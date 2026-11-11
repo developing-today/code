@@ -7,6 +7,7 @@
 - [The CLI](cli.md)
 - [The compendium: structure and mapping](compendium.md)
 - [Configuration](configuration.md)
+- [Modes](modes.md)
 - [mcpx as a consumer](consumer.md)
 - [Running mcpx in a container](container.md)
 - [Declared but never read](declared-but-unread.md)

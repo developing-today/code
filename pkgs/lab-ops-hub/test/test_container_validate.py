@@ -1,8 +1,9 @@
 # Tests for the container crawler's validate_crawl_url (container/app.py).
 # The TypeScript validator has its own suite (lib.test.ts); the Python copy
 # is the component that actually fetches, so its policy is pinned here.
-# Run with plain Python: `python3 -m unittest discover -s test -p "test_*.py"`
-# from pkgs/lab-ops-hub (stdlib only).
+# Run with the configured Python environment (including the pinned `idna`
+# dependency): `python3 -m unittest discover -s test -p "test_*.py"` from
+# pkgs/lab-ops-hub.
 import importlib.util
 import pathlib
 import time
@@ -818,6 +819,37 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused("http://\u05d0\u06611.com/")
         self.assertRefused("http://\u0661\u0627.com/")
 
+    def test_fallback_return_applies_uts46_mapping_before_nfkc(self):
+        # Codex review of PR #5231: a label python-idna refuses
+        # (here over the underscore) fell back to raw NFKC, which
+        # maps U+03F2 (lunate sigma) to U+03C2 (final sigma) where
+        # UTS-46 — and the Worker — map it to U+03C3, so ϲ_.com
+        # returned the final-sigma host xn--_-xmb instead of the
+        # WHATWG host xn--_-zmb. The fallback now remaps with
+        # UTS-46 before NFKC.
+        self.assertEqual(
+            validate_crawl_url("http://ϲ_.com/"),
+            "http://xn--_-zmb.com/",
+        )
+        # Control: the plain lunate-sigma label takes the primary
+        # codec path and returns the same sigma mapping.
+        self.assertEqual(
+            validate_crawl_url("http://ϲ.com/"),
+            "http://xn--4xa.com/",
+        )
+
+    def test_fallback_return_ascii_remapping_has_no_punycode_prefix(self):
+        # Codex review of PR #5231 (round 2): UTS-46 deletes the
+        # U+FE0F variation selector, so the label a_ + U+FE0F remaps
+        # to pure-ASCII a_. The fallback punycode-encoded it anyway,
+        # returning xn--a_- \u2014 a different host than the Worker's
+        # (and the previous codec's) a_. An ASCII remapping returns
+        # directly, with no xn-- prefix.
+        self.assertEqual(
+            validate_crawl_url("http://a_\ufe0f.com/"),
+            "http://a_.com/",
+        )
+
     def test_judges_u0345_by_its_uts46_mapping(self):
         # UTS-46 maps U+0345 (combining Greek ypogegrammeni) to
         # U+03B9 (ι, bidi class L), but NFKC leaves it unchanged, so
@@ -1451,6 +1483,23 @@ class TestValidateCrawlUrl(unittest.TestCase):
             # (xn--3xa). Both spellings return the sigma form.
             "http://ϲ.com/": "http://xn--4xa.com/",
             "http://Ϲ.com/": "http://xn--4xa.com/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+
+    def test_returns_uts46_nontransitional_alabels_matching_whatwg(self):
+        # These are new URL(raw).hostname values from the Worker runtime.
+        # Keep the Python copy aligned for nontransitional sharp S,
+        # final/ordinary/lunate sigma, and post-Unicode-3.2 mappings.
+        cases = {
+            "http://ß.com/": "http://xn--zca.com/",
+            "http://a.ß.com/": "http://a.xn--zca.com/",
+            "http://ẞ.com/": "http://xn--zca.com/",
+            "http://ς.com/": "http://xn--3xa.com/",
+            "http://σ.com/": "http://xn--4xa.com/",
+            "http://ϲ.com/": "http://xn--4xa.com/",
+            "http://ꭰ.com/": "http://xn--58d.com/",
+            "http://Ა.com/": "http://xn--lod.com/",
         }
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)

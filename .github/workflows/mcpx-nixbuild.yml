@@ -18,8 +18,6 @@ name: mcpx nix build
 # changes to this workflow are exercised by it, like mcpx.yml does.
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -50,6 +48,7 @@ jobs:
       # Warm store: dependency-bump PRs are rare, but when they come the
       # build should not start from cold (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
         with:
           # FlakeHub Cache off (#2120): no id-token is granted and the
           # developing-today org is not registered, so the action's

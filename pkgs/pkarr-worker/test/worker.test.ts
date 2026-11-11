@@ -63,6 +63,47 @@ function testEnv(store: ReturnType<typeof mockStore>["store"], retentionSeconds:
   } as unknown as Env;
 }
 
+function requestWithStream(
+  url: string,
+  method: string,
+  body: ReadableStream<Uint8Array>,
+  headers: Record<string, string> = {},
+): Request {
+  return new Request(url, {
+    method,
+    headers,
+    body,
+    duplex: "half",
+  } as RequestInit);
+}
+
+function endlessByteStream(chunkSize: number, onPull?: () => void) {
+  let pulls = 0;
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        pulls++;
+        onPull?.();
+        controller.enqueue(new Uint8Array(chunkSize));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return {
+    stream,
+    get pulls() {
+      return pulls;
+    },
+    get cancelled() {
+      return cancelled;
+    },
+  };
+}
+
 describe("z32 codec", () => {
   it("matches hand-computed vectors", () => {
     expect(z32Encode(new Uint8Array([0x00]))).toBe("yy");
@@ -187,6 +228,34 @@ describe("pkarr HTTP relay", () => {
     expect((await put(key, payload)).status).toBe(413);
   });
 
+  it("rejects an over-cap declared Content-Length before reading a PUT body", async () => {
+    const key = z32(keypair(26).publicKey);
+    const body = endlessByteStream(1);
+    const response = await worker.fetch(
+      requestWithStream(`${BASE}/pkarr/${key}`, "PUT", body.stream, {
+        "content-length": String(1073),
+      }),
+      testEnv(mockStore(undefined).store, undefined),
+    );
+
+    expect(response.status).toBe(413);
+    expect(body.pulls).toBe(0);
+    expect(body.cancelled).toBe(true);
+  });
+
+  it("cancels a streamed PUT as soon as its body exceeds the cap", async () => {
+    const key = z32(keypair(27).publicKey);
+    const body = endlessByteStream(600);
+    const response = await worker.fetch(
+      requestWithStream(`${BASE}/pkarr/${key}`, "PUT", body.stream),
+      testEnv(mockStore(undefined).store, undefined),
+    );
+
+    expect(response.status).toBe(413);
+    expect(body.pulls).toBe(2);
+    expect(body.cancelled).toBe(true);
+  });
+
   it("accepts a packet at exactly 1000 bytes", async () => {
     const kp = keypair(17);
     const key = z32(kp.publicKey);
@@ -211,6 +280,42 @@ describe("pkarr HTTP relay", () => {
     expect((await put(key, stale)).status).toBe(204);
     const res = await get(key);
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(newer);
+  });
+
+  it("rejects a signed packet whose timestamp loses precision above 2^53", async () => {
+    const kp = keypair(51);
+    const key = z32(kp.publicKey);
+    // 2^53 + 1 is the first positive integer a double cannot represent:
+    // Number(9007199254740993n) rounds down to 2^53, so storing it would
+    // silently rewrite the signed timestamp.
+    const payload = buildRelayPayload(kp, 9_007_199_254_740_993n, dnsPacketWithTxt(`_iroh.${key}`, "rounded"));
+    expect((await put(key, payload)).status).toBe(400);
+    expect((await get(key)).status).toBe(404);
+  });
+
+  it("never lets an older above-2^53 packet overwrite a newer one", async () => {
+    const kp = keypair(52);
+    const key = z32(kp.publicKey);
+    // 2^53 + 2 is exactly representable, so the newer packet stores
+    // exactly; the older 2^53 + 1 packet is rejected instead of rounding
+    // down to 2^53 in storage and passing the strictly-newer check
+    // against a collapsed value.
+    const newer = buildRelayPayload(kp, 9_007_199_254_740_994n, dnsPacketWithTxt(`_iroh.${key}`, "new"));
+    const older = buildRelayPayload(kp, 9_007_199_254_740_993n, dnsPacketWithTxt(`_iroh.${key}`, "old"));
+    expect((await put(key, newer)).status).toBe(204);
+    expect((await put(key, older)).status).toBe(400);
+    const res = await get(key);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(newer);
+  });
+
+  it("rejects nanosecond-scale timestamps that do not round-trip exactly", async () => {
+    const kp = keypair(53);
+    const key = z32(kp.publicKey);
+    // ~1.76e18 (nanosecond scale): doubles space out by 256 up there, so
+    // this value rounds to a different integer in storage.
+    const payload = buildRelayPayload(kp, 1_762_000_000_000_000_001n, dnsPacketWithTxt(`_iroh.${key}`, "ns"));
+    expect((await put(key, payload)).status).toBe(400);
+    expect((await get(key)).status).toBe(404);
   });
 
   it("lets a newer packet replace an older one", async () => {
@@ -282,6 +387,51 @@ describe("DNS-over-HTTPS", () => {
     if (typeof parsed === "string") throw new Error(parsed);
     expect(parsed.flags & 0x000f).toBe(5); // REFUSED
     expect((await doh(new Uint8Array([1, 2, 3]))).status).toBe(400);
+  });
+
+  it("rejects an over-cap declared Content-Length before reading a DoH POST body", async () => {
+    const body = endlessByteStream(1);
+    const response = await worker.fetch(
+      requestWithStream(`${BASE}/dns-query`, "POST", body.stream, {
+        "content-length": String(4097),
+      }),
+      testEnv(mockStore(undefined).store, undefined),
+    );
+
+    expect(response.status).toBe(413);
+    expect(body.pulls).toBe(0);
+    expect(body.cancelled).toBe(true);
+  });
+
+  it("cancels a streamed DoH POST as soon as its body exceeds the cap", async () => {
+    const body = endlessByteStream(2048);
+    const response = await worker.fetch(
+      requestWithStream(`${BASE}/dns-query`, "POST", body.stream),
+      testEnv(mockStore(undefined).store, undefined),
+    );
+
+    expect(response.status).toBe(413);
+    expect(body.pulls).toBe(3);
+    expect(body.cancelled).toBe(true);
+  });
+
+  it("checks the DoH limiter before reading a POST body", async () => {
+    const order: string[] = [];
+    const body = endlessByteStream(1, () => order.push("read"));
+    const env = testEnv(mockStore(undefined).store, undefined);
+    env.DOH_LIMITER = {
+      limit: async () => {
+        order.push("limit");
+        return { success: false };
+      },
+    } as Env["DOH_LIMITER"];
+
+    const response = await worker.fetch(requestWithStream(`${BASE}/dns-query`, "POST", body.stream), env);
+
+    expect(response.status).toBe(429);
+    expect(order).toEqual(["limit"]);
+    expect(body.pulls).toBe(0);
+    expect(body.cancelled).toBe(true);
   });
 });
 

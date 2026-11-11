@@ -17,27 +17,25 @@ namespaced-table decision or the #3142 storage choice.
   where the service already runs on libSQL (projector).
 - **Each product layer owns its source of truth; the projector is glue,
   not a source of truth** (see map's "How to read the map"). Migration
-  moves the *storage location*, never the ownership.
+  moves the _storage location_, never the ownership.
 - **Every move is independently shippable and reversible**: each move
   ships behind a read-fallback (dual-read or export-replay) and names its
   rollback before it lands. No flag-day cutovers.
 
 ## Preconditions (not moves — must land before Move 1)
 
-- **P0 — `pmp_links` backup legs.** The only non-rebuildable
-  cross-service store has no evidenced backup leg: the dashboard archive
-  manifest stages aggregator files and does not include `projector.db`
-  or a `pmp_links` export (map's "Registry backup legs" section,
-  verified at this branch's base). Adding a `pmp_links` export to all
-  three archive legs (local, R2, Drive) is a prerequisite for any
-  migration touching the link registry. Named follow-up: backup-leg
-  slice (does the export + verifies all three legs).
-- **P1 — Target schema vetted.** Supabase `muse-dev2` table groups
-  (`agg_*`, `shared_items`, `shared_links`, `shared_comments`,
-  `shared_events`) created with the column contracts from the map;
-  projector `pmp_*` group created alongside (new libSQL home or the
-  existing file — location is a P1 decision, recorded in the move-2
-  slice).
+- **P0 — `pmp_links` backup legs (complete, PR #5315).** The dashboard
+  archive now stages and verifies the `pmp_links`-only SQL export on the
+  local, R2, and Drive legs; see the map's "Registry backup legs" section.
+  This remains a hard prerequisite for any move touching the link
+  registry, but it is no longer outstanding work.
+- **P1 — Target schema vetted (partial, this slice).** The first action
+  group now has a column contract and reversible, locally tested DDL for
+  `public.agg_actions` and action outcomes in `public.shared_events`
+  ([contract](shared-schema/README.md)). This specifies the target but
+  does not apply it to `muse-dev2`. P1 remains open for the other
+  `agg_*` / `shared_*` groups and the projector `pmp_*` location decision
+  (recorded in the move-2 slice).
 
 ## Moves (ordered)
 
@@ -49,8 +47,9 @@ feed/quota/heartbeat caches refreshable) and every other service reads
 aggregator output. Per store, in this order inside the move:
 
 1. Append-only / audit stores (`actions.json` → `agg_` actions +
-   `shared_events` outcomes; `usage-snapshot-outbox.jsonl` drained then
-   moved to `shared_events`/`agg_` ingestion).
+   `shared_events` outcomes; the #6103 contract is the first schema-only
+   prerequisite, not a data move or writer cutover. `usage-snapshot-outbox.jsonl`
+   is drained then moved to `shared_events`/`agg_` ingestion).
 2. User-authored durable stores (`comments.json` → `shared_comments`;
    `roadmap-annotations.json` → `agg_`; `views.json` → `agg_`;
    `alerts.*` incl. `incident_events` → `agg_` + `shared_events`).
@@ -63,9 +62,18 @@ Rollback per store: writer points back at the file; files are retained
 until the move's stability window closes. Reversibility is per store,
 so Move 1 itself ships as a sequence of small PRs.
 
+For the actions slice, `actions.json` and `events.json` remain the read
+fallback and source of truth until a separate Move 1 execution slice
+verifies DB reads. If the DB path is unavailable or parity fails, keep
+serving the files and route writers back there. Before a later down
+migration, export/replay any canonical DB rows needed by the file store;
+the #6103 down migration refuses to drop non-empty tables. This slice
+does not itself copy rows, switch readers/writers, or check #1744
+acceptance criterion 3.
+
 ### Move 2 — Projector DB → shared groups, `pmp_links` as canonical `shared_links` source
 
-Second because the projector is disposable *except* `pmp_links`, and
+Second because the projector is disposable _except_ `pmp_links`, and
 Move 1 must be stable first (aggregator reads projector views for link
 joins). Steps:
 
@@ -117,9 +125,9 @@ DB filename/schema/restore path not evidenced in checked-in code).
 ## Verification for this slice
 
 - [x] Map's projector.db / `pmp_` inventory re-verified against
-  `projector/schema.sql`, `projector/src/store.ts`, and
-  `projector/README.md` at this branch's base (tables, views,
-  `file:data/projector.db` default, backup-gap statement all current;
-  line citations drifted by a few lines, substance unchanged — map left
-  untouched to keep this slice planning-only).
+      `projector/schema.sql`, `projector/src/store.ts`, and
+      `projector/README.md` at this branch's base (tables, views,
+      `file:data/projector.db` default, backup-gap statement all current;
+      line citations drifted by a few lines, substance unchanged — map left
+      untouched to keep this slice planning-only).
 - [ ] Plan-doc lint/links check per repo tooling + CI on the slice PR.

@@ -63,7 +63,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          head_sha="$(git rev-parse HEAD)"
           # Record a successful pass: store the main HEAD this run
           # pushed back (or verified clean) so the next run can skip
           # or diff against it. Best-effort by design (see header).
@@ -78,57 +77,78 @@ jobs:
               echo "::warning::could not update AUTO_FORMAT_LAST_SUCCESS_SHA; the next run will re-check this range."
             fi
           }
-          if [[ -n "${LAST_SUCCESS_SHA:-}" && "$LAST_SUCCESS_SHA" == "$head_sha" ]]; then
-            echo "main is unchanged since the last successful format pass ($head_sha); nothing to do."
-            exit 0
-          fi
           changed_file="$(mktemp)"
           trap 'rm -f "$changed_file"' EXIT
-          if [[ -n "${LAST_SUCCESS_SHA:-}" ]] \
-             && git cat-file -e "${LAST_SUCCESS_SHA}^{commit}" 2>/dev/null \
-             && git merge-base --is-ancestor "$LAST_SUCCESS_SHA" HEAD; then
-            git diff --name-only --diff-filter=ACMR "$LAST_SUCCESS_SHA...$head_sha" > "$changed_file"
-          else
-            git log --since="25 hours ago" --pretty=format: --name-only \
-              | sort -u | while IFS= read -r f; do
-                  if [[ -n "$f" && -f "$f" ]]; then
-                    printf '%s\n' "$f"
-                  fi
-                done > "$changed_file"
-          fi
-          mapfile -t changed_files < "$changed_file"
-          if ((${#changed_files[@]} == 0)); then
-            echo "No changed files to format."
-            record_success
-            exit 0
-          fi
-          # The push authenticates with the REPO_AUTOMATION_TOKEN
-          # PAT (see header), which may push workflow files, so
-          # nothing is excluded from the write pass.
-          format_files=("${changed_files[@]}")
-          printf 'Formatting %s file(s):\n' "${#format_files[@]}"
-          printf '  %s\n' "${format_files[@]}"
-          nix run .#format -- "${format_files[@]}"
-          if git diff --quiet; then
-            echo "treefmt made no changes."
-            record_success
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- "${format_files[@]}"
-          git commit -m "style(treefmt): auto-format on main"
-          pushed=0
-          for attempt in 1 2; do
+          max_attempts=3
+          for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+            # A formatter commit is based on the checkout's main. Always
+            # start from the latest remote tip so a push race can retry the
+            # formatting pass rather than rebasing stale formatter output.
+            git fetch origin main
+            git reset --hard origin/main
+            head_sha="$(git rev-parse HEAD)"
+            if [[ -n "${LAST_SUCCESS_SHA:-}" && "$LAST_SUCCESS_SHA" == "$head_sha" ]]; then
+              echo "main is unchanged since the last successful format pass ($head_sha); nothing to do."
+              exit 0
+            fi
+            : > "$changed_file"
+            if [[ -n "${LAST_SUCCESS_SHA:-}" ]] \
+               && git cat-file -e "${LAST_SUCCESS_SHA}^{commit}" 2>/dev/null \
+               && git merge-base --is-ancestor "$LAST_SUCCESS_SHA" HEAD; then
+              git diff --name-only --diff-filter=ACMR "$LAST_SUCCESS_SHA...$head_sha" > "$changed_file"
+            else
+              git log --since="25 hours ago" --pretty=format: --name-only \
+                | sort -u | while IFS= read -r f; do
+                    if [[ -n "$f" && -f "$f" ]]; then
+                      printf '%s\n' "$f"
+                    fi
+                  done > "$changed_file"
+            fi
+            mapfile -t changed_files < "$changed_file"
+            if ((${#changed_files[@]} == 0)); then
+              echo "No changed files to format."
+              record_success
+              exit 0
+            fi
+            # The push authenticates with the REPO_AUTOMATION_TOKEN
+            # PAT (see header), which may push workflow files, so
+            # nothing is excluded from the write pass.
+            format_files=("${changed_files[@]}")
+            printf 'Formatting %s file(s):\n' "${#format_files[@]}"
+            printf '  %s\n' "${format_files[@]}"
+            nix run .#format -- "${format_files[@]}"
+            # Stage every tracked change treefmt actually made, not just
+            # the listed files: formatters rewrite companions of listed
+            # files (rustfmt reformats out-of-line mod children of a
+            # listed parent), and staging only the listed files either
+            # silently dropped those companion changes or failed the
+            # commit below with "no changes added to commit" (#5014).
+            # The checkout was clean before treefmt ran, so every
+            # tracked modification present now is treefmt's. Decide
+            # "nothing to commit" from the staged diff instead.
+            git add -u
+            if git diff --cached --quiet; then
+              echo "treefmt made no changes."
+              record_success
+              exit 0
+            fi
+            git commit -m "style(treefmt): auto-format on main"
             if git push origin HEAD:main; then
               echo "Pushed auto-format commit."
-              pushed=1
-              break
+              record_success
+              exit 0
             fi
-            echo "Push raced a newer main; rebasing (attempt $attempt)."
-            git pull --rebase origin main
+            echo "Push failed; checking whether main advanced during this pass."
+            git fetch origin main
+            main_sha="$(git rev-parse origin/main)"
+            if [[ "$main_sha" == "$head_sha" ]]; then
+              echo "::error::Auto-format push failed and main did not advance; not retrying the same revision."
+              exit 1
+            fi
+            echo "main advanced during the format pass ($head_sha -> $main_sha); discarding stale formatter output and retrying against the latest main (attempt $attempt/$max_attempts)."
+            git reset --hard origin/main
           done
-          if (( pushed == 0 )); then
-            git push origin HEAD:main
-          fi
-          record_success
+          echo "::warning title=Auto-format retries exhausted::main kept advancing during all $max_attempts format passes; no success SHA was recorded, so the next scheduled run will retry."
+          exit 75

@@ -1,4 +1,5 @@
-// Project #4 coverage report (#1220): pool vs backlog reality.
+// Project #4 coverage report (#1220/#1224): pool vs backlog reality and
+// timestamped repository-wide stale-issue counts.
 //
 // Backlog counts (open issues per repo, `now`/`next` gate labels) cannot
 // come from the aggregator's item resolution — the Source only resolves
@@ -26,22 +27,41 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ProjectPoolItem } from "./model.ts";
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+export const STALE_ISSUE_AGE_MS = 90 * DAY_MS;
+export const STALE_ISSUE_CENSUS_STALE_MS = 7 * DAY_MS;
+
+/** GitHub Search API query for issues untouched strictly before the 90-day cutoff. */
+export function staleIssueSearchQuery(repo: string, collectedAt: Date): string {
+  const cutoff = new Date(collectedAt.getTime() - STALE_ISSUE_AGE_MS).toISOString();
+  return `repo:${repo} is:issue is:open updated:<${cutoff}`;
+}
+
 /** One repo's backlog census, as embedded by the collector. */
 export interface RepoCensus {
   repo: string;
   /** Open issues in the repo (Search API total_count, is:issue is:open). */
-  openIssues: number;
+  openIssues: number | null;
   /** Open issues carrying the `now` gate label. */
-  gateNow: number;
+  gateNow: number | null;
   /** Open issues carrying the `next` gate label. */
-  gateNext: number;
+  gateNext: number | null;
+  /** Open issues untouched for more than 90 days; null when this query failed. */
+  staleOpenIssues?: number | null;
+  /** Time this repo's stale-issue query completed (or failed). */
+  staleIssuesCollectedAt?: string | null;
+  /** Sanitized collection error for the stale-issue query, if any. */
+  staleIssuesError?: string | null;
 }
 
-export interface RepoCoverage extends Omit<RepoCensus, "openIssues" | "gateNow" | "gateNext"> {
+export interface RepoCoverage extends Omit<RepoCensus, "openIssues" | "gateNow" | "gateNext" | "staleOpenIssues" | "staleIssuesCollectedAt" | "staleIssuesError"> {
   /** Null when the feed carried no census for this repo. */
   openIssues: number | null;
   gateNow: number | null;
   gateNext: number | null;
+  staleOpenIssues: number | null;
+  staleIssuesCollectedAt: string | null;
+  staleIssuesError: string | null;
   /** Project #4 pool items whose linked issue/PR lives in this repo.
    * Null when the feed carried no projects section (pool unavailable). */
   poolItems: number | null;
@@ -89,6 +109,16 @@ function isRepositoryRef(value: string): boolean {
   );
 }
 
+/**
+ * One census count as the collector emits it (#3992): a non-negative
+ * integer, or null when that count's query failed ("unavailable, not
+ * zero"). Anything else - negative, fractional, a numeric string, a
+ * boolean - is an impossible row and stays rejected.
+ */
+function isCensusCount(v: unknown): v is number | null {
+  return v === null || (Number.isInteger(v) && (v as number) >= 0);
+}
+
 /** Structural gate for one census row, shared by the feed reader. */
 export function isRepoCensus(v: unknown): v is RepoCensus {
   if (!v || typeof v !== "object") return false;
@@ -96,15 +126,33 @@ export function isRepoCensus(v: unknown): v is RepoCensus {
   return (
     typeof r.repo === "string" &&
     isRepositoryRef(r.repo) &&
-    Number.isInteger(r.openIssues) &&
-    (r.openIssues as number) >= 0 &&
-    Number.isInteger(r.gateNow) &&
-    (r.gateNow as number) >= 0 &&
-    Number.isInteger(r.gateNext) &&
-    (r.gateNext as number) >= 0 &&
-    (r.gateNow as number) <= (r.openIssues as number) &&
-    (r.gateNext as number) <= (r.openIssues as number)
+    isCensusCount(r.openIssues) &&
+    isCensusCount(r.gateNow) &&
+    isCensusCount(r.gateNext) &&
+    // The gate-vs-total ordering is only decidable when both sides
+    // were actually counted; a null on either side is the partial-
+    // failure row #3992 emits, not an impossible one.
+    (r.gateNow === null || r.openIssues === null ||
+      (r.gateNow as number) <= (r.openIssues as number)) &&
+    (r.gateNext === null || r.openIssues === null ||
+      (r.gateNext as number) <= (r.openIssues as number)) &&
+    (r.staleOpenIssues === undefined || r.staleOpenIssues === null ||
+      (Number.isInteger(r.staleOpenIssues) && (r.staleOpenIssues as number) >= 0)) &&
+    (r.staleIssuesCollectedAt === undefined || r.staleIssuesCollectedAt === null ||
+      (typeof r.staleIssuesCollectedAt === "string" && Number.isFinite(Date.parse(r.staleIssuesCollectedAt)))) &&
+    (r.staleIssuesError === undefined || r.staleIssuesError === null || typeof r.staleIssuesError === "string")
   );
+}
+
+export type StaleIssueState = "current" | "stale" | "error" | "unavailable";
+
+/** The collection freshness is independent of the 90-day issue-age threshold. */
+export function staleIssueState(repo: Pick<RepoCoverage, "staleOpenIssues" | "staleIssuesCollectedAt" | "staleIssuesError">, now = new Date()): StaleIssueState {
+  if (repo.staleIssuesError) return "error";
+  if (repo.staleOpenIssues === null || !repo.staleIssuesCollectedAt) return "unavailable";
+  const collectedAt = Date.parse(repo.staleIssuesCollectedAt);
+  if (!Number.isFinite(collectedAt) || collectedAt > now.getTime()) return "unavailable";
+  return now.getTime() - collectedAt > STALE_ISSUE_CENSUS_STALE_MS ? "stale" : "current";
 }
 
 /**
@@ -131,6 +179,9 @@ export function computeCoverage(
         openIssues: null,
         gateNow: null,
         gateNext: null,
+        staleOpenIssues: null,
+        staleIssuesCollectedAt: null,
+        staleIssuesError: null,
         poolItems: pool ? 0 : null,
         poolUnsetStatus: pool ? 0 : null,
         poolUnsetArea: pool ? 0 : null,
@@ -144,6 +195,9 @@ export function computeCoverage(
     r.openIssues = c.openIssues;
     r.gateNow = c.gateNow;
     r.gateNext = c.gateNext;
+    r.staleOpenIssues = c.staleOpenIssues ?? null;
+    r.staleIssuesCollectedAt = c.staleIssuesCollectedAt ?? null;
+    r.staleIssuesError = c.staleIssuesError ?? null;
   }
   for (const p of pool ?? []) {
     const r = row(p.repo);
@@ -184,6 +238,23 @@ export function diffCoverage(current: CoverageReport, baseline: CoverageReport |
 }
 
 /**
+ * A stored anchor is usable only if it is a string that parses as a
+ * real calendar date. `new Date()` alone is not enough: it yields NaN
+ * for garbage ("not-a-date") but silently rolls an impossible date
+ * (2026-02-30) over to a neighbouring day, so the date components are
+ * round-tripped — the parsed date must still be the date the string
+ * names. (#5196)
+ */
+export function isValidAnchorAt(value: unknown): value is string {
+  if (typeof value !== "string" || value === "") return false;
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return false;
+  const named = /^\d{4}-\d{2}-\d{2}/.exec(value);
+  if (named && parsed.toISOString().slice(0, 10) !== named[0]) return false;
+  return true;
+}
+
+/**
  * The next snapshot file after observing `current`. Within the week the
  * stored baseline is untouched, `current` simply refreshes, and the
  * week's first report stays frozen in `weekly`; once the week anchored
@@ -202,12 +273,72 @@ export function nextCoverageSnapshot(
   now = new Date(),
 ): CoverageSnapshotFile {
   if (!stored) return { baseline: null, current, weekly: current, anchorAt: current.generatedAt };
-  const anchor = stored.anchorAt ?? stored.current.generatedAt;
+  // A poisoned anchor must not freeze rotation forever (#5196): an
+  // unparseable or impossible anchorAt falls back to the current
+  // report's own timestamp, the pre-anchorAt behaviour.
+  const anchor = isValidAnchorAt(stored.anchorAt) ? stored.anchorAt : stored.current.generatedAt;
   const age = now.getTime() - new Date(anchor).getTime();
   if (Number.isFinite(age) && age >= COVERAGE_WEEK_MS) {
     return { baseline: stored.weekly ?? stored.current, current, weekly: current, anchorAt: now.toISOString() };
   }
   return { baseline: stored.baseline, current, weekly: stored.weekly ?? stored.current, anchorAt: anchor };
+}
+
+/** One coverage count: a finite number, or null when unavailable. */
+function isCoverageCount(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+/** Structural gate for one stored coverage row (#4140). */
+function isCoverageRow(value: unknown): value is RepoCoverage {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.repo === "string" &&
+    isCoverageCount(row.openIssues) &&
+    isCoverageCount(row.gateNow) &&
+    isCoverageCount(row.gateNext) &&
+    isCoverageCount(row.poolItems) &&
+    isCoverageCount(row.poolUnsetStatus) &&
+    isCoverageCount(row.poolUnsetArea)
+  );
+}
+
+/** Structural gate for one stored coverage report (#4140). */
+function isCoverageReport(value: unknown): value is CoverageReport {
+  if (!value || typeof value !== "object") return false;
+  const report = value as Record<string, unknown>;
+  return (
+    typeof report.generatedAt === "string" &&
+    Array.isArray(report.repos) &&
+    report.repos.every(isCoverageRow)
+  );
+}
+
+/**
+ * Whole-file gate for the stored snapshot (#4140): `current` must be a
+ * report; `baseline` and `weekly` may be null or absent (files written
+ * before `weekly` existed) but when present must be reports. Anything
+ * else reads as absent, per the store's contract — a malformed
+ * baseline used to sail through `read()` and crash `diffCoverage` on
+ * the /projects path, and a malformed `weekly` could be promoted into
+ * the baseline slot by the weekly rotation.
+ *
+ * `anchorAt` is gated too (#5196): it may be absent (files written
+ * before it existed) but a present-and-unusable one is corruption, and
+ * corrupt reads as absent — otherwise the bad anchor would be
+ * re-persisted on every panel read and weekly rotation would freeze
+ * forever with no signal.
+ */
+function isCoverageSnapshotFile(value: unknown): value is CoverageSnapshotFile {
+  if (!value || typeof value !== "object") return false;
+  const file = value as Record<string, unknown>;
+  return (
+    isCoverageReport(file.current) &&
+    (file.baseline === null || file.baseline === undefined || isCoverageReport(file.baseline)) &&
+    (file.weekly === null || file.weekly === undefined || isCoverageReport(file.weekly)) &&
+    (file.anchorAt === undefined || isValidAnchorAt(file.anchorAt))
+  );
 }
 
 /** Thin JSON store for the coverage snapshot; corrupt reads as absent. */
@@ -219,11 +350,8 @@ export class CoverageSnapshotStore {
 
   async read(): Promise<CoverageSnapshotFile | null> {
     try {
-      const parsed = JSON.parse(await readFile(this.file, "utf8")) as CoverageSnapshotFile;
-      if (!parsed || typeof parsed !== "object" || !parsed.current || !Array.isArray(parsed.current.repos)) {
-        return null;
-      }
-      return parsed;
+      const parsed: unknown = JSON.parse(await readFile(this.file, "utf8"));
+      return isCoverageSnapshotFile(parsed) ? parsed : null;
     } catch {
       return null;
     }

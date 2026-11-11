@@ -9,8 +9,11 @@ roadmaps in slice 2, projects + stalled-PRs + loose-ends in slice 3)
 land after this scaffold does — see the triage decomposition on #1352.
 
 Ownership rules (from #1352; enforced by every section stub):
-- never touch held / do-not-merge / user-owned PRs;
-- Drew's own feature PRs get a check-in comment at 7 days, never a packet;
+- never touch held / do-not-merge / user-owned PRs (hold labels only:
+  `held`, `user/owned`, `do-not-merge`, `do-not-auto-edit`);
+- PRs labeled `user/owned` get a check-in comment at 7 days, never a packet
+  (authorship alone never marks a PR held: a dezren39-authored PR with no
+  hold label is workable like any other — Drew ruling 2026-11-07, code#7077);
 - user/review is reported, never re-decided.
 
 Usage: python3 -I scripts/program_tending.py --run [--repo owner/name ...]
@@ -21,6 +24,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 import urllib.request
 
@@ -28,8 +32,8 @@ SECTIONS = ("epics", "roadmaps", "projects", "stalled-prs", "loose-ends")
 
 FLEET_REPOS = (
     "developing-today/code",
-    "developing-today/opencode",
-    "developing-today/openchamber",
+    "developing-today-forks/opencode",
+    "developing-today-forks/openchamber",
     "developing-today/nix",
 )
 
@@ -49,10 +53,16 @@ def _gh_api(path: str) -> list:
     """GET a GitHub REST collection, following pagination. Read-only."""
     items: list = []
     url = f"https://api.github.com{path}"
+    headers = {"Accept": "application/vnd.github+json"}
+    # The workflow hands this job a token (#6860): send it when present
+    # so the reads are authenticated; without one, behave exactly as
+    # before. The value is only ever placed in the header — it is
+    # never logged or included in any error or report string.
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     while url:
-        req = urllib.request.Request(
-            url, headers={"Accept": "application/vnd.github+json"}
-        )
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
             items.extend(json.loads(resp.read().decode("utf-8")))
             nxt = resp.headers.get("Link", "")

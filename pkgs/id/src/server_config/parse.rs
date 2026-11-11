@@ -348,19 +348,31 @@ fn budget_policy(
             other => Ok(other),
         }
     };
-    if let Some(v) = checked("app_inbound_bytes_per_second", raw.app_inbound_bytes_per_second)? {
+    if let Some(v) = checked(
+        "app_inbound_bytes_per_second",
+        raw.app_inbound_bytes_per_second,
+    )? {
         policy.app_inbound[0] = BudgetLimit::bytes(1_000, v);
     }
     if let Some(v) = checked("app_inbound_bytes_per_hour", raw.app_inbound_bytes_per_hour)? {
         policy.app_inbound[1] = BudgetLimit::bytes(3_600_000, v);
     }
-    if let Some(v) = checked("app_outbound_bytes_per_second", raw.app_outbound_bytes_per_second)? {
+    if let Some(v) = checked(
+        "app_outbound_bytes_per_second",
+        raw.app_outbound_bytes_per_second,
+    )? {
         policy.app_outbound[0] = BudgetLimit::bytes(1_000, v);
     }
-    if let Some(v) = checked("app_outbound_bytes_per_hour", raw.app_outbound_bytes_per_hour)? {
+    if let Some(v) = checked(
+        "app_outbound_bytes_per_hour",
+        raw.app_outbound_bytes_per_hour,
+    )? {
         policy.app_outbound[1] = BudgetLimit::bytes(3_600_000, v);
     }
-    if let Some(v) = checked("per_peer_burst_bytes_per_minute", raw.per_peer_burst_bytes_per_minute)? {
+    if let Some(v) = checked(
+        "per_peer_burst_bytes_per_minute",
+        raw.per_peer_burst_bytes_per_minute,
+    )? {
         policy.per_peer[0] = BudgetLimit::bytes(60_000, v);
     }
     if let Some(v) = checked("per_peer_bytes_per_hour", raw.per_peer_bytes_per_hour)? {
@@ -1104,7 +1116,10 @@ mod tests {
         );
         assert_eq!(overrides[1].0, key(3));
         // The resolved override is the one the evaluator consults.
-        assert_eq!(parsed.budgets().limits_for_peer(&key(1)), overrides[0].1.as_slice());
+        assert_eq!(
+            parsed.budgets().limits_for_peer(&key(1)),
+            overrides[0].1.as_slice()
+        );
     }
 
     #[test]

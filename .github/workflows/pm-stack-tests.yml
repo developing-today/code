@@ -1,23 +1,38 @@
 name: pm-stack tests
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pm-stack/**"
-      - ".github/workflows/pm-stack-tests.yml"
   workflow_dispatch:
+  push:
+    paths:
+      - "pm-stack/external-comms/**"
+      - "pm-stack/opencode-claimant/**"
+      - "pm-stack/opencode-usage-export/**"
+      - "pm-stack/cloudflare-export/**"
+      - "pm-stack/supabase-export/**"
+      - ".github/workflows/pm-stack-tests.yml"
+  pull_request:
+    paths:
+      - "pm-stack/external-comms/**"
+      - "pm-stack/opencode-claimant/**"
+      - "pm-stack/opencode-usage-export/**"
+      - "pm-stack/cloudflare-export/**"
+      - "pm-stack/supabase-export/**"
+      - ".github/workflows/pm-stack-tests.yml"
 
 permissions:
   contents: read
 
 jobs:
   test:
-    name: aggregator + projector
+    name: aggregator + projector + dispatch + python suites + quota exporters
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
@@ -37,7 +52,99 @@ jobs:
         working-directory: pm-stack/projector
         run: bun test
 
+      - name: Install dispatch dependencies
+        working-directory: pm-stack/dispatch
+        run: bun install --frozen-lockfile
+
+      # Bun suite for #6090: pm-stack/dispatch/test/ (131 tests, incl.
+      # the #4917 launch-failure compensation / orphan-cleanup pins in
+      # launch_failure.test.ts) was run by no workflow. The test
+      # directory is asserted to exist and hold *.test.ts files first,
+      # so a green run cannot be a silently skipped suite; any failure
+      # in the suite fails the job.
+      - name: Test dispatch
+        working-directory: pm-stack/dispatch
+        run: |
+          if [ ! -d test ] || ! ls test/*.test.ts >/dev/null 2>&1; then
+            echo "::error::Missing dispatch test suite — pm-stack/dispatch/test has no *.test.ts files; the dispatch suite was not run."
+            exit 1
+          fi
+          bun test
+
       - name: Test seed and deploy/install scripts
         run: |
           bash pm-stack/scripts/seed-smoke.test.sh
           bash pm-stack/scripts/deploy-install-smoke.test.sh
+
+      # Python suites for #5951: pm-stack/opencode-claimant/test_poll.py
+      # (36 tests, the #3026 claimant session-cap gate) and
+      # pm-stack/grist/test_update_choice_options.py (7 tests) were run
+      # by no workflow. Both files are named explicitly and asserted to
+      # exist first, so a green run cannot be a silently skipped suite;
+      # any failure in either suite fails the job.
+      - name: Test claimant and grist Python suites
+        run: |
+          fail=0
+          for t in pm-stack/opencode-claimant/test_poll.py pm-stack/opencode-claimant/test_claimant.py pm-stack/opencode-claimant/test/test_claimant.py pm-stack/grist/test_update_choice_options.py; do
+            if [ ! -f "$t" ]; then
+              echo "::error::Missing suite file $t — the pm-stack Python suites were not run in full."
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          python3 -m unittest pm-stack/opencode-claimant/test_poll.py || fail=1
+          python3 -m unittest pm-stack/opencode-claimant/test_claimant.py || fail=1
+          python3 -m unittest pm-stack/opencode-claimant/test/test_claimant.py || fail=1
+          python3 -m unittest discover -s pm-stack/grist -p 'test_*.py' || fail=1
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::pm-stack Python suites: at least one suite failed (see above)."
+            exit 1
+          fi
+          echo "pm-stack Python suites: test_poll.py + test_claimant.py + test/test_claimant.py (#7670) + grist discovery passed."
+
+      # Python suite for #6217: pm-stack/external-comms/
+      # test_push_quarantine.py (6 tests, the pinning suite for the
+      # #6154 external-comms pusher fix) was run by no workflow, so a
+      # regression of the silent-drop bug would have passed CI
+      # unnoticed. The file is asserted to exist first, so a green run
+      # cannot be a silently skipped suite; any failure fails the job.
+      - name: Test external-comms push-quarantine Python suite
+        working-directory: pm-stack/external-comms
+        run: |
+          if [ ! -f test_push_quarantine.py ]; then
+            echo "::error::Missing suite file pm-stack/external-comms/test_push_quarantine.py — the push-quarantine suite was not run."
+            exit 1
+          fi
+          python3 -m unittest test_push_quarantine
+
+      # The quota exporter suites need Node 24: opencode-usage-export
+      # imports node:sqlite, which under the runner's default Node 22
+      # prints an ExperimentalWarning to stderr — and that suite's
+      # import test asserts the child's stderr is empty. (Codex P1
+      # finding on PR #6928, verified against the suite at lines
+      # 52-68 of opencode-usage-export.test.mjs.)
+      - name: Set up Node 24 for the quota exporter suites
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # Quota exporter suites for #6084
+      # opencode-usage-export: node --test (12 tests)
+      - name: Test opencode-usage-export suite
+        run: node --test pm-stack/opencode-usage-export/opencode-usage-export.test.mjs
+
+      # cloudflare-export: node --test (35 tests)
+      - name: Test cloudflare-export suite
+        run: node --test pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs
+
+      # supabase-export: bun test (12 tests)
+      - name: Test supabase-export suite
+        working-directory: pm-stack/supabase-export
+        run: |
+          if [ ! -f supabase-quota-export.test.mjs ]; then
+            echo "::error::Missing suite file pm-stack/supabase-export/supabase-quota-export.test.mjs — the supabase suite was not run."
+            exit 1
+          fi
+          bun test

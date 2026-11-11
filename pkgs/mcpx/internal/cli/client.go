@@ -373,9 +373,10 @@ func NewInProcessClient(paths daemon.Paths, configPath string, rt http.RoundTrip
 	return c
 }
 
-// Remote reports whether this client talks to a daemon it cannot start.
 // Socket is the unix socket this client is actually using, or "" when the
 // daemon is somewhere else.
+//
+// Remote reports whether this client talks to a daemon it cannot start.
 //
 // Asked of the connection rather than recomputed from the configuration.
 // Inline mode listens on a private temporary socket, so deriving the path
@@ -489,7 +490,7 @@ func (c *Client) open(ctx context.Context, method, path string, body []byte, con
 // readReply reads a whole response, turning a non-2xx status into an
 // *HTTPError.
 func (c *Client) readReply(resp *http.Response) ([]byte, int, error) {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, 0, err
@@ -639,9 +640,17 @@ func (c *Client) EnsureDaemon(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 
 	cmd := exec.Command(exe, args...)
+	// A daemon auto-started by this invocation must resolve the
+	// same chain this process did. A --paths-config seed lives only
+	// in this process's memory, so forward it as the child's
+	// MCPX_PATHS_CONFIG (PR #2477 finding); an environment seed
+	// needs no forwarding, as the child inherits the environment.
+	if seed, ok := config.PathsConfigSeedEnv(); ok {
+		cmd.Env = append(os.Environ(), "MCPX_PATHS_CONFIG="+seed)
+	}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Stdin = nil
@@ -854,19 +863,33 @@ type BatchResultItem struct {
 	Error      string          `json:"error,omitempty"`
 	IsError    bool            `json:"isError,omitempty"`
 	DurationMs int64           `json:"durationMs,omitempty"`
+	// Skipped marks an item a safe-prefix batch did not run, with
+	// the reason it stopped (#1927).
+	Skipped bool   `json:"skipped,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // BatchResponse is the response to /v1/batch.
 type BatchResponse struct {
 	Results []BatchResultItem `json:"results"`
+	// SafePrefix is present when a safe-prefix batch stopped:
+	// where, and why (#1927).
+	SafePrefix *BatchSafePrefix `json:"safePrefix,omitempty"`
+}
+
+// BatchSafePrefix reports a safe-prefix stop.
+type BatchSafePrefix struct {
+	StoppedAt int    `json:"stoppedAt"`
+	Reason    string `json:"reason"`
 }
 
 // Batch invokes multiple tools in a single turn.
-func (c *Client) Batch(ctx context.Context, calls []BatchCallItem, stopOnError bool, parallel bool, cc config.CallContext) (*BatchResponse, error) {
+func (c *Client) Batch(ctx context.Context, calls []BatchCallItem, stopOnError bool, parallel bool, safePrefix bool, cc config.CallContext) (*BatchResponse, error) {
 	b, err := c.do(ctx, http.MethodPost, "/v1/batch", map[string]any{
 		"calls":       calls,
 		"stopOnError": stopOnError,
 		"parallel":    parallel,
+		"safePrefix":  safePrefix,
 		"context":     cc,
 	})
 	if err != nil {
@@ -899,7 +922,7 @@ func (c *Client) CallRelayed(ctx context.Context, server, tool string, cc config
 		var out CallResult
 		return &out, json.Unmarshal(b, &out)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	dec := json.NewDecoder(resp.Body)
 	for {
 		var f daemon.RelayFrame
@@ -1274,7 +1297,7 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 				}
 			}
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 	return ctx.Err()
 }

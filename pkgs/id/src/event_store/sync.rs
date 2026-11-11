@@ -856,6 +856,8 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
+                chat: None,
             };
             events.push(chain::sign(&key, seq, backlink, Some(body), ext).unwrap());
         }
@@ -1111,6 +1113,8 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
+                chat: None,
             },
         )
         .unwrap();
@@ -1156,6 +1160,8 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
+                chat: None,
             },
         )
         .unwrap();
@@ -1205,6 +1211,8 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
+                chat: None,
             },
         )
         .unwrap();
@@ -1233,6 +1241,123 @@ mod tests {
         assert_eq!(
             db.voided, 0,
             "voided counts stored-but-unapplied events, not refused arrivals: {db:?}"
+        );
+    }
+
+    /// #2414: a range session counts an arrival it stores but does not apply as
+    /// voided, not as accepted and not as refused. The shape is a content event
+    /// that names a voided group operation in its `after` set: the membership
+    /// layer voids an event that names a voided event when its author is not a
+    /// member of the group at that position (resolve rule 3), so the receiver
+    /// keeps the event without applying it. This is the stored-but-unapplied
+    /// shape the frozen-arrival test above cannot reach: a frozen arrival is
+    /// turned away, while this one is kept.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_a_range_session_counts_a_stored_but_unapplied_arrival_as_voided() {
+        use crate::membership::AuthId;
+        use crate::membership::body::encode_body;
+        use p2panda_auth::Access;
+        use p2panda_auth::group::{GroupAction, GroupMember};
+
+        fn gkey(who: u8) -> SigningKey {
+            SigningKey::from_bytes(&[who; 32])
+        }
+        fn gauth(who: u8) -> AuthId {
+            AuthId::Key(*gkey(who).verifying_key().as_bytes())
+        }
+        fn ext(group: Option<Hash>, after: Vec<Hash>, kind: &str) -> ChainExt {
+            ChainExt {
+                kind: kind.to_owned(),
+                group,
+                after,
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+            }
+        }
+        // The group create, by A, listing A, B and C as managers. The group is
+        // the create's ID.
+        let create_body = encode_body(&GroupAction::Create {
+            initial_members: [b'A', b'B', b'C']
+                .iter()
+                .map(|who| (GroupMember::Individual(gauth(*who)), Access::manage()))
+                .collect(),
+        })
+        .unwrap();
+        let create = chain::sign(
+            &gkey(b'A'),
+            0,
+            None,
+            Some(&create_body),
+            ext(None, Vec::new(), "group.op"),
+        )
+        .unwrap();
+        let group = create.id;
+        // D is not a member, so D's operation on the group is stored but voided.
+        let op_body = encode_body(&GroupAction::Add {
+            member: GroupMember::Individual(gauth(b'E')),
+            access: Access::manage(),
+        })
+        .unwrap();
+        let op = chain::sign(
+            &gkey(b'D'),
+            0,
+            None,
+            Some(&op_body),
+            ext(Some(group), vec![group], "group.op"),
+        )
+        .unwrap();
+        // D's next event names the voided operation, so it is stored but does
+        // not apply either, on any store that holds the group state.
+        let target = chain::sign(
+            &gkey(b'D'),
+            1,
+            Some(op.id),
+            None,
+            ext(Some(group), vec![op.id], "message"),
+        )
+        .unwrap();
+
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        for store in [&mut a, &mut b] {
+            let created = store
+                .ingest_with_body(&create.bytes, Some(&create_body), NOW)
+                .unwrap();
+            assert!(matches!(created, Ingest::Accepted { .. }), "{created:?}");
+            let voided = store
+                .ingest_with_body(&op.bytes, Some(&op_body), NOW)
+                .unwrap();
+            assert!(matches!(voided, Ingest::Voided { .. }), "{voided:?}");
+        }
+        // Only A holds the target; it is voided there too, and sync still
+        // carries it: a voided event counts as present.
+        let held = a.ingest_events(vec![target.clone()], NOW).unwrap();
+        assert!(matches!(held[0], Ingest::Voided { .. }), "{held:?}");
+
+        let (da, db) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        let (da, db) = (da.unwrap(), db.unwrap());
+        assert_eq!(da.received, 0, "A learns nothing new: {da:?}");
+        assert_eq!(db.received, 1, "the target is the one arrival: {db:?}");
+        assert_eq!(db.voided, 1, "the target is stored but not applied: {db:?}");
+        assert_eq!(db.accepted, 0, "a voided arrival is not accepted: {db:?}");
+        assert_eq!(db.refused, 0, "a voided arrival is not refused: {db:?}");
+        assert!(
+            !b.event_applied(&target.id).unwrap(),
+            "the target is present on B but does not apply"
         );
     }
 
@@ -1760,8 +1885,10 @@ mod tests {
         let (_db, mut b) = open();
         populate(&mut a, &[(1, 4)]);
         let (before_a, before_b) = (ids(&a), ids(&b));
-        let gate = testing::open_gate()
-            .with_blocks(testing::stub_blocks(&[*testing::key(0xd1).public().as_bytes()], &[]));
+        let gate = testing::open_gate().with_blocks(testing::stub_blocks(
+            &[*testing::key(0xd1).public().as_bytes()],
+            &[],
+        ));
         let (dialer, acceptor) = loopback_gated(
             &mut a,
             &mut b,
@@ -1778,7 +1905,10 @@ mod tests {
             refused.downcast_ref::<PullRefused>().is_some(),
             "{refused:#}"
         );
-        assert!(dialer.is_err(), "the dialer's session ends with the refusal");
+        assert!(
+            dialer.is_err(),
+            "the dialer's session ends with the refusal"
+        );
         assert_eq!(ids(&b), before_b, "no event crossed to the blocked peer");
         assert_eq!(ids(&a), before_a, "the server's store is unchanged");
     }

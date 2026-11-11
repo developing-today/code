@@ -15,6 +15,22 @@
 //!              {"id":"r2","cap":"chat.say","args":{"text":"hello"}}]}
 //! ```
 //!
+//! Asking what device the program is rendering on is the same shape —
+//! `device.info` (#2338) is a one-shot request whose result is the
+//! device capability manifest (taxonomy doc 2026-10-29, §3.1):
+//!
+//! ```json
+//! {"v":1,
+//!  "requests":[{"id":"d1","cap":"device.info"}]}
+//! ```
+//!
+//! The server answers with the manifest as the result value:
+//! `{"manifest":{"v":1},"display":{...},"input":{...},"sensors":{...},"audio":{...},"network":{...}}`.
+//! A program may name the manifest version it understands
+//! (`{"id":"d1","cap":"device.info","args":{"v":1}}`); an unsupported
+//! version is refused with `bad_args`, never silently interpreted. A
+//! host that cannot describe its device refuses with `unknown_cap`.
+//!
 //! The server answers each new request with
 //! `{"cap":"result","id":"r1","ok":true,"value":...}` (or `"ok":false` with an
 //! `"error"`), and each subscription with its own events
@@ -46,6 +62,18 @@
 //! | `outside_ceiling`| The server or the world's capability ceiling excludes it.           |
 //! | `result_too_large`| The serialized result event exceeded the maximum event size.       |
 //!
+//! Location refusals reuse those codes with specific reasons (#2341):
+//! `cap_denied` with reason `consent_required` (no per-use consent) or
+//! `os_permission_denied` (the OS refused the permission), `outside_ceiling`
+//! with reason `precision_ceiling` (the fix is less precise than the
+//! ceiling allows), and `failed` with reason `no_fix` (no fix available).
+//!
+//! **Sensor caps are per-use.** The `loc.*` capabilities are sensor caps:
+//! a wildcard (`*`) grant never reaches them and grant-on-use never mints
+//! a durable grant for them — a world needs an explicit ceiling entry
+//! *and* an explicit grant, and each use still passes the consent seam.
+//! [`is_sensor_cap`] names the set; the ledger enforces it.
+//!
 //! **Local, not signed.** The granted set, the policy and the usage counts
 //! ([`CapUsage`]) belong to the hosting node and are journaled there. None of
 //! them is signed or replicated. A usage count reports what happened and bounds
@@ -71,6 +99,16 @@ pub const MAX_ARGS_BYTES: usize = 8 * 1024;
 pub const MAX_EVENT_BYTES: usize = 64 * 1024;
 /// Most distinct tick intervals one program may subscribe to.
 pub const MAX_TICK_INTERVALS: usize = 4;
+/// Most concurrent `loc.watch` subscriptions one program may hold (#2341).
+pub const MAX_LOC_WATCHES: usize = 4;
+/// The `loc.watch` interval floor in milliseconds (#2341). A watch may
+/// not sample faster than this: GNSS fixes are power-hungry, and a
+/// sub-floor interval buys no accuracy — the fix itself takes about
+/// this long to refresh on phone and ESP32 GNSS hardware. Hosts should
+/// expect a `loc.watch` to dominate a long session's battery budget;
+/// programs that only need a position should use one-shot
+/// `loc.position` instead.
+pub const MIN_LOC_WATCH_INTERVAL_MS: u64 = 5_000;
 
 /// Usage key that aggregates every unknown capability name.
 ///
@@ -207,8 +245,11 @@ macro_rules! define_provider_registry {
             default_ceiling: $default_ceiling:expr,
         },
     )+) => {
-        /// All statically registered providers, in stable catalog order.
-        pub const CATALOG_ENTRIES: &[ProviderManifest] = &[
+        /// All statically registered production providers, in stable catalog
+        /// order. The registry assembles [`CATALOG_ENTRIES`] from this list so
+        /// feature-gated, registry-only providers can join without touching
+        /// the production entries.
+        pub const PRODUCTION_CATALOG_ENTRIES: &[ProviderManifest] = &[
             $(ProviderManifest {
                 name: $name,
                 version: $version,
@@ -287,7 +328,7 @@ const CHAT_HISTORY_BOUNDS: &[ProviderBound] = &[
 /// Bounds for `records.read`: argument bytes plus the page byte cap.
 const RECORDS_READ_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
-    ProviderBound::ResponseBytes(MAX_RECORDS_PAGE_BYTES),
+    ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES),
 ];
 /// Bounds for `schedule.at`: argument bytes, id bytes, pending cap, and horizon.
 const SCHEDULE_AT_BOUNDS: &[ProviderBound] = &[
@@ -306,6 +347,28 @@ const TICK_BOUNDS: &[ProviderBound] = &[
     ProviderBound::Items(MAX_TICK_INTERVALS),
     ProviderBound::WorldLimit("min_tick_ms"),
 ];
+/// Argument schema for `loc.position`: an optional precision ceiling in
+/// whole metres. A fix less precise than the ceiling is refused with
+/// `outside_ceiling` / `precision_ceiling`, never silently degraded.
+const LOC_POSITION_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "max_accuracy_m",
+    value_type: ArgumentType::UnsignedInteger,
+    required: false,
+}];
+/// Argument schema for `device.info`: an optional manifest version
+/// the program understands. An unsupported version is refused rather
+/// than silently interpreted (#2338).
+const DEVICE_INFO_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "v",
+    value_type: ArgumentType::UnsignedInteger,
+    required: false,
+}];
+/// Bounds for `loc.position`: the argument byte cap.
+const LOC_POSITION_BOUNDS: &[ProviderBound] = &[ProviderBound::ArgsBytes(MAX_ARGS_BYTES)];
+/// Bounds for `loc.watch`: the concurrent-watch cap. The interval
+/// floor ([`MIN_LOC_WATCH_INTERVAL_MS`]) is enforced by
+/// [`parse_loc_watch_interval_ms`].
+const LOC_WATCH_BOUNDS: &[ProviderBound] = &[ProviderBound::Items(MAX_LOC_WATCHES)];
 
 define_provider_registry! {
     "time.now" => {
@@ -396,6 +459,33 @@ define_provider_registry! {
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
     },
+    "device.info" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(DEVICE_INFO_ARGUMENTS),
+        bounds: COMMON_REQUEST_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    // Sensor caps (#2341): excluded from default ceilings, so a world
+    // reaches them only through an explicit ceiling entry and an
+    // explicit grant, and each use passes the consent seam.
+    "loc.position" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(LOC_POSITION_ARGUMENTS),
+        bounds: LOC_POSITION_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
+    },
+    "loc.watch" => {
+        version: 1,
+        kind: ProviderKind::Subscription,
+        argument_schema: ArgumentSchema::Subscription("loc.watch:<positive-milliseconds>"),
+        bounds: LOC_WATCH_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
+    },
     "Key" => {
         version: 1,
         kind: ProviderKind::PlatformModule,
@@ -445,6 +535,67 @@ define_provider_registry! {
         default_ceiling: DefaultCeiling::Included,
     },
 }
+
+/// Name of the registry-only test provider (#1061 exit proof).
+///
+/// Only present with the `test-provider` feature, which production builds
+/// never enable. It is a plain platform-module name so the compile gate can
+/// recognize an `import` of it as a module import.
+#[cfg(feature = "test-provider")]
+pub const TEST_PROVIDER_NAME: &str = "RegistryProbe";
+
+/// The registry-only test provider (#1061 exit proof).
+///
+/// It registers exactly like a production provider — one manifest entry — and
+/// deliberately opts out of every default ceiling: adding a provider must
+/// never widen a world's authority by itself (#838).
+#[cfg(feature = "test-provider")]
+const TEST_PROVIDER_MANIFEST: ProviderManifest = ProviderManifest {
+    name: TEST_PROVIDER_NAME,
+    version: 1,
+    kind: ProviderKind::PlatformModule,
+    argument_schema: ArgumentSchema::NotApplicable,
+    bounds: &[],
+    required_scope: RequiredScope::Join,
+    default_ceiling: DefaultCeiling::Excluded,
+};
+
+/// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
+#[cfg(feature = "test-provider")]
+const EXTRA_CATALOG_ENTRIES: &[ProviderManifest] = &[TEST_PROVIDER_MANIFEST];
+/// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
+#[cfg(not(feature = "test-provider"))]
+const EXTRA_CATALOG_ENTRIES: &[ProviderManifest] = &[];
+
+/// Number of manifests in the assembled provider registry.
+const CATALOG_ENTRY_COUNT: usize = PRODUCTION_CATALOG_ENTRIES.len() + EXTRA_CATALOG_ENTRIES.len();
+
+/// Assemble the production manifests plus any feature-gated registry-only
+/// additions into one array.
+///
+/// This is the only place the registry grows. Adding a provider means adding a
+/// manifest — never editing dispatch or core files (#1061).
+const fn assemble_catalog_entries() -> [ProviderManifest; CATALOG_ENTRY_COUNT] {
+    let mut entries = [PRODUCTION_CATALOG_ENTRIES[0]; CATALOG_ENTRY_COUNT];
+    let mut index = 0;
+    while index < PRODUCTION_CATALOG_ENTRIES.len() {
+        entries[index] = PRODUCTION_CATALOG_ENTRIES[index];
+        index += 1;
+    }
+    let mut extra = 0;
+    while extra < EXTRA_CATALOG_ENTRIES.len() {
+        entries[PRODUCTION_CATALOG_ENTRIES.len() + extra] = EXTRA_CATALOG_ENTRIES[extra];
+        extra += 1;
+    }
+    entries
+}
+
+/// The assembled registry storage, in stable catalog order.
+static ASSEMBLED_CATALOG_ENTRIES: [ProviderManifest; CATALOG_ENTRY_COUNT] =
+    assemble_catalog_entries();
+
+/// All statically registered providers, in stable catalog order.
+pub const CATALOG_ENTRIES: &[ProviderManifest] = &ASSEMBLED_CATALOG_ENTRIES;
 
 /// A registry view over the statically registered provider manifests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -532,8 +683,30 @@ pub const MAX_SCHEDULE_HORIZON_DAYS: u64 = 30;
 pub const MAX_SCHEDULE_HORIZON_MS: u64 = MAX_SCHEDULE_HORIZON_DAYS * 24 * 60 * 60 * 1000;
 /// Most schedules delivered in one wakeup. Any left due fire on the next.
 pub const MAX_SCHEDULE_FIRES_PER_WAKEUP: usize = 64;
-/// Largest page of records returned by `records.read`, in bytes.
+/// Largest page of records served over the session protocol and the
+/// host view, in bytes. Cap results are not served this way: a
+/// `records.read` result is delivered through `result_event` and is
+/// bounded by [`MAX_RECORDS_RESULT_PAGE_BYTES`] instead (#4888).
 pub const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
+
+/// Bytes of [`MAX_EVENT_BYTES`] reserved for the `result_event`
+/// envelope around a `records.read` value: the outer
+/// `{"cap":"result","id":...,"ok":true,"value":...}` object (request
+/// ids are at most [`MAX_NAME_BYTES`] long), the value's own
+/// `{"records":[...],"next_after":...}` wrapper, and a serialized
+/// `next_after` key (record keys are at most 256 bytes, and JSON
+/// escaping at most doubles that, plus the quotes). The fixed parts
+/// measure under 200 bytes and the escaped key under 514, so 1024
+/// leaves slack rather than sitting on the edge.
+pub const RESULT_EVENT_ENVELOPE_BYTES: usize = 1024;
+
+/// Largest page of records a `records.read` cap result may carry, in
+/// bytes of serialized `{"key":...,"value":...}` entries (plus one
+/// array comma each). Derived from the event limit minus the envelope
+/// allowance, so a page admitted under this bound always fits the
+/// `result_event` that delivers it: it can never be replaced by a
+/// `result_too_large` error (#4888).
+pub const MAX_RECORDS_RESULT_PAGE_BYTES: usize = MAX_EVENT_BYTES - RESULT_EVENT_ENVELOPE_BYTES;
 
 /// Check a schedule id: 1 to [`MAX_SCHEDULE_ID_BYTES`] bytes, all printable
 /// ASCII (space through `~`), so no control characters reach the journal.
@@ -658,7 +831,11 @@ pub fn parse_wants(text: &str) -> Result<Wants> {
         text.len() <= MAX_WANTS_BYTES,
         "wants exceeds {MAX_WANTS_BYTES} bytes"
     );
-    let value: serde_json::Value = serde_json::from_str(text).context("wants is not JSON")?;
+    // A duplicate key is a parse error (#7621, the #6520 rule): the
+    // version check and the entry bounds below must see the document as
+    // written, never a last-wins collapse of it.
+    let value: serde_json::Value =
+        crate::json_unique::parse_json_without_duplicate_keys(text).context("wants is not JSON")?;
     let object = value.as_object().context("wants must be a JSON object")?;
     if let Some(version) = object.get("v") {
         ensure!(
@@ -845,6 +1022,58 @@ impl CapError {
         }
     }
 
+    /// The capability was not granted, and `reason` says why.
+    #[must_use]
+    pub fn denied_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::Denied,
+            reason: Some(reason.into()),
+        }
+    }
+
+    /// A ceiling excludes the capability, and `reason` says why.
+    #[must_use]
+    pub fn outside_ceiling_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::OutsideCeiling,
+            reason: Some(reason.into()),
+        }
+    }
+
+    /// The provider failed, and `reason` says why.
+    #[must_use]
+    pub fn failed_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::Failed,
+            reason: Some(reason.into()),
+        }
+    }
+
+    /// Location use without per-use consent (#2341): `cap_denied`.
+    #[must_use]
+    pub fn consent_required() -> Self {
+        Self::denied_with("consent_required")
+    }
+
+    /// The OS refused the location permission (#2341): `cap_denied`.
+    #[must_use]
+    pub fn os_permission_denied() -> Self {
+        Self::denied_with("os_permission_denied")
+    }
+
+    /// The available fix is less precise than the precision ceiling
+    /// allows (#2341): `outside_ceiling`.
+    #[must_use]
+    pub fn precision_ceiling() -> Self {
+        Self::outside_ceiling_with("precision_ceiling")
+    }
+
+    /// No location fix is available (#2341): `failed`.
+    #[must_use]
+    pub fn no_fix() -> Self {
+        Self::failed_with("no_fix")
+    }
+
     /// The provider failed.
     #[must_use]
     pub const fn failed() -> Self {
@@ -902,6 +1131,316 @@ impl CapError {
     }
 }
 
+/// Whether `cap` is a sensor capability (#2341). Sensor caps are
+/// per-use by default: a wildcard grant never reaches them, and
+/// grant-on-use never mints a durable grant for them. Today the sensor
+/// caps are the `loc.*` family; naming the prefix here keeps the ledger
+/// rule in one place when more sensor families land.
+#[must_use]
+pub fn is_sensor_cap(cap: &str) -> bool {
+    cap.starts_with("loc.")
+}
+
+/// Where a location reading came from (#2341). The source is part of
+/// the reading: an imprecise source is named, never silently degraded
+/// to look like a precise one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationSource {
+    /// Satellite positioning (phone GNSS, ESP32 GNSS module).
+    Gnss,
+    /// Network positioning (Wi-Fi / cell).
+    Network,
+    /// IP geolocation — kilometre-scale accuracy, named as such.
+    Ip,
+    /// The caller supplied the fix itself.
+    CallerSupplied,
+}
+
+impl LocationSource {
+    /// The wire name of the source.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Gnss => "gnss",
+            Self::Network => "network",
+            Self::Ip => "ip",
+            Self::CallerSupplied => "caller_supplied",
+        }
+    }
+
+    /// Parse a wire name, if it is one.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "gnss" => Some(Self::Gnss),
+            "network" => Some(Self::Network),
+            "ip" => Some(Self::Ip),
+            "caller_supplied" => Some(Self::CallerSupplied),
+            _ => None,
+        }
+    }
+}
+
+/// One location reading (#2341): the typed shape every `loc.position`
+/// result and `loc.watch` delivery carries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LocationReading {
+    /// Latitude in degrees, -90..=90.
+    pub lat: f64,
+    /// Longitude in degrees, -180..=180.
+    pub lon: f64,
+    /// Accuracy radius in metres; smaller is more precise.
+    pub accuracy_m: f64,
+    /// Age of the fix in milliseconds when delivered.
+    pub fix_age_ms: u64,
+    /// Where the fix came from.
+    pub source: LocationSource,
+}
+
+impl LocationReading {
+    /// Validate the reading's ranges. A reading that fails is a
+    /// provider bug, not data a program should ever see.
+    ///
+    /// # Errors
+    ///
+    /// Names the first out-of-range field.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.lat.is_finite() && (-90.0..=90.0).contains(&self.lat),
+            "lat out of range"
+        );
+        ensure!(
+            self.lon.is_finite() && (-180.0..=180.0).contains(&self.lon),
+            "lon out of range"
+        );
+        ensure!(
+            self.accuracy_m.is_finite() && self.accuracy_m >= 0.0,
+            "accuracy_m out of range"
+        );
+        Ok(())
+    }
+
+    /// The wire object: exactly `{lat, lon, accuracy_m, fix_age_ms, source}`.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "lat": self.lat,
+            "lon": self.lon,
+            "accuracy_m": self.accuracy_m,
+            "fix_age_ms": self.fix_age_ms,
+            "source": self.source.as_str(),
+        })
+    }
+
+    /// Refuse the reading when it is less precise than the precision
+    /// ceiling allows: an imprecise fix must be refusable rather than
+    /// plausible-looking (#2341).
+    ///
+    /// # Errors
+    ///
+    /// [`CapError::precision_ceiling`] when `accuracy_m` exceeds the
+    /// ceiling.
+    pub fn refuse_beyond_ceiling(&self, ceiling_m: f64) -> Result<(), CapError> {
+        if self.accuracy_m > ceiling_m {
+            return Err(CapError::precision_ceiling());
+        }
+        Ok(())
+    }
+}
+
+/// The manifest version this host speaks for `device.info` (#2338).
+/// A manifest — or a request — naming any other version is refused,
+/// never silently interpreted.
+pub const DEVICE_MANIFEST_VERSION: u64 = 1;
+
+/// One device's capability manifest (#2338): the typed shape every
+/// `device.info` result carries, in the v1 form the capability
+/// taxonomy (2026-10-29, §3.1) specifies. The five sections are opaque
+/// JSON objects on purpose: display kinds, sensor sets and transports
+/// vary per device family, and the wire contract is the section
+/// presence plus the version, not an enumeration of affordances.
+///
+/// The manifest is per-device, not per-program: the adapter boundary
+/// enumerates the device once and caches the manifest, and the world
+/// actor serves that cached copy to whoever asks (taxonomy §8 open
+/// question 4). Enumeration never happens per request.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeviceManifest {
+    /// Display affordances object (e.g. `{"kind":"pixel","width":128}`).
+    pub display: serde_json::Value,
+    /// Input affordances object (e.g. `{"keys":8,"encoder":true}`).
+    pub input: serde_json::Value,
+    /// Sensor affordances object (e.g. `{"gnss":{"accuracy_m":5}}`).
+    pub sensors: serde_json::Value,
+    /// Audio affordances object (e.g. `{"out":"pcm","in":null}`).
+    pub audio: serde_json::Value,
+    /// Network affordances object (e.g. `{"transport":"mqtt"}`).
+    pub network: serde_json::Value,
+}
+
+impl DeviceManifest {
+    /// The wire object: exactly
+    /// `{"manifest":{"v":1},"display":...,"input":...,"sensors":...,"audio":...,"network":...}`.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "manifest": {"v": DEVICE_MANIFEST_VERSION},
+            "display": self.display,
+            "input": self.input,
+            "sensors": self.sensors,
+            "audio": self.audio,
+            "network": self.network,
+        })
+    }
+
+    /// Parse and validate a manifest in wire form. The oracle is the
+    /// declared v1 manifest contract: `manifest.v` must equal
+    /// [`DEVICE_MANIFEST_VERSION`] and every section must be present
+    /// as a JSON object.
+    ///
+    /// # Errors
+    ///
+    /// [`CapError::bad_args`] naming the defect: an unsupported
+    /// manifest version, a missing section, or a section that is not
+    /// an object.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, CapError> {
+        let version = value
+            .get("manifest")
+            .and_then(|manifest| manifest.get("v"))
+            .and_then(serde_json::Value::as_u64);
+        match version {
+            Some(DEVICE_MANIFEST_VERSION) => {}
+            Some(_) => {
+                return Err(CapError::bad_args_with(
+                    "unsupported device manifest version",
+                ));
+            }
+            None => {
+                return Err(CapError::bad_args_with(
+                    "device manifest carries no version",
+                ));
+            }
+        }
+        let section = |name: &str| -> Result<serde_json::Value, CapError> {
+            match value.get(name) {
+                Some(section) if section.is_object() => Ok(section.clone()),
+                Some(_) => Err(CapError::bad_args_with(format!(
+                    "device manifest section {name} is not an object"
+                ))),
+                None => Err(CapError::bad_args_with(format!(
+                    "device manifest is missing section {name}"
+                ))),
+            }
+        };
+        Ok(Self {
+            display: section("display")?,
+            input: section("input")?,
+            sensors: section("sensors")?,
+            audio: section("audio")?,
+            network: section("network")?,
+        })
+    }
+
+    /// The manifest version a `device.info` request asks for: the
+    /// optional `v` argument, defaulting to
+    /// [`DEVICE_MANIFEST_VERSION`]. A program asking for a version
+    /// this host does not speak is refused, never silently served a
+    /// manifest it may misinterpret.
+    ///
+    /// # Errors
+    ///
+    /// [`CapError::bad_args`] for a non-integer or unsupported `v`.
+    pub fn requested_version(args: &serde_json::Value) -> Result<u64, CapError> {
+        let Some(version) = args.get("v") else {
+            return Ok(DEVICE_MANIFEST_VERSION);
+        };
+        let Some(version) = version.as_u64() else {
+            return Err(CapError::bad_args_with(
+                "device.info v is not an unsigned integer",
+            ));
+        };
+        if version != DEVICE_MANIFEST_VERSION {
+            return Err(CapError::bad_args_with(
+                "unsupported device manifest version",
+            ));
+        }
+        Ok(version)
+    }
+}
+
+/// Per-use consent for a sensor capability (#2341). Consent is a seam
+/// the host fills in (browser permission prompt, phone OS permission,
+/// device policy); the pure core only maps the state to the refusal
+/// vocabulary so every host refuses the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocationConsent {
+    /// Consent granted for this use.
+    Granted,
+    /// No consent on record: refuse with `consent_required`.
+    ConsentRequired,
+    /// The OS refused the permission: refuse with `os_permission_denied`.
+    OsPermissionDenied,
+}
+
+impl LocationConsent {
+    /// The refusal for this consent state, or `None` when use may proceed.
+    #[must_use]
+    pub fn refusal(&self) -> Option<CapError> {
+        match self {
+            Self::Granted => None,
+            Self::ConsentRequired => Some(CapError::consent_required()),
+            Self::OsPermissionDenied => Some(CapError::os_permission_denied()),
+        }
+    }
+}
+
+/// Parse a `loc.watch` subscription spec (#2341): `loc.watch` alone
+/// takes the interval floor, `loc.watch:<milliseconds>` names an
+/// interval at or above the floor.
+///
+/// # Errors
+///
+/// [`CapError::bad_args`] for a foreign spec, a non-numeric interval,
+/// or an interval below [`MIN_LOC_WATCH_INTERVAL_MS`].
+pub fn parse_loc_watch_interval_ms(spec: &str) -> Result<u64, CapError> {
+    let Some(rest) = spec.strip_prefix("loc.watch") else {
+        return Err(CapError::bad_args_with("not a loc.watch spec"));
+    };
+    if rest.is_empty() {
+        return Ok(MIN_LOC_WATCH_INTERVAL_MS);
+    }
+    let Some(ms) = rest.strip_prefix(':') else {
+        return Err(CapError::bad_args_with("not a loc.watch spec"));
+    };
+    let ms: u64 = ms
+        .parse()
+        .map_err(|_| CapError::bad_args_with("loc.watch interval is not a number"))?;
+    if ms < MIN_LOC_WATCH_INTERVAL_MS {
+        return Err(CapError::bad_args_with(
+            "loc.watch interval below the floor",
+        ));
+    }
+    Ok(ms)
+}
+
+/// The event that closes an open `loc.watch` when consent is withdrawn
+/// (#2341): exactly
+/// `{"cap":"loc.watch","event":"revoked","reason":"consent_withdrawn"}`.
+#[must_use]
+pub fn loc_watch_revocation_event() -> String {
+    serde_json::json!({"cap":"loc.watch","event":"revoked","reason":"consent_withdrawn"})
+        .to_string()
+}
+
+/// A `loc.watch` delivery event: the reading under the `loc.watch` cap.
+#[must_use]
+pub fn loc_watch_reading_event(reading: &LocationReading) -> String {
+    let mut event = reading.to_json();
+    event["cap"] = serde_json::json!("loc.watch");
+    event.to_string()
+}
+
 /// How a capability was used since the world opened.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapUsage {
@@ -915,7 +1454,8 @@ pub struct CapUsage {
 /// asked for.
 ///
 /// A use is allowed only when the capability is allowed **and** granted. `*` in
-/// the grant set counts as every allowed name.
+/// the grant set counts as every allowed name — except sensor caps
+/// ([#2341](is_sensor_cap)), which a wildcard never reaches.
 #[derive(Clone, Debug)]
 pub struct CapLedger {
     granted: BTreeSet<String>,
@@ -963,10 +1503,12 @@ impl CapLedger {
         &self.allowed
     }
 
-    /// Whether `cap` is allowed and granted (`*` grants everything allowed).
+    /// Whether `cap` is allowed and granted (`*` grants everything
+    /// allowed except sensor caps, which need an explicit grant).
     #[must_use]
     pub fn is_granted(&self, cap: &str) -> bool {
-        self.allowed.contains(cap) && (self.granted.contains(cap) || self.granted.contains("*"))
+        self.allowed.contains(cap)
+            && (self.granted.contains(cap) || (self.granted.contains("*") && !is_sensor_cap(cap)))
     }
 
     /// Record one use of `cap` and decide it.
@@ -999,9 +1541,16 @@ impl CapLedger {
             entry.denied += 1;
             return Decision::Deny(CapError::actor_denied());
         }
-        if self.granted.contains(cap) || self.granted.contains("*") {
+        if self.granted.contains(cap) || (self.granted.contains("*") && !is_sensor_cap(cap)) {
             entry.allowed += 1;
             return Decision::Allow;
+        }
+        if is_sensor_cap(cap) {
+            // Sensor caps are per-use (#2341): neither a wildcard grant
+            // nor grant-on-use reaches them, so an ungranted use is a
+            // consent refusal — never a silently minted durable grant.
+            entry.denied += 1;
+            return Decision::Deny(CapError::consent_required());
         }
         if self.grant_on_use {
             entry.allowed += 1;
@@ -1028,7 +1577,21 @@ impl CapLedger {
     #[must_use]
     pub fn effective(&self) -> BTreeSet<String> {
         if self.granted.contains("*") {
-            return self.allowed.clone();
+            // The wildcard expands to every allowed name except sensor
+            // caps (#2341); explicitly granted sensor caps still count.
+            let mut effective: BTreeSet<String> = self
+                .allowed
+                .iter()
+                .filter(|name| !is_sensor_cap(name.as_str()))
+                .cloned()
+                .collect();
+            effective.extend(
+                self.granted
+                    .intersection(&self.allowed)
+                    .filter(|name| is_sensor_cap(name.as_str()))
+                    .cloned(),
+            );
+            return effective;
         }
         self.granted.intersection(&self.allowed).cloned().collect()
     }
@@ -1178,6 +1741,47 @@ mod tests {
     }
 
     #[test]
+    fn rejects_duplicate_keys_at_any_depth() {
+        // #7621: every duplicate-key document below was accepted by the
+        // bare from_str gate (last-wins collapse) before this test existed.
+        for bad in [
+            // The version check saw only the collapsed last "v".
+            r#"{"v":2,"v":1}"#,
+            r#"{"v":1,"v":2}"#,
+            // A duplicate inside one request object collapsed its cap.
+            r#"{"requests":[{"id":"r1","cap":"time.now","cap":"chat.say"}]}"#,
+            // A duplicate inside request args.
+            r#"{"requests":[{"id":"r1","cap":"chat.say","args":{"text":"a","text":"b"}}]}"#,
+        ] {
+            assert!(parse_wants(bad).is_err(), "{bad:?}");
+        }
+        // #6499 pins: an over-long cap and a control-character id hidden
+        // behind benign duplicates inside one request entry.
+        let long_cap = "x".repeat(MAX_NAME_BYTES + 1);
+        let hidden_cap = format!(r#"{{"requests":[{{"id":"r1","cap":"{long_cap}","cap":"ok"}}]}}"#);
+        assert!(parse_wants(&hidden_cap).is_err(), "{hidden_cap:?}");
+        let hidden_id = "{\"requests\":[{\"id\":\"a\\u0001b\",\"id\":\"ok\",\"cap\":\"x\"}]}";
+        assert!(parse_wants(hidden_id).is_err(), "{hidden_id:?}");
+        // #6499 pin: a whole non-conforming requests array hidden behind
+        // a duplicate top-level "requests" key.
+        let hidden_requests =
+            format!(r#"{{"requests":[{{"id":"r1","cap":"{long_cap}"}}],"requests":[]}}"#);
+        assert!(
+            parse_wants(&hidden_requests).is_err(),
+            "{hidden_requests:?}"
+        );
+        // The 64-entry bound counted only the collapsed second array.
+        let hidden = format!(
+            r#"{{"subscribe":[{}],"subscribe":["players"]}}"#,
+            (0..=MAX_WANTS_ENTRIES)
+                .map(|i| format!(r#""cap{i}""#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(parse_wants(&hidden).is_err(), "{hidden:?}");
+    }
+
+    #[test]
     fn subscription_specs_round_trip() {
         for spec in ["players", "time.tick:1000"] {
             assert_eq!(Subscription::parse(spec).spec(), spec);
@@ -1321,6 +1925,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn records_result_pages_always_fit_the_result_event() {
+        // A page admitted at the cap-result bound, delivered with the
+        // longest request id and a longest, escape-heavy next_after key,
+        // stays a records result — never result_too_large (#4888).
+        let entry = serde_json::json!({"key": "k", "value": "x".repeat(1024)});
+        let entry_bytes = serde_json::to_vec(&entry).unwrap().len() + 1;
+        let mut records = Vec::new();
+        let mut used = 0;
+        while used + entry_bytes <= MAX_RECORDS_RESULT_PAGE_BYTES {
+            records.push(entry.clone());
+            used += entry_bytes;
+        }
+        assert!(!records.is_empty());
+        // 256 raw key bytes (128 backslash+quote pairs), the longest a
+        // record key may be, and the worst case for JSON escaping.
+        let next_after: String = (0..128)
+            .flat_map(|_| [char::from_u32(92).unwrap(), '"'])
+            .collect();
+        assert_eq!(next_after.len(), 256);
+        let value = serde_json::json!({
+            "records": records,
+            "next_after": next_after,
+        });
+        let event = result_event(&"i".repeat(MAX_NAME_BYTES), Ok(value));
+        assert!(event.len() <= MAX_EVENT_BYTES, "event is {}", event.len());
+        let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["ok"], true, "{event}");
+        assert!(event["value"]["records"].is_array());
+        // The registry reports the cap-result bound for records.read.
+        assert!(
+            RECORDS_READ_BOUNDS
+                .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES))
+        );
+        // The session-protocol page budget is a separate, larger bound.
+        assert_eq!(MAX_RECORDS_PAGE_BYTES, 768 * 1024);
+    }
+
     fn names(list: &[&str]) -> BTreeSet<String> {
         list.iter().map(|name| (*name).to_owned()).collect()
     }
@@ -1340,12 +1982,28 @@ mod tests {
     #[test]
     fn test_provider_registry_matches_the_legacy_catalog_and_carries_manifests() {
         let entry_names = PROVIDER_REGISTRY.ordered_names();
+        // The registry assembles the production catalog plus any
+        // feature-gated registry-only entries. Under `test-provider`
+        // that is exactly one extra — the RegistryProbe (#1061),
+        // whose manifest default is Excluded. The root package's
+        // dev-dependencies enable the feature, and workspace test
+        // builds (the Nix check phase among them) unify it into this
+        // test binary, so the production expectations below are stated
+        // against the catalog with the probe removed again.
+        #[cfg(feature = "test-provider")]
+        let production_names: Vec<&str> = entry_names
+            .iter()
+            .copied()
+            .filter(|name| *name != TEST_PROVIDER_NAME)
+            .collect();
+        #[cfg(not(feature = "test-provider"))]
+        let production_names: Vec<&str> = entry_names.clone();
         assert_eq!(
-            entry_names, CATALOG,
+            production_names, CATALOG,
             "legacy catalog derives from manifests"
         );
         assert_eq!(
-            entry_names,
+            production_names,
             vec![
                 "time.now",
                 "time.tick",
@@ -1358,6 +2016,9 @@ mod tests {
                 "schedule.at",
                 "schedule.cancel",
                 "world.info",
+                "device.info",
+                "loc.position",
+                "loc.watch",
                 "Key",
                 "Screen",
                 "RocJson",
@@ -1365,9 +2026,12 @@ mod tests {
                 "RocCap",
                 "RocText",
             ],
-            "registry retains the exact pre-change 17-name catalog and order"
+            "registry retains the catalog names and order (17 pre-#2341 names plus loc.position/loc.watch and device.info)"
         );
-        assert_eq!(PROVIDER_REGISTRY.entries().len(), 17);
+        assert_eq!(
+            PROVIDER_REGISTRY.entries().len(),
+            production_names.len() + EXTRA_CATALOG_ENTRIES.len()
+        );
         assert!(
             PROVIDER_REGISTRY
                 .entries()
@@ -1402,12 +2066,101 @@ mod tests {
                 .get("records.read")
                 .unwrap()
                 .bounds
-                .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_PAGE_BYTES))
+                .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES))
         );
-        // Every provider registered today opted in explicitly, so the
-        // default ceiling is still the whole catalog — naming the choice
-        // changed no world's effective ceiling.
-        assert_eq!(default_ceiling_names(), catalog_names());
+        // Every non-sensor provider opted in explicitly. The sensor
+        // caps (#2341) registered as Excluded, so the default ceiling
+        // is the catalog minus loc.* — registering them widened no
+        // existing world's authority. The RegistryProbe is Excluded
+        // for the same reason (#838), so under `test-provider` it is
+        // subtracted the same way.
+        let mut excluded_from_ceiling = names(&["loc.position", "loc.watch"]);
+        #[cfg(feature = "test-provider")]
+        excluded_from_ceiling.insert(TEST_PROVIDER_NAME.to_owned());
+        assert_eq!(
+            default_ceiling_names(),
+            catalog_names()
+                .difference(&excluded_from_ceiling)
+                .cloned()
+                .collect::<BTreeSet<String>>()
+        );
+        assert_eq!(
+            PROVIDER_REGISTRY
+                .get("loc.position")
+                .unwrap()
+                .default_ceiling,
+            DefaultCeiling::Excluded
+        );
+        assert_eq!(
+            PROVIDER_REGISTRY.get("loc.watch").unwrap().default_ceiling,
+            DefaultCeiling::Excluded
+        );
+    }
+
+    #[test]
+    fn device_manifest_round_trips_through_its_wire_form() {
+        // Oracle: the declared v1 manifest contract (taxonomy §3.1) —
+        // the wire object carries manifest.v plus the five sections,
+        // and parsing it returns the same manifest.
+        let manifest = DeviceManifest {
+            display: serde_json::json!({"kind": "pixel", "width": 128, "height": 64, "colors": 1}),
+            input: serde_json::json!({"keys": 8, "encoder": true, "pointer": false, "text_entry": "none"}),
+            sensors: serde_json::json!({"gnss": {"accuracy_m": 5}, "microphone": false, "camera": false}),
+            audio: serde_json::json!({"out": "pcm", "in": null}),
+            network: serde_json::json!({"transport": "mqtt", "rtt_class": "slow"}),
+        };
+        let wire = manifest.to_json();
+        assert_eq!(wire["manifest"]["v"], DEVICE_MANIFEST_VERSION);
+        for section in ["display", "input", "sensors", "audio", "network"] {
+            assert!(wire[section].is_object(), "section {section} present");
+        }
+        assert_eq!(DeviceManifest::from_json(&wire).unwrap(), manifest);
+    }
+
+    #[test]
+    fn device_manifest_refuses_unsupported_versions_and_missing_sections() {
+        // Oracle: the declared v1 manifest contract — an unsupported
+        // version is refused, never silently interpreted.
+        let mut wire = DeviceManifest {
+            display: serde_json::json!({}),
+            input: serde_json::json!({}),
+            sensors: serde_json::json!({}),
+            audio: serde_json::json!({}),
+            network: serde_json::json!({}),
+        }
+        .to_json();
+        wire["manifest"]["v"] = serde_json::json!(2);
+        let error = DeviceManifest::from_json(&wire).unwrap_err();
+        assert_eq!(error.code(), CapError::bad_args().code());
+        assert!(
+            error
+                .reason()
+                .is_some_and(|reason| reason.contains("unsupported")),
+            "{error:?}"
+        );
+        let mut missing = DeviceManifest {
+            display: serde_json::json!({}),
+            input: serde_json::json!({}),
+            sensors: serde_json::json!({}),
+            audio: serde_json::json!({}),
+            network: serde_json::json!({}),
+        }
+        .to_json();
+        missing.as_object_mut().unwrap().remove("audio");
+        assert!(DeviceManifest::from_json(&missing).is_err());
+        // The request side negotiates by the same rule.
+        assert_eq!(
+            DeviceManifest::requested_version(&serde_json::json!({})).unwrap(),
+            DEVICE_MANIFEST_VERSION
+        );
+        assert_eq!(
+            DeviceManifest::requested_version(&serde_json::json!({"v": 1})).unwrap(),
+            DEVICE_MANIFEST_VERSION
+        );
+        assert!(
+            DeviceManifest::requested_version(&serde_json::json!({"v": 2})).is_err(),
+            "a request for an unsupported version is refused"
+        );
     }
 
     #[test]
@@ -1445,7 +2198,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_ceiling_is_the_whole_catalog() {
+    fn the_default_ceiling_is_the_catalog_minus_sensor_caps() {
         let mut ledger = CapLedger::new(names(&["time.now"]), false);
         assert_eq!(ledger.allowed(), &default_ceiling_names());
         assert!(ledger.is_granted("time.now"));
@@ -1455,11 +2208,13 @@ mod tests {
             Decision::Deny(CapError::denied())
         );
         ledger.set_granted(names(&["*"]));
-        assert_eq!(ledger.effective(), catalog_names());
+        // The wildcard reaches every allowed name except the sensor
+        // caps (#2341), which the default ceiling already excludes.
+        assert_eq!(ledger.effective(), default_ceiling_names());
         assert_eq!(
             ledger.decide("chat.say"),
             Decision::Allow,
-            "a wildcard grant reaches every catalog name"
+            "a wildcard grant reaches every non-sensor catalog name"
         );
     }
 
@@ -1582,5 +2337,193 @@ mod tests {
         validate_ceiling_names(&["time.now".to_owned()]).unwrap();
         assert!(validate_ceiling_names(&["*".to_owned()]).is_err());
         assert!(validate_ceiling_names(&["time.nwo".to_owned()]).is_err());
+    }
+
+    /// A ledger whose ceiling explicitly names the sensor caps, as a
+    /// world that wants location must set up (#2341).
+    fn loc_ledger(granted: &[&str], grant_on_use: bool) -> CapLedger {
+        let mut ledger = CapLedger::new(names(granted), grant_on_use);
+        let mut allowed = default_ceiling_names();
+        allowed.insert("loc.position".to_owned());
+        allowed.insert("loc.watch".to_owned());
+        ledger.set_allowed(allowed);
+        ledger
+    }
+
+    #[test]
+    fn a_wildcard_grant_never_reaches_loc_caps() {
+        let mut ledger = loc_ledger(&["*"], false);
+        assert!(!ledger.is_granted("loc.position"));
+        assert!(!ledger.is_granted("loc.watch"));
+        assert_eq!(
+            ledger.decide("loc.position"),
+            Decision::Deny(CapError::consent_required()),
+            "a wildcard grant must never reach loc.*"
+        );
+        assert!(
+            !ledger.effective().contains("loc.position"),
+            "effective authority excludes sensor caps under a wildcard"
+        );
+        // The same wildcard still reaches ordinary caps.
+        assert_eq!(ledger.decide("time.now"), Decision::Allow);
+    }
+
+    #[test]
+    fn an_explicit_grant_reaches_loc_caps() {
+        let mut ledger = loc_ledger(&["loc.position", "loc.watch"], false);
+        assert!(ledger.is_granted("loc.position"));
+        assert_eq!(ledger.decide("loc.position"), Decision::Allow);
+        assert_eq!(ledger.decide("loc.watch"), Decision::Allow);
+        assert!(ledger.effective().contains("loc.watch"));
+    }
+
+    #[test]
+    fn grant_on_use_never_mints_a_sensor_grant() {
+        let mut ledger = loc_ledger(&[], true);
+        assert_eq!(
+            ledger.decide("loc.position"),
+            Decision::Deny(CapError::consent_required())
+        );
+        assert!(
+            !ledger.granted().contains("loc.position"),
+            "grant-on-use must not record a durable sensor grant"
+        );
+        // Grant-on-use still works for ordinary caps.
+        assert_eq!(ledger.decide("time.now"), Decision::AllowAndGrant);
+    }
+
+    #[test]
+    fn loc_caps_stay_outside_the_default_ceiling() {
+        // No explicit ceiling entry: even an explicit grant is refused
+        // at the ceiling, like every other excluded provider (#838).
+        let mut ledger = CapLedger::new(names(&["loc.position"]), false);
+        assert_eq!(
+            ledger.decide("loc.position"),
+            Decision::Deny(CapError::outside_ceiling())
+        );
+    }
+
+    #[test]
+    fn a_location_reading_carries_the_typed_shape() {
+        let reading = LocationReading {
+            lat: 30.2672,
+            lon: -97.7431,
+            accuracy_m: 5.0,
+            fix_age_ms: 250,
+            source: LocationSource::Gnss,
+        };
+        reading.validate().unwrap();
+        assert_eq!(
+            reading.to_json(),
+            serde_json::json!({
+                "lat": 30.2672,
+                "lon": -97.7431,
+                "accuracy_m": 5.0,
+                "fix_age_ms": 250,
+                "source": "gnss",
+            })
+        );
+        for (wire, source) in [
+            ("gnss", LocationSource::Gnss),
+            ("network", LocationSource::Network),
+            ("ip", LocationSource::Ip),
+            ("caller_supplied", LocationSource::CallerSupplied),
+        ] {
+            assert_eq!(LocationSource::parse(wire), Some(source));
+            assert_eq!(source.as_str(), wire);
+        }
+        assert_eq!(LocationSource::parse("gps"), None);
+        let bad = LocationReading {
+            lat: 91.0,
+            ..reading
+        };
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn an_imprecise_fix_is_refused_at_the_precision_ceiling() {
+        // IP geolocation: kilometre-scale, named as such.
+        let ip_fix = LocationReading {
+            lat: 30.2672,
+            lon: -97.7431,
+            accuracy_m: 5_000.0,
+            fix_age_ms: 60_000,
+            source: LocationSource::Ip,
+        };
+        let refusal = ip_fix.refuse_beyond_ceiling(100.0).unwrap_err();
+        assert_eq!(refusal, CapError::precision_ceiling());
+        assert_eq!(refusal.code(), "outside_ceiling");
+        assert_eq!(
+            refusal.reason().map(String::as_str),
+            Some("precision_ceiling")
+        );
+        // The same fix is fine for a consumer whose ceiling allows it,
+        // and a precise fix passes a tight ceiling.
+        ip_fix.refuse_beyond_ceiling(10_000.0).unwrap();
+        let gnss_fix = LocationReading {
+            accuracy_m: 5.0,
+            source: LocationSource::Gnss,
+            ..ip_fix
+        };
+        gnss_fix.refuse_beyond_ceiling(100.0).unwrap();
+    }
+
+    #[test]
+    fn consent_states_map_to_the_refusal_vocabulary() {
+        assert_eq!(LocationConsent::Granted.refusal(), None);
+        let required = LocationConsent::ConsentRequired.refusal().unwrap();
+        assert_eq!(required, CapError::consent_required());
+        assert_eq!(required.code(), "cap_denied");
+        assert_eq!(
+            required.reason().map(String::as_str),
+            Some("consent_required")
+        );
+        let os_denied = LocationConsent::OsPermissionDenied.refusal().unwrap();
+        assert_eq!(os_denied, CapError::os_permission_denied());
+        assert_eq!(os_denied.code(), "cap_denied");
+        assert_eq!(
+            os_denied.reason().map(String::as_str),
+            Some("os_permission_denied")
+        );
+        let no_fix = CapError::no_fix();
+        assert_eq!(no_fix.code(), "failed");
+        assert_eq!(no_fix.reason().map(String::as_str), Some("no_fix"));
+    }
+
+    #[test]
+    fn loc_watch_specs_enforce_the_interval_floor() {
+        assert_eq!(
+            parse_loc_watch_interval_ms("loc.watch"),
+            Ok(MIN_LOC_WATCH_INTERVAL_MS)
+        );
+        assert_eq!(parse_loc_watch_interval_ms("loc.watch:60000"), Ok(60_000));
+        assert_eq!(
+            parse_loc_watch_interval_ms("loc.watch:100"),
+            Err(CapError::bad_args_with(
+                "loc.watch interval below the floor"
+            ))
+        );
+        assert!(parse_loc_watch_interval_ms("loc.watch:fast").is_err());
+        assert!(parse_loc_watch_interval_ms("time.tick:5000").is_err());
+    }
+
+    #[test]
+    fn consent_withdrawal_closes_an_open_watch_with_the_revocation_event() {
+        assert_eq!(
+            loc_watch_revocation_event(),
+            "{\"cap\":\"loc.watch\",\"event\":\"revoked\",\"reason\":\"consent_withdrawn\"}"
+        );
+        let reading = LocationReading {
+            lat: 30.2672,
+            lon: -97.7431,
+            accuracy_m: 12.0,
+            fix_age_ms: 0,
+            source: LocationSource::Network,
+        };
+        let delivered: serde_json::Value =
+            serde_json::from_str(&loc_watch_reading_event(&reading)).unwrap();
+        assert_eq!(delivered["cap"], "loc.watch");
+        assert_eq!(delivered["source"], "network");
+        assert_eq!(delivered["accuracy_m"], 12.0);
     }
 }

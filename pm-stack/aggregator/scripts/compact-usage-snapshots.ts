@@ -22,6 +22,32 @@ import { SnapshotStore } from "../src/snapshots.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const dir = process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
+// Reject unknown or misspelled arguments BEFORE the store is read or
+// written (#6967): a typo'd --month silently fell back to the default
+// 13-month retention, so an --apply run compacted (and deleted) raw
+// months a longer requested retention meant to keep, exiting 0. The
+// token after --months is its value slot: it is consumed here and
+// judged by the --months validation below (#3285), never re-interpreted
+// as a flag. Mirrors rejectUnknownArgs in append-usage-snapshots.ts
+// (#6961).
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (arg === "--apply") continue;
+    if (arg === "--months") {
+      i++;
+      continue;
+    }
+    console.error(
+      "compact-usage-snapshots: unknown argument '" + arg + "' " +
+        "(usage: [--apply] [--months <n>]); refusing to run, store untouched",
+    );
+    process.exit(2);
+  }
+}
+rejectUnknownArgs();
+
 const apply = process.argv.includes("--apply");
 const monthsArg = process.argv.indexOf("--months");
 const retentionMonths = monthsArg >= 0 ? Number(process.argv[monthsArg + 1]) : 13;

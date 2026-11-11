@@ -104,14 +104,14 @@ describe("needs-drew census (#1226)", () => {
 
   test("a failed source is named, the census is incomplete, other sources still count", async () => {
     const fetchPage = fakeFetch((repo, label) => {
-      if (repo === "dezren39/nix") return new Error("HTTP 403");
+      if (repo === "dezren39/darwin-nix") return new Error("HTTP 403");
       if (repo === REPO && label === "user/review") return { total: 1, items: [item(12, ["user/review"])] };
       return { total: 0, items: [] };
     });
     const census = await buildNeedsDrewCensus(fetchPage, { now: NOW });
     expect(census.complete).toBe(false);
     expect(census.items.map((i) => i.number)).toEqual([12]);
-    const nix = census.sources.filter((x) => x.repo === "dezren39/nix");
+    const nix = census.sources.filter((x) => x.repo === "dezren39/darwin-nix");
     expect(nix).toHaveLength(2);
     expect(nix.every((x) => !x.ok && x.error?.includes("403"))).toBe(true);
   });
@@ -136,11 +136,14 @@ describe("needs-drew census (#1226)", () => {
   });
 
   test("only a flagged page marks the source incomplete; a clean sweep stays complete", async () => {
-    const clean = await buildNeedsDrewCensus(fakeFetch(() => ({ total: 0, items: [] })), {
-      now: NOW,
-      repos: [REPO],
-      labels: ["user/review"],
-    });
+    const clean = await buildNeedsDrewCensus(
+      fakeFetch(() => ({ total: 0, items: [] })),
+      {
+        now: NOW,
+        repos: [REPO],
+        labels: ["user/review"],
+      },
+    );
     expect(clean.complete).toBe(true);
     expect(clean.sources[0].incomplete).toBeUndefined();
   });
@@ -273,11 +276,18 @@ describe("needs-drew census rendering", () => {
       ...base,
       complete: false,
       sources: [
-        { repo: "dezren39/nix", label: "user/review" as const, ok: false, count: 0, fetchedAt: NOW.toISOString(), error: "HTTP 403" },
+        {
+          repo: "dezren39/darwin-nix",
+          label: "user/review" as const,
+          ok: false,
+          count: 0,
+          fetchedAt: NOW.toISOString(),
+          error: "HTTP 403",
+        },
       ],
     });
     expect(html).toContain("Label census incomplete");
-    expect(html).toContain("dezren39/nix");
+    expect(html).toContain("dezren39/darwin-nix");
     expect(html).toContain("HTTP 403");
   });
 });
