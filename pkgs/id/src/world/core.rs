@@ -853,11 +853,12 @@ impl WorldCore {
                     );
                     ensure!(
                         !core.handoff_transfers.iter().any(|t| {
-                            (t.handoff_id == handoff_id && t.direction == HandoffDirection::Export)
-                                || (t.entity_ref == entity_ref
-                                    && t.direction == HandoffDirection::Export)
-                        }),
-                        "journal exports handoff {handoff_id:?} or entity {entity_ref:?} twice"
+                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Export
+                        }) && !matches!(
+                            core.latest_transfer(&entity_ref),
+                            Some(latest) if latest.direction == HandoffDirection::Export
+                        ),
+                        "journal exports handoff {handoff_id:?} twice or entity {entity_ref:?} while an export is active"
                     );
                     let transfer = HandoffTransferState {
                         handoff_id,
@@ -909,10 +910,11 @@ impl WorldCore {
                     validate_handoff_transfer(&transfer, &core.handoff_transfers)?;
                     validate_entity_ref(&entity_ref)?;
                     ensure!(
-                        !core.handoff_transfers.iter().any(|t| {
-                            t.entity_ref == entity_ref && t.direction == HandoffDirection::Import
-                        }),
-                        "journal imports entity {entity_ref:?} twice"
+                        !matches!(
+                            core.latest_transfer(&entity_ref),
+                            Some(latest) if latest.direction == HandoffDirection::Import
+                        ),
+                        "journal imports entity {entity_ref:?} while an import is active"
                     );
                     validate_import_envelope(&destination_event, &payload_digest)?;
                     core.handoff_transfers.push(transfer);
@@ -1056,7 +1058,19 @@ impl WorldCore {
                                 snapshot: None,
                                 provenance: provenance.clone(),
                             });
-                            replay.clear();
+                            // Transfer receipts outlive the install (the
+                            // dedupe ledger is retained whole), so their
+                            // events survive the slate wipe too: the
+                            // replacement program has not applied them,
+                            // and dropping them would leave a stored
+                            // receipt acknowledgable for a transfer the
+                            // current program never saw (#3902).
+                            let transfer_events: Vec<&WorldEvent> = core
+                                .handoff_transfers
+                                .iter()
+                                .map(|transfer| &transfer.event)
+                                .collect();
+                            replay.retain(|event| transfer_events.contains(&event));
                         }
                         WorldEventKind::Input(_) => replay.push(event.clone()),
                         WorldEventKind::EntityInput { entity_ref, .. } => {
@@ -2285,10 +2299,27 @@ impl WorldCore {
         })
     }
 
+    /// The most recent ownership transfer recorded for `entity_ref`, if
+    /// any. The ledger is append-only and chronological, so the last entry
+    /// for an entity is its current ownership state; earlier entries are
+    /// history, retained for handoff-ID deduplication.
+    pub(crate) fn latest_transfer(&self, entity_ref: &str) -> Option<&HandoffTransferState> {
+        self.handoff_transfers
+            .iter()
+            .rev()
+            .find(|transfer| transfer.entity_ref == entity_ref)
+    }
+
+    /// An entity is fenced while its latest ownership transfer is an
+    /// export: the fence derives from the current ownership state, not
+    /// from any historical export. An entity imported back (design #2818
+    /// §3 permits later crossings) is writable again; every historical
+    /// receipt stays in the ledger for deduplication.
     pub(crate) fn entity_is_fenced(&self, entity_ref: &str) -> bool {
-        self.handoff_transfers.iter().any(|transfer| {
-            transfer.direction == HandoffDirection::Export && transfer.entity_ref == entity_ref
-        })
+        matches!(
+            self.latest_transfer(entity_ref),
+            Some(transfer) if transfer.direction == HandoffDirection::Export
+        )
     }
 
     /// Install a durable source export in the in-memory transfer ledger. The
@@ -2316,11 +2347,14 @@ impl WorldCore {
             "entity transfer payload digest does not match"
         );
         ensure!(
-            !self.handoff_transfers.iter().any(|existing| {
-                existing.handoff_id == transfer.handoff_id
-                    || (existing.direction == HandoffDirection::Export
-                        && existing.entity_ref == transfer.entity_ref)
-            }),
+            !self
+                .handoff_transfers
+                .iter()
+                .any(|existing| existing.handoff_id == transfer.handoff_id)
+                && !matches!(
+                    self.latest_transfer(&transfer.entity_ref),
+                    Some(latest) if latest.direction == HandoffDirection::Export
+                ),
             "entity already has an active export or handoff ID is duplicated"
         );
         Ok(())
@@ -2360,11 +2394,14 @@ impl WorldCore {
             "destination import carries a duplicate payload outside its event"
         );
         ensure!(
-            !self.handoff_transfers.iter().any(|existing| {
-                existing.handoff_id == transfer.handoff_id
-                    || (existing.direction == HandoffDirection::Import
-                        && existing.entity_ref == transfer.entity_ref)
-            }),
+            !self
+                .handoff_transfers
+                .iter()
+                .any(|existing| existing.handoff_id == transfer.handoff_id)
+                && !matches!(
+                    self.latest_transfer(&transfer.entity_ref),
+                    Some(latest) if latest.direction == HandoffDirection::Import
+                ),
             "entity already has an active import or handoff ID is duplicated"
         );
         Ok(())

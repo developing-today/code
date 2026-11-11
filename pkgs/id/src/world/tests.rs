@@ -496,6 +496,135 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn imported_back_entity_loses_its_fence_and_can_cross_again() {
+        let (mut actor, token, journal, _, _) = transfer_actor(b"entity".to_vec(), false);
+        let exported = export(&mut actor).await.unwrap();
+        assert!(actor.core.entity_is_fenced("entity-1"));
+
+        // The entity crosses back B -> A under a fresh handoff ID with the
+        // owner epoch advanced (design #2818 §3 permits later crossings).
+        let payload = b"entity".to_vec();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ImportEntity {
+                handoff_id: "ef".repeat(16),
+                entity_ref: "entity-1".to_owned(),
+                source_region: "region-b".to_owned(),
+                target_region: "region-a".to_owned(),
+                prior_owner_epoch: 7,
+                program_module_hash: "module-hash".to_owned(),
+                payload_schema: "test/v1".to_owned(),
+                payload_digest: hex_encode(blake3::hash(&payload).as_bytes()),
+                payload,
+                reply,
+            })
+            .await;
+        let imported = response.await.unwrap().unwrap();
+        assert_eq!(imported.direction, HandoffDirection::Import);
+
+        // The historical export receipt stays in the ledger for dedupe,
+        // but the fence derives from the latest transfer: the entity is
+        // writable again.
+        assert_eq!(actor.core.handoff_transfers().len(), 2);
+        assert!(!actor.core.entity_is_fenced("entity-1"));
+        // The fence gate itself accepts writes again (checked at prepare
+        // level so the test journal keeps only transfer entries, like the
+        // restore-based tests above).
+        assert!(
+            actor
+                .core
+                .prepare_entity_input(&token, "entity-1", b"mutate")
+                .is_ok()
+        );
+
+        // And it can cross out again under another fresh handoff ID.
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ExportEntity {
+                handoff_id: "12".repeat(16),
+                entity_ref: "entity-1".to_owned(),
+                source_region: "region-a".to_owned(),
+                target_region: "region-b".to_owned(),
+                prior_owner_epoch: 8,
+                reply,
+            })
+            .await;
+        let re_exported = response.await.unwrap().unwrap();
+        assert!(actor.core.entity_is_fenced("entity-1"));
+
+        // The whole round trip restores: both crossings replay in order
+        // and the restored fence follows the latest transfer.
+        let restored = WorldCore::restore(
+            "source",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+            journal.entries(),
+        )
+        .unwrap();
+        assert_eq!(restored.core.handoff_transfers().len(), 3);
+        assert_eq!(
+            restored.replay,
+            vec![
+                exported.event.clone(),
+                imported.event.clone(),
+                re_exported.event.clone()
+            ]
+        );
+        assert!(restored.core.entity_is_fenced("entity-1"));
+    }
+
+    #[tokio::test]
+    async fn failed_import_replay_requirement_survives_program_replacement() {
+        let (mut actor, _, journal, _, _) = transfer_actor(b"entity".to_vec(), true);
+        assert!(import(&mut actor).await.is_err());
+        assert!(!actor.program_healthy);
+        assert_eq!(actor.pending_transfer_replays.len(), 1);
+
+        // Reinstalling the same module must not clear the requirement:
+        // the replacement program replays the pending import as part of
+        // the install, and only then is the world healthy again.
+        let applied_after_install = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let replacement = TransferProgram {
+            payload: b"entity".to_vec(),
+            fail_apply: false,
+            journal: journal.clone(),
+            saw_durable_export_before_apply: Arc::new(std::sync::Mutex::new(false)),
+            applied_events: applied_after_install.clone(),
+        };
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::InstallProgram {
+                module_hash: "module-hash".to_owned(),
+                seed: 0,
+                provenance: None,
+                installed_by: None,
+                trust: None,
+                program: Box::new(replacement),
+                reply,
+            })
+            .await;
+        assert!(response.await.unwrap().is_ok());
+        assert!(actor.pending_transfer_replays.is_empty());
+        assert!(actor.program_healthy);
+        assert_eq!(
+            *applied_after_install.lock().unwrap(),
+            vec!["add-entity".to_owned()],
+            "the replacement program applied the pending import exactly once"
+        );
+
+        // Now the exact retry may return the stored receipt — and it must
+        // not apply the import a second time.
+        let receipt = import(&mut actor).await.unwrap();
+        assert_eq!(receipt.direction, HandoffDirection::Import);
+        assert_eq!(
+            *applied_after_install.lock().unwrap(),
+            vec!["add-entity".to_owned()]
+        );
+    }
+
+    #[tokio::test]
     async fn entity_input_on_a_read_only_replica_never_reaches_the_program() {
         let (mut actor, token, _, _, applied) = transfer_actor(b"entity".to_vec(), false);
         actor.read_only = true;

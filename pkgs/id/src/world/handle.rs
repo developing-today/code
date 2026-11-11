@@ -234,6 +234,7 @@ impl WorldHandle {
             storage_failed: false,
             read_only,
             program_healthy,
+            pending_transfer_replays: Vec::new(),
             view_failures: 0,
             compaction_off: false,
             event_sender: events.clone(),

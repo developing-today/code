@@ -383,6 +383,13 @@ pub(crate) struct WorldActor {
     /// by the replica open path; a writer never runs this way.
     pub(crate) read_only: bool,
     pub(crate) program_healthy: bool,
+    /// Durable transfers whose journal append succeeded but whose program
+    /// apply failed (#3902): their receipts sit in the core dedupe ledger
+    /// yet no live program has applied their events. The requirement is
+    /// tracked independently of `program_healthy`: an exact retry must not
+    /// acknowledge one of these receipts until a program — the current
+    /// one or an installed replacement — has actually applied the event.
+    pub(crate) pending_transfer_replays: Vec<HandoffTransferState>,
     /// Times a `view` or `layout` call trapped. Counted for `id world stats`
     /// (F11.17): a trapping view degrades to an error screen, not a poisoned
     /// world, so this counter is the only place the failure is recorded.
@@ -726,6 +733,10 @@ impl WorldActor {
             && existing.prior_owner_epoch == prior_owner_epoch
             && existing.program_module_hash == program_module_hash
         {
+            ensure!(
+                !self.transfer_replay_pending(HandoffDirection::Export, &handoff_id),
+                "entity export {handoff_id:?} is durably recorded but has not been applied; replay required"
+            );
             return Ok(existing.clone());
         }
         let request = EntityTransferRequest::Export {
@@ -814,6 +825,7 @@ impl WorldActor {
         })?;
         self.core.record_entity_export(transfer.clone());
         if let Err(error) = self.program.update(&source_event) {
+            self.pending_transfer_replays.push(transfer);
             self.program_healthy = false;
             tracing::error!("world program rejected a durable entity export: {error:#}");
             return Err(
@@ -833,6 +845,15 @@ impl WorldActor {
         self.republished(records, self.core.sequence);
         let _ = self.view_changed.send(self.core.sequence);
         Ok(transfer)
+    }
+
+    /// Whether a durably recorded transfer is still waiting for a program
+    /// to apply it (#3902): while it is, its stored receipt is withheld
+    /// from exact retries instead of being acknowledged.
+    fn transfer_replay_pending(&self, direction: HandoffDirection, handoff_id: &str) -> bool {
+        self.pending_transfer_replays
+            .iter()
+            .any(|pending| pending.direction == direction && pending.handoff_id == handoff_id)
     }
 
     fn import_entity(
@@ -925,6 +946,10 @@ impl WorldActor {
             && existing.payload_schema == payload_schema
             && existing.payload_digest == payload_digest
         {
+            ensure!(
+                !self.transfer_replay_pending(HandoffDirection::Import, &handoff_id),
+                "entity import {handoff_id:?} is durably recorded but has not been applied; replay required"
+            );
             return Ok(existing.clone());
         }
         let request = EntityTransferRequest::Import {
@@ -1005,6 +1030,7 @@ impl WorldActor {
         })?;
         self.core.record_entity_import(transfer.clone());
         if let Err(error) = self.program.update(&destination_event) {
+            self.pending_transfer_replays.push(transfer);
             self.program_healthy = false;
             tracing::error!("world program rejected a durable entity import: {error:#}");
             return Err(
@@ -2356,7 +2382,27 @@ impl WorldActor {
                         self.core.active_module_provenance = provenance;
                         self.core.active_seed = seed;
                         self.program = replacement;
-                        self.program_healthy = true;
+                        // A program replacement does not discharge the
+                        // replay requirement of transfers the previous
+                        // program never applied (#3902): replay them into
+                        // the replacement now, and declare health only
+                        // once every pending transfer has been applied.
+                        // Receipts for any that still fail stay withheld
+                        // (see `transfer_replay_pending`).
+                        let mut still_pending = Vec::new();
+                        for pending in std::mem::take(&mut self.pending_transfer_replays) {
+                            match self.program.update(&pending.event) {
+                                Ok(()) => {}
+                                Err(error) => {
+                                    tracing::error!(
+                                        "world program rejected a pending transfer replay after install: {error:#}"
+                                    );
+                                    still_pending.push(pending);
+                                }
+                            }
+                        }
+                        self.pending_transfer_replays = still_pending;
+                        self.program_healthy = self.pending_transfer_replays.is_empty();
                         self.compaction_off = false;
                         // A new program starts with a clean slate.
                         self.handled_requests.clear();
@@ -3078,6 +3124,7 @@ impl WorldActor {
             storage_failed: false,
             read_only: false,
             program_healthy,
+            pending_transfer_replays: Vec::new(),
             view_failures: 0,
             compaction_off: false,
             event_sender: events,
