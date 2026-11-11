@@ -1263,6 +1263,42 @@ pub struct TrustDecision {
     pub publisher: Option<String>,
 }
 
+/// A capability authorization denial (design #835): the typed root of
+/// every error the capability check returns, so callers of the
+/// authorized operation commands (`InstallProgramAuthorized`,
+/// `RevokeAuthorized`) can classify a denial from the command's own
+/// error — told apart from journal, actor, and program failures —
+/// without matching message text. The message stays the non-oracular
+/// denial text the actor has always returned: one wording for invalid,
+/// expired, revoked, and insufficient capabilities alike.
+#[derive(Debug)]
+pub struct CapabilityDenied {
+    message: &'static str,
+}
+
+impl CapabilityDenied {
+    pub(crate) const fn new(message: &'static str) -> Self {
+        Self { message }
+    }
+}
+
+impl std::fmt::Display for CapabilityDenied {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for CapabilityDenied {}
+
+/// Whether an error returned by a world operation is a capability
+/// authorization denial (see [`CapabilityDenied`]).
+#[must_use]
+pub fn is_capability_denied(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<CapabilityDenied>().is_some())
+}
+
 /// One durable fact about a world, in commit order.
 ///
 /// Capability secrets are never journaled, only their SHA-256 digests, so a

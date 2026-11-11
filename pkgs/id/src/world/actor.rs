@@ -49,6 +49,7 @@ impl WorldCommand {
             Self::Revoke { .. } => "Revoke",
             Self::RevokeAuthorized { .. } => "RevokeAuthorized",
             Self::ParticipantId { .. } => "ParticipantId",
+            Self::AuthorizeScope { .. } => "AuthorizeScope",
             Self::BindAuthorKey { .. } => "BindAuthorKey",
             Self::Chat { .. } => "Chat",
             Self::Input { .. } => "Input",
@@ -138,6 +139,16 @@ pub(crate) enum WorldCommand {
     },
     ParticipantId {
         token: JoinCapability,
+        reply: oneshot::Sender<Result<u64>>,
+    },
+    /// Authorize a live capability for a scope set without performing
+    /// the operation (design #835 phase 3): session paths check this
+    /// before receiving upload bytes, while the operation commands
+    /// (`InstallProgramAuthorized`, `RevokeAuthorized`) still re-check
+    /// at the effect boundary. Replies with the derived participant ID.
+    AuthorizeScope {
+        token: JoinCapability,
+        required: WorldScopes,
         reply: oneshot::Sender<Result<u64>>,
     },
     Chat {
@@ -1724,6 +1735,13 @@ impl WorldActor {
             }
             WorldCommand::ParticipantId { token, reply } => {
                 let _ = reply.send(self.core.authorize(&token, WorldScopes::JOIN));
+            }
+            WorldCommand::AuthorizeScope {
+                token,
+                required,
+                reply,
+            } => {
+                let _ = reply.send(self.core.authorize(&token, required));
             }
             WorldCommand::BindAuthorKey {
                 token,

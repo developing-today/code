@@ -1820,10 +1820,9 @@ impl WorldCore {
         let now = self.clock().now_ms();
         let mut current = Some(participant_id);
         while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
-            ensure!(
-                record.bounds.expires_at.is_none_or(|expires| now < expires),
-                "world capability has expired"
-            );
+            if !record.bounds.expires_at.is_none_or(|expires| now < expires) {
+                return Err(CapabilityDenied::new("world capability has expired").into());
+            }
             current = record.parent;
         }
         Ok(())
@@ -2446,19 +2445,20 @@ impl WorldCore {
         let (participant, _) = token
             .expose()
             .split_once('.')
-            .context("malformed world capability")?;
+            .ok_or_else(|| CapabilityDenied::new("malformed world capability"))?;
         let participant_id = participant
             .parse::<u64>()
-            .context("malformed world capability participant ID")?;
+            .map_err(|_| CapabilityDenied::new("malformed world capability participant ID"))?;
         let digest = token_digest(token.expose());
-        let record = self
-            .capabilities
-            .get(&participant_id)
-            .context("invalid, revoked, or insufficient world capability")?;
-        ensure!(
-            constant_time_eq(&digest, &record.digest),
-            "invalid, revoked, or insufficient world capability"
-        );
+        let record = self.capabilities.get(&participant_id).ok_or_else(|| {
+            CapabilityDenied::new("invalid, revoked, or insufficient world capability")
+        })?;
+        if !constant_time_eq(&digest, &record.digest) {
+            return Err(CapabilityDenied::new(
+                "invalid, revoked, or insufficient world capability",
+            )
+            .into());
+        }
         // The authority check must not seed from `ALL`: that set excludes
         // the admin bits by design, which would make `BUILDER` /
         // `MODERATOR` unusable through this path. Seed with every
@@ -2466,13 +2466,16 @@ impl WorldCore {
         // `effective_scopes_seeded` only removes bits, so a required
         // authority bit survives only when every record in the chain
         // actually carries it.
-        ensure!(
-            !record.revoked
-                && self
-                    .effective_scopes_seeded(participant_id, WorldScopes::all_recognized())
-                    .is_some_and(|scopes| scopes.contains(required)),
-            "invalid, revoked, or insufficient world capability"
-        );
+        if !(!record.revoked
+            && self
+                .effective_scopes_seeded(participant_id, WorldScopes::all_recognized())
+                .is_some_and(|scopes| scopes.contains(required)))
+        {
+            return Err(CapabilityDenied::new(
+                "invalid, revoked, or insufficient world capability",
+            )
+            .into());
+        }
         self.ensure_not_expired(participant_id)?;
         Ok(participant_id)
     }
