@@ -40,7 +40,7 @@ use fleet_proxy_proto::{
 };
 
 use crate::http::{HttpConn, HttpError};
-use crate::tunnel::{Egress, connect_tunnel, egress_from_env};
+use crate::tunnel::{Egress, connect_raw_tunnel, connect_tunnel, egress_from_env};
 
 /// Keepalive cadence (the Python's KEEPALIVE_S).
 const KEEPALIVE_S: u64 = 180;
@@ -49,6 +49,29 @@ const KEEPALIVE_S: u64 = 180;
 /// configured span) are the same, the granularity is finer so a
 /// short configured idle is observable in tests.
 const IDLE_TICK_S: u64 = 5;
+
+/// Dial a colocated service's Unix socket bounded by `deadline`
+/// (#6219, Codex review on PR #8388). `UnixStream::connect` has no
+/// timeout variant and can block on a listener that stopped
+/// accepting with a full backlog, so the connect runs on a scratch
+/// thread and the caller waits only for the deadline: on expiry
+/// the caller falls back to TCP while the scratch thread stays
+/// parked in the kernel until the connect resolves or errors
+/// (bounded by the listener coming back or going away, and never
+/// holding broker state). The dial IS the probe here -- a socket
+/// that answers within the deadline is used, any other outcome
+/// selects TCP within the same attempt.
+fn connect_unix_bounded(path: &std::path::Path, deadline: Duration) -> Option<UnixStream> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(UnixStream::connect(&path));
+    });
+    match rx.recv_timeout(deadline) {
+        Ok(Ok(stream)) => Some(stream),
+        _ => None,
+    }
+}
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -245,28 +268,265 @@ impl TunnelPool {
     }
 }
 
+/// How long a caller waits for an in-flight recovery of the same
+/// port before failing fast — the transport deadline, so waiting
+/// never costs more than one bounded attempt.
+const RECOVERY_WAIT: Duration = crate::tunnel::TRANSPORT_DEADLINE;
+
+#[derive(Default)]
+struct GateState {
+    /// A tunnel open failed and no recovery has succeeded since:
+    /// the next opener is the single recovery attempt.
+    needs_recovery: bool,
+    recovery_in_flight: bool,
+    active_generation: u64,
+    next_generation: u64,
+    /// Verdict of each completed recovery generation (None =
+    /// success), kept per generation so a waiter always reads the
+    /// verdict of the generation IT waited on, never a successor's.
+    /// Pruned to the most recent generations (see `record`).
+    verdicts: std::collections::HashMap<u64, Option<String>>,
+}
+
+/// What [`decide`] tells a caller to do next — the gate's pure
+/// decision core, driven synchronously by the model-based
+/// property test and under the condvar by [`RecoveryGate::run`].
+#[derive(Debug, PartialEq, Eq)]
+enum Decision {
+    /// Healthy path: open now, ungated.
+    OpenNormal,
+    /// You are the one recovery attempt, generation attached.
+    OpenRecovery(u64),
+    /// A recovery is in flight: wait for this generation.
+    Wait(u64),
+    /// The generation you waited on failed: share its verdict.
+    ShareFailure(String),
+    /// The generation you waited on succeeded: open ungated.
+    ProceedAfterRecovery,
+}
+
+/// Pure gate decision for one caller. `waiting_on` is the
+/// generation the caller has been waiting for, if any — its
+/// verdict is consumed FIRST, before any newer in-flight attempt
+/// is considered (Codex P2, PR #6490).
+fn decide(entry: &mut GateState, waiting_on: Option<u64>) -> Decision {
+    if let Some(wgen) = waiting_on {
+        if let Some(verdict) = entry.verdicts.get(&wgen) {
+            return match verdict {
+                Some(err) => Decision::ShareFailure(err.clone()),
+                None => Decision::ProceedAfterRecovery,
+            };
+        }
+    }
+    if entry.recovery_in_flight {
+        return Decision::Wait(entry.active_generation);
+    }
+    if entry.needs_recovery {
+        entry.next_generation += 1;
+        entry.active_generation = entry.next_generation;
+        entry.recovery_in_flight = true;
+        entry.needs_recovery = false;
+        return Decision::OpenRecovery(entry.active_generation);
+    }
+    Decision::OpenNormal
+}
+
+/// Pure gate bookkeeping for a finished attempt. Any failure
+/// arms recovery for the next opener; a recovery attempt also
+/// records its generation's verdict (consumed by its waiters via
+/// [`decide`]) and disarms the gate on success. Verdicts are
+/// pruned to the last 64 generations — far beyond any live
+/// waiter cohort.
+fn record(entry: &mut GateState, recovery_generation: Option<u64>, error: Option<&String>) {
+    if error.is_some() {
+        entry.needs_recovery = true;
+    }
+    if let Some(generation) = recovery_generation {
+        entry.recovery_in_flight = false;
+        entry.verdicts.insert(generation, error.cloned());
+        if error.is_none() {
+            entry.needs_recovery = false;
+        }
+        if entry.verdicts.len() > 64 {
+            let floor = generation.saturating_sub(64);
+            entry.verdicts.retain(|gnum, _| *gnum > floor);
+        }
+    }
+}
+
+/// Single-flight tunnel RECOVERY (#5758, shaped by PR #6490's
+/// Codex review): healthy opens are NOT gated — a cold pool or a
+/// burst opens concurrently exactly as before. The gate engages
+/// only after a failure: the next opener for that port becomes
+/// the one recovery attempt, and concurrent callers wait (bounded
+/// by [`RECOVERY_WAIT`]) for its verdict — failure is shared with
+/// the waiters (no CONNECT stampede against a dead target);
+/// success clears the gate and waiters proceed to their own,
+/// concurrent opens. A waiter always consumes the verdict of the
+/// generation it waited on BEFORE looking at any newer attempt,
+/// so an opener's immediate retry can never steal or overwrite
+/// the failure its cohort observed.
+struct RecoveryGate {
+    state: Mutex<std::collections::HashMap<u16, GateState>>,
+    finished: Condvar,
+}
+
+impl RecoveryGate {
+    fn new() -> RecoveryGate {
+        RecoveryGate {
+            state: Mutex::new(std::collections::HashMap::new()),
+            finished: Condvar::new(),
+        }
+    }
+
+    fn run<T>(&self, port: u16, attempt: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let deadline = Instant::now() + RECOVERY_WAIT;
+        let mut waiting_on: Option<u64> = None;
+        let recovery_generation = loop {
+            let mut state = self.state.lock().unwrap();
+            let entry = state.entry(port).or_default();
+            match decide(entry, waiting_on) {
+                Decision::ShareFailure(err) => return Err(err),
+                Decision::ProceedAfterRecovery => break None,
+                Decision::OpenNormal => break None,
+                Decision::OpenRecovery(generation) => break Some(generation),
+                Decision::Wait(generation) => {
+                    waiting_on = Some(generation);
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(format!(
+                            "tunnel recovery for port {port} still in flight; failing fast"
+                        ));
+                    }
+                    let (guard, _) = self.finished.wait_timeout(state, left).unwrap();
+                    state = guard;
+                    continue;
+                }
+            }
+        };
+        let got = attempt();
+        let mut state = self.state.lock().unwrap();
+        let entry = state.entry(port).or_default();
+        record(entry, recovery_generation, got.as_ref().err());
+        if recovery_generation.is_some() {
+            self.finished.notify_all();
+        }
+        got
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` for a unix timestamp — the broker's log
+/// stamp, computed without a date crate (civil-from-days).
+fn format_utc(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let tod = secs % 86_400;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{year:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        tod / 3600,
+        (tod % 3600) / 60,
+        tod % 60
+    )
+}
+
+/// The one startup stamp every broker start writes first
+/// (#5758): UTC time, implementation, version, pool size, and
+/// pid — so which broker owned an incident window (and with what
+/// pool) is reconstructable from broker.log alone. Credentials
+/// are never part of it.
+fn startup_line(pool_size: usize, socket_path: &std::path::Path) -> String {
+    format!(
+        "{} fleet proxy serve start implementation=fleet-proxy version={} pool_size={} pid={} socket={}",
+        format_utc(now_secs()),
+        env!("CARGO_PKG_VERSION"),
+        pool_size,
+        std::process::id(),
+        socket_path.display()
+    )
+}
+
 struct Broker {
     config: Config,
     egress: Option<Egress>,
     pool: TunnelPool,
+    /// Single-flight gate for tunnel opens (recovery stampedes).
+    recovery: RecoveryGate,
     /// Last client-request time (unix secs). Keepalive health
     /// checks deliberately never write this.
     last_used: AtomicU64,
 }
 
 impl Broker {
-    fn open_conn(&self, port: u16) -> Result<HttpConn, String> {
+    fn open_raw_tunnel(&self, port: u16) -> Result<TcpStream, String> {
         let target = self.config.target_host();
-        let stream: TcpStream = if self.config.proxy_direct() {
-            connect_tunnel(None, target, port)
+        let stream = if self.config.proxy_direct() {
+            connect_raw_tunnel(None, target, port)
         } else {
             let egress = self
                 .egress
                 .as_ref()
                 .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
-            connect_tunnel(Some(egress), target, port)
+            connect_raw_tunnel(Some(egress), target, port)
         }
-        .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
+        .map_err(|e| format!("raw tunnel to {target}:{port}: {e}"))?;
+        Ok(stream)
+    }
+
+    fn open_conn(&self, port: u16) -> Result<HttpConn, String> {
+        // Tunnel opens pass through the recovery gate: ungated
+        // while healthy, single-flight once an open has failed —
+        // see [`RecoveryGate`].
+        self.recovery.run(port, || self.open_conn_raw(port))
+    }
+
+    fn open_conn_raw(&self, port: u16) -> Result<HttpConn, String> {
+        let target = self.config.target_host();
+        if self.config.proxy_direct() {
+            // Colocated direct mode (#6219): when the service on
+            // this port is a broker role whose Unix socket answers,
+            // dial the socket instead of TCP loopback. A socket
+            // that does not answer (absent or stale, or a failed
+            // connect) falls back to the TCP dial below within the
+            // same attempt; non-colocated ports never take this
+            // path, and the tunnel (non-direct) path is unchanged.
+            if let Some((socket, pref)) = self.config.service_socket_resolution(port) {
+                // A "tcp" preference skips the socket entirely; any
+                // other case dials it, bounded by the same setup
+                // deadline the tunnel path enforces (Codex review
+                // on PR #8388: a wedged listener with a full backlog
+                // can block a bare connect indefinitely, and the
+                // read/write timeouts only apply after connect).
+                if pref.as_deref() != Some("tcp") {
+                    if let Some(stream) =
+                        connect_unix_bounded(&socket, crate::tunnel::TRANSPORT_DEADLINE)
+                    {
+                        let _ = stream.set_read_timeout(Some(crate::tunnel::TUNNEL_READ_TIMEOUT));
+                        let _ = stream.set_write_timeout(Some(crate::tunnel::TUNNEL_WRITE_TIMEOUT));
+                        return HttpConn::from_unix(stream).map_err(|e| {
+                            format!("socket {} for port {port}: {e}", socket.display())
+                        });
+                    }
+                }
+            }
+            let stream: TcpStream = connect_tunnel(None, target, port)
+                .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
+            return HttpConn::new(stream).map_err(|e| format!("tunnel to {target}:{port}: {e}"));
+        }
+        let egress = self
+            .egress
+            .as_ref()
+            .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
+        let stream: TcpStream = connect_tunnel(Some(egress), target, port)
+            .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
         HttpConn::new(stream).map_err(|e| format!("tunnel to {target}:{port}: {e}"))
     }
 
@@ -408,10 +668,13 @@ fn handle_request(broker: &Broker, frame: &serde_json::Value) -> serde_json::Val
     }
 }
 
-/// Lenient request parsing, mirroring the Python's dict access:
+/// Request parsing, mirroring the Python's dict access:
 /// `method`/`path` are required (their absence is the KeyError the
-/// Python handler turns into a 502), everything else has the same
-/// defaults the Python applies (`port` 4799, body/token_file None).
+/// Python handler turns into a 502), and the remaining fields take
+/// the same defaults the Python applies (body/token_file None, an
+/// absent `port` defaults downstream) -- except `port`, which is
+/// strict at this boundary (#6516): a present-but-unusable port is
+/// refused, never silently defaulted.
 fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
     let method = frame
         .get("method")
@@ -438,14 +701,24 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
         ));
     }
     let body = frame.get("body").filter(|b| !b.is_null()).cloned();
-    let port = frame
-        .get("port")
-        .and_then(|v| v.as_u64())
-        .and_then(|p| u16::try_from(p).ok());
-    let token_file = frame
-        .get("token_file")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let port = parse_port(frame)?;
+    let token_file = match frame.get("token_file") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(path)) => Some(path.clone()),
+        Some(value) => {
+            let shape = match value {
+                serde_json::Value::Bool(_) => "boolean",
+                serde_json::Value::Number(_) => "number",
+                serde_json::Value::Array(_) => "array",
+                serde_json::Value::Object(_) => "object",
+                serde_json::Value::Null => "null",
+                serde_json::Value::String(_) => "string",
+            };
+            return Err(format!(
+                "request \"token_file\" must be a string or null, got {shape}"
+            ));
+        }
+    };
     Ok(Request {
         method,
         path,
@@ -455,7 +728,45 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
     })
 }
 
+/// The frame's `port`, strictly. Absent -- or null, mirroring how
+/// `body` treats null -- means no port was named: the caller's
+/// default applies downstream (`Broker::do_request` substitutes
+/// PORT_LAPTOP_AGENT). A port that is present but unusable -- a
+/// string, a float, a bool/container, a negative, zero, or above
+/// 65535 -- is refused here at the frame boundary (#6516): the
+/// lenient chain this replaces collapsed every one of those shapes
+/// to None, and None became the default port, silently rerouting
+/// the request to a service the caller never named. Method/path
+/// already refuse malformed shapes at this boundary (#5750); the
+/// port now does too. The error names the shape that arrived, and
+/// `handle_request` wraps it in the standard 502 broker frame; no
+/// connection is opened for a refused port.
+fn parse_port(frame: &serde_json::Value) -> Result<Option<u16>, String> {
+    let Some(value) = frame.get("port").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let Some(n) = value.as_u64().filter(|_| value.is_u64()) else {
+        let shape = if value.is_string() {
+            format!("string {value}")
+        } else if value.is_f64() {
+            format!("non-integer number {value}")
+        } else if value.is_i64() {
+            format!("negative number {value}")
+        } else {
+            format!("{value}")
+        };
+        return Err(format!("request \"port\" {shape} is not an integer port"));
+    };
+    if n == 0 || n > u64::from(u16::MAX) {
+        return Err(format!(
+            "request \"port\" {n} is outside the usable port range 1..=65535"
+        ));
+    }
+    Ok(Some(n as u16))
+}
+
 fn serve_session(broker: &Broker, mut stream: UnixStream) {
+    let mut client_supports_raw_splice = false;
     let first = match read_frame(&mut stream) {
         Ok(f) => f,
         Err(_) => return, // probe connects and closes; the Python exits the same way
@@ -482,10 +793,22 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
             );
             return;
         }
+        client_supports_raw_splice = hello
+            .capabilities
+            .iter()
+            .any(|cap| cap == fleet_registry::Capability::ProxyRawSplice.id());
+        let services = broker.services_map();
+        let raw_splice_available = services
+            .get(&fleet_config::PORT_RUSTDESK.to_string())
+            .is_some_and(|service| service.name == "rustdesk");
+        let mut capabilities = vec![fleet_registry::Capability::ProxyServe.id().to_string()];
+        if raw_splice_available {
+            capabilities.push(fleet_registry::Capability::ProxyRawSplice.id().to_string());
+        }
         let resp = HelloResponse {
             proto: fleet_proxy_proto::PROTO_MAJOR,
-            services: broker.services_map(),
-            capabilities: vec![fleet_registry::Capability::ProxyServe.id().to_string()],
+            services,
+            capabilities,
         };
         if write_frame(&mut stream, &fleet_proxy_proto::hello_response_frame(&resp)).is_err() {
             return;
@@ -512,6 +835,68 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
     loop {
         match read_frame(&mut stream) {
             Ok(frame) => {
+                if let Some(raw_splice) = frame.get("raw_splice") {
+                    let port = raw_splice
+                        .get("port")
+                        .and_then(|value| value.as_u64())
+                        .and_then(|value| u16::try_from(value).ok());
+                    let service_available = broker
+                        .services_map()
+                        .get(&fleet_config::PORT_RUSTDESK.to_string())
+                        .is_some_and(|service| service.name == "rustdesk");
+                    if !client_supports_raw_splice
+                        || port != Some(fleet_config::PORT_RUSTDESK)
+                        || !service_available
+                    {
+                        let _ = write_frame(
+                            &mut stream,
+                            &serde_json::json!({
+                                "raw_splice": {"error": "raw-splice capability or service unavailable"}
+                            }),
+                        );
+                        return;
+                    }
+                    broker.last_used.store(now_secs(), Ordering::Relaxed);
+                    match broker.open_raw_tunnel(fleet_config::PORT_RUSTDESK) {
+                        Ok(tunnel) => {
+                            if write_frame(
+                                &mut stream,
+                                &serde_json::json!({"raw_splice": {"ready": true}}),
+                            )
+                            .is_err()
+                            {
+                                return;
+                            }
+                            // A raw relay can be the broker's only
+                            // activity for hours (a live RustDesk
+                            // session): refresh last_used while it
+                            // runs, or keepalive_loop's idle exit
+                            // would kill the broker — and the session
+                            // — after idle_exit_secs (Codex P2, PR
+                            // #8618).
+                            let relay_done = std::sync::atomic::AtomicBool::new(false);
+                            std::thread::scope(|scope| {
+                                scope.spawn(|| {
+                                    while !relay_done.load(Ordering::Relaxed) {
+                                        std::thread::sleep(Duration::from_secs(60));
+                                        if !relay_done.load(Ordering::Relaxed) {
+                                            broker.last_used.store(now_secs(), Ordering::Relaxed);
+                                        }
+                                    }
+                                });
+                                let _ = crate::raw_stream::relay(stream, tunnel);
+                                relay_done.store(true, Ordering::Relaxed);
+                            });
+                        }
+                        Err(why) => {
+                            let _ = write_frame(
+                                &mut stream,
+                                &serde_json::json!({"raw_splice": {"error": why}}),
+                            );
+                        }
+                    }
+                    return;
+                }
                 let reply = handle_request(broker, &frame);
                 if write_frame(&mut stream, &reply).is_err() {
                     return;
@@ -523,7 +908,7 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
     }
 }
 
-fn keepalive_loop(broker: Arc<Broker>) {
+fn keepalive_loop(broker: Arc<Broker>, idle_exit: bool) {
     let idle = broker.config.idle_exit_secs();
     let health_req = Request {
         method: "GET".to_string(),
@@ -536,10 +921,15 @@ fn keepalive_loop(broker: Arc<Broker>) {
     loop {
         std::thread::sleep(Duration::from_secs(IDLE_TICK_S));
         let now = now_secs();
-        if now.saturating_sub(broker.last_used.load(Ordering::Relaxed)) > idle {
+        if idle_exit
+            && now.saturating_sub(broker.last_used.load(Ordering::Relaxed)) > idle
+        {
             // The Python exits via os._exit from its keepalive
             // loop; the same abruptness is fine — the broker holds
-            // nothing that needs draining.
+            // nothing that needs draining. Standalone brokers only:
+            // a co-hosted proxy (run_cohosted) must never exit the
+            // shared process out from under its sibling roles
+            // (#8394 Codex P1).
             std::process::exit(0);
         }
         if now.saturating_sub(last_health) >= KEEPALIVE_S {
@@ -549,12 +939,26 @@ fn keepalive_loop(broker: Arc<Broker>) {
     }
 }
 
+/// Run the broker co-hosted with other serve roles in one process
+/// (`fleet serve <role> [<role> ...]`, #6264): same broker, but the
+/// idle-exit is disabled — the proxy's standalone lifetime contract
+/// (auto-spawned, exits when idle) must not terminate the sibling
+/// roles sharing the process (design #5698 point 5, #8394 Codex P1).
+/// The serve-list supervisor owns this process's lifetime instead.
+pub fn run_cohosted(config: &Config) -> i32 {
+    run_inner(config, false)
+}
+
 /// Run the broker in the foreground. Returns the process exit code.
 ///
 /// Startup mirrors the Python exactly: if the socket file exists
 /// and a connect succeeds, a live broker owns it — exit 0 quietly.
 /// If the connect fails, the file is stale — unlink and bind.
 pub fn run(config: &Config) -> i32 {
+    run_inner(config, true)
+}
+
+fn run_inner(config: &Config, idle_exit: bool) -> i32 {
     let socket_path = config.broker_socket();
     if let Some(parent) = socket_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -583,6 +987,12 @@ pub fn run(config: &Config) -> i32 {
             return crate::EXIT_TRANSPORT;
         }
     };
+    let size = pool_size();
+    // The stamp is the FIRST line a starting broker writes, so it
+    // precedes any per-request tunnel failure the egress setup
+    // below may log.
+    println!("{}", startup_line(size, &socket_path));
+    let _ = std::io::stdout().flush();
     let egress = if config.proxy_direct() {
         None
     } else {
@@ -600,7 +1010,8 @@ pub fn run(config: &Config) -> i32 {
     let broker = Arc::new(Broker {
         config: config.clone(),
         egress,
-        pool: TunnelPool::new(pool_size()),
+        pool: TunnelPool::new(size),
+        recovery: RecoveryGate::new(),
         last_used: AtomicU64::new(now_secs()),
     });
     // Preconnect: warm the laptop-agent pool through the same
@@ -620,7 +1031,7 @@ pub fn run(config: &Config) -> i32 {
     }
     {
         let broker = Arc::clone(&broker);
-        std::thread::spawn(move || keepalive_loop(broker));
+        std::thread::spawn(move || keepalive_loop(broker, idle_exit));
     }
     // CONNECT-UDP (RFC 9298) spike (#6109): only when the
     // config opts in — the flag defaults off and nothing in
@@ -635,13 +1046,6 @@ pub fn run(config: &Config) -> i32 {
             }
         });
     }
-    println!(
-        "fleet proxy serve on {} (pool: {} per port, overflow wait {} ms)",
-        socket_path.display(),
-        broker.pool.size(),
-        POOL_WAIT_BUDGET.as_millis()
-    );
-    let _ = std::io::stdout().flush();
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -706,6 +1110,76 @@ mod tests {
     }
 
     const PORT: u16 = 4799;
+
+    #[test]
+    fn parse_request_validates_token_file_shape() {
+        let mut absent = serde_json::json!({"method": "GET", "path": "/health"});
+        assert!(parse_request(&absent).unwrap().token_file.is_none());
+
+        absent["token_file"] = serde_json::Value::Null;
+        assert!(parse_request(&absent).unwrap().token_file.is_none());
+
+        absent["token_file"] = serde_json::json!("/tmp/request-token");
+        assert_eq!(
+            parse_request(&absent).unwrap().token_file.as_deref(),
+            Some("/tmp/request-token")
+        );
+
+        for (value, shape) in [
+            (serde_json::json!(123), "number"),
+            (serde_json::json!(true), "boolean"),
+            (serde_json::json!({"path": "token"}), "object"),
+            (serde_json::json!(["token"]), "array"),
+        ] {
+            let frame = serde_json::json!({
+                "method": "GET",
+                "path": "/health",
+                "token_file": value,
+            });
+            let error = parse_request(&frame).unwrap_err();
+            assert!(
+                error.contains(shape),
+                "expected token_file error to name {shape}, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_request_token_file_matches_the_shape_model_on_generated_values() {
+        use proptest::prelude::*;
+        // Oracle: the #6518 acceptance rules stated as a model over the
+        // JSON value. Absent and null yield None; an arbitrary string is
+        // preserved verbatim; every other shape -- numbers, floats,
+        // bools, containers -- is refused.
+        fn model(value: Option<&serde_json::Value>) -> Result<Option<String>, ()> {
+            match value {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+                Some(_) => Err(()),
+            }
+        }
+        let shapes = prop_oneof![
+            Just(None),
+            Just(Some(serde_json::Value::Null)),
+            any::<String>().prop_map(|s| Some(serde_json::json!(s))),
+            any::<i64>().prop_map(|n| Some(serde_json::json!(n))),
+            (-1e6f64..=1e6).prop_map(|f| Some(serde_json::json!(f))),
+            any::<bool>().prop_map(|b| Some(serde_json::json!(b))),
+            prop::collection::vec(any::<String>(), 0..4).prop_map(|v| Some(serde_json::json!(v))),
+            prop::collection::btree_map(any::<String>(), any::<String>(), 0..4)
+                .prop_map(|m| Some(serde_json::json!(m))),
+        ];
+        proptest!(|(value in shapes)| {
+            let mut frame = serde_json::json!({"method": "GET", "path": "/health"});
+            if let Some(v) = &value {
+                frame["token_file"] = v.clone();
+            }
+            let got = parse_request(&frame)
+                .map(|req| req.token_file)
+                .map_err(|_| ());
+            prop_assert_eq!(got, model(value.as_ref()), "token_file value: {:?}", value);
+        });
+    }
 
     #[test]
     fn checkout_grows_below_ceiling_then_reuses_idle() {
@@ -804,5 +1278,391 @@ mod tests {
         pool.put(PORT, close_conn()); // not reusable: never pooled
         assert_eq!(pool.idle_count(PORT), 0);
         assert_eq!(pool.live_count(PORT), 0);
+    }
+
+    #[test]
+    fn recovery_failure_is_shared_by_all_waiters() {
+        // Fault injection (#5758): one failure arms the gate;
+        // then N concurrent callers produce exactly ONE recovery
+        // attempt and every waiter fails fast with its verdict —
+        // no CONNECT stampede against a dead target.
+        let gate = Arc::new(RecoveryGate::new());
+        let attempts = Arc::new(AtomicU64::new(0));
+        let attempt = |attempts: &Arc<AtomicU64>| {
+            attempts.fetch_add(1, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(150));
+            Err::<(), String>("tunnel to laptop:4799: refused".to_string())
+        };
+        // Prime: a normal-mode failure arms single-flight recovery.
+        let priming = gate.run(PORT, || attempt(&attempts));
+        assert!(priming.is_err());
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let gate = Arc::clone(&gate);
+            let attempts = Arc::clone(&attempts);
+            handles.push(std::thread::spawn(move || {
+                gate.run(PORT, || attempt(&attempts))
+            }));
+        }
+        for h in handles {
+            assert_eq!(
+                h.join().unwrap().unwrap_err(),
+                "tunnel to laptop:4799: refused".to_string()
+            );
+        }
+        // Priming + exactly one shared recovery attempt.
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn healthy_opens_proceed_concurrently() {
+        // Codex P1 on PR #6490: the gate must NOT serialize the
+        // healthy path — a cold-pool burst opens in parallel, so
+        // nobody times out queued behind successful CONNECTs.
+        let gate = Arc::new(RecoveryGate::new());
+        let in_flight = Arc::new(AtomicU64::new(0));
+        let peak = Arc::new(AtomicU64::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let gate = Arc::clone(&gate);
+            let in_flight = Arc::clone(&in_flight);
+            let peak = Arc::clone(&peak);
+            handles.push(std::thread::spawn(move || {
+                gate.run(PORT, || {
+                    let now = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+                    peak.fetch_max(now, Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(100));
+                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                    Ok::<(), String>(())
+                })
+            }));
+        }
+        for h in handles {
+            assert!(h.join().unwrap().is_ok());
+        }
+        assert!(
+            peak.load(Ordering::Relaxed) > 1,
+            "healthy opens were serialized (peak {})",
+            peak.load(Ordering::Relaxed)
+        );
+    }
+
+    #[test]
+    fn waiter_keeps_its_generations_verdict_despite_a_retry() {
+        // Codex P2 on PR #6490: a waiter on a failed recovery
+        // generation must consume THAT verdict even if the
+        // opener's immediate retry starts a newer generation
+        // before the waiter reacquires the lock.
+        let gate = Arc::new(RecoveryGate::new());
+        // Prime the gate into recovery mode (attempt #1).
+        let n = Arc::new(AtomicU64::new(0));
+        let mk = |n: &Arc<AtomicU64>, ms: u64| {
+            let k = n.fetch_add(1, Ordering::Relaxed) + 1;
+            std::thread::sleep(Duration::from_millis(ms));
+            Err::<(), String>(format!("failure-{k}"))
+        };
+        assert_eq!(gate.run(PORT, || mk(&n, 0)).unwrap_err(), "failure-1");
+        // Leader: recovery attempt #2 (slow fail), then an
+        // immediate retry = attempt #3 (even slower fail).
+        let leader = {
+            let gate = Arc::clone(&gate);
+            let n = Arc::clone(&n);
+            std::thread::spawn(move || {
+                let first = gate.run(PORT, || mk(&n, 200));
+                let second = gate.run(PORT, || mk(&n, 600));
+                (first, second)
+            })
+        };
+        // Waiter arrives while attempt #2 is in flight.
+        std::thread::sleep(Duration::from_millis(50));
+        let waited = gate.run(PORT, || mk(&n, 0));
+        // The waiter shares attempt #2's verdict — it neither
+        // waits for nor reports attempt #3's.
+        assert_eq!(waited.unwrap_err(), "failure-2");
+        let (first, second) = leader.join().unwrap();
+        assert_eq!(first.unwrap_err(), "failure-2");
+        assert_eq!(second.unwrap_err(), "failure-3");
+    }
+
+    #[test]
+    fn successful_recovery_disarms_the_gate() {
+        // After a recovery succeeds, opens are concurrent again.
+        let gate = Arc::new(RecoveryGate::new());
+        assert!(
+            gate.run(PORT, || Err::<(), String>("dead".to_string()))
+                .is_err()
+        );
+        assert!(gate.run(PORT, || Ok::<(), String>(())).is_ok());
+        // needs_recovery cleared: a later failure is a fresh
+        // normal-mode failure, and the gate re-arms only then.
+        assert!(gate.run(PORT, || Ok::<(), String>(())).is_ok());
+    }
+
+    // Model-based property test for the RecoveryGate decision
+    // core (Codex P1 round 2 on PR #6490; the repo testing
+    // doctrine: a state machine's invariants get a model and a
+    // generator, not only handwritten schedules). The MODEL is
+    // the oracle: an independent, minimal restatement of the
+    // gate spec — armed flag, the single in-flight recovery
+    // generation, and per-generation verdicts. Generated step
+    // sequences advance four simulated callers through the REAL
+    // `decide`/`record` functions; after every step the gate
+    // state must equal the model's, the decision must be the one
+    // the model predicts, and at most one simulated caller may
+    // hold a recovery opening.
+    #[derive(Debug, Clone, PartialEq)]
+    enum SimCaller {
+        New,
+        Waiting(u64),
+        Opening(Option<u64>, bool, String),
+        Done(Result<(), String>),
+    }
+
+    #[test]
+    fn recovery_gate_matches_the_model_on_generated_interleavings() {
+        use proptest::prelude::*;
+        #[derive(Default)]
+        struct Model {
+            armed: bool,
+            in_flight: Option<u64>,
+            next_gen: u64,
+            verdicts: std::collections::HashMap<u64, Option<String>>,
+        }
+        fn model_decide(m: &Model, waiting_on: Option<u64>) -> Decision {
+            if let Some(wgen) = waiting_on {
+                if let Some(verdict) = m.verdicts.get(&wgen) {
+                    return match verdict {
+                        Some(err) => Decision::ShareFailure(err.clone()),
+                        None => Decision::ProceedAfterRecovery,
+                    };
+                }
+            }
+            if let Some(g) = m.in_flight {
+                return Decision::Wait(g);
+            }
+            if m.armed {
+                return Decision::OpenRecovery(m.next_gen + 1);
+            }
+            Decision::OpenNormal
+        }
+        let strategy = proptest::collection::vec((0usize..4, any::<bool>()), 0..48usize);
+        proptest!(|(
+            steps in strategy,
+        )| {
+            let mut entry = GateState::default();
+            let mut model = Model::default();
+            let mut callers = vec![SimCaller::New; 4];
+            let mut attempts = 0u64;
+            let advance = |entry: &mut GateState,
+                           model: &mut Model,
+                           callers: &mut Vec<SimCaller>,
+                           ci: usize,
+                           succeed: bool,
+                           attempts: &mut u64| {
+                match callers[ci].clone() {
+                    SimCaller::New | SimCaller::Waiting(_) => {
+                        let waiting_on = match callers[ci] {
+                            SimCaller::Waiting(g) => Some(g),
+                            _ => None,
+                        };
+                        let expected = model_decide(model, waiting_on);
+                        let got = decide(entry, waiting_on);
+                        prop_assert_eq!(&got, &expected);
+                        match got {
+                            Decision::ShareFailure(err) => {
+                                // Oracle check: the shared error is
+                                // exactly the waited generation's
+                                // recorded verdict.
+                                let wgen = waiting_on.unwrap();
+                                prop_assert_eq!(
+                                    Some(&Some(err.clone())),
+                                    model.verdicts.get(&wgen)
+                                );
+                                callers[ci] = SimCaller::Done(Err(err));
+                            }
+                            Decision::ProceedAfterRecovery | Decision::OpenNormal => {
+                                *attempts += 1;
+                                let label = format!("err-c{ci}-a{attempts}");
+                                callers[ci] = SimCaller::Opening(None, succeed, label);
+                            }
+                            Decision::OpenRecovery(g) => {
+                                model.in_flight = Some(g);
+                                model.next_gen = g;
+                                model.armed = false;
+                                *attempts += 1;
+                                let label = format!("err-c{ci}-a{attempts}");
+                                callers[ci] = SimCaller::Opening(Some(g), succeed, label);
+                            }
+                            Decision::Wait(g) => {
+                                callers[ci] = SimCaller::Waiting(g);
+                            }
+                        }
+                    }
+                    SimCaller::Opening(gnum, succeed, label) => {
+                        let err = if succeed { None } else { Some(label.clone()) };
+                        record(entry, gnum, err.as_ref());
+                        if err.is_some() {
+                            model.armed = true;
+                        }
+                        if let Some(g) = gnum {
+                            model.in_flight = None;
+                            model.verdicts.insert(g, err.clone());
+                            if err.is_none() {
+                                model.armed = false;
+                            }
+                        }
+                        callers[ci] = SimCaller::Done(if succeed {
+                            Ok(())
+                        } else {
+                            Err(label)
+                        });
+                    }
+                    SimCaller::Done(_) => {}
+                }
+                // State equality with the model after every step.
+                prop_assert_eq!(entry.needs_recovery, model.armed);
+                prop_assert_eq!(entry.recovery_in_flight, model.in_flight.is_some());
+                prop_assert_eq!(entry.verdicts.len(), model.verdicts.len());
+                for (g, v) in &model.verdicts {
+                    prop_assert_eq!(entry.verdicts.get(g), Some(v));
+                }
+                // Invariant: at most one recovery opening exists.
+                let recovery_openings = callers
+                    .iter()
+                    .filter(|c| matches!(c, SimCaller::Opening(Some(_), _, _)))
+                    .count();
+                prop_assert!(recovery_openings <= 1);
+                Ok(())
+            };
+            for (ci, succeed) in &steps {
+                advance(&mut entry, &mut model, &mut callers, *ci, *succeed, &mut attempts)?;
+            }
+            // Drain: with cooperative (succeeding) steps every
+            // caller must reach a terminal state — no caller is
+            // ever stranded waiting on a generation.
+            for _ in 0..200 {
+                if callers.iter().all(|c| matches!(c, SimCaller::Done(_))) {
+                    break;
+                }
+                for ci in 0..4 {
+                    advance(&mut entry, &mut model, &mut callers, ci, true, &mut attempts)?;
+                }
+            }
+            prop_assert!(
+                callers.iter().all(|c| matches!(c, SimCaller::Done(_))),
+                "callers stranded: {callers:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn startup_line_carries_the_incident_stamps() {
+        assert_eq!(format_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(format_utc(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(format_utc(951_782_400 + 3661), "2000-02-29T01:01:01Z");
+        // Pool size default is untouched by this change (#5758.5).
+        assert_eq!(DEFAULT_POOL_SIZE, 50);
+        let line = startup_line(50, std::path::Path::new("/tmp/broker.sock"));
+        assert!(line.contains("implementation=fleet-proxy"), "{line}");
+        assert!(
+            line.contains(&format!("version={}", env!("CARGO_PKG_VERSION"))),
+            "{line}"
+        );
+        assert!(line.contains("pool_size=50"), "{line}");
+        assert!(
+            line.contains(&format!("pid={}", std::process::id())),
+            "{line}"
+        );
+        assert!(line.contains("socket=/tmp/broker.sock"), "{line}");
+        // Shape: "<ISO-8601 UTC> fleet proxy serve start …".
+        let stamp = line.split(' ').next().unwrap();
+        assert!(stamp.ends_with('Z') && stamp.contains('T'), "{line}");
+    }
+
+    fn frame_with_port(port: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"method": "GET", "path": "/health", "port": port})
+    }
+
+    #[test]
+    fn parse_request_absent_port_means_the_default() {
+        // No "port" key at all: None, which do_request turns into
+        // PORT_LAPTOP_AGENT (4799) -- the absent-port route.
+        let req = parse_request(&serde_json::json!({"method": "GET", "path": "/health"})).unwrap();
+        assert_eq!(req.port, None);
+        // An explicit null is absent too, mirroring `body`.
+        let req = parse_request(&frame_with_port(serde_json::Value::Null)).unwrap();
+        assert_eq!(req.port, None);
+    }
+
+    #[test]
+    fn parse_request_valid_port_is_kept() {
+        let req = parse_request(&frame_with_port(serde_json::json!(4801))).unwrap();
+        assert_eq!(req.port, Some(4801));
+        let req = parse_request(&frame_with_port(serde_json::json!(65535))).unwrap();
+        assert_eq!(req.port, Some(65535));
+    }
+
+    #[test]
+    fn parse_request_refuses_present_but_invalid_ports() {
+        // Every shape the pre-fix chain silently collapsed to the
+        // 4799 default (#6516): out of range, negative, float,
+        // string, zero, and a bool. Each must be refused at the
+        // frame boundary with an error naming the port field, so
+        // handle_request answers the 502 broker frame and no
+        // connection is ever opened.
+        for bad in [
+            serde_json::json!(70000),
+            serde_json::json!(-1),
+            serde_json::json!(4801.5),
+            serde_json::json!("4801"),
+            serde_json::json!(0),
+            serde_json::json!(true),
+        ] {
+            let err = parse_request(&frame_with_port(bad.clone()))
+                .expect_err("present-but-invalid port must be refused");
+            assert!(
+                err.contains("\"port\""),
+                "error must name the port field, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_request_port_matches_the_shape_model_on_generated_values() {
+        use proptest::prelude::*;
+        // Oracle: the #6516 acceptance rules stated as a model over
+        // the JSON value. Null yields None (absent: the 4799 default
+        // applies downstream); an integer in 1..=65535 is preserved;
+        // every other shape -- out-of-range or negative integers,
+        // floats, strings, bools, containers -- is refused.
+        fn model(value: &serde_json::Value) -> Result<Option<u16>, ()> {
+            match value {
+                serde_json::Value::Null => Ok(None),
+                serde_json::Value::Number(n) => match n.as_u64() {
+                    Some(u) if n.is_u64() && (1..=65535).contains(&u) => Ok(Some(u as u16)),
+                    _ => Err(()),
+                },
+                _ => Err(()),
+            }
+        }
+        let shapes = prop_oneof![
+            (1u64..=65535).prop_map(|n| serde_json::json!(n)),
+            Just(serde_json::json!(0)),
+            (65536u64..=u64::MAX).prop_map(|n| serde_json::json!(n)),
+            (-1_000_000i64..=-1).prop_map(|n| serde_json::json!(n)),
+            (-1e6f64..=1e6).prop_map(|f| serde_json::json!(f)),
+            any::<String>().prop_map(|s| serde_json::json!(s)),
+            any::<bool>().prop_map(|b| serde_json::json!(b)),
+            Just(serde_json::json!([])),
+            Just(serde_json::json!({})),
+            Just(serde_json::Value::Null),
+        ];
+        proptest!(|(value in shapes)| {
+            let got = parse_request(&frame_with_port(value.clone()))
+                .map(|req| req.port)
+                .map_err(|_| ());
+            prop_assert_eq!(got, model(&value), "port value: {}", value);
+        });
     }
 }

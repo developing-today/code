@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 )
 
 const stale = `// Close stale issues in a repository.
@@ -431,5 +432,180 @@ func TestRenderValidatesAndEncodesDeclaredDefaults(t *testing.T) {
 				t.Errorf("Render output =\n%s\nwant it to contain %q", out, tc.want)
 			}
 		})
+	}
+}
+
+// Codex review on #2646 (4422039950): a TypeJSON placeholder accepts
+// any JSON value (arrays included), so FormSchema must not declare
+// "object" for it -- with broker-side schema validation (#1954) that
+// declaration refused answers the recipe renders fine.
+func TestFormSchemaJSONPlaceholderAcceptsAnyJSONValue(t *testing.T) {
+	schema := recipes.FormSchema([]recipes.Placeholder{
+		{Name: "items", Type: recipes.TypeJSON, Required: true},
+		{Name: "label", Type: recipes.TypeString, Required: true},
+	})
+	var doc struct {
+		Properties map[string]map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &doc); err != nil {
+		t.Fatalf("FormSchema output does not parse: %v", err)
+	}
+	if _, constrained := doc.Properties["items"]["type"]; constrained {
+		t.Errorf("TypeJSON property carries a type constraint: %v", doc.Properties["items"])
+	}
+	if got := doc.Properties["label"]["type"]; got != "string" {
+		t.Errorf("TypeString property type = %v, want string", got)
+	}
+	compiled, err := schemaval.Compile(schema)
+	if err != nil {
+		t.Fatalf("FormSchema output does not compile: %v", err)
+	}
+	if err := compiled.ValidateJSON([]byte(`{"items": [1, 2], "label": "x"}`)); err != nil {
+		t.Errorf("array answer for a TypeJSON placeholder refused: %v", err)
+	}
+	if err := compiled.ValidateJSON([]byte(`{"items": {"a": 1}, "label": "x"}`)); err != nil {
+		t.Errorf("object answer for a TypeJSON placeholder refused: %v", err)
+	}
+}
+
+// Oracle: the rendered script stays valid in its own language (PR #8317,
+// #1933 slice 2). Render consumes an @param declaration line by keeping
+// it as a comment; a #-style declaration (Python/shell) must keep its #
+// marker -- rewriting it with // produced "//# @param ..." as the first
+// line, which is a syntax error in Python.
+func TestRenderKeepsHashCommentMarkerOnConsumedDeclarations(t *testing.T) {
+	r := recipes.Parse("greet", "/tmp/greet.py", "# @param name:string   who to greet\nprint(\"hello \" + @name)\n")
+	out, err := r.Render(map[string]any{"name": "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, _ := strings.Cut(out, "\n")
+	if !strings.HasPrefix(first, "#") || strings.Contains(first, "//") {
+		t.Errorf("the consumed declaration must stay a # comment, got %q", first)
+	}
+	if !strings.Contains(out, `print("hello " + "world")`) {
+		t.Errorf("the placeholder must be substituted as a JSON literal:\n%s", out)
+	}
+}
+
+// Oracle: shell-safe argument handling (Codex P1 on PR #8317). A
+// shell-backed recipe renders its values as single-quoted shell
+// words, inside which the shell performs no command substitution:
+// a schema-valid $(...) argument stays data, and an embedded single
+// quote cannot break out of the word.
+func TestRenderShellValuesStayData(t *testing.T) {
+	r := recipes.Parse("greet", "/tmp/greet.sh", "#!/bin/sh\n# @param name:string   who to greet\nprintf 'hello %s' @name\n")
+	out, err := r.Render(map[string]any{"name": "$(touch /tmp/pwned)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "printf 'hello %s' '$(touch /tmp/pwned)'") {
+		t.Errorf("shell value must render as one single-quoted word:\n%s", out)
+	}
+	out, err = r.Render(map[string]any{"name": "o'clock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "'o'\\''clock'") {
+		t.Errorf("an embedded quote must be closed, escaped and reopened:\n%s", out)
+	}
+}
+
+// Oracle: Python-compatible literals (Codex P2 on PR #8317). A
+// Python recipe renders booleans and null with Python's own
+// spellings, including inside JSON-typed values, and an omitted
+// optional parameter is None, not the JavaScript undefined the
+// Python runtime would reject with a NameError.
+func TestRenderPythonSpellsPythonLiterals(t *testing.T) {
+	src := "# @param enabled:boolean\n# @param cfg:json\n# @param note:string?\nprint(@enabled, @cfg, @note)\n"
+	r := recipes.Parse("check", "/tmp/check.py", src)
+	out, err := r.Render(map[string]any{
+		"enabled": true,
+		"cfg":     map[string]any{"a": true, "b": nil, "n": []any{false}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "print(True, {\"a\": True, \"b\": None, \"n\": [False]}, None)"
+	if !strings.Contains(out, want) {
+		t.Errorf("rendered = %q, want it to contain %q", out, want)
+	}
+}
+
+// The JavaScript spelling is untouched for a script with no Python
+// or shell evidence: the language-aware rendering must not change
+// what existing TypeScript recipes produce.
+func TestRenderTypeScriptKeepsJSONLiterals(t *testing.T) {
+	r := recipes.Parse("greet", "/tmp/greet.ts", "// @param name:string\nconsole.log(@name)\n")
+	out, err := r.Render(map[string]any{"name": "$(touch /tmp/pwned)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `console.log("$(touch /tmp/pwned)")`) {
+		t.Errorf("a TypeScript recipe keeps its JSON string literal:\n%s", out)
+	}
+}
+
+func TestHashCommentMentionsAreNotPlaceholdersInPythonOrShell(t *testing.T) {
+	// PR #8317 Codex P2: Parse discovered references with the
+	// JavaScript scanner even for the #-comment languages, so a
+	// harmless comment minted a required argument the (already
+	// language-aware) renderer would never substitute.
+	for _, tc := range []struct{ path, src string }{
+		{"/tmp/x.py", "# Contact @alice for details\nprint(@who)\n"},
+		{"/tmp/x.sh", "# Contact @alice for details\necho @who\n"},
+	} {
+		r := recipes.Parse("x", tc.path, tc.src)
+		if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+			t.Errorf("%s: placeholders = %+v, want only the code reference @who", tc.path, r.Placeholders)
+		}
+	}
+}
+
+// Oracle: Python decorators are not placeholders (Codex P2 on
+// PR #8317). An ordinary @dataclass / @staticmethod at the start of
+// a line is language syntax: discovery must not mint it as a
+// required argument, and rendering must not replace it with a
+// literal.
+func TestPythonDecoratorsAreNotPlaceholders(t *testing.T) {
+	src := "# @param who:string\nfrom dataclasses import dataclass\n\n@dataclass\nclass Greeter:\n    @staticmethod\n    def greet():\n        return @who\n"
+	r := recipes.Parse("greeter", "/tmp/greeter.py", src)
+	if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+		t.Fatalf("placeholders = %+v, want only the declared @who", r.Placeholders)
+	}
+	out, err := r.Render(map[string]any{"who": "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"@dataclass", "@staticmethod", `"world"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered output must contain %q:\n%s", want, out)
+		}
+	}
+}
+
+// Oracle: a Python placeholder inside a continued expression is not
+// a decorator (Codex P2 on PR #8317, seventh round). The decorator
+// exemption covers an `@name` at a statement boundary; a leading
+// `@who` inside an unclosed bracket is an argument of the continued
+// call, and leaving it unsubstituted made the rendered script a
+// SyntaxError at execution. The same holds after a trailing
+// backslash. A real decorator in the same body still renders
+// untouched.
+func TestPythonPlaceholderInsideContinuedExpressionIsSubstituted(t *testing.T) {
+	src := "# @param who:string\nfrom dataclasses import dataclass\n\n@dataclass\nclass Greeter:\n    pass\n\nprint(\n    @who\n)\njoined = str(\n    @who)\n"
+	r := recipes.Parse("greeter", "/tmp/greeter.py", src)
+	out, err := r.Render(map[string]any{"who": "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "@who") {
+		t.Errorf("a placeholder inside a continued expression must substitute:\n%s", out)
+	}
+	if !strings.Contains(out, "@dataclass") {
+		t.Errorf("a decorator at a statement boundary must stay untouched:\n%s", out)
+	}
+	if n := strings.Count(out, `"world"`); n != 2 {
+		t.Errorf("both continued placeholders must render the value, found %d:\n%s", n, out)
 	}
 }

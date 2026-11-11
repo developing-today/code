@@ -82,6 +82,43 @@ afterAll(() => {
 });
 
 describe("end-to-end webhook + read model", () => {
+  test("colliding webhook ids and deletes remain scoped through the server", async () => {
+    const local = createClient({ url: ":memory:" });
+    try {
+      await migrate(local);
+      const env = { GITHUB_WEBHOOK_SECRET: SECRET };
+      const pr = { number: 7, title: "PR", created_at: "2026-01-01", updated_at: "2026-01-01" };
+      const repository = { full_name: "example/repo" };
+      const comment = { id: 42, created_at: "2026-01-01", body: "body" };
+      let delivery = 0;
+      const send = async (event: string, payload: object) => {
+        const body = JSON.stringify(payload);
+        const sig = await hmacSha256Hex(new TextEncoder().encode(body), SECRET);
+        const res = await handleRequest(webhookReq(body, event, sig, `collision-${delivery++}`), local, env);
+        expect(res.status).toBe(200);
+      };
+      await send("issue_comment", { repository, issue: pr, comment, action: "created" });
+      await send("pull_request_review", { repository, pull_request: pr, review: comment, action: "submitted" });
+      await send("pull_request_review_comment", { repository, pull_request: pr, comment, action: "created" });
+      let rows = await local.execute("SELECT kind, deleted FROM pmp_comments ORDER BY kind");
+      expect(rows.rows.map((r) => [r.kind, r.deleted])).toEqual([
+        ["issue_comment", 0], ["review", 0], ["review_comment", 0],
+      ]);
+      await send("issue_comment", { repository, issue: pr, comment, action: "deleted" });
+      rows = await local.execute("SELECT kind, deleted FROM pmp_comments ORDER BY kind");
+      expect(rows.rows.map((r) => [r.kind, r.deleted])).toEqual([
+        ["issue_comment", 1], ["review", 0], ["review_comment", 0],
+      ]);
+      await send("pull_request_review_comment", { repository, pull_request: pr, comment, action: "deleted" });
+      rows = await local.execute("SELECT kind, deleted FROM pmp_comments ORDER BY kind");
+      expect(rows.rows.map((r) => [r.kind, r.deleted])).toEqual([
+        ["issue_comment", 1], ["review", 0], ["review_comment", 1],
+      ]);
+    } finally {
+      local.close();
+    }
+  });
+
   test("fixture sequence applies and produces registry + read-model rows", async () => {
     const env: ServerEnv = {
       GITHUB_WEBHOOK_SECRET: SECRET,

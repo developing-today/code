@@ -20,14 +20,29 @@
 //! binaries under their historical names (src/bin/) — the
 //! migration's standing rollback inventory (design note §7).
 
+pub mod backoff;
+pub mod merge_intent;
+pub mod bin_args;
+pub mod creation_outbox;
+mod home;
 pub mod log;
 pub mod token_file;
 
 #[cfg(feature = "client")]
 pub mod client;
+#[cfg(feature = "client")]
+pub mod fallback;
+#[cfg(feature = "client")]
+pub mod needs_drew;
+#[cfg(feature = "client")]
+pub mod placement;
 #[cfg(feature = "queue-broker")]
 pub mod queue_broker;
+#[cfg(feature = "queue-broker")]
+pub mod turso_queue;
 #[cfg(feature = "secrets-broker")]
 pub mod secrets_broker;
+#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
+pub mod uds_http;
 #[cfg(feature = "queue-broker")]
 pub mod validate;

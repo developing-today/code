@@ -63,6 +63,10 @@ pub fn world_group(world_id: &str) -> Hash {
 ///
 /// # Errors
 ///
+/// Returns [`chain::ChainError::BlankWorldId`] if `world_id` is empty or
+/// whitespace-only and [`chain::ChainError::EmptyInput`] if `input` is
+/// empty, the same domain a world accepts (`WorldCore::new` and
+/// `prepare_input_signed`), so no move is signed that no world can accept.
 /// Returns the chain error if the sequence/backlink pair is inconsistent.
 pub fn sign_move(
     key: &SigningKey,
@@ -71,6 +75,12 @@ pub fn sign_move(
     backlink: Option<Hash>,
     input: &[u8],
 ) -> Result<Event, chain::ChainError> {
+    if world_id.trim().is_empty() {
+        return Err(chain::ChainError::BlankWorldId);
+    }
+    if input.is_empty() {
+        return Err(chain::ChainError::EmptyInput);
+    }
     chain::sign(
         key,
         seq_num,
@@ -87,6 +97,8 @@ pub fn sign_move(
             link: None,
             checkpoint: None,
             rotation: None,
+
+            chat: None,
         },
     )
 }
@@ -158,6 +170,14 @@ impl MoveChain {
         input: &[u8],
         author: &[u8; 32],
     ) -> Result<Event> {
+        // #6447, defense in depth for the witness-replay path (#4346):
+        // the same acceptance domain sign_move refuses to sign. A move
+        // for a blank world verifies against that same blank ID, yet no
+        // WorldCore can ever bear it; an empty input can never commit.
+        // Neither arises from a constructed world, whose constructor
+        // and input seam refuse both before verify is reached.
+        ensure!(!world_id.trim().is_empty(), "world ID must not be empty");
+        ensure!(!input.is_empty(), "world input must not be empty");
         let event = chain::decode(bytes)
             .map_err(|err| anyhow::anyhow!("signed move does not decode: {err}"))?;
         ensure!(
@@ -211,5 +231,73 @@ impl MoveChain {
         let event = self.verify(bytes, world_id, input, author)?;
         self.accept(&event);
         Ok(event)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&[7; 32])
+    }
+
+    #[test]
+    fn sign_move_refuses_a_blank_world_id() {
+        for world_id in ["", " ", "   ", "\t", "\n "] {
+            let err = sign_move(&key(), world_id, 0, None, b"cell-0").unwrap_err();
+            assert!(
+                matches!(err, chain::ChainError::BlankWorldId),
+                "{world_id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sign_move_refuses_an_empty_input() {
+        let err = sign_move(&key(), "ttt", 0, None, b"").unwrap_err();
+        assert!(matches!(err, chain::ChainError::EmptyInput));
+    }
+
+    #[test]
+    fn sign_move_still_signs_and_verifies_a_control_move() {
+        let key = key();
+        let author = *key.verifying_key().as_bytes();
+        let event = sign_move(&key, "ttt", 0, None, b"cell-0").unwrap();
+        MoveChain::new()
+            .verify(&event.bytes, "ttt", b"cell-0", &author)
+            .unwrap();
+    }
+
+    #[test]
+    fn verify_refuses_a_blank_world_id_and_an_empty_input() {
+        let key = key();
+        let author = *key.verifying_key().as_bytes();
+        let event = sign_move(&key, "ttt", 0, None, b"cell-0").unwrap();
+        let chain = MoveChain::new();
+        // The control verifies; the same bytes against a blank world
+        // or with an empty input do not (#6447 triage decision).
+        assert!(
+            chain
+                .verify(&event.bytes, "ttt", b"cell-0", &author)
+                .is_ok()
+        );
+        for world_id in ["", " ", "\t"] {
+            assert!(
+                chain
+                    .verify(&event.bytes, world_id, b"cell-0", &author)
+                    .is_err(),
+                "{world_id:?}"
+            );
+        }
+        assert!(chain.verify(&event.bytes, "ttt", b"", &author).is_err());
+    }
+
+    #[test]
+    fn sign_move_keeps_the_sequence_and_backlink_refusals() {
+        assert!(sign_move(&key(), "ttt", 1, None, b"cell-0").is_err());
+        let first = sign_move(&key(), "ttt", 0, None, b"cell-0").unwrap();
+        assert!(sign_move(&key(), "ttt", 0, Some(first.id), b"cell-1").is_err());
     }
 }

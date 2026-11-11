@@ -1,6 +1,6 @@
 name: program-tending
 
-# program-tending (issue #1352, slice 1/3 scaffold).
+# program-tending (issue #1352, slices 1+2 of 3).
 #
 # Daily scheduled care for the planning layer across the four fleet
 # repos (code, opencode, openchamber, nix): epics, roadmaps, projects,
@@ -11,8 +11,10 @@ name: program-tending
 # 2026-11-02) after this scaffold lands.
 #
 # Ownership rules (from #1352, enforced in slice 1 stubs):
-# - Never touch held / do-not-merge / user-owned PRs.
-# - Drew's own feature PRs: check-in comment at 7 days only, never a packet.
+# - Never touch held / do-not-merge / user-owned PRs (hold labels only:
+#   `held`, `user/owned`, `do-not-merge`, `do-not-auto-edit`).
+# - PRs labeled `user/owned`: check-in comment at 7 days only, never a packet
+#   (authorship alone never marks a PR held — Drew ruling 2026-11-07, #7077).
 # - user/review is reported, never re-decided.
 
 on:
@@ -29,19 +31,30 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
   tend:
-    name: program-tending scaffold run
+    name: program-tending run (slices 1+2)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
-      - name: Run program-tending scaffold (slice 1 stubs)
+      - name: Test program-tending contracts
+        run: |
+          test -f scripts/tests/test_program_tending.py
+          python3 -m unittest discover -s scripts/tests -p 'test_program_tending.py' -v
+      - name: Run program-tending (slice 2 sections live)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 -I scripts/program_tending.py --run
+          # Live writes span all four fleet repos; this repo's
+          # GITHUB_TOKEN cannot write issues elsewhere (Codex,
+          # PR #8377). REPO_AUTOMATION_TOKEN is the fleet credential
+          # other cross-repo workflows here already use; fall back to
+          # the workflow token when it is not configured.
+          GH_TOKEN: ${{ secrets.REPO_AUTOMATION_TOKEN || github.token }}
+        run: python3 -I scripts/program_tending.py --run --live

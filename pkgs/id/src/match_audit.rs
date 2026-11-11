@@ -371,6 +371,9 @@ pub enum AuditErrorV0 {
     /// The wire value could not be encoded or decoded.
     #[error("match-audit wire encoding failed: {0}")]
     Wire(#[from] postcard::Error),
+    /// Bytes remain after the first complete log value.
+    #[error("match-audit log has {0} trailing byte(s) after the encoded log")]
+    TrailingBytes(usize),
     /// The format version is not supported.
     #[error("unsupported match-audit format version {0}")]
     UnsupportedVersion(u8),
@@ -380,6 +383,12 @@ pub enum AuditErrorV0 {
     /// The participant list cannot be used as a signing roster.
     #[error("invalid match-audit roster")]
     Roster,
+    /// The signing key does not belong to any player in the header roster.
+    #[error("match-audit signer is not in the header roster")]
+    SignerNotInRoster,
+    /// The footer seed reveal does not match the header seed commitment.
+    #[error("match-audit seed reveal does not match the header seed commitment")]
+    SeedCommitmentMismatch,
     /// The reference exporter or verifier could not run its pinned module.
     #[error("match-audit reference runtime failed: {0}")]
     ReferenceRuntime(String),
@@ -400,11 +409,37 @@ pub fn header_hash(header: &HeaderV0) -> Result<Hash, AuditErrorV0> {
     Ok(hash_parts(&[HEADER_DOMAIN, &bytes]))
 }
 
+/// Refuses to sign for a caller whose key is not on the header roster:
+/// the signature set a log carries is exactly its roster, so a non-roster
+/// signature is dead on arrival at verification.
+fn validate_signer(key: &IdSigningKey, header: &HeaderV0) -> Result<(), AuditErrorV0> {
+    let player = *key.verifying_key().as_bytes();
+    if header.players.iter().any(|roster| roster.id == player) {
+        Ok(())
+    } else {
+        Err(AuditErrorV0::SignerNotInRoster)
+    }
+}
+
 /// Signs the header with an ID player key.
+///
+/// # Errors
+///
+/// Returns [`AuditErrorV0::UnsupportedVersion`] for a header version this
+/// implementation does not understand, [`AuditErrorV0::Roster`] for an
+/// empty or duplicate-key roster, and [`AuditErrorV0::SignerNotInRoster`]
+/// when the caller's key is absent from `header.players` — the same
+/// header-local rules [`MatchLogV0::verify_integrity`] applies, checked
+/// before a signature exists instead of after.
 pub fn sign_header(
     key: &IdSigningKey,
     header: &HeaderV0,
 ) -> Result<PlayerSignatureV0, AuditErrorV0> {
+    if header.version != FORMAT_VERSION_V0 {
+        return Err(AuditErrorV0::UnsupportedVersion(header.version));
+    }
+    validate_roster(&header.players)?;
+    validate_signer(key, header)?;
     let message = [HEADER_DOMAIN, &postcard::to_allocvec(header)?].concat();
     Ok(sign_message(key, &message))
 }
@@ -437,6 +472,15 @@ fn hash_parts(parts: &[&[u8]]) -> Hash {
 }
 
 /// Signs the final chain, result claim, seed reveal, and metadata.
+///
+/// # Errors
+///
+/// Returns [`AuditErrorV0::SignerNotInRoster`] when the caller's key is
+/// absent from `header.players`, and
+/// [`AuditErrorV0::SeedCommitmentMismatch`] when the digest of
+/// `footer.seed_reveal` differs from `header.seed_commitment` — the
+/// footer-local rules [`MatchLogV0::verify_integrity`] applies, checked
+/// before a signature exists instead of after.
 pub fn sign_footer(
     key: &IdSigningKey,
     header: &HeaderV0,
@@ -444,6 +488,10 @@ pub fn sign_footer(
     metadata: &MetadataV0,
     footer: &FooterV0,
 ) -> Result<PlayerSignatureV0, AuditErrorV0> {
+    validate_signer(key, header)?;
+    if Hash::digest(&footer.seed_reveal) != header.seed_commitment {
+        return Err(AuditErrorV0::SeedCommitmentMismatch);
+    }
     let message = footer_message(header, final_chain_hash, metadata, footer)?;
     Ok(sign_message(key, &message))
 }
@@ -456,8 +504,17 @@ impl MatchLogV0 {
 
     /// Decodes a complete v0 log. Structural and cryptographic checks are
     /// performed separately by [`MatchLogV0::verify_integrity`].
+    ///
+    /// Bytes after the first complete value are refused: a log is a canonical
+    /// self-authenticating record, and an unsigned suffix would give one match
+    /// many byte spellings that all verify. This is a consumed-length check
+    /// only, not re-encode-and-compare canonicalisation.
     pub fn decode(bytes: &[u8]) -> Result<Self, AuditErrorV0> {
-        Ok(postcard::from_bytes(bytes)?)
+        let (log, rest) = postcard::take_from_bytes::<Self>(bytes)?;
+        if !rest.is_empty() {
+            return Err(AuditErrorV0::TrailingBytes(rest.len()));
+        }
+        Ok(log)
     }
 
     /// Verifies version, signatures, seed commitment, tick ordering, and the
@@ -848,12 +905,16 @@ fn actual_validity(_metadata: &MetadataV0) -> ActualValidityV0 {
 #[cfg(feature = "sandbox")]
 fn integrity_reason(error: &AuditErrorV0) -> IntegrityFailureV0 {
     match error {
-        AuditErrorV0::Wire(_) => IntegrityFailureV0::MalformedEncoding,
+        AuditErrorV0::Wire(_) | AuditErrorV0::TrailingBytes(_) => {
+            IntegrityFailureV0::MalformedEncoding
+        }
         AuditErrorV0::UnsupportedVersion(_) => IntegrityFailureV0::UnsupportedVersion,
         AuditErrorV0::Signature("header") => IntegrityFailureV0::HeaderSignature,
         AuditErrorV0::Signature("footer") => IntegrityFailureV0::FooterSignature,
         AuditErrorV0::Signature(_) => IntegrityFailureV0::HeaderSignature,
         AuditErrorV0::Roster => IntegrityFailureV0::InvalidRoster,
+        AuditErrorV0::SignerNotInRoster => IntegrityFailureV0::InvalidRoster,
+        AuditErrorV0::SeedCommitmentMismatch => IntegrityFailureV0::SeedCommitmentMismatch,
         AuditErrorV0::EntryOrder => IntegrityFailureV0::EntryOrder,
         AuditErrorV0::PlayerSlot => IntegrityFailureV0::PlayerSlot,
         AuditErrorV0::Integrity(reason) => *reason,
@@ -952,7 +1013,7 @@ fn footer_message(
 
 #[cfg(all(test, feature = "sandbox"))]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use super::*;
 
@@ -1048,6 +1109,91 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sign_header_refuses_unsupported_version() {
+        let log = fixture();
+        let mut header = log.header.clone();
+        header.version = FORMAT_VERSION_V0 + 1;
+        let error = sign_header(&key(1), &header).unwrap_err();
+        assert!(
+            matches!(error, AuditErrorV0::UnsupportedVersion(version) if version == FORMAT_VERSION_V0 + 1)
+        );
+    }
+
+    #[test]
+    fn sign_header_refuses_empty_roster() {
+        let log = fixture();
+        let mut header = log.header.clone();
+        header.players.clear();
+        let error = sign_header(&key(1), &header).unwrap_err();
+        assert!(matches!(error, AuditErrorV0::Roster));
+    }
+
+    #[test]
+    fn sign_header_refuses_duplicate_roster() {
+        let log = fixture();
+        let mut header = log.header.clone();
+        let duplicate = header.players[0].clone();
+        header.players.push(duplicate);
+        let error = sign_header(&key(1), &header).unwrap_err();
+        assert!(matches!(error, AuditErrorV0::Roster));
+    }
+
+    #[test]
+    fn sign_header_refuses_non_roster_signer() {
+        let log = fixture();
+        let error = sign_header(&key(3), &log.header).unwrap_err();
+        assert!(matches!(error, AuditErrorV0::SignerNotInRoster));
+    }
+
+    #[test]
+    fn sign_footer_refuses_non_roster_signer() {
+        let log = fixture();
+        let error = sign_footer(
+            &key(3),
+            &log.header,
+            log.entries[1].hash,
+            &log.metadata,
+            &log.footer,
+        )
+        .unwrap_err();
+        assert!(matches!(error, AuditErrorV0::SignerNotInRoster));
+    }
+
+    #[test]
+    fn sign_footer_refuses_seed_commitment_mismatch() {
+        let log = fixture();
+        let mut footer = log.footer.clone();
+        footer.seed_reveal = b"a different seed".to_vec();
+        let error = sign_footer(
+            &key(1),
+            &log.header,
+            log.entries[1].hash,
+            &log.metadata,
+            &footer,
+        )
+        .unwrap_err();
+        assert!(matches!(error, AuditErrorV0::SeedCommitmentMismatch));
+    }
+
+    #[test]
+    fn sign_header_and_footer_accept_roster_signers() {
+        let log = fixture();
+        for player in [key(1), key(2)] {
+            assert!(sign_header(&player, &log.header).is_ok());
+            assert!(
+                sign_footer(
+                    &player,
+                    &log.header,
+                    log.entries[1].hash,
+                    &log.metadata,
+                    &log.footer
+                )
+                .is_ok()
+            );
+        }
+    }
+
     fn reseal(log: &mut MatchLogV0, players: &[IdSigningKey; 2]) {
         log.header_signatures = players
             .iter()
@@ -1073,6 +1219,56 @@ mod tests {
         let decoded = MatchLogV0::decode(&bytes).unwrap();
         assert_eq!(decoded, log);
         assert_eq!(decoded.verify_integrity().unwrap(), decoded.entries[1].hash);
+    }
+
+    #[test]
+    fn decode_rejects_trailing_bytes() {
+        let log = fixture();
+        let bytes = log.encode().unwrap();
+
+        let mut one = bytes.clone();
+        one.push(0);
+        assert!(matches!(
+            MatchLogV0::decode(&one),
+            Err(AuditErrorV0::TrailingBytes(1))
+        ));
+
+        let mut garbage = bytes.clone();
+        garbage.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        assert!(matches!(
+            MatchLogV0::decode(&garbage),
+            Err(AuditErrorV0::TrailingBytes(4))
+        ));
+
+        let mut doubled = bytes.clone();
+        doubled.extend_from_slice(&bytes);
+        assert!(matches!(
+            MatchLogV0::decode(&doubled),
+            Err(AuditErrorV0::TrailingBytes(n)) if n == bytes.len()
+        ));
+
+        assert_eq!(MatchLogV0::decode(&bytes).unwrap(), log);
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn suffixed_reference_log_is_an_invalid_record() {
+        let players = [key(1), key(2)];
+        let log = export_tic_tac_toe_reference(
+            [&players[0], &players[1]],
+            "reference-match-1",
+            "reference-world-1",
+            7,
+        )
+        .unwrap();
+        let mut bytes = log.encode().unwrap();
+        bytes.push(0);
+        assert_eq!(
+            verify_tic_tac_toe_v0(&bytes).technical,
+            TechnicalVerdictV0::InvalidRecord {
+                reason: IntegrityFailureV0::MalformedEncoding,
+            }
+        );
     }
 
     #[test]

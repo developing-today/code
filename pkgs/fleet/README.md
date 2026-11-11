@@ -12,12 +12,10 @@ the hello negotiation and the PATH shims. Step 4 (#5432) landed
 the dispatch domain — a thin client over pm-stack dispatch. Step 5
 (#5433) landed the search domain — the atlas-search client surface
 over the live Atlas service, gated on the #5350 step-6 cutover.
-Step 6 (#5554) landed the secrets verb. With search in, every
-domain in the registry runs for real in the full build; the one
-remaining stub is the search _serve role_ (`fleet serve search`):
-the atlas user unit still points at the standalone atlas-search
-service, and re-pointing it is tracked separately from this epic's
-client-surface step.
+Step 6 (#5554) landed the secrets verb. #5604 landed the search
+_serve role_ (`fleet serve search`): the Atlas service itself,
+rehomed from the atlas-search bin crate. With it, every domain and
+every serve role in the registry runs for real in the full build.
 
 ## Layout
 
@@ -30,8 +28,14 @@ crates/fleet-registry/      the FULL domain registry — every domain's
                             capability ids behind them. Compiled into
                             every variant, so --help is always complete.
 crates/fleet-config/        fleet.toml: [domains] switches, [proxy],
-                            [secrets], [dispatch]; path/ports/socket
-                            constants.
+                            [secrets], [queue-broker], [secrets-broker],
+                            [dispatch]; path/ports/socket constants.
+                            Role sockets (#6215, design #5699):
+                            env > [<role>] socket > $XDG_RUNTIME_DIR/
+                            fleet/<role>.sock > the $HOME default;
+                            [<role>] transport = "socket" | "tcp" is a
+                            preference between working routes (the
+                            search_via shape), never a disable lever.
 crates/fleet-secrets/       secrets by NAME only (broker first, then
                             `bws` fallback). Values never appear in
                             code, tests, errors or logs.
@@ -80,6 +84,21 @@ crates/fleet-search/        the search domain (step 5): the
                             writers are ported verbatim from the
                             atlas-search bin so service envelopes
                             print byte-identically.
+                            The `serve` cargo feature (#5604) adds
+                            the service role: `fleet serve search`
+                            (also spelled `atlas-search serve` via
+                            argv0) — server.rs is a parity-guarded
+                            verbatim copy of atlas-search's service,
+                            serve.rs the role glue (arg surface,
+                            lazy shared embedder, read-only Turso
+                            backend). atlas-core / atlas-embed /
+                            atlas-proto are consumed by relative
+                            path from pkgs/atlas-search, untouched,
+                            which is why default.nix builds from the
+                            pkgs/ tree. The standalone atlas-search
+                            artifact stays buildable: it is the
+                            single-step rollback of the unit
+                            re-point (home/common: atlasSearchServeViaFleet).
 crates/fleet-dispatch/      the dispatch domain (step 4): a THIN
                             client over pm-stack's pm-dispatch —
                             `dispatch status` (GET /health),
@@ -97,6 +116,70 @@ default.nix                 the four variant packages (see below)
 smoke.sh                    per-variant smoke suite (post-build)
 ```
 
+## Versioning — derived per-app versions (#8566; policy #5790)
+
+A fleet binary's version is **derived, never hand-maintained**. The
+workspace `version = "0.1.0"` in `Cargo.toml` is only the release-line
+base cargo requires; the version a deployed binary reports — the one
+`fleet version`, `fleet capabilities` (JSON `build.derived_version`)
+and every `--version` surface print as `Derived version:` — is baked
+at build time by `crates/fleet/build.rs` from the derivation in
+`crates/fleet/src/derived_version.rs`, through the same channel that
+reports the source rev (`FLEET_SOURCE_REV`): a packaged build with no
+git history receives it as `$FLEET_DERIVED_VERSION`, computed by the
+release tooling where the history exists.
+
+Derivation (nearest `<app>/vX.Y.Z` tag on the build commit's history;
+the app is this workspace's short name, `fleet`):
+
+| build state | reported version |
+| --- | --- |
+| exactly on the tag | `X.Y.Z` |
+| on `main`, N commits after the tag | `X.Y.(Z+1)-dev.N+g<shorthash>` |
+| on a feature branch, N commits after | `X.Y.(Z+1)-dev.N+g<shorthash>.<branch-slug>` |
+| no `<app>/v*` tag yet | `0.1.0-dev.N+g<shorthash>` (bare `0.1.0-dev` if no history is available) |
+
+The `+g<hash>` suffix is what guarantees no two distinct commits ever
+report the same version string; the patch-bump + `-dev.N` form is what
+makes the string sort after the tag it descends from and before its
+own release.
+
+### Tag and release procedure (ruled on #5790, 2026-11-06)
+
+1. **Per-app tags.** A release is cut by tagging the exact tested
+   commit `<short-app-name>/vX.Y.Z` — for this workspace,
+   `fleet/vX.Y.Z`. The short app name is the tag prefix for ALL apps
+   (one policy, no per-app mixing); app names used in tags and
+   deploys must be unique across apps — if a short name would
+   collide, fix the app name, not the policy.
+2. **First tag and 0.x discipline.** Each app's first tag is
+   `0.1.0`. Versions stay in 0.x: minor for feature releases, patch
+   for fixes, and **no major-version bumps** until a separate 1.0
+   decision.
+3. **Releases are tag builds only.** Build the release artifact
+   from the tagged commit and verify the artifact itself reports
+   the clean version: `./result/bin/fleet version` must show
+   `Derived version: X.Y.Z`. A packaged (nix) release build takes
+   the version through the package's `derivedVersion` argument —
+   the build source carries no `.git`, so the release tooling
+   computes the version where the history exists and passes it in;
+   a packaged build without one reports the rev-derived prerelease
+   form `0.1.0-dev+g<rev>`, never a clean release string. Builds
+   deployed from `main` are
+   **prereleases** (their `-dev.N` strings say so) — deploying one
+   never makes it a release.
+4. **Repo tags.** At every release point (not every commit, not
+   every deploy), also cut `repo/v<YYYYMMDD>.<minor>.<patch>` —
+   the date is the major segment; within a date, a release point
+   including any app feature increments minor and resets patch, a
+   fix-only or repeat point increments patch; minor/patch may
+   reset to `0.0` on a new date. A repo **prerelease** tag on a
+   deploy from main is also fine and does not make the deploy a
+   release.
+5. **Deploy truth.** What a target runs is read from the deployed
+   binary's own `Derived version:` line, never from paperwork
+   (that read is the #5760 deployed-state check's input).
+
 ## Variants
 
 Capability surface = compiled features ∩ invocation-name profile ∩
@@ -110,7 +193,7 @@ their domain through argv0.
 | nix attr               | profile | capabilities                                                           |
 | ---------------------- | ------- | ---------------------------------------------------------------------- |
 | `fleet`                | full    | all ten                                                                |
-| `fleet-serve`          | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve |
+| `fleet-serve`          | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve, secrets |
 | `fleet-static`         | full    | all nine (musl static; the sandbox's artifact)                         |
 | `fleet-connect`        | connect | proxy-connect (dynamic)                                                |
 | `fleet-connect-static` | connect | proxy-connect (musl static, runs anywhere)                             |
@@ -146,6 +229,91 @@ nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static
 ./pkgs/fleet/smoke.sh ./result ./result-1 ./result-2 ./result-3
 cargo test --workspace   # unit tests (registry, config, proto, secrets)
 ```
+
+## Deploy: the two live installs (read this before merging a new verb)
+
+A verb is **not shipped when it merges** — it is shipped when BOTH
+live installs report it. #6728 is the failure this section exists to
+prevent: `fleet queue fallback` was merged as source + docs
+(`crates/fleet-queue/src/fallback.rs`, wired in `lib.rs`/`client.rs`)
+while the installed 0.1.0 binaries kept answering
+`repo-queue: unknown command "fallback"` for a full day of
+backend-down shifts.
+
+Build ONE artifact from current `main` and deploy that same build to
+both installs. If the build fails in the cargo vendor step with
+`no matching package named '<crate>' found ... required by package
+'atlas-core'` (or another atlas crate), `pkgs/fleet/Cargo.lock` has
+drifted from the atlas-search path dependencies again — the fleet
+lock covers their external dependencies too (see `default.nix`).
+Regenerate it before building:
+
+```sh
+(cd pkgs/fleet && cargo update --workspace)
+```
+
+```sh
+nix build .#fleet
+./result/bin/fleet version   # record the source rev; both installs must match it
+```
+
+1. **Laptop install** — a plain binary copy at `~/.local/bin/fleet`
+   (lane-writable). Copy the fresh artifact over it, then verify.
+2. **Sandbox install** — `~/tools/fleet`, reached through the
+   `~/tools/bin/fleet` and `~/tools/bin/repo-queue` symlinks. This
+   file is **root-owned provisioning** (read-only to lanes): a lane
+   cannot redeploy it. The sandbox redeploy is done by whoever
+   provisions `~/tools`; a lane that verifies the sandbox install is
+   stale files/updates the tracking issue with both source revs
+   (installed vs current `main`) instead of improvising a replacement
+   on `PATH` — the symlinks are the contract every lane resolves.
+
+Verify BOTH installs after every deploy, with the verb surface as
+the check (a version string alone proves nothing):
+
+```sh
+fleet queue --help            # on the laptop AND on the sandbox
+fleet queue fallback scan --repo developing-today/code   # JSON items, exit 0
+```
+
+If the two installs ever disagree on source rev or verb list, the
+stale one is a bug: file it against this section (the #6728 shape)
+rather than working around it silently.
+
+## Location-aware init: provision before the binary flip (#5687, impl #6770)
+
+`fleet init` is location-aware: it resolves this machine's
+location and role set from the `[host]` section of `fleet.toml`
+(or `FLEET_HOST_CONFIG` / `FLEET_LOCATION`) and ensures exactly
+those roles — sandbox = the session proxy under `init_mode =
+"spawn"`; laptop/lab = the daemon roles under `init_mode =
+"systemd"`, reported via their `fleet-<role>.service` units and
+started only through `systemctl --user`. An unknown location
+reports state, starts nothing, and exits 69. The full design is
+issue #5687 §§1–6.
+
+**The deploy sequence is part of the feature** (§6): the
+location-aware binary has NO "no manifest ⇒ assume proxy"
+fallback — that guess is the bug the design removes. Before a
+location-aware build replaces either live install:
+
+1. Write the `[host]` section into that machine's `fleet.toml`
+   (sandbox: `location = "sandbox"`, `init_mode = "spawn"`,
+   `[host.roles] proxy = {}`).
+2. Pin the sandbox's `init-ensure.sh` call site to
+   `FLEET_LOCATION=sandbox fleet init` (belt-and-braces: the env
+   var makes the caller's assumption explicit and survives a
+   lost/truncated file location).
+3. Only then deploy the binary, and verify per the section
+   above: `fleet init` prints `location sandbox (source: …)`, a
+   second run is the strict no-op, exit 0 both times.
+
+**Rollback gotcha:** `fleet-config` parses with
+`deny_unknown_fields`, so a `fleet.toml` containing `[host]` is a
+**parse error to the pre-#6770 binary**. Rolling the binary back
+therefore requires removing the `[host]` section (or rolling
+config and binary back together) — never discover this during
+an incident.
 
 The connect variants carry the D7 size contract: **≤ 2 MiB hard
 gate** (target ≤ 1.5 MiB), enforced in `default.nix` postFixup

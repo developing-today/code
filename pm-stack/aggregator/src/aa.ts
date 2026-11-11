@@ -606,6 +606,14 @@ export interface AaPlanFact {
   /** List-rate dollars of usage per $1 paid, when the plan meters so. */
   multiplier: number | null;
   note: string;
+  /** Typed cancellation source data (#1174): the plan is cancelled and
+   *  its paid period ends on this ISO date. The quota-action derivation
+   *  (buildQuotaActions) reads THESE fields — never the note prose —
+   *  so update them with the registry when a plan changes. */
+  cancelled?: boolean;
+  periodEndsAt?: string;
+  /** Concrete next step while the cancelled period still has time left. */
+  renewalAction?: string;
 }
 
 export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
@@ -624,6 +632,11 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     multiplier: 6,
     note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×).",
   },
+  "_commandcode": {
+    plan: "Command Code GOAT",
+    multiplier: 7,
+    note: "0/mo → 0 credits (7×); the entry Go tier is  → 0 credits (10×). Tier on the account is unconfirmed.",
+  },
   commandcode: {
     plan: "Command Code GOAT",
     multiplier: 7,
@@ -639,10 +652,20 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     multiplier: null,
     note: "OpenAI plan quota — the fleet's final reserve, spent last by design.",
   },
-  "openai.alternate": {
+  "_openai.alt": {
     plan: "ChatGPT plan (student)",
     multiplier: null,
-    note: "Second ChatGPT account door; resolves through the fork's built-in catalog.",
+    note: "Second ChatGPT account door (popesdrew, self-contained _openai instance; renamed from openai.alternate 2026-11-10, code#8163).",
+  },
+  "_openai.main": {
+    plan: "ChatGPT plan",
+    multiplier: null,
+    note: "Main ChatGPT account door (drewrypope, self-contained _openai instance; renamed from openai.main 2026-11-10, code#8163).",
+  },
+  "_claude": {
+    plan: "Claude plan",
+    multiplier: null,
+    note: "Claude Code door — the fork's fleet-built _claude provider (renamed from claude-code 2026-11-07, #1823).",
   },
   "claude-code": {
     plan: "Claude plan",
@@ -1147,6 +1170,37 @@ export function aaSectionFromSupabase(
   };
 }
 
+/**
+ * Re-derive a section's current-price overlay from `prices` (#8211).
+ *
+ * The batch-bound payload (rankings, configs, thresholds, test runs,
+ * sources, cai, coverage, catalog membership) is untouched; only the
+ * two price-derived facets move: the section's `prices` list and each
+ * catalog entry's `rate`, recomputed through the same lookup
+ * `aaCatalogFromConfig` uses (full id, then bare model part). This is
+ * what lets a cached historical batch report current rates at serve
+ * time without refetching any of its batch-bound measurements: the
+ * overlay is batch-independent by definition (`v_current_prices`), so
+ * freezing it into the per-batch cache was the defect. The input
+ * section is not mutated.
+ */
+export function aaApplyPriceOverlay(section: AaSection, prices: AaPrice[]): AaSection {
+  const rates = catalogRates(prices);
+  const out: AaSection = { ...section };
+  if (section.catalog) {
+    out.catalog = section.catalog.map((entry) => ({
+      ...entry,
+      rate: rates.get(entry.id) ?? rates.get(`part:${normalizeModelName(modelPart(entry.id))}`) ?? null,
+    }));
+  }
+  if (prices.length) {
+    out.prices = [...prices];
+  } else {
+    delete out.prices;
+  }
+  return out;
+}
+
 /** Structural check shared by the collector and the live source. */
 export function isAaSection(v: unknown): v is AaFeedSection {
   if (typeof v !== "object" || v === null) return false;
@@ -1162,11 +1216,20 @@ export function isAaSection(v: unknown): v is AaFeedSection {
       (r) => typeof r === "object" && r !== null && typeof r.testRunKey === "string" && typeof r.family === "string",
     ) &&
     Array.isArray(s.configs) &&
+    // #4169: aaConfigsTable maps entries dereferencing c.modelName — a
+    // null entry passed this gate and threw in the render.
+    s.configs.every(
+      (c) => typeof c === "object" && c !== null && typeof (c as { modelName?: unknown }).modelName === "string",
+    ) &&
     Array.isArray(s.testRuns) &&
     s.testRuns.every(
       (r) =>
         typeof r === "object" &&
         r !== null &&
+        // #4169: aaTimingsTable dereferences r.modelVariantKey via
+        // variantLabel (.split) — an entry without a string key passed
+        // this gate and threw in the render.
+        typeof (r as { modelVariantKey?: unknown }).modelVariantKey === "string" &&
         // #5289: snapshotDate is a date, not just a string — summarizeAa
         // publishes these values verbatim as the batch's snapshot vintage,
         // so gate them with isIsoDate like generatedAt above (date-only
@@ -1196,7 +1259,28 @@ export function isAaSection(v: unknown): v is AaFeedSection {
         src !== null &&
         typeof (src as { name?: unknown }).name === "string" &&
         typeof (src as { kind?: unknown }).kind === "string",
-    )
+    ) &&
+    // #4169: coverage, catalog, and cai are optional (absent when the
+    // collector could not build them) but the /aa renderer dereferences
+    // them when present — a present-but-malformed value passed this gate
+    // and threw in the render instead of degrading to the not-collected
+    // banner. Gate each at the depth its consumer dereferences it.
+    (s.coverage === undefined ||
+      (typeof s.coverage === "object" &&
+        s.coverage !== null &&
+        (["measuredNotPooled", "catalogNotPooledMeasured", "measuredNotInCatalog", "catalogNotPooledUnmeasured"] as const).every(
+          (k) => Array.isArray(s.coverage?.[k]) && (s.coverage?.[k] as unknown[]).every((n) => typeof n === "string"),
+        ))) &&
+    (s.catalog === undefined ||
+      (Array.isArray(s.catalog) &&
+        s.catalog.every(
+          (e) =>
+            typeof e === "object" &&
+            e !== null &&
+            typeof (e as { provider?: unknown }).provider === "string" &&
+            Array.isArray((e as { routes?: unknown }).routes),
+        ))) &&
+    (s.cai === undefined || (Array.isArray(s.cai) && s.cai.every((r) => typeof r === "object" && r !== null)))
   );
 }
 

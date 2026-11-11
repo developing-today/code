@@ -29,8 +29,8 @@ jobs:
   # home/common/default.nix, or a non-shell launch silently dials
   # the wrong — or an empty — port (#434, #435). Pure bash/grep: no
   # Nix needed. This copy runs on main/schedule/manual runs; the
-  # dedicated proxy-port-fallbacks.yml runs it on PR and merge_group
-  # events so the expensive host/flake jobs retain their own triggers.
+  # dedicated proxy-port-fallbacks.yml runs it on PR events so the
+  # expensive host/flake jobs retain their own triggers.
   # This job used to also run the
   # treefmt format check; formatting is no longer a merge gate —
   # it is auto-fixed on main by .github/workflows/auto-format.yml
@@ -101,7 +101,7 @@ jobs:
   # ci-fix: when any main job above fails, dispatch a pm-dispatch
   # ci-fix task from inside this failing run (via the thin
   # pm-dispatch-ci-fix wrapper over pm-dispatch-task). This replaces
-  # the old workflow_run-triggered ci-failure-fix job in jules.yml.
+  # the old workflow_run-triggered ci-failure-fix job in pm-dispatch.yml.
   # continue-on-error: a dispatch failure must never change this
   # workflow's own result.
   ci-fix:

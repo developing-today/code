@@ -27,6 +27,13 @@ const CODE_ATTEMPTS: u32 = 5;
 /// How far a signed request's timestamp may be from the server's clock.
 pub const SIGNED_WINDOW_MS: u64 = 5 * 60 * 1000;
 const SIGNED_NONCE_LIMIT: usize = 4096;
+/// How many of the shared replay budget's entries one key may hold at
+/// once: a sixteenth of [`SIGNED_NONCE_LIMIT`], so a single key can
+/// never starve the others out of the guard — at least sixteen keys can
+/// always hold their full allowance at the same time. Entries expire
+/// with the signed-request window, so the allowance refills as the
+/// window slides.
+const SIGNED_NONCE_PER_KEY_LIMIT: usize = SIGNED_NONCE_LIMIT / 16;
 const SIGNED_DOMAIN: &str = "id-request-v1";
 const CODE_DOMAIN: &str = "id-code-v1";
 
@@ -52,6 +59,27 @@ pub enum Purpose {
         /// The account the address belongs to.
         account: String,
     },
+}
+
+/// Which flow a pending code was issued for.
+///
+/// A flow, rather than the account carried by [`Purpose`], selects the
+/// independent pending-code slot for an address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PurposeKind {
+    /// Attach the address to an account.
+    Confirm,
+    /// Sign in to the account that owns the address.
+    SignIn,
+}
+
+impl Purpose {
+    fn kind(&self) -> PurposeKind {
+        match self {
+            Self::Confirm { .. } => PurposeKind::Confirm,
+            Self::SignIn { .. } => PurposeKind::SignIn,
+        }
+    }
 }
 
 /// Everything a request presented to prove who it is. Each field is checked
@@ -109,7 +137,7 @@ struct SessionRecord {
 pub struct DirectoryAuth {
     /// Keyed by the SHA-256 of the token, so memory never holds a usable token.
     sessions: HashMap<[u8; 32], SessionRecord>,
-    codes: HashMap<String, PendingCode>,
+    codes: HashMap<(String, PurposeKind), PendingCode>,
 }
 
 impl DirectoryAuth {
@@ -162,11 +190,13 @@ impl DirectoryAuth {
     ///
     /// # Errors
     ///
-    /// Fails with [`Refusal::RateLimited`] if a code for this address was sent
-    /// less than a minute ago.
+    /// Fails with [`Refusal::RateLimited`] if a code for this address and flow
+    /// was sent less than a minute ago.
     pub fn issue_code(&mut self, purpose: Purpose, address: &str, now: u64) -> Result<String> {
         self.codes.retain(|_, pending| pending.expires_at > now);
-        if let Some(pending) = self.codes.get(address)
+        let kind = purpose.kind();
+        let key = (address.to_owned(), kind);
+        if let Some(pending) = self.codes.get(&key)
             && pending.sent_at + CODE_RESEND_MS > now
         {
             return Err(Refusal::RateLimited(
@@ -176,10 +206,10 @@ impl DirectoryAuth {
         }
         let code = format!("{:06}", rand::rng().random_range(0..1_000_000_u32));
         self.codes.insert(
-            address.to_owned(),
+            key,
             PendingCode {
                 purpose,
-                digest: code_digest(address, &code),
+                digest: code_digest(address, kind, &code),
                 expires_at: now + CODE_TTL_MS,
                 sent_at: now,
                 attempts: 0,
@@ -188,34 +218,47 @@ impl DirectoryAuth {
         Ok(code)
     }
 
-    /// Check a code for an address. A code is used up by a correct answer, by
-    /// its expiry, or by too many wrong answers.
+    /// Check a code for an address and flow. A code is used up by a correct
+    /// answer, by its expiry, or by too many wrong answers. Checking the other
+    /// flow cannot consume or count an attempt against this flow's code.
     ///
     /// # Errors
     ///
     /// Fails if no code is pending, it has expired or run out of attempts, or
     /// the answer is wrong.
-    pub fn check_code(&mut self, address: &str, code: &str, now: u64) -> Result<Purpose> {
+    pub fn check_code(
+        &mut self,
+        address: &str,
+        kind: PurposeKind,
+        code: &str,
+        now: u64,
+    ) -> Result<Purpose> {
         let refused =
             || anyhow::Error::from(Refusal::Unauthenticated("no matching code".to_owned()));
-        let pending = self.codes.get_mut(address).ok_or_else(refused)?;
+        let key = (address.to_owned(), kind);
+        let pending = self.codes.get_mut(&key).ok_or_else(refused)?;
         if pending.expires_at <= now || pending.attempts >= CODE_ATTEMPTS {
-            self.codes.remove(address);
+            self.codes.remove(&key);
             return Err(refused());
         }
-        let digest = code_digest(address, code.trim());
+        let digest = code_digest(address, kind, code.trim());
         if !bool::from(digest.ct_eq(&pending.digest)) {
             pending.attempts += 1;
             return Err(refused());
         }
-        let pending = self.codes.remove(address).context("code vanished")?;
+        let pending = self.codes.remove(&key).context("code vanished")?;
         Ok(pending.purpose)
     }
 }
 
-fn code_digest(address: &str, code: &str) -> [u8; 32] {
+fn code_digest(address: &str, kind: PurposeKind, code: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(CODE_DOMAIN.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(match kind {
+        PurposeKind::Confirm => b"confirm".as_slice(),
+        PurposeKind::SignIn => b"sign-in".as_slice(),
+    });
     hasher.update(b"\n");
     hasher.update(address.as_bytes());
     hasher.update(b"\n");
@@ -249,7 +292,12 @@ impl ReplayGuard {
     /// # Errors
     ///
     /// Fails during the boot window, if the same key and nonce were already
-    /// used in the window, or if too many requests are being remembered.
+    /// used in the window, if this key already holds
+    /// [`SIGNED_NONCE_PER_KEY_LIMIT`] remembered nonces, or if too many
+    /// requests are being remembered in total. Retained state is hard
+    /// bounded by [`SIGNED_NONCE_LIMIT`] entries; a live entry is never
+    /// evicted to make room, so a replay can never be admitted merely
+    /// because the guard is full.
     pub fn accept(&mut self, key: &str, nonce: &str, at: u64, now: u64) -> Result<()> {
         if now < self.quiet_until {
             let seconds = (self.quiet_until - now).div_ceil(1000);
@@ -264,6 +312,22 @@ impl ReplayGuard {
         let id = format!("{key}:{nonce}");
         if self.seen.contains_key(&id) {
             return Err(Refusal::Unauthenticated("request was already used".to_owned()).into());
+        }
+        // The per-key bound is counted from the same map the duplicate
+        // check reads, after pruning, so it can never drift from the
+        // state it bounds. Keys are normalised hex and nonces exclude
+        // ':', so the "{key}:" prefix matches exactly this key's entries.
+        let key_prefix = format!("{key}:");
+        let held_by_key = self
+            .seen
+            .keys()
+            .filter(|seen_id| seen_id.starts_with(&key_prefix))
+            .count();
+        if held_by_key >= SIGNED_NONCE_PER_KEY_LIMIT {
+            return Err(Refusal::RateLimited(
+                "too many signed requests from one key; try again shortly".to_owned(),
+            )
+            .into());
         }
         if self.seen.len() >= SIGNED_NONCE_LIMIT {
             return Err(Refusal::RateLimited(
@@ -299,8 +363,21 @@ pub fn signed_message(method: &str, target: &str, at: u64, nonce: &str, body: &[
     )
 }
 
+/// Whether `nonce` is one `verify_signed` can accept: 1-64 ASCII
+/// alphanumeric characters or '-'.
+fn nonce_in_domain(nonce: &str) -> bool {
+    !nonce.is_empty()
+        && nonce.len() <= 64
+        && nonce.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 /// Sign a request as a client holding `key` would.
-#[must_use]
+///
+/// # Errors
+///
+/// Fails if `nonce` is empty, longer than 64 characters, or has a character
+/// other than an ASCII letter, digit or '-': `verify_signed` refuses every
+/// such nonce, so no signature is produced for one.
 pub fn sign_request(
     key: &SigningKey,
     method: &str,
@@ -308,14 +385,18 @@ pub fn sign_request(
     body: &[u8],
     at: u64,
     nonce: &str,
-) -> Signed {
+) -> Result<Signed> {
+    anyhow::ensure!(
+        nonce_in_domain(nonce),
+        "nonce must be 1-64 ASCII letters, digits or '-'"
+    );
     let message = signed_message(method, target, at, nonce, body);
-    Signed {
+    Ok(Signed {
         key: hex_encode(&key.verifying_key().to_bytes()),
         at,
         nonce: nonce.to_owned(),
         signature: hex_encode(&key.sign(message.as_bytes()).to_bytes()),
-    }
+    })
 }
 
 /// Check a signed request and return the key that made it.
@@ -345,13 +426,7 @@ pub fn verify_signed(
         )
         .into());
     }
-    if signed.nonce.is_empty()
-        || signed.nonce.len() > 64
-        || !signed
-            .nonce
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
+    if !nonce_in_domain(&signed.nonce) {
         return Err(refused());
     }
     let key = normalize_key(&signed.key).ok().ok_or_else(refused)?;
@@ -413,8 +488,114 @@ mod tests {
             account: "ab".repeat(32),
         };
         let code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
-        assert_eq!(auth.check_code("a@b.co", &code, now()).unwrap(), purpose);
-        assert!(auth.check_code("a@b.co", &code, now()).is_err());
+        assert_eq!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &code, now())
+                .unwrap(),
+            purpose
+        );
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &code, now())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn confirmation_and_sign_in_codes_have_independent_slots() {
+        let mut auth = DirectoryAuth::default();
+        let confirm = Purpose::Confirm {
+            account: "ab".repeat(32),
+        };
+        let sign_in = Purpose::SignIn {
+            account: "cd".repeat(32),
+        };
+        let confirm_code = auth.issue_code(confirm.clone(), "a@b.co", now()).unwrap();
+        // The other flow can issue during the first flow's resend window.
+        let mut sign_in_code = auth
+            .issue_code(sign_in.clone(), "a@b.co", now() + 1)
+            .unwrap();
+        let same_flow_error = auth
+            .issue_code(confirm.clone(), "a@b.co", now() + 1)
+            .unwrap_err();
+        assert!(matches!(
+            same_flow_error.downcast_ref::<Refusal>(),
+            Some(Refusal::RateLimited(_))
+        ));
+
+        // The two codes are sampled independently from the same
+        // 1,000,000-value space, so they can coincide; when they do,
+        // the sign-in code IS a correct confirmation code and the
+        // cross-flow rejections below cannot hold. Re-issue the
+        // sign-in code past its resend window until it differs, and
+        // run the remaining checks at that issuance time.
+        let mut issued_at = now() + 1;
+        while sign_in_code == confirm_code {
+            issued_at += CODE_RESEND_MS + 1;
+            sign_in_code = auth
+                .issue_code(sign_in.clone(), "a@b.co", issued_at)
+                .unwrap();
+        }
+
+        // Presenting one flow's code to the other neither consumes nor
+        // increments attempts on the code's own slot.
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, &sign_in_code, issued_at)
+                .is_err()
+        );
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &confirm_code, issued_at)
+                .is_err()
+        );
+        assert_eq!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, &confirm_code, issued_at)
+                .unwrap(),
+            confirm
+        );
+        assert_eq!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &sign_in_code, issued_at)
+                .unwrap(),
+            sign_in
+        );
+    }
+
+    #[test]
+    fn issuing_again_for_the_same_purpose_replaces_its_slot_at_the_resend_boundary() {
+        let mut auth = DirectoryAuth::default();
+        let purpose = Purpose::Confirm {
+            account: "ab".repeat(32),
+        };
+        let old_code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
+        let wrong = if old_code == "999999" {
+            "000000"
+        } else {
+            "999999"
+        };
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, wrong, now())
+                .is_err()
+        );
+        let key = ("a@b.co".to_owned(), PurposeKind::Confirm);
+        assert_eq!(auth.codes[&key].attempts, 1);
+
+        let new_code = auth
+            .issue_code(purpose.clone(), "a@b.co", now() + CODE_RESEND_MS)
+            .unwrap();
+        let pending = &auth.codes[&key];
+        assert_eq!(pending.attempts, 0);
+        assert_eq!(pending.sent_at, now() + CODE_RESEND_MS);
+        assert_eq!(
+            pending.digest,
+            code_digest("a@b.co", PurposeKind::Confirm, &new_code)
+        );
+        assert_eq!(
+            auth.check_code(
+                "a@b.co",
+                PurposeKind::Confirm,
+                &new_code,
+                now() + CODE_RESEND_MS,
+            )
+            .unwrap(),
+            purpose
+        );
     }
 
     #[test]
@@ -431,9 +612,15 @@ mod tests {
             .unwrap();
         let wrong = if code == "999999" { "000000" } else { "999999" };
         for _ in 0..CODE_ATTEMPTS {
-            assert!(auth.check_code("a@b.co", wrong, now()).is_err());
+            assert!(
+                auth.check_code("a@b.co", PurposeKind::Confirm, wrong, now())
+                    .is_err()
+            );
         }
-        assert!(auth.check_code("a@b.co", &code, now()).is_err());
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, &code, now())
+                .is_err()
+        );
 
         let code = auth
             .issue_code(
@@ -445,8 +632,13 @@ mod tests {
             )
             .unwrap();
         assert!(
-            auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS + CODE_TTL_MS)
-                .is_err()
+            auth.check_code(
+                "a@b.co",
+                PurposeKind::Confirm,
+                &code,
+                now() + CODE_RESEND_MS + CODE_TTL_MS,
+            )
+            .is_err()
         );
     }
 
@@ -475,15 +667,28 @@ mod tests {
         // issuing for a second address must keep it.
         auth.issue_code(purpose.clone(), "c@d.co", now() + CODE_TTL_MS - 1)
             .unwrap();
-        assert!(auth.codes.contains_key("a@b.co"));
+        assert!(
+            auth.codes
+                .contains_key(&("a@b.co".to_owned(), PurposeKind::SignIn))
+        );
         // At exactly expires_at the code is expired (check_code refuses at
         // expires_at <= now), so the same issuance sweep evicts it without
         // the first address ever checking.
         auth.issue_code(purpose, "e@f.co", now() + CODE_TTL_MS)
             .unwrap();
-        assert!(!auth.codes.contains_key("a@b.co"));
-        assert!(auth.codes.contains_key("c@d.co"));
-        assert!(auth.codes.contains_key("e@f.co"));
+        assert!(
+            !auth
+                .codes
+                .contains_key(&("a@b.co".to_owned(), PurposeKind::SignIn))
+        );
+        assert!(
+            auth.codes
+                .contains_key(&("c@d.co".to_owned(), PurposeKind::SignIn))
+        );
+        assert!(
+            auth.codes
+                .contains_key(&("e@f.co".to_owned(), PurposeKind::SignIn))
+        );
     }
 
     #[test]
@@ -495,7 +700,10 @@ mod tests {
         let code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
         let wrong = if code == "999999" { "000000" } else { "999999" };
         for _ in 0..CODE_ATTEMPTS {
-            assert!(auth.check_code("a@b.co", wrong, now()).is_err());
+            assert!(
+                auth.check_code("a@b.co", PurposeKind::Confirm, wrong, now())
+                    .is_err()
+            );
         }
         // Issuing for another address inside the TTL sweeps expired codes
         // only: the exhausted code stays, so the attempt limit still refuses
@@ -503,14 +711,27 @@ mod tests {
         let other = auth
             .issue_code(purpose.clone(), "c@d.co", now() + CODE_RESEND_MS)
             .unwrap();
-        assert!(auth.codes.contains_key("a@b.co"));
         assert!(
-            auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS)
-                .is_err()
+            auth.codes
+                .contains_key(&("a@b.co".to_owned(), PurposeKind::Confirm))
+        );
+        assert!(
+            auth.check_code(
+                "a@b.co",
+                PurposeKind::Confirm,
+                &code,
+                now() + CODE_RESEND_MS,
+            )
+            .is_err()
         );
         assert_eq!(
-            auth.check_code("c@d.co", &other, now() + CODE_RESEND_MS)
-                .unwrap(),
+            auth.check_code(
+                "c@d.co",
+                PurposeKind::Confirm,
+                &other,
+                now() + CODE_RESEND_MS,
+            )
+            .unwrap(),
             purpose
         );
     }
@@ -525,7 +746,8 @@ mod tests {
             b"",
             now(),
             "n1",
-        );
+        )
+        .unwrap();
         let mut replays = ReplayGuard::default();
         let who = verify_signed(
             &mut replays,
@@ -555,7 +777,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[7; 32]);
         let at = now();
         let target = "/api/world/directory?world=x";
-        let signed = sign_request(&key, "GET", target, b"", at, "edge");
+        let signed = sign_request(&key, "GET", target, b"", at, "edge").unwrap();
         let mut replays = ReplayGuard::default();
 
         assert!(verify_signed(&mut replays, &signed, "GET", target, b"", at).is_ok());
@@ -585,9 +807,96 @@ mod tests {
     }
 
     #[test]
+    fn one_key_filling_its_allowance_cannot_starve_a_second_key() {
+        // End to end through verify_signed: one key spends its whole
+        // per-key allowance on distinct valid requests, its next fresh
+        // request is refused, and a second key is still admitted.
+        let first = SigningKey::from_bytes(&[7; 32]);
+        let second = SigningKey::from_bytes(&[8; 32]);
+        let target = "/api/world/directory?world=x";
+        let at = now();
+        let mut replays = ReplayGuard::default();
+        for i in 0..SIGNED_NONCE_PER_KEY_LIMIT {
+            let signed =
+                sign_request(&first, "GET", target, b"", at, &format!("fill-{i}")).unwrap();
+            verify_signed(&mut replays, &signed, "GET", target, b"", at).unwrap();
+        }
+        let one_more = sign_request(&first, "GET", target, b"", at, "fill-one-more").unwrap();
+        let err = verify_signed(&mut replays, &one_more, "GET", target, b"", at).unwrap_err();
+        assert!(format!("{err:#}").contains("one key"), "{err:#}");
+        let other = sign_request(&second, "GET", target, b"", at, "fresh").unwrap();
+        assert!(verify_signed(&mut replays, &other, "GET", target, b"", at).is_ok());
+    }
+
+    #[test]
+    fn a_replay_is_still_refused_when_its_key_is_at_its_allowance() {
+        let at = now();
+        let mut replays = ReplayGuard::default();
+        for i in 0..SIGNED_NONCE_PER_KEY_LIMIT {
+            replays.accept("aa", &format!("n{i}"), at, at).unwrap();
+        }
+        // A fresh nonce from the same key is refused by the bound...
+        let err = replays.accept("aa", "fresh", at, at).unwrap_err();
+        assert!(format!("{err:#}").contains("one key"), "{err:#}");
+        // ...but a replay of an admitted nonce is refused as a replay,
+        // never admitted merely because the guard is full.
+        let err = replays.accept("aa", "n0", at, at).unwrap_err();
+        assert!(format!("{err:#}").contains("already used"), "{err:#}");
+    }
+
+    #[test]
+    fn retained_replay_state_stays_within_the_documented_hard_bound() {
+        let at = now();
+        let mut replays = ReplayGuard::default();
+        // Sixteen keys can hold a full allowance each: exactly the
+        // global limit. A seventeenth key is refused by the global
+        // bound, and no key's entries are evicted to make room.
+        for k in 0..16 {
+            let key = format!("key{k}");
+            for i in 0..SIGNED_NONCE_PER_KEY_LIMIT {
+                replays.accept(&key, &format!("n{i}"), at, at).unwrap();
+            }
+        }
+        assert_eq!(replays.seen.len(), SIGNED_NONCE_LIMIT);
+        assert!(replays.accept("key16", "n0", at, at).is_err());
+        assert_eq!(replays.seen.len(), SIGNED_NONCE_LIMIT);
+    }
+
+    #[test]
+    fn concurrent_duplicates_cannot_race_past_admission() {
+        // The hub shares one guard behind a mutex; the same signed
+        // request presented from many threads at once is admitted
+        // exactly once.
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let target = "/api/world/directory?world=x";
+        let at = now();
+        let signed = sign_request(&key, "GET", target, b"", at, "race").unwrap();
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(ReplayGuard::default()));
+        let admitted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let shared = shared.clone();
+                let admitted = admitted.clone();
+                let signed = signed.clone();
+                std::thread::spawn(move || {
+                    let mut replays = shared.lock().unwrap();
+                    if verify_signed(&mut replays, &signed, "GET", target, b"", at).is_ok() {
+                        admitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(admitted.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn a_signed_request_is_bound_to_its_method_target_body_and_time() {
         let key = SigningKey::from_bytes(&[7; 32]);
-        let signed = sign_request(&key, "POST", "/api/world/directory", b"{}", now(), "n2");
+        let signed =
+            sign_request(&key, "POST", "/api/world/directory", b"{}", now(), "n2").unwrap();
         for (method, target, body, at) in [
             ("GET", "/api/world/directory", b"{}".as_slice(), now()),
             ("POST", "/api/world/other", b"{}".as_slice(), now()),
@@ -621,12 +930,12 @@ mod tests {
         let mut replays = ReplayGuard::after_boot(boot, window);
         let target = "/api/world/directory";
 
-        let early = sign_request(&key, "GET", target, b"", boot + 599_000, "b1");
+        let early = sign_request(&key, "GET", target, b"", boot + 599_000, "b1").unwrap();
         let error =
             verify_signed(&mut replays, &early, "GET", target, b"", boot + 599_000).unwrap_err();
         assert!(boot_refused(&error), "{error:#}");
 
-        let late = sign_request(&key, "GET", target, b"", boot + 600_000, "b2");
+        let late = sign_request(&key, "GET", target, b"", boot + 600_000, "b2").unwrap();
         assert!(verify_signed(&mut replays, &late, "GET", target, b"", boot + 600_000).is_ok());
     }
 
@@ -634,7 +943,7 @@ mod tests {
     fn a_request_captured_before_a_restart_is_refused_during_the_boot_window() {
         let key = SigningKey::from_bytes(&[7; 32]);
         let boot = now();
-        let captured = sign_request(&key, "GET", "/x", b"", boot - 60_000, "old");
+        let captured = sign_request(&key, "GET", "/x", b"", boot - 60_000, "old").unwrap();
         let mut replays = ReplayGuard::after_boot(boot, Duration::from_mins(10));
         let error =
             verify_signed(&mut replays, &captured, "GET", "/x", b"", boot + 60_000).unwrap_err();
@@ -645,8 +954,283 @@ mod tests {
     fn a_zero_boot_window_refuses_nothing() {
         let key = SigningKey::from_bytes(&[7; 32]);
         let mut replays = ReplayGuard::after_boot(now(), Duration::ZERO);
-        let signed = sign_request(&key, "GET", "/x", b"", now(), "z1");
+        let signed = sign_request(&key, "GET", "/x", b"", now(), "z1").unwrap();
         assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok());
+    }
+
+    #[test]
+    fn sign_request_refuses_nonces_verify_signed_would_reject() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let long = "a".repeat(65);
+        for bad in [
+            "",
+            long.as_str(),
+            "has space",
+            "under_score",
+            "plus+sign",
+            "dot.name",
+            "n\u{e9}",
+        ] {
+            let error = sign_request(&key, "GET", "/x", b"", now(), bad).unwrap_err();
+            assert!(format!("{error:#}").contains("nonce"), "{bad:?}: {error:#}");
+        }
+        let max = "a".repeat(64);
+        for good in ["n1", "abc-DEF-123", max.as_str()] {
+            let signed = sign_request(&key, "GET", "/x", b"", now(), good).unwrap();
+            let mut replays = ReplayGuard::default();
+            assert!(
+                verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok(),
+                "{good:?}"
+            );
+        }
+    }
+
+    // Property coverage for the nonce-domain invariant (Codex finding on
+    // PR #6539): for every generated nonce, `sign_request` succeeds exactly
+    // when an independent oracle — written from the `verify_signed` contract,
+    // not from `nonce_in_domain` — accepts the nonce, and every accepted
+    // nonce round-trips through `verify_signed`.
+    proptest::proptest! {
+        #[test]
+        fn sign_request_accepts_exactly_the_verify_signed_nonce_domain(
+            nonce in proptest::string::string_regex(".{0,70}").unwrap()
+        ) {
+            // Independent oracle: 1-64 chars, each an ASCII letter, digit
+            // or '-', measured in bytes to mirror the wire contract.
+            let oracle = !nonce.is_empty()
+                && nonce.len() <= 64
+                && nonce.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+            let key = SigningKey::from_bytes(&[7; 32]);
+            let result = sign_request(&key, "GET", "/x", b"", now(), &nonce);
+            proptest::prop_assert_eq!(result.is_ok(), oracle, "nonce {:?}", nonce);
+            if let Ok(signed) = result {
+                let mut replays = ReplayGuard::default();
+                proptest::prop_assert!(
+                    verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok(),
+                    "oracle-accepted nonce {:?} must verify", nonce
+                );
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Guess {
+        /// The target slot's own current code.
+        Own,
+        /// The other flow's current code (the #6177 confusion).
+        Other,
+        /// A code that is not the target slot's.
+        Wrong,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum PendingCodeOp {
+        Issue(usize),
+        Check(usize, Guess),
+        Advance(u64),
+    }
+
+    fn pending_code_op_strategy() -> impl proptest::strategy::Strategy<Value = PendingCodeOp> {
+        use proptest::prelude::*;
+        prop_oneof![
+            3 => (0..2usize).prop_map(PendingCodeOp::Issue),
+            4 => (0..2usize, 0..3u8).prop_map(|(idx, g)| PendingCodeOp::Check(
+                idx,
+                match g {
+                    0 => Guess::Own,
+                    1 => Guess::Other,
+                    _ => Guess::Wrong,
+                },
+            )),
+            2 => (0..90_000u64).prop_map(PendingCodeOp::Advance),
+            1 => (90_000..1_200_000u64).prop_map(PendingCodeOp::Advance),
+        ]
+    }
+
+    // Property coverage for pending-code flow isolation (Codex P1 on
+    // PR #6479): generate interleaved issuance, verification, and time
+    // advancement across both flows for one address, and check every
+    // step against an independent per-slot model. An operation on one
+    // flow's slot must preserve the other slot's code, resend window,
+    // and attempt budget exactly. The one cross-slot effect in the
+    // production code is the issuance sweep, which removes EXPIRED
+    // slots of either flow and nothing else — the model accounts for
+    // exactly that and nothing more.
+    proptest::proptest! {
+        #[test]
+        fn pending_code_slots_are_isolated_across_flows(
+            ops in proptest::collection::vec(pending_code_op_strategy(), 1..48)
+        ) {
+            #[derive(Clone, Debug)]
+            struct SlotModel {
+                code: String,
+                sent_at: u64,
+                expires_at: u64,
+                attempts: u32,
+            }
+
+            fn wrong_code(exclude: Option<&str>) -> String {
+                if exclude == Some("000000") {
+                    "000001".to_owned()
+                } else {
+                    "000000".to_owned()
+                }
+            }
+
+            let address = "a@b.co";
+            let purposes = [
+                Purpose::Confirm {
+                    account: "ab".repeat(32),
+                },
+                Purpose::SignIn {
+                    account: "cd".repeat(32),
+                },
+            ];
+            let kinds = [PurposeKind::Confirm, PurposeKind::SignIn];
+            // The full observable state of one production slot.
+            let snapshot = |auth: &DirectoryAuth, idx: usize| -> Option<([u8; 32], u64, u64, u32)> {
+                auth.codes
+                    .get(&(address.to_owned(), kinds[idx]))
+                    .map(|p| (p.digest, p.sent_at, p.expires_at, p.attempts))
+            };
+
+            let mut auth = DirectoryAuth::default();
+            let mut model: [Option<SlotModel>; 2] = [None, None];
+            let mut now = now();
+
+            for op in &ops {
+                match *op {
+                    PendingCodeOp::Advance(dt) => {
+                        now += dt;
+                    }
+                    PendingCodeOp::Issue(idx) => {
+                        let other = 1 - idx;
+                        let other_before = snapshot(&auth, other);
+                        // Post-sweep view of the target slot: issuance
+                        // sweeps expired codes first, so an expired slot
+                        // cannot rate-limit a fresh issuance.
+                        let live = match model[idx].take() {
+                            Some(slot) if slot.expires_at > now => Some(slot),
+                            _ => None,
+                        };
+                        let rate_limited = matches!(
+                            &live,
+                            Some(slot) if slot.sent_at + CODE_RESEND_MS > now
+                        );
+                        let result = auth.issue_code(purposes[idx].clone(), address, now);
+                        if rate_limited {
+                            let err = result.expect_err("model predicts the resend window");
+                            proptest::prop_assert!(
+                                matches!(
+                                    err.downcast_ref::<Refusal>(),
+                                    Some(Refusal::RateLimited(_))
+                                ),
+                                "issue inside the resend window must be rate-limited, got {err:?}"
+                            );
+                            model[idx] = live;
+                        } else {
+                            let code = result.expect("model predicts issuance");
+                            model[idx] = Some(SlotModel {
+                                code,
+                                sent_at: now,
+                                expires_at: now + CODE_TTL_MS,
+                                attempts: 0,
+                            });
+                        }
+                        // The other slot survives issuance untouched
+                        // while unexpired; an expired other slot is
+                        // removed by the sweep and only by the sweep.
+                        let expected_other = match &model[other] {
+                            Some(slot) if slot.expires_at > now => {
+                                proptest::prop_assert!(
+                                    other_before.is_some(),
+                                    "live modelled slot missing from production state"
+                                );
+                                other_before
+                            }
+                            _ => None,
+                        };
+                        proptest::prop_assert_eq!(
+                            snapshot(&auth, other),
+                            expected_other,
+                            "issue on flow {} mutated the other flow's slot",
+                            idx
+                        );
+                    }
+                    PendingCodeOp::Check(idx, guess) => {
+                        let other = 1 - idx;
+                        let other_before = snapshot(&auth, other);
+                        let guess_code = match guess {
+                            Guess::Own => model[idx]
+                                .as_ref()
+                                .map_or_else(|| wrong_code(None), |s| s.code.clone()),
+                            Guess::Other => model[other].as_ref().map_or_else(
+                                || wrong_code(model[idx].as_ref().map(|s| s.code.as_str())),
+                                |s| s.code.clone(),
+                            ),
+                            Guess::Wrong => {
+                                wrong_code(model[idx].as_ref().map(|s| s.code.as_str()))
+                            }
+                        };
+                        #[derive(PartialEq)]
+                        enum CheckExpect {
+                            Absent,
+                            Dead,
+                            Wrong,
+                            Match,
+                        }
+                        let expectation = match &model[idx] {
+                            None => CheckExpect::Absent,
+                            Some(slot)
+                                if slot.expires_at <= now
+                                    || slot.attempts >= CODE_ATTEMPTS =>
+                            {
+                                CheckExpect::Dead
+                            }
+                            Some(slot) if guess_code != slot.code => CheckExpect::Wrong,
+                            Some(_) => CheckExpect::Match,
+                        };
+                        let result = auth.check_code(address, kinds[idx], &guess_code, now);
+                        match expectation {
+                            CheckExpect::Absent => {
+                                proptest::prop_assert!(
+                                    result.is_err(),
+                                    "check with no pending code must fail"
+                                );
+                            }
+                            CheckExpect::Dead => {
+                                proptest::prop_assert!(
+                                    result.is_err(),
+                                    "expired or attempt-exhausted code must fail"
+                                );
+                                model[idx] = None;
+                            }
+                            CheckExpect::Wrong => {
+                                proptest::prop_assert!(
+                                    result.is_err(),
+                                    "a wrong code must fail"
+                                );
+                                model[idx].as_mut().expect("slot modelled live").attempts += 1;
+                            }
+                            CheckExpect::Match => {
+                                let purpose =
+                                    result.expect("model predicts the presented code matches");
+                                proptest::prop_assert_eq!(purpose, purposes[idx].clone());
+                                model[idx] = None;
+                            }
+                        }
+                        // check_code never touches the other slot — it
+                        // does not even sweep it.
+                        proptest::prop_assert_eq!(
+                            snapshot(&auth, other),
+                            other_before,
+                            "check on flow {} mutated the other flow's slot",
+                            idx
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -688,7 +1272,7 @@ mod tests {
         let mut signed = None;
         for seed in 0_u8..=255 {
             let key = SigningKey::from_bytes(&[seed; 32]);
-            let candidate = sign_request(&key, "GET", "/x", b"", now(), "n1");
+            let candidate = sign_request(&key, "GET", "/x", b"", now(), "n1").unwrap();
             if plus_encode(&candidate.key) != candidate.key {
                 signed = Some(candidate);
                 break;
@@ -706,7 +1290,7 @@ mod tests {
     #[test]
     fn a_signed_request_with_a_non_canonical_s_is_refused() {
         let key = SigningKey::from_bytes(&[7; 32]);
-        let mut signed = sign_request(&key, "GET", "/x", b"", now(), "z2");
+        let mut signed = sign_request(&key, "GET", "/x", b"", now(), "z2").unwrap();
         let raw = hex_bytes::<64>(&signed.signature).unwrap();
         signed.signature = hex_encode(&with_non_canonical_s(raw));
         let mut replays = ReplayGuard::default();

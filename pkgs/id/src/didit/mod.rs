@@ -21,8 +21,9 @@
 //! (open question 2 in the design). The evaluator evaluates windows in the
 //! expectation's IANA `tz`, never a record's raw offset (open question 1).
 //!
-//! This module is library-only. Projections (§7) and app rendering are later
-//! slices; body persistence (issue #4837) is out of scope.
+//! This module is library-only. Derived summary and full record projections
+//! implement §7; app rendering and body persistence (issue #4837) are out of
+//! scope.
 
 mod body;
 mod eval;
@@ -30,9 +31,9 @@ mod eval;
 pub use body::{
     ActiveWindow, DiditError, ENTITY_KIND, EXPECTATION_KIND, Entity, Expectation, HoursSpan,
     MAX_BODY_BYTES, Measure, OPINION_KIND, Opinion, Period, PeriodCustom, Place, RECORD_KIND,
-    Record, RecordDetail, VERSION, Window, decode_entity_body, decode_expectation_body,
-    decode_opinion_body, decode_record_body, encode_entity_body, encode_expectation_body,
-    encode_opinion_body, encode_record_body,
+    Record, RecordDetail, RecordSummary, VERSION, Window, decode_entity_body,
+    decode_expectation_body, decode_opinion_body, decode_record_body, encode_entity_body,
+    encode_expectation_body, encode_opinion_body, encode_record_body,
 };
 pub use eval::{EvalError, Verdict, VerdictState, evaluate};
 

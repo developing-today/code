@@ -46,7 +46,7 @@ func TestCloseFailsCallsInFlight(t *testing.T) {
 	}
 
 	start := time.Now()
-	c.Close()
+	_ = c.Close()
 	select {
 	case err := <-errc:
 		if err == nil {

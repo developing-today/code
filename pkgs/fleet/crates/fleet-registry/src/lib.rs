@@ -31,6 +31,8 @@ pub enum Capability {
     ProxyConnect,
     /// `fleet proxy serve` — the session broker.
     ProxyServe,
+    /// `fleet proxy splice` — the raw TCP stream relay.
+    ProxyRawSplice,
     /// `fleet queue …` — the repo-queue client surface.
     Queue,
     /// `fleet serve queue-broker` — the queue broker daemon role.
@@ -43,6 +45,8 @@ pub enum Capability {
     SearchServe,
     /// `fleet dispatch …` — thin client over pm-stack dispatch.
     Dispatch,
+    /// `fleet dispatch-test …` — explicit-dispatch CI test surface.
+    DispatchTest,
     /// `fleet laptop-agent …` — client for the (Python) laptop-agent daemon.
     LaptopAgent,
     /// `fleet secrets …` — resolve secrets by name (step 6, #5554):
@@ -57,12 +61,14 @@ impl Capability {
         match self {
             Capability::ProxyConnect => "proxy-connect",
             Capability::ProxyServe => "proxy-serve",
+            Capability::ProxyRawSplice => "proxy-raw-splice",
             Capability::Queue => "queue",
             Capability::QueueBroker => "queue-broker",
             Capability::SecretsBroker => "secrets-broker",
             Capability::Search => "search",
             Capability::SearchServe => "search-serve",
             Capability::Dispatch => "dispatch",
+            Capability::DispatchTest => "dispatch-test",
             Capability::LaptopAgent => "laptop-agent",
             Capability::Secrets => "secrets",
         }
@@ -73,12 +79,14 @@ impl Capability {
     pub const ALL: &'static [Capability] = &[
         Capability::ProxyConnect,
         Capability::ProxyServe,
+        Capability::ProxyRawSplice,
         Capability::Queue,
         Capability::QueueBroker,
         Capability::SecretsBroker,
         Capability::Search,
         Capability::SearchServe,
         Capability::Dispatch,
+        Capability::DispatchTest,
         Capability::LaptopAgent,
         Capability::Secrets,
     ];
@@ -110,6 +118,7 @@ pub fn serve_capabilities() -> CapabilitySet {
     capability_set(&[
         Capability::ProxyConnect,
         Capability::ProxyServe,
+        Capability::ProxyRawSplice,
         Capability::QueueBroker,
         Capability::SecretsBroker,
         Capability::SearchServe,
@@ -119,7 +128,7 @@ pub fn serve_capabilities() -> CapabilitySet {
 
 /// The `fleet-connect` build: the proxy client and nothing else (§2).
 pub fn connect_capabilities() -> CapabilitySet {
-    capability_set(&[Capability::ProxyConnect])
+    capability_set(&[Capability::ProxyConnect, Capability::ProxyRawSplice])
 }
 
 /// A shipped build variant (§2). The variant is a property of the
@@ -219,27 +228,33 @@ pub const DOMAINS: &[Domain] = &[
             "complete",
             "health",
             "signal",
+            "fallback",
         ],
     },
     Domain {
         name: "serve",
-        summary: "Run a fleet daemon role (queue-broker, secrets-broker, search) in the foreground.",
+        summary: "Run a fleet daemon role (queue-broker, secrets-broker, search, proxy) in the foreground.",
         capabilities: &[
             Capability::QueueBroker,
             Capability::SecretsBroker,
             Capability::SearchServe,
+            Capability::ProxyServe,
         ],
         primary: Capability::QueueBroker,
         aliases: &["queue-broker", "secrets-broker"],
-        subcommands: &["queue-broker", "secrets-broker", "search"],
+        subcommands: &["queue-broker", "secrets-broker", "search", "proxy"],
     },
     Domain {
         name: "proxy",
-        summary: "The session proxy: serve the broker socket, or connect and init a client through it.",
-        capabilities: &[Capability::ProxyServe, Capability::ProxyConnect],
+        summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, or splice raw TCP streams.",
+        capabilities: &[
+            Capability::ProxyServe,
+            Capability::ProxyConnect,
+            Capability::ProxyRawSplice,
+        ],
         primary: Capability::ProxyConnect,
         aliases: &["laptop-agent-broker"],
-        subcommands: &["serve", "connect", "init"],
+        subcommands: &["serve", "connect", "init", "ssh", "splice"],
     },
     Domain {
         name: "dispatch",
@@ -248,6 +263,14 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Dispatch,
         aliases: &[],
         subcommands: &["status", "launch", "enqueue"],
+    },
+    Domain {
+        name: "dispatch-test",
+        summary: "Explicit-dispatch CI test: scan fleet repos for free Actions capacity, submit a job, track its stored status.",
+        capabilities: &[Capability::DispatchTest],
+        primary: Capability::DispatchTest,
+        aliases: &[],
+        subcommands: &["scan", "submit", "status"],
     },
     Domain {
         name: "secrets",
@@ -337,6 +360,7 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), count, "capability ids must be unique");
         assert!(ids.contains(&"proxy-connect"));
+        assert!(ids.contains(&"proxy-raw-splice"));
         assert!(ids.contains(&"queue"));
     }
 

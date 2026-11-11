@@ -38,6 +38,13 @@ import (
 type Options struct {
 	// Source is the TypeScript to run. Exactly one of Source or File.
 	Source string
+	// SourceName is the name of the file Source was rendered from,
+	// when the caller rendered a declared file's body itself (a
+	// script-backed tool view, #1933 slice 2). It is language
+	// evidence only -- the runner executes Source, never a file by
+	// this name -- so a .py declaration with no shebang is Python
+	// even though its rendered body arrives as text.
+	SourceName string
 	// File is a path to a script. Its directory is used as the working dir.
 	File string
 	// ClientSource is the generated client module of the default target,
@@ -94,6 +101,14 @@ type Options struct {
 	OnResult func(logging.Streamed)
 	// OnArtifact receives files a script registered with artifact().
 	OnArtifact func(logging.Artifacted)
+	// OnWarning receives each non-fatal preflight diagnostic, in order,
+	// as the runner produces it. The same text still goes to Stderr; a
+	// caller that captures Stderr and only surfaces it on a non-zero
+	// exit (the daemon's exec buffer) uses this to deliver the
+	// diagnostic through its own result and stream even when the run
+	// succeeds, where a stderr-only caller never saw it (Codex review,
+	// PR #6111).
+	OnWarning func(string)
 	// Export names the function to call instead of the default export.
 	Export string
 	// Permissions is the sandbox setting; empty means wide open.
@@ -132,6 +147,10 @@ type Options struct {
 	PlaceholderFiles []string
 	// TypeCheck resolves and checks the generated program before running it.
 	TypeCheck string
+	// TypeCheckOnError selects how a failed checker affects execution.
+	TypeCheckOnError string
+	// TypeCheckOnUnsupported selects what to do when the runtime cannot check.
+	TypeCheckOnUnsupported string
 	// TypeCheckTimeout bounds that check.
 	TypeCheckTimeout time.Duration
 	// Imports selects the preflight import-graph stage: "off" or "report"
@@ -219,6 +238,20 @@ func warnSink(opts Options) io.Writer {
 		return opts.Stderr
 	}
 	return os.Stderr
+}
+
+// reportWarning emits one non-fatal preflight diagnostic: to the
+// caller's diagnostic writer, and to OnWarning when one is installed.
+// A service that captures Stderr and only reads it on a non-zero exit
+// (execsvc) delivers the first write nowhere on success, so the
+// callback is how a `checkOnError=warn` diagnostic reaches a remote
+// caller whose script otherwise runs fine (Codex review, PR #6111).
+func reportWarning(opts Options, w preflight.Problem) {
+	msg := w.String()
+	_, _ = fmt.Fprintln(warnSink(opts), "mcpx:", msg)
+	if opts.OnWarning != nil {
+		opts.OnWarning(msg)
+	}
 }
 
 // workDirKeyMaterial is the WorkRoot directory key's input: the
@@ -310,7 +343,7 @@ func npmrcReferencedVars(npmrc []byte) []string {
 			continue
 		}
 		name := text[start:j]
-		if c := name[0]; !(c == '_' || ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')) {
+		if c := name[0]; c != '_' && ('A' > c || c > 'Z') && ('a' > c || c > 'z') {
 			continue
 		}
 		if !seen[name] {
@@ -346,6 +379,16 @@ func workDirKeyMaterial(kind string, opts Options) string {
 	return material
 }
 
+// evidenceFile names the file whose extension may speak for the
+// script's language: the execution target when there is one, else the
+// file Source was rendered from.
+func (o Options) evidenceFile() string {
+	if o.File != "" {
+		return o.File
+	}
+	return o.SourceName
+}
+
 // Run generates the client, writes the script and executes it.
 func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" && opts.File == "" {
@@ -373,7 +416,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// harness path honours what the raw path preserves.
 		opts.Runtime = js.runtime
 		jsEnv = js
-	} else if ScriptLanguage(opts.File, opts.Source) == codegen.Python.Name {
+	} else if ScriptLanguage(opts.evidenceFile(), opts.Source) == codegen.Python.Name {
 		// Rank 3: nothing named an interpreter and the script is Python
 		// by extension, so the run is a Python harness run rather than a
 		// TypeScript one. Installing the client is the difference from a
@@ -638,6 +681,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rt.Bin = abs
 		}
 	}
+	if rt.Kind == KindNode {
+		if err := checkNodeTransformTypes(rt.Bin); err != nil {
+			return nil, err
+		}
+	}
 
 	// Checked after the launcher is written, because the launcher is what
 	// actually gets run and therefore what has to be valid. Doing it here
@@ -647,13 +695,23 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if timeout == 0 {
 			timeout = defaults.TypecheckTimeout
 		}
-		rep := preflight.TypeCheckResolved(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
-			append(append([]string{}, rt.ConfigArgs...), depsFlags...), opts.Dir)
+		// The checker is not necessarily the execution runtime: the
+		// switch policy checks a Node or Bun script with Deno. depsFlags
+		// describes the EXECUTION runtime (Bun's --no-install, or none
+		// for Node), and ResolutionArgs drops what a checker cannot use,
+		// so a deps.autoInstall=off set would let the Deno checker fetch
+		// uncached dependencies before execution even starts. Give the
+		// checker the flags its own runtime would carry for this set
+		// (Codex review, PR #6111).
+		checkerFlags := checkerDepsFlags(rt.Kind, opts.TypeCheckOnUnsupported, opts.Deps, depsFlags)
+		rep := preflight.TypeCheckWithPolicy(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
+			append(append([]string{}, rt.ConfigArgs...), checkerFlags...), opts.Dir,
+			opts.TypeCheckOnError, opts.TypeCheckOnUnsupported)
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}
 		for _, w := range rep.Warnings() {
-			fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
+			reportWarning(opts, w)
 		}
 	}
 
@@ -710,7 +768,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 		for _, w := range rep.Warnings() {
-			fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
+			reportWarning(opts, w)
 		}
 	}
 
@@ -762,7 +820,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		stderrDone = make(chan struct{})
 		go func() {
 			defer close(stderrDone)
-			defer pr.Close()
+			defer func() { _ = pr.Close() }()
 			_ = logging.Stream(pr, opts.Log, logging.StreamOptions{
 				Enrich:      opts.Enrich,
 				Passthrough: passthrough,
@@ -772,7 +830,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			})
 		}()
 		defer func() {
-			pw.Close()
+			_ = pw.Close()
 			<-stderrDone
 		}()
 	} else if opts.Stderr != nil {
@@ -802,10 +860,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if cmd.Process != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 			select {
-			case <-waitCh:
+			case recvErr := <-waitCh:
+				_ = recvErr
 			case <-time.After(defaults.ShutdownGrace):
 				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-				<-waitCh
+				recvErr := <-waitCh
+				_ = recvErr
 			}
 		}
 		res.Duration = time.Since(start)
@@ -1017,9 +1077,9 @@ func writeIfChanged(path, content string) error {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }()
 	if _, err := f.WriteString(content); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
@@ -1054,17 +1114,17 @@ func textScanSource(opts Options, scriptPath string) string {
 	return scan
 }
 
-// writeLauncher emits a shim that imports the user's module and calls its
-// entry point if it has one.
-//
-// The shim is written beside the script so its relative import resolves, and
-// so the generated client next to the script is the one both files see.
-// LauncherNone, given as the launcher, means no shim at all: the script is
+// LauncherNone given as the launcher means no shim at all: the script is
 // handed to the runtime untouched. Nothing is installed, nothing is captured,
 // nothing wraps the error. It is the escape hatch for a script that wants the
 // runtime and none of the harness.
 const LauncherNone = "none"
 
+// writeLauncher emits a shim that imports the user's module and calls its
+// entry point if it has one.
+//
+// The shim is written beside the script so its relative import resolves, and
+// so the generated client next to the script is the one both files see.
 func writeLauncher(workDir, scriptPath, export string, ph Phases, captureConsole bool, opts Options) (string, error) {
 	if strings.TrimSpace(opts.Launcher) == LauncherNone {
 		return "", nil

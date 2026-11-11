@@ -41,23 +41,23 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use iroh::{
+    Endpoint, EndpointAddr,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
-    Endpoint, EndpointAddr,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::is_nfc;
 
-use crate::connectivity::{connect, within, DIAL_TIMEOUT};
-use crate::directory::{hex_to_array, normalize_key, Directory, Refusal};
+use crate::connectivity::{DIAL_TIMEOUT, connect, within};
+use crate::directory::{Directory, Refusal, hex_to_array, normalize_key};
 use crate::directory_auth::Caller;
 use crate::directory_view::{DirectoryAction, DirectoryOutcome};
-use crate::envelope_net::{answer_frames, send, Reply};
-use crate::envelope_outbox::{check_target, Outcome};
+use crate::envelope_net::{Reply, answer_frames, send};
+use crate::envelope_outbox::{Outcome, check_target};
 use crate::event_sync::{CLOSE_WAIT, SESSION_DEADLINE};
 use crate::frames::{read_frame, write_frame};
 use crate::world::hex_encode;
@@ -796,13 +796,16 @@ impl ArtifactLog {
     ///
     /// Fails if a complete line is corrupt or does not verify.
     pub fn open(path: &Path) -> Result<Self> {
-        let text = match fs::read_to_string(path) {
-            Ok(text) => text,
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(error) => return Err(error).context("reading the artifact file"),
         };
-        let kept = text.rfind('\n').map_or(0, |index| index + 1);
-        if kept < text.len() {
+        let kept = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |index| index + 1);
+        if kept < bytes.len() {
             // #2128: mirror Directory::replay / FileJournal::open - a torn
             // final entry is dropped loudly, not silently.
             tracing::warn!(
@@ -814,8 +817,9 @@ impl ArtifactLog {
                 .open(path)?
                 .set_len(u64::try_from(kept)?)?;
         }
+        let text = std::str::from_utf8(&bytes[..kept]).context("artifact file is not UTF-8")?;
         let mut log = Self::default();
-        for (number, line) in text[..kept].lines().enumerate() {
+        for (number, line) in text.lines().enumerate() {
             // #2128: blank lines are cosmetic (Directory::replay skips them
             // in its own journal); enumerate() keeps the physical line
             // number, so a corrupt non-blank line still reports its true
@@ -1227,11 +1231,11 @@ pub async fn pull_within(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::test_forgeries::{identity_forgery, with_non_canonical_s, IDENTITY_KEY};
+    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
     use iroh::{
-        endpoint::{presets, RelayMode},
-        protocol::Router,
         TransportAddr,
+        endpoint::{RelayMode, presets},
+        protocol::Router,
     };
     use iroh_base::SecretKey;
     use proptest::prelude::*;
@@ -1796,14 +1800,20 @@ mod tests {
         let second = log.sign(&key(1), &declared(1, 7)).unwrap();
         log.insert(second.clone()).unwrap();
         append(&path, &second).unwrap();
-        let mut text = fs::read_to_string(&path).unwrap();
-        text.push_str("{\"author\":\"tor");
-        fs::write(&path, text).unwrap();
+        let complete = fs::read(&path).unwrap();
+        let mut torn = complete.clone();
+        torn.extend_from_slice(b"{\"name\":\"Jos");
+        torn.push(0xc3); // First byte of "é".
+        fs::write(&path, torn).unwrap();
 
-        let reopened = ArtifactLog::open(&path).unwrap();
+        let mut reopened = ArtifactLog::open(&path).unwrap();
         assert_eq!(reopened, log);
-        assert!(fs::read_to_string(&path).unwrap().ends_with('\n'));
+        assert_eq!(fs::read(&path).unwrap(), complete);
         assert_eq!(reopened.head_seq(&public(1)), 2);
+        let third = reopened.sign(&key(1), &declared(1, 9)).unwrap();
+        reopened.insert(third.clone()).unwrap();
+        append(&path, &third).unwrap();
+        assert_eq!(ArtifactLog::open(&path).unwrap(), reopened);
     }
 
     #[test]
@@ -2328,13 +2338,14 @@ mod tests {
         assert!(log.insert(doubled).is_err());
 
         // The builder refuses the same frontier before receipt sees it.
-        assert!(log
-            .sign_after(
+        assert!(
+            log.sign_after(
                 &key(1),
                 &document("second"),
                 vec![first.hash.clone(), first.hash.clone()],
             )
-            .is_err());
+            .is_err()
+        );
 
         let repeated = sign_raw_after(
             &key(1),

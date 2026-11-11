@@ -43,6 +43,26 @@ general/muse-meta database rather than requiring a dedicated database. Run
 locally against a SQLite file (`file:` URL) or remotely via
 `DATABASE_URL` + `TURSO_AUTH_TOKEN`.
 
+### Upgrading the comment identity schema
+
+Existing databases with the old `pmp_comments(id)` primary key fail startup
+with an explicit error. Stop all projector writers and back up the entire
+database first, including the human-written `pmp_links` registry. Do not
+delete the database: it may contain unrelated fleet data. Using the SQL client
+for that database, run:
+
+```sql
+DROP VIEW IF EXISTS pmp_v_subject_activity;
+DROP TABLE pmp_comments;
+```
+
+Start the upgraded projector to recreate the table and view, then run a full
+reconciliation for every configured repository and check all stream errors.
+The comment and review streams reread their full GitHub collections. This
+rebuild cannot recover deleted comments or overwritten historical records
+that GitHub no longer returns; retain the backup for those records. Links,
+items, deliveries, cursors, and other applications' tables are untouched.
+
 ## Secrets (referenced by name only — never commit values)
 
 | Env var                  | What it is                                                                |
@@ -89,6 +109,28 @@ local source you don't commit.
 | `/hot/checkpoints?consumer=<id>`              | GET    | none   | a consumer's acked checkpoint cursor                              |
 | `/hot/checkpoints`                            | POST   | bearer | ack a checkpoint `{consumer, cursor, highWater}`                  |
 | `/reconcile`                                  | POST   | bearer | trigger a reconciliation poll                                     |
+
+### Integrated queue/PM view — machine + human faces (#7078, #2072 slice 3)
+
+`bun run src/cli.ts queue-view --tasks <tasks.json> [--window-hours 24] [--consumer queue-view] [--no-ack]`
+prints one read-only JSON view joining fleet queue task records (JSON
+exported from the queue broker: an array, or `{ "tasks": [...] }`) with
+this projector's slice-2 hot list, consumed through a consumer
+checkpoint (pinned high-water; the checkpoint is acked only after the
+view prints, unless `--no-ack`). The view lists queued items in claim
+order, items claimed inside the window with their claiming
+system/lane, snapshot counts by status (which reconcile with
+`fleet queue health` when fed the full task list), and links to the
+existing aggregator/projector trend stores. It writes nothing and
+collects nothing new.
+
+`--format html` on the same command prints the human face: the same
+view rendered as one standalone HTML page/report (status counts,
+queued in claim order, picked-up items with their claiming
+system/lane, hot-list summary, and trend panels that link — never
+copy — the same stores the machine face links). The read model is
+identical for both faces; only the rendering differs
+(`src/queue-view-html.ts`).
 
 **Subjects** are external keys:
 

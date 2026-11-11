@@ -1,0 +1,48 @@
+# Follow-on landscape and queue handoff
+
+2026-11-11 UTC. Evidence: parent-provided `gh issue list --repo developing-today/code --state all --search atlas --limit 500 --json number,title,state,labels,body,url` returned 248 issues, and [the dependency snapshot](07-issue-snapshot.json). The working search dumps were reduced to the audit ledger below to avoid committing unrelated issue bodies. Search is title/text dependent and not proof of absence. This worker's `gh` lacks authentication; parent must recheck state, labels, issue comments, PRs and broader synonyms before filing. No issue or queue writes were performed by this worker. Never modify held, user-owned, `do-not-merge` or `do-not-auto-edit` work; coordinate separately assigned work rather than duplicating it.
+
+## Reuse, not duplicates
+
+| Existing issue | Snapshot state and relevant labels | Scope / limitation |
+|---|---|---|
+| #5741 | CLOSED, `status:done` | Offline eval exists: `pkgs/atlas-search/crates/atlas-core/src/eval.rs` consumes saved rankings, reports deterministic qrels metrics; it does not execute retrieval or prove corpus absence. |
+| #6046 | OPEN, `status:in-review`, `task/small-fix` | Golden-set builder and gate design; #8062 OPEN, `status/parked`, `queue/parked`, `work/assigned` identifies missing fresh runs in that design. Don't duplicate either. |
+| #6027 | OPEN, `status:in-review` | Retrieval stats, feedback, score traces; implementation #8245, #8246, #8247, #8248, #8249 OPEN, no labels in snapshot. #8245 already covers query IDs, stage scores and unserved pool entrants; #8248 captures thumbs/essays; #8249 nominations only. #7647 OPEN, `status/parked`, `queue/parked`, `work/assigned` covers model provenance in traces. |
+| #6047 | OPEN, `status/blocked`, `queue/blocked` | Weak implicit-event logging design; position bias and agent self-feedback are already in scope. |
+| #3125 | OPEN, `source/human`, `priority/high` | Occurrence registry, CAS, backfill and multi-DB resolution. Do not create another occurrence registry. #6035 OPEN, `user/escalated`, `status/blocked`, `queue/blocked` concerns spans; #6062 OPEN, `status/parked`, `queue/parked`, `work/assigned` covers ID graph publication. |
+| #5410 | CLOSED | Filter manifest design; #6228 OPEN, `status/blocked`, `queue/blocked`, `work/assigned` implementation; #6993 OPEN, `status/parked`, `queue/parked`, `work/assigned` schema/loader. Manifest is not security authority. |
+| #6058 | CLOSED | Embedding ledger design; #7969 OPEN, no labels in snapshot, covers sweep runner and plan-headroom reporting. Avoid another embedding ledger. |
+| #6054 | CLOSED | Deletion propagation design; #6024 OPEN is external-content licensing gate. Source-rights purge is not usefulness retirement. |
+| #6266 | OPEN, `source/human` | Approved non-secret edge Ask-the-ledger with specific Cloudflare architecture; not a generic citation-bearing agent recall contract. Do not change its approved scope. |
+
+## Candidate early slices (new only after fresh dedup)
+
+These are independent fixtures/contract work, not a decision to deploy a graph, train a ranker, migrate providers or automate deletion. Existing issues above are prerequisites only where noted. Candidate paths exist, but are not exclusive ownership claims; coordinate concurrent edits.
+
+1. **Offline missing-versus-buried diagnostic fixture.** Extend, don't replace, #5741: exhaustively enumerate a synthetic eligible snapshot and supply target identity, coverage state, index/candidate membership and served cutoff. Oracle: independently known fixture truth distinguishes incomplete coverage, absent, unindexed/not-candidate, below cutoff and served; forbidden targets have ordinary not-found output. Hard: fixture and explicit enumerated eligible set; no deployed trace or feedback dependency. Soft: #6046/#8062 golden-set reconciliation. Candidate `pkgs/atlas-search/crates/atlas-core/src/eval.rs`, `pkgs/atlas-search/crates/atlas-core/tests/`.
+2. **Visibility-boundary regression model.** Fixture-only reference model over caller ceiling, physical source selection, cached snapshot and revocation epoch; compare permitted projected IDs at candidate, hydration, cache/replay stages. Oracle: generated mixed-visibility cases never return or count restricted IDs after downgrade/revocation, including warm cache. Hard: defined fixture policy, not manifest loader; soft: #6228/#6993 and #6021 runtime classification work. Candidate `pkgs/atlas-search/crates/atlas-core/src/search.rs`, `filters.rs`, `tests/`; separate security semantics from manifest filter semantics.
+3. **Authorized occurrence projection contract fixture.** Reuse #3125 as registry owner: synthetic occurrences with opaque content ID, occurrence ID, source/version locator, coverage and current visibility; expose only permitted occurrences and authorized completeness state. Oracle: same bytes with mixed rights never merge authority, and inserting a hidden occurrence cannot alter public result or count. Hard: fixture contract only; production adapter depends on #3125 and rights/retention enforcement. Soft: #6035 span schema, #6062 graph publication. Candidate `pkgs/atlas-search/crates/atlas-core/src/types.rs` and `tests/`; do not implement another registry.
+4. **Cost-aware placement dry-run model.** Synthetic scenario model compares speed/quality and itemized unit costs within hard rights, retention and headroom constraints; unknown prices remain unknown. Oracle: hand-calculated ledgers and generated monotonicity/policy invariants. Hard: fixture only. Soft: #6061 growth forecast, #6041 retention rules, #6058 ledger and #7969 operational runner. Candidate `pkgs/atlas-search/crates/atlas-core/tests/`; no real provider or automatic movement.
+
+All four are **provisional**, not certified unique from one keyword search; file only remaining gaps after inspecting broader issue/PR history. In particular do not file separate score-trace, feedback, manifest, costs or registry work already covered above.
+
+The full, self-contained issue drafts are [F01](../follow-ons/F01.md), [F02](../follow-ons/F02.md), [F03](../follow-ons/F03.md), [F04](../follow-ons/F04.md). F02 models end-to-end visibility noninterference; F03 tests identity and citation fidelity. Both are separately buildable and use separate test-local helpers. Fixture work has no runtime dependencies; adapter integration must be separately gated. Create and enqueue only after the design merge, as directed by the parent.
+
+### Compact dedup audit ledger
+
+The parent additionally searched via `gh` at 2026-11-11 03:52 UTC: `"atlas" "diagnos"`, `"atlas" "fixture"`, `"noninterference"`, `"missing" "buried"`, `"atlas" "placement"`, `"atlas" "resolver"`, `"atlas" "simulation"`. Search results can be noisy, capped or miss synonyms; they do not establish universal absence. Relevant retained identifiers: #6018 #6020 #5741 #6046 #8062 #6027 #8245 #8246 #8247 #8248 #8249 #7647 #6047 #3125 #6035 #6062 #6026 #6021 #8479 #5410 #6228 #6993 #5375 #6805 #8312 #6664 #6054 #6024 #6041 #6061 #6058 #7969 #6042 #8227 #8228 #8229 #8230 #8231 #6266 #6022 #7717 #8204 #8206. Detailed state/labels and overlap for the critical items appear above; state can change and parent must recheck immediately before filing. #8312 is cache per-key purge, #6664 is actual hydration, #8227–#8231 are cold-tier implementation, and #6022/#7717/#8204/#8206 concern agent-note placement, not this placement simulator. No raw issue body is necessary in the final audit ledger.
+
+## Queue CLI (source-verified; no writes)
+
+`pkgs/fleet/crates/fleet-queue/src/client.rs:1347-1387,1388-1515,1861-1884,1971-1981,2191-2292`; validation `validate.rs:38-174`; canonical packet builder `scripts/fleet/queue-reconcile/check_coverage.py:157-216`.
+
+```sh
+repo-queue list --queue repo-health-code-pilot --worker repo-worker-code --limit 500
+repo-queue heartbeat 14861 --worker repo-worker-code --progress '{"note":"..."}'
+repo-queue complete 14861 --worker repo-worker-code --result '{"summary":"..."}' --execution '{"lane":"opencode","session_id":"<session-id>"}'
+```
+
+Enqueue/validate accept no `--worker` flag. The parent verified the installed enqueue rejects the mandated flag before any write. The [chosen nonblocking default](10-open-questions.md) honors the worker constraint and records deliberate non-enqueue plus the triage packet on each filed issue, rather than silently omitting it or claiming queue coverage. The packet envelope has title, body, priority, dedupe_key, payload; required payload includes `schema: repo-task/v1`, supported kind, allowlisted repo, issue identity, problem, nonempty evidence/acceptance/tests, scope include/exclude, risk level/flags, priority_reason, positive timebox_minutes/max_attempts, context_refs, dedupe checked_at/basis. The ordinary triage dedupe key is `repo-health:v1:triage:developing-today/code:issue:<number>`. Enqueue through a compatible authorized surface in the same pass, or document why deliberately not queued; never infer coverage from an issue alone.
+
+If the original task is parked, wake only when its condition is satisfied: `repo-queue wake 14861 --worker repo-worker-code --reason '<reason>'`, then `repo-queue claim --task 14861 --worker repo-worker-code --lane <lane> --session-id <session>`; by-ID is exceptional. If currently claimed, coordinate with its actual holder and use `repo-queue claim --task 14861 --worker repo-worker-code --lane <lane> --from-session <holder-session> --session-id <session>`; the holder session must match. Never assume ownership or wake an unsatisfied park.

@@ -2,7 +2,30 @@ name: opencode-config-guard
 
 # CI tier policy: see .github/ci-policy.md
 on:
-  merge_group:
+  pull_request:
+    # Path-gated (#1401): this guard checks exactly one canonical file
+    # plus its own implementation, so PRs that touch none of these
+    # paths must not enqueue a queued-then-6s run behind the runner
+    # backlog. Push to main stays unfiltered, so main is always
+    # validated. (Gate covers the workflow's current check set: the
+    # route-rules and provider-catalog fixtures were added after the
+    # original #1401 gate was written. merge_group omitted - there is
+    # no merge queue; Drew ruling 2026-11-08, see ci-policy.md.)
+    paths:
+      - ".opencode/opencode.jsonc"
+      - "bin/check-opencode-metered-providers.mjs"
+      - "bin/check-opencode-metered-providers.test.mjs"
+      - "bin/check-opencode-go-seating.mjs"
+      - "bin/check-opencode-go-seating.test.mjs"
+      - "bin/check-opencode-route-rules.mjs"
+      - "bin/check-opencode-route-rules.test.mjs"
+      - "bin/provider-catalog-sync.mjs"
+      - "bin/provider-catalog-sync.test.mjs"
+      - "bin/provider-catalog-snapshot.test.mjs"
+      - "bin/snapshot-provider-catalogs.mjs"
+      - ".github/workflows/opencode-config-guard.yml"
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -19,7 +42,24 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
       - name: Run guard fixtures
         run: node --test bin/check-opencode-metered-providers.test.mjs
       - name: Check canonical OpenCode config
         run: node bin/check-opencode-metered-providers.mjs .opencode/opencode.jsonc
+      # #5611: regression fixtures cover the exact-id credential requirement
+      # and the successful-attempt window. The live-store check runs on the
+      # laptop timer; CI must not pretend it can read the laptop's database.
+      - name: Run opencode-go seating fixtures
+        run: node --test bin/check-opencode-go-seating.test.mjs
+      - name: Run provider-catalog audit fixtures
+        run: node --test bin/provider-catalog-sync.test.mjs bin/provider-catalog-snapshot.test.mjs
+      # #1173: the offline snapshot handoff and the route-rule audit are
+      # validated on every PR, so implementation-only changes to either
+      # cannot land unexercised.
+      - name: Run route-rule guard fixtures
+        run: node --test bin/check-opencode-route-rules.test.mjs
+      - name: Check canonical route rules
+        run: node bin/check-opencode-route-rules.mjs .opencode/opencode.jsonc

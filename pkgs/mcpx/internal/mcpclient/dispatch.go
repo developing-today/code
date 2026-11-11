@@ -18,6 +18,19 @@ func WithToolCallDispatchHook(ctx context.Context, hook func()) context.Context 
 	return context.WithValue(ctx, toolCallDispatchKey{}, hook)
 }
 
+// NoteToolCallDispatched fires the dispatch hook installed by
+// WithToolCallDispatchHook, for a call that is being dispatched by a
+// path with no transport frame to observe -- a script-backed tool view
+// (#1933 slice 2) executes in-process, so the moment its program
+// starts is its dispatch. Callers invoke it exactly when execution
+// begins, never during validation or rendering, so a hook observer
+// can distinguish "never ran" from "ran with an unknown outcome".
+func NoteToolCallDispatched(ctx context.Context) {
+	if hook, ok := ctx.Value(toolCallDispatchKey{}).(func()); ok {
+		hook()
+	}
+}
+
 func isToolCallFrame(msg []byte) bool {
 	var frame struct {
 		Method string `json:"method"`

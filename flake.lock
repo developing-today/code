@@ -128,6 +128,22 @@
       "original": {
         "owner": "ipetkov",
         "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      }
+    },
+    "crane_2": {
+      "locked": {
+        "lastModified": 1766774972,
+        "narHash": "sha256-8qxEFpj4dVmIuPn9j9z6NTbU+hrcGjBOvaxTzre5HmM=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
         "type": "github"
       }
     },
@@ -1314,11 +1330,11 @@
     "mcpx-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1793735966,
-        "narHash": "sha256-UeoH+e/9HREDUyV1n5vBjv9fSqhdf0i1vwmQ0FnAAK4=",
+        "lastModified": 1794021949,
+        "narHash": "sha256-qiIa3rV7keHJCEdqMKILnsbr6SbRSYbFZXuCRO5PqeA=",
         "owner": "developing-today",
         "repo": "code",
-        "rev": "031cde20f71c2fafa068c47b69e68175b72994a5",
+        "rev": "bcc090152f3fd7d97d5fbc81c4815224a39d4d30",
         "type": "github"
       },
       "original": {
@@ -2224,11 +2240,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1793786409,
-        "narHash": "sha256-yimwZMpUUknr18zB4SScE53r/8DvNhF5FJp5XfypMPU=",
+        "lastModified": 1794228084,
+        "narHash": "sha256-298W/X8tTZ0e80sjYkWfh2DbJ8TW8f7wBf3IG7NIujw=",
         "owner": "developing-today-forks",
         "repo": "openchamber",
-        "rev": "794e5f5c260ee4de1d8d9c4a29b330b009fde5aa",
+        "rev": "e895968ba30b28f5345df0661d11278265505967",
         "type": "github"
       },
       "original": {
@@ -2248,11 +2264,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1793897879,
-        "narHash": "sha256-Hkp+ITzWt3njy7nwZP0LSwKS71m4gVoIeasJ+/utpww=",
+        "lastModified": 1794379058,
+        "narHash": "sha256-/RdOxYIRdSKHqL7Ms6gZ7JJZ2g2vpUUGK1V1pGZZs8A=",
         "owner": "developing-today-forks",
         "repo": "opencode",
-        "rev": "1add72932a4eae0794712c7c1f95a74aad10d03c",
+        "rev": "94a9e531aa1525daf48aa5ee06c263e4e8b46615",
         "type": "github"
       },
       "original": {
@@ -2359,6 +2375,7 @@
         "chatgpt-desktop": "chatgpt-desktop",
         "clan-core": "clan-core",
         "claude-desktop": "claude-desktop",
+        "crane": "crane",
         "disko": "disko_2",
         "esp-dev": "esp-dev",
         "esp-dev-6": "esp-dev-6",
@@ -2428,7 +2445,7 @@
     },
     "rust-flake": {
       "inputs": {
-        "crane": "crane",
+        "crane": "crane_2",
         "nixpkgs": [
           "omnix",
           "nixpkgs"
