@@ -193,7 +193,7 @@ impl Mirror<'_> {
     }
 
     /// Deletes the rows of the events the pool has expired into its buffer, and returns
-    /// how many. `pool.arrived` expires due events as a side effect of a release, into
+    /// how many. `pool.release` expires due events as a side effect of a release, into
     /// the buffer only `pool.expire` drains; a caller that releases without expiring
     /// first would commit with the pool and the rows disagreeing -- the expired events
     /// gone from the pool, their rows still on disk, and their expiry left for a later,
@@ -273,8 +273,8 @@ impl Mirror<'_> {
     /// that dependency. Returns the released events in arrival order. Their rows stay until the
     /// caller decides each one.
     pub fn release(&mut self, id: &Hash, now: u64) -> Result<Vec<Event>, StoreError> {
-        let released = self.pool.arrived(*id, now);
-        // `arrived` expired every event due at `now` into the pool's buffer; their
+        let released = self.pool.release(*id, now);
+        // `release` expired every event due at `now` into the pool's buffer; their
         // rows go in this transaction too, not a later one's.
         self.flush_expired(now)?;
         delete(self.txn, id)?;
@@ -288,8 +288,8 @@ impl Mirror<'_> {
     /// seen. Returns the released events in arrival order.
     pub fn present_proof(&mut self, id: &Hash, now: u64) -> Result<Vec<Event>, StoreError> {
         let held = get(self.txn, id)?;
-        let released = self.pool.arrived(*id, now);
-        // As in `release`: the events `arrived` expired lose their rows here. The
+        let released = self.pool.release(*id, now);
+        // As in `release`: the events `release` expired lose their rows here. The
         // flush runs before the park below, so a held proof that was itself due is
         // re-held for good by the park rather than deleted by the flush.
         self.flush_expired(now)?;
@@ -339,7 +339,12 @@ impl Mirror<'_> {
     }
 
     /// Removes the row of an event the pool has released, once it is decided for good.
-    pub fn drop_row(&self, id: &Hash) -> Result<(), StoreError> {
+    /// The event is decided for good here: it reaches neither `release` nor
+    /// `restore` after this, so its handed-out mark in the pool is finalized
+    /// too (#7724) -- otherwise every released-then-refused event would leak
+    /// one mark for the life of the pool.
+    pub fn drop_row(&mut self, id: &Hash) -> Result<(), StoreError> {
+        self.pool.forget(id);
         delete(self.txn, id)
     }
 }

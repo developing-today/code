@@ -20,7 +20,7 @@ func TestHandleArtifactPutTTLCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	s := &Server{}
 	s.artifactStore = store
 	s.artifactsOnce.Do(func() {})

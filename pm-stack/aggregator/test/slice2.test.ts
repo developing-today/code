@@ -10,7 +10,7 @@ import {
   sessionRoots,
   timeline,
 } from "../src/derive.ts";
-import { type OrchestrationSection, type RoadmapRow, type SessionFeedEntry, type TierItem } from "../src/model.ts";
+import { type BoardItem, type OrchestrationSection, type RoadmapRow, type SessionFeedEntry, type TierItem } from "../src/model.ts";
 import { renderAttention, renderRoadmap, renderToday } from "../src/render.ts";
 import {
   FIXTURE_ATTENTION,
@@ -266,9 +266,9 @@ describe("roadmap grains (#898 §3)", () => {
       links: [],
     };
     const html = renderRoadmap([...FIXTURE_ROADMAP, row], await src.items([]), src.provenance(), "today");
-    expect(html).toContain("Next 3 days");
-    expect(html).toContain("Dated today row");
-    expect(html).toContain("no calendar date");
+      expect(html).toContain("Next 3 days");
+      expect(html).toContain("Dated today row");
+      expect(html).toContain("Undated or coarse horizons");
   });
 });
 
@@ -368,6 +368,31 @@ describe("today view (#898 §4)", () => {
     expect(html).toContain("Top objectives");
     expect(html).toContain("Project momentum");
     expect(html).toContain("has not published a goal-measurement section yet");
+  });
+
+  test("prototype-spelling priorities use the unknown-priority rank", () => {
+    const item = (title: string, priority: string): BoardItem => ({
+      id: title,
+      title,
+      repo: "example/repo",
+      source: "kaneo",
+      status: "in-progress",
+      priority,
+      updatedAt: "2026-10-25T15:00:00.000Z",
+      links: [],
+    });
+    const derivedOrder = (priorities: string[]) =>
+      deriveToday(priorities.map((priority) => item(priority, priority)), [], new Map(), null, new Date(NOW)).objectives.map(
+        (objective) => objective.title,
+      );
+
+    for (const key of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+      const prototypeOrder = derivedOrder([key, "urgent"]);
+      const unknownOrder = derivedOrder(["unknown-a", "urgent"]).map((title) => (title === "unknown-a" ? key : title));
+      expect(prototypeOrder).toEqual(unknownOrder);
+      expect(prototypeOrder).toEqual(["urgent", key]);
+    }
+    expect(derivedOrder(["normal", "urgent"])).toEqual(["urgent", "normal"]);
   });
 });
 

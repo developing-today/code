@@ -29,6 +29,25 @@ name: go modules build
 # pgx/cockroach indirects) with nothing noticing.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/chat/**"
+      - "pkgs/database/**"
+      - "pkgs/graph/**"
+      - "pkgs/import/**"
+      - "pkgs/launcher/**"
+      - "pkgs/tea/**"
+      - ".github/workflows/go-modules-build.yml"
+  pull_request:
+    paths:
+      - "pkgs/chat/**"
+      - "pkgs/database/**"
+      - "pkgs/graph/**"
+      - "pkgs/import/**"
+      - "pkgs/launcher/**"
+      - "pkgs/tea/**"
+      - ".github/workflows/go-modules-build.yml"
   workflow_dispatch:
 
 permissions:

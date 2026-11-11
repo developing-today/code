@@ -27,6 +27,13 @@ const CODE_ATTEMPTS: u32 = 5;
 /// How far a signed request's timestamp may be from the server's clock.
 pub const SIGNED_WINDOW_MS: u64 = 5 * 60 * 1000;
 const SIGNED_NONCE_LIMIT: usize = 4096;
+/// How many of the shared replay budget's entries one key may hold at
+/// once: a sixteenth of [`SIGNED_NONCE_LIMIT`], so a single key can
+/// never starve the others out of the guard — at least sixteen keys can
+/// always hold their full allowance at the same time. Entries expire
+/// with the signed-request window, so the allowance refills as the
+/// window slides.
+const SIGNED_NONCE_PER_KEY_LIMIT: usize = SIGNED_NONCE_LIMIT / 16;
 const SIGNED_DOMAIN: &str = "id-request-v1";
 const CODE_DOMAIN: &str = "id-code-v1";
 
@@ -249,7 +256,12 @@ impl ReplayGuard {
     /// # Errors
     ///
     /// Fails during the boot window, if the same key and nonce were already
-    /// used in the window, or if too many requests are being remembered.
+    /// used in the window, if this key already holds
+    /// [`SIGNED_NONCE_PER_KEY_LIMIT`] remembered nonces, or if too many
+    /// requests are being remembered in total. Retained state is hard
+    /// bounded by [`SIGNED_NONCE_LIMIT`] entries; a live entry is never
+    /// evicted to make room, so a replay can never be admitted merely
+    /// because the guard is full.
     pub fn accept(&mut self, key: &str, nonce: &str, at: u64, now: u64) -> Result<()> {
         if now < self.quiet_until {
             let seconds = (self.quiet_until - now).div_ceil(1000);
@@ -264,6 +276,22 @@ impl ReplayGuard {
         let id = format!("{key}:{nonce}");
         if self.seen.contains_key(&id) {
             return Err(Refusal::Unauthenticated("request was already used".to_owned()).into());
+        }
+        // The per-key bound is counted from the same map the duplicate
+        // check reads, after pruning, so it can never drift from the
+        // state it bounds. Keys are normalised hex and nonces exclude
+        // ':', so the "{key}:" prefix matches exactly this key's entries.
+        let key_prefix = format!("{key}:");
+        let held_by_key = self
+            .seen
+            .keys()
+            .filter(|seen_id| seen_id.starts_with(&key_prefix))
+            .count();
+        if held_by_key >= SIGNED_NONCE_PER_KEY_LIMIT {
+            return Err(Refusal::RateLimited(
+                "too many signed requests from one key; try again shortly".to_owned(),
+            )
+            .into());
         }
         if self.seen.len() >= SIGNED_NONCE_LIMIT {
             return Err(Refusal::RateLimited(
@@ -299,8 +327,21 @@ pub fn signed_message(method: &str, target: &str, at: u64, nonce: &str, body: &[
     )
 }
 
+/// Whether `nonce` is one `verify_signed` can accept: 1-64 ASCII
+/// alphanumeric characters or '-'.
+fn nonce_in_domain(nonce: &str) -> bool {
+    !nonce.is_empty()
+        && nonce.len() <= 64
+        && nonce.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 /// Sign a request as a client holding `key` would.
-#[must_use]
+///
+/// # Errors
+///
+/// Fails if `nonce` is empty, longer than 64 characters, or has a character
+/// other than an ASCII letter, digit or '-': `verify_signed` refuses every
+/// such nonce, so no signature is produced for one.
 pub fn sign_request(
     key: &SigningKey,
     method: &str,
@@ -308,14 +349,18 @@ pub fn sign_request(
     body: &[u8],
     at: u64,
     nonce: &str,
-) -> Signed {
+) -> Result<Signed> {
+    anyhow::ensure!(
+        nonce_in_domain(nonce),
+        "nonce must be 1-64 ASCII letters, digits or '-'"
+    );
     let message = signed_message(method, target, at, nonce, body);
-    Signed {
+    Ok(Signed {
         key: hex_encode(&key.verifying_key().to_bytes()),
         at,
         nonce: nonce.to_owned(),
         signature: hex_encode(&key.sign(message.as_bytes()).to_bytes()),
-    }
+    })
 }
 
 /// Check a signed request and return the key that made it.
@@ -345,13 +390,7 @@ pub fn verify_signed(
         )
         .into());
     }
-    if signed.nonce.is_empty()
-        || signed.nonce.len() > 64
-        || !signed
-            .nonce
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
+    if !nonce_in_domain(&signed.nonce) {
         return Err(refused());
     }
     let key = normalize_key(&signed.key).ok().ok_or_else(refused)?;
@@ -525,7 +564,8 @@ mod tests {
             b"",
             now(),
             "n1",
-        );
+        )
+        .unwrap();
         let mut replays = ReplayGuard::default();
         let who = verify_signed(
             &mut replays,
@@ -555,7 +595,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[7; 32]);
         let at = now();
         let target = "/api/world/directory?world=x";
-        let signed = sign_request(&key, "GET", target, b"", at, "edge");
+        let signed = sign_request(&key, "GET", target, b"", at, "edge").unwrap();
         let mut replays = ReplayGuard::default();
 
         assert!(verify_signed(&mut replays, &signed, "GET", target, b"", at).is_ok());
@@ -585,9 +625,96 @@ mod tests {
     }
 
     #[test]
+    fn one_key_filling_its_allowance_cannot_starve_a_second_key() {
+        // End to end through verify_signed: one key spends its whole
+        // per-key allowance on distinct valid requests, its next fresh
+        // request is refused, and a second key is still admitted.
+        let first = SigningKey::from_bytes(&[7; 32]);
+        let second = SigningKey::from_bytes(&[8; 32]);
+        let target = "/api/world/directory?world=x";
+        let at = now();
+        let mut replays = ReplayGuard::default();
+        for i in 0..SIGNED_NONCE_PER_KEY_LIMIT {
+            let signed =
+                sign_request(&first, "GET", target, b"", at, &format!("fill-{i}")).unwrap();
+            verify_signed(&mut replays, &signed, "GET", target, b"", at).unwrap();
+        }
+        let one_more = sign_request(&first, "GET", target, b"", at, "fill-one-more").unwrap();
+        let err = verify_signed(&mut replays, &one_more, "GET", target, b"", at).unwrap_err();
+        assert!(format!("{err:#}").contains("one key"), "{err:#}");
+        let other = sign_request(&second, "GET", target, b"", at, "fresh").unwrap();
+        assert!(verify_signed(&mut replays, &other, "GET", target, b"", at).is_ok());
+    }
+
+    #[test]
+    fn a_replay_is_still_refused_when_its_key_is_at_its_allowance() {
+        let at = now();
+        let mut replays = ReplayGuard::default();
+        for i in 0..SIGNED_NONCE_PER_KEY_LIMIT {
+            replays.accept("aa", &format!("n{i}"), at, at).unwrap();
+        }
+        // A fresh nonce from the same key is refused by the bound...
+        let err = replays.accept("aa", "fresh", at, at).unwrap_err();
+        assert!(format!("{err:#}").contains("one key"), "{err:#}");
+        // ...but a replay of an admitted nonce is refused as a replay,
+        // never admitted merely because the guard is full.
+        let err = replays.accept("aa", "n0", at, at).unwrap_err();
+        assert!(format!("{err:#}").contains("already used"), "{err:#}");
+    }
+
+    #[test]
+    fn retained_replay_state_stays_within_the_documented_hard_bound() {
+        let at = now();
+        let mut replays = ReplayGuard::default();
+        // Sixteen keys can hold a full allowance each: exactly the
+        // global limit. A seventeenth key is refused by the global
+        // bound, and no key's entries are evicted to make room.
+        for k in 0..16 {
+            let key = format!("key{k}");
+            for i in 0..SIGNED_NONCE_PER_KEY_LIMIT {
+                replays.accept(&key, &format!("n{i}"), at, at).unwrap();
+            }
+        }
+        assert_eq!(replays.seen.len(), SIGNED_NONCE_LIMIT);
+        assert!(replays.accept("key16", "n0", at, at).is_err());
+        assert_eq!(replays.seen.len(), SIGNED_NONCE_LIMIT);
+    }
+
+    #[test]
+    fn concurrent_duplicates_cannot_race_past_admission() {
+        // The hub shares one guard behind a mutex; the same signed
+        // request presented from many threads at once is admitted
+        // exactly once.
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let target = "/api/world/directory?world=x";
+        let at = now();
+        let signed = sign_request(&key, "GET", target, b"", at, "race").unwrap();
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(ReplayGuard::default()));
+        let admitted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let shared = shared.clone();
+                let admitted = admitted.clone();
+                let signed = signed.clone();
+                std::thread::spawn(move || {
+                    let mut replays = shared.lock().unwrap();
+                    if verify_signed(&mut replays, &signed, "GET", target, b"", at).is_ok() {
+                        admitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(admitted.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn a_signed_request_is_bound_to_its_method_target_body_and_time() {
         let key = SigningKey::from_bytes(&[7; 32]);
-        let signed = sign_request(&key, "POST", "/api/world/directory", b"{}", now(), "n2");
+        let signed =
+            sign_request(&key, "POST", "/api/world/directory", b"{}", now(), "n2").unwrap();
         for (method, target, body, at) in [
             ("GET", "/api/world/directory", b"{}".as_slice(), now()),
             ("POST", "/api/world/other", b"{}".as_slice(), now()),
@@ -621,12 +748,12 @@ mod tests {
         let mut replays = ReplayGuard::after_boot(boot, window);
         let target = "/api/world/directory";
 
-        let early = sign_request(&key, "GET", target, b"", boot + 599_000, "b1");
+        let early = sign_request(&key, "GET", target, b"", boot + 599_000, "b1").unwrap();
         let error =
             verify_signed(&mut replays, &early, "GET", target, b"", boot + 599_000).unwrap_err();
         assert!(boot_refused(&error), "{error:#}");
 
-        let late = sign_request(&key, "GET", target, b"", boot + 600_000, "b2");
+        let late = sign_request(&key, "GET", target, b"", boot + 600_000, "b2").unwrap();
         assert!(verify_signed(&mut replays, &late, "GET", target, b"", boot + 600_000).is_ok());
     }
 
@@ -634,7 +761,7 @@ mod tests {
     fn a_request_captured_before_a_restart_is_refused_during_the_boot_window() {
         let key = SigningKey::from_bytes(&[7; 32]);
         let boot = now();
-        let captured = sign_request(&key, "GET", "/x", b"", boot - 60_000, "old");
+        let captured = sign_request(&key, "GET", "/x", b"", boot - 60_000, "old").unwrap();
         let mut replays = ReplayGuard::after_boot(boot, Duration::from_mins(10));
         let error =
             verify_signed(&mut replays, &captured, "GET", "/x", b"", boot + 60_000).unwrap_err();
@@ -645,8 +772,63 @@ mod tests {
     fn a_zero_boot_window_refuses_nothing() {
         let key = SigningKey::from_bytes(&[7; 32]);
         let mut replays = ReplayGuard::after_boot(now(), Duration::ZERO);
-        let signed = sign_request(&key, "GET", "/x", b"", now(), "z1");
+        let signed = sign_request(&key, "GET", "/x", b"", now(), "z1").unwrap();
         assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok());
+    }
+
+    #[test]
+    fn sign_request_refuses_nonces_verify_signed_would_reject() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let long = "a".repeat(65);
+        for bad in [
+            "",
+            long.as_str(),
+            "has space",
+            "under_score",
+            "plus+sign",
+            "dot.name",
+            "n\u{e9}",
+        ] {
+            let error = sign_request(&key, "GET", "/x", b"", now(), bad).unwrap_err();
+            assert!(format!("{error:#}").contains("nonce"), "{bad:?}: {error:#}");
+        }
+        let max = "a".repeat(64);
+        for good in ["n1", "abc-DEF-123", max.as_str()] {
+            let signed = sign_request(&key, "GET", "/x", b"", now(), good).unwrap();
+            let mut replays = ReplayGuard::default();
+            assert!(
+                verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok(),
+                "{good:?}"
+            );
+        }
+    }
+
+    // Property coverage for the nonce-domain invariant (Codex finding on
+    // PR #6539): for every generated nonce, `sign_request` succeeds exactly
+    // when an independent oracle — written from the `verify_signed` contract,
+    // not from `nonce_in_domain` — accepts the nonce, and every accepted
+    // nonce round-trips through `verify_signed`.
+    proptest::proptest! {
+        #[test]
+        fn sign_request_accepts_exactly_the_verify_signed_nonce_domain(
+            nonce in proptest::string::string_regex(".{0,70}").unwrap()
+        ) {
+            // Independent oracle: 1-64 chars, each an ASCII letter, digit
+            // or '-', measured in bytes to mirror the wire contract.
+            let oracle = !nonce.is_empty()
+                && nonce.len() <= 64
+                && nonce.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+            let key = SigningKey::from_bytes(&[7; 32]);
+            let result = sign_request(&key, "GET", "/x", b"", now(), &nonce);
+            proptest::prop_assert_eq!(result.is_ok(), oracle, "nonce {:?}", nonce);
+            if let Ok(signed) = result {
+                let mut replays = ReplayGuard::default();
+                proptest::prop_assert!(
+                    verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok(),
+                    "oracle-accepted nonce {:?} must verify", nonce
+                );
+            }
+        }
     }
 
     #[test]
@@ -688,7 +870,7 @@ mod tests {
         let mut signed = None;
         for seed in 0_u8..=255 {
             let key = SigningKey::from_bytes(&[seed; 32]);
-            let candidate = sign_request(&key, "GET", "/x", b"", now(), "n1");
+            let candidate = sign_request(&key, "GET", "/x", b"", now(), "n1").unwrap();
             if plus_encode(&candidate.key) != candidate.key {
                 signed = Some(candidate);
                 break;
@@ -706,7 +888,7 @@ mod tests {
     #[test]
     fn a_signed_request_with_a_non_canonical_s_is_refused() {
         let key = SigningKey::from_bytes(&[7; 32]);
-        let mut signed = sign_request(&key, "GET", "/x", b"", now(), "z2");
+        let mut signed = sign_request(&key, "GET", "/x", b"", now(), "z2").unwrap();
         let raw = hex_bytes::<64>(&signed.signature).unwrap();
         signed.signature = hex_encode(&with_non_canonical_s(raw));
         let mut replays = ReplayGuard::default();

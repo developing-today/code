@@ -13,7 +13,7 @@ var update = flag.Bool("update", false, "rewrite generated files instead of comp
 
 const (
 	parityPath   = "../../docs/parity.md"
-	daemonTSPath = "../../plugin/opencode/mcpx/daemon.ts"
+	daemonTSPath = "../../plugin/core/daemon.ts"
 )
 
 // TestParityDocumentIsCurrent fails when docs/parity.md no longer matches the

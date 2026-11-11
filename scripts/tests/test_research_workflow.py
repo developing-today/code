@@ -273,6 +273,80 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.init(outline=outline, ok=False)
         self.assertEqual(self.snapshot(), before)
 
+    def test_outline_top_level_must_be_an_object(self):
+        before = self.snapshot()
+        result = self.init(outline=[], ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("must be a JSON object", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_non_json_names_the_file(self):
+        self.outline_file = self.scratch / "outline.json"
+        self.outline_file.write_text("this is not json", encoding="utf-8")
+        before = self.snapshot()
+        result = self.cli(
+            "init",
+            "--repo-root",
+            self.root,
+            "--input",
+            self.input,
+            "--slug",
+            "assorted-ideas",
+            "--timestamp",
+            TIMESTAMP,
+            "--outline",
+            self.outline_file,
+            ok=False,
+        )
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("is not valid JSON", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_title_must_be_a_string(self):
+        outline = self.outline()
+        outline["title"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'title' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_introduction_must_be_a_string(self):
+        outline = self.outline()
+        outline["introduction"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'introduction' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_concept_entries_must_be_objects(self):
+        outline = self.outline()
+        outline["concepts"][0] = "just-a-string"
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("concept 1 must be a JSON object", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_concept_slug_must_be_a_string(self):
+        outline = self.outline()
+        outline["concepts"][0]["slug"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'slug' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_concept_summary_must_be_a_string(self):
+        outline = self.outline()
+        outline["concepts"][0]["summary"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'summary' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
     def test_existing_package_collision_never_overwrites_completed_intake(self):
         self.init()
         before = self.snapshot()
@@ -500,6 +574,50 @@ class ResearchWorkflowTests(unittest.TestCase):
             reason,
             ok=ok,
         )
+
+    def test_check_rejects_non_object_resolution_blocks_with_named_errors(self):
+        package = self.init()
+        concept = package / self.state(package)["concepts"][0]["path"]
+        original = concept.read_bytes().decode("utf-8")
+        for malformed in ("[]", '"x"', "42"):
+            with self.subTest(resolution=malformed):
+                concept.write_bytes(
+                    (
+                        original
+                        + "\n<!-- workflow:resolution -->\n"
+                        + malformed
+                        + "\n<!-- /workflow:resolution -->\n"
+                    ).encode("utf-8")
+                )
+                result = self.check(package, ok=False)
+                self.assertIn(
+                    f"{concept}: resolution block must be a JSON object",
+                    result.stderr,
+                )
+                self.assertNotIn("AttributeError", result.stderr)
+
+    def test_check_rejects_non_object_note_markers_with_named_errors(self):
+        package = self.init()
+        note_path = package / self.create_note(package)
+        original = note_path.read_bytes().decode("utf-8")
+        marker = re.compile(
+            r"(<!-- workflow:note -->\s*)(.*?)(\s*<!-- /workflow:note -->)", re.S
+        )
+        for malformed in ("[]", '"x"', "42", "null", "[1, 2]"):
+            with self.subTest(marker=malformed):
+                content, count = marker.subn(
+                    lambda match: match.group(1) + malformed + match.group(3),
+                    original,
+                    count=1,
+                )
+                self.assertEqual(count, 1)
+                note_path.write_bytes(content.encode("utf-8"))
+                result = self.check(package, ok=False)
+                self.assertIn(
+                    f"{note_path}: note marker must be a JSON object",
+                    result.stderr,
+                )
+                self.assertNotIn("AttributeError", result.stderr)
 
     def test_every_disposition_passes_require_resolved_via_resolve_note(self):
         # The skill names five dispositions (#492): each one, recorded
@@ -1214,6 +1332,60 @@ class ResearchWorkflowTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.check(package, ok=True)
+
+    def test_profile_non_object_fails_with_named_diagnostic(self):
+        self.init()
+        profile_path = self.root / ".agents/research-workflow.json"
+        for bad in ([], "x", 42, None):
+            with self.subTest(bad=bad):
+                profile_path.write_text(json.dumps(bad), encoding="utf-8")
+                result = self.cli("check", "--repo-root", self.root, ok=False)
+                self.assertIn("profile must be a JSON object", result.stderr)
+                self.assertIn("research-workflow.json", result.stderr)
+
+    def test_state_non_object_fails_with_named_diagnostic(self):
+        package = self.init()
+        for bad in ([], "x", 42, None):
+            with self.subTest(bad=bad):
+                self.write_state(package, bad)
+                result = self.check(package, ok=False)
+                self.assertIn("workflow state must be a JSON object", result.stderr)
+
+    def test_check_package_rejects_wrong_shape_fields(self):
+        package = self.init()
+        original = self.state(package)
+        cases = [
+            ("transcript string", lambda s: s.update(transcript="transcript.txt"), "transcript"),
+            ("transcript missing sha256", lambda s: s.update(transcript={"path": "transcript.txt"}), "transcript"),
+            ("transcript missing", lambda s: s.pop("transcript"), "transcript"),
+            ("concepts object", lambda s: s.update(concepts={}), "concepts"),
+            ("concepts string entries", lambda s: s.update(concepts=["x"]), "concepts"),
+            ("concepts missing", lambda s: s.pop("concepts"), "concepts"),
+            ("dependencies missing", lambda s: s.pop("dependencies"), "dependencies"),
+            ("dependencies string", lambda s: s.update(dependencies="x"), "dependencies"),
+            ("dependencies string edge", lambda s: s.update(dependencies=["x"]), "dependencies"),
+        ]
+        for name, mutate, field in cases:
+            with self.subTest(name=name):
+                state = json.loads(json.dumps(original))
+                mutate(state)
+                self.write_state(package, state)
+                result = self.check(package, ok=False)
+                self.assertIn(field, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+        self.write_state(package, original)
+        self.check(package, ok=True)
+
+    def test_trigger_entry_non_object_fails_with_named_diagnostic(self):
+        package = self.init()
+        triggers = self.root / "docs/workflow-triggers.json"
+        self.profile["triggers"] = "docs/workflow-triggers.json"
+        self.write_profile()
+        for bad in (["intake"], [42], [None]):
+            with self.subTest(bad=bad):
+                triggers.write_text(json.dumps(bad), encoding="utf-8")
+                result = self.check(package, ok=False)
+                self.assertIn("Trigger fixture entries must be objects", result.stderr)
 
 
 if __name__ == "__main__":

@@ -31,9 +31,43 @@ pub const CAP_MS: u64 = 20_000;
 pub const MAX_ATTEMPTS: u32 = 6;
 
 /// True when an error text belongs to the statement-timeout class:
-/// it carries the Postgres `57014` code or PostgREST's `PGRST002`.
+/// its PostgREST `code` field is exactly the Postgres `57014` code or
+/// PostgREST's `PGRST002` (#6616).
+///
+/// The decision reads the code field ONLY — never a substring of the
+/// whole text. Permanent RPC errors interpolate the task ID into their
+/// message (`fail_repo_task: task % is not claimed by %`), so a bare
+/// `contains("57014")` misclassifies any permanent failure on a task
+/// whose ID contains those digits (57014, 157014, 570149, …) as a
+/// retryable statement timeout, stepping outside the no-double-apply
+/// argument above, which holds only when the error *actually is* a
+/// statement cancellation.
 pub fn is_retryable(err_text: &str) -> bool {
-    err_text.contains("57014") || err_text.contains("PGRST002")
+    matches!(postgrest_code(err_text), Some("57014" | "PGRST002"))
+}
+
+/// Extract the value of the first well-formed `"code"` field in a
+/// PostgREST error body embedded in `err_text`: `"code":"<value>"` or
+/// `"code": "<value>"` (whitespace around the colon tolerated).
+/// Occurrences of the digits in message/detail/hint prose are not a
+/// code field and never match; a malformed candidate (no colon, no
+/// quoted value) is skipped in favour of a later well-formed one.
+fn postgrest_code(err_text: &str) -> Option<&str> {
+    let mut rest = err_text;
+    while let Some(pos) = rest.find("\"code\"") {
+        let after_key = &rest[pos + "\"code\"".len()..];
+        let value = after_key
+            .trim_start()
+            .strip_prefix(':')
+            .map(str::trim_start)
+            .and_then(|v| v.strip_prefix('"'))
+            .and_then(|v| v.split('"').next());
+        if let Some(value) = value {
+            return Some(value);
+        }
+        rest = after_key;
+    }
+    None
 }
 
 /// The nominal (pre-jitter) delay after `failed_attempt` failures
@@ -76,6 +110,7 @@ pub fn sleep_after_failure(failed_attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn retryable_class_matches_only_the_timeout_codes() {
@@ -88,6 +123,84 @@ mod tests {
         assert!(!is_retryable("HTTP 400 from PostgREST: {\"code\":\"PGRST102\"}"));
         assert!(!is_retryable("packet validation failed (1 error(s))"));
         assert!(!is_retryable("claim_repo_task: no matching claimed row"));
+    }
+
+    #[test]
+    fn permanent_errors_naming_task_ids_with_timeout_digits_are_not_retryable() {
+        // #6616 regression: the RPCs' permanent errors interpolate the
+        // task ID into the message; IDs containing 57014 must not be
+        // mistaken for the statement-timeout code.
+        for task_id in ["57014", "157014", "570149", "570140", "257014"] {
+            let err = format!(
+                "HTTP 400 from PostgREST: {{\"code\":\"P0001\",\"message\":\"fail_repo_task: task {task_id} is not claimed by repo-worker-code\"}}"
+            );
+            assert!(!is_retryable(&err), "task {task_id} misclassified");
+        }
+    }
+
+    #[test]
+    fn timeout_digits_in_detail_or_hint_prose_are_not_retryable() {
+        assert!(!is_retryable(
+            "HTTP 400 from PostgREST: {\"code\":\"P0001\",\"message\":\"boom\",\"detail\":\"statement 57014 seen earlier\",\"hint\":\"PGRST002\"}"
+        ));
+        assert!(!is_retryable("plain prose mentioning 57014 and PGRST002"));
+    }
+
+    #[test]
+    fn code_field_with_space_after_colon_is_retryable() {
+        assert!(is_retryable(
+            "HTTP 500 from PostgREST: {\"code\": \"57014\", \"message\": \"canceling statement due to statement timeout\"}"
+        ));
+        assert!(is_retryable(
+            "HTTP 503 from PostgREST: {\"code\": \"PGRST002\"}"
+        ));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// PBT (#6616, testing doctrine): retryability depends ONLY on
+        /// exact equality of the generated top-level `code` value with
+        /// `57014`/`PGRST002` — the generated code is the oracle.
+        /// Message/detail/hint prose (which may embed the timeout
+        /// digits, e.g. an interpolated task ID), field ordering, and
+        /// whitespace around the colon must never change the outcome.
+        #[test]
+        fn retryable_depends_only_on_exact_code_field(
+            code in prop_oneof![
+                Just("57014".to_string()), Just("PGRST002".to_string()),
+                Just("P0001".to_string()), Just("PGRST102".to_string()),
+                Just("5701".to_string()), Just("570140".to_string()),
+                Just("057014".to_string()), Just("pgrst002".to_string()),
+                "[A-Z0-9]{1,8}",
+            ],
+            prose in prop::collection::vec(prop_oneof![
+                Just("task".to_string()), Just("57014".to_string()),
+                Just("PGRST002".to_string()), Just("157014".to_string()),
+                Just("570149".to_string()), Just("failed".to_string()),
+                "[a-z]{1,6}",
+            ], 0..6),
+            sp_before in "[ ]{0,2}",
+            sp_after in "[ ]{0,2}",
+            code_pos in 0usize..4,
+        ) {
+            let prose = prose.join(" ");
+            let mut fields = vec![
+                format!("\"message\":\"{prose}\""),
+                format!("\"detail\":\"{prose}\""),
+                format!("\"hint\":\"{prose}\""),
+            ];
+            fields.insert(
+                code_pos.min(fields.len()),
+                format!("\"code\"{sp_before}:{sp_after}\"{code}\""),
+            );
+            let err = format!(
+                "HTTP 400 from PostgREST: {{{}}}",
+                fields.join(",")
+            );
+            let oracle = code == "57014" || code == "PGRST002";
+            prop_assert_eq!(is_retryable(&err), oracle, "err={}", err);
+        }
     }
 
     #[test]

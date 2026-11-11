@@ -8,7 +8,14 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { CODEDB_TOOLS, createHandler, parseDaemonUrl, routeForTool } from './codedb-bridge.mjs';
+import {
+  CODEDB_TOOLS,
+  createHandler,
+  DEFAULT_DAEMON_FETCH_TIMEOUT_MS,
+  parseDaemonFetchTimeoutMs,
+  parseDaemonUrl,
+  routeForTool,
+} from './codedb-bridge.mjs';
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,6 +34,14 @@ test('daemon URL rejects query, fragment and userinfo by name instead of silentl
   assert.throws(() => parseDaemonUrl('http://127.0.0.1:7719/#frag'), /CODEDB_DAEMON_URL.*fragment/);
   assert.throws(() => parseDaemonUrl('http://user:pass@127.0.0.1:7719/'), /CODEDB_DAEMON_URL.*userinfo/);
   assert.throws(() => parseDaemonUrl('http://user@127.0.0.1:7719'), /CODEDB_DAEMON_URL.*userinfo/);
+});
+
+test('daemon fetch timeout defaults to a named deadline and accepts a positive integer override', () => {
+  assert.equal(DEFAULT_DAEMON_FETCH_TIMEOUT_MS, 10_000);
+  assert.equal(parseDaemonFetchTimeoutMs(undefined), DEFAULT_DAEMON_FETCH_TIMEOUT_MS);
+  assert.equal(parseDaemonFetchTimeoutMs('250'), 250);
+  assert.throws(() => parseDaemonFetchTimeoutMs('0'), /positive integer/);
+  assert.throws(() => parseDaemonFetchTimeoutMs('nope'), /positive integer/);
 });
 
 test('every advertised tool maps to a verified daemon route', () => {
@@ -55,6 +70,32 @@ test('unhonourable arguments are rejected by name, never silently ignored (#3352
   assert.throws(() => routeForTool('codedb_tree', { project: '/elsewhere' }), /"project"/);
   assert.throws(() => routeForTool('codedb_search', {}), /"query" is required/);
   assert.throws(() => routeForTool('codedb_read', { path: 'x' }), /unknown tool "codedb_read"/);
+});
+
+test('regex, scope and compact are rejected by name for every advertised tool (#4197)', () => {
+  const args = {
+    codedb_tree: {},
+    codedb_outline: { path: 'a/b.rs' },
+    codedb_symbol: { name: 'IdentityStore' },
+    codedb_search: { query: 'IdentityStore' },
+    codedb_word: { word: 'IdentityStore' },
+    codedb_hot: {},
+    codedb_deps: { path: 'a/b.rs' },
+  };
+  for (const { name } of CODEDB_TOOLS) {
+    for (const key of ['regex', 'scope', 'compact']) {
+      assert.throws(
+        () => routeForTool(name, { ...args[name], [key]: true }),
+        /argument ".*"/,
+        `${name} must reject ${key}: true`
+      );
+    }
+  }
+});
+
+test('misnamed limit arguments are rejected instead of silently ignored (#4197)', () => {
+  assert.throws(() => routeForTool('codedb_search', { query: 'x', limit: 5 }), /argument "limit"/);
+  assert.throws(() => routeForTool('codedb_hot', { max_results: 2 }), /argument "max_results"/);
 });
 
 const stubFetch = (routes) => async (url) => {
@@ -104,6 +145,45 @@ test('tools/call forwards to the daemon and returns its payload', async () => {
   assert.deepEqual(JSON.parse(hot.result.content[0].text).files, ['a']);
 });
 
+test('arguments in no tool schema are rejected by name, never silently dropped (#4216)', () => {
+  const neverNamed = {
+    codedb_tree: { bogus_tree_opt: 1 },
+    codedb_outline: { path: 'x', bogus_outline_opt: 1 },
+    codedb_symbol: { name: 'x', bogus_symbol_opt: 1 },
+    codedb_search: { query: 'x', bogus_search_opt: 1 },
+    codedb_word: { word: 'x', bogus_word_opt: 1 },
+    codedb_hot: { bogus_hot_opt: 1 },
+    codedb_deps: { path: 'x', bogus_deps_opt: 1 },
+  };
+  for (const t of CODEDB_TOOLS) {
+    const key = Object.keys(neverNamed[t.name]).find((k) => k.startsWith('bogus_'));
+    assert.throws(() => routeForTool(t.name, neverNamed[t.name]), new RegExp(`"${key}"`));
+  }
+  // The typo case from the issue: max_result (no s) is not max_results.
+  assert.throws(() => routeForTool('codedb_search', { query: 'x', max_result: 2 }), /"max_result"/);
+});
+
+test('a typoed max_result surfaces as an MCP error naming the argument, not the full result set (#4216)', async () => {
+  const handle = createHandler({
+    fetchFn: stubFetch({
+      '/explore/search?q=x': {
+        query: 'x',
+        results: [
+          { path: 'a.rs', line: 1, text: 'a' },
+          { path: 'b.rs', line: 2, text: 'b' },
+          { path: 'c.rs', line: 3, text: 'c' },
+          { path: 'd.rs', line: 4, text: 'd' },
+          { path: 'e.rs', line: 5, text: 'e' },
+        ],
+      },
+    }),
+    daemonUrl: 'http://127.0.0.1:7719',
+  });
+  const typo = await call(handle, 'codedb_search', { query: 'x', max_result: 2 });
+  assert.equal(typo.result.isError, true);
+  assert.match(typo.result.content[0].text, /"max_result"/);
+});
+
 test('a slow daemon call does not head-of-line block a later ping (PR #4171 Codex P2)', async () => {
   const daemon = http.createServer((req, res) => {
     const respond = () => {
@@ -141,6 +221,51 @@ test('a slow daemon call does not head-of-line block a later ping (PR #4171 Code
   } finally {
     child.stdin.end();
     child.kill();
+    daemon.close();
+  }
+});
+
+test('a never-resolving daemon fetch returns a timeout MCP error naming URL, route and deadline', async () => {
+  const timeoutMs = 25;
+  const daemonUrl = 'http://127.0.0.1:7719';
+  const handle = createHandler({ fetchFn: () => new Promise(() => {}), daemonUrl, timeoutMs });
+  const response = await call(handle, 'codedb_tree', {});
+  assert.equal(response.result.isError, true);
+  assert.match(response.result.content[0].text, /timed out after 25ms/);
+  assert.match(response.result.content[0].text, /http:\/\/127\.0\.0\.1:7719\/explore\/tree/);
+});
+
+test('bridge exits after stdin closes while a hanging daemon call times out', async () => {
+  const daemon = http.createServer(() => {});
+  await new Promise((resolve) => daemon.listen(0, '127.0.0.1', resolve));
+  const daemonUrl = `http://127.0.0.1:${daemon.address().port}`;
+  const child = spawn(process.execPath, [path.join(binDir, 'codedb-bridge.mjs')], {
+    env: { ...process.env, CODEDB_DAEMON_URL: daemonUrl, CODEDB_DAEMON_TIMEOUT_MS: '50' },
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  try {
+    let received = '';
+    child.stdout.on('data', (chunk) => {
+      received += chunk;
+    });
+    const exited = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('bridge did not exit after its daemon timeout')), 2_000);
+      child.once('exit', (code) => {
+        clearTimeout(timer);
+        resolve(code);
+      });
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'codedb_tree', arguments: {} } })}\n`);
+    child.stdin.end();
+    assert.equal(await exited, 0);
+    const response = JSON.parse(received.trim());
+    assert.equal(response.id, 1);
+    assert.equal(response.result.isError, true);
+    assert.match(response.result.content[0].text, /timed out after 50ms/);
+    assert.match(response.result.content[0].text, /\/explore\/tree/);
+  } finally {
+    child.kill();
+    daemon.closeAllConnections();
     daemon.close();
   }
 });
@@ -233,4 +358,28 @@ test('daemon errors and an unreachable daemon surface as MCP errors naming the c
   const badArg = await call(down, 'codedb_search', { query: 'x', regex: true });
   assert.equal(badArg.result.isError, true);
   assert.match(badArg.result.content[0].text, /"regex"/);
+});
+
+test('null or non-object daemon bodies are isError results, never a throw or a "null" success (#6917)', async () => {
+  const handle = createHandler({
+    fetchFn: stubFetch({
+      '/explore/tree': null,
+      '/explore/search?q=x': null,
+      '/explore/outline?path=a.ts': 'weird',
+      '/explore/hot': [1, 2],
+    }),
+    daemonUrl: 'http://127.0.0.1:7719',
+  });
+  const tree = await call(handle, 'codedb_tree', {});
+  assert.equal(tree.result.isError, true);
+  assert.match(tree.result.content[0].text, /null JSON body for \/explore\/tree/);
+  const search = await call(handle, 'codedb_search', { query: 'x' });
+  assert.equal(search.result.isError, true);
+  assert.match(search.result.content[0].text, /null JSON body/);
+  const outline = await call(handle, 'codedb_outline', { path: 'a.ts' });
+  assert.equal(outline.result.isError, true);
+  assert.match(outline.result.content[0].text, /string JSON body/);
+  const hot = await call(handle, 'codedb_hot', {});
+  assert.equal(hot.result.isError, true);
+  assert.match(hot.result.content[0].text, /array JSON body/);
 });

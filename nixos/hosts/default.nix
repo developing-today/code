@@ -28,6 +28,8 @@ in
       "services/pm-apps"
       "services/power-guard"
       "services/openai-cred-watchdog"
+      "services/opencode-go-seating-guard"
+      "services/opencode-watchdog"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -85,6 +87,38 @@ in
         services.openai-cred-watchdog.enable = true;
       }
       {
+        # OpenCode Go seating guard (code#5611): hourly user timer
+        # asserting every Go leaf seated in a pool has an exact-id active
+        # credential and has recorded a successful route attempt recently.
+        services.opencode-go-seating-guard.enable = true;
+      }
+      {
+        # OpenCode watchdog (code#7780): per-minute user timer asserting
+        # opencode.service is active or port 13420 is serving; an
+        # exit-0 non-serving restart sticks dark under Restart=on-failure,
+        # so after a 120s dark grace window the watchdog alerts and
+        # restarts the unit (Restart=always would race lifecycle
+        # handovers — see the module).
+        services.opencode-watchdog = {
+          enable = true;
+          # The build the watchdog's build-identity check (code#8255)
+          # expects on the port, read from the name of the very
+          # opencode package derivation the unit runs (openchamber's
+          # nested opencode input — the same derivation home/common's
+          # cascade wraps), so expectation and ExecStart resolve from
+          # one derivation and cannot drift apart. This option lives
+          # at the NixOS level (this module is a NixOS import); the
+          # home-manager copy of this setting that #8255 landed in
+          # home/common/default.nix named an option that does not
+          # exist there and broke evaluation of the whole config.
+          expectedVersion =
+            let
+              m = builtins.match "opencode-(.*)" inputs.openchamber.inputs.opencode.packages.x86_64-linux.opencode.name;
+            in
+            if m == null then "" else builtins.head m;
+        };
+      }
+      {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard
         # backup (local + R2 + Drive) and the repo-archive restic job,
         # declared in this flake (nixos/home/laptop-backups.nix) as a
@@ -124,6 +158,16 @@ in
         home-manager.users.user = {
           imports = [ ../home/laptop-autocommit.nix ];
           services.laptop-autocommit.enable = true;
+        };
+      }
+      {
+        # Laptop scratch sweep (darwin-nix#373): daily reaping of
+        # opencode test/build scratch (>72h) and mcpx binary dirs
+        # (>24h) - the two un-reaped scratch growth sources behind
+        # the 2026-11-11 disk catch.
+        home-manager.users.user = {
+          imports = [ ../home/laptop-scratch-sweep.nix ];
+          services.laptop-scratch-sweep.enable = true;
         };
       }
       {

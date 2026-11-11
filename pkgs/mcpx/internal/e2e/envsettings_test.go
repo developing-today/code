@@ -122,7 +122,7 @@ func TestABootstrapSettingCannotBeSetWhereItWouldDoNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "MCPX_CONFIG") {
 		t.Errorf("the daemon should refuse, naming the variable: %d %s", resp.StatusCode, body)
 	}

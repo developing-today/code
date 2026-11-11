@@ -1649,7 +1649,6 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 	return out
 }
 
-// ToolInfo describes one tool for search results.
 // TermScore is one term's contribution to a search hit's Score: the field
 // it matched and the points that field's tier awards (#1923, --explain).
 type TermScore struct {
@@ -1658,6 +1657,7 @@ type TermScore struct {
 	Points int    `json:"points"`
 }
 
+// ToolInfo describes one tool for search results.
 type ToolInfo struct {
 	Namespace string `json:"namespace"`
 	Server    string `json:"server"`
@@ -2331,7 +2331,14 @@ func (r *Registry) callWithLedger(ctx context.Context, p *pool.Pool, server, too
 	var dispatched atomic.Bool
 	callCtx := mcpclient.WithToolCallDispatchHook(ctx, func() { dispatched.Store(true) })
 	result, err := p.Call(callCtx, rs, tool, args)
-	if err != nil && dispatched.Load() && !toolReadOnly(p, tool) && r.writeLedger != nil && !mcpclient.IsConclusiveUpstreamError(err) {
+	// The unknown-outcome classification honors the operator's
+	// readOnlyTools declaration (#6493) as well as the annotation-based
+	// classification: a declared read-only tool's post-dispatch failure
+	// cannot have written, so it must not record an unknown outcome and
+	// block later writes. declaredReadOnly reads the requested server's
+	// view -- the same name this call was made under.
+	readOnly := toolReadOnly(p, tool) || r.declaredReadOnly(server, tool)
+	if err != nil && dispatched.Load() && !readOnly && r.writeLedger != nil && !mcpclient.IsConclusiveUpstreamError(err) {
 		return nil, r.recordUnknownOutcome(p, server, tool, args, surface)
 	}
 	return result, err
@@ -2601,12 +2608,6 @@ func (r *Registry) GetPrompt(ctx context.Context, server, name string, args map[
 		return nil, err
 	}
 	return p.GetPrompt(ctx, r.resolvedFor(p, cc), name, args)
-}
-
-// keyFor resolves a server's scope key; resolvedFor is the full
-// resolution, for callers that also pass the root to the pool.
-func (r *Registry) keyFor(p *pool.Pool, cc config.CallContext) string {
-	return r.resolvedFor(p, cc).Key
 }
 
 // resolvedFor resolves a server's scope and records the association so

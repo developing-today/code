@@ -1753,6 +1753,7 @@ pub fn render_text(view: &DirectoryView) -> String {
 mod tests {
     use super::*;
     use crate::artifact::HomeServer;
+    use crate::envelope_outbox::{MAX_FINISHED_ENTRIES, Outcome};
     use ed25519_dalek::SigningKey;
 
     fn node() -> String {
@@ -1928,6 +1929,70 @@ mod tests {
     }
 
     #[test]
+    fn deliveries_keeps_the_newest_finished_entries_and_all_pending_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(dir.path().join("outbox.jsonl")).unwrap();
+        let total_finished = MAX_FINISHED_ENTRIES + 3;
+
+        for index in 0..total_finished {
+            let id = format!("delivery-{index:03}");
+            let envelope = Envelope {
+                kind: EnvelopeKind::FriendRequest,
+                from: "ann".to_owned(),
+                to: format!("recipient-{index:03}"),
+                audience: "club".to_owned(),
+                id: id.clone(),
+                request: None,
+                at: 0,
+                signature: "00".to_owned(),
+            };
+            outbox.enqueue(&node(), envelope).unwrap();
+            outbox.record(&id, 0, Outcome::Delivered).unwrap();
+        }
+
+        for id in ["pending-now", "pending-later"] {
+            outbox
+                .enqueue(
+                    &node(),
+                    Envelope {
+                        kind: EnvelopeKind::FriendRequest,
+                        from: "ann".to_owned(),
+                        to: id.to_owned(),
+                        audience: "club".to_owned(),
+                        id: id.to_owned(),
+                        request: None,
+                        at: 0,
+                        signature: "00".to_owned(),
+                    },
+                )
+                .unwrap();
+        }
+        outbox
+            .record("pending-later", 0, Outcome::Retry("down".to_owned()))
+            .unwrap();
+
+        let shown = deliveries(&outbox, "admin");
+        assert_eq!(shown.len(), MAX_FINISHED_ENTRIES + 2);
+        assert_eq!(
+            shown
+                .iter()
+                .filter(|delivery| delivery.status == "delivered")
+                .count(),
+            MAX_FINISHED_ENTRIES
+        );
+        assert_eq!(
+            shown
+                .iter()
+                .filter(|delivery| delivery.status == "not yet delivered")
+                .count(),
+            2
+        );
+        assert!(!shown.iter().any(|delivery| delivery.to == "recipient-000"));
+        assert!(shown.iter().any(|delivery| delivery.to == "pending-now"));
+        assert!(shown.iter().any(|delivery| delivery.to == "pending-later"));
+    }
+
+    #[test]
     fn the_admin_sees_every_detail_and_member() {
         let s = sample();
         let view = view_for(&s.directory, &Viewer::Admin);
@@ -1973,6 +2038,63 @@ mod tests {
         let ada = view.accounts.iter().find(|a| a.id == s.ada).unwrap();
         assert!(ada.friends.is_none());
         assert!(ada.verified.is_none());
+    }
+
+    #[test]
+    fn a_member_can_view_groups_in_a_diamond_nesting() {
+        let mut s = sample();
+        s.directory
+            .set_member(
+                Actor::Server,
+                s.club,
+                Member::Account { id: s.bo.clone() },
+                Some(Level::Admin),
+            )
+            .unwrap();
+        let mut layers = vec![vec![s.club]];
+
+        for layer in 0..25 {
+            let children = layers.last().unwrap().clone();
+            let mut parents = Vec::new();
+            for branch in 0..2 {
+                let (parent, _) = s
+                    .directory
+                    .create_group(
+                        &s.ada,
+                        &format!("View layer {layer} branch {branch}"),
+                        "",
+                        WorldScopes::GUEST,
+                    )
+                    .unwrap();
+                for child in &children {
+                    let held_at = if layer == 0 {
+                        if branch == 0 {
+                            Level::Read
+                        } else {
+                            Level::Manage
+                        }
+                    } else {
+                        Level::Write
+                    };
+                    s.directory
+                        .set_member(
+                            Actor::Server,
+                            parent,
+                            Member::Group { id: *child },
+                            Some(held_at),
+                        )
+                        .unwrap();
+                }
+                parents.push(parent);
+            }
+            layers.push(parents);
+        }
+
+        let root = layers.last().unwrap()[0];
+        let view = view_for(&s.directory, &Viewer::Account(s.bo.clone()));
+        let root_view = view.groups.iter().find(|group| group.id == root).unwrap();
+        assert_eq!(root_view.level, Some(Level::Write));
+        assert!(root_view.members.is_some());
     }
 
     #[test]

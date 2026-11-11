@@ -273,7 +273,12 @@ pub(crate) enum ClientFrame {
         text: String,
     },
     InstallBegin {
-        admin_token: String,
+        /// The admin secret, for the pre-join admin path. Joined builder
+        /// sessions (design #835 phase 3) omit it and are authorized by
+        /// their live capability instead; a joined frame that carries
+        /// one is refused as mixed credentials.
+        #[serde(default)]
+        admin_token: Option<String>,
         total_bytes: usize,
         /// Expected BLAKE3 hash. Optional for browser uploads, whose `WebCrypto`
         /// API does not provide BLAKE3; the host still computes and returns it.
@@ -288,6 +293,13 @@ pub(crate) enum ClientFrame {
         data_hex: String,
     },
     InstallEnd,
+    /// Joined moderator: revoke an active participant (design #835
+    /// phase 3). The frame names only the target — the audit actor is
+    /// derived from this session's live capability by the world actor,
+    /// never from the frame.
+    Revoke {
+        participant_id: u64,
+    },
 }
 
 /// Signer metadata supplied with an uploaded module. Public keys and
@@ -431,12 +443,24 @@ pub(crate) enum ServerFrame<'a> {
         module_hash: &'a str,
         sequence: u64,
     },
+    /// A joined moderator's revoke was carried out (`revoked: true`)
+    /// or named an inactive/unknown target (`revoked: false`, a no-op
+    /// that writes no journal record).
+    Revoked {
+        participant_id: u64,
+        revoked: bool,
+    },
     ProgramChanged {
         module_hash: &'a str,
         sequence: u64,
     },
     Error {
         message: &'a str,
+        /// Stable denial code for joined role/capability refusals
+        /// (`actor_denied`, design #835 §5). Omitted for every existing
+        /// error, so their serialized shape is unchanged.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        code: Option<&'a str>,
     },
 }
 
@@ -515,6 +539,11 @@ pub enum InstallError {
     RawModuleDisabled,
     /// Wasmtime rejected or could not instantiate the module.
     InvalidModule,
+    /// The joined session's live capability does not authorize this
+    /// install (design #835 phase 3): invalid, expired, revoked, or
+    /// missing the `BUILDER` scope. Non-oracular by design — the wire
+    /// code is `actor_denied` for every one of those causes.
+    ActorDenied,
     /// The server has a module trust list and the artifact is unsigned,
     /// signed by an untrusted key, or has an invalid signature.
     UntrustedModule,

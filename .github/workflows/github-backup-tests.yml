@@ -24,11 +24,16 @@ name: github-backup tests
 # runner image provides.
 #
 # Trigger policy matches the house pattern since 5a94833ea3:
-# dispatch/schedule only, no push/pull_request triggers.
+# dispatch/schedule only, no push/pull_request triggers. The schedule
+# is daily at 04:47 UTC (off the hour, clear of the other dailies);
+# it was promised here but missing from `on:` until #7777, so the
+# suite silently never ran between 2026-11-05 and this fix.
 # CI tier policy: see .github/ci-policy.md.
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "47 4 * * *"
 
 permissions:
   contents: read
