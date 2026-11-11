@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// The build temp dirs this test binary created (mcpx-bin-* for the mcpx
-// binary, mcpx-fake-* for the fake MCP server). The builders register
+// The build temp dirs this test binary created by its fixture builders
+// (mcpx-bin-*, mcpx-fake-*, mcpx-era-*, mcpx-ask-*, mcpx-task-*). The builders register
 // every dir they make here so the suite-wide sweep (#1971 remainder
 // item 2) can remove exactly this binary's dirs at the end of the run —
 // and only this binary's: other suites running concurrently on the same
@@ -101,18 +101,31 @@ func processesExecutingFrom(dirs []string) []LeftoverProcess {
 	return out
 }
 
+// leftoverGracePeriod bounds how long the sweep waits for a process
+// seen executing from a build dir to exit on its own before calling it
+// a leak. It mirrors the harness's supported shutdown budget: a daemon
+// draining in-flight work during cleanup may legitimately take up to
+// the default 10-second drain to stop (Server.stopServing closes the
+// listener before draining; TestEnvCleanupStopsTheDaemonItStarted
+// allows the same 10 seconds for the asynchronous exit). Polling inside
+// that budget is not leniency — a survivor past it is not draining, it
+// is leaked.
+var leftoverGracePeriod = 10 * time.Second
+
+const leftoverPollInterval = 100 * time.Millisecond
+
 // SweepBuildTempDirs is the suite-wide sweep of #1971 remainder item 2:
 // it removes this test binary's build temp dirs and reports any process
 // still executing from them. Detection runs before removal, and a
-// process seen once gets one short grace re-check, so a child caught in
-// the act of exiting is not a failure; a process still there after the
-// grace window is a leak and is reported for the caller (the e2e
-// TestMain) to fail on.
+// process seen at suite end is polled for exit within
+// leftoverGracePeriod, so orderly shutdown is never misreported; a
+// process still there after the budget is a leak and is reported for
+// the caller (the e2e TestMain) to fail on.
 func SweepBuildTempDirs() (removed []string, leftover []LeftoverProcess) {
 	dirs := BuildTempDirs()
 	leftover = processesExecutingFrom(dirs)
-	if len(leftover) > 0 {
-		time.Sleep(250 * time.Millisecond)
+	for deadline := time.Now().Add(leftoverGracePeriod); len(leftover) > 0 && time.Now().Before(deadline); {
+		time.Sleep(leftoverPollInterval)
 		leftover = processesExecutingFrom(dirs)
 	}
 	for _, dir := range dirs {

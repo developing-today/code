@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,10 +50,36 @@ func plantSleeper(t *testing.T, dir string) *exec.Cmd {
 	return cmd
 }
 
+// Every fixture builder that creates a build temp dir must register it,
+// or the suite-wide guard silently misses that builder's dirs and any
+// process surviving from them (the class-wide coverage rule). The
+// oracle is the builder sources themselves: a new builder that creates
+// a mcpx-* temp dir without registering fails here.
+func TestEveryFixtureBuilderRegistersItsTempDir(t *testing.T) {
+	for _, file := range []string{"build.go", "build_era.go", "build_proto.go", "build_task.go"} {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(raw)
+		if !strings.Contains(src, "os.MkdirTemp(\"\", \"mcpx-") {
+			continue
+		}
+		if !strings.Contains(src, "registerBuildTempDir(dir)") {
+			t.Fatalf("%s creates a mcpx-* build temp dir but never calls registerBuildTempDir(dir); the suite sweep cannot see it", file)
+		}
+	}
+}
+
 func TestSweepReportsAProcessExecutingFromABuildDir(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("leftover detection is /proc based")
 	}
+	// The planted sleeper never exits, so it must still be reported —
+	// but the test need not wait out the full shutdown budget for it.
+	prev := leftoverGracePeriod
+	leftoverGracePeriod = 600 * time.Millisecond
+	t.Cleanup(func() { leftoverGracePeriod = prev })
 	dir, err := os.MkdirTemp("", "mcpx-bin-")
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +109,50 @@ func TestSweepReportsAProcessExecutingFromABuildDir(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("build dir %s still exists after sweep: %v", dir, err)
+	}
+}
+
+// A process that exits inside the grace budget (orderly daemon drain)
+// must not be reported: the sweep polls for exit within the budget
+// before classifying a survivor as a leak.
+func TestSweepDoesNotReportAProcessThatExitsWithinTheGraceBudget(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("leftover detection is /proc based")
+	}
+	prev := leftoverGracePeriod
+	leftoverGracePeriod = 3 * time.Second
+	t.Cleanup(func() { leftoverGracePeriod = prev })
+
+	dir, err := os.MkdirTemp("", "mcpx-bin-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerBuildTempDir(dir)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("no sleep binary to plant: %v", err)
+	}
+	planted := filepath.Join(dir, "sleep")
+	raw, err := os.ReadFile(sleep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planted, raw, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(planted, "0.3")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = cmd.Process.Wait() })
+
+	_, leftover := SweepBuildTempDirs()
+	for _, p := range leftover {
+		if p.PID == cmd.Process.Pid {
+			t.Fatalf("sweep reported a process that exited within the grace budget: %v", p)
+		}
 	}
 }
 
