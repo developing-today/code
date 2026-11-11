@@ -253,12 +253,36 @@ pub enum DeclarationError {
 
 /// A versioned, content-addressed boundary declaration (§2.3). Immutable
 /// once built: every change is a new version with a new id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct BoundaryDeclaration {
     /// The content-addressed id, derived from every other field.
     pub id: DeclarationId,
     /// The declaration body the id commits to.
     pub body: BoundaryDeclarationBody,
+}
+
+#[derive(Deserialize)]
+struct BoundaryDeclarationWire {
+    id: DeclarationId,
+    body: BoundaryDeclarationBody,
+}
+
+impl<'de> Deserialize<'de> for BoundaryDeclaration {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let wire = BoundaryDeclarationWire::deserialize(deserializer)?;
+        let declaration = Self::new(wire.body).map_err(D::Error::custom)?;
+        if declaration.id != wire.id {
+            return Err(D::Error::custom(
+                "boundary declaration id does not match its canonical body hash",
+            ));
+        }
+        Ok(declaration)
+    }
 }
 
 impl Default for BoundaryDeclaration {
@@ -594,6 +618,51 @@ mod tests {
         assert!(!d.is_enabled());
         assert!(!BoundaryDeclaration::default().is_enabled());
         assert!(BoundaryDeclaration::default().body.enforcement.is_empty());
+    }
+
+    #[test]
+    fn serde_round_trip_preserves_the_content_addressed_declaration() {
+        // Oracle: every accepted declaration's id equals the canonical hash
+        // of its body, and valid declarations preserve both fields on round-trip.
+        let declaration = server("s", true, &[EnforcementPoint::AccountCreation]);
+        let encoded = serde_json::to_vec(&declaration).expect("serialize declaration");
+        let decoded: BoundaryDeclaration =
+            serde_json::from_slice(&encoded).expect("deserialize declaration");
+
+        assert_eq!(decoded, declaration);
+        assert_eq!(decoded.id, declaration_id(&decoded.body));
+    }
+
+    #[test]
+    fn serde_rejects_a_changed_body_under_the_old_id() {
+        // Oracle: every accepted declaration's id equals the canonical hash
+        // of its body, so changing any committed field under the old id fails.
+        let declaration = server("s", true, &[EnforcementPoint::AccountCreation]);
+        let mut encoded = serde_json::to_value(&declaration).expect("serialize declaration");
+        encoded["body"]["failure"] = serde_json::json!("warn");
+
+        assert!(serde_json::from_value::<BoundaryDeclaration>(encoded).is_err());
+    }
+
+    #[test]
+    fn serde_rejects_a_mismatched_id_for_an_unchanged_body() {
+        // Oracle: every accepted declaration's id equals the canonical hash
+        // of its body, independently of how the mismatch was introduced.
+        let declaration = server("s", true, &[EnforcementPoint::AccountCreation]);
+        let mut encoded = serde_json::to_value(&declaration).expect("serialize declaration");
+        encoded["id"][0] = serde_json::json!(encoded["id"][0].as_u64().unwrap() ^ 1);
+
+        assert!(serde_json::from_value::<BoundaryDeclaration>(encoded).is_err());
+    }
+
+    #[test]
+    fn serde_rejects_a_body_the_constructor_rejects() {
+        // Oracle: deserialization accepts only bodies accepted by `new()`.
+        let declaration = server("s", false, &[]);
+        let mut encoded = serde_json::to_value(&declaration).expect("serialize declaration");
+        encoded["body"]["version"] = serde_json::json!(0);
+
+        assert!(serde_json::from_value::<BoundaryDeclaration>(encoded).is_err());
     }
 
     #[test]
