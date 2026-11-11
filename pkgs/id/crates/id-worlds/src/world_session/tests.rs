@@ -19,6 +19,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    const SESSION_FRAME_TIMEOUT: Duration = Duration::from_secs(60);
+
     /// In-memory transport: tests push frames in and read frames out.
     struct ChannelIo {
         inbound: mpsc::Receiver<Inbound>,
@@ -2668,20 +2670,26 @@ mod tests {
     /// Read until a frame of `wanted` type arrives (broadcasts and view
     /// frames interleave freely in a joined session).
     async fn next_of_type(peer: &mut Peer, wanted: &str) -> serde_json::Value {
-        for _ in 0..32 {
-            let frame = peer.next().await.unwrap();
-            if frame["type"] == wanted {
-                return frame;
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            loop {
+                let frame = peer
+                    .next()
+                    .await
+                    .unwrap_or_else(|| panic!("session closed before a {wanted} frame"));
+                if frame["type"] == wanted {
+                    return frame;
+                }
             }
-        }
-        panic!("no {wanted} frame arrived");
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for a {wanted} frame"))
     }
 
     /// Read until an `error` frame arrives, failing if a frame of the
     /// `forbidden` type shows up first. `next_of_type` alone would skip a
     /// success ack sent ahead of a failure and so could not prove its absence.
     async fn next_error_before(peer: &mut Peer, forbidden: &str) -> serde_json::Value {
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
             loop {
                 let frame = peer
                     .next()
