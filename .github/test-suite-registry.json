@@ -1060,6 +1060,20 @@
       "status": "mapped",
       "related_issues": [7322],
       "notes": "Basic-tier PR gate for the deploy registry checks (#7322); before this workflow the two checks ran only in the full flake check on main / the nix-ci schedule."
+    },
+    {
+      "id": "yard-reaper.python",
+      "paths": ["infra/yard-reaper/tests/test_yard_reaper.py"],
+      "invocation": "python3 -m unittest discover -s infra/yard-reaper/tests -v",
+      "venue": {
+        "workflow": ".github/workflows/yard-reaper-tests.yml",
+        "job_step": "python-tests / Run the yard-reaper suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [7879],
+      "notes": "Deletion-safety suite for the hourly yard-reaper (oracle: Drew's 2026-11-07 disposition rule, #7093). Ran nowhere before #7879: no workflow, flake check, or registry entry, while the timer runs the reaper with --apply hourly."
     }
   ],
   "waivers": []
