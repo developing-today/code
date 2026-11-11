@@ -452,16 +452,34 @@ impl Broker {
 
     fn open_conn_raw(&self, port: u16) -> Result<HttpConn, String> {
         let target = self.config.target_host();
-        let stream: TcpStream = if self.config.proxy_direct() {
-            connect_tunnel(None, target, port)
-        } else {
-            let egress = self
-                .egress
-                .as_ref()
-                .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
-            connect_tunnel(Some(egress), target, port)
+        if self.config.proxy_direct() {
+            // Colocated direct mode (#6219): when the service on
+            // this port is a broker role whose Unix socket answers,
+            // dial the socket instead of TCP loopback. A socket
+            // that does not answer (absent or stale, or a failed
+            // connect) falls back to the TCP dial below within the
+            // same attempt; non-colocated ports never take this
+            // path, and the tunnel (non-direct) path is unchanged.
+            if let Some(fleet_config::RoleTransport::Socket(socket)) =
+                self.config.service_transport_choice(port)
+            {
+                if let Ok(stream) = UnixStream::connect(&socket) {
+                    let _ = stream.set_read_timeout(Some(crate::tunnel::TUNNEL_READ_TIMEOUT));
+                    let _ = stream.set_write_timeout(Some(crate::tunnel::TUNNEL_WRITE_TIMEOUT));
+                    return HttpConn::from_unix(stream)
+                        .map_err(|e| format!("socket {} for port {port}: {e}", socket.display()));
+                }
+            }
+            let stream: TcpStream = connect_tunnel(None, target, port)
+                .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
+            return HttpConn::new(stream).map_err(|e| format!("tunnel to {target}:{port}: {e}"));
         }
-        .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
+        let egress = self
+            .egress
+            .as_ref()
+            .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
+        let stream: TcpStream = connect_tunnel(Some(egress), target, port)
+            .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
         HttpConn::new(stream).map_err(|e| format!("tunnel to {target}:{port}: {e}"))
     }
 
@@ -1429,8 +1447,7 @@ mod tests {
     fn parse_request_absent_port_means_the_default() {
         // No "port" key at all: None, which do_request turns into
         // PORT_LAPTOP_AGENT (4799) -- the absent-port route.
-        let req = parse_request(&serde_json::json!({"method": "GET", "path": "/health"}))
-            .unwrap();
+        let req = parse_request(&serde_json::json!({"method": "GET", "path": "/health"})).unwrap();
         assert_eq!(req.port, None);
         // An explicit null is absent too, mirroring `body`.
         let req = parse_request(&frame_with_port(serde_json::Value::Null)).unwrap();
@@ -1482,9 +1499,7 @@ mod tests {
             match value {
                 serde_json::Value::Null => Ok(None),
                 serde_json::Value::Number(n) => match n.as_u64() {
-                    Some(u) if n.is_u64() && (1..=65535).contains(&u) => {
-                        Ok(Some(u as u16))
-                    }
+                    Some(u) if n.is_u64() && (1..=65535).contains(&u) => Ok(Some(u as u16)),
                     _ => Err(()),
                 },
                 _ => Err(()),
