@@ -385,6 +385,13 @@ fn call_result(path: &str, body: &Value) -> Result<Value, (i32, String)> {
     // the caller. Safe for writes: a 57014 means Postgres cancelled
     // the statement, so the write rolled back and cannot
     // double-apply (enqueue dedupe keys are a second belt).
+    // /claim-flow invariant (#5757-A, Codex P1 on PR #8493): this
+    // whole-request retry is safe ONLY because both brokers answer
+    // any post-claim-commit lane/bind failure as a partial SUCCESS
+    // (ok envelope + `claim_flow_partial`), never as a retryable
+    // error — a retryable error out of /claim-flow can therefore
+    // only come from the claim step itself, whose statement rolled
+    // back. Do not weaken the broker side of this invariant.
     let mut attempt: u32 = 0;
     loop {
         match broker_roundtrip(path, body) {
@@ -845,6 +852,58 @@ pub(crate) fn list_limit_or_default(raw: Option<i64>) -> Result<i64, String> {
     validate_list_limit(raw.unwrap_or(LIST_LIMIT_DEFAULT))
 }
 
+/// One page of a `list` fetch (#7871): a single /list response
+/// reliably carries at most ~100 rows — above that the reply comes
+/// back unusable and, before this fix, the client rendered it as a
+/// silent "(no tasks)" with exit 0. `cmd_list` therefore fetches
+/// any limit in pages of this size, advancing an offset the broker
+/// honors on both backends (PostgREST `offset=` and Turso
+/// `OFFSET`), so a large --limit returns rows page by page instead
+/// of one oversized response.
+pub(crate) const LIST_PAGE_SIZE: i64 = 100;
+
+/// The (offset, page_limit) requests that fetch `limit` rows in
+/// pages of LIST_PAGE_SIZE (#7871). Pure, so the paging plan is
+/// unit-testable without a broker. Oracle: the pages are
+/// contiguous, non-overlapping, in ascending offset order, and
+/// their page_limits sum to exactly `limit`.
+pub(crate) fn list_pages(limit: i64) -> Vec<(i64, i64)> {
+    let mut pages = Vec::new();
+    let mut offset = 0;
+    while offset < limit {
+        let page = LIST_PAGE_SIZE.min(limit - offset);
+        pages.push((offset, page));
+        offset += page;
+    }
+    pages
+}
+
+/// The /list `offset` for a broker request (#7871): absent means
+/// the first page; a negative value is never interpolated into a
+/// query — it clamps to 0. The client only ever sends offsets its
+/// own paging plan produced; the broker re-derives the value here
+/// because it is the trust boundary for non-CLI callers.
+pub(crate) fn list_offset_or_default(raw: Option<i64>) -> i64 {
+    raw.unwrap_or(0).max(0)
+}
+
+/// The rows of a /list envelope (#7871): the `rows` field must be
+/// present and an array. Before this guard, a malformed or
+/// truncated broker reply (which parses to a Null body) fell
+/// through `unwrap_or_default` in cmd_list and printed
+/// "(no tasks)" with exit 0 — a silent empty that reads as "task
+/// does not exist". A reply we cannot read is an error, never an
+/// empty list.
+pub(crate) fn list_rows(resp: &Value) -> Result<Vec<Value>, String> {
+    resp.get("rows")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .ok_or_else(|| {
+            "queue-broker /list reply had no rows array — refusing to report an empty list"
+                .to_string()
+        })
+}
+
 /// The accepted ranges for the queue duration flags (#6420; design
 /// #6448 Phase 3 pin, same as `list --limit`: out-of-range is
 /// REJECTED, never clamped, at both the client and the broker).
@@ -906,6 +965,19 @@ pub(crate) fn extend_seconds_or_default(raw: Option<i64>) -> Result<i64, String>
 /// `delay_seconds` out of the park request entirely.)
 pub(crate) fn validate_delay_seconds(value: i64) -> Result<i64, String> {
     validate_duration("delay-seconds", value, DELAY_SECONDS_MAX)
+}
+
+/// Validate a `--not-before` flag value (#6426): the same rule the
+/// packet validator and the broker apply — a non-empty RFC 3339
+/// timestamp no more than 366 days in the future. Until now the raw
+/// string went into the park/revive body unchecked, so garbage
+/// failed only as a downstream DB cast error. A valid value is
+/// returned unchanged, so the broker body for valid timestamps is
+/// byte-for-byte what it was before; an invalid one is a usage
+/// error naming `--not-before` (the caller dies with exit 2).
+pub(crate) fn validate_not_before_flag(raw: &str) -> Result<String, String> {
+    crate::validate::validate_not_before(&json!(raw), "--not-before")?;
+    Ok(raw.to_string())
 }
 
 fn env_or_default(value: Option<&str>, default: &str) -> String {
@@ -1347,7 +1419,15 @@ fn find_task_row(rows: &[Value], task_id: i64) -> Option<&Value> {
 fn cmd_list(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
-        &["queue", "status", "limit", "not-before", "lane", "worker"],
+        &[
+            "queue",
+            "status",
+            "limit",
+            "not-before",
+            "lane",
+            "worker",
+            "task",
+        ],
         &[],
     );
     reject_extra_pos("list", &args, 0);
@@ -1355,23 +1435,38 @@ fn cmd_list(rest: &[String]) -> i32 {
         Ok(limit) => limit,
         Err(e) => die(2, &e),
     };
-    let resp = call(
-        "/list",
-        &json!({
-            "queue": opt_queue(&args),
-            "status": args.get("status"),
-            "limit": limit,
-            "not_before": args.get("not-before"),
-            "lane": args.get("lane"),
-            "worker": args.get("worker"),
-        }),
-    );
-    let resp = unwrap_ok(resp);
-    let rows = resp
-        .get("rows")
-        .and_then(|r| r.as_array())
-        .cloned()
-        .unwrap_or_default();
+    // #7871: fetch in pages of LIST_PAGE_SIZE (see list_pages) — a
+    // single oversized /list response comes back unusable and used
+    // to render as a silent "(no tasks)". `--task <id>` narrows to
+    // one task regardless of status ordering, so a worker can
+    // verify a just-completed task's status from list output even
+    // when the done list is thousands of rows long.
+    let mut rows: Vec<Value> = Vec::new();
+    for (offset, page_limit) in list_pages(limit) {
+        let resp = call(
+            "/list",
+            &json!({
+                "queue": opt_queue(&args),
+                "status": args.get("status"),
+                "limit": page_limit,
+                "offset": offset,
+                "not_before": args.get("not-before"),
+                "lane": args.get("lane"),
+                "worker": args.get("worker"),
+                "task": args.get_i64("task"),
+            }),
+        );
+        let resp = unwrap_ok(resp);
+        let page = match list_rows(&resp) {
+            Ok(page) => page,
+            Err(e) => die(3, &e),
+        };
+        let short_page = (page.len() as i64) < page_limit;
+        rows.extend(page);
+        if short_page {
+            break;
+        }
+    }
     if rows.is_empty() {
         println!("(no tasks)");
         return 0;
@@ -1383,6 +1478,99 @@ fn cmd_list(rest: &[String]) -> i32 {
     let str_rows: Vec<Vec<String>> = rows.iter().map(list_row_cells).collect();
     print_table(&cols, &str_rows);
     0
+}
+
+/// The /claim-flow request invariants (#5757-A), checked before
+/// any step runs, on both broker backends (the broker is the
+/// trust boundary; the client mirrors the same rules in
+/// claim_bind_path): a session to bind is required, batch claims
+/// bind one session per item elsewhere, and --from-session
+/// transfers keep the three-verb sequence. Returns the session
+/// id to bind.
+pub(crate) fn claim_flow_precheck(req: &Value) -> Result<String, String> {
+    let session = req.get("session_id").and_then(|s| s.as_str()).unwrap_or("");
+    if session.is_empty() {
+        return Err("claim-flow: session_id is required (the session the claimed                     task binds to; without one use /claim)"
+            .to_string());
+    }
+    if req.get("count").and_then(|c| c.as_i64()).unwrap_or(1) > 1 {
+        return Err("claim-flow: batch claims (--count > 1) bind one session per                     item — dispatch or send each item instead"
+            .to_string());
+    }
+    let from_session = req
+        .get("from_session")
+        .and_then(|s| s.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if from_session {
+        return Err(
+            "claim-flow: from_session transfers keep the claim/lane/bind sequence".to_string(),
+        );
+    }
+    Ok(session.to_string())
+}
+
+/// #5757-A: the operator-facing note for a /claim-flow partial
+/// success — the claim COMMITTED and stands, but the lane or bind
+/// step failed broker-side. The claimed task's identity is
+/// preserved (no re-claim, no replay); the caller finishes the
+/// named step with the single-verb call for this task id.
+/// Returns None on a full success (or a non-claim-flow answer).
+fn claim_flow_partial_note(resp: &Value) -> Option<String> {
+    let partial = resp.get("claim_flow_partial")?;
+    let step = partial
+        .get("step")
+        .and_then(|s| s.as_str())
+        .unwrap_or("lane/bind");
+    let error = partial
+        .get("error")
+        .and_then(|e| e.as_str())
+        .unwrap_or("unknown error");
+    let task_id = resp
+        .get("row")
+        .and_then(|r| r.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    Some(format!(
+        "repo-queue: claim-flow claimed task {task_id} but the {step} step failed ({error}); \
+         the claim stands — finish that step with the single-verb call for task {task_id}, do not re-claim"
+    ))
+}
+
+/// Whether this claim takes the one-trip /claim-flow path
+/// (#5757-A): only with an explicit --bind, a single (non-batch)
+/// claim, no --from-session transfer, and a --session-id to
+/// bind. --bind is never implied by --session-id alone: existing
+/// callers pass --session-id as a claim mark and keep
+/// byte-identical behavior without the flag. Each refusal names
+/// the flag at fault — a caller who asked for a bind must never
+/// silently get an unbound claim. Mirrors claim_flow_precheck
+/// (the broker-side enforcement of the same invariants).
+pub(crate) fn claim_bind_path(
+    bind: bool,
+    count: i64,
+    from_session: bool,
+    session_id: Option<&str>,
+) -> Result<bool, String> {
+    if !bind {
+        return Ok(false);
+    }
+    if count > 1 {
+        return Err("claim --bind: batch claims (--count > 1) bind one session per                     item — dispatch or send each item instead"
+            .to_string());
+    }
+    if from_session {
+        return Err(
+            "claim --bind: --from-session transfers keep the claim/lane/bind sequence".to_string(),
+        );
+    }
+    match session_id {
+        Some(s) if !s.is_empty() => Ok(true),
+        _ => Err(
+            "claim --bind: --session-id is required (the session the claimed task binds to)"
+                .to_string(),
+        ),
+    }
 }
 
 fn cmd_claim(rest: &[String]) -> i32 {
@@ -1403,8 +1591,9 @@ fn cmd_claim(rest: &[String]) -> i32 {
             "model-variant",
             "filter",
             "pool",
+            "launched-by",
         ],
-        &["handoff"],
+        &["handoff", "bind"],
     );
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
@@ -1513,7 +1702,38 @@ fn cmd_claim(rest: &[String]) -> i32 {
     if let Some(fs) = args.get("from-session") {
         body["from_session"] = json!(fs);
     }
-    let resp = unwrap_ok_fb(call_fb("/claim", &body), "/claim");
+    // --bind (#5757-A): claim + lane-assign + session-bind in
+    // ONE broker round trip via /claim-flow instead of the three
+    // trips claim -> lane -> bind. The answer carries the same
+    // task row in `row`, so claim_output and the #6741 fallback
+    // guard below work unchanged. The flow goes through call_fb
+    // like /claim: on a backend failure the fallback switch
+    // fires identically, and lane/bind — broker-ledger steps —
+    // are skipped in fallback mode (runbook §0a: no ledger
+    // there), so there is no client-side three-verb replay.
+    let bind = match claim_bind_path(
+        args.has("bind"),
+        count,
+        args.get("from-session").is_some(),
+        args.get("session-id").as_deref(),
+    ) {
+        Ok(bind) => bind,
+        Err(e) => die(2, &e),
+    };
+    if bind {
+        body["launched_by"] = json!(
+            args.get("launched-by")
+                .unwrap_or_else(|| "opencode-claimant".to_string())
+        );
+    }
+    let resp = if bind {
+        unwrap_ok_fb(call_fb("/claim-flow", &body), "/claim-flow")
+    } else {
+        unwrap_ok_fb(call_fb("/claim", &body), "/claim")
+    };
+    if let Some(note) = claim_flow_partial_note(&resp) {
+        eprint(&note);
+    }
     if count > 1 {
         return claim_batch_output(&resp, &worker, count);
     }
@@ -1804,6 +2024,16 @@ fn claim_output(resp: &Value) -> (Value, i32) {
             return (json!({"task": Value::Null}), NO_CLAIM_EXIT);
         }
     }
+    // #5757-A (Codex P2, PR #8493): a /claim-flow partial success
+    // must stay distinguishable in the machine-readable output —
+    // the stderr note alone leaves stdout consumers unable to tell
+    // a completed bind from an unbound claim. Carry the broker's
+    // claim_flow_partial marker on the printed row, alongside the
+    // claimed task's identity; the claim itself is not retried.
+    let mut row = row;
+    if let (Some(partial), Some(obj)) = (resp.get("claim_flow_partial"), row.as_object_mut()) {
+        obj.insert("claim_flow_partial".to_string(), partial.clone());
+    }
     (row, 0)
 }
 
@@ -1939,6 +2169,10 @@ fn cmd_park(rest: &[String]) -> i32 {
         "progress": progress_arg(&args).unwrap_or(json!({})),
     });
     if let Some(nb) = args.get("not-before") {
+        let nb = match validate_not_before_flag(&nb) {
+            Ok(v) => v,
+            Err(e) => die(2, &e),
+        };
         body["not_before"] = json!(nb);
     } else if let Some(d) = args.get_i64("delay-seconds") {
         let d = match validate_delay_seconds(d) {
@@ -2152,6 +2386,10 @@ fn cmd_revive(rest: &[String]) -> i32 {
         "reason": args.get("reason").unwrap_or_default(),
     });
     if let Some(nb) = args.get("not-before") {
+        let nb = match validate_not_before_flag(&nb) {
+            Ok(v) => v,
+            Err(e) => die(2, &e),
+        };
         body["not_before"] = json!(nb);
     }
     let resp = unwrap_ok(call("/revive", &body));
@@ -2977,7 +3215,7 @@ fn cmd_outbox(rest: &[String]) -> i32 {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|revive|health|signal|fallback|outbox> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|revive|health|signal|fallback|outbox|dispatch|session|surfaces> ...",
         );
         return 2;
     }
@@ -3008,6 +3246,9 @@ pub fn run(args: &[String]) -> i32 {
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
         "fallback" => crate::fallback::run(rest),
+        "dispatch" => crate::placement::cmd_dispatch(rest),
+        "session" => crate::placement::cmd_session(rest),
+        "surfaces" => crate::placement::cmd_surfaces(rest),
         "outbox" => cmd_outbox(rest),
         _ => {
             eprint(&format!("repo-queue: unknown command {sub:?}"));
@@ -3336,6 +3577,122 @@ mod tests {
     }
 
     #[test]
+    fn claim_flow_partial_note_names_the_claimed_task_and_step() {
+        // #5757-A Codex P1 oracle (PR #8493): a partial success
+        // produces a note that preserves the claimed task's
+        // identity and names the failed step; a full success (and
+        // a plain /claim answer) produces no note.
+        let partial = json!({
+            "row": {"id": 4242},
+            "claim_flow_partial": {"step": "bind", "exit": 4, "error": "PGRST002 boom"},
+        });
+        let note = claim_flow_partial_note(&partial).expect("partial yields a note");
+        assert!(note.contains("4242"), "{note}");
+        assert!(note.contains("bind"), "{note}");
+        assert!(note.contains("do not re-claim"), "{note}");
+        let full = json!({"row": {"id": 4242}, "lane_row": {}, "bind_row": {}});
+        assert!(claim_flow_partial_note(&full).is_none());
+        assert!(claim_flow_partial_note(&json!({"row": {"id": 1}})).is_none());
+    }
+
+    #[test]
+    fn claim_output_preserves_claim_flow_partial_marker() {
+        // #5757-A Codex P2 oracle (PR #8493): claim_output on a
+        // partial /claim-flow answer keeps claim_flow_partial in
+        // the printed JSON with the claimed task's identity and
+        // exit 0; a full success passes the row through untouched.
+        let partial = json!({
+            "row": {"id": 4242, "status": "claimed"},
+            "claim_flow_partial": {"step": "bind", "exit": 4, "error": "PGRST002 boom"},
+        });
+        let (out, code) = claim_output(&partial);
+        assert_eq!(code, 0);
+        assert_eq!(out["id"], 4242);
+        assert_eq!(out["claim_flow_partial"]["step"], "bind");
+        assert_eq!(out["claim_flow_partial"]["exit"], 4);
+        let full = json!({"row": {"id": 4242, "status": "claimed"}, "lane_row": {}, "bind_row": {}});
+        let (out, code) = claim_output(&full);
+        assert_eq!(code, 0);
+        assert!(out.get("claim_flow_partial").is_none());
+    }
+
+    #[test]
+    fn claim_bind_path_requires_explicit_bind_single_claim_and_session() {
+        // #5757-A oracle: /claim-flow is chosen ONLY for an
+        // explicit --bind with a session to bind, a single claim,
+        // and no transfer; --session-id as a bare mark never
+        // selects it, and every refused combination errors loudly
+        // instead of silently claiming unbound.
+        assert_eq!(claim_bind_path(false, 1, false, Some("ses_1")), Ok(false));
+        assert_eq!(claim_bind_path(false, 1, false, None), Ok(false));
+        assert_eq!(claim_bind_path(true, 1, false, Some("ses_1")), Ok(true));
+        assert!(claim_bind_path(true, 1, false, None).is_err());
+        assert!(claim_bind_path(true, 1, false, Some("")).is_err());
+        assert!(claim_bind_path(true, 2, false, Some("ses_1")).is_err());
+        assert!(claim_bind_path(true, 1, true, Some("ses_1")).is_err());
+    }
+
+    #[test]
+    fn claim_flow_precheck_enforces_the_same_invariants() {
+        // #5757-A oracle (broker side): the precheck returns the
+        // session id for a well-formed flow request and refuses
+        // a missing session, a batch, and a transfer — before
+        // any step runs.
+        assert_eq!(
+            claim_flow_precheck(&json!({"session_id": "ses_1"})),
+            Ok("ses_1".to_string())
+        );
+        assert!(claim_flow_precheck(&json!({})).is_err());
+        assert!(claim_flow_precheck(&json!({"session_id": ""})).is_err());
+        assert!(claim_flow_precheck(&json!({"session_id": "s", "count": 2})).is_err());
+        assert!(claim_flow_precheck(&json!({"session_id": "s", "from_session": "ses_0"})).is_err());
+        assert_eq!(
+            claim_flow_precheck(&json!({"session_id": "s", "count": 1})),
+            Ok("s".to_string())
+        );
+    }
+
+    #[test]
+    fn list_pages_cover_the_limit_exactly() {
+        // #7871 oracle: pages are contiguous, ascending, and sum
+        // to the requested limit; no page exceeds LIST_PAGE_SIZE
+        // (the per-response row ceiling the bug tracks).
+        assert_eq!(list_pages(1), vec![(0, 1)]);
+        assert_eq!(list_pages(20), vec![(0, 20)]);
+        assert_eq!(list_pages(LIST_PAGE_SIZE), vec![(0, LIST_PAGE_SIZE)]);
+        assert_eq!(
+            list_pages(LIST_PAGE_SIZE + 1),
+            vec![(0, LIST_PAGE_SIZE), (LIST_PAGE_SIZE, 1)]
+        );
+        let pages = list_pages(LIST_LIMIT_MAX);
+        assert_eq!(pages.len() as i64, LIST_LIMIT_MAX / LIST_PAGE_SIZE);
+        assert_eq!(pages.iter().map(|(_, n)| n).sum::<i64>(), LIST_LIMIT_MAX);
+        for (i, (offset, n)) in pages.iter().enumerate() {
+            assert_eq!(*offset, i as i64 * LIST_PAGE_SIZE);
+            assert!(*n >= 1 && *n <= LIST_PAGE_SIZE);
+        }
+        // Offsets clamp at 0, absent means the first page.
+        assert_eq!(list_offset_or_default(None), 0);
+        assert_eq!(list_offset_or_default(Some(-5)), 0);
+        assert_eq!(list_offset_or_default(Some(200)), 200);
+    }
+
+    #[test]
+    fn list_rows_rejects_a_reply_without_a_rows_array() {
+        // #7871: the silent-empty path — a truncated broker reply
+        // parses to Null, and an ok-envelope may still lack rows.
+        // Both must be errors, never an empty list.
+        assert!(list_rows(&Value::Null).is_err());
+        assert!(list_rows(&json!({"ok": true})).is_err());
+        assert!(list_rows(&json!({"ok": true, "rows": {}})).is_err());
+        assert_eq!(list_rows(&json!({"ok": true, "rows": []})), Ok(vec![]));
+        assert_eq!(
+            list_rows(&json!({"ok": true, "rows": [{"id": 7}]})),
+            Ok(vec![json!({"id": 7})])
+        );
+    }
+
+    #[test]
     fn duration_flags_range_is_validated() {
         // #6420: 0/negative durations corrupt claim state (a lease
         // born expired, a heartbeat that lapses its own claim, a park
@@ -3396,6 +3753,36 @@ mod tests {
             extend_seconds_or_default(Some(-1)),
             validate_extend_seconds(-1)
         );
+    }
+
+    #[test]
+    fn not_before_flag_is_validated() {
+        // #6426: park/revive --not-before went into the broker body
+        // as a raw string — garbage failed only as a downstream DB
+        // cast error, and a far-future value parked a task out of
+        // reach for years. It is now a usage error naming the flag
+        // (cmd_park/cmd_revive die with exit 2 on Err).
+        for bad in [
+            "banana",
+            "",
+            "   ",
+            "2026-02-31T00:00:00Z",
+            "9999-01-01T00:00:00Z",
+        ] {
+            let err = validate_not_before_flag(bad)
+                .err()
+                .expect("invalid --not-before must be rejected");
+            assert!(err.contains("--not-before"), "error names the flag: {err}");
+        }
+        // Valid timestamps pass through unchanged — the broker body
+        // for a valid value is byte-for-byte what it was before.
+        for ok in [
+            "2020-01-01T00:00:00Z",
+            "2026-11-06T00:00:00Z",
+            "2026-11-06T05:30:00+05:30",
+        ] {
+            assert_eq!(validate_not_before_flag(ok), Ok(ok.to_string()));
+        }
     }
 
     #[test]

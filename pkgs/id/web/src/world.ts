@@ -1,6 +1,7 @@
 /** Browser presentation for the server-authoritative world session. */
 
 import { terminalBytesForKey } from "./world-keyboard";
+import { parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
 import { parseWorldSeed } from "./world-seed";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 
@@ -430,14 +431,11 @@ function initWorld(): void {
           throw new Error(response.status === 401 ? "Host authorization denied" : "Host view unavailable");
         }
         if (generation !== hostViewGeneration || !hostMode) return;
-        const result = (await response.json()) as {
-          snapshot?: NonNullable<WorldFrame["snapshot"]>;
-          view?: string | null;
-          surface?: ScreenSurface | null;
-          records_sequence: number;
-          records: Record<string, unknown>;
-          next_after: string | null;
-        };
+        // Validate the page at the fetch boundary before any state is
+        // touched (#7833): a wrong-shape 200 must fail closed with the
+        // designed "Host view unavailable" error, never a raw TypeError
+        // or bogus per-character records.
+        const result = parseWorldHostViewPage(await response.json());
         if (recordsSequence !== null && recordsSequence !== result.records_sequence) {
           throw new Error("World records changed while paging; refresh the host view");
         }
@@ -563,11 +561,14 @@ function initWorld(): void {
       if (!response.ok) {
         throw new Error(response.status === 401 ? "Admin token refused" : `Invite failed (${response.status})`);
       }
-      const result = (await response.json()) as { capability: string; display_name: string };
+      // Validate at the fetch boundary (#7833): a malformed 200 must
+      // never reach showCapability, which persists the capability to
+      // sessionStorage.
+      const result = parseWorldInviteResponse(await response.json());
       showCapability(result.capability);
       admin.value = "";
       setStatus("Invite created. Copy it or join this browser.", "good");
-      appendLine(log, `Invite created for ${result.display_name}`);
+      appendLine(log, `Invite created for ${result.display_name ?? (name.value || "guest")}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Invite failed", "error");
     } finally {

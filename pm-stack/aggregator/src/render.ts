@@ -1600,10 +1600,11 @@ export function renderBoard(
 
 /** The Datastar shell for / (#1444): heading + intro paint at once;
  *  the board itself streams in from /frag/board. */
-export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDetail, viewQuery = ""): string {
+  const fragBoard = viewQuery ? `/frag/board?${viewQuery}` : "/frag/board";
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')"><div class="skel">Loading the board…</div></div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('${fragBoard}')" data-on-dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
     provenance,
     "/board",
     ACTION_SCRIPT,

@@ -161,6 +161,16 @@ in
         };
       }
       {
+        # Laptop scratch sweep (darwin-nix#373): daily reaping of
+        # opencode test/build scratch (>72h) and mcpx binary dirs
+        # (>24h) - the two un-reaped scratch growth sources behind
+        # the 2026-11-11 disk catch.
+        home-manager.users.user = {
+          imports = [ ../home/laptop-scratch-sweep.nix ];
+          services.laptop-scratch-sweep.enable = true;
+        };
+      }
+      {
         # GitHub backup mirror timers (code#3215): webhook-queue
         # drain every 5 min, daily mirror fetch, weekly reconcile.
         # Folded into the flake 2026-11-01 (code#3720); the scripts

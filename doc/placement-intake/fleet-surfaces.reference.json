@@ -1,0 +1,159 @@
+{
+  "comment": "Fleet placement surface registry (docs/placement.md). Adding a location = adding an entry here (+ app installation + a fleet copy). The dispatcher core (tools/fleet-place) reads ONLY this file for what exists; kinds map to adapters in the dispatcher. Limits source: GitHub Actions limits reference, https://docs.github.com/en/actions/reference/limits (verified 2026-11-04): concurrent GitHub-hosted jobs per account Free 20 / Pro 40 / Team 60 / Enterprise 500 (macOS subset 5 / 5 / 5 / 50); included private-repo minutes per month Free 2000 / Pro 3000 / Team 3000 / Enterprise 50000; public repositories: minutes unlimited on every plan, so for public targets the binding limit is the concurrency cap, not minutes.",
+  "laptop": {
+    "busy": false,
+    "busy_source": "manual-flag",
+    "note": "Saturation signal for the codespace tier. Set from pm-dispatch/queue depth where a caller can read it, else flip by hand or pass --laptop-busy. Deliberately not scraped telemetry."
+  },
+  "owners": {
+    "developing-today": {
+      "concurrent_jobs_cap": 20,
+      "concurrent_macos_cap": 5,
+      "plan": "free-org",
+      "private_minutes_monthly": 2000
+    },
+    "developing-today-forks": {
+      "concurrent_jobs_cap": 20,
+      "concurrent_macos_cap": 5,
+      "plan": "free-org (assumed - confirm)",
+      "private_minutes_monthly": 2000
+    },
+    "dezren39": {
+      "concurrent_jobs_cap": 40,
+      "concurrent_macos_cap": 5,
+      "plan": "pro",
+      "private_minutes_monthly": 3000
+    }
+  },
+  "surfaces": [
+    {
+      "app_installation": 175747567,
+      "id": "fleet-personal",
+      "kind": "github-actions",
+      "notes": "Personal copy of the fleet umbrella. Dispatches as the developing-today app via the personal installation (verified 2026-11-04). Repo secrets provisioned (GHCR_ORG_PAT, CACHIX_AUTH_TOKEN, NIX_CACHE_SIGNING_KEY, NIX_CACHE_UPLOAD_URL), so cross-repo checkouts work here, and cache pushes will the moment the fork workflow deltas are adopted upstream (upstream fleet-run ignores entry cache fields until then).",
+      "owner": "dezren39",
+      "repo": "dezren39/fleet",
+      "status": "active",
+      "targets": [
+        "developing-today/code",
+        "developing-today/opencode",
+        "developing-today/openchamber",
+        "dezren39/darwin-nix",
+        "dezren39/fleet"
+      ],
+      "workflow": "fleet-run.yml"
+    },
+    {
+      "app_installation": 174792676,
+      "id": "fleet-org",
+      "kind": "github-actions",
+      "notes": "Org fork of dezren39/fleet (created 2026-11-04). Actions are enabled at repo level, but the developing-today app installation is repository-selected and does not yet include this repo (API add refused 403; org-owner GUI grant filed under GRANTS NEEDED in the placement report). Ineligible for app dispatch until covered. Also needs repo secrets (GHCR_ORG_PAT for cross-repo checkout; NIX_CACHE_* for cache pushes) before non-trivial jobs.",
+      "owner": "developing-today",
+      "repo": "developing-today/fleet",
+      "status": "pending-app-coverage",
+      "targets": [
+        "developing-today/code",
+        "developing-today/opencode",
+        "developing-today/openchamber",
+        "dezren39/darwin-nix",
+        "dezren39/fleet"
+      ],
+      "workflow": "fleet-run.yml"
+    },
+    {
+      "app_installation": null,
+      "id": "fleet-forks",
+      "kind": "github-actions",
+      "notes": "Third copy of the umbrella, in the forks org (stood up 2026-11-04; Drew is org admin). Absorbed as registry DATA only - no dispatcher change; the live extensibility proof. The developing-today app is NOT installed on developing-today-forks, so this surface is ineligible-app-missing until that grant lands (GRANTS NEEDED); no user-token fallback, per the app-only rule.",
+      "owner": "developing-today-forks",
+      "repo": "developing-today-forks/fleet",
+      "status": "pending-app-installation",
+      "targets": [
+        "developing-today/code",
+        "developing-today/opencode",
+        "developing-today/openchamber",
+        "dezren39/darwin-nix",
+        "dezren39/fleet"
+      ],
+      "workflow": "fleet-run.yml"
+    },
+    {
+      "app_installation": 174792676,
+      "id": "org-run",
+      "kind": "github-actions",
+      "notes": "Org-level generic runner hosted in the code repo (org-run.yml landed on code main 2026-11-04; runner input parity added by code PR #5417, merged as the app). Dispatches as the app via the org installation. Allowlist = the six org repos in targets.",
+      "owner": "developing-today",
+      "repo": "developing-today/code",
+      "status": "active",
+      "targets": [
+        "developing-today/code",
+        "developing-today/opencode",
+        "developing-today/openchamber",
+        "developing-today/.github",
+        "developing-today/hardware-doc",
+        "developing-today/zulip-archive"
+      ],
+      "workflow": "org-run.yml"
+    },
+    {
+      "app_installation": 174792676,
+      "budget": {
+        "free_minutes_monthly": 3000,
+        "paid_cap_minutes": 0,
+        "rate_note": "Blacksmith is orgs-only: 3,000 free min/mo, then PAID per-minute (it charges for public-repo minutes past the free tier). paid_cap_minutes is the registry knob Drew can raise; 0 = free tier only."
+      },
+      "host_surface": "fleet-org",
+      "id": "fleet-org-blacksmith",
+      "kind": "blacksmith",
+      "notes": "Blacksmith variant of the org fork's fleet-run (runner input = blacksmith, label blacksmith-4vcpu-ubuntu-2404). Blacksmith app (blacksmith-sh, id 807020) VERIFIED installed on the developing-today org with repository_selection=all (2026-11-04). Org surfaces only \u2014 never the personal copy (provider is orgs-only). Inherits fleet-org's app-coverage blocker.",
+      "owner": "developing-today",
+      "repo": "developing-today/fleet",
+      "status": "pending-app-coverage",
+      "targets": [
+        "developing-today/code",
+        "developing-today/opencode",
+        "developing-today/openchamber",
+        "dezren39/darwin-nix",
+        "dezren39/fleet"
+      ],
+      "workflow": "fleet-run.yml"
+    },
+    {
+      "app_installation": null,
+      "budget": {
+        "core_hours_monthly": 180,
+        "note": "Personal Pro Codespaces budget: 180 core-hours/mo. A 4-core codespace burns 4 core-hours per wall hour."
+      },
+      "id": "codespace-overflow",
+      "kind": "codespace",
+      "max_live": 3,
+      "notes": "Last-resort surface: start/reuse a codespace on the target repo and hand the job to a session inside it. Eligible only when every Actions tier is tapped AND the laptop is saturated (registry laptop.busy or --laptop-busy). Currently pending-scope: gh tokens lack the codespace OAuth scope (gh codespace list returns 403 as of 2026-11-04); the scope grant is being unblocked separately. Reuse-only: fleet-place never creates a codespace; creation stays a deliberate operator act.",
+      "owner": "dezren39",
+      "repo": null,
+      "status": "pending-scope",
+      "targets": [
+        "developing-today/code",
+        "developing-today/opencode",
+        "developing-today/openchamber",
+        "dezren39/darwin-nix",
+        "dezren39/fleet",
+        "developing-today/fleet"
+      ],
+      "workflow": null
+    },
+    {
+      "app_installation": null,
+      "id": "laptop",
+      "kind": "laptop",
+      "notes": "The laptop itself (stateful work: deploys, activations, live services) is owned by pm-dispatch/repo-queue lanes, not by fleet-place. This entry exists so a job can PIN the laptop and get a recorded handoff session instead of an Actions run; fleet-place never executes laptop work itself. Saturation input for the spill cascade lives under 'laptop' below.",
+      "owner": "dezren39",
+      "repo": null,
+      "status": "handoff-only",
+      "targets": [
+        "*"
+      ],
+      "workflow": null
+    }
+  ],
+  "version": 1
+}

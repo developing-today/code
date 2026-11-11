@@ -318,12 +318,15 @@ function poolFor(provider: string, model: string): string | null {
     case "_claude":
       return "anthropic:claude-pro";
     case "openai":
-    case "openai-codex":
-    case "chatgpt":
+    case "_openai":
+    case "_openai.main":
+    case "codex":
       // Keep aligned with the pool IDs in ../src/quota-extract.ts; matching below is exact.
-      return "openai.main";
-    case "openai.alternate":
-      return "openai.alternate";
+      // ("codex" is the pre-rename fork quota id, fork PR #2261; a row
+      // still stamped with it files under the renamed pool.)
+      return "_openai.main";
+    case "_openai.alt":
+      return "_openai.alt";
     case "cline-pass":
       return "cline-pass";
     case "opendesign":

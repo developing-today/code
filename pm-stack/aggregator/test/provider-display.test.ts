@@ -36,16 +36,16 @@ describe("providerDisplayNames (#6125)", () => {
   });
 
   test("non-direct names are untouched", () => {
-    const names = providerDisplayNames(["mistral", "openai.main", "cline-pass", "direct"]);
+    const names = providerDisplayNames(["mistral", "_openai.main", "cline-pass", "direct"]);
     expect(names.get("mistral")).toBe("mistral");
-    expect(names.get("openai.main")).toBe("openai.main");
+    expect(names.get("_openai.main")).toBe("openai.main"); // Rule 0 (#1823): display strips the leading underscore
     expect(names.get("cline-pass")).toBe("cline-pass");
     expect(names.get("direct")).toBe("direct");
   });
 
   test("a base provider present only as a dotted sibling still blocks stripping", () => {
-    // "openai.main" is a non-direct openai provider in the set.
-    const names = providerDisplayNames(["openai.main", "openai-direct"]);
+    // "_openai.main" is a non-direct openai provider in the set.
+    const names = providerDisplayNames(["_openai.main", "openai-direct"]);
     expect(names.get("openai-direct")).toBe("openai-direct");
   });
 

@@ -223,7 +223,19 @@ Out of the box, a server running our software ships:
 
 ### 6.1 Identify and allow to exist
 
-NC work is not contraband. The classifier identifies it (#5977 §2.5: `noncommercial` trait, flagged *differently* from copyleft because the restriction is on field of use, not derivatives), and NC artifacts may exist in private storage and on any server whose policy admits them — self-hosting stance: an admin running a genuinely non-commercial community server may allow NC with a one-line removal of the shipped deny. What *our* servers do is a default, not a capability removal.
+NC work is not contraband. The classifier identifies it (#5977 §2.5: `noncommercial` trait, flagged *differently* from copyleft because the restriction is on field of use, not derivatives), and NC artifacts may exist in private storage and on any server whose policy admits them — self-hosting stance: an admin running a genuinely non-commercial community server may allow NC, but **not** with a one-line removal of the shipped deny alone. Removing the deny is necessary, not sufficient, for two reasons that stack: (1) the shipped deny is a top-level hard deny (§4.3 step 0, §5), so while it stands no policy can admit NC at all — but the default deciding policy (§4.2) *also* carries a scoped `deny trait="noncommercial"` of its own; and (2) even with both denies gone, the deciding policy's ladder ceiling is 2, while the taxonomy places NC entries at level 3 (#5977 ladder: level 3 is "all NC and ND content"; NC-adjacent source-available entries sit at level 4), so every NC upload still fails the §4.3 ceiling test. The full change, in the §4.2 shape:
+
+```kdl
+licensing {
+    // 1. remove the shipped top-level deny trait="noncommercial" (the §5 hard deny)
+    policy kind="all" principals="all" {
+        // 2. remove this policy's scoped deny trait="noncommercial"
+        ceiling 3              // 3. raise the ceiling from 2 to cover NC at level 3
+    }
+}
+```
+
+Raising the ceiling to 3 admits the rest of level 3 as well (LGPL/EPL, GPL, ND, proprietary terms) — that breadth is the price of the ceiling route. An admin who wants NC only, at the shipped ceiling, instead leaves `ceiling 2` in place and adds an explicit `allow` naming the NC entries to admit (e.g. `allow "CC-BY-NC-4.0" "CC-BY-NC-SA-4.0"`) to the deciding policy: under §4.3 step 2 an allow admits the entries it names as an exception within the ceiling, without opening level 3 generally. Either route works; deny-removal alone does not — an admin who removes only the deny has changed nothing observable, because NC uploads still refuse, now at the scoped deny or the ceiling instead of the hard deny (and the §4.3 step-4 refusal explanation names the rule that refused). What *our* servers do is a default, not a capability removal.
 
 ### 6.2 The sharp case, settled as far as design can settle it
 

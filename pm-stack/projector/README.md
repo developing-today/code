@@ -110,6 +110,20 @@ local source you don't commit.
 | `/hot/checkpoints`                            | POST   | bearer | ack a checkpoint `{consumer, cursor, highWater}`                  |
 | `/reconcile`                                  | POST   | bearer | trigger a reconciliation poll                                     |
 
+### Integrated queue/PM view — machine face (#7078, #2072 slice 3)
+
+`bun run src/cli.ts queue-view --tasks <tasks.json> [--window-hours 24] [--consumer queue-view] [--no-ack]`
+prints one read-only JSON view joining fleet queue task records (JSON
+exported from the queue broker: an array, or `{ "tasks": [...] }`) with
+this projector's slice-2 hot list, consumed through a consumer
+checkpoint (pinned high-water; the checkpoint is acked only after the
+view prints, unless `--no-ack`). The view lists queued items in claim
+order, items claimed inside the window with their claiming
+system/lane, snapshot counts by status (which reconcile with
+`fleet queue health` when fed the full task list), and links to the
+existing aggregator/projector trend stores. It writes nothing and
+collects nothing new; the human face is a later slice-3 piece.
+
 **Subjects** are external keys:
 
 - `kaneo:<projectSlug>/<taskId>` — a Kaneo board item (e.g. `kaneo:code/CODE-107`)
