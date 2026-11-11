@@ -45,10 +45,18 @@ if (cmd === "reconcile") {
     process.exit(2);
   }
   const windowHours = Number(arg("window-hours") ?? "24");
+  const consumer = arg("consumer") ?? "queue-view";
+  // Consume BEFORE capturing the window end: consumeHotList pins the
+  // hot-list high-water, and the window end must be at or after that
+  // pin. Capturing `until` first would let an event appended after
+  // `until` but before the pin be consumed, filtered out of the view
+  // by the window, and then acked past — lost for good. With this
+  // order every consumed event has received_at <= pin <= until, and
+  // anything appended after the pin is neither consumed nor acked.
+  // (Codex finding on PR #8481, 2026-11-11.)
+  const consumed = await consumeHotList(db, consumer);
   const until = new Date();
   const since = new Date(until.getTime() - windowHours * 3_600_000);
-  const consumer = arg("consumer") ?? "queue-view";
-  const consumed = await consumeHotList(db, consumer);
   const view = buildQueueView(tasks, consumed.events, {
     since: since.toISOString(),
     until: until.toISOString(),

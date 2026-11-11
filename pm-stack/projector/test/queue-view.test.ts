@@ -129,13 +129,19 @@ describe("queue-view: buildQueueView", () => {
     });
   });
 
-  test("claimed falls back to the progress checkpoint timestamp when claimed_at is absent (rich /list rows)", () => {
+  test("claimed_at is authoritative: a progress checkpoint timestamp is never substituted for it (rich /list rows)", () => {
+    // Oracle: Codex finding on PR #8481 — verb_checkpoint overwrites
+    // progress.last_checkpoint.at on every checkpoint, so it cannot
+    // date a claim. Rows without claimed_at are listed as now-facts
+    // with claimed_at null (unknown), whatever their checkpoints say;
+    // a row whose claimed_at is outside the window stays out even
+    // when a checkpoint landed inside it.
     const rich = [
       task({
         id: 21,
         status: "claimed",
         claimed_at: null,
-        progress: { last_checkpoint: { at: "2026-11-10T06:00:00Z" } },
+        progress: { last_checkpoint: { at: "2026-11-10T06:00:00Z" } }, // in-window checkpoint, no claim time
         worker_id: "repo-worker-code",
         lane_id: "code-l",
         payload: { repo: "developing-today/code", kind: "small_fix", issue: { number: 600 } },
@@ -144,7 +150,7 @@ describe("queue-view: buildQueueView", () => {
         id: 22,
         status: "claimed",
         claimed_at: null,
-        progress: { last_checkpoint: { at: "2026-11-01T06:00:00Z" } }, // stale: before the window
+        progress: { last_checkpoint: { at: "2026-11-01T06:00:00Z" } }, // stale checkpoint, no claim time
         worker_id: "repo-worker-code",
         lane_id: "code-a",
         payload: { repo: "developing-today/code", kind: "small_fix", issue: { number: 700 } },
@@ -158,11 +164,19 @@ describe("queue-view: buildQueueView", () => {
         lane_id: null,
         payload: { repo: "developing-today/code", kind: "small_fix", issue: { number: 800 } },
       }),
+      task({
+        id: 24,
+        status: "claimed",
+        claimed_at: "2026-11-01T05:00:00Z", // claimed before the window
+        progress: { last_checkpoint: { at: "2026-11-10T07:00:00Z" } }, // in-window checkpoint must not pull it in
+        worker_id: "repo-worker-code",
+        lane_id: "code-b",
+        payload: { repo: "developing-today/code", kind: "small_fix", issue: { number: 900 } },
+      }),
     ];
     const view = buildQueueView(rich, [], { since: SINCE, until: UNTIL, now: UNTIL });
-    expect(view.claimed.map((c) => c.task_id)).toEqual([21, 23]);
-    expect(view.claimed[0].claimed_at).toBe("2026-11-10T06:00:00Z");
-    expect(view.claimed[1].claimed_at).toBeNull();
+    expect(view.claimed.map((c) => c.task_id)).toEqual([21, 22, 23]);
+    expect(view.claimed.map((c) => c.claimed_at)).toEqual([null, null, null]);
   });
 
   test("counts reconcile with the input snapshot: every record counted once, by status", () => {

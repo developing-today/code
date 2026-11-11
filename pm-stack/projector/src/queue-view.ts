@@ -151,13 +151,20 @@ function inWindow(iso: string | null | undefined, since: string, until: string):
 }
 
 /**
- * When the task was picked up, as far as the record can say: the full
- * task JSON carries `claimed_at`, but the broker's rich /list rows omit
- * it — there the claim's own checkpoint timestamp is the best activity
- * evidence. Null when the record carries neither.
+ * When the task was picked up, as far as the record can say: ONLY the
+ * record's own `claimed_at` is a claim time. The broker's rich /list
+ * rows omit `claimed_at` and carry `progress.last_checkpoint.at`
+ * instead, but that timestamp is overwritten by every checkpoint
+ * (verb_checkpoint), so it is activity evidence, never a claim time:
+ * substituting it mis-dates claims in both directions (a task claimed
+ * before the window but checkpointed inside it reads as newly
+ * claimed; a fresh claim carrying an old checkpoint reads as stale).
+ * Rows without `claimed_at` report null (unknown); buildQueueView
+ * lists such claimed rows as now-facts rather than dating them by a
+ * checkpoint. (Codex finding on PR #8481, 2026-11-11.)
  */
 export function claimTimestamp(task: QueueTaskRecord): string | null {
-  return task.claimed_at ?? task.progress?.last_checkpoint?.at ?? null;
+  return task.claimed_at ?? null;
 }
 
 function toViewEvents(events: HotEventRow[]): ViewHotEvent[] {
