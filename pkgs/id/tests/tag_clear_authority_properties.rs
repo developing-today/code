@@ -88,6 +88,7 @@ impl Chains {
             tag,
             document: None,
             removes: None,
+            chat: None,
             note: None,
             link: None,
             checkpoint: None,
