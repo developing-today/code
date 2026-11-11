@@ -634,6 +634,17 @@ impl WorldCore {
                         "participant {} issued twice",
                         participant.id
                     );
+                    let active = core
+                        .capabilities
+                        .values()
+                        .filter(|record| !record.revoked)
+                        .count();
+                    ensure!(
+                        active < core.limits.participants,
+                        "participant {} exceeds world participant limit {}",
+                        participant.id,
+                        core.limits.participants
+                    );
                     ensure!(
                         parent.is_none_or(|parent| core.capabilities.contains_key(&parent)),
                         "participant {} delegated from an unknown capability",

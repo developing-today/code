@@ -5006,6 +5006,129 @@ mod tests {
     }
 
     #[test]
+    fn restore_refuses_more_issued_participants_than_the_limit() {
+        let mut source = world(8);
+        let mut entries = vec![JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version: JOURNAL_VERSION,
+        }];
+        for name in ["Ada", "Bo", "Cy"] {
+            let (participant, _) = join(&mut source, name);
+            entries.push(source.issued_entry(participant.id).unwrap());
+        }
+
+        let error = WorldCore::restore(
+            "test-world",
+            WorldLimits {
+                participants: 2,
+                ..WorldLimits::default()
+            },
+            entries,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("participant 3") && error.to_string().contains("limit 2"),
+            "error must name the rejected participant and limit: {error}"
+        );
+    }
+
+    #[test]
+    fn restore_accepts_issued_participants_at_the_limit() {
+        let mut source = world(8);
+        let (first, _) = join(&mut source, "Ada");
+        let (second, _) = join(&mut source, "Bo");
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "test-world".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            source.issued_entry(first.id).unwrap(),
+            source.issued_entry(second.id).unwrap(),
+        ];
+
+        let restored = WorldCore::restore(
+            "test-world",
+            WorldLimits {
+                participants: 2,
+                ..WorldLimits::default()
+            },
+            entries,
+        )
+        .unwrap();
+        assert_eq!(restored.core.participants().len(), 2);
+    }
+
+    #[test]
+    fn restore_releases_participant_capacity_after_revocation() {
+        let mut source = world(8);
+        let (first, _) = join(&mut source, "Ada");
+        let (second, _) = join(&mut source, "Bo");
+        assert_eq!(source.revoke_tree(first.id), vec![first.id]);
+        let (third, _) = join(&mut source, "Cy");
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "test-world".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            source.issued_entry(first.id).unwrap(),
+            source.issued_entry(second.id).unwrap(),
+            JournalEntry::Revoked {
+                participant_id: first.id,
+                by: None,
+            },
+            source.issued_entry(third.id).unwrap(),
+        ];
+
+        let restored = WorldCore::restore(
+            "test-world",
+            WorldLimits {
+                participants: 2,
+                ..WorldLimits::default()
+            },
+            entries,
+        )
+        .unwrap();
+        let mut active_ids: Vec<_> = restored
+            .core
+            .participants()
+            .into_iter()
+            .map(|participant| participant.id)
+            .collect();
+        active_ids.sort_unstable();
+        assert_eq!(active_ids, vec![second.id, third.id]);
+    }
+
+    #[test]
+    fn restore_accepts_compacted_journal_at_active_participant_limit() {
+        let mut source = world(8);
+        let (first, _) = join(&mut source, "Ada");
+        source.revoke_tree(first.id);
+        let (second, _) = join(&mut source, "Bo");
+        let (third, _) = join(&mut source, "Cy");
+        source.active_module_hash = Some("module-hash".to_owned());
+        let entries = source.checkpoint_entries("snapshot".to_owned()).unwrap();
+
+        let restored = WorldCore::restore(
+            "test-world",
+            WorldLimits {
+                participants: 2,
+                ..WorldLimits::default()
+            },
+            entries,
+        )
+        .unwrap();
+        assert_eq!(restored.core.capabilities.len(), 3);
+        let mut active_ids: Vec<_> = restored
+            .core
+            .participants()
+            .into_iter()
+            .map(|participant| participant.id)
+            .collect();
+        active_ids.sort_unstable();
+        assert_eq!(active_ids, vec![second.id, third.id]);
+    }
+
+    #[test]
     fn events_are_sequenced_and_reconnect_can_catch_up() {
         let mut core = world(8);
         let (_, token) = join(&mut core, "Ada");
