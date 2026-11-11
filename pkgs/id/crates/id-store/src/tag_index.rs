@@ -1,6 +1,6 @@
 //! The tag index on the tuple encoding (Phase 5, P5.2; design §9.2).
 //!
-//! Each live claim is indexed three times, as a key in [`crate::tuple`] order:
+//! Each live claim is indexed three times, as a key in [`id_core::tuple`] order:
 //!
 //! - α: `(subject, name, value, claim)`, for "the tags of X", "the tags of X named N" and "the
 //!   tags of X named N with value V".
@@ -20,8 +20,8 @@ use std::collections::BTreeMap;
 use p2panda_core::Hash;
 
 use crate::tag_claims::{Claim, TagScope};
-use crate::tuple::TupleEncoder;
-use crate::waiting::AuthorKey;
+use id_core::tuple::TupleEncoder;
+use id_core::waiting::AuthorKey;
 
 /// One indexed claim.
 #[derive(Clone, Debug, PartialEq, Eq)]

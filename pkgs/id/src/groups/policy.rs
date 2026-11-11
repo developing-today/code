@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{Key, Role};
 
+pub use id_store::policy::History;
+
 /// A concrete group-removal behavior, without its per-call options.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum RemoveModeKind {
@@ -227,20 +229,6 @@ pub enum Delegation {
     Transfer,
 }
 
-/// What a joiner may see of earlier history (design §8.3).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum History {
-    /// The whole history.
-    #[default]
-    Full,
-    /// The last N epochs (P4.5). A joiner reads older messages only by asking a member (P4.6).
-    /// N is at least 1.
-    Recent(u32),
-    /// Only what came after the join.
-    FromJoin,
-    /// Causal history (deferred).
-    Causal,
-}
 
 /// A key-agreement scheme and its version (design §8.7). A policy with no scheme has `None`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -53,7 +53,12 @@ use iroh_blobs::{
 };
 use tokio::fs as afs;
 
-use crate::STORE_PATH;
+/// Directory name for persistent blob storage.
+///
+/// Contains the iroh-blobs file store (a `redb` database plus data files) and the
+/// iroh-docs store under `docs/`. Only one process can open it at a time.
+pub const STORE_PATH: &str = ".iroh-store";
+
 
 /// Loads an existing Ed25519 keypair from a file, or creates a new one.
 ///
@@ -146,7 +151,7 @@ async fn read_key_after_creation_race(path: &str) -> Result<[u8; 32]> {
 /// The mode is set atomically at creation, so the key is never briefly
 /// world-readable. `create_new` prevents concurrent first-run processes from
 /// overwriting each other's identity.
-pub(crate) async fn write_private_file(path: &str, data: &[u8]) -> Result<()> {
+pub async fn write_private_file(path: &str, data: &[u8]) -> Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write as _;

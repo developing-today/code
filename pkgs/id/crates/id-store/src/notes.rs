@@ -22,7 +22,7 @@ use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
 use crate::documents::DocumentRef;
-use crate::waiting::AuthorKey;
+use id_core::waiting::AuthorKey;
 
 /// The kind of a `note.create` event, as the header's `kind` names it. The event's own ID is
 /// the note's stable ID.

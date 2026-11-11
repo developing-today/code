@@ -52,7 +52,7 @@ use iroh_docs::store::Query;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::tuple::{TupleEncoder, TupleValue, decode};
+use id_core::tuple::{TupleEncoder, TupleValue, decode};
 
 // ============================================================================
 // Tag value type (binary-safe)

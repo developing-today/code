@@ -29,12 +29,7 @@ use std::collections::HashSet;
 
 use anyhow::{Result, bail, ensure};
 
-/// Bytes in a sync key: the author (32), the sequence number (8, big-endian), then the ID (32).
-pub const KEY_LEN: usize = 72;
-/// A sync key.
-pub type Key = [u8; KEY_LEN];
-/// An event ID: the BLAKE3 hash of the signed header.
-pub type Id = [u8; 32];
+pub use id_store::range::{Id, Key, KEY_LEN};
 
 /// The default fan-out.
 pub const DEFAULT_K: usize = 16;

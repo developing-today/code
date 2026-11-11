@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
 use crate::notes::NoteRecord;
-use crate::waiting::AuthorKey;
+use id_core::waiting::AuthorKey;
 
 /// The kind of a `note.link` event, as the header's `kind` names it.
 pub const LINK_KIND: &str = "note.link";
