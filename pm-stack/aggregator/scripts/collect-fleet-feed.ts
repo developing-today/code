@@ -150,7 +150,7 @@ import { fetchProjectSnapshot } from "../src/projects.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import { staleIssueSearchQuery, type RepoCensus } from "../src/coverage.ts";
-import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
+import { loadLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 import type { FreshnessInput } from "../src/freshness.ts";
 
@@ -922,14 +922,20 @@ async function main(): Promise<void> {
   // Muse sessions have no server to scrape: they register by
   // appending one JSON line at launch (scripts/record-claude-launch.ts).
   // Absent file = no Muse sessions recorded yet — the normal state
-  // until the helper is used.
-  try {
-    const jsonl = await readFile(launchRecordsPath, "utf8");
-    registry.push(...parseLaunchRecords(jsonl));
-  } catch {
-    /* no launch records yet */
+  // until the helper is used. A file that is present but unreadable is
+  // NOT absent (#8353): it degrades the section to error, like every
+  // other source failure in this collector, instead of letting the
+  // registry mark ok/skipped from its remaining sources alone.
+  const launch = await loadLaunchRecords(launchRecordsPath);
+  registry.push(...launch.records);
+  if (launch.error) {
+    console.error(
+      `collector: launch records unreadable (${sanitizeCollectionError(launch.error)}); registry section marks error`,
+    );
+    markSection("registry", "error", launch.error);
+  } else {
+    markSection("registry", registry.length ? "ok" : "skipped");
   }
-  markSection("registry", registry.length ? "ok" : "skipped");
 
   // --- DNS register (#902's files; #906 §1 owns the view) ----------------
   // Slice 2: register.json is authoritative for the fields it carries;
