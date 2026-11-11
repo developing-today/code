@@ -51,6 +51,11 @@ done
   exit 2
 }
 [ -f "$manifest" ] && [ -f "$live" ] || { echo "input file missing" >&2; exit 2; }
+# An empty counts export must never reach the comparison: with no live
+# rows at all the gate has nothing to verify, and a failed export would
+# otherwise be indistinguishable from a pass (Codex review, PR #8406).
+[ -s "$live" ] || { echo "live counts file is empty: $live" >&2; exit 2; }
+[ -s "$manifest" ] || { echo "manifest file is empty: $manifest" >&2; exit 2; }
 if [ -n "$inventory" ] && [ ! -f "$inventory" ]; then
   echo "inventory file missing: $inventory" >&2; exit 2
 fi
@@ -61,8 +66,10 @@ exec awk -v inventory="$inventory" '
   BEGIN { FS = "\t"; fails = 0; infos = 0 }
   function fail(msg) { printf "FAIL  %s\n", msg; fails++ }
   function info(msg) { printf "INFO  %s\n", msg; infos++ }
-  # Pass 1: live counts (the first file argument).
-  FNR == NR {
+  # Pass 1: live counts (the first file argument). Identified by
+  # filename, not FNR == NR: with an empty first file the counters
+  # never diverge and manifest rows would be parsed as live counts.
+  FILENAME == ARGV[1] {
     if (FNR == 1) next
     live[$1] = $2 + 0; seen_live[$1] = 1
     next
@@ -82,6 +89,10 @@ exec awk -v inventory="$inventory" '
     }
     if (disp != "load") {
       fail(table ": unknown disposition " disp)
+      next
+    }
+    if (allow > 0 && note == "") {
+      fail(table ": load row allowlists a delta of " allow " with no explanation note")
       next
     }
     if (!(table in seen_live)) {
