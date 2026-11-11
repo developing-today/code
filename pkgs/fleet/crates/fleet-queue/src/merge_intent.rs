@@ -16,8 +16,9 @@
 //!
 //! This module is the pure core: the table DDL of record, the row
 //! shape, the ordering and state-transition rules, and conflict
-//! routing. Broker endpoints, client verbs, and the replay executor
-//! build on it in follow-on increments; nothing here does I/O.
+//! routing. The broker's storage endpoints (increment 2, in
+//! `turso_queue`) build on it; client verbs and the replay executor
+//! follow in later increments. Nothing here does I/O.
 
 /// DDL of record for the merge-intent table (fleet-queue database).
 /// `position` is the recorded merge order inside one `stack_id`:
@@ -176,6 +177,69 @@ pub fn next_base_branch(existing: &[MergeIntent], stack_id: &str) -> String {
         .filter(|i| i.stack_id == stack_id && i.state != IntentState::Abandoned)
         .max_by_key(|i| i.position)
         .map_or_else(|| "main".to_string(), |i| i.branch.clone())
+}
+
+/// A request to append one finished branch to a stack, as recorded
+/// by the authoring lane during an outage (#8582 increment 2). The
+/// broker's record endpoint builds this from the request body; the
+/// append rules (position, base) are decided here, in the pure core,
+/// so the storage layer cannot drift from the replay semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendRequest {
+    pub stack_id: String,
+    pub repo: String,
+    pub branch: String,
+    pub base_branch: Option<String>,
+    pub head_sha: Option<String>,
+    pub issue_number: Option<i64>,
+    pub pr_number: Option<i64>,
+    pub owner_lane: String,
+    pub owner_worker: String,
+    pub owner_session: Option<String>,
+}
+
+/// The fields an append must carry to be recorded: a stack, a repo,
+/// a branch, and the authoring owner (lane + worker) a later
+/// conflict will be routed to. An append without an owner is
+/// rejected — recording it would strand its replay conflict with
+/// nobody to route to.
+pub fn validate_append(req: &AppendRequest) -> Result<(), String> {
+    for (field, value) in [
+        ("stack_id", &req.stack_id),
+        ("repo", &req.repo),
+        ("branch", &req.branch),
+        ("owner_lane", &req.owner_lane),
+        ("owner_worker", &req.owner_worker),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("merge-intent record requires a non-empty {field}"));
+        }
+    }
+    Ok(())
+}
+
+/// Plan the row an append inserts: position from [`next_position`],
+/// base from the request's explicit base or [`next_base_branch`]
+/// (the current tip, so each new branch stacks on the previous
+/// one), state `intended`.
+pub fn plan_append(existing: &[MergeIntent], req: &AppendRequest) -> MergeIntent {
+    MergeIntent {
+        stack_id: req.stack_id.clone(),
+        position: next_position(existing, &req.stack_id),
+        repo: req.repo.clone(),
+        branch: req.branch.clone(),
+        base_branch: req
+            .base_branch
+            .clone()
+            .unwrap_or_else(|| next_base_branch(existing, &req.stack_id)),
+        head_sha: req.head_sha.clone(),
+        issue_number: req.issue_number,
+        pr_number: req.pr_number,
+        owner_lane: req.owner_lane.clone(),
+        owner_worker: req.owner_worker.clone(),
+        owner_session: req.owner_session.clone(),
+        state: IntentState::Intended,
+    }
 }
 
 /// The replay walk for one stack: the `intended` intents in recorded
@@ -427,6 +491,70 @@ mod tests {
                 .map(|i| i.branch.clone())
                 .collect();
             prop_assert_eq!(walk, expected);
+        }
+    }
+
+    fn append_req(stack: &str, branch: &str) -> AppendRequest {
+        AppendRequest {
+            stack_id: stack.to_string(),
+            repo: "developing-today/code".to_string(),
+            branch: branch.to_string(),
+            base_branch: None,
+            head_sha: None,
+            issue_number: Some(8582),
+            pr_number: None,
+            owner_lane: "code-c".to_string(),
+            owner_worker: "repo-worker-code".to_string(),
+            owner_session: None,
+        }
+    }
+
+    #[test]
+    fn plan_append_stacks_on_the_tip_in_finish_order() {
+        // Oracle: the #8582 stacking rule stated in the issue — each
+        // new branch is based on the previous branch's tip, and the
+        // recorded position is the order work finished in.
+        let first = plan_append(&[], &append_req("s1", "queue/a"));
+        assert_eq!(first.position, 0);
+        assert_eq!(first.base_branch, "main");
+        assert_eq!(first.state, IntentState::Intended);
+        let second = plan_append(&[first], &append_req("s1", "queue/b"));
+        assert_eq!(second.position, 1);
+        assert_eq!(second.base_branch, "queue/a");
+        // A different stack is independent: it starts at main again.
+        let other = plan_append(&[second.clone()], &append_req("s2", "queue/c"));
+        assert_eq!(other.position, 0);
+        assert_eq!(other.base_branch, "main");
+        // An abandoned tip never becomes the next base.
+        let mut dead = second;
+        dead.state = IntentState::Abandoned;
+        let third = plan_append(&[dead], &append_req("s1", "queue/d"));
+        assert_eq!(third.base_branch, "main");
+    }
+
+    #[test]
+    fn plan_append_honors_an_explicit_base() {
+        let mut req = append_req("s1", "queue/b");
+        req.base_branch = Some("release/x".to_string());
+        let planned = plan_append(&[intent("s1", 0, "queue/a", IntentState::Intended)], &req);
+        assert_eq!(planned.base_branch, "release/x");
+        assert_eq!(planned.position, 1);
+    }
+
+    #[test]
+    fn validate_append_requires_stack_repo_branch_and_owner() {
+        assert!(validate_append(&append_req("s1", "queue/a")).is_ok());
+        for blank in ["stack_id", "repo", "branch", "owner_lane", "owner_worker"] {
+            let mut req = append_req("s1", "queue/a");
+            match blank {
+                "stack_id" => req.stack_id = " ".to_string(),
+                "repo" => req.repo = String::new(),
+                "branch" => req.branch = String::new(),
+                "owner_lane" => req.owner_lane = String::new(),
+                _ => req.owner_worker = String::new(),
+            }
+            let err = validate_append(&req).expect_err("blank field must be rejected");
+            assert!(err.contains(blank), "{err}");
         }
     }
 
