@@ -2,9 +2,9 @@
 //! exec channels.
 //!
 //! One frame is a big-endian `u32` byte length followed by the payload bytes.
-//! This is shared by the sync protocol (`crate::log_sync`), the envelope
-//! protocol (`crate::envelope_net`), and the world session transports
-//! (`crate::world_net` over iroh, `crate::world_ssh` over an SSH exec
+//! This is shared by the sync protocol (`id_sync::log_sync`), the envelope
+//! protocol (`id_sync::envelope_net`), and the world session transports
+//! (`id::world_net` over iroh, `id::world_ssh` over an SSH exec
 //! channel); it lives in its own ungated module so the crate builds without
 //! the `world` feature. Every writer goes through [`encode_frame`], so a frame
 //! has the same envelope bytes on every transport that uses it.

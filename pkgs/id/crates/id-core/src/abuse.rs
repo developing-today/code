@@ -52,7 +52,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use crate::event_store::BlockList;
+use crate::block_list::BlockList;
 
 /// A remote endpoint identity: the 32 bytes of its verifying key,
 /// the same bytes the event store uses as an author key.
@@ -1171,8 +1171,8 @@ impl AbuseEvaluator {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn active_connection_count(&self, endpoint: &EndpointId) -> usize {
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn active_connection_count(&self, endpoint: &EndpointId) -> usize {
         self.endpoints
             .get(endpoint)
             .map_or(0, |state| state.connections.len())
@@ -1361,6 +1361,49 @@ mod tests {
         AbuseEvaluator::new(AbusePolicy::default(), [1; 32])
     }
 
+    /// An operator block list with fixed rows, for the block tests: the
+    /// peers and IPs it names are blocked, and nothing else. This is the
+    /// same fixture shape the pull-policy tests use; it lives here now
+    /// that the evaluator lives in the kernel crate, below the pull
+    /// policy.
+    #[derive(Debug, Default)]
+    struct StubBlocks {
+        peers: std::collections::HashSet<[u8; 32]>,
+        ips: std::collections::HashSet<String>,
+    }
+
+    impl crate::block_list::BlockList for StubBlocks {
+        fn is_blocked(&self, kind: crate::block_list::BlockKind, value: &[u8]) -> bool {
+            match kind {
+                crate::block_list::BlockKind::PeerKey => {
+                    <[u8; 32]>::try_from(value).is_ok_and(|key| self.peers.contains(&key))
+                }
+                crate::block_list::BlockKind::Ip => {
+                    std::str::from_utf8(value).is_ok_and(|text| self.ips.contains(text))
+                }
+                crate::block_list::BlockKind::TopicTag => false,
+            }
+        }
+    }
+
+    fn stub_blocks(peers: &[[u8; 32]], _topics: &[&str]) -> Arc<StubBlocks> {
+        Arc::new(StubBlocks {
+            peers: peers.iter().copied().collect(),
+            ips: std::collections::HashSet::new(),
+        })
+    }
+
+    fn stub_blocks_with_ips(
+        peers: &[[u8; 32]],
+        _topics: &[&str],
+        ips: &[std::net::IpAddr],
+    ) -> Arc<StubBlocks> {
+        Arc::new(StubBlocks {
+            peers: peers.iter().copied().collect(),
+            ips: ips.iter().map(|ip| ip.to_string()).collect(),
+        })
+    }
+
     #[test]
     fn defaults_match_the_design() {
         let policy = AbusePolicy::default();
@@ -1423,7 +1466,7 @@ mod tests {
         // #2245 session admission: with a block list attached, a blocked
         // endpoint's new connection is refused as an operator block —
         // permanent, no retry offered, and no connection registered.
-        let blocks = crate::pull_policy::testing::stub_blocks(&[endpoint(7)], &[]);
+        let blocks = stub_blocks(&[endpoint(7)], &[]);
         let mut eval = evaluator().with_block_list(blocks);
         let refused = eval
             .open_connection(endpoint(7), 0)
@@ -1445,7 +1488,7 @@ mod tests {
         // connection (no IP observed) is unaffected by the IP block.
         let blocked_ip: IpAddr = "203.0.113.7".parse().expect("test ip");
         let other_ip: IpAddr = "203.0.113.8".parse().expect("test ip");
-        let blocks = crate::pull_policy::testing::stub_blocks_with_ips(&[], &[], &[blocked_ip]);
+        let blocks = stub_blocks_with_ips(&[], &[], &[blocked_ip]);
         let mut eval = evaluator().with_block_list(blocks);
         let refused = eval
             .open_connection_with_direct_ip(endpoint(7), Some(blocked_ip), 0)

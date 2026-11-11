@@ -20,10 +20,13 @@
 //!   `world_manifest`; `id-caps` depends on this crate (for
 //!   `json_unique`), never the reverse.
 
+pub mod abuse;
 pub mod access;
+pub mod block_list;
 pub mod boundary;
 pub mod connectivity;
 pub mod discovery;
+pub mod frames;
 pub mod ip_evidence;
 pub mod json_unique;
 pub mod membership;
