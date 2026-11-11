@@ -132,11 +132,17 @@ if [ "$CHANGED" -eq 1 ]; then
     local rc="$?"
     if [ "$STOPPED_FOR_MIGRATION" -eq 1 ]; then
       echo "WARNING: install failed after stopping pm-aggregator.service; restoring the previous configuration" >&2
+      local restart=1
       if [ "$MIGRATED_ANNOTATIONS" -eq 1 ] && [ "$ENV_RENDERED" -eq 0 ]; then
-        mv "$ANNOTATIONS_DST" "$LEGACY_ANNOTATIONS" 2>/dev/null || true
+        if ! mv "$ANNOTATIONS_DST" "$LEGACY_ANNOTATIONS" 2>/dev/null; then
+          echo "ERROR: could not move the migrated roadmap annotations at $ANNOTATIONS_DST back to $LEGACY_ANNOTATIONS; leaving pm-aggregator.service stopped -- move the file back manually before starting it, so it does not start on a configuration whose store is missing" >&2
+          restart=0
+        fi
       fi
       rm -f "$ENV_FILE.tmp"
-      systemctl --user start pm-aggregator.service || true
+      if [ "$restart" -eq 1 ]; then
+        systemctl --user start pm-aggregator.service || true
+      fi
     fi
     exit "$rc"
   }

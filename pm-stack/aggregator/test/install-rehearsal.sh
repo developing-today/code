@@ -31,6 +31,7 @@ STATE="$HOME_TEST/.local/state/pm-aggregator"
 INSTALL_SRC="$HOME_TEST/git/code/pm-stack/aggregator"
 LOG="$TMP/commands.log"
 REAL_CP="$(command -v cp)"
+REAL_MV="$(command -v mv)"
 mkdir -p "$BIN" "$HOME_TEST/pm-stack" "$STATE"
 mkdir -p "$(dirname "$INSTALL_SRC")"
 ln -s "$PKG" "$INSTALL_SRC"
@@ -93,7 +94,18 @@ fi
 exec "${TEST_REAL_CP:?}" "$@"
 STUB
 
-chmod +x "$BIN/systemctl" "$BIN/bun" "$BIN/curl" "$BIN/sops" "$BIN/cp"
+cat >"$BIN/mv" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+dest="${@: -1}"
+if [ "${TEST_MV_FAIL:-0}" = 1 ] && [[ "$dest" == *"git/code/pm-stack/aggregator/roadmap-annotations.json" ]]; then
+  echo "injected mv failure for rollback" >&2
+  exit 1
+fi
+exec "${TEST_REAL_MV:?}" "$@"
+STUB
+
+chmod +x "$BIN/systemctl" "$BIN/bun" "$BIN/curl" "$BIN/sops" "$BIN/cp" "$BIN/mv"
 if TEST_LOG="$LOG" TEST_UNIT_DST="$UNIT_DST" TEST_REAL_CP="$REAL_CP" HOME="$HOME_TEST" PATH="$BIN:$PATH" \
   bash "$PKG/install.sh" >"$TMP/worktree-refused.out" 2>&1; then
   echo 'install unexpectedly accepted a non-primary checkout' >&2
@@ -104,13 +116,13 @@ printf '%s\n' '{"kept":"legacy annotations"}' >"$INSTALL_SRC/roadmap-annotations
 SEEDED_LEGACY=1
 TEST_LOG="$LOG" \
   TEST_UNIT_DST="$UNIT_DST" \
-  TEST_REAL_CP="$REAL_CP" \
+  TEST_REAL_CP="$REAL_CP" TEST_REAL_MV="$REAL_MV" \
   TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" \
   HOME="$HOME_TEST" PATH="$BIN:$PATH" \
   bash "$INSTALL_SRC/install.sh" >"$TMP/install.out"
 TEST_LOG="$LOG" \
   TEST_UNIT_DST="$UNIT_DST" \
-  TEST_REAL_CP="$REAL_CP" \
+  TEST_REAL_CP="$REAL_CP" TEST_REAL_MV="$REAL_MV" \
   TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" \
   HOME="$HOME_TEST" PATH="$BIN:$PATH" \
   bash "$INSTALL_SRC/install.sh" >"$TMP/install-second.out"
@@ -164,7 +176,7 @@ printf '%s\n' '{"kept":"legacy annotations"}' >"$INSTALL_SRC/roadmap-annotations
 SEEDED_LEGACY=1
 mkdir -p "$HOME_TEST/secrets"
 printf 'dummy: not-a-real-secret\n' >"$HOME_TEST/secrets/pm-stack.sops.yaml"
-if TEST_LOG="$LOG" TEST_UNIT_DST="$UNIT_DST" TEST_REAL_CP="$REAL_CP" TEST_SOPS_FAIL=1 TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" HOME="$HOME_TEST" PATH="$BIN:$PATH" bash "$INSTALL_SRC/install.sh" >"$TMP/install-failed.out" 2>&1; then
+if TEST_LOG="$LOG" TEST_UNIT_DST="$UNIT_DST" TEST_REAL_CP="$REAL_CP" TEST_REAL_MV="$REAL_MV" TEST_SOPS_FAIL=1 TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" HOME="$HOME_TEST" PATH="$BIN:$PATH" bash "$INSTALL_SRC/install.sh" >"$TMP/install-failed.out" 2>&1; then
   echo 'install unexpectedly succeeded with a failing sops' >&2
   exit 1
 fi
@@ -175,5 +187,24 @@ grep -Fx '{"kept":"legacy annotations"}' "$INSTALL_SRC/roadmap-annotations.json"
 grep -Fx '{"kept":"legacy annotations"}' "$STATE/roadmap-annotations.json" >/dev/null
 test ! -e "$STATE/.env.tmp"
 grep -Fx "PM_AGG_ROADMAP_ANNOTATIONS_FILE=$STATE/roadmap-annotations.json" "$STATE/.env" >/dev/null
+
+# Failed-rollback coverage (CodeRabbit on PR #8765): the migration
+# succeeds, the env render fails, and the rollback move itself fails.
+# The service must be left stopped -- starting it would point the
+# previous configuration at a missing store -- the failure must be
+# reported, and the migrated store stays in the state directory.
+printf '%s\n' '{"kept":"legacy annotations"}' >"$INSTALL_SRC/roadmap-annotations.json"
+SEEDED_LEGACY=1
+mv "$STATE/roadmap-annotations.json" "$TMP/state-annotations-aside.json"
+printf 'dummy: changed-again\n' >"$HOME_TEST/secrets/pm-stack.sops.yaml"
+if TEST_LOG="$LOG" TEST_UNIT_DST="$UNIT_DST" TEST_REAL_CP="$REAL_CP" TEST_REAL_MV="$REAL_MV" TEST_MV_FAIL=1 TEST_SOPS_FAIL=1 TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" HOME="$HOME_TEST" PATH="$BIN:$PATH" bash "$INSTALL_SRC/install.sh" >"$TMP/install-rollback-failed.out" 2>&1; then
+  echo 'install unexpectedly succeeded with failing sops and mv' >&2
+  exit 1
+fi
+grep -F 'could not move the migrated roadmap annotations' "$TMP/install-rollback-failed.out" >/dev/null
+test "$(grep -c -F 'systemctl --user start pm-aggregator.service' "$LOG")" = 1
+grep -Fx '{"kept":"legacy annotations"}' "$STATE/roadmap-annotations.json" >/dev/null
+test ! -e "$INSTALL_SRC/roadmap-annotations.json"
+test ! -e "$STATE/.env.tmp"
 
 echo 'install rehearsal passed (isolated HOME; no live service or credentials used)'
