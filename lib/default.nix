@@ -1239,8 +1239,13 @@ let
     system:
     let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      # Crane libs for the dependency-split package build (code#8392):
+      # pkgs/fleet compiles its registry dependencies as a separate
+      # derivation per variant when these are passed.
+      craneLib = inputs.crane.mkLib pkgs;
       fleetPkgs = pkgs.callPackage ../pkgs/fleet {
         sourceRev = inputs.self.rev or "dirty";
+        inherit craneLib;
       };
     in
     {

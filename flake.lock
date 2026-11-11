@@ -128,6 +128,22 @@
       "original": {
         "owner": "ipetkov",
         "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      }
+    },
+    "crane_2": {
+      "locked": {
+        "lastModified": 1766774972,
+        "narHash": "sha256-8qxEFpj4dVmIuPn9j9z6NTbU+hrcGjBOvaxTzre5HmM=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
         "type": "github"
       }
     },
@@ -2359,6 +2375,7 @@
         "chatgpt-desktop": "chatgpt-desktop",
         "clan-core": "clan-core",
         "claude-desktop": "claude-desktop",
+        "crane": "crane",
         "disko": "disko_2",
         "esp-dev": "esp-dev",
         "esp-dev-6": "esp-dev-6",
@@ -2428,7 +2445,7 @@
     },
     "rust-flake": {
       "inputs": {
-        "crane": "crane",
+        "crane": "crane_2",
         "nixpkgs": [
           "omnix",
           "nixpkgs"
