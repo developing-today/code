@@ -124,10 +124,13 @@ triggers_of() {
 # no push trigger at all. The main tier's contract is a push on
 # branches: [main] (ci-policy.md), so the trigger *name* is not
 # enough (#7950): a bare/unfiltered push counts; an explicit
-# branches: filter must list main; branches-ignore: naming main, a
-# branches: list without main, and a tags-only push never run on
-# main and do not satisfy the leg. Path gates do not affect the
-# verdict ("path gates as before").
+# branches: filter must match main as a pattern (an ordered list,
+# so a later '!main' negation unmatches it); branches-ignore: with
+# any pattern matching main, a branches: list whose patterns do not
+# match main, and a tags-only push (tags: or tags-ignore:, with no
+# branch filter) never run on main and do not satisfy the leg.
+# Trailing YAML comments on filter lines are not filter entries.
+# Path gates do not affect the verdict ("path gates as before").
 push_targets_main() {
   local file="$1"
   awk '
@@ -143,6 +146,39 @@ push_targets_main() {
         if (tok != "") out = out " " tok
       }
       return out
+    }
+    function glob_regex(pat,   out, i, c) {
+      out = "^"
+      for (i = 1; i <= length(pat); i++) {
+        c = substr(pat, i, 1)
+        if (c == "*") out = out ".*"
+        else if (c == "?") out = out "."
+        else if (c ~ /[.+()|^${}]/) out = out "\\" c
+        else out = out c
+      }
+      return out "$"
+    }
+    function list_matches_main(list,   n, parts, i, tok) {
+      n = split(list, parts, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        tok = parts[i]
+        if (tok != "" && ("main" ~ glob_regex(tok))) return 1
+      }
+      return 0
+    }
+    function branches_allow_main(list,   n, parts, i, tok, allow) {
+      allow = 0
+      n = split(list, parts, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        tok = parts[i]
+        if (tok == "") continue
+        if (substr(tok, 1, 1) == "!") {
+          if ("main" ~ glob_regex(substr(tok, 2))) allow = 0
+        } else if ("main" ~ glob_regex(tok)) {
+          allow = 1
+        }
+      }
+      return allow
     }
     /^"?on"?:[[:space:]]*\[/ {
       line = $0
@@ -179,12 +215,13 @@ push_targets_main() {
       sub(/:.*/, "", subkey)
       val = line
       sub(/^[^:]*:[[:space:]]*/, "", val)
+      if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", val)
       if (subkey == "branches") {
         seen_branches = 1
         branches_list = add_tokens(val)
       } else if (subkey == "branches-ignore") {
         ignore_list = add_tokens(val)
-      } else if (subkey == "tags") {
+      } else if (subkey == "tags" || subkey == "tags-ignore") {
         seen_tags = 1
       }
       next
@@ -192,12 +229,13 @@ push_targets_main() {
     inpush && /^      -[[:space:]]/ {
       item = $0
       sub(/^      -[[:space:]]*/, "", item)
+      if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", item)
       if (subkey == "branches") {
         seen_branches = 1
         branches_list = branches_list " " clean(item)
       } else if (subkey == "branches-ignore") {
         ignore_list = ignore_list " " clean(item)
-      } else if (subkey == "tags") {
+      } else if (subkey == "tags" || subkey == "tags-ignore") {
         seen_tags = 1
       }
       next
@@ -211,10 +249,10 @@ push_targets_main() {
         print "absent"
         exit
       }
-      if ((" " ignore_list " ") ~ / main /) {
+      if (list_matches_main(ignore_list)) {
         print "no"
       } else if (seen_branches) {
-        if ((" " branches_list " ") ~ / main /) print "yes"
+        if (branches_allow_main(branches_list)) print "yes"
         else print "no"
       } else if (seen_tags) {
         print "no"

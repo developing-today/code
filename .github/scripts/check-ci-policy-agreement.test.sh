@@ -204,4 +204,94 @@ fi
 grep -q "DISAGREEMENT map-build.yml: workflow file missing" "$TMP/nofile.out"
 echo "pass: a missing workflow file fails naming it"
 
+
+# Codex P2 regressions on #8513: pattern, comment and tags-ignore
+# semantics of the same main-tier question. A tags-ignore-only push
+# never runs for branch pushes, including main.
+build_tree "$TMP/filter-tags_ignore"
+wf_raw "$TMP/filter-tags_ignore" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    tags-ignore: ["v*"]
+EOF
+bash "$SCRIPT" "$TMP/filter-tags_ignore" >"$TMP/filter-tags_ignore.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-tags_ignore.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-tags_ignore.out"
+echo "pass: tags-ignore-only push keeps the main leg waived, not stale"
+
+# A trailing YAML comment is not a filter entry: the word main in a
+# comment must not certify a branches: [release] push.
+build_tree "$TMP/filter-comment_branches"
+wf_raw "$TMP/filter-comment_branches" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: [release] # main is intentionally excluded
+EOF
+bash "$SCRIPT" "$TMP/filter-comment_branches" >"$TMP/filter-comment_branches.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-comment_branches.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-comment_branches.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-comment_branches.out"; then
+  echo "FAIL: a YAML comment was treated as a branches entry" >&2
+  exit 1
+fi
+echo "pass: trailing comment on branches: is not a filter entry"
+
+# ...and the mirror image: a comment must not turn an agreeing
+# branches-ignore into a disagreement either.
+build_tree "$TMP/filter-comment_ignore"
+wf_raw "$TMP/filter-comment_ignore" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore: [release] # main remains enabled
+EOF
+if bash "$SCRIPT" "$TMP/filter-comment_ignore" >"$TMP/filter-comment_ignore.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a comment-bearing branches-ignore" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-comment_ignore.out"
+echo "pass: trailing comment on branches-ignore: is not a filter entry"
+
+# Branch filters are patterns evaluated in order: a later '!main'
+# unmatches an earlier literal main.
+build_tree "$TMP/filter-negated"
+wf_raw "$TMP/filter-negated" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: [main, '!main']
+EOF
+bash "$SCRIPT" "$TMP/filter-negated" >"$TMP/filter-negated.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-negated.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-negated.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-negated.out"; then
+  echo "FAIL: branches: [main, '!main'] was certified as main-tier agreement" >&2
+  exit 1
+fi
+echo "pass: branches: [main, '!main'] keeps the main leg waived, not stale"
+
+# branches-ignore patterns match as globs: '*' excludes main too.
+build_tree "$TMP/filter-ignore_star"
+wf_raw "$TMP/filter-ignore_star" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore: ['*']
+EOF
+bash "$SCRIPT" "$TMP/filter-ignore_star" >"$TMP/filter-ignore_star.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-ignore_star.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-ignore_star.out"
+echo "pass: branches-ignore: ['*'] keeps the main leg waived, not stale"
+
+# A glob that matches main satisfies the leg like a literal listing.
+build_tree "$TMP/filter-pattern_main"
+wf_raw "$TMP/filter-pattern_main" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: ['m*']
+EOF
+if bash "$SCRIPT" "$TMP/filter-pattern_main" >"$TMP/filter-pattern_main.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a pattern-matched main push" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-pattern_main.out"
+echo "pass: branches: ['m*'] satisfies the main leg (waiver stale)"
+
 echo "check-ci-policy-agreement.test: all contract tests passed"
