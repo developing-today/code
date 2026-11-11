@@ -908,6 +908,19 @@ pub(crate) fn validate_delay_seconds(value: i64) -> Result<i64, String> {
     validate_duration("delay-seconds", value, DELAY_SECONDS_MAX)
 }
 
+/// Validate a `--not-before` flag value (#6426): the same rule the
+/// packet validator and the broker apply — a non-empty RFC 3339
+/// timestamp no more than 366 days in the future. Until now the raw
+/// string went into the park/revive body unchecked, so garbage
+/// failed only as a downstream DB cast error. A valid value is
+/// returned unchanged, so the broker body for valid timestamps is
+/// byte-for-byte what it was before; an invalid one is a usage
+/// error naming `--not-before` (the caller dies with exit 2).
+pub(crate) fn validate_not_before_flag(raw: &str) -> Result<String, String> {
+    crate::validate::validate_not_before(&json!(raw), "--not-before")?;
+    Ok(raw.to_string())
+}
+
 fn env_or_default(value: Option<&str>, default: &str) -> String {
     value
         .map(str::trim)
@@ -1939,6 +1952,10 @@ fn cmd_park(rest: &[String]) -> i32 {
         "progress": progress_arg(&args).unwrap_or(json!({})),
     });
     if let Some(nb) = args.get("not-before") {
+        let nb = match validate_not_before_flag(&nb) {
+            Ok(v) => v,
+            Err(e) => die(2, &e),
+        };
         body["not_before"] = json!(nb);
     } else if let Some(d) = args.get_i64("delay-seconds") {
         let d = match validate_delay_seconds(d) {
@@ -2152,6 +2169,10 @@ fn cmd_revive(rest: &[String]) -> i32 {
         "reason": args.get("reason").unwrap_or_default(),
     });
     if let Some(nb) = args.get("not-before") {
+        let nb = match validate_not_before_flag(&nb) {
+            Ok(v) => v,
+            Err(e) => die(2, &e),
+        };
         body["not_before"] = json!(nb);
     }
     let resp = unwrap_ok(call("/revive", &body));
@@ -3399,6 +3420,36 @@ mod tests {
             extend_seconds_or_default(Some(-1)),
             validate_extend_seconds(-1)
         );
+    }
+
+    #[test]
+    fn not_before_flag_is_validated() {
+        // #6426: park/revive --not-before went into the broker body
+        // as a raw string — garbage failed only as a downstream DB
+        // cast error, and a far-future value parked a task out of
+        // reach for years. It is now a usage error naming the flag
+        // (cmd_park/cmd_revive die with exit 2 on Err).
+        for bad in [
+            "banana",
+            "",
+            "   ",
+            "2026-02-31T00:00:00Z",
+            "9999-01-01T00:00:00Z",
+        ] {
+            let err = validate_not_before_flag(bad)
+                .err()
+                .expect("invalid --not-before must be rejected");
+            assert!(err.contains("--not-before"), "error names the flag: {err}");
+        }
+        // Valid timestamps pass through unchanged — the broker body
+        // for a valid value is byte-for-byte what it was before.
+        for ok in [
+            "2020-01-01T00:00:00Z",
+            "2026-11-06T00:00:00Z",
+            "2026-11-06T05:30:00+05:30",
+        ] {
+            assert_eq!(validate_not_before_flag(ok), Ok(ok.to_string()));
+        }
     }
 
     #[test]
