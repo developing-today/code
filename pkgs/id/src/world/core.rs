@@ -126,6 +126,30 @@ fn presence_after(events: &[WorldEvent]) -> BTreeSet<u64> {
     present
 }
 
+pub(super) fn check_journal_version(version: u32, max_supported: u32) -> Result<()> {
+    ensure!(
+        (JOURNAL_VERSION..=max_supported).contains(&version),
+        "unsupported world journal version {version}"
+    );
+    Ok(())
+}
+
+pub(super) fn validate_entity_ref(entity_ref: &str) -> Result<()> {
+    ensure!(
+        !entity_ref.trim().is_empty(),
+        "entity reference must not be empty"
+    );
+    ensure!(
+        entity_ref.len() <= 256,
+        "entity reference exceeds 256 bytes"
+    );
+    ensure!(
+        !entity_ref.chars().any(char::is_control),
+        "entity reference contains a control character"
+    );
+    Ok(())
+}
+
 /// Mutable world state. Keep it behind one actor/mutex so event sequencing is serialized.
 #[derive(Debug)]
 pub struct WorldCore {
@@ -238,6 +262,55 @@ fn chat_endpoint(participant_id: u64) -> crate::abuse::EndpointId {
 /// Validate the invariants shared by standalone handoff entries and
 /// checkpoint-carried transfer state. `prior_transfers` are the already
 /// admitted records, so callers validate a checkpoint's list in list order.
+/// The owner epoch an entity sits at after a transfer: an export leaves
+/// at the epoch it records as prior (ownership departs at that epoch), an
+/// import lands at its new epoch. A subsequent crossing for the same
+/// entity must chain from exactly this epoch; anything else is a stale
+/// ownership claim and must never supersede the recorded state (#3902).
+fn owner_epoch_after(transfer: &HandoffTransferState) -> u64 {
+    match transfer.direction {
+        HandoffDirection::Export => transfer.prior_owner_epoch,
+        HandoffDirection::Import => transfer
+            .new_owner_epoch
+            .unwrap_or(transfer.prior_owner_epoch),
+    }
+}
+
+/// Enforce the epoch chain against the transfers already recorded for
+/// the entity, if any. While the entity is local (its latest transfer is
+/// an import), the next crossing must depart from exactly the epoch the
+/// import landed at. While it is away (its latest transfer is an
+/// export), ownership advances abroad - one step per crossing on other
+/// shards - so a returning transfer may chain from any epoch at or
+/// beyond the one the export left at, but never an older one: a stale
+/// epoch would supersede the fence with an outdated ownership claim.
+/// First crossings are unconstrained (the epoch originates with the
+/// caller's ownership claim).
+fn ensure_epoch_chains(
+    transfer: &HandoffTransferState,
+    prior_transfers: &[HandoffTransferState],
+) -> Result<()> {
+    if let Some(latest) = prior_transfers
+        .iter()
+        .rev()
+        .find(|prior| prior.entity_ref == transfer.entity_ref)
+    {
+        let chained = match latest.direction {
+            HandoffDirection::Export => transfer.prior_owner_epoch >= latest.prior_owner_epoch,
+            HandoffDirection::Import => transfer.prior_owner_epoch == owner_epoch_after(latest),
+        };
+        ensure!(
+            chained,
+            "handoff {:?} claims prior owner epoch {} for entity {:?}, but the latest recorded transfer leaves it at epoch {}",
+            transfer.handoff_id,
+            transfer.prior_owner_epoch,
+            transfer.entity_ref,
+            owner_epoch_after(latest)
+        );
+    }
+    Ok(())
+}
+
 fn validate_handoff_transfer(
     transfer: &HandoffTransferState,
     prior_transfers: &[HandoffTransferState],
@@ -271,6 +344,54 @@ fn validate_handoff_transfer(
         }),
         "journal {name}s handoff {:?} twice",
         transfer.handoff_id
+    );
+    ensure_epoch_chains(transfer, prior_transfers)?;
+    Ok(())
+}
+
+/// Verify a journaled destination event carries the import envelope for
+/// `payload_digest` (#3870 phase 3, design #2818 \§3): the payload rides
+/// hex-encoded inside the versioned system event, and its BLAKE3 digest
+/// must match the digest the journal entry records \— a tampered or
+/// mismatched envelope is refused at restore, never applied.
+fn validate_import_envelope(event: &WorldEvent, payload_digest: &str) -> Result<()> {
+    let text = match &event.kind {
+        WorldEventKind::System { event } => event,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "journal import event is not a host system event"
+            ));
+        }
+    };
+    let envelope: serde_json::Value = serde_json::from_str(text)
+        .map_err(|_| anyhow::anyhow!("journal import event is not a transfer envelope"))?;
+    ensure!(
+        envelope["protocol"] == "world.entity-transfer.v1" && envelope["direction"] == "import",
+        "journal import event is not an import envelope"
+    );
+    ensure!(
+        envelope["payload_digest"] == payload_digest,
+        "journal import envelope digest does not match the journal entry"
+    );
+    let payload_hex = envelope["payload_hex"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("journal import envelope carries no payload"))?;
+    ensure!(
+        payload_hex.len() % 2 == 0 && payload_hex.bytes().all(|b| b.is_ascii_hexdigit()),
+        "journal import envelope payload is not hex"
+    );
+    let payload: Vec<u8> = (0..payload_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&payload_hex[i..i + 2], 16))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| anyhow::anyhow!("journal import envelope payload is not hex"))?;
+    ensure!(
+        payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
+        "journal import payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+    );
+    ensure!(
+        hex_encode(blake3::hash(&payload).as_bytes()) == payload_digest,
+        "journal import payload digest does not match"
     );
     Ok(())
 }
@@ -524,10 +645,7 @@ impl WorldCore {
                     "journal belongs to world {world_id:?}, not {:?}",
                     core.world_id
                 );
-                ensure!(
-                    (JOURNAL_VERSION..=MAX_JOURNAL_VERSION).contains(&version),
-                    "unsupported world journal version {version}"
-                );
+                check_journal_version(version, MAX_JOURNAL_VERSION)?;
                 version
             }
             Some(_) => anyhow::bail!("world journal does not start with a header"),
@@ -612,6 +730,17 @@ impl WorldCore {
                         !core.capabilities.contains_key(&participant.id),
                         "participant {} issued twice",
                         participant.id
+                    );
+                    let active = core
+                        .capabilities
+                        .values()
+                        .filter(|record| !record.revoked)
+                        .count();
+                    ensure!(
+                        active < core.limits.participants,
+                        "participant {} exceeds world participant limit {}",
+                        participant.id,
+                        core.limits.participants
                     );
                     ensure!(
                         parent.is_none_or(|parent| core.capabilities.contains_key(&parent)),
@@ -766,6 +895,32 @@ impl WorldCore {
                     payload,
                     payload_digest,
                 } => {
+                    ensure!(
+                        source_event.sequence == 0 && source_event.participant_id == 0,
+                        "journal export event claims a sequence"
+                    );
+                    ensure!(
+                        matches!(&source_event.kind, WorldEventKind::System { .. }),
+                        "journal export event is not a host system event"
+                    );
+                    validate_entity_ref(&entity_ref)?;
+                    ensure!(
+                        payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
+                        "journal export payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+                    );
+                    ensure!(
+                        payload_digest == hex_encode(blake3::hash(&payload).as_bytes()),
+                        "journal export payload digest does not match"
+                    );
+                    ensure!(
+                        !core.handoff_transfers.iter().any(|t| {
+                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Export
+                        }) && !matches!(
+                            core.latest_transfer(&entity_ref),
+                            Some(latest) if latest.direction == HandoffDirection::Export
+                        ),
+                        "journal exports handoff {handoff_id:?} twice or entity {entity_ref:?} while an export is active"
+                    );
                     let transfer = HandoffTransferState {
                         handoff_id,
                         entity_ref,
@@ -800,8 +955,8 @@ impl WorldCore {
                     destination_event,
                 } => {
                     let transfer = HandoffTransferState {
-                        handoff_id,
-                        entity_ref,
+                        handoff_id: handoff_id.clone(),
+                        entity_ref: entity_ref.clone(),
                         source_region,
                         target_region,
                         direction: HandoffDirection::Import,
@@ -809,11 +964,20 @@ impl WorldCore {
                         new_owner_epoch: Some(new_owner_epoch),
                         program_module_hash,
                         payload_schema,
-                        payload_digest,
+                        payload_digest: payload_digest.clone(),
                         payload: None,
                         event: destination_event.clone(),
                     };
                     validate_handoff_transfer(&transfer, &core.handoff_transfers)?;
+                    validate_entity_ref(&entity_ref)?;
+                    ensure!(
+                        !matches!(
+                            core.latest_transfer(&entity_ref),
+                            Some(latest) if latest.direction == HandoffDirection::Import
+                        ),
+                        "journal imports entity {entity_ref:?} while an import is active"
+                    );
+                    validate_import_envelope(&destination_event, &payload_digest)?;
                     core.handoff_transfers.push(transfer);
                     replay.push(destination_event);
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
@@ -933,11 +1097,12 @@ impl WorldCore {
                 }
                 JournalEntry::Committed { event } => {
                     ensure!(
-                        event.sequence == core.sequence.saturating_add(1),
+                        core.sequence.checked_add(1) == Some(event.sequence),
                         "journal sequence jumps from {} to {}",
                         core.sequence,
                         event.sequence
                     );
+                    core.validate_restored_event_author(&event, false)?;
                     match &event.kind {
                         WorldEventKind::ProgramInstalled {
                             module_hash,
@@ -954,10 +1119,31 @@ impl WorldCore {
                                 snapshot: None,
                                 provenance: provenance.clone(),
                             });
-                            replay.clear();
+                            // Transfer receipts outlive the install (the
+                            // dedupe ledger is retained whole), so their
+                            // events survive the slate wipe too: the
+                            // replacement program has not applied them,
+                            // and dropping them would leave a stored
+                            // receipt acknowledgable for a transfer the
+                            // current program never saw (#3902). Rebuild
+                            // the replay from the ledger instead of
+                            // filtering the events already replayed: a
+                            // transfer compacted into a checkpoint sits
+                            // in the ledger without ever entering the
+                            // replay, and filtering would lose it here.
+                            replay = core
+                                .handoff_transfers
+                                .iter()
+                                .map(|transfer| transfer.event.clone())
+                                .collect();
                         }
-                        WorldEventKind::Input(_) | WorldEventKind::EntityInput { .. } => {
-                            replay.push(event.clone())
+                        WorldEventKind::Input(_) => replay.push(event.clone()),
+                        WorldEventKind::EntityInput { entity_ref, .. } => {
+                            ensure!(
+                                !core.entity_is_fenced(entity_ref),
+                                "journal accepts input for fenced entity {entity_ref:?}"
+                            );
+                            replay.push(event.clone());
                         }
                         WorldEventKind::System { .. } => anyhow::bail!(
                             "host system events must use the unsequenced system journal entry"
@@ -1019,6 +1205,9 @@ impl WorldCore {
                         }),
                         "journal checkpoint contains a host system event"
                     );
+                    for event in &events {
+                        core.validate_restored_event_author(event, true)?;
+                    }
                     core.sequence = sequence;
                     core.events = events.into();
                     while core.events.len() > core.limits.retained_events {
@@ -1191,6 +1380,71 @@ impl WorldCore {
             replay,
             presence,
         })
+    }
+
+    /// Scopes a participant capability chain records in the journal
+    /// itself: the intersection of every ancestor issued scope.
+    /// Unlike `effective_scopes`, this never consults the world
+    /// directory: friendship and ceilings are mutable current state,
+    /// and restore runs before the directory is loaded, so historical
+    /// events are judged against what the journal recorded when they
+    /// were committed (Codex P1 finding on PR #4518).
+    fn journaled_scopes(&self, participant_id: u64) -> Option<WorldScopes> {
+        self.capabilities.get(&participant_id)?;
+        let mut scopes = WorldScopes::ALL;
+        let mut current = Some(participant_id);
+        while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
+            scopes = scopes.intersect(record.scopes.implied());
+            current = record.parent;
+        }
+        Some(scopes)
+    }
+
+    /// Check that a journaled event could have been authored by the
+    /// participant state rebuilt so far. For compacted checkpoint events,
+    /// revocation timing is no longer represented: `checkpoint_entries`
+    /// writes the current revoked flags before the retained historical events.
+    /// Keep those events valid when their participant and scope are present;
+    /// ordinary `Committed` entries retain enough journal order to reject an
+    /// author revoked before that event.
+    fn validate_restored_event_author(
+        &self,
+        event: &WorldEvent,
+        checkpoint_event: bool,
+    ) -> Result<()> {
+        let participant_id = event.participant_id;
+        if participant_id == 0 {
+            return Ok(());
+        }
+
+        let record = self.capabilities.get(&participant_id).with_context(|| {
+            format!(
+                "journal event at sequence {} uses participant {participant_id} before it was issued",
+                event.sequence
+            )
+        })?;
+        ensure!(
+            checkpoint_event || !record.revoked,
+            "journal event at sequence {} is authored by participant {participant_id} after revocation",
+            event.sequence
+        );
+
+        let required_scope = match &event.kind {
+            WorldEventKind::Input(_) | WorldEventKind::EntityInput { .. } => {
+                Some((WorldScopes::INPUT, "INPUT"))
+            }
+            WorldEventKind::Chat(_) => Some((WorldScopes::CHAT, "CHAT")),
+            WorldEventKind::System { .. } | WorldEventKind::ProgramInstalled { .. } => None,
+        };
+        if let Some((scope, name)) = required_scope {
+            ensure!(
+                self.journaled_scopes(participant_id)
+                    .is_some_and(|scopes| scopes.contains(scope)),
+                "journal event at sequence {} uses participant {participant_id} without {name} scope",
+                event.sequence
+            );
+        }
+        Ok(())
     }
 
     /// Whether enough events piled up behind the last checkpoint to trim.
@@ -1642,8 +1896,22 @@ impl WorldCore {
     /// of each account in its chain. A delegation to a friend stops once the
     /// friendship ends.
     pub(crate) fn effective_scopes(&self, participant_id: u64) -> Option<WorldScopes> {
+        self.effective_scopes_seeded(participant_id, WorldScopes::ALL)
+    }
+
+    /// [`Self::effective_scopes`] with a different starting set. Seeding
+    /// with [`WorldScopes::all_recognized`] keeps admin-issued authority
+    /// bits (`BUILDER` / `MODERATOR`) visible to the intersection; the
+    /// public [`Self::effective_scopes`] seeds with [`WorldScopes::ALL`],
+    /// which deliberately excludes them, so no ceiling, delegation, or
+    /// projection path can ever surface them.
+    fn effective_scopes_seeded(
+        &self,
+        participant_id: u64,
+        seed: WorldScopes,
+    ) -> Option<WorldScopes> {
         self.capabilities.get(&participant_id)?;
-        let mut scopes = WorldScopes::ALL;
+        let mut scopes = seed;
         let mut current = Some(participant_id);
         while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
             scopes = scopes.intersect(record.scopes.implied());
@@ -1686,10 +1954,9 @@ impl WorldCore {
         let now = self.clock().now_ms();
         let mut current = Some(participant_id);
         while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
-            ensure!(
-                record.bounds.expires_at.is_none_or(|expires| now < expires),
-                "world capability has expired"
-            );
+            if !record.bounds.expires_at.is_none_or(|expires| now < expires) {
+                return Err(CapabilityDenied::new("world capability has expired").into());
+            }
             current = record.parent;
         }
         Ok(())
@@ -1929,6 +2196,10 @@ impl WorldCore {
         signed_move: &[u8],
     ) -> Result<(WorldEvent, crate::chain::Event)> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        ensure!(
+            !self.limits.region_sharded,
+            "region-sharded worlds require entity-addressed input"
+        );
         self.ensure_uses_left(participant_id)?;
         ensure!(
             input.len() <= self.limits.input_bytes,
@@ -2033,6 +2304,10 @@ impl WorldCore {
             !self.author_keys.contains_key(&participant_id),
             "participant {participant_id} has a bound author key; inputs must be player-signed (#2814)"
         );
+        ensure!(
+            !self.limits.region_sharded,
+            "region-sharded worlds require entity-addressed input"
+        );
         self.ensure_uses_left(participant_id)?;
         ensure!(
             input.len() <= self.limits.input_bytes,
@@ -2049,6 +2324,160 @@ impl WorldCore {
             participant_id,
             kind: WorldEventKind::Input(input.to_vec()),
         })
+    }
+
+    pub(crate) fn prepare_entity_input(
+        &self,
+        token: &JoinCapability,
+        entity_ref: &str,
+        input: &[u8],
+    ) -> Result<WorldEvent> {
+        validate_entity_ref(entity_ref)?;
+        let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        ensure!(
+            !self.author_keys.contains_key(&participant_id),
+            "participant {participant_id} has a bound author key; inputs must be player-signed (#2814)"
+        );
+        self.ensure_uses_left(participant_id)?;
+        ensure!(
+            input.len() <= self.limits.input_bytes,
+            "world input exceeds {} bytes",
+            self.limits.input_bytes
+        );
+        ensure!(!input.is_empty(), "world input must not be empty");
+        ensure!(
+            !self.entity_is_fenced(entity_ref),
+            "entity {entity_ref:?} is fenced after export"
+        );
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .context("world event sequence exhausted")?;
+        Ok(WorldEvent {
+            sequence,
+            participant_id,
+            kind: WorldEventKind::EntityInput {
+                entity_ref: entity_ref.to_owned(),
+                input: input.to_vec(),
+            },
+        })
+    }
+
+    /// The most recent ownership transfer recorded for `entity_ref`, if
+    /// any. The ledger is append-only and chronological, so the last entry
+    /// for an entity is its current ownership state; earlier entries are
+    /// history, retained for handoff-ID deduplication.
+    pub(crate) fn latest_transfer(&self, entity_ref: &str) -> Option<&HandoffTransferState> {
+        self.handoff_transfers
+            .iter()
+            .rev()
+            .find(|transfer| transfer.entity_ref == entity_ref)
+    }
+
+    /// An entity is fenced while its latest ownership transfer is an
+    /// export: the fence derives from the current ownership state, not
+    /// from any historical export. An entity imported back (design #2818
+    /// §3 permits later crossings) is writable again; every historical
+    /// receipt stays in the ledger for deduplication.
+    pub(crate) fn entity_is_fenced(&self, entity_ref: &str) -> bool {
+        matches!(
+            self.latest_transfer(entity_ref),
+            Some(transfer) if transfer.direction == HandoffDirection::Export
+        )
+    }
+
+    /// Install a durable source export in the in-memory transfer ledger. The
+    /// caller must append the matching journal entry first.
+    pub(crate) fn validate_entity_export(&self, transfer: &HandoffTransferState) -> Result<()> {
+        ensure!(
+            self.limits.region_sharded,
+            "entity export requires a region-sharded world"
+        );
+        ensure!(
+            transfer.direction == HandoffDirection::Export,
+            "source export has the wrong transfer direction"
+        );
+        validate_entity_ref(&transfer.entity_ref)?;
+        ensure!(
+            transfer
+                .payload
+                .as_ref()
+                .is_some_and(|payload| payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES),
+            "entity transfer payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+        );
+        let payload = transfer.payload.as_deref().unwrap_or_default();
+        ensure!(
+            transfer.payload_digest == hex_encode(blake3::hash(payload).as_bytes()),
+            "entity transfer payload digest does not match"
+        );
+        ensure!(
+            !self
+                .handoff_transfers
+                .iter()
+                .any(|existing| existing.handoff_id == transfer.handoff_id)
+                && !matches!(
+                    self.latest_transfer(&transfer.entity_ref),
+                    Some(latest) if latest.direction == HandoffDirection::Export
+                ),
+            "entity already has an active export or handoff ID is duplicated"
+        );
+        ensure_epoch_chains(transfer, &self.handoff_transfers)?;
+        Ok(())
+    }
+
+    /// Install a source fence after its matching journal record is durable.
+    pub(crate) fn record_entity_export(&mut self, transfer: HandoffTransferState) {
+        debug_assert!(self.validate_entity_export(&transfer).is_ok());
+        self.handoff_transfers.push(transfer);
+        self.since_checkpoint = self.since_checkpoint.saturating_add(1);
+    }
+
+    /// Validate a destination import against the dedupe ledger (#3870
+    /// phase 3). The actor has already verified the envelope's module
+    /// hash, schema and payload digest before mutation; this checks the
+    /// durable-state invariants: direction, owner-epoch advance, no
+    /// duplicate payload copy, and that neither the handoff ID nor the
+    /// entity already carries an import.
+    pub(crate) fn validate_entity_import(&self, transfer: &HandoffTransferState) -> Result<()> {
+        ensure!(
+            self.limits.region_sharded,
+            "entity import requires a region-sharded world"
+        );
+        ensure!(
+            transfer.direction == HandoffDirection::Import,
+            "destination import has the wrong transfer direction"
+        );
+        validate_entity_ref(&transfer.entity_ref)?;
+        ensure!(
+            transfer.new_owner_epoch.is_some_and(|new_owner_epoch| {
+                transfer.prior_owner_epoch.checked_add(1) == Some(new_owner_epoch)
+            }),
+            "destination import does not advance the owner epoch"
+        );
+        ensure!(
+            transfer.payload.is_none(),
+            "destination import carries a duplicate payload outside its event"
+        );
+        ensure!(
+            !self
+                .handoff_transfers
+                .iter()
+                .any(|existing| existing.handoff_id == transfer.handoff_id)
+                && !matches!(
+                    self.latest_transfer(&transfer.entity_ref),
+                    Some(latest) if latest.direction == HandoffDirection::Import
+                ),
+            "entity already has an active import or handoff ID is duplicated"
+        );
+        ensure_epoch_chains(transfer, &self.handoff_transfers)?;
+        Ok(())
+    }
+
+    /// Install an import receipt after its matching journal record is durable.
+    pub(crate) fn record_entity_import(&mut self, transfer: HandoffTransferState) {
+        debug_assert!(self.validate_entity_import(&transfer).is_ok());
+        self.handoff_transfers.push(transfer);
+        self.since_checkpoint = self.since_checkpoint.saturating_add(1);
     }
 
     pub(crate) fn commit_prepared(&mut self, event: WorldEvent) -> Result<WorldEvent> {
@@ -2219,26 +2648,37 @@ impl WorldCore {
         let (participant, _) = token
             .expose()
             .split_once('.')
-            .context("malformed world capability")?;
+            .ok_or_else(|| CapabilityDenied::new("malformed world capability"))?;
         let participant_id = participant
             .parse::<u64>()
-            .context("malformed world capability participant ID")?;
+            .map_err(|_| CapabilityDenied::new("malformed world capability participant ID"))?;
         let digest = token_digest(token.expose());
-        let record = self
-            .capabilities
-            .get(&participant_id)
-            .context("invalid, revoked, or insufficient world capability")?;
-        ensure!(
-            constant_time_eq(&digest, &record.digest),
-            "invalid, revoked, or insufficient world capability"
-        );
-        ensure!(
-            !record.revoked
-                && self
-                    .effective_scopes(participant_id)
-                    .is_some_and(|scopes| scopes.contains(required)),
-            "invalid, revoked, or insufficient world capability"
-        );
+        let record = self.capabilities.get(&participant_id).ok_or_else(|| {
+            CapabilityDenied::new("invalid, revoked, or insufficient world capability")
+        })?;
+        if !constant_time_eq(&digest, &record.digest) {
+            return Err(CapabilityDenied::new(
+                "invalid, revoked, or insufficient world capability",
+            )
+            .into());
+        }
+        // The authority check must not seed from `ALL`: that set excludes
+        // the admin bits by design, which would make `BUILDER` /
+        // `MODERATOR` unusable through this path. Seed with every
+        // recognized bit instead — the ancestor-chain intersection in
+        // `effective_scopes_seeded` only removes bits, so a required
+        // authority bit survives only when every record in the chain
+        // actually carries it.
+        if !(!record.revoked
+            && self
+                .effective_scopes_seeded(participant_id, WorldScopes::all_recognized())
+                .is_some_and(|scopes| scopes.contains(required)))
+        {
+            return Err(CapabilityDenied::new(
+                "invalid, revoked, or insufficient world capability",
+            )
+            .into());
+        }
         self.ensure_not_expired(participant_id)?;
         Ok(participant_id)
     }

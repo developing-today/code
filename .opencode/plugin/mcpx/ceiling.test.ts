@@ -8,7 +8,7 @@
 import { existsSync } from "node:fs"
 import { describe, expect, test } from "bun:test"
 
-import { DaemonClient } from "./daemon.ts"
+import { DaemonClient } from "../../core/daemon.ts"
 
 const socket = process.env.CEILING_SOCKET
 const mark = process.env.CEILING_MARK as string

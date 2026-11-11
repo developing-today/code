@@ -19,6 +19,11 @@ use anyhow::{Context, Result};
 use p2panda_core::Hash;
 
 use super::fold::{FoldError, Outcome, Projection, fold};
+
+/// The serde adapters for the group model types, re-exported from
+/// `id-events` (step 2b of the crate split, #4405): the model they
+/// serialize moved down with the fold, and the adapters moved with it.
+pub(crate) use id_events::groups::wire;
 use super::{Body, Event, Key};
 
 /// The file a node keeps its group log in, under its data directory.
@@ -53,26 +58,29 @@ impl GroupLog {
     ///
     /// Fails if the file cannot be read, or a complete line is not an event.
     pub fn open(path: &Path) -> Result<Self> {
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
         };
         let mut events = Vec::new();
         let mut kept = 0;
-        for (number, line) in text.split_inclusive('\n').enumerate() {
-            if !line.ends_with('\n') {
+        for (number, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+            if !line.ends_with(b"\n") {
                 tracing::warn!(
                     "group log {}: dropping torn final entry at byte {kept}",
                     path.display()
                 );
                 break;
             }
-            if line.trim().is_empty() {
+            let text = std::str::from_utf8(line).with_context(|| {
+                format!("{}: line {} is not an event", path.display(), number + 1)
+            })?;
+            if text.trim().is_empty() {
                 kept += line.len();
                 continue;
             }
-            match serde_json::from_str::<Event>(line.trim_end()) {
+            match serde_json::from_str::<Event>(text.trim_end()) {
                 Ok(event) => {
                     events.push(event);
                     kept += line.len();
@@ -84,7 +92,7 @@ impl GroupLog {
                 }
             }
         }
-        if kept < text.len() {
+        if kept < bytes.len() {
             OpenOptions::new()
                 .write(true)
                 .open(path)
@@ -144,6 +152,34 @@ impl GroupLog {
         Ok(Recorded { event: id, outcome })
     }
 
+    /// Records an event that was already formed elsewhere, keeping its
+    /// ID and its place in its own chain: the seeding path for events a
+    /// config provisioned (#5119 slice 3). An event whose ID the log
+    /// already holds is skipped and changes nothing, so seeding the
+    /// same events on every start is a no-op after the first.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the events cannot be folded, or the file cannot be
+    /// written. Nothing is written when the fold fails.
+    pub fn record_preformed(&mut self, event: &Event) -> Result<Option<Recorded>> {
+        if self.events.iter().any(|held| held.id == event.id) {
+            return Ok(None);
+        }
+        let mut next = self.events.clone();
+        next.push(event.clone());
+        let outcome = fold(&next)?
+            .outcome(&event.id)
+            .cloned()
+            .context("the fold did not decide the event")?;
+        self.append(event)?;
+        self.events = next;
+        Ok(Some(Recorded {
+            event: event.id,
+            outcome,
+        }))
+    }
+
     /// The IDs no event names in its `after`. A new event names these, so it comes after all of them.
     fn heads(&self) -> Vec<Hash> {
         let named: BTreeSet<Hash> = self
@@ -192,166 +228,6 @@ pub fn hash_from_hex(text: &str) -> Result<Hash> {
     Hash::from_str(text.trim()).with_context(|| format!("`{text}` is not 64 hex characters"))
 }
 
-/// Serde adapters. A key or a hash is written as 64 hex characters, so a log line reads as text.
-/// Each module is named for the type it adapts, and is used as `#[serde(with = "...")]`.
-pub(crate) mod wire {
-    use p2panda_core::Hash;
-    use serde::de;
-
-    use crate::groups::Key;
-
-    fn key_text(key: &Key) -> String {
-        Hash::from_bytes(*key).to_hex()
-    }
-
-    fn hash_text(hash: &Hash) -> String {
-        hash.to_hex()
-    }
-
-    fn text_to_hash<E: de::Error>(text: &str) -> Result<Hash, E> {
-        text.parse()
-            .map_err(|error| E::custom(format!("`{text}` is not 64 hex characters: {error}")))
-    }
-
-    fn text_to_key<E: de::Error>(text: &str) -> Result<Key, E> {
-        text_to_hash::<E>(text).map(|hash| *hash.as_bytes())
-    }
-
-    /// A key, as hex.
-    pub mod key {
-        use serde::{Deserialize, Deserializer, Serializer};
-
-        use super::{Key, key_text, text_to_key};
-
-        pub fn serialize<S: Serializer>(key: &Key, serializer: S) -> Result<S::Ok, S::Error> {
-            serializer.serialize_str(&key_text(key))
-        }
-
-        pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Key, D::Error> {
-            text_to_key(&String::deserialize(deserializer)?)
-        }
-    }
-
-    /// An optional key, as hex.
-    pub mod opt_key {
-        use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-        use super::{Key, key_text, text_to_key};
-
-        #[allow(clippy::ref_option)] // serde passes the field by reference.
-        pub fn serialize<S: Serializer>(
-            key: &Option<Key>,
-            serializer: S,
-        ) -> Result<S::Ok, S::Error> {
-            key.as_ref().map(key_text).serialize(serializer)
-        }
-
-        pub fn deserialize<'de, D: Deserializer<'de>>(
-            deserializer: D,
-        ) -> Result<Option<Key>, D::Error> {
-            Option::<String>::deserialize(deserializer)?
-                .as_deref()
-                .map(text_to_key::<D::Error>)
-                .transpose()
-        }
-    }
-
-    /// A hash, as hex.
-    pub mod hash {
-        use p2panda_core::Hash;
-        use serde::{Deserialize, Deserializer, Serializer};
-
-        use super::{hash_text, text_to_hash};
-
-        pub fn serialize<S: Serializer>(hash: &Hash, serializer: S) -> Result<S::Ok, S::Error> {
-            serializer.serialize_str(&hash_text(hash))
-        }
-
-        pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Hash, D::Error> {
-            text_to_hash(&String::deserialize(deserializer)?)
-        }
-    }
-
-    /// An optional hash, as hex.
-    pub mod opt_hash {
-        use p2panda_core::Hash;
-        use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-        use super::{hash_text, text_to_hash};
-
-        #[allow(clippy::ref_option)] // serde passes the field by reference.
-        pub fn serialize<S: Serializer>(
-            hash: &Option<Hash>,
-            serializer: S,
-        ) -> Result<S::Ok, S::Error> {
-            hash.as_ref().map(hash_text).serialize(serializer)
-        }
-
-        pub fn deserialize<'de, D: Deserializer<'de>>(
-            deserializer: D,
-        ) -> Result<Option<Hash>, D::Error> {
-            Option::<String>::deserialize(deserializer)?
-                .as_deref()
-                .map(text_to_hash::<D::Error>)
-                .transpose()
-        }
-    }
-
-    /// A list of hashes, as hex.
-    pub mod hashes {
-        use p2panda_core::Hash;
-        use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-        use super::{hash_text, text_to_hash};
-
-        pub fn serialize<S: Serializer>(hashes: &[Hash], serializer: S) -> Result<S::Ok, S::Error> {
-            hashes
-                .iter()
-                .map(hash_text)
-                .collect::<Vec<_>>()
-                .serialize(serializer)
-        }
-
-        pub fn deserialize<'de, D: Deserializer<'de>>(
-            deserializer: D,
-        ) -> Result<Vec<Hash>, D::Error> {
-            Vec::<String>::deserialize(deserializer)?
-                .iter()
-                .map(|text| text_to_hash::<D::Error>(text))
-                .collect()
-        }
-    }
-
-    /// A create's members, each with its role, as hex.
-    pub mod members {
-        use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-        use crate::groups::Role;
-
-        use super::{Key, key_text, text_to_key};
-
-        pub fn serialize<S: Serializer>(
-            members: &[(Key, Role)],
-            serializer: S,
-        ) -> Result<S::Ok, S::Error> {
-            members
-                .iter()
-                .map(|(key, role)| (key_text(key), *role))
-                .collect::<Vec<_>>()
-                .serialize(serializer)
-        }
-
-        pub fn deserialize<'de, D: Deserializer<'de>>(
-            deserializer: D,
-        ) -> Result<Vec<(Key, Role)>, D::Error> {
-            Vec::<(String, Role)>::deserialize(deserializer)?
-                .iter()
-                .map(|(text, role)| Ok((text_to_key::<D::Error>(text)?, *role)))
-                .collect()
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -371,6 +247,36 @@ mod tests {
             members: Vec::new(),
             admins_on_create: false,
         })
+    }
+
+    #[test]
+    fn test_record_preformed_seeds_once_and_then_skips() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        // Form the event in a scratch log, as provisioning forms it
+        // away from the log it will seed.
+        let scratch = dir.path().join("scratch.jsonl");
+        let mut formed = GroupLog::open(&scratch).unwrap();
+        let recorded = formed.record(OWNER, None, create_body()).unwrap();
+        let event = formed.events()[0].clone();
+
+        let mut log = GroupLog::open(&path).unwrap();
+        let seeded = log.record_preformed(&event).unwrap().unwrap();
+        assert_eq!(seeded.event, recorded.event);
+        assert_eq!(seeded.outcome, Outcome::Applied);
+        // Seeding the same event again changes nothing.
+        assert!(log.record_preformed(&event).unwrap().is_none());
+        assert_eq!(log.events().len(), 1);
+        // And the seeded event is what a reopen reads back.
+        let reopened = GroupLog::open(&path).unwrap();
+        assert_eq!(reopened.events(), log.events());
+        assert!(
+            reopened
+                .projection()
+                .unwrap()
+                .group(&recorded.event)
+                .is_some()
+        );
     }
 
     #[test]
@@ -544,19 +450,24 @@ mod tests {
         let mut log = GroupLog::open(&path).unwrap();
         let created = log.record(OWNER, None, create_body()).unwrap();
         drop(log);
-        let good = std::fs::read_to_string(&path).unwrap();
-        // A crash mid-append leaves a partial event, no trailing newline.
+        let good = std::fs::read(&path).unwrap();
+        // A crash after the first byte of a multibyte name leaves invalid
+        // UTF-8 in the unterminated final event.
         let mut torn = good.clone();
-        torn.push_str("{\"id\":\"f00");
+        torn.extend_from_slice(b"{\"name\":\"Jos");
+        torn.push(0xc3); // First byte of "é".
         std::fs::write(&path, torn).unwrap();
 
-        let reopened = GroupLog::open(&path).unwrap();
+        let mut reopened = GroupLog::open(&path).unwrap();
         assert_eq!(reopened.events().len(), 1);
         let projection = reopened.projection().unwrap();
         assert!(projection.group(&created.event).is_some());
         // The torn bytes are truncated, so the next append is not glued
         // onto them and replays cleanly on the next open.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+        assert_eq!(std::fs::read(&path).unwrap(), good);
+        reopened.record(OWNER, None, create_body()).unwrap();
+        drop(reopened);
+        assert_eq!(GroupLog::open(&path).unwrap().events().len(), 2);
     }
 
     #[test]

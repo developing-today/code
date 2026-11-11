@@ -96,6 +96,13 @@ pub enum ConvertError {
         /// Which leg: `"source"`, `"fee"`, or `"destination"`.
         leg: &'static str,
     },
+    /// A leg's ledger is zero. No account can exist on ledger 0
+    /// (the ledger layer's `LedgerMustNotBeZero`), so a batch built
+    /// on it could never post.
+    ZeroLedger {
+        /// Which ledger: `source` or `destination`.
+        leg: &'static str,
+    },
     /// A positive fee was computed but no fee account was supplied.
     MissingFeeAccount,
     /// The caller supplied the wrong number of transfer IDs.
@@ -109,6 +116,16 @@ pub enum ConvertError {
     /// leg and must be distinct.
     DuplicateTransferId {
         /// The repeated transfer ID.
+        id: u128,
+    },
+    /// A TigerBeetle account or transfer ID is reserved and cannot be
+    /// submitted. Both zero and `u128::MAX` are invalid IDs.
+    InvalidId {
+        /// Whether this is an account ID or a transfer ID.
+        kind: &'static str,
+        /// The account or conversion leg that supplied the ID.
+        role: &'static str,
+        /// The reserved ID value.
         id: u128,
     },
 }
@@ -140,6 +157,9 @@ impl std::fmt::Display for ConvertError {
             Self::SameAccount { leg } => {
                 write!(f, "{leg} leg debits and credits the same account")
             }
+            Self::ZeroLedger { leg } => {
+                write!(f, "{leg} ledger must not be zero")
+            }
             Self::MissingFeeAccount => {
                 write!(f, "a positive fee requires a fee account")
             }
@@ -149,6 +169,10 @@ impl std::fmt::Display for ConvertError {
             Self::DuplicateTransferId { id } => {
                 write!(f, "transfer ID {id} is used by more than one leg")
             }
+            Self::InvalidId { kind, role, id } => write!(
+                f,
+                "invalid {kind} ID {id} for {role}: zero and u128::MAX are reserved"
+            ),
         }
     }
 }
@@ -421,8 +445,11 @@ pub struct ConversionAmounts {
 /// request with the typed reason. Pure: no ledger or store access.
 ///
 /// Validation order is fixed so callers see deterministic errors:
-/// amount bounds, rate/scale/fee terms, account shape, fee-account
-/// presence, then transfer-ID shape.
+/// amount bounds, rate/scale/fee terms, ledger shape,
+/// account-ID validity (caller source, LP source, optional fee
+/// account, LP destination, caller destination), account shape,
+/// fee-account presence, then transfer-ID count, validity, and
+/// uniqueness (in leg order).
 ///
 /// # Errors
 ///
@@ -456,6 +483,19 @@ pub fn build_conversion_batch(
         Some(fee_bps) => fee_amount(request.amount_in, fee_bps)?,
         None => 0,
     };
+    if request.source_ledger == 0 {
+        return Err(ConvertError::ZeroLedger { leg: "source" });
+    }
+    if request.dest_ledger == 0 {
+        return Err(ConvertError::ZeroLedger { leg: "destination" });
+    }
+    validate_id("account", "caller_source", request.caller_source)?;
+    validate_id("account", "lp_source", request.lp_source)?;
+    if let Some(fee_account) = request.fee_account {
+        validate_id("account", "fee_account", fee_account)?;
+    }
+    validate_id("account", "lp_dest", request.lp_dest)?;
+    validate_id("account", "caller_dest", request.caller_dest)?;
     if request.caller_source == request.lp_source {
         return Err(ConvertError::SameAccount { leg: "source" });
     }
@@ -479,7 +519,13 @@ pub fn build_conversion_batch(
         });
     }
     let mut seen = std::collections::HashSet::with_capacity(leg_count);
-    for id in &request.transfer_ids {
+    for (index, id) in request.transfer_ids.iter().enumerate() {
+        let role = match (fee > 0, index) {
+            (_, 0) => "source",
+            (true, 1) => "fee",
+            _ => "destination",
+        };
+        validate_id("transfer", role, *id)?;
         if !seen.insert(id) {
             return Err(ConvertError::DuplicateTransferId { id: *id });
         }
@@ -535,7 +581,15 @@ pub fn build_conversion_batch(
     Ok((amounts, legs))
 }
 
+fn validate_id(kind: &'static str, role: &'static str, id: u128) -> Result<(), ConvertError> {
+    if id == 0 || id == u128::MAX {
+        return Err(ConvertError::InvalidId { kind, role, id });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use proptest::prelude::*;
 
@@ -555,6 +609,119 @@ mod tests {
         let numerator = amount_in * rate_num * 10u128.pow(dest_scale);
         let denominator = rate_den * 10u128.pow(source_scale);
         numerator / denominator
+    }
+
+    /// A test-only 512-bit unsigned integer in base 2^32: the wide
+    /// oracle's arithmetic. It shares no code with the `U256` under
+    /// test \u2014 different limb base (2^32, not 2^64 halves), a plain
+    /// schoolbook multiply, and no division at all: the wide
+    /// properties below verify the *floor characterisation* of the
+    /// quotient (`den * out <= num < den * (out + 1)`) in exact
+    /// arithmetic, which determines the quotient uniquely. 512 bits
+    /// hold every product the full domain can form: a `u128 * u128`
+    /// product folded by `10^38` stays below 2^383, and `den * (out
+    /// + 1)` below 2^384.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Wide([u32; 16]);
+
+    impl Wide {
+        fn from_u128(value: u128) -> Self {
+            let mut limbs = [0u32; 16];
+            for (i, limb) in limbs.iter_mut().take(4).enumerate() {
+                *limb = (value >> (32 * i)) as u32;
+            }
+            Self(limbs)
+        }
+
+        fn add_one(self) -> Self {
+            let mut limbs = self.0;
+            for limb in &mut limbs {
+                let (next, carry) = limb.overflowing_add(1);
+                *limb = next;
+                if !carry {
+                    break;
+                }
+            }
+            Self(limbs)
+        }
+
+        /// `self * 2^128` (four whole limbs).
+        fn shl128(self) -> Self {
+            let mut limbs = [0u32; 16];
+            limbs[4..].copy_from_slice(&self.0[..12]);
+            Self(limbs)
+        }
+
+        /// Schoolbook multiplication in base 2^32, one output limb at
+        /// a time with a `u128` accumulator (at most 16 products of
+        /// two `u32`s plus a carry \u2014 far inside `u128`). Callers
+        /// keep every product below 2^512 (see the type docs), so
+        /// the carry out of the top limb is always zero.
+        fn mul(self, other: Self) -> Self {
+            let mut out = [0u32; 16];
+            let mut carry = 0u128;
+            for k in 0..16 {
+                let mut sum = carry;
+                for i in 0..=k {
+                    sum += u128::from(self.0[i]) * u128::from(other.0[k - i]);
+                }
+                out[k] = sum as u32;
+                carry = sum >> 32;
+            }
+            debug_assert_eq!(carry, 0, "wide product exceeds 512 bits");
+            Self(out)
+        }
+    }
+
+    impl PartialOrd for Wide {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for Wide {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            for i in (0..16).rev() {
+                match self.0[i].cmp(&other.0[i]) {
+                    std::cmp::Ordering::Equal => {}
+                    ord => return ord,
+                }
+            }
+            std::cmp::Ordering::Equal
+        }
+    }
+
+    /// The exact terms of the documented formula `y = floor(amount *
+    /// rate_num * 10^dest_scale / (rate_den * 10^source_scale))` as
+    /// `Wide` values: `(numerator, denominator)`. The oracle for the
+    /// wide-domain properties \u2014 exact across the whole `u128`
+    /// range, where the naive `u128` formula above would overflow.
+    fn wide_terms(
+        amount_in: u128,
+        rate_num: u128,
+        rate_den: u128,
+        source_scale: u32,
+        dest_scale: u32,
+    ) -> (Wide, Wide) {
+        let numerator = Wide::from_u128(amount_in)
+            .mul(Wide::from_u128(rate_num))
+            .mul(Wide::from_u128(10u128.pow(dest_scale)));
+        let denominator = Wide::from_u128(rate_den).mul(Wide::from_u128(10u128.pow(source_scale)));
+        (numerator, denominator)
+    }
+
+    /// Full-range `u128` strategy for the wide-domain properties:
+    /// arbitrary values, powers of two and their neighbours, small
+    /// values (zero included), and the top of the range.
+    fn wide_u128() -> impl Strategy<Value = u128> {
+        prop_oneof![
+            any::<u128>(),
+            (0u32..128).prop_map(|k| 1u128 << k),
+            (0u32..128).prop_map(|k| (1u128 << k) - 1),
+            (0u32..128).prop_map(|k| (1u128 << k) + 1),
+            0u128..1_000,
+            (0u128..1_000).prop_map(|s| u128::MAX - s),
+        ]
     }
 
     #[test]
@@ -713,6 +880,123 @@ mod tests {
     }
 
     #[test]
+    fn batch_rejects_zero_ledgers_but_builds_for_sane_ledgers() {
+        // Oracle: the ledger layer itself — no account can exist on
+        // ledger 0 (LedgerMustNotBeZero), so a batch naming ledger 0
+        // for either side can never post and must be rejected here.
+        let mut req = request();
+        req.source_ledger = 0;
+        assert_eq!(
+            build_conversion_batch(&req),
+            Err(ConvertError::ZeroLedger { leg: "source" })
+        );
+
+        let mut req = request();
+        req.dest_ledger = 0;
+        assert_eq!(
+            build_conversion_batch(&req),
+            Err(ConvertError::ZeroLedger { leg: "destination" })
+        );
+
+        // Control: the sane 100/200 request builds the identical batch
+        // the happy-path test pins (ledgers copied onto the legs).
+        let (amounts, legs) = build_conversion_batch(&request()).expect("sane ledgers");
+        assert_eq!(amounts.amount_out, 1_500);
+        assert_eq!(legs[0].ledger, 100);
+        assert_eq!(legs[1].ledger, 200);
+    }
+
+    #[test]
+    fn rejects_reserved_transfer_ids_in_every_leg_position() {
+        for (index, role) in [(0, "source"), (1, "fee"), (2, "destination")] {
+            for id in [0, u128::MAX] {
+                let mut req = request();
+                req.transfer_ids = vec![11, 22, 33];
+                req.fee_bps = Some(50);
+                req.fee_account = Some(9);
+                req.transfer_ids[index] = id;
+                assert_eq!(
+                    build_conversion_batch(&req),
+                    Err(ConvertError::InvalidId {
+                        kind: "transfer",
+                        role,
+                        id,
+                    })
+                );
+            }
+        }
+
+        // The ordinary IDs still produce the expected control batch.
+        let req = request();
+        let (amounts, legs) = build_conversion_batch(&req).expect("sane IDs build");
+        assert_eq!(amounts.amount_out, 1_500);
+        assert_eq!(legs.iter().map(|leg| leg.id).collect::<Vec<_>>(), [11, 22]);
+    }
+
+    #[test]
+    fn rejects_reserved_account_ids_in_every_role() {
+        for id in [0, u128::MAX] {
+            let mut req = request();
+            req.fee_bps = Some(50);
+            req.transfer_ids = vec![11, 22, 33];
+
+            req.caller_source = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "caller_source",
+                    id,
+                })
+            );
+
+            req.caller_source = 1;
+            req.lp_source = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "lp_source",
+                    id,
+                })
+            );
+
+            req.lp_source = 2;
+            req.fee_account = Some(id);
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "fee_account",
+                    id,
+                })
+            );
+
+            req.fee_account = Some(9);
+            req.lp_dest = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "lp_dest",
+                    id,
+                })
+            );
+
+            req.lp_dest = 3;
+            req.caller_dest = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "caller_dest",
+                    id,
+                })
+            );
+        }
+    }
+
+    #[test]
     fn batch_validation_errors_are_typed() {
         let mut req = request();
         req.amount_in = 0;
@@ -825,6 +1109,91 @@ mod tests {
         ) {
             let expected = principal * u128::from(fee_bps) / 10_000;
             prop_assert_eq!(fee_amount(principal, fee_bps), Ok(expected));
+        }
+
+        /// Wide oracle: the floor characterisation, checked in exact
+        /// `Wide` arithmetic (see `wide_terms`). `convert_amount`
+        /// returns the unique `out` with `den * out <= num < den *
+        /// (out + 1)`; it returns ZeroOutput exactly when `num <
+        /// den`, and Overflow exactly when `num >= den * 2^128` (the
+        /// true quotient does not fit a `u128`) \u2014 including when
+        /// the implementation's own scale fold overflows 256 bits,
+        /// since the denominator there is at most `u128::MAX`. The
+        /// oracle shares no code with the `U256` under test: base
+        /// 2^32 schoolbook multiplication, and no division anywhere.
+        #[test]
+        fn convert_amount_matches_wide_oracle_on_full_domain(
+            amount in wide_u128(),
+            rate_num in wide_u128(),
+            rate_den in wide_u128(),
+            source_scale in 0u32..=MAX_SCALE,
+            dest_scale in 0u32..=MAX_SCALE,
+        ) {
+            let result = convert_amount(amount, rate_num, rate_den, source_scale, dest_scale);
+            if rate_den == 0 {
+                prop_assert_eq!(result, Err(ConvertError::ZeroRateDenominator));
+                return Ok(());
+            }
+            let (num, den) = wide_terms(amount, rate_num, rate_den, source_scale, dest_scale);
+            match result {
+                Ok(out) => {
+                    let out = Wide::from_u128(out);
+                    prop_assert!(den.mul(out) <= num, "out is above the true quotient");
+                    prop_assert!(num < den.mul(out.add_one()), "out is below the true quotient");
+                }
+                Err(ConvertError::ZeroOutput) => {
+                    prop_assert!(num < den, "ZeroOutput but the true quotient is >= 1");
+                }
+                Err(ConvertError::Overflow) => {
+                    prop_assert!(num >= den.shl128(), "Overflow but the true quotient fits u128");
+                }
+                Err(other) => {
+                    prop_assert!(false, "unexpected error on the wide domain: {other:?}");
+                }
+            }
+        }
+
+        /// The 256-bit-overflow scale-fold path, from generated
+        /// inputs: amounts and rate terms above 2^100 with a scale
+        /// fold of at least 10^21 push the folded numerator past
+        /// 256 bits, and the verdict must be Overflow \u2014 confirmed
+        /// against the wide oracle, not just asserted.
+        #[test]
+        fn convert_amount_scale_fold_overflow_from_generated_inputs(
+            amount in (1u128 << 100)..=u128::MAX,
+            rate_num in (1u128 << 100)..=u128::MAX,
+            rate_den in 1u128..(1u128 << 32),
+            source_scale in 0u32..=4,
+            dest_scale in 25u32..=MAX_SCALE,
+        ) {
+            let result = convert_amount(amount, rate_num, rate_den, source_scale, dest_scale);
+            prop_assert_eq!(result, Err(ConvertError::Overflow));
+            let (num, den) = wide_terms(amount, rate_num, rate_den, source_scale, dest_scale);
+            prop_assert!(num >= den.shl128());
+        }
+
+        /// Fee oracle on the full domain: the same floor
+        /// characterisation in `Wide` arithmetic \u2014 `fee * 10_000
+        /// <= principal * fee_bps < (fee + 1) * 10_000` \u2014 with
+        /// principals across the whole `u128` range (the naive
+        /// oracle above bounds them to 2^100 because its `u128`
+        /// product would overflow).
+        #[test]
+        fn fee_amount_matches_wide_oracle_on_full_domain(
+            principal in wide_u128(),
+            fee_bps in 0u32..=20_000,
+        ) {
+            let result = fee_amount(principal, fee_bps);
+            if fee_bps > MAX_FEE_BPS {
+                prop_assert_eq!(result, Err(ConvertError::InvalidFeeBps { fee_bps }));
+                return Ok(());
+            }
+            let fee = result.expect("fee_bps within range always quotes");
+            let product = Wide::from_u128(principal).mul(Wide::from_u128(u128::from(fee_bps)));
+            let fee = Wide::from_u128(fee);
+            let bps_denominator = Wide::from_u128(BPS_DENOMINATOR);
+            prop_assert!(fee.mul(bps_denominator) <= product);
+            prop_assert!(product < fee.add_one().mul(bps_denominator));
         }
     }
 }

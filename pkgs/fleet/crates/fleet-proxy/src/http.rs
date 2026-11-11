@@ -23,6 +23,16 @@
 //! read with the [`MAX_LINE_BYTES`] bound instead of accumulating
 //! without limit.
 //!
+//! Repetition is bounded as well as size (#6509): a peer can send
+//! units that are each individually legal forever — interim 1xx
+//! heads, header lines, trailer lines — and each successful read
+//! resets the per-read tunnel timeout, so the exchange (and its
+//! pooled tunnel) hangs indefinitely. The count bounds
+//! [`MAX_INTERIM_HEADS`], [`MAX_HEADER_LINES`], and
+//! [`MAX_TRAILER_LINES`] cap the repetition; exceeding one is the
+//! same failure shape as exceeding a size cap —
+//! [`HttpError::Malformed`], connection non-reusable.
+//!
 //! Body existence is decided by the request method and the status
 //! class before the framing headers are consulted (#5921): a
 //! response to a HEAD request and a 101, 204, or 304 response
@@ -36,6 +46,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::os::unix::net::UnixStream;
 
 /// Largest response body this client will accept, on either the
 /// Content-Length or the chunked path (cumulative for chunked).
@@ -50,6 +61,23 @@ pub const MAX_RESPONSE_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// tunnel CONNECT response cap precedent (65536 bytes): legitimate
 /// lines from the laptop's local services are nowhere near this.
 pub const MAX_LINE_BYTES: usize = 64 * 1024;
+
+/// Largest number of interim 1xx heads (excluding 101) this client
+/// will consume before the final response head. A legitimate
+/// laptop service sends at most one or two (100 Continue, 103
+/// Early Hints); an unbounded stream of them is a hang, not a
+/// conversation (#6509).
+pub const MAX_INTERIM_HEADS: usize = 16;
+
+/// Largest number of header lines in one response head. The
+/// laptop's local services send a handful; hundreds of distinct
+/// lines is a peer burning the exchange, not metadata (#6509).
+pub const MAX_HEADER_LINES: usize = 256;
+
+/// Largest number of trailer lines after a chunked body's final
+/// chunk. Trailers mirror header counts in legitimate traffic;
+/// the same generous ceiling applies (#6509).
+pub const MAX_TRAILER_LINES: usize = 256;
 
 #[derive(Debug)]
 pub enum HttpError {
@@ -114,15 +142,69 @@ pub(crate) fn valid_path(path: &str) -> bool {
     path.starts_with('/') && path.bytes().all(|b| b > 0x20 && b != 0x7f)
 }
 
-/// One HTTP connection to a laptop service, over a tunnel stream.
+/// The byte stream under an [`HttpConn`]: a TCP tunnel stream, or
+/// a colocated service's Unix socket (#6219). Both are plain
+/// Read+Write byte streams once connected; the HTTP exchange does
+/// not care which it rides.
+pub enum ConnStream {
+    Tcp(TcpStream),
+    Unix(UnixStream),
+}
+
+impl ConnStream {
+    fn try_clone(&self) -> std::io::Result<ConnStream> {
+        Ok(match self {
+            ConnStream::Tcp(s) => ConnStream::Tcp(s.try_clone()?),
+            ConnStream::Unix(s) => ConnStream::Unix(s.try_clone()?),
+        })
+    }
+}
+
+impl Read for ConnStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            ConnStream::Tcp(s) => s.read(buf),
+            ConnStream::Unix(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for ConnStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            ConnStream::Tcp(s) => s.write(buf),
+            ConnStream::Unix(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            ConnStream::Tcp(s) => s.flush(),
+            ConnStream::Unix(s) => s.flush(),
+        }
+    }
+}
+
+/// One HTTP connection to a laptop service, over a tunnel stream
+/// or a colocated Unix socket (#6219).
 pub struct HttpConn {
-    reader: BufReader<TcpStream>,
-    writer: TcpStream,
+    reader: BufReader<ConnStream>,
+    writer: ConnStream,
     reusable: bool,
 }
 
 impl HttpConn {
     pub fn new(stream: TcpStream) -> std::io::Result<HttpConn> {
+        Self::from_stream(ConnStream::Tcp(stream))
+    }
+
+    /// An HTTP connection over a colocated service's Unix socket
+    /// (#6219): the same exchange, dialled locally instead of via
+    /// TCP loopback.
+    pub fn from_unix(stream: UnixStream) -> std::io::Result<HttpConn> {
+        Self::from_stream(ConnStream::Unix(stream))
+    }
+
+    fn from_stream(stream: ConnStream) -> std::io::Result<HttpConn> {
         let writer = stream.try_clone()?;
         Ok(HttpConn {
             reader: BufReader::with_capacity(16 * 1024, stream),
@@ -212,9 +294,17 @@ impl HttpConn {
         // interim head as final would leave the real response in
         // the stream, to be parsed as the next exchange's response
         // on this pooled connection.
+        let mut interim_heads = 0usize;
         let (status, content_length, chunked, close_after) = loop {
             let head = self.read_response_head()?;
             if (100..200).contains(&head.0) && head.0 != 101 {
+                interim_heads += 1;
+                if interim_heads > MAX_INTERIM_HEADS {
+                    self.reusable = false;
+                    return Err(HttpError::Malformed(format!(
+                        "more than {MAX_INTERIM_HEADS} interim 1xx heads"
+                    )));
+                }
                 continue;
             }
             break head;
@@ -300,6 +390,7 @@ impl HttpConn {
         let mut content_length: Option<usize> = None;
         let mut chunked = false;
         let mut close_after = false;
+        let mut header_lines = 0usize;
         loop {
             let mut line = String::new();
             let n = self.read_line_bounded(&mut line)?;
@@ -310,6 +401,13 @@ impl HttpConn {
             let line = line.trim_end();
             if line.is_empty() {
                 break;
+            }
+            header_lines += 1;
+            if header_lines > MAX_HEADER_LINES {
+                self.reusable = false;
+                return Err(HttpError::Malformed(format!(
+                    "more than {MAX_HEADER_LINES} header lines"
+                )));
             }
             let Some((name, value)) = line.split_once(':') else {
                 self.reusable = false;
@@ -367,11 +465,19 @@ impl HttpConn {
             })?;
             if size == 0 {
                 // Trailer part: header lines until the blank line.
+                let mut trailer_lines = 0usize;
                 loop {
                     let mut trailer = String::new();
                     let n = self.read_line_bounded(&mut trailer)?;
                     if n == 0 || trailer.trim_end().is_empty() {
                         break;
+                    }
+                    trailer_lines += 1;
+                    if trailer_lines > MAX_TRAILER_LINES {
+                        self.reusable = false;
+                        return Err(HttpError::Malformed(format!(
+                            "more than {MAX_TRAILER_LINES} trailer lines"
+                        )));
                     }
                 }
                 return Ok(());
@@ -531,6 +637,84 @@ mod tests {
         assert_eq!(body, b"hello");
         assert!(conn.reusable());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn single_interim_head_then_final_response_succeeds() {
+        // Control for the 1xx bound (#6509): one interim head is
+        // ordinary traffic and the final response parses normally.
+        let (mut conn, server) = canned_conn(vec![
+            b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec(),
+        ]);
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"{}");
+        assert!(conn.reusable());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn interim_head_flood_is_malformed_and_not_reusable() {
+        // #6509: an endless stream of individually legal 1xx heads
+        // must fail at the count bound, not hang the exchange.
+        let mut flood = Vec::new();
+        for _ in 0..(MAX_INTERIM_HEADS + 5) {
+            flood.extend_from_slice(b"HTTP/1.1 100 Continue\r\n\r\n");
+        }
+        flood.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let (mut conn, _server) = canned_conn(vec![flood]);
+        let err = get(&mut conn).unwrap_err();
+        assert!(matches!(err, HttpError::Malformed(_)), "{err}");
+        assert!(!conn.reusable());
+    }
+
+    #[test]
+    fn header_line_flood_is_malformed_and_not_reusable() {
+        // #6509: header lines are each under MAX_LINE_BYTES; only
+        // the count bound stops the flood.
+        let mut flood = Vec::new();
+        flood.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+        for i in 0..(MAX_HEADER_LINES + 5) {
+            flood.extend_from_slice(format!("X-Flood-{i}: v\r\n").as_bytes());
+        }
+        flood.extend_from_slice(b"Content-Length: 0\r\n\r\n");
+        let (mut conn, _server) = canned_conn(vec![flood]);
+        let err = get(&mut conn).unwrap_err();
+        assert!(matches!(err, HttpError::Malformed(_)), "{err}");
+        assert!(!conn.reusable());
+    }
+
+    #[test]
+    fn chunked_with_trailers_round_trips_and_stays_reusable() {
+        // Control for the trailer bound (#6509): a couple of
+        // trailer lines after the final chunk are ordinary.
+        let (mut conn, server) = canned_conn(vec![
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Checksum: abc\r\nX-Trailer: yes\r\n\r\n"
+                .to_vec(),
+        ]);
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"hello");
+        assert!(conn.reusable());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn trailer_line_flood_is_malformed_and_not_reusable() {
+        // #6509: the trailer loop after the final chunk gets the
+        // same count bound as the header loop.
+        let mut flood = Vec::new();
+        flood.extend_from_slice(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\n",
+        );
+        for i in 0..(MAX_TRAILER_LINES + 5) {
+            flood.extend_from_slice(format!("X-Flood-{i}: v\r\n").as_bytes());
+        }
+        flood.extend_from_slice(b"\r\n");
+        let (mut conn, _server) = canned_conn(vec![flood]);
+        let err = get(&mut conn).unwrap_err();
+        assert!(matches!(err, HttpError::Malformed(_)), "{err}");
+        assert!(!conn.reusable());
     }
 
     #[test]
@@ -734,5 +918,39 @@ mod tests {
         assert_eq!(body, b"hello");
         assert!(conn.reusable());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn unix_socket_round_trips_and_stays_reusable() {
+        // #6219: an HttpConn over a UnixStream speaks the same
+        // HTTP exchange as over TCP (the colocated dial path).
+        use std::os::unix::net::UnixListener;
+        let dir =
+            std::env::temp_dir().join(format!("fleet-proxy-http-uds-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("svc.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let stream = UnixStream::connect(&path).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut buf = [0u8; 1024];
+            let mut seen = Vec::new();
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                match peer.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => seen.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = peer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+            let _ = peer.flush();
+        });
+        let mut conn = HttpConn::from_unix(stream).unwrap();
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"{}");
+        assert!(conn.reusable());
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

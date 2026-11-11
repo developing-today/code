@@ -35,34 +35,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::chain::{self, ChainExt, Event};
 
+pub use id_store::issuer_rotation::{IssuerId, author_id, issuer_id};
+
+/// Graph-native currency definitions and value-event contracts.
+pub mod graph;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 
 /// The event kind carrying a rate authorisation revocation body.
 pub const RATE_AUTHORISATION_REVOKE_KIND: &str = "currency.rate_authorisation_revoke";
 
-/// An issuer identity: the 32 bytes of its signing key's verifying
-/// key, the same bytes the event store uses as an author key.
-pub type IssuerId = [u8; 32];
-
-/// The issuer id of a signing key.
-#[must_use]
-pub fn issuer_id(key: &SigningKey) -> IssuerId {
-    *key.verifying_key().as_bytes()
-}
-
-/// The author of a decoded (signature-verified) event, as an issuer id.
-#[must_use]
-pub fn author_id(event: &Event) -> IssuerId {
-    *event.header.verifying_key.as_bytes()
-}
-
 /// Who may convert under an authorisation (#2063 §2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthorisedCallers {
     /// Any caller.
     Any,
-    /// Only the listed identities.
+    /// Only the listed identities; the list must be non-empty.
     Allowlist(Vec<IssuerId>),
     /// Only this one counterparty.
     Single(IssuerId),
@@ -95,31 +84,35 @@ pub struct RateAuthorisation {
     pub version: u64,
     /// The offering LP; must equal the event author (verifying key).
     pub issuer_id: IssuerId,
-    /// The ledger conversions draw from.
+    /// The ledger conversions draw from; must be non-empty and differ
+    /// from `dest_ledger`.
     pub source_ledger: String,
-    /// The ledger conversions pay into.
+    /// The ledger conversions pay into; must be non-empty and differ
+    /// from `source_ledger`.
     pub dest_ledger: String,
-    /// Rate numerator (integer-rational rate, #2063 §2).
+    /// Positive rate numerator (integer-rational rate, #2063 §2).
     pub rate_num: u128,
     /// Rate denominator; non-zero in a valid authorisation.
     pub rate_den: u128,
-    /// Smallest convertible amount, in source-ledger units.
+    /// Smallest convertible amount, in source-ledger units; at most
+    /// `max_amount`.
     pub min_amount: u128,
     /// Largest convertible amount, in source-ledger units.
     pub max_amount: u128,
-    /// Total convertible volume, in source-ledger units.
+    /// Positive total convertible volume, in source-ledger units.
     pub total_cap: u128,
     /// Who may convert under this authorisation.
     pub authorised_callers: AuthorisedCallers,
     /// No conversions before this time (unix seconds).
     pub not_before: u64,
-    /// Mandatory expiry (unix seconds): no conversions at or after.
+    /// Mandatory expiry (unix seconds), strictly after `not_before`;
+    /// no conversions at or after this time.
     pub expires_at: u64,
     /// Optional window (seconds) in which a posted conversion may be
     /// reversed at the original rate (#2063 §4.4).
     pub reversal_window_secs: Option<u64>,
-    /// Optional fee in basis points; fees are non-refundable unless
-    /// stated (#2063 §4.4).
+    /// Optional fee in basis points, at most 10,000; fees are
+    /// non-refundable unless stated (#2063 §4.4).
     pub fee_bps: Option<u32>,
 }
 
@@ -147,15 +140,45 @@ impl RateAuthorisation {
     ///
     /// # Errors
     ///
-    /// Returns [`ValidateError::IssuerMismatch`] if the body names an
-    /// issuer other than the event author, and
-    /// [`ValidateError::ZeroRateDenominator`] if `rate_den` is zero.
+    /// Returns a [`ValidateError`] when the issuer does not match, the
+    /// rate numerator or denominator is zero, the amount bounds or time
+    /// window are invalid, the fee exceeds 10,000 basis points, either
+    /// ledger is empty or both ledgers are equal, the total cap is zero,
+    /// or the caller allowlist is empty.
     pub fn validate(&self, author: &IssuerId) -> Result<(), ValidateError> {
         if self.issuer_id != *author {
             return Err(ValidateError::IssuerMismatch);
         }
         if self.rate_den == 0 {
             return Err(ValidateError::ZeroRateDenominator);
+        }
+        if self.rate_num == 0 {
+            return Err(ValidateError::ZeroRateNumerator);
+        }
+        if self.min_amount > self.max_amount {
+            return Err(ValidateError::MinAmountExceedsMaxAmount);
+        }
+        if self.expires_at <= self.not_before {
+            return Err(ValidateError::InvalidTimeWindow);
+        }
+        if self.fee_bps.is_some_and(|fee_bps| fee_bps > 10_000) {
+            return Err(ValidateError::FeeBpsTooHigh);
+        }
+        if self.source_ledger.is_empty() {
+            return Err(ValidateError::EmptySourceLedger);
+        }
+        if self.dest_ledger.is_empty() {
+            return Err(ValidateError::EmptyDestinationLedger);
+        }
+        if self.source_ledger == self.dest_ledger {
+            return Err(ValidateError::SameSourceAndDestinationLedger);
+        }
+        if self.total_cap == 0 {
+            return Err(ValidateError::ZeroTotalCap);
+        }
+        if matches!(&self.authorised_callers, AuthorisedCallers::Allowlist(list) if list.is_empty())
+        {
+            return Err(ValidateError::EmptyAllowlist);
         }
         Ok(())
     }
@@ -215,20 +238,55 @@ impl RateAuthorisationRevoke {
 pub enum ValidateError {
     /// The body names an issuer other than the event author.
     IssuerMismatch,
+    /// The rate numerator is zero.
+    ZeroRateNumerator,
     /// The rate denominator is zero.
     ZeroRateDenominator,
+    /// The minimum amount is greater than the maximum amount.
+    MinAmountExceedsMaxAmount,
+    /// The expiry is not after the start of the validity window.
+    InvalidTimeWindow,
+    /// The optional fee is greater than 10,000 basis points.
+    FeeBpsTooHigh,
+    /// The source ledger is empty.
+    EmptySourceLedger,
+    /// The destination ledger is empty.
+    EmptyDestinationLedger,
+    /// The source and destination ledgers are equal.
+    SameSourceAndDestinationLedger,
+    /// The total conversion cap is zero.
+    ZeroTotalCap,
+    /// The caller allowlist contains no identities.
+    EmptyAllowlist,
 }
 
 impl std::fmt::Display for ValidateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::IssuerMismatch => {
-                write!(
-                    f,
-                    "authorisation body names an issuer other than the event author"
-                )
-            }
+            Self::IssuerMismatch => write!(
+                f,
+                "authorisation body names an issuer other than the event author"
+            ),
+            Self::ZeroRateNumerator => write!(f, "authorisation rate numerator is zero"),
             Self::ZeroRateDenominator => write!(f, "authorisation rate denominator is zero"),
+            Self::MinAmountExceedsMaxAmount => {
+                write!(f, "authorisation minimum amount exceeds maximum amount")
+            }
+            Self::InvalidTimeWindow => {
+                write!(f, "authorisation expiry must be after not-before time")
+            }
+            Self::FeeBpsTooHigh => {
+                write!(f, "authorisation fee exceeds 10,000 basis points")
+            }
+            Self::EmptySourceLedger => write!(f, "authorisation source ledger is empty"),
+            Self::EmptyDestinationLedger => {
+                write!(f, "authorisation destination ledger is empty")
+            }
+            Self::SameSourceAndDestinationLedger => {
+                write!(f, "authorisation source and destination ledgers are equal")
+            }
+            Self::ZeroTotalCap => write!(f, "authorisation total cap is zero"),
+            Self::EmptyAllowlist => write!(f, "authorisation caller allowlist is empty"),
         }
     }
 }
@@ -349,6 +407,8 @@ pub fn sign_authorisation(
             link: None,
             checkpoint: None,
             rotation: None,
+
+            chat: None,
         },
     )?)
 }
@@ -382,6 +442,8 @@ pub fn sign_revoke(
             link: None,
             checkpoint: None,
             rotation: None,
+
+            chat: None,
         },
     )?)
 }
@@ -483,6 +545,118 @@ mod tests {
         // whole dest units before scale normalisation (#2290 record).
         assert_eq!(auth.apply_rate(100), Some(81));
         assert_eq!(auth.apply_rate(10_000), Some(8123));
+    }
+
+    #[test]
+    fn test_rejects_minimum_above_maximum_amount() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.min_amount = auth.max_amount + 1;
+        assert_eq!(
+            auth.validate(&author),
+            Err(ValidateError::MinAmountExceedsMaxAmount)
+        );
+    }
+
+    #[test]
+    fn test_rejects_expiry_at_or_before_not_before() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.not_before = 2_000;
+        for expires_at in [2_000, 1_999] {
+            auth.expires_at = expires_at;
+            assert_eq!(
+                auth.validate(&author),
+                Err(ValidateError::InvalidTimeWindow)
+            );
+        }
+    }
+
+    #[test]
+    fn test_rejects_fee_above_ten_thousand_basis_points() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.fee_bps = Some(10_001);
+        assert_eq!(auth.validate(&author), Err(ValidateError::FeeBpsTooHigh));
+    }
+
+    #[test]
+    fn test_rejects_empty_source_ledger() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.source_ledger.clear();
+        assert_eq!(
+            auth.validate(&author),
+            Err(ValidateError::EmptySourceLedger)
+        );
+    }
+
+    #[test]
+    fn test_rejects_empty_destination_ledger() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.dest_ledger.clear();
+        assert_eq!(
+            auth.validate(&author),
+            Err(ValidateError::EmptyDestinationLedger)
+        );
+    }
+
+    #[test]
+    fn test_rejects_equal_source_and_destination_ledgers() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.dest_ledger = auth.source_ledger.clone();
+        assert_eq!(
+            auth.validate(&author),
+            Err(ValidateError::SameSourceAndDestinationLedger)
+        );
+    }
+
+    #[test]
+    fn test_rejects_zero_rate_numerator() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.rate_num = 0;
+        assert_eq!(
+            auth.validate(&author),
+            Err(ValidateError::ZeroRateNumerator)
+        );
+    }
+
+    #[test]
+    fn test_rejects_zero_total_cap() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.total_cap = 0;
+        assert_eq!(auth.validate(&author), Err(ValidateError::ZeroTotalCap));
+    }
+
+    #[test]
+    fn test_rejects_empty_caller_allowlist() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.authorised_callers = AuthorisedCallers::Allowlist(vec![]);
+        assert_eq!(auth.validate(&author), Err(ValidateError::EmptyAllowlist));
+    }
+
+    #[test]
+    fn test_fold_ignores_invalid_higher_version_and_keeps_prior_valid_body() {
+        let author = issuer_id(&lp_key());
+        let valid = forward();
+        let mut invalid = valid.clone();
+        invalid.version = 2;
+        invalid.min_amount = invalid.max_amount + 1;
+
+        assert_eq!(
+            fold_authorisation(
+                7,
+                &author,
+                &[(author, valid.clone()), (author, invalid)],
+                &[]
+            ),
+            Some(AuthorisationState::Live(valid))
+        );
     }
 
     #[test]

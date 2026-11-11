@@ -111,6 +111,210 @@ impl TerminalNegotiator {
     }
 }
 
+/// Streaming demultiplexer used by the SSH adapter.
+///
+/// Bytes are forwarded as user input in arrival order. A possible reply prefix
+/// holds back every byte behind it until it completes or the startup deadline
+/// expires, so unmatched keystrokes can never be reordered around a reply.
+#[derive(Debug, Default)]
+pub(crate) struct ProbeDemux {
+    evidence: Evidence,
+    pending: Vec<u8>,
+    expired: bool,
+}
+
+impl ProbeDemux {
+    /// Start an empty demultiplexer for one startup probe.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed received bytes; returns the bytes that are user input, in order.
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
+        if self.expired {
+            return bytes.to_vec();
+        }
+        self.pending.extend_from_slice(bytes);
+        let mut input = Vec::new();
+        let mut consumed = 0;
+        while consumed < self.pending.len() {
+            match scan_step(&self.pending[consumed..], &mut self.evidence) {
+                ScanStep::Reply(len) => consumed += len,
+                ScanStep::Unmatched(len) => {
+                    input.extend_from_slice(&self.pending[consumed..consumed + len]);
+                    consumed += len;
+                }
+                ScanStep::Incomplete => break,
+            }
+        }
+        self.pending.drain(..consumed);
+        input
+    }
+
+    /// Close the startup window: held prefixes are user input after all.
+    ///
+    /// Every later [`ProbeDemux::push`] forwards bytes untouched.
+    pub(crate) fn expire(&mut self) -> Vec<u8> {
+        self.expired = true;
+        std::mem::take(&mut self.pending)
+    }
+
+    /// Evidence gathered so far, including bytes still held.
+    pub(crate) fn outcome(&self) -> ProbeOutcome {
+        ProbeOutcome {
+            profile: self.evidence.profile(),
+            replay: self.pending.clone(),
+            conflicted: self.evidence.conflicted,
+        }
+    }
+
+    /// Tier selected from the replies seen so far.
+    pub(crate) fn tier(&self) -> PresentationTier {
+        self.outcome().tier()
+    }
+}
+
+/// Probe a local interactive terminal once, restoring its mode before return.
+///
+/// Returns `None` when either standard stream is not a terminal (a piped or
+/// scripted caller must send no probe bytes), or when the terminal cannot be
+/// switched to the non-canonical mode needed to read replies. Only the Tier 3
+/// fallback presenter consumes this result in the current slice.
+#[cfg(unix)]
+pub(crate) fn probe_local_tty() -> Option<ProbeOutcome> {
+    use std::io::IsTerminal;
+
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return None;
+    }
+    let _raw = RawMode::enable()?;
+    let mut io = TtyIo;
+    TerminalNegotiator::probe(&mut io).ok()
+}
+
+/// Non-Unix builds have no TTY probe; callers keep the piped behavior.
+#[cfg(not(unix))]
+pub(crate) fn probe_local_tty() -> Option<ProbeOutcome> {
+    None
+}
+
+/// Byte I/O for [`probe_local_tty`], bounded by the caller's deadline.
+#[cfg(unix)]
+#[derive(Debug)]
+struct TtyIo;
+
+#[cfg(unix)]
+impl TerminalIo for TtyIo {
+    type Error = std::io::Error;
+
+    fn write(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        use std::io::Write as _;
+
+        let mut out = std::io::stdout().lock();
+        out.write_all(bytes)?;
+        out.flush()
+    }
+
+    #[allow(unsafe_code)] // libc poll/read are the only way to bound a TTY read.
+    fn read_until(&mut self, timeout: Duration) -> Result<Vec<u8>, Self::Error> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut collected = Vec::new();
+        loop {
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return Ok(collected);
+            };
+            // Round up so a sub-millisecond remainder still gets one poll.
+            let millis = remaining
+                .as_millis()
+                .saturating_add(u128::from(remaining.subsec_nanos() > 0))
+                .min(i32::MAX as u128) as i32;
+            let mut pollfd = libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `pollfd` points at one initialized descriptor owned by
+            // this call; poll only reads it and writes `revents`.
+            let ready = unsafe { libc::poll(&raw mut pollfd, 1, millis) };
+            if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if ready == 0 {
+                return Ok(collected);
+            }
+            let mut buffer = [0_u8; 256];
+            // SAFETY: the buffer is writable for its full length and stdin was
+            // polled readable above; read never writes past `buffer.len()`.
+            let read =
+                unsafe { libc::read(libc::STDIN_FILENO, buffer.as_mut_ptr().cast(), buffer.len()) };
+            if read < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if read == 0 {
+                return Ok(collected);
+            }
+            collected.extend_from_slice(&buffer[..read as usize]);
+        }
+    }
+}
+
+/// Non-canonical mode for the probe window, restored on every return path.
+#[cfg(unix)]
+struct RawMode {
+    original: libc::termios,
+}
+
+#[cfg(unix)]
+impl std::fmt::Debug for RawMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RawMode")
+    }
+}
+
+#[cfg(unix)]
+impl RawMode {
+    /// Disable line buffering and echo so terminal replies arrive immediately.
+    #[allow(unsafe_code)] // termios calls are the only way to read query replies.
+    fn enable() -> Option<Self> {
+        // SAFETY: `termios` is plain old data; tcgetattr fills it on success.
+        let mut term = unsafe { std::mem::zeroed::<libc::termios>() };
+        // SAFETY: `term` points at writable storage for one termios and stdin
+        // is a valid descriptor for this process.
+        if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &raw mut term) } != 0 {
+            return None;
+        }
+        let original = term;
+        term.c_lflag &= !(libc::ICANON | libc::ECHO);
+        term.c_cc[libc::VMIN] = 0;
+        term.c_cc[libc::VTIME] = 0;
+        // SAFETY: `term` is the termios just read for this descriptor.
+        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw const term) } != 0 {
+            return None;
+        }
+        Some(Self { original })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RawMode {
+    #[allow(unsafe_code)] // restoring termios is the inverse tcsetattr call.
+    fn drop(&mut self) {
+        // SAFETY: `original` came from a successful tcgetattr on this
+        // descriptor; restoring it is the documented inverse operation.
+        unsafe {
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw const self.original);
+        }
+    }
+}
+
 /// Byte and frame counters used to compare presenters with a full-render baseline.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PresenterCounters {
@@ -167,6 +371,68 @@ impl Evidence {
     }
 }
 
+/// One step of the shared query/reply grammar.
+///
+/// The same scanner is used to parse a whole transcript and to demultiplex a
+/// live byte stream, so both adapters classify bytes identically.
+enum ScanStep {
+    /// A complete, matching reply consuming this many bytes.
+    Reply(usize),
+    /// Complete bytes that match no outstanding query: user input.
+    Unmatched(usize),
+    /// A possible reply prefix; wait for more bytes or the deadline.
+    Incomplete,
+}
+
+/// Classify the sequence at the start of `input`, recording any reply evidence.
+///
+/// A single plain byte is always user input. A lead-in that could still grow
+/// into a reply (`ESC`, `ESC [`, an unterminated DCS/APC) is incomplete until
+/// it resolves or the caller's deadline expires.
+fn scan_step(input: &[u8], evidence: &mut Evidence) -> ScanStep {
+    let Some(&first) = input.first() else {
+        return ScanStep::Incomplete;
+    };
+    if first == 0x1b {
+        match input.get(1) {
+            None => return ScanStep::Incomplete,
+            Some(&b'P') | Some(&b'_') => {
+                let introducer = input[1];
+                let Some(end) = find_st(input, 2) else {
+                    return ScanStep::Incomplete;
+                };
+                let body = &input[2..end];
+                let matched = if introducer == b'P' {
+                    parse_xtgettcap(body, evidence)
+                } else {
+                    parse_kitty_graphics(body, evidence)
+                };
+                return if matched {
+                    ScanStep::Reply(end + 2)
+                } else {
+                    ScanStep::Unmatched(end + 2)
+                };
+            }
+            Some(&b'[') => {
+                let Some(final_offset) =
+                    (2..input.len()).find(|&index| (0x40..=0x7e).contains(&input[index]))
+                else {
+                    return ScanStep::Incomplete;
+                };
+                let body = &input[2..final_offset];
+                let matched = parse_csi(body, input[final_offset], evidence);
+                return if matched {
+                    ScanStep::Reply(final_offset + 1)
+                } else {
+                    ScanStep::Unmatched(final_offset + 1)
+                };
+            }
+            Some(_) => return ScanStep::Unmatched(2),
+        }
+    }
+    ScanStep::Unmatched(1)
+}
+
 /// Parse complete replies from the batched transcript and preserve everything else.
 ///
 /// Partial sequences are intentionally not consumed. This parser has no access
@@ -177,44 +443,17 @@ fn parse_transcript(transcript: &[u8]) -> ProbeOutcome {
     let mut offset = 0;
 
     while offset < transcript.len() {
-        if transcript[offset..].starts_with(b"\x1bP") || transcript[offset..].starts_with(b"\x1b_")
-        {
-            let introducer = transcript[offset + 1];
-            let Some(end) = find_st(transcript, offset + 2) else {
+        match scan_step(&transcript[offset..], &mut evidence) {
+            ScanStep::Reply(consumed) => offset += consumed,
+            ScanStep::Unmatched(consumed) => {
+                replay.extend_from_slice(&transcript[offset..offset + consumed]);
+                offset += consumed;
+            }
+            ScanStep::Incomplete => {
                 replay.extend_from_slice(&transcript[offset..]);
                 break;
-            };
-            let body = &transcript[offset + 2..end];
-            let matched = if introducer == b'P' {
-                parse_xtgettcap(body, &mut evidence)
-            } else {
-                parse_kitty_graphics(body, &mut evidence)
-            };
-            if !matched {
-                replay.extend_from_slice(&transcript[offset..end + 2]);
             }
-            offset = end + 2;
-            continue;
         }
-
-        if transcript[offset..].starts_with(b"\x1b[") {
-            let Some(final_offset) = (offset + 2..transcript.len())
-                .find(|&index| (0x40..=0x7e).contains(&transcript[index]))
-            else {
-                replay.extend_from_slice(&transcript[offset..]);
-                break;
-            };
-            let body = &transcript[offset + 2..final_offset];
-            let final_byte = transcript[final_offset];
-            if !parse_csi(body, final_byte, &mut evidence) {
-                replay.extend_from_slice(&transcript[offset..=final_offset]);
-            }
-            offset = final_offset + 1;
-            continue;
-        }
-
-        replay.push(transcript[offset]);
-        offset += 1;
     }
 
     ProbeOutcome {
@@ -390,6 +629,7 @@ fn hex_digit(byte: u8) -> Option<u8> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::collections::VecDeque;
@@ -408,7 +648,7 @@ mod tests {
     }
 
     impl TranscriptIo {
-        fn new(delay: Duration, replies: impl IntoIterator<Item = &'static [u8]>) -> Self {
+        fn new<'a>(delay: Duration, replies: impl IntoIterator<Item = &'a [u8]>) -> Self {
             Self {
                 replies: replies.into_iter().map(<[u8]>::to_vec).collect(),
                 delay,
@@ -548,5 +788,92 @@ mod tests {
                 presenter_bytes: 17,
             }
         );
+    }
+
+    /// The SSH stream demultiplexer and the iroh `TerminalIo` seam share one
+    /// grammar: equivalent transcripts must select the same tier and replay
+    /// the same user bytes, in order (F13.4 Phase 2).
+    #[test]
+    fn ssh_demux_and_iroh_seam_agree_on_the_transcript_matrix() {
+        let cases: [(&str, Vec<u8>); 6] = [
+            (
+                "tier one",
+                [
+                    b"j".as_slice(),
+                    COLOR_COUNT_REPLY,
+                    b"k".as_slice(),
+                    CURSOR_POSITION_REPLY,
+                    KITTY_KEYBOARD_REPLY,
+                    SYNC_OUTPUT_REPLY,
+                    KITTY_GRAPHICS_REPLY,
+                ]
+                .concat(),
+            ),
+            (
+                "tier two",
+                [COLOR_COUNT_REPLY, CURSOR_POSITION_REPLY].concat(),
+            ),
+            ("no reply", Vec::new()),
+            (
+                "malformed",
+                b"x\x1b[?x u\x1b[?2026;9$y\x1b_Gi=other;OK\x1b\\".to_vec(),
+            ),
+            ("partial then deadline", b"q\x1b[1;2".to_vec()),
+            (
+                "interleaved keys",
+                b"x\x1b[?1u\x1b[A\x1bP1+r436F=323536\x1b\\y".to_vec(),
+            ),
+        ];
+
+        for (name, transcript) in cases {
+            let mut iroh_io = TranscriptIo::new(Duration::from_millis(5), [transcript.as_slice()]);
+            let iroh = TerminalNegotiator::probe(&mut iroh_io).expect("scripted I/O succeeds");
+
+            let mut demux = ProbeDemux::new();
+            let mut replay = demux.push(&transcript);
+            replay.extend(demux.expire());
+            let ssh = demux.outcome();
+
+            assert_eq!(iroh.tier(), ssh.tier(), "{name}: tier differs");
+            assert_eq!(iroh.profile, ssh.profile, "{name}: profile differs");
+            assert_eq!(iroh.conflicted, ssh.conflicted, "{name}: conflict differs");
+            assert_eq!(iroh.replay, replay, "{name}: replay differs");
+        }
+    }
+
+    #[test]
+    fn demux_streams_plain_input_and_holds_only_a_possible_reply_prefix() {
+        let mut demux = ProbeDemux::new();
+
+        assert_eq!(demux.push(b"ab"), b"ab".to_vec());
+        assert_eq!(demux.push(b"\x1b"), Vec::<u8>::new());
+        assert_eq!(demux.push(b"["), Vec::<u8>::new());
+        assert_eq!(demux.push(b"12;40R"), Vec::<u8>::new());
+        assert!(demux.outcome().profile.cursor_position_report);
+        assert_eq!(demux.expire(), Vec::<u8>::new());
+        // One positive report is not enough for Tier 2.
+        assert_eq!(demux.tier(), PresentationTier::Tier3);
+    }
+
+    #[test]
+    fn demux_deadline_flushes_held_prefix_without_reordering() {
+        let mut demux = ProbeDemux::new();
+
+        assert_eq!(demux.push(b"q\x1b[1;2"), b"q".to_vec());
+        assert_eq!(demux.expire(), b"\x1b[1;2".to_vec());
+        // After the deadline every byte is user input again.
+        assert_eq!(demux.push(b"later"), b"later".to_vec());
+        assert_eq!(demux.outcome().replay, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn demux_never_forwards_a_consumed_reply() {
+        let mut demux = ProbeDemux::new();
+
+        let input = demux.push(&[b"z".as_slice(), SYNC_OUTPUT_REPLY, b"w".as_slice()].concat());
+
+        assert_eq!(input, b"zw".to_vec());
+        assert!(demux.outcome().profile.synchronized_output);
+        assert_eq!(demux.tier(), PresentationTier::Tier3);
     }
 }

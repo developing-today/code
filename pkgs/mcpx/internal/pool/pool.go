@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -58,11 +59,11 @@ const ownServerName = "mcpx"
 // falls back to convicting on the aggregate surface alone.
 var OwnInstanceID string
 
-// Trace, when set, receives a line per tool call naming the instance that
-// served it. The daemon wires this to its logger when MCPX_TRACE is set.
+// Trace receives a line per tool call naming the instance that
+// served it, when set. The daemon wires this to its logger when MCPX_TRACE is set.
 var Trace func(string, ...any)
 
-// Lifecycle, when set, receives structured lifecycle events: a server
+// Lifecycle receives structured lifecycle events when set: a server
 // starting, stopping or being reaped. Reported here rather than inferred from
 // logs so that a consumer sees the same events the pool acted on.
 var Lifecycle func(event string, attrs map[string]any)
@@ -369,7 +370,7 @@ func (p *Pool) Acquire(ctx context.Context, rs config.ResolvedScope) (*Lease, er
 			if dup := p.findLaneLocked(key, legacy); dup != nil {
 				p.cond.Broadcast()
 				p.mu.Unlock()
-				go in.Client.Close()
+				go func() { _ = in.Client.Close() }()
 				p.mu.Lock()
 				continue
 			}
@@ -551,13 +552,9 @@ func (p *Pool) reapDeadLocked() {
 		if p.lastErr == nil {
 			p.lastErr = in.Client.Err()
 		}
-		go in.Client.Close()
+		go func() { _ = in.Client.Close() }()
 	}
 	p.instances = kept
-}
-
-func (p *Pool) start(ctx context.Context) (*Instance, error) {
-	return p.startLane(ctx, false, config.ResolvedScope{})
 }
 
 // installServerHooks wires what a server may ask of mcpx into the options its
@@ -1071,6 +1068,31 @@ func (p *Pool) runtimeEnv() map[string]string {
 // parameters and environment a connection carries. A credential that names an
 // unset variable fails here, before a request, rather than as a 401 later.
 func (p *Pool) resolveAuth() (*mcpauth.Resolved, error) {
+	// Identity failover (#7948): a server whose auth block carries a
+	// failover list resolves the CURRENT identity's credential instead
+	// of a single stored one. Rotation state persists at the list's
+	// StatePath, so a (re)start after a rotation resumes on the rotated
+	// identity. Servers without a failover block are untouched.
+	if p.cfg.Auth != nil && p.cfg.Auth.Failover != nil && len(p.cfg.Auth.Failover.Identities) > 0 {
+		fo := p.cfg.Auth.Failover
+		rot := mcpauth.NewRotator(fo, nil)
+		secrets := func(name string) (string, error) {
+			if v := p.variable(name); v != "" {
+				return v, nil
+			}
+			return "", fmt.Errorf("secret %s not set in the daemon's environment", name)
+		}
+		envNames := make([]string, 0, len(p.cfg.Auth.Env))
+		for name := range p.cfg.Auth.Env {
+			envNames = append(envNames, name)
+		}
+		minter := &mcpauth.Minter{HTTP: &http.Client{Timeout: 15 * time.Second}}
+		_, r, err := rot.ResolveCurrent(context.Background(), envNames, secrets, minter)
+		if err != nil {
+			return nil, fmt.Errorf("%s: auth: failover: %w", p.cfg.Name, err)
+		}
+		return r, nil
+	}
 	r, err := p.cfg.Auth.ResolveWith(p.variable)
 	if err != nil {
 		return nil, fmt.Errorf("%s: auth: %w", p.cfg.Name, err)

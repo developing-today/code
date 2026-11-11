@@ -103,4 +103,24 @@ Implemented in `pkgs/id/src/references.rs` (`FanOut::fetch_located` /
 - **Pins are unaffected.** The fetch follows the stable logical ID; an
   exact-revision pin stays on the reference and does not change which object
   is fetched (the per-store indexes hold the logical object, not its revision
-  chain). Hosted-store search remains out of scope, as scoped on #5927.
+  chain).
+
+## Hosted-store search + live-store wiring (third slice, #5178 remainder)
+
+Implemented in `pkgs/id/src/references.rs` (`StoreView` / `StoreId::hosted` /
+`FanOut::from_views`), queue task 13938.
+
+- **Hosted search is an answer set, not a protocol.** A hosted store joins the
+  fan-out by producing a viewer-scoped `StoreView` — its identity, the hosted
+  rows the viewer may see as `IndexedObject`s, the IDs hidden from this viewer —
+  which folds into a `LocalIndex`-equivalent answer set under the same
+  `MatchKind` tiers. The fan-out contract is unchanged by the boundary:
+  tier-first merge, per-candidate provenance, cross-store contested state, and
+  the no-leak rule for hidden targets all hold across local/hosted exactly as
+  among local stores. A hosted view carries no petnames (the viewer's petnames
+  live in their local index only).
+- **Live wiring is `FanOut::from_views`.** Production adapters snapshot one
+  `StoreView` per store per viewer — local notes/documents rows, hosted rows —
+  instead of hand-built in-memory indexes. The merge, the claimant union, and
+  the locator fetch all operate on the folded indexes, so where the rows come
+  from never changes what the fan-out decides.

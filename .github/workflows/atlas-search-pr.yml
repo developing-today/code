@@ -1,0 +1,55 @@
+name: atlas-search
+
+# CI tier policy: see .github/ci-policy.md
+#
+# No `cargo fmt --check` step: the policy is that formatting is not a
+# merge gate (formatting is auto-fixed on main by auto-format.yml), so
+# this basic-tier job runs tests only.
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/atlas-search/**"
+      - ".github/workflows/atlas-search-pr.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/atlas-search/**"
+      - ".github/workflows/atlas-search-pr.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Push-to-main runs are keyed by run_id so every merged tree gets its
+  # own completed run (the scripts-test/nix-ci contract); pull-request
+  # runs share a per-ref group so a new push supersedes the stale one.
+  group: atlas-search-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  atlas-search:
+    name: "basic: atlas-search Rust checks"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal
+
+      - name: Test atlas-search
+        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-search --all-targets
+
+      - name: Test atlas-core
+        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-core --all-targets
+
+      - name: Test atlas-proto
+        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-proto --all-targets
+
+      # gate_a's model test stays #[ignore]d here: it requires
+      # ATLAS_ORT_LIB and the pinned model snapshot (see the test's
+      # file docs) — the venue runs the crate's remaining targets.
+      - name: Test atlas-embed
+        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-embed --all-targets

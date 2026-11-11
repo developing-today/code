@@ -205,6 +205,7 @@ pub fn sign_genesis(
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         },
     )?)
 }
@@ -282,6 +283,7 @@ pub(crate) fn sign_claim_unchecked(
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         },
     )?)
 }

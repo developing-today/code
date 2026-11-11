@@ -1,0 +1,1150 @@
+{
+ "configs": [
+  {
+   "overlap": 0.0,
+   "per_type": {
+    "logs": {
+     "chunks": 325,
+     "embed_tokens_est": 83765,
+     "embed_words": 62981,
+     "per_class": {
+      "boundary": {
+       "mean_best_coverage_top10": 0.5,
+       "misses": 0,
+       "mrr_at_10": 1.0,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 0.0
+      },
+      "interior": {
+       "mean_best_coverage_top10": 0.9106,
+       "misses": 0,
+       "mrr_at_10": 1.0,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 0.8125
+      }
+     },
+     "queries": 32,
+     "stored_bytes": 490618
+    },
+    "prose": {
+     "chunks": 178,
+     "embed_tokens_est": 45890,
+     "embed_words": 34504,
+     "per_class": {
+      "boundary": {
+       "mean_best_coverage_top10": 0.5,
+       "misses": 0,
+       "mrr_at_10": 0.9688,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 0.0
+      },
+      "interior": {
+       "mean_best_coverage_top10": 0.8901,
+       "misses": 0,
+       "mrr_at_10": 1.0,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 0.8125
+      }
+     },
+     "queries": 32,
+     "stored_bytes": 221053
+    }
+   }
+  },
+  {
+   "overlap": 0.1,
+   "per_type": {
+    "logs": {
+     "chunks": 358,
+     "embed_tokens_est": 92684,
+     "embed_words": 69687,
+     "per_class": {
+      "boundary": {
+       "mean_best_coverage_top10": 0.9812,
+       "misses": 0,
+       "mrr_at_10": 1.0,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 1.0
+      },
+      "interior": {
+       "mean_best_coverage_top10": 0.9814,
+       "misses": 0,
+       "mrr_at_10": 1.0,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 1.0
+      }
+     },
+     "queries": 32,
+     "stored_bytes": 542838
+    },
+    "prose": {
+     "chunks": 196,
+     "embed_tokens_est": 50785,
+     "embed_words": 38184,
+     "per_class": {
+      "boundary": {
+       "mean_best_coverage_top10": 0.975,
+       "misses": 0,
+       "mrr_at_10": 1.0,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 1.0
+      },
+      "interior": {
+       "mean_best_coverage_top10": 0.9613,
+       "misses": 0,
+       "mrr_at_10": 1.0,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 0.9375
+      }
+     },
+     "queries": 32,
+     "stored_bytes": 244558
+    }
+   }
+  },
+  {
+   "overlap": 0.2,
+   "per_type": {
+    "logs": {
+     "chunks": 402,
+     "embed_tokens_est": 103882,
+     "embed_words": 78107,
+     "per_class": {
+      "boundary": {
+       "mean_best_coverage_top10": 1.0,
+       "misses": 0,
+       "mrr_at_10": 1.0,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 1.0
+      },
+      "interior": {
+       "mean_best_coverage_top10": 0.9747,
+       "misses": 0,
+       "mrr_at_10": 1.0,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 0.9375
+      }
+     },
+     "queries": 32,
+     "stored_bytes": 608048
+    },
+    "prose": {
+     "chunks": 219,
+     "embed_tokens_est": 56903,
+     "embed_words": 42784,
+     "per_class": {
+      "boundary": {
+       "mean_best_coverage_top10": 1.0,
+       "misses": 0,
+       "mrr_at_10": 1.0,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 1.0
+      },
+      "interior": {
+       "mean_best_coverage_top10": 0.9831,
+       "misses": 0,
+       "mrr_at_10": 1.0,
+       "queries": 16,
+       "recall_at_10_any_overlap": 1.0,
+       "recall_at_10_coverage80": 0.9375
+      }
+     },
+     "queries": 32,
+     "stored_bytes": 273538
+    }
+   }
+  }
+ ],
+ "corpus": {
+  "logs": {
+   "bytes": 519737,
+   "documents": 25,
+   "words": 63027
+  },
+  "prose": {
+   "bytes": 267214,
+   "documents": 12,
+   "words": 34504
+  }
+ },
+ "golden": [
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:0",
+   "end": 14,
+   "id": "logs-interior-q0",
+   "query_terms": [
+    "2b3ca04ac8b770c721daa8b82fcc926e8799b287",
+    "taxonomy",
+    "typing",
+    "repo-worker-code",
+    "developing"
+   ],
+   "start": 0,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:1",
+   "end": 1017,
+   "id": "logs-interior-q1",
+   "query_terms": [
+    "3ea2a10f945acae6bea172901d5b9d262642225a",
+    "workhorse-weighted",
+    "workhorse-weighted-luna",
+    "xhigh",
+    "2026-11-07"
+   ],
+   "start": 998,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:10",
+   "end": 1981,
+   "id": "logs-interior-q2",
+   "query_terms": [
+    "36180c8b8bec885ee79eca967dacb149e2ab396d",
+    "family",
+    "packet",
+    "require",
+    "dedupe"
+   ],
+   "start": 1967,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:12",
+   "end": 1309,
+   "id": "logs-interior-q3",
+   "query_terms": [
+    "1d5b3889a085da38b34a1b0ce128be9e4bee0de3",
+    "brokersource",
+    "drews",
+    "exiting",
+    "missers"
+   ],
+   "start": 1129,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:14",
+   "end": 221,
+   "id": "logs-interior-q4",
+   "query_terms": [
+    "231eb9ccb1eef731f933078d392f9dc8f2f93e89",
+    "deepseek-flash-plan-variant-restore",
+    "mistral-small",
+    "remap",
+    "deepseek-flash-plan"
+   ],
+   "start": 200,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:15",
+   "end": 1035,
+   "id": "logs-interior-q5",
+   "query_terms": [
+    "2b476fd0453c8b6de423154b8b645b33ed8e76f4",
+    "golden-comparison",
+    "pytest",
+    "runner's",
+    "stealing"
+   ],
+   "start": 925,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:16",
+   "end": 1474,
+   "id": "logs-interior-q6",
+   "query_terms": [
+    "46282eacfc2025a425e80150d06aa479b678f2ca",
+    "mistral-providers-1653",
+    "mistral",
+    "mistral-plan",
+    "vibe-direct"
+   ],
+   "start": 1457,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:18",
+   "end": 2014,
+   "id": "logs-interior-q7",
+   "query_terms": [
+    "06150818c8393b10bcf0758edde6e2c9acb0c7a0",
+    "append-gate",
+    "audits",
+    "backwards",
+    "bump-on-first-write"
+   ],
+   "start": 1911,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:2",
+   "end": 488,
+   "id": "logs-interior-q8",
+   "query_terms": [
+    "11054-6835-drain-validators",
+    "a78a26ade789e90339aef447fab090ec13e92c6a",
+    "validators",
+    "drain",
+    "loads"
+   ],
+   "start": 467,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:20",
+   "end": 2811,
+   "id": "logs-interior-q9",
+   "query_terms": [
+    "3102efa68702ad0e08413316d7b5a47da1783a13",
+    "9043-5001-session-binding-clearing",
+    "bind-time",
+    "migration-0022",
+    "requeue"
+   ],
+   "start": 2790,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:22",
+   "end": 1779,
+   "id": "logs-interior-q10",
+   "query_terms": [
+    "6ed2ae7ad70cef64bc42dd9e0d6793975a45b136",
+    "8943-3327-drop-nixpkgs-master",
+    "nixpkgs-master",
+    "nixpkgs-stable",
+    "inputs"
+   ],
+   "start": 1763,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:24",
+   "end": 663,
+   "id": "logs-interior-q11",
+   "query_terms": [
+    "1430e9070dda9bd83e7012b557049e5033901763",
+    "8948-3914-watchdog-offsite",
+    "backups",
+    "offsite",
+    "watchdog"
+   ],
+   "start": 644,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:4",
+   "end": 90,
+   "id": "logs-interior-q12",
+   "query_terms": [
+    "0547bce54975a4fd2d60d83aa091383b897673e6",
+    "clone-source",
+    "hascloneablevariants",
+    "name-only",
+    "siblings"
+   ],
+   "start": 0,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:5",
+   "end": 1157,
+   "id": "logs-interior-q13",
+   "query_terms": [
+    "c28b9c8bdb368ae9a5012b923525d15f62243889",
+    "9223-multi-ns-exec-probe",
+    "visibility",
+    "namespace",
+    "cover"
+   ],
+   "start": 1140,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:6",
+   "end": 2704,
+   "id": "logs-interior-q14",
+   "query_terms": [
+    "0551bddfdfc35a0ff2ddfb26dd99825070b0b8b0",
+    "fallback-6609-claimant-poll-api",
+    "test-pinned",
+    "unify",
+    "counting"
+   ],
+   "start": 2682,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "logs:gitlog:8",
+   "end": 912,
+   "id": "logs-interior-q15",
+   "query_terms": [
+    "f7bc605eddd4d57eb62dc5543db09e48b39ffc61",
+    "fleet-paperwork",
+    "matches",
+    "pages",
+    "dedupe"
+   ],
+   "start": 900,
+   "type": "logs"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-03-20T05-30-00Z_feature_collaborative_cursor_enhancements/2026-03-20T05-30-00Z_feature_collaborative_cursor_enhancements.md",
+   "end": 76,
+   "id": "prose-interior-q0",
+   "query_terms": [
+    "enhancements",
+    "improved",
+    "organization",
+    "tooltip",
+    "describes"
+   ],
+   "start": 35,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-03-21T05-47-48Z_feature_content_modes/2026-03-21T05-47-48Z_feature_content_modes.md",
+   "end": 244,
+   "id": "prose-interior-q1",
+   "query_terms": [
+    "media",
+    "non-utf8",
+    "paragraphs",
+    "shortcuts",
+    "toolbar"
+   ],
+   "start": 173,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-03-22T00-00-00Z_feature_peer-discovery/2026-03-22T00-00-00Z_feature_peer-discovery.md",
+   "end": 811,
+   "id": "prose-interior-q2",
+   "query_terms": [
+    "announcements",
+    "ed25519-signed",
+    "exposure",
+    "limiting",
+    "pluggable"
+   ],
+   "start": 755,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-03-22T00-00-00Z_feature_peer-discovery/2026-03-22T12-00-00Z_feature_peer-discovery_build-defaults-and-cli-flags.md",
+   "end": 1691,
+   "id": "prose-interior-q3",
+   "query_terms": [
+    "175-243",
+    "2026-03-22t00-00-00z",
+    "246-360",
+    "330-418",
+    "70-96"
+   ],
+   "start": 1634,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md",
+   "end": 602,
+   "id": "prose-interior-q4",
+   "query_terms": [
+    "check-one",
+    "nixos-integration",
+    "test-int",
+    "test-int-sandbox",
+    "test-nixos-integration"
+   ],
+   "start": 556,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md",
+   "end": 2913,
+   "id": "prose-interior-q5",
+   "query_terms": [
+    "500mb",
+    "512mb",
+    "build-nix",
+    "check-one",
+    "hangs"
+   ],
+   "start": 2668,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-04-01T00-00-00Z_feature_image_upload/2026-04-01T00-00-00Z_feature_image_upload.md",
+   "end": 456,
+   "id": "prose-interior-q6",
+   "query_terms": [
+    "pulsing",
+    "animation",
+    "cleaned",
+    "decoration",
+    "displayed"
+   ],
+   "start": 398,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-04-01T00-00-00Z_feature_multi_instance/2026-04-01T00-00-00Z_feature_multi_instance.md",
+   "end": 363,
+   "id": "prose-interior-q7",
+   "query_terms": [
+    "cwd-relative",
+    "iroh-key",
+    "iroh-serve",
+    "iroh-store",
+    "codebase"
+   ],
+   "start": 312,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md",
+   "end": 478,
+   "id": "prose-interior-q8",
+   "query_terms": [
+    "adversarial",
+    "minimize",
+    "resource-exhaustion",
+    "sandboxing",
+    "wasmtime"
+   ],
+   "start": 448,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md",
+   "end": 2408,
+   "id": "prose-interior-q9",
+   "query_terms": [
+    "assigns",
+    "mutations",
+    "pretend",
+    "provide",
+    "transport-independent"
+   ],
+   "start": 2361,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md",
+   "end": 4149,
+   "id": "prose-interior-q10",
+   "query_terms": [
+    "app's",
+    "build-host",
+    "import-free",
+    "rebuilds",
+    "roc-counter"
+   ],
+   "start": 4093,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md",
+   "end": 6605,
+   "id": "prose-interior-q11",
+   "query_terms": [
+    "diffing",
+    "worldactor",
+    "wants",
+    "follow-ups",
+    "ticks"
+   ],
+   "start": 6565,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md",
+   "end": 8500,
+   "id": "prose-interior-q12",
+   "query_terms": [
+    "clipping",
+    "code-point",
+    "expects",
+    "roc-screen",
+    "roc-world"
+   ],
+   "start": 8447,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-10-09T09-59-07Z_design_attenuated_capabilities/2026-10-09T09-59-07Z_design_attenuated_capabilities.md",
+   "end": 1463,
+   "id": "prose-interior-q13",
+   "query_terms": [
+    "adopt",
+    "agreement",
+    "attenuable",
+    "beekem",
+    "beelay"
+   ],
+   "start": 1282,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-10-09T12-00-00Z_feature_directory_accounts_groups/2026-10-09T12-00-00Z_feature_directory_accounts_groups.md",
+   "end": 998,
+   "id": "prose-interior-q14",
+   "query_terms": [
+    "actors",
+    "entities",
+    "non-friends",
+    "outlives",
+    "widens"
+   ],
+   "start": 892,
+   "type": "prose"
+  },
+  {
+   "class": "interior",
+   "doc": "prose:doc/2026-10-09T12-00-00Z_feature_directory_accounts_groups/2026-10-09T12-00-00Z_feature_directory_accounts_groups.md",
+   "end": 4083,
+   "id": "prose-interior-q15",
+   "query_terms": [
+    "no-default-features",
+    "predate",
+    "touched",
+    "produce",
+    "clippy"
+   ],
+   "start": 4042,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-03-20T05-30-00Z_feature_collaborative_cursor_enhancements/2026-03-20T05-30-00Z_feature_collaborative_cursor_enhancements.md",
+   "end": 225,
+   "id": "prose-boundary-q0",
+   "query_terms": [
+    "bolder",
+    "brought",
+    "elevation",
+    "pauses",
+    "strobe"
+   ],
+   "start": 175,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-03-21T05-47-48Z_feature_content_modes/2026-03-21T05-47-48Z_feature_content_modes.md",
+   "end": 225,
+   "id": "prose-boundary-q1",
+   "query_terms": [
+    "media",
+    "paragraphs",
+    "converts",
+    "become",
+    "editing"
+   ],
+   "start": 175,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-03-22T00-00-00Z_feature_peer-discovery/2026-03-22T00-00-00Z_feature_peer-discovery.md",
+   "end": 825,
+   "id": "prose-boundary-q2",
+   "query_terms": [
+    "announcements",
+    "ed25519-signed",
+    "exposure",
+    "id-public-discovery-v1",
+    "limiting"
+   ],
+   "start": 775,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-03-22T00-00-00Z_feature_peer-discovery/2026-03-22T12-00-00Z_feature_peer-discovery_build-defaults-and-cli-flags.md",
+   "end": 1625,
+   "id": "prose-boundary-q3",
+   "query_terms": [
+    "swarm-discovery",
+    "all-targets",
+    "asset",
+    "provisioning",
+    "all-features"
+   ],
+   "start": 1575,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md",
+   "end": 825,
+   "id": "prose-boundary-q4",
+   "query_terms": [
+    "fullyparallel",
+    "fundamentals",
+    "sequentially",
+    "chromium",
+    "firefox"
+   ],
+   "start": 775,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md",
+   "end": 2825,
+   "id": "prose-boundary-q5",
+   "query_terms": [
+    "build-nix",
+    "individual",
+    "playwright-driver",
+    "chromium",
+    "playwright"
+   ],
+   "start": 2775,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-04-01T00-00-00Z_feature_image_upload/2026-04-01T00-00-00Z_feature_image_upload.md",
+   "end": 625,
+   "id": "prose-boundary-q6",
+   "query_terms": [
+    "border-radius",
+    "clipboard",
+    "handlepaste",
+    "margin",
+    "outlines"
+   ],
+   "start": 575,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-04-01T00-00-00Z_feature_multi_instance/2026-04-01T00-00-00Z_feature_multi_instance.md",
+   "end": 1225,
+   "id": "prose-boundary-q7",
+   "query_terms": [
+    "0814e632",
+    "dual-instance",
+    "e2f05339",
+    "id-module",
+    "multi-instance"
+   ],
+   "start": 1175,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md",
+   "end": 2025,
+   "id": "prose-boundary-q8",
+   "query_terms": [
+    "counter",
+    "further",
+    "poisons",
+    "broadcasts",
+    "computes"
+   ],
+   "start": 1975,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md",
+   "end": 4025,
+   "id": "prose-boundary-q9",
+   "query_terms": [
+    "2026-10-07t10-00-00z",
+    "iroh-docs",
+    "learn",
+    "tic-tac-toe",
+    "ticket"
+   ],
+   "start": 3975,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md",
+   "end": 6025,
+   "id": "prose-boundary-q10",
+   "query_terms": [
+    "roc-bin",
+    "least",
+    "private",
+    "beside",
+    "platform"
+   ],
+   "start": 5975,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md",
+   "end": 8025,
+   "id": "prose-boundary-q11",
+   "query_terms": [
+    "2026-10-08t12-00-00z",
+    "compiled-in",
+    "installing",
+    "not-offered",
+    "replicating"
+   ],
+   "start": 7975,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-10-09T09-59-07Z_design_attenuated_capabilities/2026-10-09T09-59-07Z_design_attenuated_capabilities.md",
+   "end": 1025,
+   "id": "prose-boundary-q12",
+   "query_terms": [
+    "compile-time",
+    "untrusted",
+    "world's",
+    "questions",
+    "transports"
+   ],
+   "start": 975,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-10-09T09-59-07Z_design_attenuated_capabilities/2026-10-09T09-59-07Z_design_attenuated_capabilities.md",
+   "end": 3025,
+   "id": "prose-boundary-q13",
+   "query_terms": [
+    "11-28-37z",
+    "attenuate",
+    "attenuated",
+    "revoke",
+    "screen"
+   ],
+   "start": 2975,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-10-09T12-00-00Z_feature_directory_accounts_groups/2026-10-09T12-00-00Z_feature_directory_accounts_groups.md",
+   "end": 1625,
+   "id": "prose-boundary-q14",
+   "query_terms": [
+    "ending",
+    "compaction",
+    "holds",
+    "omitted",
+    "friendship"
+   ],
+   "start": 1575,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "prose:doc/2026-10-09T12-00-00Z_feature_directory_accounts_groups/2026-10-09T12-00-00Z_feature_directory_accounts_groups.md",
+   "end": 3625,
+   "id": "prose-boundary-q15",
+   "query_terms": [
+    "explore",
+    "no-default-features",
+    "sign-out",
+    "sign-up",
+    "cookie"
+   ],
+   "start": 3575,
+   "type": "prose"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:0",
+   "end": 225,
+   "id": "logs-boundary-q0",
+   "query_terms": [
+    "percent-decoded",
+    "projector-dir",
+    "re-interpolated",
+    "stale-root",
+    "containing"
+   ],
+   "start": 175,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:1",
+   "end": 1025,
+   "id": "logs-boundary-q1",
+   "query_terms": [
+    "3ea2a10f945acae6bea172901d5b9d262642225a",
+    "a74eec546cb02df7675be163a00ebfad86522547",
+    "b2491c9523b98dfb775ee3a9198020185f33536c",
+    "contributor",
+    "spark"
+   ],
+   "start": 975,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:3",
+   "end": 625,
+   "id": "logs-boundary-q2",
+   "query_terms": [
+    "0290574b3e456bc212eb29da275de1a348173463",
+    "12ddbf25d86e330d3ae29153e36f4e8109195648",
+    "6970-idmail-runtime-config-shape",
+    "6973-backfill-unknown-args",
+    "backfill-usage-snapshots"
+   ],
+   "start": 575,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:4",
+   "end": 2625,
+   "id": "logs-boundary-q3",
+   "query_terms": [
+    "10-page",
+    "fetchprojectpool",
+    "fetchprojectsnapshot",
+    "resolveepicrefs",
+    "tolerant"
+   ],
+   "start": 2575,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:6",
+   "end": 1025,
+   "id": "logs-boundary-q4",
+   "query_terms": [
+    "60c3d0a24b962815cf46c4ec070ef4de3e01f96e",
+    "66db0aa6f9e4154bedc9da6b20aea6c3c145d053",
+    "completeness",
+    "escalating",
+    "f235cef8c5f9776eb893d6fd6a041da58b7bf365"
+   ],
+   "start": 975,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:7",
+   "end": 1825,
+   "id": "logs-boundary-q5",
+   "query_terms": [
+    "0ccd562df0743612afb4b60b28127116b82358a9",
+    "8ab5c72bb4a2606f04b3c8eb2ff46610dda4b49a",
+    "command-level",
+    "fallback-6392-skip-set-guard",
+    "conformance-record"
+   ],
+   "start": 1775,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:8",
+   "end": 2225,
+   "id": "logs-boundary-q6",
+   "query_terms": [
+    "over-cap",
+    "collapsed",
+    "last-wins",
+    "hidden",
+    "serde"
+   ],
+   "start": 2175,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:10",
+   "end": 825,
+   "id": "logs-boundary-q7",
+   "query_terms": [
+    "10970-6483-read-records-caps",
+    "4ed01981b22f691d9236d60cdb1cedf67491bc72",
+    "bench",
+    "driven",
+    "fc073b5f11444d9450fe2adb9f091ec8d69ae87a"
+   ],
+   "start": 775,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:11",
+   "end": 2425,
+   "id": "logs-boundary-q8",
+   "query_terms": [
+    "05d4f66a7dd23aded76ced95e14d8d5ab6753369",
+    "50237a7debf6e9114122c593a15a467858d2bf9a",
+    "560febee0db260399619ec75f18193ec2838a5bf",
+    "entry-point",
+    "meta-exporter"
+   ],
+   "start": 2375,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:13",
+   "end": 1025,
+   "id": "logs-boundary-q9",
+   "query_terms": [
+    "10020-6205-guard-reconciled-refs",
+    "38d8d1eb3535a017449bcc30e80fdd1c0e3d601a",
+    "e8acc22725f03c62d13d93d7e6a02f46d047d5ff",
+    "reconciledinprogress",
+    "unpatched"
+   ],
+   "start": 975,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:14",
+   "end": 2225,
+   "id": "logs-boundary-q10",
+   "query_terms": [
+    "amd-6-password",
+    "owning",
+    "rustdesk-password-assert",
+    "rustdesk",
+    "applies"
+   ],
+   "start": 2175,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:15",
+   "end": 2225,
+   "id": "logs-boundary-q11",
+   "query_terms": [
+    "6abb86b3901bc205c039bd072f4cb5a64f8b182b",
+    "c002ae6d759f5f969ebb78e187c55560c5c7221d",
+    "def71ff7146989c5979f901c7c9e78c3ad783405",
+    "prior-day",
+    "7695-4890-refs-safe"
+   ],
+   "start": 2175,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:18",
+   "end": 1025,
+   "id": "logs-boundary-q12",
+   "query_terms": [
+    "21726e4df5659033aef53283f9bbbec5a53b182b",
+    "857e3413daae08f818c9b50b2b897b43e7e36be7",
+    "grounds",
+    "same-key",
+    "unattended-installer"
+   ],
+   "start": 975,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:19",
+   "end": 2025,
+   "id": "logs-boundary-q13",
+   "query_terms": [
+    "e2e-shard-packer",
+    "e2e-timings",
+    "lpt-packs",
+    "unmeasured",
+    "discovers"
+   ],
+   "start": 1975,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:21",
+   "end": 425,
+   "id": "logs-boundary-q14",
+   "query_terms": [
+    "attaches",
+    "coalescing",
+    "post-clamp",
+    "submits",
+    "trunc"
+   ],
+   "start": 375,
+   "type": "logs"
+  },
+  {
+   "class": "boundary",
+   "doc": "logs:gitlog:22",
+   "end": 1225,
+   "id": "logs-boundary-q15",
+   "query_terms": [
+    "binary-search",
+    "floors",
+    "midpoint",
+    "splitter",
+    "checkpoints"
+   ],
+   "start": 1175,
+   "type": "logs"
+  }
+ ],
+ "golden_queries": 64,
+ "overlaps": [
+  0.0,
+  0.1,
+  0.2
+ ],
+ "window_words": 200
+}

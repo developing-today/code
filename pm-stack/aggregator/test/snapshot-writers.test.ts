@@ -206,11 +206,23 @@ describe("recordsFromProviderUsage", () => {
     const recs = recordsFromProviderUsage(answered, "check-usage");
     expect(recs.map((r) => `${r.serviceId}/${r.metricId}=${r.value}`)).toEqual([
       "opencode-server/sessions-listed=0",
-      "openai.main/7-day=12",
-      "openai.main/5-hour=3",
+      "_openai.main/7-day=12",
+      "_openai.main/5-hour=3",
     ]);
     expect(recordsFromProviderUsage(null, "check-usage")).toEqual([]);
     expect(recordsFromProviderUsage({ sessions: [] }, "check-usage")).toEqual([]);
+  });
+
+  test("refuses impossible and non-ISO generated_at values the store would reject (#5140)", () => {
+    const withTs = (generated_at: unknown) => ({ generated_at, sessions: [1] });
+    // Date.parse accepts the first three; isSnapshotRecord's isIsoDate gate
+    // does not — records built on them were silently dropped at append.
+    for (const bad of ["2026-02-30T10:59:33Z", "2026-04-31T10:59:33Z", "March 2, 2026", "not-a-date"]) {
+      expect(recordsFromProviderUsage(withTs(bad), "check-usage")).toEqual([]);
+    }
+    const ok = recordsFromProviderUsage(withTs("2026-10-26T10:59:33Z"), "check-usage");
+    expect(ok).toHaveLength(1);
+    expect(ok.every((r) => isSnapshotRecord(r))).toBe(true);
   });
 
   test("skips an invalid window without suppressing sessions or a valid companion", () => {
@@ -229,7 +241,7 @@ describe("recordsFromProviderUsage", () => {
 
     expect(
       recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
-    ).toEqual(["opencode-server/sessions-listed=1", "openai.main/5-hour=100"]);
+    ).toEqual(["opencode-server/sessions-listed=1", "_openai.main/5-hour=100"]);
   });
 
   test("skips percentages above 100 and non-finite values", () => {
@@ -266,7 +278,7 @@ describe("recordsFromProviderUsage", () => {
 
     expect(
       recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
-    ).toEqual(["openai.main/7-day=0", "openai.main/5-hour=100"]);
+    ).toEqual(["_openai.main/7-day=0", "_openai.main/5-hour=100"]);
   });
 });
 

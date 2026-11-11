@@ -221,7 +221,7 @@ func (a *App) execRemoteStream(ctx context.Context, c *Client, req map[string]an
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	sc := bufio.NewScanner(resp.Body)
 	// The same ceiling the daemon writes with, rather than a second number
 	// that happens to be larger today.
@@ -230,7 +230,7 @@ func (a *App) execRemoteStream(ctx context.Context, c *Client, req map[string]an
 	pending := map[string]*os.File{}
 	defer func() {
 		for _, f := range pending {
-			f.Close()
+			_ = f.Close()
 		}
 	}()
 	for sc.Scan() {
@@ -247,7 +247,7 @@ func (a *App) execRemoteStream(ctx context.Context, c *Client, req map[string]an
 		}
 		// Frames are echoed as they arrive when the caller asked for a
 		// stream: that is what it asked for.
-		fmt.Fprintln(os.Stdout, line)
+		_, _ = fmt.Fprintln(os.Stdout, line)
 	}
 	return sc.Err()
 }
@@ -332,22 +332,22 @@ func (a *App) applyFrame(res *execsvc.Result, f execsvc.Frame, eo execOptions, p
 			return err
 		}
 		if _, err := w.Seek(0, io.SeekStart); err != nil {
-			claim.Close()
-			os.Remove(dest)
+			_ = claim.Close()
+			_ = os.Remove(dest)
 			return err
 		}
 		if _, err := io.Copy(claim, w); err != nil {
-			claim.Close()
-			os.Remove(dest)
+			_ = claim.Close()
+			_ = os.Remove(dest)
 			return err
 		}
 		if err := w.Close(); err != nil {
-			claim.Close()
-			os.Remove(dest)
+			_ = claim.Close()
+			_ = os.Remove(dest)
 			return err
 		}
 		if err := claim.Close(); err != nil {
-			os.Remove(dest)
+			_ = os.Remove(dest)
 			return err
 		}
 		if match >= 0 {
@@ -370,10 +370,10 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 		}
 	default:
 		for _, e := range res.Emits {
-			fmt.Fprintln(os.Stdout, string(e))
+			_, _ = fmt.Fprintln(os.Stdout, string(e))
 		}
 		if res.Stdout != "" {
-			fmt.Fprint(os.Stdout, res.Stdout)
+			_, _ = fmt.Fprint(os.Stdout, res.Stdout)
 		}
 		a.reportArtifacts(res)
 	}
@@ -384,7 +384,7 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 		if res.Error != "" {
 			fmt.Fprintln(os.Stderr, "mcpx:", res.Error)
 		}
-		os.Exit(res.ExitCode)
+		return &exitStatusError{code: res.ExitCode}
 	}
 	return nil
 }
@@ -423,7 +423,7 @@ func (a *App) fetchArtifacts(res *execsvc.Result, eo execOptions) error {
 				return gerr
 			}
 			body, err = io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if err != nil {
 				return err
 			}
@@ -449,12 +449,12 @@ func writeNew(dir, name string, body []byte) (string, error) {
 		return "", err
 	}
 	if _, err := claim.Write(body); err != nil {
-		claim.Close()
-		os.Remove(dest)
+		_ = claim.Close()
+		_ = os.Remove(dest)
 		return "", err
 	}
 	if err := claim.Close(); err != nil {
-		os.Remove(dest)
+		_ = os.Remove(dest)
 		return "", err
 	}
 	return dest, nil
@@ -516,7 +516,7 @@ func (c *Client) stream(ctx context.Context, method, path string, body any, acce
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		var e struct {
 			Error string `json:"error"`
 		}
@@ -539,6 +539,9 @@ type execRemoteFlags struct {
 	session     string
 	shape       scriptShape
 	dryRun      bool
+	// remoteFile asks the daemon to resolve the script name itself
+	// (#2168): the wire request carries file, not source.
+	remoteFile bool
 }
 
 // execOnDaemon sends the script to the daemon and renders what comes back.
@@ -556,7 +559,17 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	var args []string
 	var scriptPath string
 	phases := &execsvc.Phases{Before: sh.before, OnSuccess: sh.onSuccess, OnError: sh.onError}
-	if !inline {
+	if !inline && rf.remoteFile {
+		// --remote-file (#2168): the name travels, not the text, and the
+		// daemon resolves it on its own search path through the shared
+		// scriptresolve rule. This is the form for a script that lives
+		// on the daemon's side — including one this machine does not
+		// have at all. --export works here too: the daemon resolved the
+		// file itself, so its launcher imports the real file and calls
+		// the named export there.
+		args = fs.Args()[1:]
+		phases.Prefix, phases.Suffix = sh.prefix, sh.suffix
+	} else if !inline {
 		// The file's text travels and the daemon writes it to its own disk,
 		// where the launcher imports it -- so --export works as it does
 		// locally. Relative imports are what cannot survive the trip.
@@ -603,20 +616,22 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		Args:      args,
 		Artifacts: eo.artifactOptions(cwd),
 
-		Export:              rf.export,
-		DryRun:              rf.dryRun,
-		Env:                 withInputReport(sh.env, a.stdoutOverride == nil),
-		TypeCheck:           sh.typecheck,
-		Imports:             sh.imports,
-		ImportsOnDynamic:    sh.importsOnDynamic,
-		ImportsOnMissing:    sh.importsOnMissing,
-		ImportsCrossProject: sh.importsCrossProject,
-		ImportsNetwork:      sh.importsNetwork,
-		Launcher:            sh.launcher,
-		LauncherName:        sh.launcherName,
-		AllowRepeat:         sh.allowRepeat,
-		CaptureConsole:      &sh.captureConsole,
-		Deps:                depsOpts,
+		Export:                 rf.export,
+		DryRun:                 rf.dryRun,
+		Env:                    withInputReport(sh.env, a.stdoutOverride == nil),
+		TypeCheck:              sh.typecheck,
+		TypeCheckOnError:       sh.checkOnError,
+		TypeCheckOnUnsupported: sh.checkOnUnsupported,
+		Imports:                sh.imports,
+		ImportsOnDynamic:       sh.importsOnDynamic,
+		ImportsOnMissing:       sh.importsOnMissing,
+		ImportsCrossProject:    sh.importsCrossProject,
+		ImportsNetwork:         sh.importsNetwork,
+		Launcher:               sh.launcher,
+		LauncherName:           sh.launcherName,
+		AllowRepeat:            sh.allowRepeat,
+		CaptureConsole:         &sh.captureConsole,
+		Deps:                   depsOpts,
 	}
 	if len(phases.Before)+len(phases.Prefix)+len(phases.OnSuccess)+
 		len(phases.OnError)+len(phases.Suffix) > 0 {
@@ -643,6 +658,11 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	// printed nothing. The structured answer is rendered as text locally.
 	if opts.Output != execsvc.OutputStream {
 		opts.Output = execsvc.OutputStructured
+	}
+	if rf.remoteFile && !inline {
+		// The file: form of the wire request — the daemon resolves the
+		// name through scriptresolve and runs the file it finds (#2168).
+		return a.execRemote(ctx, c, map[string]any{"file": fs.Arg(0), "options": opts}, eo)
 	}
 	return a.execRemote(ctx, c, map[string]any{"source": source, "options": opts}, eo)
 }
@@ -684,7 +704,7 @@ func (c *Client) ArtifactBody(ctx context.Context, id string) (string, string, e
 	if err != nil {
 		return "", "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", "", err

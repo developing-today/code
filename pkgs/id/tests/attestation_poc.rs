@@ -22,8 +22,6 @@
 //! re-implemented here; the PoC question is whether the #2037 object
 //! shapes carry the attestation, not how bytes move.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use p2panda_core::{Hash, SigningKey};
 use tempfile::TempDir;
 
@@ -58,6 +56,7 @@ struct Match {
 /// Plays the whole match as signed attestation events: genesis pair,
 /// then one result claim per player asserting `x_outcome` / `o_outcome`
 /// as the winner (a player id hex, or `"draw"`).
+#[allow(clippy::unwrap_used)]
 fn play_match(x_outcome: &str, o_outcome: &str) -> Match {
     let x = key(0);
     let o = key(100);
@@ -116,6 +115,7 @@ fn play_match(x_outcome: &str, o_outcome: &str) -> Match {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 fn decoded_objects(
     played: &Match,
 ) -> (
@@ -141,6 +141,7 @@ fn computed_state(played: &Match) -> MatchState {
 }
 
 /// Ingests every match event into a store, in chain order per author.
+#[allow(clippy::unwrap_used)]
 fn ingest_match(store: &mut EventStore, played: &Match) {
     for (event, body) in played.genesis.iter().chain(played.claims.iter()) {
         let outcome = store.ingest_with_body(&event.bytes, Some(body), 0).unwrap();
@@ -155,6 +156,7 @@ fn ingest_match(store: &mut EventStore, played: &Match) {
 /// The viewer: reads a store's applied events for both players,
 /// decodes the attestation objects from the bodies those events
 /// commit to, and computes the match state from the objects alone.
+#[allow(clippy::unwrap_used, clippy::panic)]
 fn view(store: &EventStore, played: &Match) -> (MatchState, Vec<Hash>) {
     let mut ids = Vec::new();
     let mut genesis = Vec::new();
@@ -187,6 +189,7 @@ fn view(store: &EventStore, played: &Match) -> (MatchState, Vec<Hash>) {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn offline_match_attests_agreed_and_syncs_identical_state() {
     let x = key(0);
     let o = key(100);
@@ -212,6 +215,7 @@ fn offline_match_attests_agreed_and_syncs_identical_state() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn wrong_winner_claim_computes_disputed_never_agreed() {
     let x = key(0);
     let o = key(100);
@@ -225,6 +229,7 @@ fn wrong_winner_claim_computes_disputed_never_agreed() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn one_claim_only_stays_proposed() {
     let x = key(0);
     let mut played = play_match(&hex(&player_id(&x)), &hex(&player_id(&x)));
@@ -323,6 +328,7 @@ fn draw_is_a_valid_concurring_outcome() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn out_of_domain_claim_from_a_player_does_not_create_a_fork() {
     let x = key(0);
     let played = play_match(&hex(&player_id(&x)), &hex(&player_id(&x)));
@@ -344,6 +350,7 @@ fn out_of_domain_claim_from_a_player_does_not_create_a_fork() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn same_position_claims_with_different_frontiers_still_agree() {
     let x = key(0);
     let played = play_match(&hex(&player_id(&x)), &hex(&player_id(&x)));
@@ -389,6 +396,7 @@ fn duplicate_seat_agreement() -> (SigningKey, GenesisAgreement) {
     (a, agreement)
 }
 
+#[allow(clippy::unwrap_used)]
 fn claim_for(agreement: &GenesisAgreement, outcome: String, final_state_hash: Hash) -> ResultClaim {
     ResultClaim {
         agreement: agreement.agreement_hash().unwrap(),
@@ -448,6 +456,7 @@ fn duplicate_seat_agreement_stays_proposed_without_genesis_or_claims() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn sign_genesis_refuses_duplicate_seat_agreement() {
     let (a, agreement) = duplicate_seat_agreement();
 
@@ -461,6 +470,7 @@ fn sign_genesis_refuses_duplicate_seat_agreement() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn same_player_claims_with_different_position_fields_are_disputed() {
     let x = key(0);
     let played = play_match(&hex(&player_id(&x)), &hex(&player_id(&x)));

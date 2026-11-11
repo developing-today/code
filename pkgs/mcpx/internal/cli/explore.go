@@ -117,7 +117,7 @@ func (e *explorer) help() {
 		{"status", "daemon, pools and live instances"},
 		{"q", "quit"},
 	} {
-		fmt.Fprintf(w, "  %s\t%s\n", row[0], row[1])
+		_, _ = fmt.Fprintf(w, "  %s\t%s\n", row[0], row[1])
 	}
 	_ = w.Flush()
 	fmt.Println("\n  Every screen prints the command that produced it.")
@@ -206,7 +206,7 @@ func (e *explorer) recentTraces() {
 		fmt.Fprintln(os.Stderr, "mcpx:", err)
 		return
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	recs, err := st.Records(logstore.Query{Event: "mcp.call", Limit: 10})
 	if err != nil || len(recs) == 0 {
 		fmt.Println("  no calls recorded yet")
@@ -214,9 +214,9 @@ func (e *explorer) recentTraces() {
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].Time.After(recs[j].Time) })
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "  TRACE\tWHEN\tSERVER.TOOL\tMS")
+	_, _ = fmt.Fprintln(w, "  TRACE\tWHEN\tSERVER.TOOL\tMS")
 	for _, r := range recs {
-		fmt.Fprintf(w, "  %s\t%s\t%s.%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "  %s\t%s\t%s.%s\t%s\n",
 			attrString(r.Attrs, "trace"), r.Time.Format("15:04:05"),
 			attrString(r.Attrs, "server"), attrString(r.Attrs, "tool"),
 			attrString(r.Attrs, "durationMs"))

@@ -371,6 +371,9 @@ pub enum AuditErrorV0 {
     /// The wire value could not be encoded or decoded.
     #[error("match-audit wire encoding failed: {0}")]
     Wire(#[from] postcard::Error),
+    /// Bytes remain after the first complete log value.
+    #[error("match-audit log has {0} trailing byte(s) after the encoded log")]
+    TrailingBytes(usize),
     /// The format version is not supported.
     #[error("unsupported match-audit format version {0}")]
     UnsupportedVersion(u8),
@@ -501,8 +504,17 @@ impl MatchLogV0 {
 
     /// Decodes a complete v0 log. Structural and cryptographic checks are
     /// performed separately by [`MatchLogV0::verify_integrity`].
+    ///
+    /// Bytes after the first complete value are refused: a log is a canonical
+    /// self-authenticating record, and an unsigned suffix would give one match
+    /// many byte spellings that all verify. This is a consumed-length check
+    /// only, not re-encode-and-compare canonicalisation.
     pub fn decode(bytes: &[u8]) -> Result<Self, AuditErrorV0> {
-        Ok(postcard::from_bytes(bytes)?)
+        let (log, rest) = postcard::take_from_bytes::<Self>(bytes)?;
+        if !rest.is_empty() {
+            return Err(AuditErrorV0::TrailingBytes(rest.len()));
+        }
+        Ok(log)
     }
 
     /// Verifies version, signatures, seed commitment, tick ordering, and the
@@ -893,7 +905,9 @@ fn actual_validity(_metadata: &MetadataV0) -> ActualValidityV0 {
 #[cfg(feature = "sandbox")]
 fn integrity_reason(error: &AuditErrorV0) -> IntegrityFailureV0 {
     match error {
-        AuditErrorV0::Wire(_) => IntegrityFailureV0::MalformedEncoding,
+        AuditErrorV0::Wire(_) | AuditErrorV0::TrailingBytes(_) => {
+            IntegrityFailureV0::MalformedEncoding
+        }
         AuditErrorV0::UnsupportedVersion(_) => IntegrityFailureV0::UnsupportedVersion,
         AuditErrorV0::Signature("header") => IntegrityFailureV0::HeaderSignature,
         AuditErrorV0::Signature("footer") => IntegrityFailureV0::FooterSignature,
@@ -999,7 +1013,7 @@ fn footer_message(
 
 #[cfg(all(test, feature = "sandbox"))]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use super::*;
 
@@ -1205,6 +1219,56 @@ mod tests {
         let decoded = MatchLogV0::decode(&bytes).unwrap();
         assert_eq!(decoded, log);
         assert_eq!(decoded.verify_integrity().unwrap(), decoded.entries[1].hash);
+    }
+
+    #[test]
+    fn decode_rejects_trailing_bytes() {
+        let log = fixture();
+        let bytes = log.encode().unwrap();
+
+        let mut one = bytes.clone();
+        one.push(0);
+        assert!(matches!(
+            MatchLogV0::decode(&one),
+            Err(AuditErrorV0::TrailingBytes(1))
+        ));
+
+        let mut garbage = bytes.clone();
+        garbage.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        assert!(matches!(
+            MatchLogV0::decode(&garbage),
+            Err(AuditErrorV0::TrailingBytes(4))
+        ));
+
+        let mut doubled = bytes.clone();
+        doubled.extend_from_slice(&bytes);
+        assert!(matches!(
+            MatchLogV0::decode(&doubled),
+            Err(AuditErrorV0::TrailingBytes(n)) if n == bytes.len()
+        ));
+
+        assert_eq!(MatchLogV0::decode(&bytes).unwrap(), log);
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn suffixed_reference_log_is_an_invalid_record() {
+        let players = [key(1), key(2)];
+        let log = export_tic_tac_toe_reference(
+            [&players[0], &players[1]],
+            "reference-match-1",
+            "reference-world-1",
+            7,
+        )
+        .unwrap();
+        let mut bytes = log.encode().unwrap();
+        bytes.push(0);
+        assert_eq!(
+            verify_tic_tac_toe_v0(&bytes).technical,
+            TechnicalVerdictV0::InvalidRecord {
+                reason: IntegrityFailureV0::MalformedEncoding,
+            }
+        );
     }
 
     #[test]

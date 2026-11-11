@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.96"
 description = "A peer-to-peer file sharing CLI built with Iroh"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/example/id"
+repository = "https://github.com/developing-today/code"
 keywords = ["p2p", "file-sharing", "iroh", "cli"]
 categories = ["command-line-utilities", "network-programming"]
 
@@ -16,14 +16,14 @@ categories = ["command-line-utilities", "network-programming"]
 # id-core sub-crate under crates/; this package is the workspace root.
 
 [workspace]
-members = ["crates/id-core", "crates/id-native-shell"]
+members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-native-shell"]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
 # feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
 # forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
 # into Cargo.lock even though no build here enables it (see vendor/README.md).
 exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
-default-members = [".", "crates/id-core"]
+default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events"]
 
 # =============================================================================
 # Features
@@ -31,7 +31,7 @@ default-members = [".", "crates/id-core"]
 
 [features]
 default = ["sandbox", "world"]
-sandbox = ["dep:wasmtime", "world", "id-core/sandbox"]
+sandbox = ["dep:wasmtime", "world", "id-core/sandbox", "id-caps/sandbox"]
 world = [
   "dep:subtle",
   "dep:hmac",
@@ -68,6 +68,15 @@ currency-poc-tb = ["dep:tigerbeetle"]
 # Features are forwarded explicitly (see [features]); the crate's modules
 # are re-exported at their historical crate:: paths in src/lib.rs.
 id-core = { path = "crates/id-core", default-features = false }
+# Capability/limit/manifest modules extracted in step 1 of the crate split
+# (#4403). Re-exported at their historical crate:: paths in src/lib.rs.
+id-caps = { path = "crates/id-caps", default-features = false }
+# Store-family modules extracted in step 2a of the crate split (#4405).
+# Re-exported at their historical crate:: paths in src/lib.rs.
+id-store = { path = "crates/id-store", default-features = false }
+# Events-family modules extracted in step 2b of the crate split (#4405).
+# Re-exported at their historical crate:: paths in src/lib.rs.
+id-events = { path = "crates/id-events", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 # Calendar arithmetic and the IANA time-zone database for the did-it tracker's
@@ -148,6 +157,13 @@ zeroize = "1"
 rpassword = "7"
 base64 = "0.22"
 blake3 = "1"
+# Turso/libsql HTTP adapter v1 (#7577, decision record #5806): raw HTTP
+# pipeline client in src/foreign_libsql.rs. rustls, tokio-rustls and
+# webpki-roots are already in Cargo.lock via iroh/quinn; no SQLite-family
+# dependency is added (the store_traits guard test stays green).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 hkdf = { version = "0.13", optional = true }
 # SHA-256 for the hosted binding ceremony's service attestation (slice 1,
@@ -171,6 +187,12 @@ tokio = { version = "1", features = ["test-util"] }
 # The root package's tests exercise dial deadlines using id-core's test-only helpers.
 id-core = { path = "crates/id-core", default-features = false, features = [
   "test-utils",
+  "test-provider",
+] }
+# The registry exit proof's test provider lives in id-caps since step 1
+# of the crate split (#4403); its dev build enables the same feature there.
+id-caps = { path = "crates/id-caps", default-features = false, features = [
+  "test-provider",
 ] }
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
 rusqlite = { version = "0.32", features = ["bundled"] }
