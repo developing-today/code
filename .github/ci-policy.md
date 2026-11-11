@@ -257,7 +257,6 @@ stale waiver whose leg now agrees.
 | ------------------------------------------------- | ------------------------------------------------------- | ----------- |
 | opencode-config-guard                             | main tier (`push`); venue `disabled_manually`           | Phase 2 — #6953 |
 | production-line-guard                             | PR tier (`pull_request`)                                | Phase 3 — #6959 |
-| go-modules-build, identity-build, map-build, mcpx-nixbuild | PR tier (`pull_request`) and main tier (`push`); venues `disabled_manually` | Phase 3 — #6981 |
 
 ## Coverage rule
 

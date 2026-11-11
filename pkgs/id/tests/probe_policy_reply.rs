@@ -5,11 +5,11 @@
 // return Ok(null)/Ok(verbatim); a "world_state" reply mistyping `seed`
 // must Err, not collapse to the legitimate capability-only None.
 use id::frames::{read_frame, write_frame};
-use id::world_net::{WorldClient, WORLD_ALPN};
+use id::world_net::{WORLD_ALPN, WorldClient};
 use iroh::{
-    endpoint::{presets, RelayMode},
-    protocol::{AcceptError, ProtocolHandler, Router},
     Endpoint, EndpointAddr,
+    endpoint::{RelayMode, presets},
+    protocol::{AcceptError, ProtocolHandler, Router},
 };
 
 #[derive(Debug, Clone)]
@@ -126,7 +126,11 @@ async fn probe_manifest_state_seed_shapes() {
     .await;
     let control = c.manifest_state(Some("admin"), None).await;
     println!("CONTROL seed=42 -> {control:?}");
-    assert_eq!(control.unwrap().0, Some(42), "control: numeric seed reads back");
+    assert_eq!(
+        control.unwrap().0,
+        Some(42),
+        "control: numeric seed reads back"
+    );
     c.close();
     ep.close().await;
     r.shutdown().await.unwrap();

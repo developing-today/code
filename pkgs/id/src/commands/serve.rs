@@ -751,7 +751,26 @@ fn resolve_compiler(
         roc = %compiler.roc_bin,
         "world: on-the-fly compilation enabled"
     );
-    Ok(Some(compiler))
+    // The shared compiled-world cache (design #5965 §2/§4, P1 in
+    // #6235) is opt-in: ID_WORLD_COMPILE_CACHE_DIR names its root,
+    // ID_WORLD_COMPILE_CACHE_LRU_BYTES its tier-1 budget (default
+    // 2 GiB). Unset, compiles behave exactly as before the cache.
+    let Some(cache_dir) = std::env::var("ID_WORLD_COMPILE_CACHE_DIR")
+        .ok()
+        .filter(|dir| !dir.is_empty())
+    else {
+        return Ok(Some(compiler));
+    };
+    let lru_bytes = std::env::var("ID_WORLD_COMPILE_CACHE_LRU_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(crate::world_cache::DEFAULT_LRU_BYTES);
+    let cache = crate::world_cache::WorldCache::open(PathBuf::from(&cache_dir), lru_bytes)?;
+    info!(
+        cache_dir,
+        lru_bytes, "world: shared compiled-world cache enabled"
+    );
+    Ok(Some(compiler.with_cache(std::sync::Arc::new(cache))))
 }
 
 /// Builds this server's worlds: durable under [`WORLDS_DIR`] unless

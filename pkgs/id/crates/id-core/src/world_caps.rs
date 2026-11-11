@@ -895,6 +895,21 @@ pub fn parse_wants(text: &str) -> Result<Wants> {
                 .get("args")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            // A request's args are a JSON object or absent/null (#7929):
+            // handlers read named fields from them, so any other JSON
+            // value silently collapsed to "no arguments" — for
+            // records.read that widened the read to every record.
+            ensure!(
+                args.is_null() || args.is_object(),
+                "request args must be a JSON object or null, not {}",
+                match &args {
+                    serde_json::Value::Number(_) => "a number",
+                    serde_json::Value::String(_) => "a string",
+                    serde_json::Value::Array(_) => "an array",
+                    serde_json::Value::Bool(_) => "a boolean",
+                    _ => "a non-object value",
+                }
+            );
             ensure!(
                 serde_json::to_vec(&args).map_or(usize::MAX, |bytes| bytes.len()) <= MAX_ARGS_BYTES,
                 "request args exceed {MAX_ARGS_BYTES} bytes"
@@ -1709,6 +1724,31 @@ mod tests {
             wants.caps().into_iter().collect::<Vec<_>>(),
             vec!["bogus", "chat.say", "players", "time.now", "time.tick"]
         );
+    }
+
+    #[test]
+    fn non_object_request_args_are_rejected() {
+        // #7929: a present args that is neither an object nor null used
+        // to collapse to no arguments in every handler, silently
+        // widening records.read to every record.
+        for bad in ["42", "\"text\"", "[1,2]", "true"] {
+            let doc =
+                format!(r#"{{"requests":[{{"id":"r1","cap":"records.read","args":{bad}}}]}}"#);
+            let error = parse_wants(&doc).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("args must be a JSON object"),
+                "{error:#}"
+            );
+        }
+        // Absent args and args:null behave exactly as before.
+        parse_wants(r#"{"requests":[{"id":"r1","cap":"records.read"}]}"#).unwrap();
+        parse_wants(r#"{"requests":[{"id":"r1","cap":"records.read","args":null}]}"#).unwrap();
+        // An object args is carried through unchanged.
+        let wants = parse_wants(
+            r#"{"requests":[{"id":"r1","cap":"records.read","args":{"prefix":"co"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(wants.requests[0].args, serde_json::json!({"prefix": "co"}));
     }
 
     #[test]

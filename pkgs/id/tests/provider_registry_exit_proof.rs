@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 
 use id::world_caps::{
-    CATALOG, CATALOG_ENTRIES, CapLedger, DefaultCeiling, Decision, PROVIDER_REGISTRY,
+    CATALOG, CATALOG_ENTRIES, CapLedger, Decision, DefaultCeiling, PROVIDER_REGISTRY,
     TEST_PROVIDER_NAME, catalog_names, default_ceiling_names,
 };
 use id::world_compile::{CompileSpec, check_imports};

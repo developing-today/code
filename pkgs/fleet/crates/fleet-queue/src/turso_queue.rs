@@ -456,6 +456,132 @@ pub struct TursoBackend {
 
 type TErr = String;
 
+/// The canonical fleet lane registry (#6853, re-based on the
+/// post-rename universe under #8097): every lane id a fleet worker
+/// may claim with, the worker that owns it, and the enabled flag a
+/// missing registration is restored with. The queue binding is the
+/// one-queue default ("*": the lane may claim any stream; see
+/// lane_queue_binds).
+///
+/// The set is EXACTLY the live registry universe left by the
+/// 2026-11-11 lane rename and trims (#8097): 35 lanes — code-a..j,
+/// not-code-a..f, any-a..s — 16 of them enabled. Lane ids Drew
+/// deleted (the code-k..z overhang, nix-a/b, opencode-a/b,
+/// openchamber-a/b) are deliberately ABSENT: the pre-rename seed
+/// still named them, so each schema ensure resurrected
+/// hand-deleted rows from it — openchamber-a/b came back enabled
+/// after being deleted on 2026-11-10. A lane outside this set is
+/// never seeded; a lane inside it that is deleted by hand comes
+/// back with exactly these fields. Registrations for
+/// session-scoped lanes (UUID ids) are created by their sessions
+/// and are not part of the canonical set; the OpenChamber lanes
+/// renamed out of UUID ids on 2026-11-11 are canonical under
+/// their final names below.
+fn canonical_lanes() -> Vec<(&'static str, &'static str, bool)> {
+    let mut lanes: Vec<(&'static str, &'static str, bool)> = Vec::new();
+    // code group: code-a..d (Muse) and code-f..j (OpenChamber),
+    // all owned by repo-worker-code. code-e (Muse) is disabled
+    // per the 2026-11-10 trims; the other nine are enabled.
+    for c in 'a'..='j' {
+        // Leak-free: the ids are built from a fixed alphabet by a
+        // match on the letter so the strings stay 'static.
+        lanes.push((code_lane_id(c), "repo-worker-code", c != 'e'));
+    }
+    // not-code group: only not-code-d (OpenChamber) is enabled.
+    // Worker ids follow each lane's predecessor row: not-code-a
+    // was nix-a, not-code-b was opencode-a, and not-code-e was
+    // the opencode-project OpenChamber task.
+    for c in 'a'..='f' {
+        let worker = match c {
+            'a' => "repo-worker-nix",
+            'b' | 'e' => "repo-worker-opencode",
+            'd' => "repo-worker-openchamber",
+            _ => "repo-worker-code",
+        };
+        lanes.push((not_code_lane_id(c), worker, c == 'd'));
+    }
+    // any group: any-a..d (Muse) and any-n, any-o (OpenChamber)
+    // are enabled; any-e..m and any-p..s are disabled per the
+    // 2026-11-10 trims. All owned by repo-worker-code.
+    for c in 'a'..='s' {
+        let enabled = matches!(c, 'a' | 'b' | 'c' | 'd' | 'n' | 'o');
+        lanes.push((any_lane_id(c), "repo-worker-code", enabled));
+    }
+    lanes
+}
+
+fn code_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "code-a",
+        'b' => "code-b",
+        'c' => "code-c",
+        'd' => "code-d",
+        'e' => "code-e",
+        'f' => "code-f",
+        'g' => "code-g",
+        'h' => "code-h",
+        'i' => "code-i",
+        'j' => "code-j",
+        _ => unreachable!("code lane letters are a..=j"),
+    }
+}
+
+fn not_code_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "not-code-a",
+        'b' => "not-code-b",
+        'c' => "not-code-c",
+        'd' => "not-code-d",
+        'e' => "not-code-e",
+        'f' => "not-code-f",
+        _ => unreachable!("not-code lane letters are a..=f"),
+    }
+}
+
+fn any_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "any-a",
+        'b' => "any-b",
+        'c' => "any-c",
+        'd' => "any-d",
+        'e' => "any-e",
+        'f' => "any-f",
+        'g' => "any-g",
+        'h' => "any-h",
+        'i' => "any-i",
+        'j' => "any-j",
+        'k' => "any-k",
+        'l' => "any-l",
+        'm' => "any-m",
+        'n' => "any-n",
+        'o' => "any-o",
+        'p' => "any-p",
+        'q' => "any-q",
+        'r' => "any-r",
+        's' => "any-s",
+        _ => unreachable!("any lane letters are a..=s"),
+    }
+}
+
+/// The registry seed statement (#6853): INSERT OR IGNORE, so it
+/// restores a missing registration with its canonical fields —
+/// including a disabled lane's enabled = 0 — and can never
+/// resurrect or re-enable a lane whose row already exists in any
+/// state. Lanes outside the canonical set are never seeded at
+/// all (#8097).
+fn lane_seed_sql() -> String {
+    let values: Vec<String> = canonical_lanes()
+        .iter()
+        .map(|(id, worker, enabled)| {
+            format!("('{id}', '{worker}', '*', {})", i32::from(*enabled))
+        })
+        .collect();
+    format!(
+        "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES {}",
+        values.join(", ")
+    )
+}
+
 impl TursoBackend {
     pub fn new(url: String, token: String, agent: ureq::Agent) -> Self {
         Self {
@@ -631,6 +757,18 @@ impl TursoBackend {
     pub fn ensure_schema(&self) -> Result<(), TErr> {
         let stmts: Vec<(&str, Vec<Arg>)> = SCHEMA.iter().map(|s| (*s, Vec::new())).collect();
         self.pipeline(&stmts)?;
+        // #6853: seed the canonical lane registry. Registrations
+        // used to be hand-inserted rows with no code-owned seed, so
+        // a store rebuild/restore silently dropped lanes that were
+        // not in whoever's seed set — openchamber-a/b were disabled
+        // on 2026-11-08 (rows present) and unknown by 2026-11-11
+        // (rows gone). INSERT OR IGNORE fills only MISSING rows: an
+        // existing registration — including a lane Drew disabled
+        // (enabled = 0) — is never overwritten by the seed.
+        // #8097: the canonical set is exactly the post-rename
+        // registry universe, so a hand-deleted legacy lane (one
+        // outside the set) is not resurrected either.
+        self.exec(&lane_seed_sql(), &[])?;
         // Additive task columns land here for databases created
         // before them: #8097 Rule 2's tasks.platform (the optional
         // coarse platform selector — existing rows read NULL: unset,
@@ -1528,10 +1666,38 @@ fn on_binding_cleared(
     )
 }
 
+/// What lease expiry does to one claimed task (#6463): a task with
+/// attempts left returns to queued; a task already at its attempt cap
+/// fails terminally instead. Before #6463 the at-cap task also went
+/// back to queued, where the claim query (attempts < max_attempts)
+/// could never select it again -- it sat in queued forever, invisible
+/// to terminal counts, with no failed event (142 such silent zombies
+/// measured in repo-health-code-pilot on 2026-11-06).
+#[derive(Debug, PartialEq)]
+enum ExpiryDisposition {
+    Requeue,
+    FailAtCap,
+}
+
+fn expiry_disposition(attempts: i64, max_attempts: i64) -> ExpiryDisposition {
+    if attempts >= max_attempts {
+        ExpiryDisposition::FailAtCap
+    } else {
+        ExpiryDisposition::Requeue
+    }
+}
+
 /// expire_leases (migration 0023 §1): claimed rows whose lease has
-/// lapsed return to queued, binding cleared, lease rows dropped.
+/// lapsed return to queued, binding cleared, lease rows dropped --
+/// except rows already at their attempt cap, which transition to
+/// failed with a lease_expired_at_cap event (#6463, mirroring
+/// fail_repo_task's terminal branch). Sink-bound rows (#8234) keep
+/// their sink return regardless of cap: the sink pick serves them
+/// under its own rule, so the at-cap failure applies to the ordinary
+/// claim path only.
 /// Returns how many tasks were returned to queued (PG returned the
 /// count; claim ignores it, the /sweep verb reports it, #6803).
+/// At-cap failures are not counted: they were not returned to queued.
 fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
     let now = now_iso();
     let mut expired = 0i64;
@@ -1553,7 +1719,29 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
         let progress = row.get("progress").cloned().unwrap_or(json!({}));
         let to_sink = expired_claim_returns_to_sink(&progress);
         let (progress, cleared) = clear_binding(&progress, "expire_leases");
-        let upd = if to_sink {
+        let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let max_attempts = row
+            .get("max_attempts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(4);
+        let at_cap = !to_sink
+            && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
+        let upd = if at_cap {
+            t.exec(
+                "UPDATE tasks SET status = 'failed', worker_id = NULL, lease_until = NULL, \
+                   last_error = ?, progress = ?, updated_at = ? \
+                 WHERE id = ? AND status = 'claimed' AND lease_until < ?",
+                &[
+                    Arg::Text(format!(
+                        "lease expired at attempt cap ({attempts}/{max_attempts})"
+                    )),
+                    Arg::Text(progress.to_string()),
+                    Arg::Text(now.clone()),
+                    Arg::Int(id),
+                    Arg::Text(now.clone()),
+                ],
+            )?
+        } else if to_sink {
             // #8234: the sink is its own status now — the return
             // lands in 'handed_off' with NO wait fields at all. The
             // pre-#8234 shape stamped a fresh not_before = +1200s
@@ -1584,15 +1772,30 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
         if upd.affected == 0 {
             continue;
         }
-        expired += 1;
-        event(
-            t,
-            Some(&worker),
-            Some(id),
-            "lease_expired",
-            &json!({"via": "expire_leases", "cleared_session_id": cleared,
-                    "return": if to_sink { "handed_off" } else { "queued" }}),
-        )?;
+        if at_cap {
+            event(
+                t,
+                Some(&worker),
+                Some(id),
+                "lease_expired_at_cap",
+                &json!({
+                    "via": "expire_leases",
+                    "attempts": attempts,
+                    "max_attempts": max_attempts,
+                    "cleared_session_id": cleared,
+                }),
+            )?;
+        } else {
+            expired += 1;
+            event(
+                t,
+                Some(&worker),
+                Some(id),
+                "lease_expired",
+                &json!({"via": "expire_leases", "cleared_session_id": cleared,
+                        "return": if to_sink { "handed_off" } else { "queued" }}),
+            )?;
+        }
         if let Some(old) = cleared {
             on_binding_cleared(t, &worker, id, &old, "expire_leases")?;
         }
@@ -6015,7 +6218,17 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         sql += " AND (not_before IS NULL OR not_before <= ?)";
         args.push(Arg::Text(nb.to_string()));
     }
-    sql += &format!(" ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT {limit}");
+    // #7871: --task narrows to one task id (the PostgREST /list
+    // path applies the same filter), and the client's paged fetch
+    // advances OFFSET page by page.
+    if let Some(id) = req_i64(req, "task") {
+        sql += " AND id = ?";
+        args.push(Arg::Int(id));
+    }
+    let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
+    sql += &format!(
+        " ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
+    );
     let json_cols: &[&str] = if rich {
         &["progress", "payload", "blocked_deps"]
     } else {
@@ -6816,6 +7029,116 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn canonical_lanes_are_exactly_the_post_rename_universe_8097() {
+        // #8097 oracle: after the 2026-11-11 lane rename + trims,
+        // the canonical seed set is exactly the 35-lane registry
+        // universe with the end-state enabled flags — no more, no
+        // fewer. The pre-rename set named ids that no longer exist
+        // (code-k..z, nix-a/b, opencode-a/b, openchamber-a/b), and
+        // ensure_schema kept resurrecting hand-deleted rows from
+        // it: openchamber-a/b were deleted on 2026-11-10 and came
+        // back enabled at the next seed run. Seeding an empty
+        // lanes table executes lane_seed_sql() — a pure function
+        // of this set — so pinning the set and its per-lane tuples
+        // (next test) pins the seeded database exactly.
+        let lanes = canonical_lanes();
+        assert_eq!(lanes.len(), 35);
+        let mut ids: Vec<&str> = lanes.iter().map(|(id, _, _)| *id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 35, "duplicate lane ids in the canonical set");
+        let expected_ids: Vec<&str> = vec![
+            "any-a", "any-b", "any-c", "any-d", "any-e", "any-f", "any-g", "any-h", "any-i",
+            "any-j", "any-k", "any-l", "any-m", "any-n", "any-o", "any-p", "any-q", "any-r",
+            "any-s", "code-a", "code-b", "code-c", "code-d", "code-e", "code-f", "code-g",
+            "code-h", "code-i", "code-j", "not-code-a", "not-code-b", "not-code-c",
+            "not-code-d", "not-code-e", "not-code-f",
+        ];
+        assert_eq!(
+            ids, expected_ids,
+            "the canonical set is not the post-rename universe"
+        );
+        // No legacy id may ever be seeded again: the deleted
+        // openchamber pair, the pre-rename stream lanes, the
+        // code-k..z overhang, and the rename's tmp ids.
+        for legacy in [
+            "openchamber-a",
+            "openchamber-b",
+            "nix-a",
+            "nix-b",
+            "opencode-a",
+            "opencode-b",
+        ] {
+            assert!(
+                !ids.contains(&legacy),
+                "legacy lane {legacy} must not be seeded"
+            );
+        }
+        for c in 'k'..='z' {
+            let legacy = format!("code-{c}");
+            assert!(
+                !ids.iter().any(|id| *id == legacy),
+                "legacy lane {legacy} must not be seeded"
+            );
+        }
+        assert!(
+            ids.iter().all(|id| !id.starts_with("tmp-")),
+            "tmp rename ids must not be seeded"
+        );
+        // The enabled set is exactly the 16 working lanes.
+        let mut enabled: Vec<&str> = lanes
+            .iter()
+            .filter(|(_, _, e)| *e)
+            .map(|(id, _, _)| *id)
+            .collect();
+        enabled.sort();
+        assert_eq!(
+            enabled,
+            [
+                "any-a", "any-b", "any-c", "any-d", "any-n", "any-o", "code-a", "code-b",
+                "code-c", "code-d", "code-f", "code-g", "code-h", "code-i", "code-j",
+                "not-code-d",
+            ]
+        );
+        // Worker ownership: the renamed lanes keep the worker of
+        // the registry row they came from.
+        let owner = |id: &str| lanes.iter().find(|(l, _, _)| *l == id).map(|(_, w, _)| *w);
+        assert_eq!(owner("code-a"), Some("repo-worker-code"));
+        assert_eq!(owner("code-j"), Some("repo-worker-code"));
+        assert_eq!(owner("not-code-a"), Some("repo-worker-nix"));
+        assert_eq!(owner("not-code-b"), Some("repo-worker-opencode"));
+        assert_eq!(owner("not-code-d"), Some("repo-worker-openchamber"));
+        assert_eq!(owner("not-code-e"), Some("repo-worker-opencode"));
+        assert_eq!(owner("any-s"), Some("repo-worker-code"));
+    }
+
+    #[test]
+    fn lane_seed_sql_is_insert_or_ignore_over_the_canonical_set() {
+        // #6853 oracle, extended under #8097: the seed can only
+        // fill missing rows — an existing registration (in
+        // particular a lane disabled via enabled = 0) is never
+        // overwritten, so seeding at every broker start cannot
+        // undo a disable — and every seeded row carries its
+        // canonical fields, so a restored disabled lane comes
+        // back disabled, and a restored enabled lane comes back
+        // with its owning worker and the one-queue binding.
+        let sql = lane_seed_sql();
+        assert!(sql.starts_with("INSERT OR IGNORE INTO lanes"), "{sql}");
+        for (id, worker, enabled) in canonical_lanes() {
+            let tuple = format!("('{id}', '{worker}', '*', {})", i32::from(enabled));
+            assert!(sql.contains(&tuple), "seed misses {tuple}");
+        }
+        // Nothing outside the canonical set is seeded: a deleted
+        // legacy lane stays deleted across broker restarts.
+        for legacy in ["openchamber-a", "openchamber-b", "nix-a", "opencode-a", "code-z"] {
+            assert!(
+                !sql.contains(&format!("('{legacy}'")),
+                "seed must not name {legacy}"
+            );
+        }
+    }
+
+    #[test]
     fn claim_lease_is_the_requested_lease_not_the_heartbeat_default() {
         // #7617 oracle: a claim's stored lease_until is claimed_at +
         // the lease the caller requested (2700 s for a 45-minute
@@ -7424,6 +7747,19 @@ mod tests {
         // not a wait at all, it is already claimable.
         let err = wake_eligible("handed_off").unwrap_err();
         assert!(err.contains("already claimable"), "{err}");
+    }
+
+    #[test]
+    #[test]
+    fn expiry_disposition_fails_only_at_cap() {
+        // Below cap: the task returns to queued for another attempt.
+        assert_eq!(expiry_disposition(0, 4), ExpiryDisposition::Requeue);
+        assert_eq!(expiry_disposition(3, 4), ExpiryDisposition::Requeue);
+        // At or past cap (#6463): terminal failure, never a silent
+        // return to a queued state the claim query cannot select.
+        assert_eq!(expiry_disposition(4, 4), ExpiryDisposition::FailAtCap);
+        assert_eq!(expiry_disposition(24, 24), ExpiryDisposition::FailAtCap);
+        assert_eq!(expiry_disposition(9, 4), ExpiryDisposition::FailAtCap);
     }
 
     #[test]

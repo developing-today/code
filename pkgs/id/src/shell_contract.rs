@@ -543,6 +543,10 @@ impl fmt::Display for Violation {
 pub struct Conformance<'c> {
     contract: &'c ShellContract,
     phase: Phase,
+    /// Where the session returns when the current upload ends: a
+    /// pre-join upload closes the session, a joined builder's upload
+    /// returns to `Joined` (design #835 phase 3).
+    install_return: Phase,
     index: usize,
     violations: Vec<Violation>,
 }
@@ -554,6 +558,7 @@ impl<'c> Conformance<'c> {
         Self {
             contract,
             phase: Phase::Opening,
+            install_return: Phase::Closed,
             index: 0,
             violations: Vec::new(),
         }
@@ -580,10 +585,17 @@ impl<'c> Conformance<'c> {
                         .client_frames
                         .get(kind)
                         .and_then(|spec| spec.opens);
+                    if opens == Some(Phase::Install) {
+                        self.install_return = match self.phase {
+                            Phase::Joined => Phase::Joined,
+                            _ => Phase::Closed,
+                        };
+                    }
                     self.phase = match (self.phase, kind) {
                         (Phase::Opening, _) => opens.unwrap_or(Phase::Closed),
                         (Phase::Query, "join") => Phase::Joined,
-                        (Phase::Install, "install_end") => Phase::Closed,
+                        (Phase::Install, "install_end") => self.install_return,
+                        (Phase::Joined, _) if opens == Some(Phase::Install) => Phase::Install,
                         (phase, _) => phase,
                     };
                 }
@@ -598,11 +610,15 @@ impl<'c> Conformance<'c> {
         if let Err(message) = self.contract.check_server_frame(frame) {
             self.violate(Side::Server, message);
         }
-        // Before a join, an error ends the session.
-        if frame.get("type").and_then(Value::as_str) == Some("error")
-            && matches!(self.phase, Phase::Opening | Phase::Query | Phase::Install)
-        {
-            self.phase = Phase::Closed;
+        // Before a join, an error ends the session; during an upload
+        // it returns to wherever that upload returns — a refused
+        // joined upload leaves the session joined.
+        if frame.get("type").and_then(Value::as_str) == Some("error") {
+            match self.phase {
+                Phase::Opening | Phase::Query => self.phase = Phase::Closed,
+                Phase::Install => self.phase = self.install_return,
+                Phase::Joined | Phase::Closed => {}
+            }
         }
         self.index += 1;
     }

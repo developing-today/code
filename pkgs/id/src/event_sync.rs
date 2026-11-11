@@ -363,14 +363,9 @@ mod tests {
         // documented contract: a refused peer gets no event, and the session
         // reports the refusal rather than a successful zero transfer - serve
         // logs the error and carries on). Nothing may move in either direction.
-        let error = sync_with_peer(
-            &client,
-            loopback(&server),
-            &a,
-            &gate(PullPolicy::Members),
-        )
-        .await
-        .expect_err("a members gate with no membership source completed a session");
+        let error = sync_with_peer(&client, loopback(&server), &a, &gate(PullPolicy::Members))
+            .await
+            .expect_err("a members gate with no membership source completed a session");
         assert!(
             error.to_string().contains("pull policy refuses"),
             "the session failed for a reason other than the gate: {error:#}"
