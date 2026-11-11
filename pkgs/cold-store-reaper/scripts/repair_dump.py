@@ -247,13 +247,23 @@ def main():
             buffered_bytes += len(line)
             if buffered_bytes > MAX_CANDIDATE_BYTES:
                 # Over the cap: flush what was buffered unchanged
-                # and stream the rest of the statement (#6525).
+                # and stream the rest of the statement (#6525) --
+                # unless the cap-crossing line itself terminates
+                # the candidate: then the statement is complete
+                # (flushed whole, unrepaired like any over-cap
+                # statement) and the next statement must still be
+                # processed normally, not streamed through.
+                chunk = b"".join(buffered)
                 for part in buffered:
                     out.write(part)
                 out.flush()
                 buffered = None
                 buffered_bytes = 0
-                passthrough = True
+                if not (
+                    line.rstrip(b"\r\n").endswith(STATEMENT_END)
+                    and ends_statement(chunk, next_line)
+                ):
+                    passthrough = True
             elif line.rstrip(b"\r\n").endswith(STATEMENT_END):
                 chunk = b"".join(buffered)
                 if ends_statement(chunk, next_line):

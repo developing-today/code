@@ -339,6 +339,26 @@ class TestDumpRepairFilter(unittest.TestCase):
         expected = opener + filler + b"');\n" + ESCAPED_SCHEMA_INSERT
         self.assertEqual(self.run_filter_capped(data, 4096), expected)
 
+    def test_cap_crossed_on_terminating_line_does_not_leak_passthrough(self):
+        # Codex P2 on PR #8415: when the cap is first exceeded ON the
+        # candidate's terminating line, the statement is complete --
+        # it flushes whole (unrepaired, like any over-cap statement)
+        # and must NOT enable pass-through, or the following statement
+        # streams through unrepaired even when it is below the cap
+        # and needs quote repair.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 39 + b"x" * 46 + b"\n"
+        # opener + filler stays under the 4096 cap; the terminating
+        # line itself is what pushes the buffer over it.
+        self.assertLessEqual(len(opener) + len(filler), 4096)
+        self.assertGreater(len(opener) + len(filler) + len(b"');\n"), 4096)
+        data = opener + filler + b"');\n" + BROKEN_SCHEMA_INSERT
+        expected = opener + filler + b"');\n" + ESCAPED_SCHEMA_INSERT
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
     def test_over_cap_candidate_emits_before_eof(self):
         # #6525, the streaming half of the oracle: with stdin held
         # open, output from an over-cap candidate must already be
