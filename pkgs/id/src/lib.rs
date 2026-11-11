@@ -197,6 +197,7 @@ pub mod event_sync;
 pub mod fileops;
 pub mod foreign_libsql;
 pub mod frames;
+pub mod game_replay;
 pub mod groups;
 pub mod helpers;
 pub mod hosted_binding;
