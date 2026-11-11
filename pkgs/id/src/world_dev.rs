@@ -273,6 +273,20 @@ impl DevScratchWorld {
     /// scratch world's guest capability cannot be issued.
     pub async fn launch(module: &[u8], seed: u64) -> Result<Self> {
         let runner = Sandbox::compile(module, SandboxLimits::default())?;
+        Self::launch_compiled(&runner, seed).await
+    }
+
+    /// Launch a scratch world from an already-compiled [`Sandbox`],
+    /// instantiating a fresh isolated guest for this world. Callers
+    /// that launch many worlds from one module (the fuzz campaign)
+    /// compile once with [`Sandbox::compile`] and instantiate per
+    /// world through here, instead of recompiling per launch.
+    ///
+    /// # Errors
+    ///
+    /// The compiled module fails instantiation or the scratch
+    /// world's guest capability cannot be issued.
+    pub async fn launch_compiled(runner: &Sandbox, seed: u64) -> Result<Self> {
         let guest = runner.instantiate(seed)?;
         let core = WorldCore::new(DEV_WORLD_ID, WorldLimits::default())?;
         let handle = WorldHandle::spawn_with_program(core, Box::new(guest));
@@ -1595,10 +1609,14 @@ pub async fn fuzz_candidate(
         budget <= MAX_FUZZ_CASES,
         "the fuzz case budget {budget} exceeds the bound {MAX_FUZZ_CASES}"
     );
+    // Compile the candidate once for the whole campaign; each case
+    // still runs against a fresh isolated guest instance (a new
+    // store, memory, and world), so per-case isolation is unchanged.
+    let runner = Sandbox::compile(module, SandboxLimits::default())?;
     let mut inputs_applied: u64 = 0;
     for case in 0..budget {
         let inputs = fuzz_case_inputs(decl, fuzz_seed, case);
-        let world = DevScratchWorld::launch(module, seed).await?;
+        let world = DevScratchWorld::launch_compiled(&runner, seed).await?;
         let mut failure: Option<FuzzFailure> = None;
         for (step, input) in inputs.iter().enumerate() {
             let before = world.records();
