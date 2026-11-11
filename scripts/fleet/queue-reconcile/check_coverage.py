@@ -36,6 +36,18 @@ JSON file shaped `{"issues": {"owner/repo": [...]}, "coverage":
 {"owner/repo": {"uncovered_issues": [...]}}}`, so the whole decision
 path runs offline in tests.
 
+Open-PR coverage (#4951): the broker diff only knows about tasks, so
+an issue whose fix task completed `pr_opened` reads as uncovered and
+was re-triaged while its PR bit-rotted. Before declaring an issue
+uncovered, this script also consults the repo's OPEN PRs (branch
+`queue/<task>-<issue>-*`, a closing keyword, or a trailing `(#n)`
+title reference). An issue with an open fix PR is in-flight, not
+ownerless: it gets no triage packet. In `--import` mode it gets one
+dedupe-keyed merge-watch packet per PR instead, whose job is the
+~24h recheck the queue otherwise never does — re-test mergibility,
+refresh the branch, merge, or close with a salvage note. Fixtures
+carry the PR set under a top-level `"pulls": {"owner/repo": [...]}`.
+
 Exit codes: 0 = run completed (uncovered may be > 0 in observe mode),
 2 = configuration/usage error, 3 = a fetch or broker call failed (the
 report names which; a failure never masquerades as "0 uncovered").
@@ -46,6 +58,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -116,6 +129,81 @@ def fetch_open_issues(repo: str, gh: str = "gh") -> list[dict]:
             continue
         issues.append(json.loads(line))
     return issues
+
+
+# ---------------------------------------------------------------------------
+# GitHub: enumerate open PRs and map them to the issues they fix (#4951)
+# ---------------------------------------------------------------------------
+
+_BRANCH_ISSUE = re.compile(r"^queue/\d+-(\d+)(?:-|$)")
+_CLOSING_REF = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)")
+_TITLE_REF = re.compile(r"\(#(\d+)\)\s*$")
+
+
+def fetch_open_prs(repo: str, gh: str = "gh") -> list[dict]:
+    """All open PRs in `repo`, with the fields the issue map needs.
+
+    A failed or partial enumeration must never read as "no open PRs"
+    (that would re-triage issues whose PRs are in flight), so any
+    failure is a FetchError, exactly like the issue enumeration.
+    """
+    cmd = [
+        gh,
+        "api",
+        "--paginate",
+        f"repos/{repo}/pulls?state=open&per_page=100",
+        "--jq",
+        ".[] | {number, title, body: ((.body // \"\") | .[0:2000]), head: {ref: .head.ref}}",
+    ]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FetchError(f"github PR enumeration failed for {repo}: {exc}") from exc
+    if out.returncode != 0:
+        raise FetchError(
+            f"github PR enumeration failed for {repo} (exit {out.returncode}): "
+            f"{out.stderr.strip()[:400]}"
+        )
+    prs: list[dict] = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        prs.append(json.loads(line))
+    return prs
+
+
+def pr_issue_numbers(pr: dict) -> set[int]:
+    """Issue numbers an open PR is a fix for, from fleet-strong signals:
+    the `queue/<task>-<issue>-*` branch namespace, a closing keyword in
+    the body (Closes/Fixes/Resolves #n), or a trailing `(#n)` in the
+    title. A bare `#n` mention in prose is NOT a signal — it would
+    suppress triage for issues a PR merely discusses."""
+    numbers: set[int] = set()
+    ref = ((pr.get("head") or {}).get("ref") or "")
+    m = _BRANCH_ISSUE.match(ref)
+    if m:
+        numbers.add(int(m.group(1)))
+    for m in _CLOSING_REF.finditer(pr.get("body") or ""):
+        numbers.add(int(m.group(1)))
+    m = _TITLE_REF.search(pr.get("title") or "")
+    if m:
+        numbers.add(int(m.group(1)))
+    return numbers
+
+
+def build_pr_coverage(prs: list[dict]) -> dict[int, dict]:
+    """issue number -> the open PR covering it (first PR wins)."""
+    coverage: dict[int, dict] = {}
+    for pr in prs:
+        info = {
+            "number": pr["number"],
+            "title": pr.get("title") or "",
+            "branch": ((pr.get("head") or {}).get("ref") or ""),
+        }
+        for n in pr_issue_numbers(pr):
+            coverage.setdefault(n, info)
+    return coverage
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +304,86 @@ def triage_packet(repo: str, issue: dict, checked_at: str) -> dict:
     }
 
 
+def merge_watch_packet(repo: str, issue: dict, pr: dict, checked_at: str) -> dict:
+    """The ~24h merge-watch recheck for work that ended `pr_opened` (#4951).
+
+    One packet per open PR, dedupe-keyed on the PR, so re-runs of the
+    reconciliation never stack duplicates while a watch is live. The
+    packet shepherds the EXISTING PR — it never re-implements the fix.
+    """
+    number = issue["number"]
+    pr_number = pr["number"]
+    issue_url = f"https://github.com/{repo}/issues/{number}"
+    pr_url = f"https://github.com/{repo}/pull/{pr_number}"
+    return {
+        "title": f"Merge-watch {repo}#{pr_number}: recheck fix PR for issue #{number}"[:180],
+        "body": (
+            f"Merge-watch recheck (#4951): {pr_url} is the open fix PR for {issue_url}, "
+            "whose fix task completed pr_opened with no live task watching the PR. "
+            "Re-test mergibility against current main; refresh the branch if the fix "
+            "is still desired, merge it when verified, or close it with a salvage "
+            "note if main has superseded it."
+        ),
+        "priority": 30,
+        "dedupe_key": f"repo-health:v1:merge-watch:{repo}:pr:{pr_number}",
+        "payload": {
+            "schema": "repo-task/v1",
+            "kind": "pr_shepherd",
+            "repo": repo,
+            "queue": None,  # filled by the caller with the pilot queue
+            "issue": {
+                "number": number,
+                "url": issue_url,
+                "title": issue.get("title") or f"issue {number}",
+                "state_checked_at": checked_at,
+            },
+            "pr": {
+                "number": pr_number,
+                "url": pr_url,
+                "title": pr.get("title") or f"PR {pr_number}",
+                "branch": pr.get("branch") or "",
+                "state_checked_at": checked_at,
+            },
+            "problem": (
+                "A task completed with outcome pr_opened leaves the live set, so "
+                "nothing rechecks whether its PR still merges. Coverage "
+                "reconciliation (#4951) found this PR open with no live task."
+            ),
+            "evidence": [
+                f"Coverage reconciliation {checked_at}: issue #{number} holds no live "
+                f"task but open PR #{pr_number} ({pr.get('branch') or 'branch unknown'}) "
+                "is its in-flight fix",
+                pr_url,
+            ],
+            "acceptance": [
+                "Mergibility re-tested against current main (git merge-tree or the PR's mergeable state) and the result recorded on the task/PR",
+                "Branch refreshed (rebase/conflict resolution) if the fix is still desired, then merged when checks are green and review findings are dispositioned",
+                "OR the PR is closed with a salvage note per protocol §8 (diff against main first; 'nothing unique' counts) if main has superseded it",
+                "The fix is NOT re-implemented by a fresh task",
+            ],
+            "tests": [
+                "Merge-tree / mergeable verdict recorded; if merged, the PR's closing keyword disposition of the issue is verified",
+            ],
+            "scope": {
+                "include": [f"Shepherd existing PR {repo}#{pr_number} for issue #{number}"],
+                "exclude": ["Re-implementing the fix", "Unrelated issues, pull requests, or repositories"],
+            },
+            "risk": {"level": "low", "flags": ["merge-watch"]},
+            "priority_reason": (
+                "Normal (30): merge-watch recheck for pr_opened work, filed by "
+                "coverage reconciliation (#4951)."
+            ),
+            "timebox_minutes": 45,
+            "max_attempts": 4,
+            "context_refs": [issue_url, pr_url],
+            "dedupe": {
+                "checked_at": checked_at,
+                "basis": "Merge-watch (#4951): open fix PR with no live task at check time; one watch per PR.",
+            },
+        },
+    }
+
+
 def enqueue_packet(
     packet: dict,
     queue: str,
@@ -282,23 +450,39 @@ def render_report(
         f"Mode: **{mode}**. Doctrine: every open issue must hold a LIVE task "
         "(queued/claimed/parked/blocked) in its own pilot queue; a done task is not coverage.",
         "",
-        "| repo | queue | open issues | covered | uncovered | imported |",
-        "|---|---|---|---|---|---|",
+        "| repo | queue | open issues | covered | open-PR covered | uncovered | imported | watch imported |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         lines.append(
             f"| {r['repo']} | {r['queue']} | {r['open_issues']} | {r['covered']} "
-            f"| {r['uncovered']} | {r['imported']} |"
+            f"| {r.get('pr_covered', 0)} | {r['uncovered']} | {r['imported']} "
+            f"| {r.get('watch_imported', 0)} |"
         )
     total_uncovered = sum(r["uncovered"] for r in results)
     total_imported = sum(r["imported"] for r in results)
+    total_pr = sum(r.get("pr_covered", 0) for r in results)
+    total_watch = sum(r.get("watch_imported", 0) for r in results)
     lines += [
         "",
         f"**Total uncovered: {total_uncovered}** · imported this run: {total_imported}",
+        f"Open-PR covered (#4951): {total_pr} · merge-watch imported this run: {total_watch}",
         "",
     ]
     if errors:
         lines += ["## ERRORS", ""] + [f"- {e}" for e in errors] + [""]
+    pr_any = [
+        (r, i) for r in results for i in r.get("pr_covered_issues", [])
+    ]
+    if pr_any:
+        lines += ["## Covered by an open PR — merge-watch, no triage packet (#4951)", ""]
+        for r, i in pr_any:
+            pr = i.get("pr") or {}
+            lines.append(
+                f"- {r['repo']}#{i['number']} — PR #{pr.get('number')} "
+                f"({pr.get('branch') or 'branch unknown'})"
+            )
+        lines.append("")
     uncovered_any = [
         (r, i) for r in results for i in r.get("uncovered_issues", [])
     ]
@@ -360,14 +544,25 @@ def main(argv: list[str] | None = None) -> int:
             if fixture:
                 issues = fixture["issues"][repo]
                 cov = fixture["coverage"][repo]
+                pulls = (fixture.get("pulls") or {}).get(repo, [])
             else:
                 issues = fetch_open_issues(repo)
                 cov = broker_coverage(args.broker_url, token, queue, repo, issues)
+                pulls = fetch_open_prs(repo)
         except (FetchError, KeyError) as exc:
             errors.append(str(exc))
             continue
 
-        uncovered = cov.get("uncovered_issues", [])
+        # #4951: an issue the broker calls uncovered whose fix PR is
+        # still open is in-flight, not ownerless — no triage packet.
+        pr_coverage = build_pr_coverage(pulls)
+        broker_uncovered = cov.get("uncovered_issues", [])
+        uncovered = [i for i in broker_uncovered if i["number"] not in pr_coverage]
+        pr_covered = [
+            {**i, "pr": pr_coverage[i["number"]]}
+            for i in broker_uncovered
+            if i["number"] in pr_coverage
+        ]
         imported = 0
         if do_import and uncovered:
             for issue in uncovered:
@@ -380,14 +575,31 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     errors.append(f"enqueue failed for {repo}#{issue['number']}: {detail}")
 
+        watch_imported = 0
+        if do_import and pr_covered:
+            for issue in pr_covered:
+                packet = merge_watch_packet(repo, issue, issue["pr"], checked_at)
+                ok, detail = enqueue_packet(
+                    packet, queue, args.fleet, args.broker_url, args.token_file
+                )
+                if ok:
+                    watch_imported += 1
+                else:
+                    errors.append(
+                        f"merge-watch enqueue failed for {repo}#{issue['number']}: {detail}"
+                    )
+
         results.append(
             {
                 "repo": repo,
                 "queue": queue,
                 "open_issues": cov.get("open_issues", len(issues)),
                 "covered": cov.get("covered", 0),
+                "pr_covered": len(pr_covered),
+                "pr_covered_issues": pr_covered,
                 "uncovered": len(uncovered),
                 "imported": imported,
+                "watch_imported": watch_imported,
                 "uncovered_issues": uncovered,
             }
         )
