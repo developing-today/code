@@ -78,6 +78,13 @@
 //! [`super::WorldCore::restore`] demands of a journal against these
 //! checks; its one confirmed gap — per-entry version requirements are
 //! enforced at restore but not yet at accept — is filed as #7970.
+//! - A journal compacted by an older binary can still hold one oversized
+//!   `Checkpoint` entry above the v1 bound. The feed scans the captured
+//!   journal source at build time and compacts the legacy journal once
+//!   through the existing compaction path before splitting it (when the
+//!   world can snapshot and compact); otherwise the feed fails with the
+//!   entry ordinal, encoded size, and payload bound and asks for compaction
+//!   rather than failing at [`split_entry_payload`] with no context.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -191,7 +198,10 @@ pub fn frame_digest(frame_bytes: &[u8]) -> [u8; 32] {
 /// [`ReplicationError::MalformedPayload`] if a non-empty payload does not
 /// end at an entry boundary, or
 /// [`ReplicationError::PayloadTooLarge`] if one entry alone exceeds the
-/// per-frame bound (such an entry can never be replicated in v1).
+/// per-frame bound (such an entry can never be replicated in v1). The feed
+/// scans its captured source before this call so a legacy journal is
+/// re-compacted or reported actionably instead of failing here with no
+/// context.
 pub fn split_entry_payload(payload: &[u8]) -> Result<Vec<Vec<u8>>, ReplicationError> {
     if payload.is_empty() {
         return Ok(Vec::new());

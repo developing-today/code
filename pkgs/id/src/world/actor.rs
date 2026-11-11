@@ -3,7 +3,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::Instrument;
 
@@ -82,6 +82,7 @@ impl WorldCommand {
             Self::Metrics { .. } => "Metrics",
             Self::AdminEventHistory { .. } => "AdminEventHistory",
             Self::ReplicationFeed { .. } => "ReplicationFeed",
+            Self::ReplicationCompact { .. } => "ReplicationCompact",
             Self::Shutdown { .. } => "Shutdown",
         }
     }
@@ -342,14 +343,27 @@ pub(crate) enum WorldCommand {
         reply: oneshot::Sender<Result<AdminEventHistory>>,
     },
     /// Atomically capture the journal and subscribe to subsequent durable changes.
+    /// When the captured journal is large enough to hold an over-bound entry,
+    /// a second source is returned as a probe: the caller scans it OUTSIDE
+    /// the actor (#8095), because awaiting the scan here would suspend all
+    /// command processing for the duration of a full journal read.
     ReplicationFeed {
         reply: oneshot::Sender<
             Result<(
                 String,
                 JournalSnapshotSource,
+                Option<JournalSnapshotSource>,
                 broadcast::Receiver<ReplicationUpdate>,
             )>,
         >,
+    },
+    /// Serialized forced compaction after an out-of-actor probe found an
+    /// oversized legacy entry (#8095). Compaction itself stays an actor
+    /// operation; only the scan moved out.
+    ReplicationCompact {
+        ordinal: usize,
+        encoded_size: usize,
+        reply: oneshot::Sender<Result<()>>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
@@ -2767,17 +2781,55 @@ impl WorldActor {
                         "world storage failed; replication feed is unavailable"
                     ))
                 } else {
-                    // Subscribe before capturing the image. The actor is the
-                    // only journal owner and processes commands serially, so
-                    // no durable append can fall between these two operations.
-                    let updates = self.replication_sender.subscribe();
-                    let world_id = self.core.world_id().to_owned();
-                    self.journal
-                        .as_mut()
-                        .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))
-                        .and_then(|journal| journal.replication_snapshot_source())
-                        .map(|snapshot_source| (world_id, snapshot_source, updates))
+                    async {
+                        // Subscribe before capturing the image. The actor is
+                        // the only journal owner and processes commands
+                        // serially, so no durable append can fall between
+                        // these operations.
+                        let updates = self.replication_sender.subscribe();
+                        let world_id = self.core.world_id().to_owned();
+                        let snapshot_source = self
+                            .journal
+                            .as_mut()
+                            .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))?
+                            .replication_snapshot_source()?;
+
+                        // A small journal cannot contain an over-bound line,
+                        // so keep its existing fast path: no probe source and
+                        // no attempt to serialize a checkpoint. A large one
+                        // gets a second source as a probe for the CALLER to
+                        // scan outside the actor (#8095): awaiting the scan
+                        // here suspended every other command, tick, and
+                        // schedule for the duration of a full journal read.
+                        // If the probe finds an oversized entry, the caller
+                        // sends ReplicationCompact (still a serialized actor
+                        // operation) and builds its feed again from the
+                        // compacted image.
+                        let probe_source = if snapshot_source.byte_len
+                            > super::replication::MAX_REPLICATION_PAYLOAD_BYTES as u64
+                        {
+                            Some(
+                                self.journal
+                                    .as_mut()
+                                    .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))?
+                                    .replication_snapshot_source()?,
+                            )
+                        } else {
+                            None
+                        };
+
+                        Ok((world_id, snapshot_source, probe_source, updates))
+                    }
+                    .await
                 };
+                let _ = reply.send(result);
+            }
+            WorldCommand::ReplicationCompact {
+                ordinal,
+                encoded_size,
+                reply,
+            } => {
+                let result = self.force_compact_for_replication(ordinal, encoded_size);
                 let _ = reply.send(result);
             }
             WorldCommand::CapsInfo { reply } => {
@@ -2825,6 +2877,67 @@ impl WorldActor {
         }
     }
 
+    /// Re-compact a legacy journal only when a feed discovers an entry that
+    /// cannot fit the v1 per-entry payload bound. Unlike policy-driven
+    /// compaction, this intentionally ignores `checkpoint_due()`.
+    fn force_compact_for_replication(&mut self, ordinal: usize, encoded_size: usize) -> Result<()> {
+        let unavailable = if self.read_only {
+            Some("the world is read-only")
+        } else if self.compaction_off {
+            Some("compaction was disabled after an earlier failure")
+        } else if self.storage_failed {
+            Some("world storage has failed")
+        } else if !self.program_healthy {
+            Some("the active program is unhealthy")
+        } else if self.core.active_module_hash.is_none() {
+            Some("there is no active program to checkpoint")
+        } else if self.journal.is_none() {
+            Some("the world has no durable journal to compact")
+        } else {
+            None
+        };
+        if let Some(reason) = unavailable {
+            return Err(oversized_journal_compaction_error(
+                ordinal,
+                encoded_size,
+                reason,
+            ));
+        }
+
+        let started = std::time::Instant::now();
+        let Some(journal) = self.journal.as_mut() else {
+            return Err(oversized_journal_compaction_error(
+                ordinal,
+                encoded_size,
+                "the world has no durable journal to compact",
+            ));
+        };
+        let compacted = compact_journal(&mut self.core, self.program.as_mut(), journal.as_mut());
+        match compacted {
+            Ok(true) => {
+                self.metrics.record_checkpoint(started.elapsed());
+                self.publish_replication_reset();
+                Ok(())
+            }
+            Ok(false) => {
+                self.compaction_off = true;
+                Err(oversized_journal_compaction_error(
+                    ordinal,
+                    encoded_size,
+                    "the active program cannot provide a checkpoint snapshot",
+                ))
+            }
+            Err(error) => {
+                self.compaction_off = true;
+                Err(oversized_journal_compaction_error(
+                    ordinal,
+                    encoded_size,
+                    &format!("forced compaction failed: {error:#}"),
+                ))
+            }
+        }
+    }
+
     fn publish_replication_reset(&mut self) {
         let Some(journal) = self.journal.as_mut() else {
             return;
@@ -2843,10 +2956,24 @@ impl WorldActor {
     }
 }
 
+fn oversized_journal_compaction_error(
+    ordinal: usize,
+    encoded_size: usize,
+    reason: &str,
+) -> anyhow::Error {
+    anyhow::anyhow!(
+        "oversized legacy journal entry at ordinal {ordinal} is {encoded_size} encoded bytes, exceeding MAX_REPLICATION_PAYLOAD_BYTES={}; replication needs compaction before it can continue, but {reason}",
+        super::replication::MAX_REPLICATION_PAYLOAD_BYTES
+    )
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod replication_feed_tests {
     use super::*;
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use tempfile::TempDir;
 
     struct SnapshotProgram;
@@ -2855,6 +2982,235 @@ mod replication_feed_tests {
         fn snapshot(&mut self) -> Result<Option<String>> {
             Ok(Some("{}".to_owned()))
         }
+    }
+
+    struct CountingSnapshotProgram {
+        snapshot_calls: Arc<AtomicUsize>,
+    }
+
+    impl WorldProgram for CountingSnapshotProgram {
+        fn snapshot(&mut self) -> Result<Option<String>> {
+            self.snapshot_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some("recompacted-state".to_owned()))
+        }
+    }
+
+    struct FeedJournal {
+        version: u32,
+        entries: Vec<JournalEntry>,
+        compactions: Arc<AtomicUsize>,
+        source_captures: Arc<AtomicUsize>,
+    }
+
+    impl WorldJournal for FeedJournal {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            self.entries.push(entry.clone());
+            Ok(())
+        }
+
+        fn replication_snapshot(&mut self) -> Result<JournalSnapshot> {
+            Ok(JournalSnapshot {
+                header_version: self.version,
+                bytes: self.entries.iter().flat_map(journal_entry_line).collect(),
+            })
+        }
+
+        fn replication_snapshot_source(&mut self) -> Result<JournalSnapshotSource> {
+            self.source_captures.fetch_add(1, Ordering::SeqCst);
+            let bytes: Vec<u8> = self.entries.iter().flat_map(journal_entry_line).collect();
+            Ok(JournalSnapshotSource::from_reader(
+                self.version,
+                bytes.len() as u64,
+                Cursor::new(bytes),
+            ))
+        }
+
+        fn replication_header_version(&self) -> Option<u32> {
+            Some(self.version)
+        }
+
+        fn compact(&mut self, entries: &[JournalEntry]) -> Result<()> {
+            self.compactions.fetch_add(1, Ordering::SeqCst);
+            self.entries = entries.to_vec();
+            if let Some(JournalEntry::Created { version, .. }) = self.entries.first() {
+                self.version = *version;
+            }
+            Ok(())
+        }
+    }
+
+    fn legacy_oversized_checkpoint() -> Vec<JournalEntry> {
+        vec![
+            JournalEntry::Created {
+                world_id: "lobby".to_owned(),
+                version: 1,
+            },
+            JournalEntry::Checkpoint {
+                sequence: 0,
+                module_hash: "legacy-module".to_owned(),
+                seed: 0,
+                provenance: None,
+                execution_profile: None,
+                caps_ceiling: None,
+                schedules: None,
+                transfers: None,
+                lease: None,
+                snapshot: "x".repeat(super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES),
+                events: Vec::new(),
+                admin_history: None,
+                open_presence: None,
+            },
+        ]
+    }
+
+    // ---- Property coverage for the oversized scanner (#7890 Codex P1) ----
+    // Oracle for both properties: an independent first-over-bound-line scan
+    // of the serialized journal lines — a line (entry bytes including the
+    // trailing newline) is oversized iff its length exceeds
+    // MAX_REPLICATION_PAYLOAD_BYTES, and the scanner must name the FIRST
+    // such line's ordinal and length, or None when there is none.
+
+    fn prop_filler(len: usize, special: u8) -> String {
+        // Mostly plain bytes, with JSON-escaped and multibyte characters
+        // mixed in so serialized sizes differ from char counts.
+        let mut out = String::with_capacity(len);
+        for i in 0..len {
+            out.push(match (i as u8).wrapping_add(special) % 16 {
+                0 => '"',
+                1 => '\\',
+                2 => '\u{e9}',
+                3 => '\u{1f980}',
+                _ => 'x',
+            });
+        }
+        out
+    }
+
+    fn prop_checkpoint(snapshot: String) -> JournalEntry {
+        JournalEntry::Checkpoint {
+            sequence: 0,
+            module_hash: "prop-module".to_owned(),
+            seed: 0,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            lease: None,
+            snapshot,
+            events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
+        }
+    }
+
+    fn prop_entry() -> impl proptest::strategy::Strategy<Value = JournalEntry> {
+        use proptest::prelude::*;
+        prop_oneof![
+            any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                participant_id,
+                by: None,
+            }),
+            proptest::collection::vec((0..24_usize, any::<u8>()), 0..=4).prop_map(|parts| {
+                JournalEntry::CapsGranted {
+                    granted: parts
+                        .into_iter()
+                        .map(|(len, special)| prop_filler(len, special))
+                        .collect(),
+                }
+            }),
+            // Snapshot sizes straddle the payload bound: below, around, above.
+            prop_oneof![
+                (0..=200_usize, any::<u8>()),
+                (
+                    super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES - 600
+                        ..=super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES + 600,
+                    any::<u8>(),
+                ),
+                (
+                    super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES + 1
+                        ..=super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES + 8192,
+                    any::<u8>(),
+                ),
+            ]
+            .prop_map(|(len, special)| prop_checkpoint(prop_filler(len, special))),
+        ]
+    }
+
+    fn prop_bounded_entry() -> impl proptest::strategy::Strategy<Value = JournalEntry> {
+        use proptest::prelude::*;
+        // Every entry bounded far below the payload limit by construction;
+        // the journal TOTAL still ranges past it via the entry count.
+        prop_oneof![
+            any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                participant_id,
+                by: None,
+            }),
+            (0..=20_000_usize, any::<u8>())
+                .prop_map(|(len, special)| prop_checkpoint(prop_filler(len, special))),
+        ]
+    }
+
+    #[test]
+    fn scanner_matches_first_over_bound_line_oracle() {
+        use proptest::prelude::*;
+        proptest!(ProptestConfig::with_cases(48), |(entries in proptest::collection::vec(prop_entry(), 1..=10))| {
+            let lines: Vec<Vec<u8>> = entries.iter().map(journal_entry_line).collect();
+            let oracle = lines
+                .iter()
+                .enumerate()
+                .find(|(_, line)| line.len() > super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES)
+                .map(|(ordinal, line)| (ordinal, line.len()));
+            let bytes: Vec<u8> = lines.into_iter().flatten().collect();
+            let source = JournalSnapshotSource::from_reader(1, bytes.len() as u64, Cursor::new(bytes));
+            let scanned = source.first_oversized_entry().unwrap();
+            prop_assert_eq!(scanned, oracle);
+        });
+    }
+
+    #[test]
+    fn bounded_journals_never_compact_at_feed_build() {
+        use proptest::prelude::*;
+        proptest!(ProptestConfig::with_cases(24), |(entries in proptest::collection::vec(prop_bounded_entry(), 1..=24))| {
+            // Oracle first: no serialized line may exceed the bound.
+            let lines: Vec<Vec<u8>> = entries.iter().map(journal_entry_line).collect();
+            prop_assert!(lines
+                .iter()
+                .all(|line| line.len() <= super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES));
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let compactions = Arc::new(AtomicUsize::new(0));
+                let source_captures = Arc::new(AtomicUsize::new(0));
+                let journal = FeedJournal {
+                    version: 1,
+                    entries,
+                    compactions: Arc::clone(&compactions),
+                    source_captures: Arc::clone(&source_captures),
+                };
+                let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+                core.active_module_hash = Some("prop-module".to_owned());
+                let mut actor = WorldActor::for_test(
+                    core,
+                    Box::new(SnapshotProgram),
+                    Some(Box::new(journal)),
+                );
+                let (reply, response) = oneshot::channel();
+                actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+                let (_world_id, _source, probe_source, _updates) =
+                    response.await.unwrap().expect("feed capture");
+                if let Some(probe) = probe_source {
+                    // The caller-side scan (WorldHandle::replication_feed's
+                    // step) must find nothing, so no ReplicationCompact is
+                    // ever sent for a bounded journal.
+                    let scanned = probe.first_oversized_entry().unwrap();
+                    assert_eq!(scanned, None);
+                }
+                assert_eq!(compactions.load(Ordering::SeqCst), 0);
+            });
+        });
     }
 
     struct BumpingJournal {
@@ -3072,6 +3428,340 @@ mod replication_feed_tests {
         };
         assert_eq!(snapshot.bytes, std::fs::read(path).unwrap());
         assert!(snapshot.bytes.ends_with(b"\n"));
+    }
+
+    #[tokio::test]
+    async fn legacy_oversized_checkpoint_is_recompacted_at_feed_build() {
+        use crate::world::{
+            MAX_REPLICATION_PAYLOAD_BYTES, ReplicationEnvelope, ReplicationKind,
+            ReplicationTracker, SignedReplicationEnvelope, chain_base_cursor, chain_payload,
+            frame_digest, split_entry_payload,
+        };
+
+        let snapshot_calls = Arc::new(AtomicUsize::new(0));
+        let compactions = Arc::new(AtomicUsize::new(0));
+        let source_captures = Arc::new(AtomicUsize::new(0));
+        let journal = FeedJournal {
+            version: 1,
+            entries: legacy_oversized_checkpoint(),
+            compactions: Arc::clone(&compactions),
+            source_captures: Arc::clone(&source_captures),
+        };
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        // Restored legacy worlds are never `checkpoint_due` (nothing has been
+        // committed since restore), so this must not matter to the feed.
+        assert!(!core.checkpoint_due());
+        core.active_module_hash = Some("test-module-hash".to_owned());
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(CountingSnapshotProgram {
+                snapshot_calls: Arc::clone(&snapshot_calls),
+            }),
+            Some(Box::new(journal)),
+        );
+        let mut existing_updates = actor.replication_sender.subscribe();
+
+        // The feed flow since #8095: the actor returns a probe source, the
+        // CALLER scans it outside the actor, a serialized ReplicationCompact
+        // command compacts, and the feed is rebuilt from the compacted image.
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, _pre_compact_source, probe_source, _pre_compact_updates) =
+            response.await.unwrap().expect("first feed capture");
+        assert_eq!(
+            compactions.load(Ordering::SeqCst),
+            0,
+            "the actor must not compact (or scan) during ReplicationFeed"
+        );
+        let probe = probe_source.expect("a >256 KiB journal must yield a probe source");
+        let (ordinal, encoded_size) = probe
+            .first_oversized_entry()
+            .unwrap()
+            .expect("the legacy fixture holds an oversized entry");
+        let (reply, response) = oneshot::channel();
+        actor
+            .handle(WorldCommand::ReplicationCompact {
+                ordinal,
+                encoded_size,
+                reply,
+            })
+            .await;
+        response
+            .await
+            .unwrap()
+            .expect("legacy oversized journal must re-compact at feed build");
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, snapshot_source, _probe_source, mut updates) = response
+            .await
+            .unwrap()
+            .expect("feed rebuilt after compaction");
+        assert_eq!(compactions.load(Ordering::SeqCst), 1);
+        assert_eq!(snapshot_calls.load(Ordering::SeqCst), 1);
+        let ReplicationUpdate::Reset(reset) = existing_updates.try_recv().unwrap() else {
+            panic!("feed-time compaction must publish a reset to existing feeds");
+        };
+
+        let snapshot = snapshot_source.read().unwrap();
+        assert_eq!(reset.bytes, snapshot.bytes);
+        let chunks = split_entry_payload(&snapshot.bytes).unwrap();
+        assert!(!chunks.is_empty());
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.len() <= MAX_REPLICATION_PAYLOAD_BYTES)
+        );
+
+        // End to end: split chunks frame and verify exactly like the network
+        // feed does, with a cursor chaining every accepted payload.
+        const NONCE: [u8; 16] = [7; 16];
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let source = *key.verifying_key().as_bytes();
+        let mut tracker =
+            ReplicationTracker::new("lobby", source, snapshot.header_version, NONCE).unwrap();
+        let mut previous_frame_digest = [0; 32];
+        let mut cursor = chain_base_cursor("lobby", &source, snapshot.header_version);
+        let mut received = Vec::new();
+        for (index, payload) in chunks.iter().enumerate() {
+            let envelope = if index == 0 {
+                ReplicationEnvelope::snapshot(
+                    "lobby",
+                    source,
+                    snapshot.header_version,
+                    NONCE,
+                    previous_frame_digest,
+                    payload.clone(),
+                )
+                .unwrap()
+            } else {
+                ReplicationEnvelope::tail(
+                    "lobby",
+                    source,
+                    snapshot.header_version,
+                    NONCE,
+                    cursor,
+                    previous_frame_digest,
+                    payload.clone(),
+                )
+                .unwrap()
+            };
+            cursor = envelope.cursor_after;
+            let frame = SignedReplicationEnvelope::sign(envelope, &key)
+                .unwrap()
+                .encode_frame()
+                .unwrap();
+            previous_frame_digest = frame_digest(&frame);
+            received.extend_from_slice(&tracker.accept(&frame).unwrap().payload);
+        }
+        let terminal = ReplicationEnvelope::terminal(
+            "lobby",
+            source,
+            snapshot.header_version,
+            NONCE,
+            cursor,
+            previous_frame_digest,
+        );
+        assert_eq!(
+            tracker
+                .accept(
+                    &SignedReplicationEnvelope::sign(terminal, &key)
+                        .unwrap()
+                        .encode_frame()
+                        .unwrap()
+                )
+                .unwrap()
+                .kind,
+            ReplicationKind::Terminal
+        );
+        assert_eq!(received, snapshot.bytes);
+        let mut expected = chain_base_cursor("lobby", &source, snapshot.header_version);
+        for chunk in split_entry_payload(&snapshot.bytes).unwrap() {
+            expected = chain_payload(expected, &chunk).unwrap();
+        }
+        assert_eq!(tracker.cursor(), expected);
+        assert!(
+            updates.try_recv().is_err(),
+            "the feed starts after its own compaction reset"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_oversized_checkpoint_without_a_program_is_actionable() {
+        use crate::world::MAX_REPLICATION_PAYLOAD_BYTES;
+
+        let snapshot_calls = Arc::new(AtomicUsize::new(0));
+        let compactions = Arc::new(AtomicUsize::new(0));
+        let source_captures = Arc::new(AtomicUsize::new(0));
+        let journal = FeedJournal {
+            version: 1,
+            entries: legacy_oversized_checkpoint(),
+            compactions: Arc::clone(&compactions),
+            source_captures: Arc::clone(&source_captures),
+        };
+        let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        assert!(core.active_module_hash.is_none());
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(CountingSnapshotProgram {
+                snapshot_calls: Arc::clone(&snapshot_calls),
+            }),
+            Some(Box::new(journal)),
+        );
+
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, _source, probe_source, _updates) =
+            response.await.unwrap().expect("first feed capture");
+        let probe = probe_source.expect("a >256 KiB journal must yield a probe source");
+        let (ordinal, encoded_size) = probe
+            .first_oversized_entry()
+            .unwrap()
+            .expect("the legacy fixture holds an oversized entry");
+        let (reply, response) = oneshot::channel();
+        actor
+            .handle(WorldCommand::ReplicationCompact {
+                ordinal,
+                encoded_size,
+                reply,
+            })
+            .await;
+        let error = response
+            .await
+            .unwrap()
+            .expect_err("compaction without a program must fail the feed");
+        let message = format!("{error:#}");
+        let legacy_bytes: Vec<u8> = legacy_oversized_checkpoint()
+            .iter()
+            .flat_map(journal_entry_line)
+            .collect();
+        let encoded_size = legacy_bytes
+            .split_inclusive(|byte| *byte == b'\n')
+            .nth(1)
+            .expect("fixture must hold an oversized checkpoint")
+            .len();
+        assert!(
+            message.contains("ordinal 1"),
+            "error must name the entry ordinal, got: {message}"
+        );
+        assert!(
+            message.contains(&encoded_size.to_string()),
+            "error must name the encoded size, got: {message}"
+        );
+        assert!(
+            message.contains(&MAX_REPLICATION_PAYLOAD_BYTES.to_string()),
+            "error must name the bound, got: {message}"
+        );
+        assert!(
+            message.contains("compaction"),
+            "error must ask for compaction, got: {message}"
+        );
+        assert!(
+            !message.contains("not a sequence of complete entries")
+                && !message.contains("not complete journal entries"),
+            "oversized-entry refusal must stay distinguishable from a malformed payload, got: {message}"
+        );
+        assert_eq!(compactions.load(Ordering::SeqCst), 0);
+        assert_eq!(snapshot_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn oversized_probe_does_not_block_the_actor() {
+        // #8095 acceptance: while a >256 KiB journal scan is in flight (here:
+        // captured but deliberately not yet scanned), the actor keeps
+        // processing other commands. Before the fix, ReplicationFeed awaited
+        // the scan inside handle, so every command queued behind it.
+        let snapshot_calls = Arc::new(AtomicUsize::new(0));
+        let compactions = Arc::new(AtomicUsize::new(0));
+        let source_captures = Arc::new(AtomicUsize::new(0));
+        let journal = FeedJournal {
+            version: 1,
+            entries: legacy_oversized_checkpoint(),
+            compactions: Arc::clone(&compactions),
+            source_captures: Arc::clone(&source_captures),
+        };
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("test-module-hash".to_owned());
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(CountingSnapshotProgram {
+                snapshot_calls: Arc::clone(&snapshot_calls),
+            }),
+            Some(Box::new(journal)),
+        );
+
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, _source, probe_source, _updates) =
+            response.await.unwrap().expect("first feed capture");
+        let probe = probe_source.expect("a >256 KiB journal must yield a probe source");
+        assert_eq!(compactions.load(Ordering::SeqCst), 0);
+        assert_eq!(snapshot_calls.load(Ordering::SeqCst), 0);
+
+        // The scan has not run, yet the actor answers another command —
+        // the probe waits on the caller's side of the command channel.
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::CapsInfo { reply }).await;
+        let _report = response.await.unwrap();
+
+        // Now the caller scans, compacts through the serialized command,
+        // and rebuilds the feed — the legacy outcome, without the stall.
+        let (ordinal, encoded_size) = probe
+            .first_oversized_entry()
+            .unwrap()
+            .expect("the legacy fixture holds an oversized entry");
+        let (reply, response) = oneshot::channel();
+        actor
+            .handle(WorldCommand::ReplicationCompact {
+                ordinal,
+                encoded_size,
+                reply,
+            })
+            .await;
+        response.await.unwrap().expect("compaction succeeds");
+        assert_eq!(compactions.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn feed_without_an_oversized_entry_keeps_the_fast_path() {
+        let snapshot_calls = Arc::new(AtomicUsize::new(0));
+        let compactions = Arc::new(AtomicUsize::new(0));
+        let source_captures = Arc::new(AtomicUsize::new(0));
+        let journal = FeedJournal {
+            version: 1,
+            entries: vec![JournalEntry::Created {
+                world_id: "lobby".to_owned(),
+                version: 1,
+            }],
+            compactions: Arc::clone(&compactions),
+            source_captures: Arc::clone(&source_captures),
+        };
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("test-module-hash".to_owned());
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(CountingSnapshotProgram {
+                snapshot_calls: Arc::clone(&snapshot_calls),
+            }),
+            Some(Box::new(journal)),
+        );
+
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, snapshot_source, probe_source, mut updates) = response
+            .await
+            .unwrap()
+            .expect("a small journal must keep the fast path");
+        assert!(
+            probe_source.is_none(),
+            "a small journal cannot hold an over-bound entry: no probe (#8095)"
+        );
+        // Behavior, not timing: no compaction ran, the program was never
+        // serialized, and the actor captured exactly one journal source.
+        assert_eq!(compactions.load(Ordering::SeqCst), 0);
+        assert_eq!(snapshot_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(source_captures.load(Ordering::SeqCst), 1);
+        assert!(snapshot_source.read().is_ok());
+        assert!(updates.try_recv().is_err());
     }
 }
 
