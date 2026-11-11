@@ -247,6 +247,79 @@ func TestAPIAddAllowsNameThatOnlySanitizesToAnExplicitNamespace(t *testing.T) {
 	}
 }
 
+// A disabled server owns no namespace: ResolveAll skips disabled
+// servers, so a disabled server's explicit namespace must not refuse
+// an API add (Codex P2, PR #4637 round 4). The exact-name refusal is
+// a separate check and is not exercised here.
+func TestAPIAddAllowsNamespaceOwnedByADisabledServer(t *testing.T) {
+	s, _ := setupPersist(t, []byte(`{"mcpServers":{"backend":{"command":"/bin/true","mcpx":{"namespace":"pets","disabled":true}}}}`), false)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "apis.json")
+	if err := os.WriteFile(file, []byte(`{"apis":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.set.SetRuntime("paths.apis", file); err != nil {
+		t.Fatal(err)
+	}
+	rec := postAPI(t, s, `{"name":"pets","spec":"./x.json"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add pets: status %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if got := readFile(t, file); !strings.Contains(got, "pets") {
+		t.Fatalf("the non-colliding declaration was not persisted: %s", got)
+	}
+}
+
+// Removing an API an enabled server aliases is refused BEFORE the
+// declaration is deleted: the alias resolves against the generated
+// server, so a delete-then-reload would strand the config (Codex
+// P2, PR #4637 round 4). Oracle: Config.Resolve rejects an alias
+// whose target is unknown, and the API-generated server exists only
+// while its declaration does.
+func TestAPIRemoveRefusesWhenAnEnabledAliasDependsOnIt(t *testing.T) {
+	// The "demo" server entry stands in for the API-generated server
+	// the real augment produces from the declaration below: in the
+	// live daemon the merged config carries both, which is what lets
+	// pets-view resolve at all before the removal.
+	s, _ := setupPersist(t, []byte(`{"mcpServers":{"demo":{"command":"/bin/true"},"pets-view":{"aliasOf":"demo"}}}`), false)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "apis.json")
+	if err := os.WriteFile(file, []byte(`{"apis":[{"name":"demo","spec":"./demo.json"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.set.SetRuntime("paths.apis", file); err != nil {
+		t.Fatal(err)
+	}
+	rec := deleteAPI(t, s, "demo")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if got := readFile(t, file); !strings.Contains(got, "demo") {
+		t.Fatalf("the refused removal still deleted the declaration: %s", got)
+	}
+}
+
+// A DISABLED alias is skipped by ResolveAll, so it does not gate
+// removing the API it points at.
+func TestAPIRemoveAllowsWhenOnlyADisabledAliasDependsOnIt(t *testing.T) {
+	s, _ := setupPersist(t, []byte(`{"mcpServers":{"pets-view":{"aliasOf":"demo","mcpx":{"disabled":true}}}}`), false)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "apis.json")
+	if err := os.WriteFile(file, []byte(`{"apis":[{"name":"demo","spec":"./demo.json"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.set.SetRuntime("paths.apis", file); err != nil {
+		t.Fatal(err)
+	}
+	rec := deleteAPI(t, s, "demo")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if got := readFile(t, file); strings.Contains(got, "demo") {
+		t.Fatalf("the declaration is still there: %s", got)
+	}
+}
+
 func TestAPIAddRefusesExactServerNameWithForeignNamespace(t *testing.T) {
 	s, _ := setupPersist(t, []byte(`{"mcpServers":{"backend":{"command":"/bin/true","mcpx":{"namespace":"pets"}}}}`), false)
 	dir := t.TempDir()

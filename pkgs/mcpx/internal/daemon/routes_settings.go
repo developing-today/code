@@ -1139,7 +1139,12 @@ func (s *Server) handleAPIsAdd(w http.ResponseWriter, r *http.Request) {
 			// it again here would invent collisions ResolveAll never
 			// sees -- a server with explicit namespace "pets$" does
 			// NOT own "pets_" (Codex P2, PR #4637 round 3).
-			nsHit := resolved == want
+			// A DISABLED server owns no namespace at all: ResolveAll
+			// skips it, so its namespace cannot collide (Codex P2,
+			// PR #4637 round 4). The exact-name check below is
+			// independent of this and still applies to it.
+			disabled := srv.Mcpx != nil && srv.Mcpx.Disabled
+			nsHit := !disabled && resolved == want
 			// The EXACT server name is a collision independently of the
 			// namespace: augmentAPIs refuses an API whose name equals a
 			// configured server's name even when that server resolves
@@ -1195,6 +1200,27 @@ func (s *Server) handleAPIsRemove(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf(
 			"no configured apis file declares %q", name))
 		return
+	}
+	// Refuse BEFORE writing when an enabled configured server
+	// aliases this API: the alias resolves against the server the
+	// API declaration generates, so deleting the declaration first
+	// and reloading second would fail every later reload and
+	// daemon start in Resolve -- with the entry already gone
+	// (Codex P2, PR #4637 round 4). A disabled alias is skipped
+	// by ResolveAll and does not gate the removal.
+	if cfg := s.currentConfig(); cfg != nil {
+		for aliasName, srv := range cfg.MCPServers {
+			if srv == nil || srv.AliasOf != name {
+				continue
+			}
+			if srv.Mcpx != nil && srv.Mcpx.Disabled {
+				continue
+			}
+			writeErr(w, http.StatusConflict, fmt.Errorf(
+				"server %q aliases API %q; remove or retarget that alias before removing the API",
+				aliasName, name))
+			return
+		}
 	}
 	if _, err := config.RemoveAPIEntry(path, name); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
