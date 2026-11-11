@@ -796,6 +796,7 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn payload_with(identity: serde_json::Value) -> Value {
         let mut payload = json!({
@@ -1274,6 +1275,119 @@ mod tests {
                 "error names the field: {}",
                 errs[0]
             );
+        }
+    }
+
+    /// Test-local civil_from_days (Howard Hinnant's algorithm) —
+    /// the independent inverse of days_from_civil, used as the
+    /// calendar oracle by the property tests below.
+    fn civil_from_days(z: i64) -> (i64, u32, u32) {
+        let z = z + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = (z - era * 146_097) as u64;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe as i64 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+        (if m <= 2 { y + 1 } else { y }, m, d)
+    }
+
+    fn format_utc(epoch: i64) -> String {
+        let (y, m, d) = civil_from_days(epoch.div_euclid(86_400));
+        let secs = epoch.rem_euclid(86_400);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+            secs / 3600,
+            (secs % 3600) / 60,
+            secs % 60
+        )
+    }
+
+    proptest! {
+        /// Calendar invariant (Codex P1 on PR #8489): the parser
+        /// accepts a (year, month, day) triple iff that day exists,
+        /// and the parsed value is the civil-date epoch. Oracle: the
+        /// inverse pair days_from_civil/civil_from_days — a triple
+        /// is a real date iff the round trip returns it unchanged
+        /// (normalization moves impossible dates into the next
+        /// month, so their round trip differs).
+        #[test]
+        fn parse_accepts_exactly_real_dates(
+            year in 1600i64..2400,
+            month in 1u32..=12,
+            day in 1u32..=31,
+        ) {
+            let s = format!("{year:04}-{month:02}-{day:02}T00:00:00Z");
+            let real = civil_from_days(days_from_civil(year, month, day)) == (year, month, day);
+            prop_assert_eq!(parse_rfc3339_epoch(&s).is_some(), real, "{}", s);
+            if real {
+                prop_assert_eq!(
+                    parse_rfc3339_epoch(&s),
+                    Some(days_from_civil(year, month, day) * 86_400)
+                );
+            }
+        }
+
+        /// Round-trip invariant: any epoch in the RFC 3339 year
+        /// range formats (via the civil_from_days oracle) to a
+        /// string the parser reads back as the same epoch.
+        #[test]
+        fn parse_format_round_trip_any_epoch(epoch in -31_622_400i64..253_402_300_799) {
+            prop_assert_eq!(parse_rfc3339_epoch(&format_utc(epoch)), Some(epoch));
+        }
+
+        /// Offset-equivalence invariant: the same wall clock with a
+        /// numeric offset names the instant shifted by exactly that
+        /// offset. Oracle: the offset-seconds arithmetic identity.
+        #[test]
+        fn offset_forms_shift_by_exactly_the_offset(
+            epoch in -31_622_400i64..253_402_300_799,
+            oh in 0i64..=23,
+            om in 0i64..=59,
+            sign in proptest::bool::ANY,
+        ) {
+            let (y, m, d) = civil_from_days(epoch.div_euclid(86_400));
+            let secs = epoch.rem_euclid(86_400);
+            let s = format!(
+                "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}{}{oh:02}:{om:02}",
+                secs / 3600,
+                (secs % 3600) / 60,
+                secs % 60,
+                if sign { "+" } else { "-" }
+            );
+            let offset = (if sign { 1 } else { -1 }) * (oh * 3600 + om * 60);
+            prop_assert_eq!(parse_rfc3339_epoch(&s), Some(epoch - offset), "{}", s);
+        }
+
+        /// Horizon invariant (#6426): validation accepts a formatted
+        /// instant iff it is at most NOT_BEFORE_MAX_FUTURE_SECONDS
+        /// past the given now. Oracle: the direct epoch comparison.
+        #[test]
+        fn horizon_accepts_iff_within_366_days(
+            now in 0i64..2_000_000_000,
+            delta in -40_000_000i64..40_000_000,
+        ) {
+            let epoch = now + delta;
+            let ok = validate_not_before_at(&json!(format_utc(epoch)), "packet.not_before", now)
+                .is_ok();
+            prop_assert_eq!(ok, delta <= NOT_BEFORE_MAX_FUTURE_SECONDS, "delta {}", delta);
+        }
+
+        /// Robustness invariant: arbitrary text never panics the
+        /// parser or the validator — every input resolves to
+        /// None/Some or Err/Ok. (The enumerated shapes above pin
+        /// the semantics; this pins the absence of panics on
+        /// overflow-shaped inputs, the failure mode of Codex
+        /// rounds 2-4 on PR #8489.)
+        #[test]
+        fn arbitrary_text_never_panics(
+            chars in proptest::collection::vec(proptest::char::range('\u{20}', '\u{7e}'), 0..64),
+        ) {
+            let s: String = chars.into_iter().collect();
+            let _ = parse_rfc3339_epoch(&s);
+            let _ = validate_not_before_at(&json!(s), "packet.not_before", 1_762_700_000);
         }
     }
 }
