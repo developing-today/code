@@ -828,7 +828,8 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
                     "task_id": task_id,
                     "session_id": session_id,
                     "worker_id": worker_id,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                    "queue": candidate.get("queue"),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 if not _send_prompt(session_id, prompt):
                     entry["prompt_failed"] = True
