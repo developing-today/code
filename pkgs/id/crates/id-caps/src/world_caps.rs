@@ -758,6 +758,9 @@ pub enum Subscription {
     Players,
     /// A tick event every this many milliseconds while someone is connected.
     Tick(u64),
+    /// A location reading every this many milliseconds while someone
+    /// is connected and consent stands (#2341).
+    LocWatch(u64),
     /// A spec the host does not understand.
     Unknown(String),
 }
@@ -775,6 +778,11 @@ impl Subscription {
         {
             return Self::Tick(ms);
         }
+        if (spec == "loc.watch" || spec.starts_with("loc.watch:"))
+            && let Ok(ms) = parse_loc_watch_interval_ms(spec)
+        {
+            return Self::LocWatch(ms);
+        }
         Self::Unknown(spec.to_owned())
     }
 
@@ -784,6 +792,7 @@ impl Subscription {
         match self {
             Self::Players => "players",
             Self::Tick(_) => "time.tick",
+            Self::LocWatch(_) => "loc.watch",
             Self::Unknown(spec) => spec,
         }
     }
@@ -794,6 +803,7 @@ impl Subscription {
         match self {
             Self::Players => "players".to_owned(),
             Self::Tick(ms) => format!("time.tick:{ms}"),
+            Self::LocWatch(ms) => format!("loc.watch:{ms}"),
             Self::Unknown(spec) => spec.clone(),
         }
     }

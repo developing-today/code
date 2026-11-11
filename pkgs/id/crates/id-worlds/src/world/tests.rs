@@ -4582,6 +4582,110 @@ mod tests {
         }
     }
 
+    /// A program that subscribes to `loc.watch:5000` and records every
+    /// system event it is delivered, verbatim (#2341 slice 2).
+    #[derive(Debug, Default)]
+    struct LocWatchRecorder {
+        events: Vec<String>,
+    }
+
+    impl WorldProgram for LocWatchRecorder {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.events.push(event.clone());
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"v": 1, "subscribe": ["loc.watch:5000"]}).to_string(),
+            ))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"events": self.events}).to_string(),
+            ))
+        }
+    }
+
+    /// The system events a [`LocWatchRecorder`] actor has delivered, via its records.
+    fn loc_events(actor: &WorldActor) -> Vec<String> {
+        actor
+            .records_sender
+            .borrow()
+            .1
+            .get("events")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn loc_watch_delivers_readings_and_revokes_on_consent_withdrawal() {
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
+        let mut core =
+            WorldCore::new_with_clock("loc-watch", WorldLimits::default(), clock.clone()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["loc.watch".to_owned()]));
+        let mut allowed = crate::world_caps::default_ceiling_names();
+        allowed.insert("loc.watch".to_owned());
+        core.ledger.set_allowed(allowed);
+        let (_, _token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(LocWatchRecorder::default()), None);
+        let reading = crate::world_caps::LocationReading {
+            lat: 52.5,
+            lon: 13.4,
+            accuracy_m: 12.0,
+            fix_age_ms: 250,
+            source: crate::world_caps::LocationSource::Gnss,
+        };
+        actor.location_consent = crate::world_caps::LocationConsent::Granted;
+        actor.location_fix = Some(reading);
+
+        actor.after_change().await;
+        actor
+            .handle(WorldCommand::Presence {
+                participant: 1,
+                joined: true,
+            })
+            .await;
+        assert!(
+            actor.loc_watches.contains_key(&5000),
+            "a granted, consented watch arms on presence"
+        );
+
+        clock.advance(5000);
+        actor.fire_loc_watches().await;
+        assert_eq!(
+            loc_events(&actor),
+            vec![crate::world_caps::loc_watch_reading_event(&reading)],
+            "the open watch delivers the host reading"
+        );
+
+        // Consent withdrawn: the next fire closes the watch with
+        // exactly the revocation event, and nothing is delivered after.
+        actor.location_consent = crate::world_caps::LocationConsent::ConsentRequired;
+        clock.advance(5000);
+        actor.fire_loc_watches().await;
+        assert_eq!(
+            loc_events(&actor),
+            vec![
+                crate::world_caps::loc_watch_reading_event(&reading),
+                crate::world_caps::loc_watch_revocation_event(),
+            ]
+        );
+        assert!(actor.loc_watches.is_empty(), "the revoked watch disarms");
+        assert!(
+            !actor
+                .active_subs
+                .contains(&crate::world_caps::Subscription::LocWatch(5000)),
+            "the revoked watch is closed, not merely muted"
+        );
+    }
+
     #[tokio::test]
     async fn subscribed_ticks_arrive_only_while_someone_is_present() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
