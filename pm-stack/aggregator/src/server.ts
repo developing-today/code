@@ -69,12 +69,15 @@ import {
   decisionSetOpenState,
   decisionSetProgress,
   deferWithSubmissions,
+  getDecisionDrafts,
   getDecisionSet,
   isDeferLean,
   listOpenDecisionSets,
   raiseDecisionSet,
   recordResolutions,
   requestInfoOpenQuestions,
+  upsertDecisionDrafts,
+  validateDecisionDraftUpsert,
   validateDecisionSet,
   type DecisionItem,
   type DecisionSet,
@@ -3084,6 +3087,40 @@ async function handler(req: Request): Promise<Response> {
     );
     if (!result) return json({ error: "unknown set" }, 404);
     return json({ requestedCount: result.requestedCount, ...decisionSetOpenState(result.set) });
+  }
+
+  const decisionsDraftsMatch = /^\/api\/decisions\/([^/]+)\/drafts$/.exec(path);
+  if ((req.method === "GET" || req.method === "POST") && decisionsDraftsMatch) {
+    const setId = decodePathSegment(decisionsDraftsMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (req.method === "GET") {
+      const token = url.searchParams.get("t") ?? "";
+      // Unknown set or token mismatch: 403, nothing about the set's
+      // drafts is shown without the correct link.
+      if (!set || !token || token !== set.token) {
+        return json({ error: "unknown set or bad token" }, 403);
+      }
+      const drafts = await getDecisionDrafts(cfg.decisionsFile, setId).catch(() => null);
+      return json({
+        drafts: drafts ?? { questions: {}, bulk: [], bulkLean: "", bulkNote: "", updatedAt: "" },
+      });
+    }
+    let body: { token?: unknown; drafts?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid drafts body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const parsedDrafts = validateDecisionDraftUpsert(body.drafts);
+    if (!parsedDrafts.ok) return json({ error: parsedDrafts.error }, 400);
+    const result = await upsertDecisionDrafts(cfg.decisionsFile, setId, parsedDrafts.value);
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({ drafts: result.drafts, applied: result.applied, skipped: result.skipped });
   }
   const alertActionMatch = /^\/api\/alerts\/([\w-]+)\/(ack|close)$/.exec(path);
   if (req.method === "POST" && alertActionMatch) {
