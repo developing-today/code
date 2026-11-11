@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -73,7 +74,7 @@ func scriptViewTool(name string, tv config.ToolView) mcpclient.Tool {
 // as text. A program that exits non-zero is a result with isError set, carrying
 // its exit status and stderr. Only a call that cannot run, times out or is
 // cancelled is an error.
-func (r *Registry) runScriptView(ctx context.Context, pl *pool.Pool, tool string, tv *config.ToolView, args any, session string) (json.RawMessage, error) {
+func (r *Registry) runScriptView(ctx context.Context, pl *pool.Pool, tool string, tv *config.ToolView, args any, session string, resolved *config.Resolved) (json.RawMessage, error) {
 	if tv.File != "" {
 		r.mu.RLock()
 		run := r.scriptRun
@@ -107,10 +108,10 @@ func (r *Registry) runScriptView(ctx context.Context, pl *pool.Pool, tool string
 		}
 		return run(ctx, tool, *tv, values, session)
 	}
-	return callScriptView(ctx, pl, tool, tv, args)
+	return callScriptView(ctx, pl, tool, tv, args, resolved)
 }
 
-func callScriptView(ctx context.Context, pl *pool.Pool, tool string, tv *config.ToolView, args any) (json.RawMessage, error) {
+func callScriptView(ctx context.Context, pl *pool.Pool, tool string, tv *config.ToolView, args any, resolved *config.Resolved) (json.RawMessage, error) {
 	ctx = withRequestedCallTimeout(ctx)
 	payload, err := json.Marshal(args)
 	if err != nil {
@@ -151,6 +152,9 @@ func callScriptView(ctx context.Context, pl *pool.Pool, tool string, tv *config.
 	defer cancel()
 
 	cmd := exec.CommandContext(cctx, tv.Command, tv.Args...)
+	if resolved != nil {
+		cmd.Env = scriptCommandEnv(resolved)
+	}
 	cmd.Stdin = bytes.NewReader(payload)
 	stdout := &cappedBuffer{max: defaults.ExecStdoutLimit}
 	stderr := &cappedBuffer{max: defaults.ExecStderrLimit}
@@ -220,6 +224,15 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 	if err != nil {
 		return nil, &mcpclient.InvalidParamsError{Tool: tool, Err: err}
 	}
+	// Preflight before anything runs: the exec endpoint refuses a
+	// script that reaches a namespace whose required secret has no
+	// value before its first statement, but a declared script
+	// skipped that check, so its local side effects executed before
+	// the eventual missing-secret refusal surfaced mid-run (Codex
+	// P1 on PR #8317).
+	if refusal := s.reg.refuseScript(rendered); refusal != nil {
+		return nil, refusal
+	}
 	opts := execsvc.Options{
 		Output:  execsvc.OutputStructured,
 		Session: session,
@@ -241,7 +254,21 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 	// misrouted to the TypeScript runtime (Codex P2 on PR #8317).
 	// Passing it as File instead would execute the unrendered file.
 	mcpclient.NoteToolCallDispatched(ctx)
-	res, runErr := s.ExecService().Run(ctx, execsvc.Request{Source: rendered, SourceName: view.Path, Opts: opts}, nil)
+	req := execsvc.Request{Source: rendered, SourceName: view.Path, Opts: opts}
+	cleanup := func() {}
+	if file, cf, ferr := materializeDeclaredScript(view.Path, rendered); ferr == nil {
+		// Run the rendered body as a file in a directory holding
+		// the declared script's siblings, so a relative import
+		// (./helper, a sibling module) resolves the way it does
+		// for the declared file itself. As Source, the runner
+		// materialised the body under a generated name in its
+		// cache directory, where no sibling exists (Codex P2 on
+		// PR #8317).
+		req = execsvc.Request{File: file, Opts: opts}
+		cleanup = cf
+	}
+	defer cleanup()
+	res, runErr := s.ExecService().Run(ctx, req, nil)
 	if runErr != nil && res == nil {
 		return nil, fmt.Errorf("tool %q: %w", tool, runErr)
 	}
@@ -286,11 +313,88 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 func (r *Registry) callScriptWithLedger(ctx context.Context, pl *pool.Pool, server, tool string, tv *config.ToolView, args any, session, surface string) (json.RawMessage, error) {
 	var dispatched atomic.Bool
 	callCtx := mcpclient.WithToolCallDispatchHook(ctx, func() { dispatched.Store(true) })
-	res, err := r.runScriptView(callCtx, pl, tool, tv, args, session)
+	r.mu.RLock()
+	resolved := r.views[server]
+	r.mu.RUnlock()
+	res, err := r.runScriptView(callCtx, pl, tool, tv, args, session, resolved)
 	var invalid *mcpclient.InvalidParamsError
 	if err != nil && dispatched.Load() && !tv.ReadOnly && r.writeLedger != nil &&
 		!mcpclient.IsConclusiveUpstreamError(err) && !errors.As(err, &invalid) {
 		return nil, r.recordUnknownOutcome(pl, server, tool, args, surface)
 	}
 	return res, err
+}
+
+// scriptCommandEnv is the environment a command-backed tool runs
+// with: the daemon's own, overlaid with its server's configured
+// env, overlaid with the resolved values of the secrets the server
+// requires -- the values a child process of that server would see
+// (config.Resolved.SecretValue, runtime provision first). Without
+// it, a script-only namespace's env: entries and
+// runtime-provisioned secrets never reached the program: cmd.Env
+// was unset, so only the daemon's environment was inherited (Codex
+// P2 on PR #8317).
+func scriptCommandEnv(resolved *config.Resolved) []string {
+	keys := []string{}
+	vals := map[string]string{}
+	set := func(k, v string) {
+		if _, ok := vals[k]; !ok {
+			keys = append(keys, k)
+		}
+		vals[k] = v
+	}
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			set(k, v)
+		}
+	}
+	for k, v := range resolved.Env {
+		set(k, v)
+	}
+	for _, name := range resolved.SecretNames() {
+		if v, ok := resolved.SecretValue(name); ok {
+			set(name, v)
+		}
+	}
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, k+"="+vals[k])
+	}
+	return out
+}
+
+// materializeDeclaredScript writes the rendered body into a fresh
+// directory under the declared script's own name, with every
+// sibling of the declared script linked in beside it, and returns
+// the path to run plus a cleanup for the directory. Relative
+// imports resolve against the file's directory, so the rendered
+// body has to sit where its siblings are visible; the declared
+// directory itself is never written to.
+func materializeDeclaredScript(path, rendered string) (string, func(), error) {
+	dir := filepath.Dir(path)
+	tmp, err := os.MkdirTemp("", "mcpx-declared-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	for _, e := range entries {
+		if e.Name() == filepath.Base(path) {
+			continue
+		}
+		// Best effort: a sibling that cannot be linked (a socket,
+		// a permission edge) must not stop the tool; the script's
+		// own import of it fails with its own error, as it should.
+		_ = os.Symlink(filepath.Join(dir, e.Name()), filepath.Join(tmp, e.Name()))
+	}
+	target := filepath.Join(tmp, filepath.Base(path))
+	if err := os.WriteFile(target, []byte(rendered), 0o755); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return target, cleanup, nil
 }

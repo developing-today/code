@@ -487,3 +487,61 @@ func TestRenderKeepsHashCommentMarkerOnConsumedDeclarations(t *testing.T) {
 		t.Errorf("the placeholder must be substituted as a JSON literal:\n%s", out)
 	}
 }
+
+// Oracle: shell-safe argument handling (Codex P1 on PR #8317). A
+// shell-backed recipe renders its values as single-quoted shell
+// words, inside which the shell performs no command substitution:
+// a schema-valid $(...) argument stays data, and an embedded single
+// quote cannot break out of the word.
+func TestRenderShellValuesStayData(t *testing.T) {
+	r := recipes.Parse("greet", "/tmp/greet.sh", "#!/bin/sh\n# @param name:string   who to greet\nprintf 'hello %s' @name\n")
+	out, err := r.Render(map[string]any{"name": "$(touch /tmp/pwned)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "printf 'hello %s' '$(touch /tmp/pwned)'") {
+		t.Errorf("shell value must render as one single-quoted word:\n%s", out)
+	}
+	out, err = r.Render(map[string]any{"name": "o'clock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "'o'\\''clock'") {
+		t.Errorf("an embedded quote must be closed, escaped and reopened:\n%s", out)
+	}
+}
+
+// Oracle: Python-compatible literals (Codex P2 on PR #8317). A
+// Python recipe renders booleans and null with Python's own
+// spellings, including inside JSON-typed values, and an omitted
+// optional parameter is None, not the JavaScript undefined the
+// Python runtime would reject with a NameError.
+func TestRenderPythonSpellsPythonLiterals(t *testing.T) {
+	src := "# @param enabled:boolean\n# @param cfg:json\n# @param note:string?\nprint(@enabled, @cfg, @note)\n"
+	r := recipes.Parse("check", "/tmp/check.py", src)
+	out, err := r.Render(map[string]any{
+		"enabled": true,
+		"cfg":     map[string]any{"a": true, "b": nil, "n": []any{false}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "print(True, {\"a\": True, \"b\": None, \"n\": [False]}, None)"
+	if !strings.Contains(out, want) {
+		t.Errorf("rendered = %q, want it to contain %q", out, want)
+	}
+}
+
+// The JavaScript spelling is untouched for a script with no Python
+// or shell evidence: the language-aware rendering must not change
+// what existing TypeScript recipes produce.
+func TestRenderTypeScriptKeepsJSONLiterals(t *testing.T) {
+	r := recipes.Parse("greet", "/tmp/greet.ts", "// @param name:string\nconsole.log(@name)\n")
+	out, err := r.Render(map[string]any{"name": "$(touch /tmp/pwned)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `console.log("$(touch /tmp/pwned)")`) {
+		t.Errorf("a TypeScript recipe keeps its JSON string literal:\n%s", out)
+	}
+}

@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -464,38 +465,45 @@ func (r Recipe) Missing(values map[string]any) []Placeholder {
 
 // Render substitutes values into the body.
 //
-// Values are written as JSON, so a string arrives quoted and an object
-// arrives as an object. Substituting raw text would make every recipe an
-// injection site, and a recipe is run with the user's credentials.
+// Values are written as literals of the body's own language, so a
+// string arrives quoted and an object arrives as an object.
+// Substituting raw text would make every recipe an injection site,
+// and a recipe is run with the user's credentials. The language is
+// the recipe's own (see language): JavaScript gets JSON literals,
+// Python gets Python literals (True/False/None -- Codex P2 on PR
+// #8317), and shell gets single-quoted words, inside which the shell
+// performs no substitution at all, so a value like $(touch /tmp/x)
+// stays data (Codex P1 on PR #8317).
 func (r Recipe) Render(values map[string]any) (string, error) {
+	lang := r.language()
 	lits := map[string]string{}
 	for _, p := range r.Placeholders {
 		v, given := values[p.Name]
 		switch {
 		case given:
-			lit, err := literal(p, v)
+			lit, err := literalFor(lang, p, v)
 			if err != nil {
 				return "", err
 			}
 			lits[p.Name] = lit
 		case p.Default != nil:
-			v, ok := decodeLiteral(p, *p.Default)
+			v, ok := decodeLiteralFor(lang, p, *p.Default)
 			if !ok {
 				return "", fmt.Errorf("%s default must be a valid %s: %q", p.Name, p.Type, *p.Default)
 			}
-			lit, err := literal(p, v)
+			lit, err := literalFor(lang, p, v)
 			if err != nil {
 				return "", fmt.Errorf("%s default must be a valid %s: %w", p.Name, p.Type, err)
 			}
 			lits[p.Name] = lit
 		case !p.Required:
-			lits[p.Name] = "undefined"
+			lits[p.Name] = undefinedLiteral(lang)
 		default:
 			return "", fmt.Errorf("recipe %s needs %s", r.Name, p.Name)
 		}
 	}
 
-	code := scanCode(r.Source)
+	code := scanCodeFor(r.Source, lang)
 	var b strings.Builder
 	offset := 0
 	for _, line := range strings.Split(r.Source, "\n") {
@@ -552,7 +560,11 @@ func substitute(line string, code []bool, lits map[string]string) string {
 	return b.String()
 }
 
-func literal(p Placeholder, v any) (string, error) {
+// literal renders one value as a JavaScript literal; literalFor is
+// the language-aware form Render uses.
+func literal(p Placeholder, v any) (string, error) { return literalFor(langJS, p, v) }
+
+func literalFor(lang string, p Placeholder, v any) (string, error) {
 	switch p.Type {
 	case TypeNumber:
 		switch n := v.(type) {
@@ -598,13 +610,13 @@ func literal(p Placeholder, v any) (string, error) {
 	case TypeBoolean:
 		switch t := v.(type) {
 		case bool:
-			return strconv.FormatBool(t), nil
+			return boolLiteral(lang, t), nil
 		case string:
 			b, err := strconv.ParseBool(t)
 			if err != nil {
 				return "", fmt.Errorf("%s is a boolean, got %q", p.Name, t)
 			}
-			return strconv.FormatBool(b), nil
+			return boolLiteral(lang, b), nil
 		default:
 			return "", fmt.Errorf("%s is a boolean, got %q", p.Name, v)
 		}
@@ -614,14 +626,20 @@ func literal(p Placeholder, v any) (string, error) {
 		}
 	case TypeJSON:
 		if s, ok := v.(string); ok && json.Valid([]byte(s)) {
+			switch lang {
+			case langPython:
+				var parsed any
+				if err := json.Unmarshal([]byte(s), &parsed); err == nil {
+					return pythonValue(parsed)
+				}
+				return s, nil
+			case langShell:
+				return shellQuote(s), nil
+			}
 			return s, nil
 		}
 	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "", fmt.Errorf("%s cannot be encoded: %w", p.Name, err)
-	}
-	return string(b), nil
+	return valueLiteral(lang, p, v)
 }
 
 func numberStringLiteral(p Placeholder, n string) (string, error) {
@@ -695,4 +713,267 @@ func decodeLiteral(p Placeholder, lit string) (any, bool) {
 		return strings.Trim(lit, "\"'`"), true
 	}
 	return nil, false
+}
+
+// The languages a recipe body can be written in, for literal
+// rendering. langJS is the empty string because JavaScript is the
+// historical default: a recipe with no language evidence renders
+// exactly as it always has.
+const (
+	langJS     = ""
+	langPython = "python"
+	langShell  = "shell"
+)
+
+// language names the language this recipe's body runs in, from the
+// same evidence the runner uses: a shebang first, then the file
+// extension. Only the languages whose literal spellings differ from
+// JavaScript's are named; everything else is langJS.
+func (r Recipe) language() string {
+	first := r.Source
+	if i := strings.IndexByte(first, '\n'); i >= 0 {
+		first = first[:i]
+	}
+	if strings.HasPrefix(first, "#!") {
+		fields := strings.Fields(strings.TrimPrefix(first, "#!"))
+		if len(fields) > 0 {
+			interp := filepath.Base(fields[0])
+			if interp == "env" && len(fields) > 1 {
+				interp = filepath.Base(fields[1])
+			}
+			switch {
+			case interp == "uv" || strings.HasPrefix(interp, "python"):
+				return langPython
+			case isShellName(interp):
+				return langShell
+			}
+		}
+	}
+	switch strings.ToLower(filepath.Ext(r.Path)) {
+	case ".py":
+		return langPython
+	case ".sh", ".bash", ".zsh", ".ksh":
+		return langShell
+	}
+	return langJS
+}
+
+func isShellName(name string) bool {
+	switch name {
+	case "sh", "bash", "dash", "zsh", "ksh", "ash", "mksh":
+		return true
+	}
+	return false
+}
+
+// boolLiteral spells a boolean in the body's language.
+func boolLiteral(lang string, b bool) string {
+	if lang == langPython {
+		if b {
+			return "True"
+		}
+		return "False"
+	}
+	return strconv.FormatBool(b)
+}
+
+// undefinedLiteral spells "no value" in the body's language: the
+// value an omitted optional parameter renders as.
+func undefinedLiteral(lang string) string {
+	switch lang {
+	case langPython:
+		return "None"
+	case langShell:
+		return "''"
+	}
+	return "undefined"
+}
+
+// valueLiteral renders a value that reached the end of literalFor:
+// a string, a JSON value, or anything else the placeholder's type
+// did not specialise.
+func valueLiteral(lang string, p Placeholder, v any) (string, error) {
+	switch lang {
+	case langPython:
+		return pythonValue(v)
+	case langShell:
+		if s, ok := v.(string); ok {
+			return shellQuote(s), nil
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", fmt.Errorf("%s cannot be encoded: %w", p.Name, err)
+		}
+		return shellQuote(string(b)), nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("%s cannot be encoded: %w", p.Name, err)
+	}
+	return string(b), nil
+}
+
+// pythonValue renders v as a Python literal. JSON is almost Python;
+// the differences are the three keywords and the container syntax,
+// both handled by walking the value instead of patching the text.
+func pythonValue(v any) (string, error) {
+	switch t := v.(type) {
+	case nil:
+		return "None", nil
+	case bool:
+		return boolLiteral(langPython, t), nil
+	case string:
+		b, err := json.Marshal(t)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	case []any:
+		parts := make([]string, len(t))
+		for i, e := range t {
+			s, err := pythonValue(e)
+			if err != nil {
+				return "", err
+			}
+			parts[i] = s
+		}
+		return "[" + strings.Join(parts, ", ") + "]", nil
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(t))
+		for _, k := range keys {
+			kb, err := json.Marshal(k)
+			if err != nil {
+				return "", err
+			}
+			s, err := pythonValue(t[k])
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, string(kb)+": "+s)
+		}
+		return "{" + strings.Join(parts, ", ") + "}", nil
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+}
+
+// shellQuote renders s as one POSIX shell word: single-quoted, with
+// embedded single quotes closed, escaped and reopened. Inside single
+// quotes the shell performs no word splitting, no globbing and no
+// command substitution, so any value stays exactly one data word.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// decodeLiteralFor is decodeLiteral in the body's language: a Python
+// default may be spelled with Python's own keywords.
+func decodeLiteralFor(lang string, p Placeholder, lit string) (any, bool) {
+	if lang == langPython {
+		switch strings.TrimSpace(lit) {
+		case "True":
+			return true, true
+		case "False":
+			return false, true
+		case "None":
+			return nil, true
+		}
+	}
+	return decodeLiteral(p, lit)
+}
+
+// scanCodeFor is scanCode in the body's language.
+func scanCodeFor(src string, lang string) []bool {
+	if lang == langJS {
+		return scanCode(src)
+	}
+	return scanHashCode(src, lang == langPython)
+}
+
+// scanHashCode is the code mask for the #-comment languages (Python
+// and POSIX shell), where scanCode's JavaScript comment forms do not
+// exist: a `#` comment runs to the end of the line, and placeholders
+// inside it or inside a string are text, not holes. Python strings
+// escape with backslashes and come in triple-quoted form; a shell
+// single-quoted string has no escapes and may span lines.
+func scanHashCode(src string, python bool) []bool {
+	code := make([]bool, len(src))
+	const (
+		stCode = iota
+		stComment
+		stSingle
+		stDouble
+		stTripleSingle
+		stTripleDouble
+	)
+	state := stCode
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		switch state {
+		case stCode:
+			switch {
+			case c == '#' && (python || i == 0 || strings.IndexByte(" \t\n;&|()", src[i-1]) >= 0):
+				state = stComment
+			case c == '\'' && python && i+2 < len(src) && src[i+1] == '\'' && src[i+2] == '\'':
+				state = stTripleSingle
+				i += 2
+			case c == '"':
+				if python && i+2 < len(src) && src[i+1] == '"' && src[i+2] == '"' {
+					state = stTripleDouble
+					i += 2
+				} else {
+					state = stDouble
+				}
+			case c == '\'':
+				state = stSingle
+			default:
+				code[i] = true
+			}
+		case stComment:
+			if c == '\n' {
+				state = stCode
+				code[i] = true
+			}
+		case stSingle:
+			switch {
+			case python && c == '\\':
+				i++
+			case c == '\'':
+				state = stCode
+			case c == '\n' && python:
+				state = stCode
+				code[i] = true
+			}
+		case stDouble:
+			switch {
+			case c == '\\':
+				i++
+			case c == '"':
+				state = stCode
+			case c == '\n' && python:
+				state = stCode
+				code[i] = true
+			}
+		case stTripleSingle, stTripleDouble:
+			q := byte('\'')
+			if state == stTripleDouble {
+				q = '"'
+			}
+			if c == '\\' {
+				i++
+			} else if c == q && i+2 < len(src) && src[i+1] == q && src[i+2] == q {
+				state = stCode
+				i += 2
+			}
+		}
+	}
+	return code
 }

@@ -590,3 +590,184 @@ func TestScriptViewReadOnlyTimeoutRecordsNothing(t *testing.T) {
 		t.Fatal("a read-only call must not write the ledger")
 	}
 }
+
+// Oracle: shell-safe argument handling (Codex P1 on PR #8317). A
+// schema-valid argument that is a shell command substitution must
+// reach a shell-backed tool as data: the rendered body carries it
+// as one single-quoted word, so the shell never executes it.
+func TestScriptFileToolShellArgumentStaysData(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "greet.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n# @param name:string\nprintf 'hello %s' @name\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"greet": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	pwned := filepath.Join(dir, "pwned")
+	payload := "$(touch " + pwned + ")"
+	raw, err := srv.reg.Call(scriptCtx(t), "ops", "greet", config.CallContext{}, map[string]any{"name": payload})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if res.IsError {
+		t.Fatalf("a clean exit is not an error: %s", raw)
+	}
+	if got := strings.TrimSpace(res.Content[0].Text); got != "hello "+payload {
+		t.Errorf("script output = %q, want the argument as literal data", got)
+	}
+	if _, err := os.Stat(pwned); !os.IsNotExist(err) {
+		t.Errorf("the argument was executed by the shell: %s exists", pwned)
+	}
+}
+
+// Oracle: Python-compatible literals (Codex P2 on PR #8317). A
+// boolean argument renders as Python's True, and an omitted
+// optional parameter as None: print(@enabled, @note) must not raise
+// NameError on the JavaScript spellings.
+func TestScriptFileToolPythonBooleanAndOptionalRender(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "check.py")
+	body := "# @param enabled:boolean\n# @param note:string?\nprint(@enabled, @note)\n"
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"check": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	raw, err := srv.reg.Call(scriptCtx(t), "ops", "check", config.CallContext{}, map[string]any{"enabled": true})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if res.IsError {
+		t.Fatalf("a clean Python run is not an error: %s", raw)
+	}
+	if got := strings.TrimSpace(res.Content[0].Text); got != "True None" {
+		t.Errorf("script output = %q, want Python literals True None", got)
+	}
+}
+
+// Oracle: relative module imports (Codex P2 on PR #8317). A declared
+// script importing a sibling module must find it: the rendered body
+// runs in a directory where the declared script's siblings are
+// visible, not in a generated cache directory of strangers.
+func TestScriptFileToolRelativeImportResolves(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "helper.py"), []byte("VALUE = \"from-helper\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "worker.py")
+	if err := os.WriteFile(script, []byte("import helper\nprint(helper.VALUE)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"work": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	raw, err := srv.reg.Call(scriptCtx(t), "ops", "work", config.CallContext{}, map[string]any{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if res.IsError {
+		t.Fatalf("the sibling import must resolve: %s", raw)
+	}
+	if got := strings.TrimSpace(res.Content[0].Text); got != "from-helper" {
+		t.Errorf("script output = %q, want the sibling module's value", got)
+	}
+}
+
+// Oracle: the configured environment (Codex P2 on PR #8317). A
+// command-backed tool on a server declaring env: (which is also how
+// its requiresSecrets are satisfied) runs with those values in its
+// environment, not only the daemon's own.
+func TestScriptViewCommandSeesConfiguredEnv(t *testing.T) {
+	r := scriptRegistry(t, map[string]*config.Server{
+		"ops": {Name: "ops",
+			Env: map[string]string{"SCRIPT_TOKEN": "from-config"},
+			Mcpx: &config.Extras{RequiresSecrets: []string{"SCRIPT_TOKEN"}, ToolViews: map[string]config.ToolView{
+				"token": {Command: "sh", Args: []string{"-c", "printf %s \"$SCRIPT_TOKEN\""}, Description: "print the configured token", ReadOnly: true},
+			}}},
+	})
+	raw, err := r.Call(scriptCtx(t), "ops", "token", config.CallContext{}, map[string]any{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if got := strings.TrimSpace(res.Content[0].Text); got != "from-config" {
+		t.Errorf("program environment = %q, want the server's configured env value", got)
+	}
+}
+
+// Oracle: preflight before side effects (Codex P1 on PR #8317). A
+// declared script that reaches a namespace whose required secret is
+// unavailable is refused before it starts: no local side effect of
+// the script's first statements may happen.
+func TestScriptFileToolRefusesUnavailableSecretBeforeRunning(t *testing.T) {
+	dir := t.TempDir()
+	sideEffect := filepath.Join(dir, "side-effect.txt")
+	script := filepath.Join(dir, "reach.ts")
+	body := "import { writeFileSync } from \"node:fs\";\nwriteFileSync(\"" + sideEffect + "\", \"ran\");\nawait tools.waiting.ping();\n"
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"reach": {File: script, ReadOnly: true},
+			}}},
+			"waiting": {Name: "waiting", Command: "cat",
+				Mcpx: &config.Extras{RequiresSecrets: []string{"MCPX_MISSING_14190_TOKEN"}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	_, err = srv.reg.Call(scriptCtx(t), "ops", "reach", config.CallContext{}, map[string]any{})
+	var refusal SecretRequired
+	var refusalP *SecretRequired
+	if !errors.As(err, &refusal) && !errors.As(err, &refusalP) {
+		t.Fatalf("want a SecretRequired refusal before the script runs, got %v", err)
+	}
+	if _, serr := os.Stat(sideEffect); !os.IsNotExist(serr) {
+		t.Errorf("the script ran before the refusal: %s exists", sideEffect)
+	}
+}
