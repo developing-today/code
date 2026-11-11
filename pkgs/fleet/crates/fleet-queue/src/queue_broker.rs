@@ -1010,10 +1010,18 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             } else {
                 "id,queue,title,priority,status,dedupe_key,created_at,not_before"
             };
+            let offset =
+                crate::client::list_offset_or_default(req.get("offset").and_then(|o| o.as_i64()));
             let mut path = format!(
-                "tasks?select={select}&queue=eq.{}&order=priority.asc,created_at.asc&limit={limit}",
+                "tasks?select={select}&queue=eq.{}&order=priority.asc,created_at.asc&limit={limit}&offset={offset}",
                 quote(queue, "")
             );
+            // #7871: --task narrows to one task id, so a worker can
+            // verify a single recent completion from list output
+            // regardless of the done list's size or ordering.
+            if let Some(t) = req.get("task").and_then(|t| t.as_i64()) {
+                path += &format!("&id=eq.{t}");
+            }
             if let Some(s) = req.get("status").and_then(|s| s.as_str()) {
                 path += &format!("&status=eq.{}", quote(s, ""));
             }
