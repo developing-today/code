@@ -550,10 +550,15 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
                 ));
             }
         }
+        // Absent is valid, and null is its stored spelling:
+        // task_from_packet writes body:null for a body-less packet, and
+        // the claim guard (#5444) revalidates stored rows through this
+        // same function — a null body must not quarantine a task that
+        // enqueue accepted (Codex P1 on PR #8477).
+        None | Some(Value::Null) => {}
         // body=12345/{x:1}/[a]/true and even body='' used to pass silently
         // because the body was only read when it was a string (#6430).
         Some(_) => errors.push("packet.body: must be a non-empty string".to_string()),
-        None => {}
     }
     let size = serde_json::to_string(payload).map(|s| s.len()).unwrap_or(0);
     if size > PAYLOAD_MAX_BYTES {
@@ -757,6 +762,18 @@ mod tests {
         // Valid control: the well-typed packet still validates clean (#6430).
         let (errors, _) = validate_packet(&valid_packet());
         assert!(errors.is_empty(), "valid control errors: {errors:?}");
+
+        // A body-less packet validates, in both spellings: the key
+        // absent (enqueue form) and null (the stored-row form the claim
+        // guard revalidates, #5444 / PR #8477 Codex P1).
+        let mut no_body = valid_packet();
+        no_body.as_object_mut().unwrap().remove("body");
+        let (errors, _) = validate_packet(&no_body);
+        assert!(errors.is_empty(), "absent body errors: {errors:?}");
+        let mut null_body = valid_packet();
+        null_body["body"] = Value::Null;
+        let (errors, _) = validate_packet(&null_body);
+        assert!(errors.is_empty(), "null body errors: {errors:?}");
 
         // The probe cases from issue #6430 (~/git/fleet/probe-queue-body):
         // every malformed variant must now error, naming its field.
