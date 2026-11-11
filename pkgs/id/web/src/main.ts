@@ -13,6 +13,7 @@ import { type EditorInstance, getEditorState } from "./editor";
 import { updateHeaderSubtitle } from "./header-subtitle";
 import {
   identityNeedsRefresh,
+  meResponseCarriesName,
   parseIdentityMeResponse,
   parseIdentityNameResponse,
   parseIdentityRegisterResponse,
@@ -156,17 +157,22 @@ async function ensureIdentity(): Promise<IdentityState | null> {
     try {
       const resp = await fetch(`/api/identity/me?token=${encodeURIComponent(stored.token)}`);
       if (resp.ok) {
-        const data = parseIdentityMeResponse(await resp.json());
+        const rawBody: unknown = await resp.json();
+        const data = parseIdentityMeResponse(rawBody);
+        // A wrong-shape me body carrying no name field at all must not
+        // wipe the stored display name (#7838): the parser maps an
+        // absent name to null, so presence is checked on the raw body.
+        const nameCarried = meResponseCarriesName(rawBody);
         // Server returns a refreshed token on each validation, resetting the
         // 30-day expiry clock. Save it so the client stays authenticated as
         // long as they visit within every 30 days.
         if (data.token) {
           stored.token = data.token;
-          saveIdentity(stored.token, stored.clientId, data.name);
+          saveIdentity(stored.token, stored.clientId, nameCarried ? data.name : stored.name);
         }
         // Update name from server (may have changed via another tab/session)
         const serverName = data.name;
-        if (serverName !== stored.name) {
+        if (nameCarried && serverName !== stored.name) {
           updateStoredName(serverName);
           stored.name = serverName;
         }

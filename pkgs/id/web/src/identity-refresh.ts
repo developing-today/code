@@ -82,6 +82,19 @@ export function parseIdentityMeResponse(payload: unknown): IdentityMeResponse {
 }
 
 /**
+ * Whether a `/api/identity/me` payload carries a `name` field at all
+ * (#7838). The parser maps an absent name to `null`, which is also the
+ * legitimate "no display name" value, so presence has to be checked on
+ * the raw payload: a wrong-shape 200 with no name field ({}) must never
+ * be applied as a name change, or it silently wipes the stored display
+ * name. An explicit `name: null` does count as carried — that is the
+ * server saying the name is unset.
+ */
+export function meResponseCarriesName(payload: unknown): boolean {
+  return typeof payload === "object" && payload !== null && "name" in payload;
+}
+
+/**
  * Validate a `/api/identity/register` payload at the fetch boundary
  * (#7839). Both `token` and `client_id` are required non-empty strings:
  * anything else throws before the caller can persist a fake identity
