@@ -454,6 +454,14 @@ func declaredToolNames(view *config.Resolved, all []mcpclient.Tool) map[string]b
 	}
 	cp := *view
 	cp.Preconditions = nil
+	// Secret gates (the view's own RequiresSecrets and per-tool
+	// RequiresSecret preconditions) are transient too: on the
+	// copy, every secret reads as supplied, so a tool whose only
+	// obstacle is a secret not yet provided still counts as
+	// declared. (RequiresServer gates need an activity callback
+	// the presentation path never passes, so they never hid a
+	// tool here in the first place.)
+	cp.Runtime = func(string) (string, bool) { return "declared", true }
 	names := map[string]bool{}
 	for _, t := range visibleTools(&cp, all) {
 		names[t.Name] = true

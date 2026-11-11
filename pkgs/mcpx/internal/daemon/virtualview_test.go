@@ -327,8 +327,8 @@ func TestVirtualNamespaceCachedFollowsSources(t *testing.T) {
 }
 
 // A mount whose source presently gates the tool out of its own
-// visible catalogue (here a precondition on a server that is not
-// running; a missing secret gates the same way) is blocked, not
+// visible catalogue (here a per-tool precondition on a secret
+// that has not been supplied) is blocked, not
 // unknown: validation judges existence against the source's
 // declared presentation, so registry creation does not fail for
 // a transient gate (Codex P2 on PR #8632).
@@ -338,9 +338,16 @@ func TestVirtualValidationToleratesGatedSourceTool(t *testing.T) {
 	beta := newEchoUpstream(t, "beta", tools)
 	dir := t.TempDir()
 	cfg := &config.Config{MCPServers: map[string]*config.Server{
-		"alpha": {Name: "alpha", URL: alpha.URL, Mcpx: &config.Extras{Preconditions: map[string]config.Precondition{
-			"echo": {RequiresServer: "ghost"},
-		}}},
+		"alpha": {Name: "alpha", URL: alpha.URL, Mcpx: &config.Extras{
+			// The exclude entry matters to the mechanism, not
+			// the assertion: visibleTools applies a view's
+			// VisibleTool filtering (through which the
+			// precondition gate acts) only when the view
+			// carries an include/exclude list or tool views.
+			ExcludeTools: []string{"search"},
+			Preconditions: map[string]config.Precondition{
+				"echo": {RequiresSecret: "ECHO_TOKEN"},
+			}}},
 		"beta": {Name: "beta", URL: beta.URL},
 		"combo": {Name: "combo", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
 			"alphaEcho": {From: "alpha.echo"},
@@ -357,6 +364,21 @@ func TestVirtualValidationToleratesGatedSourceTool(t *testing.T) {
 	}
 	if err := r.validateViews(); err != nil {
 		t.Fatalf("a gated mount target must not fail validation: %v", err)
+	}
+	// The gate is real, not decorative: the assembled listing
+	// omits the gated mount (and keeps the ungated one) while
+	// validation above accepts it. (A RequiresServer precondition
+	// would not discriminate here -- the presentation path passes
+	// no activity callback, so only a secret gate hides the tool;
+	// and without the exclude entry above, visibleTools would
+	// return the source catalogue unfiltered and the gate would
+	// never reach the assembly at all.)
+	var listed []string
+	for _, ti := range r.Tools([]string{"combo"}) {
+		listed = append(listed, ti.Tool)
+	}
+	if strings.Join(listed, ",") != "betaEcho" {
+		t.Fatalf("the gated mount must be absent from the listing, the ungated present: %v", listed)
 	}
 }
 
