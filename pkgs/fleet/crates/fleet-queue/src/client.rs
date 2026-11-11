@@ -2535,25 +2535,93 @@ fn cmd_outbox_resolve(rest: &[String]) -> i32 {
     0
 }
 
-/// Run one `gh` command and capture (success, stdout, stderr)
-/// without a shell — arguments never pass through shell expansion.
-fn gh_run(argv: &[String]) -> (bool, String, String) {
-    match std::process::Command::new("gh").args(argv).output() {
-        Ok(out) => (
-            out.status.success(),
-            String::from_utf8_lossy(&out.stdout).trim().to_string(),
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ),
-        Err(e) => (false, String::new(), format!("cannot run gh: {e}")),
+/// How one `gh` invocation is run. Production runs the real `gh`
+/// binary; tests substitute a stub binary through this seam so the
+/// exact argv and the failure shapes are observable (#8361 — the
+/// creation-outbox production leg previously had no seam at all and
+/// its marker search was never exercised by a test).
+#[derive(Debug, Clone)]
+struct GhRunner {
+    bin: String,
+}
+
+impl GhRunner {
+    fn system() -> Self {
+        let bin = std::env::var("FLEET_QUEUE_GH_BIN")
+            .ok()
+            .filter(|b| !b.trim().is_empty())
+            .unwrap_or_else(|| "gh".to_string());
+        GhRunner { bin }
+    }
+
+    fn with_bin(bin: impl Into<String>) -> Self {
+        GhRunner { bin: bin.into() }
+    }
+
+    /// Run one `gh` command and capture (success, stdout, stderr)
+    /// without a shell — arguments never pass through shell expansion.
+    fn run(&self, argv: &[String]) -> (bool, String, String) {
+        match std::process::Command::new(&self.bin).args(argv).output() {
+            Ok(out) => (
+                out.status.success(),
+                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ),
+            Err(e) => (false, String::new(), format!("cannot run gh: {e}")),
+        }
+    }
+
+    /// Run one `gh` command expecting JSON on stdout. A failure is
+    /// an `Err` carrying the error class derived from stderr —
+    /// never a silent `None` — so callers that must distinguish
+    /// "checked and absent" from "could not check" can (#8361).
+    fn json(&self, argv: &[String]) -> Result<Value, String> {
+        let (ok, stdout, stderr) = self.run(argv);
+        if !ok {
+            return Err(gh_error_class(&stderr));
+        }
+        serde_json::from_str(&stdout).map_err(|_| "unparseable_json".to_string())
     }
 }
 
-fn gh_json(argv: &[String]) -> Option<Value> {
-    let (ok, stdout, _) = gh_run(argv);
-    if !ok {
-        return None;
+/// Classify a failed `gh` invocation's stderr into the error-class
+/// vocabulary recorded in an outbox entry's `last_error_class`.
+fn gh_error_class(stderr: &str) -> String {
+    let lower = stderr.to_lowercase();
+    if lower.contains("rate limit")
+        || lower.contains("submitted too quickly")
+        || lower.contains("429")
+    {
+        "rate_limit".to_string()
+    } else if lower.contains("404") {
+        "http_404".to_string()
+    } else if lower.contains("403") {
+        "http_403".to_string()
+    } else if lower.contains("cannot run gh") {
+        "spawn_failed".to_string()
+    } else if stderr.trim().is_empty() {
+        "gh_failed_no_stderr".to_string()
+    } else {
+        "gh_failed".to_string()
     }
-    serde_json::from_str(&stdout).ok()
+}
+
+/// The three-way result of a marker lookup (#8361). The old
+/// `Option` collapsed "the search ran and found nothing" into the
+/// same `None` as "the search itself failed", and the drain loop
+/// re-created on both — duplicating objects whose create had
+/// actually landed.
+#[derive(Debug, Clone, PartialEq)]
+enum MarkerLookup {
+    Found(i64, String),
+    /// The search completed and no listed object carries the marker:
+    /// absence is proven, re-creating is safe.
+    Absent,
+    /// The lookup could not be performed (non-2xx, transport error,
+    /// unparseable response). Absence is NOT proven: the entry must
+    /// stay uncertain and must never be re-created on this. Carries
+    /// the stderr error class.
+    CouldNotCheck(String),
 }
 
 fn s(v: &Value, key: &str) -> String {
@@ -2566,7 +2634,21 @@ fn s(v: &Value, key: &str) -> String {
 /// The drainer's GitHub leg (production `Creator` for the
 /// creation_outbox state machine): submits with the entry's marker
 /// in the body, classifies the result, and verifies by read-back.
-struct GhCreator;
+struct GhCreator {
+    gh: GhRunner,
+}
+
+impl GhCreator {
+    fn new() -> Self {
+        GhCreator {
+            gh: GhRunner::system(),
+        }
+    }
+
+    fn with_runner(gh: GhRunner) -> Self {
+        GhCreator { gh }
+    }
+}
 
 impl GhCreator {
     fn create(&mut self, entry: &Value) -> crate::creation_outbox::CreateOutcome {
@@ -2642,7 +2724,7 @@ impl GhCreator {
             ],
             other => return CreateOutcome::Failed(format!("unknown outbox kind {other:?}")),
         };
-        let (ok, stdout, stderr) = gh_run(&argv);
+        let (ok, stdout, stderr) = self.gh.run(&argv);
         if !ok {
             let lower = stderr.to_lowercase();
             if lower.contains("403")
@@ -2674,11 +2756,19 @@ impl GhCreator {
     }
 
     fn read_back(&mut self, entry: &Value, number: i64) -> bool {
+        matches!(self.read_back_checked(entry, number), Ok(true))
+    }
+
+    /// The read-back with the failure kept: `Err(class)` when the
+    /// verifying call itself could not be performed, so a marker
+    /// lookup never mistakes a failed verification for a proven
+    /// absence (#8361).
+    fn read_back_checked(&mut self, entry: &Value, number: i64) -> Result<bool, String> {
         let repo = s(entry, "repo");
         let kind = s(entry, "kind");
         let id = s(entry, "id");
         let obj = match kind.as_str() {
-            "issue" => gh_json(&[
+            "issue" => self.gh.json(&[
                 "issue".into(),
                 "view".into(),
                 number.to_string(),
@@ -2686,8 +2776,8 @@ impl GhCreator {
                 repo,
                 "--json".into(),
                 "number,url,body".into(),
-            ]),
-            "pull_request" => gh_json(&[
+            ])?,
+            "pull_request" => self.gh.json(&[
                 "pr".into(),
                 "view".into(),
                 number.to_string(),
@@ -2695,37 +2785,50 @@ impl GhCreator {
                 repo,
                 "--json".into(),
                 "number,url,body".into(),
-            ]),
-            _ => gh_json(&[
+            ])?,
+            _ => self.gh.json(&[
                 "api".into(),
                 format!("repos/{repo}/issues/comments/{number}"),
-            ]),
+            ])?,
         };
-        match obj {
-            Some(v) => crate::creation_outbox::marker_id(&s(&v, "body")) == Some(id),
-            None => false,
-        }
+        Ok(crate::creation_outbox::marker_id(&s(&obj, "body")) == Some(id))
     }
 
-    fn find_by_marker(&mut self, entry: &Value) -> Option<(i64, String)> {
+    /// Reconcile an uncertain entry by searching for its marker.
+    /// Three-way (#8361): the search is issued as a GET — the old
+    /// `gh api search/issues -f q=...` form makes gh use POST,
+    /// /search/issues has no POST route (404), and the failure read
+    /// as proven absence, so every uncertain entry was re-created.
+    fn find_by_marker(&mut self, entry: &Value) -> MarkerLookup {
         let repo = s(entry, "repo");
         let id = s(entry, "id");
         let q = format!("repo:{repo} fleet-outbox:{id}");
-        let results = gh_json(&[
+        let results = match self.gh.json(&[
             "api".into(),
+            "--method".into(),
+            "GET".into(),
             "search/issues".into(),
             "-f".into(),
             format!("q={q}"),
-        ])?;
-        let items = results.get("items").and_then(|i| i.as_array())?;
+        ]) {
+            Ok(v) => v,
+            Err(class) => return MarkerLookup::CouldNotCheck(class),
+        };
+        let Some(items) = results.get("items").and_then(|i| i.as_array()) else {
+            return MarkerLookup::CouldNotCheck("unexpected_search_shape".to_string());
+        };
         for item in items {
-            let number = item.get("number").and_then(|n| n.as_i64())?;
+            let Some(number) = item.get("number").and_then(|n| n.as_i64()) else {
+                continue;
+            };
             let url = s(item, "html_url");
-            if self.read_back(entry, number) {
-                return Some((number, url));
+            match self.read_back_checked(entry, number) {
+                Ok(true) => return MarkerLookup::Found(number, url),
+                Ok(false) => {}
+                Err(class) => return MarkerLookup::CouldNotCheck(class),
             }
         }
-        None
+        MarkerLookup::Absent
     }
 }
 
@@ -2737,7 +2840,7 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
         .get("owner")
         .unwrap_or_else(|| "outbox-drainer".to_string());
     let max = args.get_i64("max").unwrap_or(20).max(1);
-    let mut creator = GhCreator;
+    let mut creator = GhCreator::new();
     let mut processed = 0i64;
     let mut last_create: Option<std::time::Instant> = None;
     for _ in 0..max {
@@ -2757,7 +2860,7 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
         // Uncertain first: reconcile by marker, never blind-retry.
         if state == "uncertain" {
             match creator.find_by_marker(&row) {
-                Some((number, url)) => {
+                MarkerLookup::Found(number, url) => {
                     let resp = outbox_resolve(
                         &id,
                         "done",
@@ -2769,9 +2872,26 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
                     );
                     continue;
                 }
-                None => {
+                MarkerLookup::Absent => {
                     // Marker search proves absence: fall through and
                     // re-create under the same entry.
+                }
+                MarkerLookup::CouldNotCheck(class) => {
+                    // The lookup itself failed (#8361): absence is
+                    // NOT proven. Keep the entry uncertain (the
+                    // resolve applies the backoff) with the error
+                    // class recorded, and never re-create on an
+                    // unchecked lookup.
+                    let resp = outbox_resolve(
+                        &id,
+                        "uncertain",
+                        json!({"error": format!("marker lookup could not check: {class}")}),
+                    );
+                    println!(
+                        "{}",
+                        json!({"id": id, "outcome": "lookup_unchecked", "error_class": class, "row": resp.get("row")})
+                    );
+                    continue;
                 }
             }
         }
@@ -3630,5 +3750,137 @@ mod tests {
             "{args:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- #8361: GhCreator marker-search seam tests ----
+    // Oracle: the production drainer's reconciliation leg, driven
+    // through a stub `gh` binary that logs its argv and plays back
+    // canned responses. The argv log is the evidence for the GET
+    // shape; the stub's exit/stderr shapes drive the three-way
+    // lookup (found / checked-absent / could-not-check).
+
+    fn stub_gh_8361(tag: &str, script: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-queue-ghcreator-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("argv.log");
+        let bin = dir.join("gh");
+        let full = format!("#!/bin/sh\necho \"$@\" >> '{}'\n{}", log.display(), script);
+        std::fs::write(&bin, full).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        (bin, log)
+    }
+
+    fn outbox_entry_8361() -> Value {
+        json!({
+            "id": "OB-test-1",
+            "repo": "developing-today/code",
+            "kind": "issue",
+            "payload": {"title": "t", "body": "b"},
+        })
+    }
+
+    #[test]
+    fn marker_search_is_a_get_and_finds_the_landed_marker() {
+        let (bin, log) = stub_gh_8361(
+            "found",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":42,"html_url":"https://github.com/developing-today/code/issues/42"}]}' ;;
+  *view*) printf '%s' '{"number":42,"url":"https://github.com/developing-today/code/issues/42","body":"landed <!-- fleet-outbox:OB-test-1 -->"}' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        let found = creator.find_by_marker(&outbox_entry_8361());
+        assert_eq!(
+            found,
+            MarkerLookup::Found(
+                42,
+                "https://github.com/developing-today/code/issues/42".to_string()
+            )
+        );
+        let argv_log = std::fs::read_to_string(&log).unwrap();
+        let search_line = argv_log
+            .lines()
+            .find(|l| l.contains("search/issues"))
+            .expect("the stub must have seen the search call");
+        assert!(
+            search_line.contains("--method GET"),
+            "marker search must be a GET, argv was: {search_line}"
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_404_is_could_not_check_not_absent() {
+        let (bin, _log) = stub_gh_8361("e404", "echo 'gh: Not Found (HTTP 404)' >&2\nexit 1\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("http_404".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_403_is_could_not_check_not_absent() {
+        let (bin, _log) = stub_gh_8361("e403", "echo 'gh: Forbidden (HTTP 403)' >&2\nexit 1\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("http_403".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_empty_result_is_checked_absent() {
+        let (bin, _log) =
+            stub_gh_8361("absent", "printf '%s' '{\"total_count\":0,\"items\":[]}'\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::Absent
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_unparseable_is_could_not_check() {
+        let (bin, _log) = stub_gh_8361("garbage", "printf '%s' 'not json'\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("unparseable_json".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_failed_candidate_readback_is_could_not_check() {
+        let (bin, _log) = stub_gh_8361(
+            "readback404",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":42,"html_url":"https://github.com/developing-today/code/issues/42"}]}' ;;
+  *view*) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("http_404".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
     }
 }
