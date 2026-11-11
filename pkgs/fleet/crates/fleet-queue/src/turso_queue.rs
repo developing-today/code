@@ -464,8 +464,14 @@ type TErr = String;
 /// lane_queue_binds).
 ///
 /// The set is EXACTLY the live registry universe left by the
-/// 2026-11-11 lane rename and trims (#8097): 35 lanes — code-a..j,
-/// not-code-a..f, any-a..s — 16 of them enabled. Lane ids Drew
+/// 2026-11-11 lane rename and trims (#8097), plus one lane
+/// added later the same day: 36 lanes — code-a..j,
+/// not-code-a..g, any-a..s — 17 of them enabled. The added
+/// lane is not-code-g, the nix event-hook worker's OWN lane
+/// (Drew, 2026-11-11: the nix worker does not share a lane
+/// row with a Muse shift — it had been parked on
+/// not-code-a, the disabled Muse not-code-a shift's row;
+/// #8097 record, catch #6853). Lane ids Drew
 /// deleted (the code-k..z overhang, nix-a/b, opencode-a/b,
 /// openchamber-a/b) are deliberately ABSENT: the pre-rename seed
 /// still named them, so each schema ensure resurrected
@@ -487,18 +493,19 @@ fn canonical_lanes() -> Vec<(&'static str, &'static str, bool)> {
         // match on the letter so the strings stay 'static.
         lanes.push((code_lane_id(c), "repo-worker-code", c != 'e'));
     }
-    // not-code group: only not-code-d (OpenChamber) is enabled.
-    // Worker ids follow each lane's predecessor row: not-code-a
-    // was nix-a, not-code-b was opencode-a, and not-code-e was
-    // the opencode-project OpenChamber task.
-    for c in 'a'..='f' {
+    // not-code group: not-code-d (OpenChamber) and not-code-g
+    // (the nix event-hook worker's own lane, added 2026-11-11)
+    // are enabled. Worker ids follow each lane's predecessor
+    // row: not-code-a was nix-a, not-code-b was opencode-a, and
+    // not-code-e was the opencode-project OpenChamber task.
+    for c in 'a'..='g' {
         let worker = match c {
-            'a' => "repo-worker-nix",
+            'a' | 'g' => "repo-worker-nix",
             'b' | 'e' => "repo-worker-opencode",
             'd' => "repo-worker-openchamber",
             _ => "repo-worker-code",
         };
-        lanes.push((not_code_lane_id(c), worker, c == 'd'));
+        lanes.push((not_code_lane_id(c), worker, c == 'd' || c == 'g'));
     }
     // any group: any-a..d (Muse) and any-n, any-o (OpenChamber)
     // are enabled; any-e..m and any-p..s are disabled per the
@@ -534,7 +541,8 @@ fn not_code_lane_id(c: char) -> &'static str {
         'd' => "not-code-d",
         'e' => "not-code-e",
         'f' => "not-code-f",
-        _ => unreachable!("not-code lane letters are a..=f"),
+        'g' => "not-code-g",
+        _ => unreachable!("not-code lane letters are a..=g"),
     }
 }
 
@@ -6954,7 +6962,9 @@ mod tests {
     #[test]
     fn canonical_lanes_are_exactly_the_post_rename_universe_8097() {
         // #8097 oracle: after the 2026-11-11 lane rename + trims,
-        // the canonical seed set is exactly the 35-lane registry
+        // the canonical seed set is exactly the 36-lane registry
+        // (the 35 rename lanes plus not-code-g — the nix worker's
+        // own lane, added later the same day; #8097 record, #6853)
         // universe with the end-state enabled flags — no more, no
         // fewer. The pre-rename set named ids that no longer exist
         // (code-k..z, nix-a/b, opencode-a/b, openchamber-a/b), and
@@ -6965,17 +6975,17 @@ mod tests {
         // of this set — so pinning the set and its per-lane tuples
         // (next test) pins the seeded database exactly.
         let lanes = canonical_lanes();
-        assert_eq!(lanes.len(), 35);
+        assert_eq!(lanes.len(), 36);
         let mut ids: Vec<&str> = lanes.iter().map(|(id, _, _)| *id).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 35, "duplicate lane ids in the canonical set");
+        assert_eq!(ids.len(), 36, "duplicate lane ids in the canonical set");
         let expected_ids: Vec<&str> = vec![
             "any-a", "any-b", "any-c", "any-d", "any-e", "any-f", "any-g", "any-h", "any-i",
             "any-j", "any-k", "any-l", "any-m", "any-n", "any-o", "any-p", "any-q", "any-r",
             "any-s", "code-a", "code-b", "code-c", "code-d", "code-e", "code-f", "code-g",
             "code-h", "code-i", "code-j", "not-code-a", "not-code-b", "not-code-c",
-            "not-code-d", "not-code-e", "not-code-f",
+            "not-code-d", "not-code-e", "not-code-f", "not-code-g",
         ];
         assert_eq!(
             ids, expected_ids,
@@ -7008,7 +7018,7 @@ mod tests {
             ids.iter().all(|id| !id.starts_with("tmp-")),
             "tmp rename ids must not be seeded"
         );
-        // The enabled set is exactly the 16 working lanes.
+        // The enabled set is exactly the 17 working lanes.
         let mut enabled: Vec<&str> = lanes
             .iter()
             .filter(|(_, _, e)| *e)
@@ -7020,7 +7030,7 @@ mod tests {
             [
                 "any-a", "any-b", "any-c", "any-d", "any-n", "any-o", "code-a", "code-b",
                 "code-c", "code-d", "code-f", "code-g", "code-h", "code-i", "code-j",
-                "not-code-d",
+                "not-code-d", "not-code-g",
             ]
         );
         // Worker ownership: the renamed lanes keep the worker of
@@ -7032,6 +7042,7 @@ mod tests {
         assert_eq!(owner("not-code-b"), Some("repo-worker-opencode"));
         assert_eq!(owner("not-code-d"), Some("repo-worker-openchamber"));
         assert_eq!(owner("not-code-e"), Some("repo-worker-opencode"));
+        assert_eq!(owner("not-code-g"), Some("repo-worker-nix"));
         assert_eq!(owner("any-s"), Some("repo-worker-code"));
     }
 
