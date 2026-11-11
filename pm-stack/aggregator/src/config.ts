@@ -61,6 +61,10 @@ export interface Config {
   digestsDir: string;
   /** Append-only notification state/send/suppression log (#3317). */
   notificationsFile: string;
+  /** Needs-Drew question store (#8568): fleet workers blocked on Drew. */
+  needsDrewFile: string;
+  /** Stack-health state written by the sentinel intake extension (#8568). */
+  stackHealthFile: string;
   /** Versioned item-history JSONL (#3981) the forecast contract
    * (#3984) derives from: one cutoff per line, read via
    * ItemHistoryStore. */
@@ -177,6 +181,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     notificationsFile: s(
       env.PM_AGG_NOTIFICATIONS_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "notifications.jsonl"),
+    ),
+    needsDrewFile: s(
+      env.PM_AGG_NEEDS_DREW_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "needs-drew.json"),
+    ),
+    stackHealthFile: s(
+      env.PM_AGG_STACK_HEALTH_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "stack-health.json"),
     ),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
