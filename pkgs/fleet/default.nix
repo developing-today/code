@@ -42,6 +42,12 @@
   callPackage,
   craneLib ? null,
   sourceRev ? "unknown",
+  # The derived per-app version (#8566), computed by the release
+  # tooling where the git history exists (the nix build source has
+  # no .git). A release build passes the clean tag version here
+  # (e.g. "0.1.0" at fleet/v0.1.0); left null, the package derives
+  # an honest prerelease from sourceRev below.
+  derivedVersion ? null,
 }:
 
 let
@@ -102,6 +108,19 @@ let
       # role there needs ATLAS_ORT_LIB).
       envAttrs = {
         FLEET_SOURCE_REV = sourceRev;
+        # #8566: the binary's Derived version channel. An explicit
+        # derivedVersion wins; otherwise a real sourceRev yields a
+        # unique prerelease form (0.1.0-dev+g<rev7>) instead of the
+        # colliding bare 0.1.0-dev every packaged build would
+        # otherwise report. "unknown"/"dirty" pass nothing and the
+        # build script's own fallback applies.
+        FLEET_DERIVED_VERSION =
+          if derivedVersion != null then
+            derivedVersion
+          else if sourceRev != "unknown" && sourceRev != "dirty" then
+            "0.1.0-dev+g${lib.substring 0 7 sourceRev}"
+          else
+            "0.1.0-dev";
       }
       // lib.optionalAttrs (features != [ ] && !static) {
         ATLAS_SEARCH_ORT_LIB_DEFAULT = "${onnxruntime}/lib/libonnxruntime.so";
