@@ -447,6 +447,32 @@ export function isGoLapseResult(result: QuotaProviderResult): boolean {
   );
 }
 
+/** The remedy every Meta session-lapse surface must name (#8294). */
+export const META_SESSION_LAPSE_REMEDY =
+  "dev.meta.ai portal session is logged out; re-auth (re-login) in the hub browser profile to restore Meta quota reads";
+
+/**
+ * A configured Meta result that failed because the dev.meta.ai portal
+ * session lapsed (#8294). The Meta read rides a live browser session
+ * on the hub (there is no stored credential — see meta-renewal.ts);
+ * when that session expires, the provider leg fails session-class
+ * ("unauthorized", or the exporter's "session-expired" shape) rather
+ * than with a provider error. A lapsed session has a known remedy
+ * (re-auth on the hub) and is not a provider failure, so — following
+ * the OpenCode Go lapse template (#1161 / PR #7898) — it classifies
+ * as "lapsed", never "error". Unlike the Go lapse this one is
+ * temporary: the gatherer retains the pool's last good windows as
+ * stale rows alongside the lapsed entry (see gather-quota.ts).
+ */
+export function isMetaSessionLapseResult(result: QuotaProviderResult): boolean {
+  if (canonicalProviderId(result.providerId) !== "_muse" || result.ok || !result.configured) {
+    return false;
+  }
+  if (result.failureClass === "unauthorized") return true;
+  const error = typeof result.error === "string" ? result.error : "";
+  return /unauthorized|session-expired|session expired|logged out/i.test(error);
+}
+
 /** Map one provider result onto a quota-current entry. */
 export function entryFromResult(result: QuotaProviderResult, tickIso: string): QuotaCurrentEntry {
   let measuredAt = tickIso;
@@ -456,7 +482,7 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   }
   const state: QuotaCurrentEntry["state"] = result.ok
     ? "ok"
-    : isGoLapseResult(result)
+    : isGoLapseResult(result) || isMetaSessionLapseResult(result)
       ? "lapsed"
       : result.configured
         ? "error"
@@ -493,6 +519,12 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   if (result.credentialSource) entry.credentialSource = result.credentialSource;
   if (result.planLabel) entry.planLabel = result.planLabel;
   if (result.error) entry.error = safeProviderReason(result.error);
+  if (isMetaSessionLapseResult(result)) {
+    // Name the remedy on the entry itself: this text is what the pool
+    // note surfaces (quota-current freshness.error), so a lapsed Meta
+    // session reads as an actionable re-auth state, not a bare error.
+    entry.error = `session lapsed: ${entry.error ?? "unauthorized"} — ${META_SESSION_LAPSE_REMEDY}`;
+  }
   if (typeof result.failureClass === "string" && result.failureClass !== "") entry.failureClass = result.failureClass;
   if (typeof result.lastSuccessAt === "number" && Number.isFinite(result.lastSuccessAt) && result.lastSuccessAt > 0) {
     entry.lastSuccessAt = new Date(result.lastSuccessAt).toISOString();
