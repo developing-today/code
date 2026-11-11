@@ -24,7 +24,7 @@ use p2panda_core::{Hash, SigningKey};
 use crate::chain::{ChainExt, Event, MAX_AFTER, sign};
 use crate::chat::{CHAT_MESSAGE_KIND, ChatMessage, ChatRecord, SendRate};
 use crate::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
-use crate::event_store::{EventStore, Ingest};
+use crate::event_store::{Block, BlockKind, EventStore, Ingest};
 use crate::local_claims::LocalClaims;
 use crate::notes::{
     AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteFoldError, NoteOp, NoteRecord,
@@ -274,6 +274,52 @@ impl LocalEvents {
     #[must_use]
     pub fn author(&self) -> AuthorKey {
         *self.key.verifying_key().as_bytes()
+    }
+
+    /// Adds `block` to the operator block list (#2245), replacing any row
+    /// that names the same kind and value. The enforcement seams
+    /// ([`crate::abuse`], [`crate::blob_gate`], [`crate::pull_policy`])
+    /// read the list live, so a block lands on the next check.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the block row cannot be written.
+    pub fn add_block(&self, block: &Block) -> Result<()> {
+        self.store
+            .add_block(block)
+            .context("add the operator block row")
+    }
+
+    /// Removes the operator block naming (`kind`, `value`), returning
+    /// whether a row was removed (#2245).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the block row cannot be removed.
+    pub fn remove_block(&self, kind: BlockKind, value: &[u8]) -> Result<bool> {
+        self.store
+            .remove_block(kind, value)
+            .context("remove the operator block row")
+    }
+
+    /// Every operator block row, expired ones included, in (kind, value)
+    /// order (#2245).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the block rows cannot be read.
+    pub fn blocks(&self) -> Result<Vec<Block>> {
+        self.store.blocks().context("read the operator block rows")
+    }
+
+    /// Whether (`kind`, `value`) is blocked right now, judged against the
+    /// wall clock exactly as the enforcement seams judge it (#2245).
+    /// Reads go through [`crate::event_store::BlockList`], the same trait
+    /// [`crate::abuse`], [`crate::blob_gate`] and [`crate::pull_policy`]
+    /// consult, so a web-written row and an enforced row are one row.
+    #[must_use]
+    pub fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
+        crate::event_store::BlockList::is_blocked(&self.store, kind, value)
     }
 
     /// Publishes `content` as a document of `media_type`, with a tag for each of `tags`. The event

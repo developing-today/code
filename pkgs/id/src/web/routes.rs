@@ -5,7 +5,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
-    Json, Router,
+    Form, Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
@@ -19,12 +19,14 @@ use super::content_mode::{ContentMode, detect_mode, detect_mode_with_content, ge
 use super::markdown::prosemirror_to_markdown;
 use super::security::{self, WebSecurity};
 use super::templates::{
-    render_binary_viewer, render_editor, render_editor_page, render_file_list,
-    render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
-    render_peers, render_peers_content, render_settings,
+    AssetUrls, hex_encode, render_binary_viewer, render_blocks, render_editor, render_editor_page,
+    render_file_list, render_file_list_content, render_main_page_wrapper, render_media_viewer,
+    render_page, render_peers, render_peers_content, render_settings,
 };
+use crate::event_store::{Block, BlockKind};
 use crate::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
 use crate::tags::TagStore;
+use iroh_base::EndpointId;
 
 mod file_handlers;
 use file_handlers::*;
@@ -570,6 +572,7 @@ fn create_router_inner(state: AppState) -> Router {
         .route(&world_route, get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
+        .route("/blocks", get(blocks_page_handler))
         .route("/groups", get(super::groups::groups_page_handler))
         .route("/edit/{*name}", get(file_by_name_handler))
         .route("/hash/{hash}", get(hash_redirect_handler))
@@ -580,6 +583,8 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/api/files", get(files_list_handler))
         .route("/api/home/feed", get(super::home::feed_handler))
         .route("/api/peers", get(peers_partial_handler))
+        .route("/api/blocks", get(blocks_partial_handler).post(block_create_handler))
+        .route("/api/blocks/remove", post(block_remove_handler))
         // File management API routes
         .route("/api/save", post(save_handler))
         .route("/api/new", post(new_file_handler))
@@ -746,7 +751,7 @@ async fn peers_handler(State(state): State<AppState>, headers: HeaderMap) -> imp
         Vec::new()
     };
 
-    let content = render_peers(&peers_data);
+    let content = render_peers(&peers_data, &blocked_peer_ids(&state).await);
     if is_partial_request(&headers) {
         Html(render_main_page_wrapper(&content))
     } else {
@@ -1088,7 +1093,236 @@ async fn peers_partial_handler(State(state): State<AppState>) -> impl IntoRespon
     // Return only the inner content: fetchPartial assigns this as
     // innerHTML of #peers-content, so the wrapper must not be included
     // (issue #6956).
-    Html(render_peers_content(&peers_data))
+    Html(render_peers_content(
+        &peers_data,
+        &blocked_peer_ids(&state).await,
+    ))
+}
+
+/// Node-ID strings (peers-page form) that already name a peer-key row on
+/// the operator block list (#2245). A store read failure yields an empty
+/// set: the page still renders, just without blocked badges.
+async fn blocked_peer_ids(state: &AppState) -> std::collections::HashSet<String> {
+    match state.local_events.lock().await.blocks() {
+        Ok(rows) => rows
+            .iter()
+            .filter(|block| block.kind == BlockKind::PeerKey)
+            .map(|block| hex_encode(&block.value))
+            .collect(),
+        Err(err) => {
+            tracing::warn!("[routes] Could not read the block list: {err:#}");
+            std::collections::HashSet::new()
+        }
+    }
+}
+
+/// Which block rows a list/unblock form addresses (#2245).
+fn parse_block_kind(raw: Option<&str>) -> Result<BlockKind, String> {
+    match raw.unwrap_or("peer_key") {
+        "peer_key" => Ok(BlockKind::PeerKey),
+        "ip" => Ok(BlockKind::Ip),
+        "topic_tag" => Ok(BlockKind::TopicTag),
+        other => Err(format!(
+            "unknown block kind {other:?}; want peer_key, ip, or topic_tag"
+        )),
+    }
+}
+
+/// Raw row value for `kind` from the operator's text: a peer key parses
+/// as an endpoint ID (its 32 key bytes are the row, matching
+/// [`BlockList::peer_blocked`](crate::event_store::BlockList::peer_blocked)),
+/// an IP parses and stores in text form (the form
+/// [`BlockList::ip_blocked`](crate::event_store::BlockList::ip_blocked)
+/// checks), a topic tag stores verbatim.
+fn parse_block_value(kind: BlockKind, raw: &str) -> Result<Vec<u8>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("block value must not be empty".to_owned());
+    }
+    match kind {
+        BlockKind::PeerKey => raw
+            .parse::<EndpointId>()
+            .map(|id| id.as_bytes().to_vec())
+            .map_err(|_| "peer key must be an endpoint ID (64 hex characters)".to_owned()),
+        BlockKind::Ip => raw
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.to_string().into_bytes())
+            .map_err(|_| "IP must parse as an IP address".to_owned()),
+        BlockKind::TopicTag => Ok(raw.as_bytes().to_vec()),
+    }
+}
+
+/// Only a local path on this host is a valid post-action destination;
+/// anything else falls back to the Blocks page (no open redirects).
+fn sanitize_return_to(raw: Option<&str>) -> String {
+    match raw {
+        Some(path) if path.starts_with('/') && !path.starts_with("//") => path.to_owned(),
+        _ => "/blocks".to_owned(),
+    }
+}
+
+/// One operator block form, from a peer row or the Blocks page (#2245).
+#[derive(Debug, Deserialize)]
+struct BlockForm {
+    /// Peer endpoint ID, IP text, or topic tag (per `kind`).
+    value: String,
+    /// `peer_key` (default), `ip`, or `topic_tag`.
+    kind: Option<String>,
+    /// Operator's reason; stored on the row.
+    reason: Option<String>,
+    /// Optional expiry as unix milliseconds.
+    expires_at_ms: Option<String>,
+    /// Where to land after the write.
+    return_to: Option<String>,
+}
+
+/// Refusal page for a bad block form: the reason plus a way back. The
+/// message carries operator input, so it renders escaped.
+fn bad_block_request(message: &str, return_to: &str, assets: &AssetUrls) -> Response {
+    let content = format!(
+        "<h1>Blocks</h1><p>Could not write the block: {}</p><p><a href=\"{}\">Back</a></p>",
+        super::templates::html_escape(message),
+        super::templates::html_escape(return_to),
+    );
+    (
+        StatusCode::BAD_REQUEST,
+        Html(render_page("Blocks", &content, "", assets)),
+    )
+        .into_response()
+}
+
+/// Handler to write one operator block row (`POST /api/blocks`, #2245).
+async fn block_create_handler(
+    State(state): State<AppState>,
+    Form(form): Form<BlockForm>,
+) -> Response {
+    let return_to = sanitize_return_to(form.return_to.as_deref());
+    let kind = match parse_block_kind(form.kind.as_deref()) {
+        Ok(kind) => kind,
+        Err(message) => return bad_block_request(&message, &return_to, &state.assets),
+    };
+    let value = match parse_block_value(kind, &form.value) {
+        Ok(value) => value,
+        Err(message) => return bad_block_request(&message, &return_to, &state.assets),
+    };
+    let expires_at_ms = match form.expires_at_ms.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(ts) => Some(ts),
+            Err(_) => {
+                return bad_block_request(
+                    "expiry must be unix milliseconds, or left blank for a permanent block",
+                    &return_to,
+                    &state.assets,
+                );
+            }
+        },
+    };
+    let block = Block {
+        kind,
+        value,
+        added_at_ms: crate::time::unix_ms(),
+        reason: form.reason.as_deref().unwrap_or("").trim().to_owned(),
+        expires_at_ms,
+    };
+    match state.local_events.lock().await.add_block(&block) {
+        Ok(()) => {
+            tracing::info!("[routes] Operator block written: {kind:?}");
+            Redirect::to(&return_to).into_response()
+        }
+        Err(err) => {
+            tracing::error!("[routes] Could not write the operator block: {err:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<h1>Blocks</h1><p>Could not write the block: {}</p>",
+                    super::templates::html_escape(&format!("{err:#}")),
+                )),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Form that names the row an unblock removes (`POST /api/blocks/remove`).
+#[derive(Debug, Deserialize)]
+struct UnblockForm {
+    /// The blocked value exactly as the Blocks page rendered it.
+    value: String,
+    /// `peer_key` (default), `ip`, or `topic_tag`.
+    kind: Option<String>,
+    /// Where to land after the removal.
+    return_to: Option<String>,
+}
+
+/// Handler to remove one operator block row (`POST /api/blocks/remove`,
+/// #2245). Removing a row that is not there still lands back on the page.
+async fn block_remove_handler(
+    State(state): State<AppState>,
+    Form(form): Form<UnblockForm>,
+) -> Response {
+    let return_to = sanitize_return_to(form.return_to.as_deref());
+    let kind = match parse_block_kind(form.kind.as_deref()) {
+        Ok(kind) => kind,
+        Err(message) => return bad_block_request(&message, &return_to, &state.assets),
+    };
+    let value = match parse_block_value(kind, &form.value) {
+        Ok(value) => value,
+        Err(message) => return bad_block_request(&message, &return_to, &state.assets),
+    };
+    match state.local_events.lock().await.remove_block(kind, &value) {
+        Ok(removed) => {
+            tracing::info!("[routes] Operator block removed: {kind:?} (row present: {removed})");
+            Redirect::to(&return_to).into_response()
+        }
+        Err(err) => {
+            tracing::error!("[routes] Could not remove the operator block: {err:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<h1>Blocks</h1><p>Could not remove the block: {}</p>",
+                    super::templates::html_escape(&format!("{err:#}")),
+                )),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Blocks page handler - every operator block row with unblock actions.
+async fn blocks_page_handler(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let blocks = match state.local_events.lock().await.blocks() {
+        Ok(blocks) => blocks,
+        Err(err) => {
+            let content = format!(
+                "<h1>Blocks</h1><p>Could not read the block list: {}</p>",
+                super::templates::html_escape(&format!("{err:#}")),
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(render_page("Blocks", &content, "", &state.assets)),
+            )
+                .into_response();
+        }
+    };
+    let content = render_blocks(&blocks);
+    if is_partial_request(&headers) {
+        Html(render_main_page_wrapper(&content)).into_response()
+    } else {
+        Html(render_page("Blocks", &content, "", &state.assets)).into_response()
+    }
+}
+
+/// API handler for the blocks partial (the Blocks page fragment).
+async fn blocks_partial_handler(State(state): State<AppState>) -> Response {
+    match state.local_events.lock().await.blocks() {
+        Ok(blocks) => Html(render_blocks(&blocks)).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not read the block list: {err:#}"),
+        )
+            .into_response(),
+    }
 }
 
 /// Static assets handler.
