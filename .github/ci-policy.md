@@ -39,7 +39,7 @@ Workflow names (`nix ci`, `id`, `mcpx`, `mcpx conformance`,
 `mcpx nix build`, `go modules build`, `identity build`,
 `map build`, `id bench`) are deliberately NOT renamed:
 `main-broken.yml` (the Phase 3 watcher) references them by name in
-its `workflow_run` trigger; `jules.yml` has no `workflow_run`
+its `workflow_run` trigger; `pm-dispatch.yml` has no `workflow_run`
 trigger. If branch rules
 ever require checks by name, require the `basic`-prefixed names
 (plus `nix flake check` for `id`) — full main-tier jobs must
@@ -329,10 +329,12 @@ runs every 15 minutes (`*/15 * * * *`, one live run: group
 sweeper is schedule/dispatch-only) and performs the management
 duties in one deterministic pass. It replaced `auto-assign.yml`
 (assign the maintainer to open issues/PRs). Kept event-based,
-deliberately: `jules.yml` is retained because `main-broken.yml` and
-`repo-sweeper.yml` reference the path. The retained `jules` label
-starts remediation via `pm-dispatch`; Jules was decommissioned
-(#5098), and the old `workflow_run` ci-failure-fix leg is gone. This
+deliberately: `pm-dispatch.yml` is retained because `main-broken.yml` and
+`repo-sweeper.yml` reference the path. The retained `dispatch/remediate` label
+starts remediation via `pm-dispatch`; file and label carried
+Jules-era names until the 2026-11-11 rename (Jules was
+decommissioned, #5098), and the old `workflow_run` ci-failure-fix
+leg is gone. This
 is a synchronous human-initiated handoff, not management
 bookkeeping. Never
 pair `queue: max` with a cancel-in-progress expression that
