@@ -2366,7 +2366,14 @@ func (r *Registry) callWithLedger(ctx context.Context, p *pool.Pool, server, too
 	var dispatched atomic.Bool
 	callCtx := mcpclient.WithToolCallDispatchHook(ctx, func() { dispatched.Store(true) })
 	result, err := p.Call(callCtx, rs, tool, args)
-	if err != nil && dispatched.Load() && !toolReadOnly(p, tool) && r.writeLedger != nil && !mcpclient.IsConclusiveUpstreamError(err) {
+	// The unknown-outcome classification honors the operator's
+	// readOnlyTools declaration (#6493) as well as the annotation-based
+	// classification: a declared read-only tool's post-dispatch failure
+	// cannot have written, so it must not record an unknown outcome and
+	// block later writes. declaredReadOnly reads the requested server's
+	// view -- the same name this call was made under.
+	readOnly := toolReadOnly(p, tool) || r.declaredReadOnly(server, tool)
+	if err != nil && dispatched.Load() && !readOnly && r.writeLedger != nil && !mcpclient.IsConclusiveUpstreamError(err) {
 		return nil, r.recordUnknownOutcome(p, server, tool, args, surface)
 	}
 	return result, err

@@ -439,8 +439,8 @@ export function prettifyModelName(modelId) {
         .split('-')
         .map((tok) => {
           if (!tok) return tok;
-          if (BRANDS[tok.toLowerCase()]) return BRANDS[tok.toLowerCase()];
-          if (ACRONYMS[tok.toLowerCase()]) return ACRONYMS[tok.toLowerCase()];
+          if (Object.hasOwn(BRANDS, tok.toLowerCase())) return BRANDS[tok.toLowerCase()];
+          if (Object.hasOwn(ACRONYMS, tok.toLowerCase())) return ACRONYMS[tok.toLowerCase()];
           if (/^v\d/i.test(tok)) return tok.toLowerCase();
           if (/^\d+$/.test(tok)) return tok;
           return tok.charAt(0).toUpperCase() + tok.slice(1);

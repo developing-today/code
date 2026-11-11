@@ -560,7 +560,7 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
     const prev = new Map(svc.metrics.map((m) => [m.id, m]));
     const metrics: UsageMetric[] = [];
     for (const w of entry.windows) {
-      const meta = TURSO_WINDOW_META[w.name];
+      const meta = Object.hasOwn(TURSO_WINDOW_META, w.name) ? TURSO_WINDOW_META[w.name] : undefined;
       if (!meta || w.value == null) continue;
       metrics.push({
         id: w.name,

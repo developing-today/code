@@ -346,11 +346,13 @@ async fn metrics_handler(
         metrics.sessions,
     );
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
-        .body(axum::body::Body::from(out))
-        .unwrap())
+    let mut response = Response::new(axum::body::Body::from(out));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/plain; version=0.0.4"),
+    );
+    Ok(response)
 }
 
 async fn directory_read_handler(

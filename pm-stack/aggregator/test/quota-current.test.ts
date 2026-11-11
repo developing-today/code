@@ -457,6 +457,24 @@ describe("overlayTursoUsage (#1049)", () => {
       ["storage", 1.053323, "gb", 21.066],
     ]);
   });
+  test("prototype-spelling Turso windows are ignored like unknown names", () => {
+    const at = iso(5 * 60_000);
+    const names = ["databases", "constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "unknown-window"];
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          measuredAt: at,
+          windows: names.map((name) => tursoWin(name, 3, 3, at)),
+        }),
+      ]),
+      NOW,
+    );
+    expect(out[0].metrics.map((metric) => metric.id)).toEqual(["databases"]);
+  });
   test("an error entry keeps the dated card and adds a dated conflict flag", () => {
     const at = iso(5 * 60_000);
     const out = overlayTursoUsage(

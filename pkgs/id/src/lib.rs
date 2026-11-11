@@ -221,6 +221,7 @@ pub mod notes;
 pub use id_core::petname;
 pub mod protocol;
 pub mod publications;
+pub mod publications_runtime;
 pub mod pull_policy;
 pub use id_core::residency;
 pub mod references;
