@@ -106,7 +106,9 @@ function openCollab(onEditorReady = vi.fn()) {
   return { conn, socket, onEditorReady };
 }
 
-const validInit = () => [MSG_INIT, 0, { type: "doc", content: [{ type: "paragraph" }] }, "raw"];
+// Raw mode schema-valid INIT: the raw schema only allows code_block nodes.
+// (A paragraph doc in raw mode does not parse and is now rejected, #7884.)
+const validInit = () => [MSG_INIT, 0, { type: "doc", content: [{ type: "code_block" }] }, "raw"];
 
 describe("initCollab protocol handling (#1463, #2824)", () => {
   beforeEach(() => {
@@ -226,7 +228,7 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
     }
 
     socket.open();
-    socket.deliver([0, 0, { type: "doc", content: [{ type: "paragraph" }] }, "raw"]);
+    socket.deliver([0, 0, { type: "doc", content: [{ type: "code_block" }] }, "raw"]);
     socket.drop();
     vi.advanceTimersToNextTimer();
     socket = FakeWebSocket.instances.at(-1)!;
@@ -301,6 +303,52 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
     socket.deliver(validInit());
     expect(conn.editor).not.toBeNull();
     expect(onEditorReady).toHaveBeenCalledOnce();
+  });
+
+  it("rejects INIT docs whose content entries do not parse against the mode schema (#7884)", () => {
+    const onEditorReady = vi.fn();
+    const { conn, socket } = openCollab(onEditorReady);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // One bad entry must reject the whole INIT at the frame boundary:
+    // before this check, Node.fromJSON threw inside initEditor and the
+    // session silently continued with an empty editor.
+    for (const doc of [
+      // unknown node type alongside a valid paragraph
+      {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "good paragraph" }] },
+          { type: "future_node_from_newer_server" },
+        ],
+      },
+      // unknown mark type
+      {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "hi", marks: [{ type: "future_mark" }] }] },
+        ],
+      },
+      // non-string text
+      { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: 12345 }] }] },
+      // numeric content entry
+      { type: "doc", content: [42] },
+    ]) {
+      socket.deliver([MSG_INIT, 0, doc, "rich"]);
+      expect(conn.editor).toBeNull();
+      expect(onEditorReady).not.toHaveBeenCalled();
+    }
+
+    // Control: the same shape with only valid entries initializes normally.
+    socket.deliver([
+      MSG_INIT,
+      0,
+      { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "hello rich" }] }] },
+      "rich",
+    ]);
+    expect(conn.editor).not.toBeNull();
+    expect(onEditorReady).toHaveBeenCalledOnce();
+    expect(conn.editor?.view.state.doc.textContent).toBe("hello rich");
   });
 });
 
