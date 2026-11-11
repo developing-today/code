@@ -262,8 +262,9 @@ export type ProvenanceDetail = Record<keyof Provenance, ProvenanceFacet>;
 
 /** "error"/"stale" are gatherer-overlay states (#1151): the gatherer
  * could not read the pool, or its read is past the freshness bound.
- * They are never rendered as healthy, and never as zero usage. */
-export type QuotaState = "healthy" | "near" | "walled" | "error" | "stale";
+ * "lapsed" is a confirmed terminal subscription state, not a provider
+ * failure. None are rendered as healthy or as zero usage. */
+export type QuotaState = "healthy" | "near" | "walled" | "error" | "stale" | "lapsed";
 
 /** One usage window a provider exposes (5-hour, weekly, monthly, ...). */
 export interface QuotaWindow {
@@ -322,8 +323,8 @@ export interface QuotaCredentialRow {
 export interface PoolFreshness {
   measuredAt: string;
   source: string;
-  state: "ok" | "stale" | "error";
-  /** Why the gatherer could not read the pool, when state is "error". */
+  state: "ok" | "stale" | "error" | "lapsed";
+  /** Why the gatherer could not read the pool, when state is "error" or "lapsed". */
   error?: string;
 }
 
@@ -332,7 +333,7 @@ export interface GathererProviderFreshness {
   providerId: string;
   serviceId: string;
   credentialLabel?: string;
-  state: "ok" | "stale" | "error";
+  state: "ok" | "stale" | "error" | "lapsed";
   measuredAt: string;
   source: string;
   error?: string;
@@ -850,7 +851,7 @@ export interface AaThreshold {
   usdPerUsablePoint: number | null;
 }
 
-/** One AA Intelligence Index row of ainventory.benchmark_results. */
+/** One AA Intelligence Index row of ainventory.measurement_events (canonical, code#4401). */
 export interface AaConfig {
   modelName: string;
   benchmark: string;
@@ -879,7 +880,7 @@ export interface AaTestRun {
 }
 
 /**
- * One Coding Agent Index row of ainventory.benchmark_results (the
+ * One Coding Agent Index row of ainventory.measurement_events (the
  * import's Coding_Agent_Results rows): a model + effort + agent
  * harness observation, kept strictly separate from the AA Intelligence
  * Index — no score conversion between the indexes (the ChatGPT
@@ -1069,6 +1070,36 @@ export interface AaCatalogEntry {
   } | null;
 }
 
+/**
+ * One selectable AA workbook version (#3302). The index is built from
+ * ainventory.sources rows with kind='drive-workbook' — the complete
+ * register; ingest_batches is optional metadata only. Carriers whose
+ * batch-bound semantic content has the same fingerprint are collapsed
+ * into the newest entry.
+ */
+export interface AaBatchSummary {
+  /** ainventory import batch id (the ?batch= value). */
+  importBatch: string;
+  /** Workbook file name from sources.name. */
+  name: string | null;
+  /** When ainventory imported the workbook. */
+  importedAt: string | null;
+  /** The workbook file's own Drive modification time. */
+  driveModifiedAt: string | null;
+  /** ingest_batches.ran_at when a metadata row exists, else null. */
+  ranAt: string | null;
+  /** ingest_batches.inserted_counts when a metadata row exists. */
+  insertedCounts: Record<string, number> | null;
+  /** Human label: date + short file name. */
+  label: string;
+  /** sha256 of the batch-bound semantic payload; null until built. */
+  fingerprint: string | null;
+  /** Whether a usable per-batch payload file exists. */
+  cached: boolean;
+  /** True for the newest surviving entry. */
+  latest: boolean;
+}
+
 /** The AA explorer section as the collector embeds it in the fleet feed. */
 export interface AaSection {
   status: "ok";
@@ -1076,6 +1107,9 @@ export interface AaSection {
   generatedAt: string;
   /** ainventory import batch (v_latest_import_batch) the rows came from. */
   batch: string;
+  /** Selectable workbook versions, newest first, carrier duplicates
+   * collapsed by content fingerprint (#3302). Absent in older feeds. */
+  batches?: AaBatchSummary[];
   sources: AaSourceInfo[];
   rankings: AaRanking[];
   thresholds: AaThreshold[];
@@ -1140,6 +1174,8 @@ export interface DashComment {
   objectRef: string;
   kind: DashCommentKind;
   author: DashAuthor;
+  /** True only when a privileged Drew/Muse author supplied the configured operator token. */
+  authorVerified?: boolean;
   body: string;
   createdAt: string;
   /** kind "message": the orchestrator's triage state. */
@@ -1154,6 +1190,13 @@ export interface DashComment {
    *  fleet poster reported (#1210), rendered so a failed comment
    *  shows why it failed, not just that it did. Cleared on posting. */
   githubError?: string;
+  /** kind "github", when githubState is "failed": when the most
+   *  recent failure was reported (#8586), so the queue renders the
+   *  failure's age rather than the comment's age. Refreshed on every
+   *  repeat failure alongside githubError; cleared on posting.
+   *  Absent on records written before the field existed — readers
+   *  fall back to createdAt for those. */
+  githubFailedAt?: string;
 }
 
 /** Runtime families the session registry tracks. */
@@ -1355,14 +1398,45 @@ export interface ChargeRow {
 /**
  * One tripped bubble rule (§1.3): a metric over 80% of its limit, or
  * projected unbilled PAYG over $5 (unbilled accrual only, Q3 default).
+ * "quota-action" entries are the eligible quota actions from
+ * buildQuotaActions (derive.ts, #1174) — expiry/cancellation, walled,
+ * and high-usage — rendered on the same strip, never a second list.
  */
 export interface AttentionFlag {
-  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle";
+  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle" | "quota-action";
   label: string;
   detail: string;
   href: string;
   /** Percent (over-limit) or counted dollars (payg-unbilled); worst first. */
   severity: number;
+}
+
+/**
+ * One actionable quota entry (#1174): an expiring/cancelled plan
+ * period, a walled pool, or a high-usage window whose reset is far
+ * enough away to act on. Derived once by buildQuotaActions (derive.ts)
+ * from the pools' typed source data — never by scraping display
+ * prose — and rendered identically on /quota, /today, and /attention.
+ * An entry exists only while its source condition holds: past
+ * deadlines and cleared states produce no entry, so nothing goes
+ * stale and nothing renders twice.
+ */
+export type QuotaActionKind = "expiry" | "walled" | "high-usage";
+
+export interface QuotaAction {
+  /** Stable per pool + kind, so surfaces dedupe by identity. */
+  id: string;
+  poolId: string;
+  provider: string;
+  plan: string;
+  kind: QuotaActionKind;
+  /** Actionable one-liner, e.g. "OpenCode Go — Personal ends 2026-11-02". */
+  title: string;
+  /** Reason + deadline + concrete next step, when the source names one. */
+  detail: string;
+  /** ISO deadline when the source carries one (expiry date, wall lift, reset). */
+  deadline: string | null;
+  href: string;
 }
 
 /**
@@ -1386,7 +1460,7 @@ export interface QuotaCurrentWindow {
   resetsAt: string | null;
   measuredAt: string;
   source: string;
-  state: "ok" | "error";
+  state: "ok" | "error" | "lapsed";
 }
 
 export interface QuotaCurrentEntry {
@@ -1409,7 +1483,7 @@ export interface QuotaCurrentEntry {
   /** ISO time of the provider's last successful read, when the quota
    *  module carries one; lets readers age a degraded row honestly. */
   lastSuccessAt?: string;
-  state: "ok" | "error" | "unconfigured";
+  state: "ok" | "error" | "lapsed" | "unconfigured";
   measuredAt: string;
   /** #1268: ISO time of the tick that retained this entry from the
    *  previous tick after the provider's run errored. The data is
@@ -1430,7 +1504,7 @@ export interface QuotaGatherHeartbeat {
   tickAt: string;
   ok: boolean;
   durationMs: number;
-  perProvider: Record<string, { state: "ok" | "error"; ms: number; rows: number; error?: string }>;
+  perProvider: Record<string, { state: "ok" | "error" | "lapsed"; ms: number; rows: number; error?: string }>;
   /** Set when the tick itself failed before any provider ran (import / credential store). */
   error?: string;
 }

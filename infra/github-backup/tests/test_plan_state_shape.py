@@ -156,6 +156,37 @@ class ValidateStateTests(unittest.TestCase):
         self.assertEqual(len(problems), 2)
         self.assertIn("drain_last::a/b", problems[0])
 
+    def test_wrong_shape_last_fetch_is_named_and_dropped(self):
+        # Oracle (#6821): fetch_mirrors.main does arithmetic on
+        # last_fetch, so any non-number shape must surface as a named
+        # problem at validation and never reach the fetch loop.
+        for bad in ["2026-11-01T00:00:00Z", [1762000000], {"ts": 1}, True]:
+            clean, problems = ghb_common.validate_state(
+                {"a/b": {"last_fetch": bad, "fail_days": []}}
+            )
+            self.assertEqual(len(problems), 1, bad)
+            self.assertIn("last_fetch", problems[0])
+            self.assertIn("a/b", problems[0])
+            self.assertNotIn("last_fetch", clean["a/b"])
+            self.assertEqual(clean["a/b"]["fail_days"], [])
+
+    def test_drain_fail_entry_inner_fields_are_preserved(self):
+        # drain_fail::<repo> is a drainer bookkeeping object, preserved
+        # verbatim under its own shape (#6637) — its inner fields are
+        # not per-repo fetch state and are not last_fetch-validated.
+        entry = {"count": 2, "last_fetch": {}}
+        clean, problems = ghb_common.validate_state({"drain_fail::a/b": entry})
+        self.assertEqual(problems, [])
+        self.assertEqual(clean["drain_fail::a/b"], entry)
+
+    def test_numeric_last_fetch_passes_unchanged(self):
+        for good in [1762000000, 1762000000.5, 0]:
+            clean, problems = ghb_common.validate_state(
+                {"a/b": {"last_fetch": good}}
+            )
+            self.assertEqual(problems, [])
+            self.assertEqual(clean["a/b"]["last_fetch"], good)
+
     def test_non_list_fail_days_is_reset_with_problem(self):
         clean, problems = ghb_common.validate_state(
             {"a/b": {"fail_days": "2026-01-01"}}
@@ -489,6 +520,20 @@ class ShapePropertyTests(unittest.TestCase):
             days = entry.get("fail_days")
             if days is not None and not isinstance(days, list):
                 entry["fail_days"] = []
+                problems += 1
+            # #6821: a wrong-shape per-repo last_fetch is dropped
+            # under a named problem; drain bookkeeping entries are
+            # preserved under their own shapes.
+            last_fetch = entry.get("last_fetch")
+            if (
+                not key.startswith("drain_")
+                and last_fetch is not None
+                and (
+                    not isinstance(last_fetch, (int, float))
+                    or isinstance(last_fetch, bool)
+                )
+            ):
+                del entry["last_fetch"]
                 problems += 1
             clean[key] = entry
         return clean, problems

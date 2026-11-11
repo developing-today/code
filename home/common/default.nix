@@ -129,6 +129,7 @@ let
   # flake's own packages.<system>.opencode). Named once here: the
   # wrapper below execs it, and the wrapped package joins over it.
   opencodeCascade = inputs.openchamber.inputs.opencode.packages.${system}.opencode;
+
   # Drew's opencode wrapper -- formerly a standalone home.packages
   # entry (writeShellScriptBin "opencode"), logic unchanged:
   # Cloudflare env top-up and the stamp-gated sync-models
@@ -1103,6 +1104,8 @@ in
     # inherits them — the mcpx daemon receives them the same way.)
   };
 
+
+
   services.opencode = {
     # enable comes from the cascade (mkDefault at each layer).
     #
@@ -1181,7 +1184,9 @@ in
         fi
       ''
     );
-    EnvironmentFile = "%h/.local/state/opencode/mistral-api-key.env";
+    # Let ExecStartPre run when the file is absent; systemd reads it again
+    # for ExecStart after the materializer has created it.
+    EnvironmentFile = "-%h/.local/state/opencode/mistral-api-key.env";
   };
 
   services.mcpx = {

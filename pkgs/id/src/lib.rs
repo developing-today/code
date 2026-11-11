@@ -152,19 +152,19 @@
 //! id get abc123... myfile.txt
 //! ```
 
+pub use id_core::abuse;
 pub use id_core::access;
-pub mod abuse;
 pub mod aliases;
 pub mod app_manifest;
 #[cfg(feature = "world")]
 pub mod artifact;
-pub mod attestation;
+pub use id_events::attestation;
 pub mod backup;
 pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;
-pub mod chain;
-pub mod chat;
+pub use id_store::chain;
+pub use id_store::chat;
 pub mod chat_presence;
 pub mod cli;
 pub mod commands;
@@ -172,7 +172,7 @@ pub use id_core::connectivity;
 pub mod conversion;
 pub mod currency;
 pub mod currency_poc;
-pub mod dht;
+pub use id_sync::dht;
 #[cfg(feature = "world")]
 pub mod directory;
 #[cfg(feature = "world")]
@@ -185,67 +185,72 @@ pub mod directory_mail;
 pub mod directory_view;
 pub use id_core::discovery;
 pub mod didit;
-pub mod documents;
+pub use id_store::documents;
 #[cfg(feature = "world")]
 pub mod encryption;
 #[cfg(feature = "world")]
 pub mod envelope_net;
 #[cfg(feature = "world")]
 pub mod envelope_outbox;
-pub mod event_store;
-pub mod event_sync;
+pub use id_events::event_store;
+pub use id_events::event_sync;
 pub mod fileops;
 pub mod foreign_libsql;
-pub mod frames;
+pub use id_core::frames;
+pub mod grant_service;
+pub mod grants;
 pub mod groups;
 pub mod helpers;
 pub mod hosted_binding;
-pub mod idset;
+pub use id_events::idset;
 pub mod input_framing;
 pub mod invite;
 pub mod invites;
-pub mod issuer_rotation;
+pub use id_store::issuer_rotation;
 pub(crate) mod key_envelope;
 pub mod local;
-pub mod local_claims;
-pub mod local_events;
-pub mod log_sync;
+pub use id_events::local_claims;
+pub use id_events::local_events;
+pub use id_sync::log_sync;
 mod peer_announcement;
 pub mod serve_proxy;
 pub use id_core::membership;
 pub mod match_audit;
 pub mod meta_client;
-pub mod note_links;
-pub mod notes;
+pub use id_store::note_links;
+pub use id_store::notes;
 #[cfg(feature = "world")]
 pub use id_core::petname;
 pub mod protocol;
 pub mod publications;
+pub mod publications_runtime;
 pub mod pull_policy;
 pub use id_core::residency;
 pub mod references;
-pub mod rejection;
+pub use id_core::rejection;
 pub mod repl;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
-pub mod search;
+#[cfg(feature = "sandbox")]
+pub mod world_dev;
+pub use id_store::search;
 #[cfg(feature = "world")]
 pub mod seitan;
 #[cfg(feature = "world")]
 pub mod server_config;
-pub mod session_checkpoint;
+pub use id_store::session_checkpoint;
 #[cfg(feature = "world")]
 pub mod shell_contract;
-pub mod store;
+pub use id_store::store;
 pub mod store_traits;
 pub mod structured_logging;
 pub use id_core::sync_method;
-pub mod tag_claims;
-pub mod tag_index;
-pub mod tags;
+pub use id_store::tag_claims;
+pub use id_store::tag_index;
+pub use id_store::tags;
 #[cfg(test)]
 mod test_forgeries;
-pub(crate) mod text;
+pub(crate) use id_core::text;
 pub(crate) use id_core::is_format_char;
 pub(crate) use id_core::time;
 pub use id_core::tuple;
@@ -253,20 +258,23 @@ pub use id_core::waiting;
 #[cfg(feature = "world")]
 pub mod world;
 #[cfg(feature = "world")]
-pub use id_core::world_caps;
+pub use id_caps::world_caps;
 #[cfg(feature = "world")]
+pub mod world_cache;
 pub mod world_compile;
 #[cfg(feature = "world")]
 pub mod world_doctor;
 #[cfg(feature = "world")]
 pub mod world_fixture;
 #[cfg(feature = "world")]
+mod session_host;
+
 pub mod world_hub;
 #[cfg(feature = "world")]
-pub use id_core::world_limits;
+pub use id_caps::world_limits;
 pub(crate) mod world_line;
 #[cfg(feature = "world")]
-pub mod world_manifest;
+pub use id_caps::world_manifest;
 #[cfg(feature = "world")]
 pub mod world_native;
 #[cfg(feature = "world")]
@@ -311,6 +319,7 @@ pub use helpers::{
     print_matches_cli,
 };
 pub use protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
+pub use protocol::match_kind;
 pub use repl::run_repl;
 pub use store::{StoreType, load_or_create_keypair, open_store};
 
@@ -333,12 +342,7 @@ pub const KEY_FILE: &str = ".iroh-key";
 /// different identities for serving vs. connecting.
 pub const CLIENT_KEY_FILE: &str = ".iroh-key-client";
 
-/// Directory name for persistent blob storage.
-///
-/// Contains the iroh-blobs file store (a `redb` database plus data files) and the
-/// iroh-docs store under `docs/`. Only one process can open it at a time; while
-/// `id serve` runs, the CLI talks to the server instead of opening the store.
-pub const STORE_PATH: &str = ".iroh-store";
+pub use id_store::STORE_PATH;
 
 /// Filename for the serve lock file.
 ///
@@ -346,25 +350,7 @@ pub const STORE_PATH: &str = ".iroh-store";
 /// for local clients to connect. Automatically removed on clean shutdown.
 pub const SERVE_LOCK: &str = ".iroh-serve.lock";
 
-/// Application-Level Protocol Negotiation (ALPN) identifier for the meta protocol.
-///
-/// Used during QUIC handshake to identify connections for metadata operations
-/// (list, find, delete, rename, etc.) as opposed to blob data transfer.
-///
-/// **Version 2** carries tag keys/values as raw bytes (binary-safe), defines
-/// `DelTag` with no value as "delete every value of the key", and adds `Whoami`
-/// and `Error`. It is not wire-compatible with `/iroh-meta/1`; the ALPN bump
-/// makes old and new nodes fail the handshake cleanly instead of mis-decoding.
-///
-/// **Version 3** changes the `List` response item from `(hash, name)` pairs
-/// to `ListEntry` records carrying the file's origin node and upload time
-/// (#4973). That payload change is not wire-compatible with `/iroh-meta/2`
-/// under postcard, so it takes this ALPN bump per the rule below.
-///
-/// Compatibility rule: within a version, only **append** enum variants. Any
-/// other change to [`protocol::MetaRequest`] / [`protocol::MetaResponse`]
-/// requires a new ALPN. `protocol::tests` pins every discriminant.
-pub const META_ALPN: &[u8] = b"/iroh-meta/3";
+pub use id_sync::protocol::META_ALPN;
 
 // ============================================================================
 // Utility Functions
@@ -404,46 +390,7 @@ pub fn to_absolute(path: &PathBuf) -> Result<PathBuf> {
     }
 }
 
-/// Determines how a search query matches a string.
-///
-/// This function implements a priority-based matching system:
-/// 1. **Exact**: The strings are identical
-/// 2. **Prefix**: The haystack starts with the needle
-/// 3. **Contains**: The haystack contains the needle somewhere
-///
-/// # Arguments
-///
-/// * `haystack` - The string to search within (e.g., filename or hash)
-/// * `needle` - The search query
-///
-/// # Returns
-///
-/// * `Some(MatchKind::Exact)` if `haystack == needle`
-/// * `Some(MatchKind::Prefix)` if `haystack.starts_with(needle)`
-/// * `Some(MatchKind::Contains)` if `haystack.contains(needle)`
-/// * `None` if no match
-///
-/// # Example
-///
-/// ```rust
-/// use id::{match_kind, MatchKind};
-///
-/// assert_eq!(match_kind("hello.txt", "hello.txt"), Some(MatchKind::Exact));
-/// assert_eq!(match_kind("hello.txt", "hello"), Some(MatchKind::Prefix));
-/// assert_eq!(match_kind("say-hello.txt", "hello"), Some(MatchKind::Contains));
-/// assert_eq!(match_kind("world.txt", "hello"), None);
-/// ```
-pub fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
-    if haystack == needle {
-        Some(MatchKind::Exact)
-    } else if haystack.starts_with(needle) {
-        Some(MatchKind::Prefix)
-    } else if haystack.contains(needle) {
-        Some(MatchKind::Contains)
-    } else {
-        None
-    }
-}
+
 
 /// Checks if a string is a valid node ID format.
 ///

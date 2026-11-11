@@ -265,6 +265,12 @@ func renderQuestion(r elicit.Request) string {
 		fmt.Fprintf(&b, "  mcpx elicit decline %s\n", r.ID)
 		return b.String()
 	}
+	if r.Mode == elicit.Sample {
+		b.WriteString(sampleRequestLines(r))
+		fmt.Fprintf(&b, "\n  mcpx elicit answer %s %s\n", r.ID, shellQuote(sampleAnswerExample()))
+		fmt.Fprintf(&b, "  mcpx elicit decline %s\n", r.ID)
+		return b.String()
+	}
 	for _, f := range describeSchema(r.Schema) {
 		fmt.Fprintf(&b, "  %-8s %s\n", f.name, f.detail)
 	}
@@ -339,6 +345,93 @@ func exampleFor(raw json.RawMessage) string {
 		parts = append(parts, fmt.Sprintf("%q:%s", f.name, v))
 	}
 	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// sampleRequestLines renders a sampling question as what it is: a
+// server asking a model to complete a prompt (#1837, Phase 3 of #1834).
+//
+// A sampling question's Schema is a full CreateMessageRequest, not a
+// JSON Schema, so describeSchema finds no properties in it and the old
+// rendering showed the reviewer nothing -- the system prompt sat in
+// Message and the actual prompt (the messages) rendered as nothing,
+// with a '{}' answer example that is not a CreateMessageResult. Here
+// the reviewer sees the requesting server (the from line above), the
+// system prompt and every message verbatim, so the thing being relayed
+// can actually be reviewed before it is answered. The full request
+// JSON stays available on the row itself (show with the global --json
+// flag). Answered results are recorded on the broker row and visible
+// via `mcpx elicit result <id>`; there is no pre-delivery staging
+// state, and this rendering does not invent one.
+func sampleRequestLines(r elicit.Request) string {
+	var b strings.Builder
+	b.WriteString("  sampling  a server asks a model to complete this prompt; review the prompt itself before answering -- an answer relays a model completion back to the server\n")
+	var req struct {
+		SystemPrompt string `json:"systemPrompt"`
+		Messages     []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		MaxTokens int `json:"maxTokens"`
+	}
+	if err := json.Unmarshal(r.Schema, &req); err != nil || (req.SystemPrompt == "" && len(req.Messages) == 0) {
+		fmt.Fprintf(&b, "  request   could not be decoded; the full request JSON is on this row (mcpx --json elicit show %s)\n", r.ID)
+		return b.String()
+	}
+	if req.SystemPrompt != "" {
+		fmt.Fprintf(&b, "  system    %s\n", req.SystemPrompt)
+	}
+	for i, m := range req.Messages {
+		fmt.Fprintf(&b, "  msg %-4d  %s\n", i+1, m.Role)
+		for _, line := range sampleContentLines(m.Content) {
+			fmt.Fprintf(&b, "    %s\n", line)
+		}
+	}
+	if req.MaxTokens > 0 {
+		fmt.Fprintf(&b, "  maxTokens %d\n", req.MaxTokens)
+	}
+	return b.String()
+}
+
+// sampleContentLines renders one message's content: text blocks
+// verbatim (the prompt is the thing under review), any other block as
+// compact JSON so nothing is silently dropped.
+func sampleContentLines(raw json.RawMessage) []string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return []string{"(no content)"}
+	}
+	var blocks []json.RawMessage
+	if strings.HasPrefix(trimmed, "[") {
+		if err := json.Unmarshal(raw, &blocks); err != nil {
+			return []string{compactJSON(raw)}
+		}
+	} else {
+		blocks = []json.RawMessage{raw}
+	}
+	var out []string
+	for _, blk := range blocks {
+		var block struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(blk, &block) == nil && block.Type == "text" {
+			out = append(out, block.Text)
+			continue
+		}
+		out = append(out, compactJSON(blk))
+	}
+	if len(out) == 0 {
+		return []string{"(no content)"}
+	}
+	return out
+}
+
+// sampleAnswerExample is the answer skeleton offered for a sampling
+// question: a real CreateMessageResult shape (the shape
+// elicit.ValidateSampleResult accepts), not the '{}' a schema-less
+// question used to offer.
+func sampleAnswerExample() string {
+	return `{"role":"assistant","model":"<model>","content":{"type":"text","text":"..."},"stopReason":"endTurn"}`
 }
 
 // shellQuote renders s as a single POSIX shell word: wrapped in single

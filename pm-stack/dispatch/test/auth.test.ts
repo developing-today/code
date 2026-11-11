@@ -134,6 +134,8 @@ describe("OIDC verification", () => {
   });
 
   test("rejects a repo outside the allowlist", async () => {
+    // The pre-rename spelling is exactly such a repo now (#6940):
+    // only the canonical dezren39/darwin-nix is allowlisted.
     const token = signJwt({ ...baseClaims, repository: "dezren39/nix" });
     await expect(verifyOidcToken(token, oidcOpts)).rejects.toThrow(/allowlist/);
   });
@@ -144,7 +146,7 @@ describe("cross-repo grants (assertCallerRepo)", () => {
     "developing-today/code",
     "developing-today/opencode",
     "developing-today/openchamber",
-    "dezren39/nix",
+    "dezren39/darwin-nix",
     "developing-today/zettel",
     "dezren39/dezren39",
   ];
@@ -158,10 +160,10 @@ describe("cross-repo grants (assertCallerRepo)", () => {
     expect(() => assertCallerRepo(openchamberCaller, "developing-today/opencode", allowlist)).not.toThrow();
   });
 
-  test("cross-repo allowed: a zettel token may target dezren39/dezren39 and dezren39/nix", () => {
+  test("cross-repo allowed: a zettel token may target dezren39/dezren39 and dezren39/darwin-nix", () => {
     const zettelCaller = { type: "oidc" as const, repository: "developing-today/zettel", actor: "dezren39" };
     expect(() => assertCallerRepo(zettelCaller, "dezren39/dezren39", allowlist)).not.toThrow();
-    expect(() => assertCallerRepo(zettelCaller, "dezren39/nix", allowlist)).not.toThrow();
+    expect(() => assertCallerRepo(zettelCaller, "dezren39/darwin-nix", allowlist)).not.toThrow();
   });
 
   test("same-repo still allowed", () => {
@@ -179,7 +181,7 @@ describe("cross-repo grants (assertCallerRepo)", () => {
 
   test("bearer callers are unaffected by caller/target repo pairing: an allowlisted target passes", () => {
     expect(() => assertCallerRepo({ type: "bearer" }, "developing-today/opencode", allowlist)).not.toThrow();
-    expect(() => assertCallerRepo({ type: "bearer" }, "dezren39/nix", allowlist)).not.toThrow();
+    expect(() => assertCallerRepo({ type: "bearer" }, "dezren39/darwin-nix", allowlist)).not.toThrow();
   });
 
   test("bearer callers are rejected for a non-allowlisted target", () => {
@@ -227,15 +229,15 @@ describe("JWKS body shape (#7565)", () => {
     resetJwksCacheForTests();
     const originalFetch = globalThis.fetch;
     let calls = 0;
-    globalThis.fetch = async () => {
+    globalThis.fetch = (async () => {
       calls++;
       return {
         ok: true,
         json: async () => {
           throw new SyntaxError("Unexpected token < in JSON");
         },
-      } as Response;
-    };
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
     try {
       await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
       await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
@@ -249,7 +251,7 @@ describe("JWKS body shape (#7565)", () => {
   test("fetchGithubJwks rejects a wrong-shape 200 body as AuthError", async () => {
     resetJwksCacheForTests();
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => ({ ok: true, json: async () => ({}) }) as Response;
+    globalThis.fetch = (async () => ({ ok: true, json: async () => ({}) }) as unknown as Response) as unknown as typeof fetch;
     try {
       await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
     } finally {

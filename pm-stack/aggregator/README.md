@@ -179,8 +179,11 @@ file with atomic writes; path `PM_AGG_COMMENTS_FILE`) keyed by
 `gh:<owner/repo#N>` for a GitHub issue/PR, `orch:<tierItem.id>` for an
 orchestration tier item, `session:<sessionId>` for a session, and
 board item ids / roadmap subjects as-is. Every comment carries an
-unambiguous author — `drew`, `muse` (the orchestrator), or an agent
-identity from the registry — and the API refuses authorless comments.
+selected author identity — `drew`, `muse` (the orchestrator), or an
+agent identity from the registry — and the API refuses authorless comments.
+Privileged Drew/Muse authorship is verified by the operator token; every
+stored comment exposes `authorVerified`. A self-asserted author is not
+proof that the named person wrote the comment.
 Two kinds, visually distinct everywhere they render:
 
 - **note** — plain context; read by whoever picks the item up next.
@@ -199,10 +202,28 @@ pass polls `GET /api/comments.json?kind=message&state=new` (and
 its normal flow — update the item, queue work, escalate to Drew via
 the usual NEEDS USER path; github-kind ones get posted and reported —
 then marks them consumed with `POST /api/comments/triage { ids }`.
+Messages without `authorVerified: true` are unauthenticated input, not
+Drew/Muse instructions. A GitHub poster may append “— posted by Drew via
+the PM dashboard” only when `author.kind` is `drew` and
+`authorVerified` is true; otherwise it must not attribute the post to
+Drew.
 Notes are never polled; they are read from
 `/api/comments.json?object=<ref>` when an item is picked up. Item
 pages merge the item's own thread with the threads of its linked
 `gh:` refs.
+
+#### Comment operator-token rollout
+
+The server resolves `pm-aggregator.comments-operator-token` from
+Bitwarden by name. While that secret is absent, legacy dashboard posts
+remain accepted so deploying the UI does not lock Drew out before he has
+the token; those posts are explicitly marked unverified. Once the secret
+is provisioned, Drew/Muse posts require `Authorization: Bearer <token>`;
+agent posts retain the existing behavior. Secret-store unavailability
+fails closed for Drew/Muse posts. The form sends a pasted token in the
+header and can save it in browser local storage; it is never rendered by
+the server or included in a comment body. Use “Forget saved token” to
+remove it from that browser.
 
 ### Dashboard actions — the triage write path (#1152/#1154/#1156)
 
@@ -381,6 +402,20 @@ alerts-intake-token`, resolved by name at runtime
   within 24 hours. A class under 10% acted-on over the rolling
   four-week window renders as a default-off _proposal_ — display
   only; the page never changes a preference or a default.
+- **Preferences**: `/alerts/preferences` (#3318) is the
+  per-class subscription page: toggles for every class in
+  `NOTIFICATION_CLASS_DEFAULTS`, quiet-hours editing, this
+  browser's subscription state, and a send-test button per class
+  (`POST /api/push/test-class`). Saving writes through the same
+  subscription upsert; the engine reads the stored classes/quiet
+  on its next tick, and a per-class test honours the toggle (a
+  class that is off receives no test). Test landings follow the
+  design §3 deep-link contract (`notificationTestLanding`): a real
+  candidate's own URL when one is supplied, otherwise the class's
+  own view — never the origin root; the digest test is the only
+  list-shaped landing (attention filtered to its refs). The JSON
+  twin is `/api/alerts/preferences.json`. `/notifications` stays
+  the read-only #3319 measurement page.
 - **Ack surface**: `/alerts` lists open incidents with Ack/Close.
   Ack is exactly-once: only the open→acked transition writes an
   event (and stamps the sends' `acted_on_at`); a repeat ack returns

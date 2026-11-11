@@ -736,6 +736,108 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             } = args;
             verify_fixture(&module, &fixture, seed, allow_partial)
         }
+        #[cfg(feature = "sandbox")]
+        WorldCommand::Dev(args) => {
+            let crate::cli::WorldDevArgs {
+                dir,
+                platform,
+                roc,
+                seed,
+                inputs,
+                fixtures,
+                fuzz,
+                fuzz_seed,
+                fuzz_cases,
+                watch,
+                watch_max_cycles,
+                watch_debounce_ms,
+            } = args;
+            let mut fixture_inputs = Vec::with_capacity(fixtures.len());
+            for fixture_path in &fixtures {
+                let text = String::from_utf8(read_bounded(
+                    fixture_path,
+                    crate::world_fixture::MAX_FIXTURE_BYTES,
+                    "fixture",
+                )?)
+                .context("the fixture is not UTF-8")?;
+                let fixture = crate::world_fixture::decode(&text)?;
+                fixture_inputs.push((fixture_path.display().to_string(), fixture));
+            }
+            if let Some(fuzz_path) = &fuzz {
+                let text = String::from_utf8(read_bounded(
+                    fuzz_path,
+                    crate::world_dev::MAX_FUZZ_DECL_BYTES as u64,
+                    "fuzz declaration",
+                )?)
+                .context("the fuzz declaration is not UTF-8")?;
+                let decl = crate::world_dev::parse_fuzz_decl(&text)?;
+                let report = crate::world_dev::run_dev_fuzz(
+                    &dir,
+                    platform.as_deref(),
+                    roc.as_deref(),
+                    seed,
+                    &decl,
+                    fuzz_seed,
+                    fuzz_cases,
+                )
+                .await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                if let Some(summary) = report.failure_summary() {
+                    anyhow::bail!("{summary}");
+                }
+                return Ok(());
+            }
+            if watch {
+                let report = crate::world_dev::run_dev_watch(
+                    &dir,
+                    platform.as_deref(),
+                    roc.as_deref(),
+                    seed,
+                    &inputs,
+                    &fixture_inputs,
+                    watch_max_cycles,
+                    watch_debounce_ms,
+                )
+                .await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                if !report.initial_promoted {
+                    let blocking: Vec<&str> = report
+                        .fixture_gates
+                        .iter()
+                        .filter(|gate| gate.blocks_promotion)
+                        .map(|gate| gate.fixture.as_str())
+                        .collect();
+                    anyhow::bail!(
+                        "fixture gate: candidate not promoted; fixture(s) mismatched: {}",
+                        blocking.join(", ")
+                    );
+                }
+                return Ok(());
+            }
+            let report = crate::world_dev::run_dev_once(
+                &dir,
+                platform.as_deref(),
+                roc.as_deref(),
+                seed,
+                &inputs,
+                &fixture_inputs,
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if !report.promoted {
+                let blocking: Vec<&str> = report
+                    .fixture_gates
+                    .iter()
+                    .filter(|gate| gate.blocks_promotion)
+                    .map(|gate| gate.fixture.as_str())
+                    .collect();
+                anyhow::bail!(
+                    "fixture gate: candidate not promoted; fixture(s) mismatched: {}",
+                    blocking.join(", ")
+                );
+            }
+            Ok(())
+        }
         WorldCommand::List(args) => {
             let crate::cli::WorldListArgs {
                 node,
@@ -1014,8 +1116,12 @@ async fn join_over_ssh(
     let check = match ssh_host_key {
         Some(fingerprint) => HostKeyCheck::Fingerprint(fingerprint),
         None => {
+            // Home-resolution contract (issues #5762 / #5763): empty
+            // HOME is unset - the old code let Some("") through and
+            // joined a CWD-relative ".ssh/known_hosts".
             let home = std::env::var_os("HOME")
-                .context("no HOME for ~/.ssh/known_hosts; pass --ssh-host-key")?;
+                .filter(|home| !home.is_empty())
+                .context("no HOME (unset or empty) for ~/.ssh/known_hosts; pass --ssh-host-key")?;
             HostKeyCheck::KnownHosts(PathBuf::from(home).join(".ssh").join("known_hosts"))
         }
     };
@@ -1146,18 +1252,11 @@ async fn current_world_state(
             .await?,
     )
     .context("host returned a malformed execution profile")?;
-    // The report carries the world's own ceiling as a list; a ceiling equal
-    // to the default ceiling folds back to "no ceiling" (an apply then
-    // restores the default ceiling, #838).
-    let ceiling = if caps.ceiling
-        == crate::world_caps::default_ceiling_names()
-            .into_iter()
-            .collect::<Vec<_>>()
-    {
-        None
-    } else {
-        Some(caps.ceiling.clone())
-    };
+    // The report carries the world's own ceiling as a list; the shared
+    // fold turns a report equal to the default ceiling into None, which
+    // means the default ceiling — the one meaning of None for a live
+    // ceiling (#6817, #838).
+    let ceiling = crate::world_manifest::fold_reported_ceiling(caps.ceiling.clone());
     let (seed, schedules) = client
         .fresh_session()
         .await?
@@ -1270,9 +1369,10 @@ async fn apply_steps(
                 }
             }
             ApplyStep::SetCeiling { ceiling } => {
-                // `None` means "no ceiling": restore the default ceiling —
-                // providers with an `Excluded` manifest default stay out
-                // until a ceiling names them (#838).
+                // `None` means the default ceiling — the one meaning of
+                // None for a live ceiling (#6817): restore the default
+                // names on the wire; providers with an `Excluded` manifest
+                // default stay out until a ceiling names them (#838).
                 let names = ceiling.clone().unwrap_or_else(|| {
                     crate::world_caps::default_ceiling_names()
                         .into_iter()
@@ -2377,7 +2477,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.5"
+            "3 frames conform to shell contract v1.6"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

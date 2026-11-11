@@ -18,7 +18,7 @@ Routing (consumed by .github/workflows/main-broken.yml):
     infra-*           -> rerun    (one automatic re-run of failed jobs)
     flake-suspect     -> rerun    (one re-run; strike counting lives in
                                    the workflow, which can see the issue)
-    real-regression   -> fix      (existing Jules/queue routing)
+    real-regression   -> fix      (existing dispatch/queue routing)
     unknown           -> fix      (existing routing, diagnosis attached)
 
 Rules are evaluated in the order above: a quota or runner problem must

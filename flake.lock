@@ -128,6 +128,22 @@
       "original": {
         "owner": "ipetkov",
         "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      }
+    },
+    "crane_2": {
+      "locked": {
+        "lastModified": 1766774972,
+        "narHash": "sha256-8qxEFpj4dVmIuPn9j9z6NTbU+hrcGjBOvaxTzre5HmM=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
         "type": "github"
       }
     },
@@ -2224,11 +2240,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794228084,
-        "narHash": "sha256-298W/X8tTZ0e80sjYkWfh2DbJ8TW8f7wBf3IG7NIujw=",
+        "lastModified": 1794386120,
+        "narHash": "sha256-LUM3DsLu/MIjkvTffsGEmWlBrUIw2d9dzhP82UHrARc=",
         "owner": "developing-today-forks",
         "repo": "openchamber",
-        "rev": "e895968ba30b28f5345df0661d11278265505967",
+        "rev": "a70ffb28b6c0942e37e7767e2ac460fb69e643b4",
         "type": "github"
       },
       "original": {
@@ -2248,11 +2264,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794315291,
-        "narHash": "sha256-seZ3b5NjH3VWTkgnz2kUjr3c7USl02zDG/XnCTyWR7Q=",
+        "lastModified": 1794393923,
+        "narHash": "sha256-+z1i4CpoJOWoG5ugPBdA/apUrgVAWMvJQfseDW2sdsA=",
         "owner": "developing-today-forks",
         "repo": "opencode",
-        "rev": "ba0e822893dd2349a8c64249e12ca68223619170",
+        "rev": "e25d8c132b7e3e404f84ebb3e5e35e54042d8dd4",
         "type": "github"
       },
       "original": {
@@ -2359,6 +2375,7 @@
         "chatgpt-desktop": "chatgpt-desktop",
         "clan-core": "clan-core",
         "claude-desktop": "claude-desktop",
+        "crane": "crane",
         "disko": "disko_2",
         "esp-dev": "esp-dev",
         "esp-dev-6": "esp-dev-6",
@@ -2428,7 +2445,7 @@
     },
     "rust-flake": {
       "inputs": {
-        "crane": "crane",
+        "crane": "crane_2",
         "nixpkgs": [
           "omnix",
           "nixpkgs"

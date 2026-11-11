@@ -26,6 +26,7 @@ synthetic repo; 100000 makes everything active).
 Run on the laptop:  python3 tests/test_worktree_reaper.py
 """
 
+import argparse
 import contextlib
 import fcntl
 import importlib.util
@@ -378,6 +379,105 @@ class UnitTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
 
+class ConfigValidationTests(unittest.TestCase):
+    """#6394: load_config validates both config files, naming the file.
+
+    Each invalid case from the issue must yield a clean ConfigError
+    (never a silent disarm, never a raw traceback): a typo'd deny
+    key, a string-typed deny list, a wrong-shaped top level,
+    malformed JSON, and a string-typed numeric. A valid config and
+    a valid overlay merge exactly as before.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="reaper-config-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state_dir = os.path.join(self.tmp, "state")
+        os.makedirs(self.state_dir)
+
+    def _args(self, config_path=None):
+        return argparse.Namespace(
+            config=config_path,
+            state_dir=self.state_dir,
+            quiet_hours=None,
+            max_removals=None,
+            no_fetch=False,
+        )
+
+    def _write(self, name, text):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w") as fh:
+            fh.write(text)
+        return path
+
+    def _load(self, config_path=None):
+        return wr.load_config(self.tmp, self._args(config_path))
+
+    def test_typo_deny_key_is_refused_naming_the_file(self):
+        path = self._write("config.json", json.dumps({"deny_path": ["/x"]}))
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn(path, str(ctx.exception))
+        self.assertIn("deny_path", str(ctx.exception))
+
+    def test_string_typed_deny_paths_is_refused(self):
+        path = self._write(
+            "config.json", json.dumps({"deny_paths": "/home/user/git/important"})
+        )
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn("deny_paths", str(ctx.exception))
+
+    def test_top_level_list_is_refused_cleanly(self):
+        path = self._write("config.json", json.dumps(["deny_paths"]))
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn("must be a JSON object", str(ctx.exception))
+
+    def test_malformed_json_is_refused_naming_the_file(self):
+        path = self._write("bad.json", "{oops")
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn(path, str(ctx.exception))
+        self.assertIn("invalid JSON", str(ctx.exception))
+
+    def test_string_typed_quiet_hours_is_refused_at_load(self):
+        path = self._write("config.json", json.dumps({"quiet_hours": "6"}))
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn("quiet_hours", str(ctx.exception))
+
+    def test_overlay_typo_key_is_refused_naming_the_overlay(self):
+        overlay = os.path.join(self.state_dir, "config.local.json")
+        with open(overlay, "w") as fh:
+            json.dump({"deny_path": ["/x"]}, fh)
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load()
+        self.assertIn(overlay, str(ctx.exception))
+
+    def test_overlay_top_level_list_is_refused_cleanly(self):
+        overlay = os.path.join(self.state_dir, "config.local.json")
+        with open(overlay, "w") as fh:
+            json.dump(["x"], fh)
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load()
+        self.assertIn(overlay, str(ctx.exception))
+
+    def test_valid_config_and_overlay_merge_unchanged(self):
+        path = self._write(
+            "config.json",
+            json.dumps({"quiet_hours": 2, "deny_paths": ["/a"], "fetch": False}),
+        )
+        overlay = os.path.join(self.state_dir, "config.local.json")
+        with open(overlay, "w") as fh:
+            json.dump({"deny_paths": ["/b"], "max_removals": 5}, fh)
+        cfg = self._load(path)
+        self.assertEqual(cfg["quiet_hours"], 2)
+        self.assertEqual(cfg["deny_paths"], ["/a", "/b"])
+        self.assertEqual(cfg["max_removals"], 5)
+        self.assertFalse(cfg["fetch"])
+
+
 class ProcScanFailClosedTests(unittest.TestCase):
     """#5740: a /proc scan failure is UNKNOWN occupancy — fail closed."""
 
@@ -610,6 +710,62 @@ class SingleInstanceLockTests(unittest.TestCase):
                              "after the lock is released the run must reap")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class StaleRegistrationTests(unittest.TestCase):
+    """#6547: a stale registration (worktree directory deleted out from
+    under git) is prune work on its own — no same-run candidate reap
+    may be required to trigger `git worktree prune`, and a dry run
+    must report it as would-prune while changing nothing on disk."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="wtreaper-stale-")
+        cls.repo = SyntheticRepo(cls.tmp)
+        cls.state = os.path.join(cls.tmp, "state")
+        cls.runner = ReaperRun(cls.repo, cls.state)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def registered_paths(self):
+        rc, out, _ = wr.run_git(self.repo.primary, "worktree", "list",
+                                "--porcelain")
+        assert rc == 0
+        return [line.split(" ", 1)[1] for line in out.decode().splitlines()
+                if line.startswith("worktree ")]
+
+    def last_summary(self):
+        with open(os.path.join(self.state, "last-run.json")) as fh:
+            return json.load(fh)
+
+    def test_01_dry_run_reports_would_prune_and_changes_nothing(self):
+        tree = self.repo.branch_tree("t/stale-dry", push=True)
+        shutil.rmtree(tree)
+        assert tree in self.registered_paths()
+        decisions = self.runner.run(dry_run=True)
+        assert decisions[tree]["action"] == "would-prune", decisions[tree]
+        summary = self.last_summary()
+        assert summary["stale_registrations"] == 1, summary
+        assert summary["pruned"] == 0, summary
+        assert "stale-registration" not in summary["kept"], summary
+        assert tree in self.registered_paths()
+
+    def test_02_non_dry_run_prunes_deleted_directory_only_primary(self):
+        tree = self.repo.branch_tree("t/stale-real", push=True)
+        shutil.rmtree(tree)
+        assert tree in self.registered_paths()
+        decisions = self.runner.run()
+        assert decisions[tree]["action"] == "stale-registration", decisions[tree]
+        summary = self.last_summary()
+        # The dry-run test's registration is still stale too (that test
+        # proved a dry run changes nothing), so the count is >= 1; this
+        # run prunes the primary once, clearing both.
+        assert summary["stale_registrations"] >= 1, summary
+        assert summary["pruned"] == 1, summary
+        assert summary["errors"] == [], summary
+        assert tree not in self.registered_paths()
 
 
 if __name__ == "__main__":

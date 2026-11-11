@@ -13,6 +13,21 @@
 //! escape-free text projection via [`WorldSurface::text_projection`]; the
 //! match there is exhaustive, so adding a variant without a projection is a
 //! compile-time error.
+//!
+//! Semantic token adapter contract (xterm-256 foreground, bold; 1-bit):
+//! | token | terminal | 1-bit | text |
+//! |---|---|---|---|
+//! | emphasis | default, bold | on | plain |
+//! | muted | 8, normal | dither | plain |
+//! | heading | default, bold | on | plain |
+//! | code | 14, normal | on | plain |
+//! | warning | 11, bold | on | plain |
+//! | success | 10, normal | on | plain |
+//! | link | 12, normal | dither | plain |
+//! Adapters resolve every token; unknown future tokens fall back to plain,
+//! while guest documents reject unknown tokens. Tokens override foreground
+//! and bold of overlapping style spans and retain their background. Text
+//! strips styling. Rendering and dithering are trusted adapter operations.
 
 use std::fmt::Write as _;
 
@@ -264,6 +279,7 @@ impl ScreenSurface {
                         bg: 0,
                         bold: false,
                         columns: 1,
+                        token: None,
                     };
                 }
             }
@@ -379,6 +395,34 @@ impl ScreenPatch {
     }
 }
 
+/// Semantic intent retained for adapters, not guest-supplied markup.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StyleToken {
+    Emphasis,
+    Muted,
+    Heading,
+    Code,
+    Warning,
+    Success,
+    Link,
+}
+
+impl StyleToken {
+    /// Xterm-256 foreground (zero is default) and bold projection.
+    #[must_use]
+    pub const fn ansi_style(self) -> (u8, bool) {
+        match self {
+            Self::Emphasis | Self::Heading => (0, true),
+            Self::Muted => (8, false),
+            Self::Code => (14, false),
+            Self::Warning => (11, true),
+            Self::Success => (10, false),
+            Self::Link => (12, false),
+        }
+    }
+}
+
 /// One normalized cell. `columns == 0` marks the continuation of a two-column glyph.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -393,6 +437,9 @@ pub struct ScreenCell {
     pub bold: bool,
     /// Terminal columns occupied by this grapheme (zero for continuation cells).
     pub columns: u8,
+    /// Semantic intent, if supplied by the guest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<StyleToken>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -415,6 +462,8 @@ struct ScreenPayload {
     rows: Vec<String>,
     #[serde(default)]
     styles: Vec<Vec<StyleSpan>>,
+    #[serde(default)]
+    tokens: Vec<Vec<TokenSpan>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -427,14 +476,97 @@ struct StyleSpan {
     bold: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TokenSpan {
+    x: usize,
+    length: usize,
+    token: StyleToken,
+}
+
+/// Whether the document's top-level object repeats the `kind` key.
+///
+/// Only a top-level duplicate makes the surface dispatch ambiguous: a
+/// `kind` repeated inside a nested object (for example a legacy
+/// `{"payload":{"kind":"a","kind":"b"}}`) cannot affect dispatch, which
+/// reads the top-level `kind` alone, so it must not turn a plain-text
+/// document into an error. Nested values are skipped with
+/// `IgnoredAny`, which does not itself reject duplicates.
+fn top_level_kind_is_duplicated(data: &str) -> bool {
+    use serde::Deserializer as _;
+    use serde::de::{IgnoredAny, MapAccess, Visitor};
+    use std::fmt;
+
+    struct TopLevelKindVisitor;
+
+    impl<'de> Visitor<'de> for TopLevelKindVisitor {
+        type Value = bool;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a JSON object")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<bool, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            // No early return on the duplicate: serde_json calls
+            // end_map() after the visitor returns, so leaving the map
+            // unconsumed turns the remaining entries into a trailing
+            // error that the caller maps to a negative verdict (Codex
+            // P2 on PR #8424). Record the flag and consume the rest.
+            let mut seen_kind = false;
+            let mut duplicated = false;
+            while let Some(key) = map.next_key::<String>()? {
+                let _ignored = map.next_value::<IgnoredAny>()?;
+                if key == "kind" {
+                    if seen_kind {
+                        duplicated = true;
+                    }
+                    seen_kind = true;
+                }
+            }
+            Ok(duplicated)
+        }
+    }
+
+    serde_json::Deserializer::from_str(data)
+        .deserialize_map(TopLevelKindVisitor)
+        .unwrap_or(false)
+}
+
 /// Parse the opt-in screen contract; untagged program views remain legacy text.
 ///
 /// Malformed values that identify themselves as a screen are rejected. Other
 /// JSON and ordinary strings remain plain text for compatibility.
 pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
-    let value: Value = match serde_json::from_str(data) {
+    // A duplicate object key is a parse error for a surface document
+    // (#6491, the #6520 rule): the checks below must see the document as
+    // written, never a last-wins collapse of it — a forbidden version,
+    // width, lines, or rows hidden behind a duplicate was accepted
+    // before. Parse through the shared duplicate-rejecting helper;
+    // anything that is not a surface document keeps the legacy
+    // plain-text path (Ok(None)).
+    let value: Value = match crate::json_unique::parse_json_without_duplicate_keys(data) {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            if err.to_string().contains("duplicate JSON object key") {
+                // The collapsed parse still names the document's kind: a
+                // duplicate anywhere in a text/screen document — or a
+                // duplicated `kind` key itself, which makes the dispatch
+                // ambiguous — rejects the document instead of letting
+                // the surviving values pass the checks.
+                let lenient: Option<Value> = serde_json::from_str(data).ok();
+                let kind = lenient
+                    .as_ref()
+                    .and_then(|value| value.get("kind"))
+                    .and_then(Value::as_str);
+                if matches!(kind, Some("screen" | "text")) || top_level_kind_is_duplicated(data) {
+                    return Err(err).context("duplicate JSON object key in world presentation");
+                }
+            }
+            return Ok(None);
+        }
     };
     match value.get("kind").and_then(Value::as_str) {
         Some("screen") => {}
@@ -489,7 +621,12 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
         "world screen style rows do not match height"
     );
     ensure!(
-        payload.styles.iter().map(Vec::len).sum::<usize>() <= MAX_SCREEN_STYLE_SPANS,
+        payload.tokens.is_empty() || payload.tokens.len() == payload.height,
+        "world screen token rows do not match height"
+    );
+    ensure!(
+        payload.styles.iter().map(Vec::len).sum::<usize>()
+            + payload.tokens.iter().map(Vec::len).sum::<usize>() <= MAX_SCREEN_STYLE_SPANS,
         "world screen has too many style spans"
     );
 
@@ -499,6 +636,7 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
         bg: 0,
         bold: false,
         columns: 1,
+        token: None,
     };
     let mut cells = vec![default_cell; cell_count];
 
@@ -533,6 +671,7 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                 bold: false,
                 columns: u8::try_from(columns)
                     .context("screen glyph width is not representable")?,
+                token: None,
             };
             if columns == 2 {
                 cells[row_start + column + 1] = ScreenCell {
@@ -541,6 +680,7 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     bg: 0,
                     bold: false,
                     columns: 0,
+                    token: None,
                 };
             }
             column = end;
@@ -582,6 +722,23 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                 previous_end = end;
             }
         }
+        if let Some(spans) = payload.tokens.get(row_index) {
+            let mut previous_end = 0;
+            for span in spans {
+                ensure!(span.length > 0, "world screen token span must not be empty");
+                let end = span.x.checked_add(span.length).context("world screen token span overflows")?;
+                ensure!(end <= payload.width, "world screen token span exceeds its row");
+                ensure!(span.x >= previous_end, "world screen token spans overlap or are unsorted");
+                ensure!(boundaries[span.x] && boundaries[end], "world screen token span splits a wide glyph");
+                let (fg, bold) = span.token.ansi_style();
+                for cell in &mut cells[row_start + span.x..row_start + end] {
+                    cell.token = Some(span.token);
+                    cell.fg = fg;
+                    cell.bold = bold;
+                }
+                previous_end = end;
+            }
+        }
     }
 
     for row in 0..payload.height {
@@ -595,7 +752,8 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     leading.columns == 2
                         && leading.fg == cell.fg
                         && leading.bg == cell.bg
-                        && leading.bold == cell.bold,
+                        && leading.bold == cell.bold
+                        && leading.token == cell.token,
                     "world screen continuation does not match its wide glyph"
                 );
             }
@@ -742,6 +900,7 @@ impl ScreenSurface {
                     || previous.fg != cell.fg
                     || previous.bg != cell.bg
                     || previous.bold != cell.bold
+                    || previous.token != cell.token
                     || !cell.symbol.is_empty()
                 {
                     return false;
@@ -765,6 +924,7 @@ impl ScreenSurface {
                         || continuation.fg != cell.fg
                         || continuation.bg != cell.bg
                         || continuation.bold != cell.bold
+                        || continuation.token != cell.token
                         || !continuation.symbol.is_empty()
                     {
                         return false;
@@ -796,7 +956,34 @@ fn style_sequence(fg: u8, bg: u8, bold: bool) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
     use serde_json::json;
+
+    #[test]
+    fn semantic_tokens_validate_and_project() {
+        let mut doc = json!({"kind":"screen", "version":1, "width":1, "height":1,
+            "rows":["x"], "tokens":[[{"x":0,"length":1,"token":"warning"}]]});
+        let screen = parsed_screen(doc.clone());
+        assert_eq!(screen.cells[0].token, Some(StyleToken::Warning));
+        assert_eq!(screen.render_ansi().unwrap(), "\x1b[H\x1b[2J\x1b[0;1;38;5;11mx\x1b[0m");
+        assert_eq!(screen.text_projection(), "x");
+        doc["tokens"][0][0]["token"] = json!("<script>");
+        assert!(parse_surface(&doc.to_string()).is_err());
+    }
+
+    #[derive(Deserialize)]
+    struct ScreenCellParityCorpus {
+        cases: Vec<ScreenCellParityCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct ScreenCellParityCase {
+        name: String,
+        width: u16,
+        height: u16,
+        expected_valid: bool,
+        cells: Vec<ScreenCell>,
+    }
 
     fn screen(value: Value) -> Result<Option<WorldSurface>> {
         parse_surface(&value.to_string())
@@ -816,11 +1003,49 @@ mod tests {
             bg: 0,
             bold: false,
             columns: 1,
+            token: None,
         }
     }
 
     fn grid(width: usize, height: usize, fill: &str) -> ScreenSurface {
         ScreenSurface::from_cells(width, height, vec![cell(fill); width * height]).unwrap()
+    }
+
+    #[test]
+    fn test_rust_screen_presenter_matches_the_shared_web_parity_corpus() {
+        let corpus: ScreenCellParityCorpus = serde_json::from_str(include_str!(
+            "../../../web/src/test-fixtures/screen-cell-parity.json"
+        ))
+        .unwrap();
+
+        let case_names: Vec<_> = corpus.cases.iter().map(|case| case.name.as_str()).collect();
+        for required_case in [
+            "CJK wide character",
+            "astral-plane emoji",
+            "ZWJ emoji sequence",
+            "warning sign with emoji variation selector",
+            "non-empty continuation cell",
+            "wide character declared with the wrong width",
+        ] {
+            assert!(
+                case_names.contains(&required_case),
+                "missing {required_case:?}"
+            );
+        }
+        for case in corpus.cases {
+            let surface = ScreenSurface {
+                version: 1,
+                width: case.width,
+                height: case.height,
+                cells: case.cells,
+            };
+            assert_eq!(
+                surface.render_ansi().is_some(),
+                case.expected_valid,
+                "Rust screen presenter verdict for {:?}",
+                case.name
+            );
+        }
     }
 
     #[test]
@@ -893,6 +1118,7 @@ mod tests {
                     ScreenCell {
                         symbol: "界".to_owned(),
                         columns: 2,
+                        token: None,
                         ..cell("界")
                     },
                     cell("x"),
@@ -928,11 +1154,13 @@ mod tests {
                 ScreenCell {
                     symbol: "界".to_owned(),
                     columns: 2,
+                    token: None,
                     ..cell("界")
                 },
                 ScreenCell {
                     symbol: String::new(),
                     columns: 0,
+                    token: None,
                     ..cell("")
                 },
             ],
@@ -962,6 +1190,7 @@ mod tests {
                 start: 0,
                 cells: vec![ScreenCell {
                     columns: 3,
+                    token: None,
                     ..cell("x")
                 }],
             }],
@@ -982,6 +1211,7 @@ mod tests {
                 cells: vec![ScreenCell {
                     symbol: "界".to_owned(),
                     columns: 2,
+                    token: None,
                     ..cell("界")
                 }],
             }],
@@ -1174,6 +1404,60 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_keys_in_surface_documents_are_rejected() {
+        // #6491: raw string literals — serde_json::json! values cannot
+        // represent duplicate keys, so the in-tree tests could not express
+        // this defect. Every document below was accepted (Ok(Some(..)))
+        // before the fix: the forbidden value hides behind a benign
+        // duplicate and only the survivor was ever checked.
+        for doc in [
+            // Duplicate version, text: unsupported version first.
+            r#"{"kind":"text","version":99,"version":1,"lines":["hi"]}"#,
+            // Duplicate version, screen.
+            r#"{"kind":"screen","version":99,"version":1,"width":2,"height":1,"rows":["hi"]}"#,
+            // Duplicate width: a zero width hidden behind a benign one.
+            r#"{"kind":"text","version":1,"width":0,"width":80,"lines":["hi"]}"#,
+            // Duplicate lines: a control character (JSON-escaped ESC)
+            // hidden behind clean lines.
+            r#"{"kind":"text","version":1,"lines":["\u001b[31mred"],"lines":["clean"]}"#,
+            // Duplicate rows: an over-wide row hidden behind a fitting one.
+            r#"{"kind":"screen","version":1,"width":2,"height":1,"rows":["toolong"],"rows":["hi"]}"#,
+            // Duplicate kind: the dispatch itself must not be last-wins.
+            r#"{"kind":"screen","kind":"text","version":1,"lines":["hi"]}"#,
+            // Duplicate kind whose survivor is NOT a surface kind, with
+            // further fields after the duplicate: the top-level scan
+            // must consume the whole map or its verdict is lost to a
+            // trailing-content error (Codex P2 on PR #8424).
+            r#"{"kind":"screen","kind":"other","version":1}"#,
+            // Duplicate kind preceded by an unrelated duplicate key: the
+            // unique-key parser stops at the first duplicate, so the
+            // verdict must come from the top-level scan, not from which
+            // duplicate the parser hit first (Codex P2 on PR #8424).
+            r#"{"x":1,"x":2,"kind":"screen","kind":"other"}"#,
+            // Duplicate key at a nested level the parser inspects (a
+            // style span object).
+            r#"{"kind":"screen","version":1,"width":2,"height":1,"rows":["hi"],"styles":[[{"x":0,"x":0,"length":1,"fg":0,"bg":0,"bold":false}]]}"#,
+        ] {
+            assert!(
+                parse_surface(doc).is_err(),
+                "accepted duplicate-key document: {doc}"
+            );
+        }
+        // Controls: single-key documents behave exactly as before, and a
+        // duplicate in a document that is not a surface at all stays on
+        // the legacy plain-text path.
+        assert!(
+            parse_surface(r#"{"kind":"text","version":1,"lines":["hi"]}"#)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            parse_surface(r#"{"kind":"other","version":1,"version":1}"#).unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn viewport_crops_rows_and_does_not_split_wide_graphemes() {
         let parsed = parse_surface(
             r#"{"kind":"screen","version":1,"width":4,"height":2,"rows":["界ab","wxyz"]}"#,
@@ -1222,6 +1506,7 @@ mod tests {
                 bg: 0,
                 bold: true,
                 columns: 2,
+                token: None,
             },
             ScreenCell {
                 symbol: String::new(),
@@ -1229,6 +1514,7 @@ mod tests {
                 bg: 0,
                 bold: true,
                 columns: 0,
+                token: None,
             },
         ];
         let captured = ScreenSurface::from_cells(2, 1, cells).unwrap();
@@ -1248,6 +1534,7 @@ mod tests {
                         bg: 0,
                         bold: false,
                         columns: 1,
+                        token: None,
                     };
                     121
                 ]
@@ -1314,6 +1601,7 @@ mod tests {
                 bg: 0,
                 bold: false,
                 columns: 1,
+                token: None,
             }],
         };
         assert_eq!(screen.render_ansi(), None);

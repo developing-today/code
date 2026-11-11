@@ -13,11 +13,10 @@ Prints one JSON object:
                                               # "opencode", stage
                                               # handed_off/launch_failed,
                                               # no session_id; status
-                                              # "claimed", or "parked"
-                                              # for a handed-off task
-                                              # the handing-off lane
-                                              # parked as its sink
-                                              # (is_handoff_parked)
+                                              # "claimed", or "handed_off"
+                                              # for a task resting in
+                                              # the handoff sink (#8234;
+                                              # is_handoff_waiting)
     "stuck_bound": [ {id, queue, ..., session_id, session_updated} ... ],
                                               # bound tasks whose session
                                               # looks never-prompted and
@@ -166,6 +165,40 @@ def parse_lease_ms(value):
     return int(dt.timestamp() * 1000)
 
 
+
+def _session_timing(session):
+    """(idle, updated_ms) for a session entry, or None when its timing
+    cannot be read (#6868).
+
+    Readable: `time` absent/None (timeless: updated_ms 0, matching the
+    pinned timeless-entry behaviour), or a dict whose present
+    updated/created values are numbers (bool is not a number here).
+    The updated/created choice keeps the historical `or` chain: the
+    first present non-zero numeric value wins, absent stamps read 0.
+
+    Unreadable (None): `time` present but not an object, or a present
+    updated/created value of a non-numeric shape (string, list, dict,
+    bool). Callers fail closed on None: the entry is never counted as
+    known-inactive (cap counts go unknown instead) and never
+    classified stuck-bound on timing evidence it does not have."""
+    t = session.get("time")
+    if t is None:
+        t = {}
+    if not isinstance(t, dict):
+        return None
+    updated = 0
+    for key in ("updated", "created"):
+        v = t.get(key)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        if v:
+            updated = v
+            break
+    return t.get("idle"), updated
+
+
 def is_stuck_bound(row, session, active_ids, now_ms):
     """True iff a claimed opencode-lane task is bound to a session that
     looks created-but-never-prompted and dead (#4758): the task's lease
@@ -196,10 +229,12 @@ def is_stuck_bound(row, session, active_ids, now_ms):
         return False
     if active_ids is None or session_id in active_ids:
         return False
-    t = session.get("time") or {}
-    if t.get("idle") or session.get("outcome"):
+    timing = _session_timing(session)
+    if timing is None:
         return False
-    updated = t.get("updated") or t.get("created") or 0
+    idle, updated = timing
+    if idle or session.get("outcome"):
+        return False
     return now_ms - updated >= ACTIVE_WINDOW_MS
 
 
@@ -207,7 +242,10 @@ def is_root_session(s):
     return isinstance(s, dict) and not s.get("parentID") and not s.get("parent_id")
 
 
-def is_active_root(s, now_ms, active_ids=None):
+def _active_root_state(s, now_ms, active_ids=None):
+    """True (proven active), False (proven inactive), or None (the
+    entry's timing cannot be read, so its activity is UNKNOWN — see
+    _session_timing; #6868)."""
     if not is_root_session(s):
         return False
     # The server's active set is authoritative: a RESUMED session keeps
@@ -217,15 +255,27 @@ def is_active_root(s, now_ms, active_ids=None):
     # counts the root no matter what its stored markers say.
     if active_ids is not None and s.get("id") in active_ids:
         return True
-    t = s.get("time") or {}
-    if t.get("idle") or s.get("outcome"):
+    timing = _session_timing(s)
+    if timing is None:
+        return None
+    idle, updated = timing
+    if idle or s.get("outcome"):
         return False
-    updated = t.get("updated") or t.get("created") or 0
     return now_ms - updated < ACTIVE_WINDOW_MS
 
 
+def is_active_root(s, now_ms, active_ids=None):
+    return _active_root_state(s, now_ms, active_ids) is True
+
+
 def count_active_roots(sessions, now_ms, active_ids=None):
-    return sum(1 for s in sessions if is_active_root(s, now_ms, active_ids))
+    """Count of proven-active roots, or None when any root's activity
+    is unknown (#6868): an unreadable entry must never be silently
+    counted as inactive, which would manufacture cap room."""
+    states = [_active_root_state(s, now_ms, active_ids) for s in sessions]
+    if any(state is None for state in states):
+        return None
+    return sum(1 for state in states if state)
 
 
 def summarize_cap(sessions, active_ids, now_ms):
@@ -244,6 +294,8 @@ def summarize_cap(sessions, active_ids, now_ms):
     if active_ids is None:
         return len(roots), None, None
     active = count_active_roots(roots, now_ms, active_ids)
+    if active is None:
+        return len(roots), None, None
     return len(roots), active, max(0, CAP - active)
 
 
@@ -374,26 +426,41 @@ def fetch_claimed_rows(queue):
     return _fetch_rows(queue, "claimed")
 
 
-def fetch_parked_rows(queue):
-    """Parked rows for one queue (handoff-sink candidates)."""
-    return _fetch_rows(queue, "parked")
+def fetch_handed_off_rows(queue):
+    """Handed_off rows for one queue (handoff-sink candidates)."""
+    return _fetch_rows(queue, "handed_off")
 
 
-def is_handoff_parked(row):
-    """A parked row is a claimant candidate iff it is a recorded
-    opencode handoff that was parked as the handing-off lane's sink:
-    the same yield contract as a claimed candidate (is_candidate —
-    lane opencode, recorded handed_off/launch_failed yield, no
-    session bound, non-UUID claiming lane), read off a parked row.
-    The lane's park is not a wait: verb_park stamps the default
-    +20-minute timer and clears the claim, so a handed-off task sits
-    parked, invisible to claimed-only discovery, until a later shift
-    wave re-claims it and parks it again (#7907/#6533 looped for
-    days this way). A genuine wait park never satisfies the yield
-    contract: its stage is the park/gate itself, not a handoff."""
-    if row.get("status") not in (None, "parked"):
+def is_handoff_waiting(row):
+    """A handed_off (sink) row is a claimant candidate iff it is a
+    recorded opencode handoff resting in the handoff sink: status
+    'handed_off' (#8234), lane opencode, no session bound, and the
+    claiming lane is not itself an OpenChamber scheduled lane (the
+    same double-execution guard as is_candidate).
+
+    Deliberately NO stage test. Sink membership is the STATUS —
+    written once by the broker's park classification, the
+    lease-expiry sink return, or the #8234 migration — so this
+    reader must not reconstruct it from a stage, and in particular
+    must not care whether progress.stage or
+    progress.last_checkpoint.stage carries the yield: the broker
+    and this poll once read different sources and disagreed about
+    a resting row (#8192). For CLAIMED rows the stage test in
+    is_candidate stays — there it is the launch-safety contract
+    (a lane mid-work must never be launched into); a sink row has
+    no lane working it by construction. Historically the sink sat
+    in status 'parked' under the park verb's default timer, and
+    tasks looped claim -> handoff -> park -> re-claim for days
+    (#7907/#6533)."""
+    if row.get("status") not in (None, "handed_off"):
         return False
-    return is_candidate(row)
+    prog = row.get("progress") or {}
+    if prog.get("lane") != "opencode" or prog.get("session_id"):
+        return False
+    lane_id = row.get("lane_id")
+    if lane_id and UUID_LANE.match(lane_id):
+        return False
+    return True
 
 
 def normalize_row(row):
@@ -460,7 +527,8 @@ def _candidate_entry(row, queue):
 
 def _stuck_entry(row, queue, session):
     prog = row.get("progress") or {}
-    sess_t = (session or {}).get("time") or {}
+    timing = _session_timing(session) if isinstance(session, dict) else None
+    sess_updated = timing[1] if timing and timing[1] else None
     issue = prog.get("issue_number") or prog.get("issue") or ""
     return {
         "id": row.get("id"),
@@ -472,7 +540,7 @@ def _stuck_entry(row, queue, session):
         "lane": prog.get("lane"),
         "stage": prog.get("stage"),
         "session_id": prog.get("session_id"),
-        "session_updated": sess_t.get("updated") or sess_t.get("created"),
+        "session_updated": sess_updated,
         "issue": issue,
         "issue_number": prog.get("issue_number"),
         "attempts": row.get("attempts"),
@@ -485,9 +553,9 @@ def get_candidates(rows):
     return [r for r in rows if is_candidate(r)]
 
 
-def get_parked_candidates(rows):
-    """Unbound opencode-lane candidates from parked handoff rows."""
-    return [r for r in rows if is_handoff_parked(r)]
+def get_handed_off_candidates(rows):
+    """Unbound opencode-lane candidates from handoff-sink rows."""
+    return [r for r in rows if is_handoff_waiting(r)]
 
 
 def get_stuck_bound(rows, session_by_id, active_ids, now_ms):
@@ -513,7 +581,8 @@ def get_active_root_session_count():
     active_ids = fetch_active_ids()
     if active_ids is None:
         return -1
-    return count_active_roots(sessions, int(time.time() * 1000), active_ids)
+    count = count_active_roots(sessions, int(time.time() * 1000), active_ids)
+    return -1 if count is None else count
 
 
 def main():
@@ -532,9 +601,9 @@ def main():
     for q in QUEUES:
         rows = fetch_claimed_rows(q)
         cands = [_candidate_entry(r, q) for r in get_candidates(rows)]
-        parked_rows = fetch_parked_rows(q)
+        handed_off_rows = fetch_handed_off_rows(q)
         cands.extend(
-            _candidate_entry(r, q) for r in get_parked_candidates(parked_rows)
+            _candidate_entry(r, q) for r in get_handed_off_candidates(handed_off_rows)
         )
         stuck = [
             _stuck_entry(r, q, session_by_id.get((r.get("progress") or {}).get("session_id")))
@@ -542,7 +611,7 @@ def main():
         ]
         out["queues"][q] = {
             "claimed": len(rows),
-            "parked": len(parked_rows),
+            "handed_off": len(handed_off_rows),
             "candidates": cands,
             "stuck_bound": stuck,
         }

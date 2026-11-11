@@ -338,12 +338,34 @@ function parseHourFlag(flag, raw, args) {
   return value;
 }
 
+/** Validate one path-valued flag (#6934). A present --db or --out-dir
+ * must carry a real value: a missing (trailing), empty, or flag-like
+ * value used to be consumed blindly -- a trailing --db silently fell
+ * back to OPENCODE_USAGE_DB / the default store, and a flag-like value
+ * swallowed the next flag and surfaced later as a bogus unknown
+ * argument. Reject in the #4739 invalid-argument style, before any
+ * store read, with the flag and bad value named. The error carries the
+ * partially parsed args so `run` can still route the failure document
+ * to --out-dir when one was validly parsed. */
+function parsePathFlag(flag, raw, args) {
+  if (raw === undefined || raw === "" || raw.startsWith("--")) {
+    const err = new ExportError(
+      "invalid-argument",
+      2,
+      `${flag} requires a path value (got ${raw === undefined ? "no value" : JSON.stringify(raw)})`,
+    );
+    err.args = args;
+    throw err;
+  }
+  return raw;
+}
+
 function parseArgs(argv) {
   const args = { db: null, outDir: null, windowHours: DEFAULT_WINDOW_HOURS, freshHours: DEFAULT_FRESH_HOURS };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
-    if (a === "--db") args.db = argv[++i];
-    else if (a === "--out-dir") args.outDir = argv[++i];
+    if (a === "--db") args.db = parsePathFlag("--db", argv[++i], args);
+    else if (a === "--out-dir") args.outDir = parsePathFlag("--out-dir", argv[++i], args);
     else if (a === "--window-hours") args.windowHours = parseHourFlag("--window-hours", argv[++i], args);
     else if (a === "--fresh-hours") args.freshHours = parseHourFlag("--fresh-hours", argv[++i], args);
     else throw new Error(`unknown argument: ${a}`);

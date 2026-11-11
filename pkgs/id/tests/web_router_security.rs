@@ -199,6 +199,7 @@ async fn every_public_router_constructor_enforces_its_security_policy() {
         None,
         vec![None, Some("arena".to_owned())],
         None,
+        web::SeitanState::default(),
     )
     .await
     .unwrap();

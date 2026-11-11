@@ -3,7 +3,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::Instrument;
 
@@ -49,9 +49,13 @@ impl WorldCommand {
             Self::Revoke { .. } => "Revoke",
             Self::RevokeAuthorized { .. } => "RevokeAuthorized",
             Self::ParticipantId { .. } => "ParticipantId",
+            Self::AuthorizeScope { .. } => "AuthorizeScope",
             Self::BindAuthorKey { .. } => "BindAuthorKey",
             Self::Chat { .. } => "Chat",
             Self::Input { .. } => "Input",
+            Self::EntityInput { .. } => "EntityInput",
+            Self::ExportEntity { .. } => "ExportEntity",
+            Self::ImportEntity { .. } => "ImportEntity",
             Self::Snapshot { .. } => "Snapshot",
             Self::HostView { .. } => "HostView",
             Self::EventsAfter { .. } => "EventsAfter",
@@ -78,6 +82,7 @@ impl WorldCommand {
             Self::Metrics { .. } => "Metrics",
             Self::AdminEventHistory { .. } => "AdminEventHistory",
             Self::ReplicationFeed { .. } => "ReplicationFeed",
+            Self::ReplicationCompact { .. } => "ReplicationCompact",
             Self::Shutdown { .. } => "Shutdown",
         }
     }
@@ -138,6 +143,16 @@ pub(crate) enum WorldCommand {
         token: JoinCapability,
         reply: oneshot::Sender<Result<u64>>,
     },
+    /// Authorize a live capability for a scope set without performing
+    /// the operation (design #835 phase 3): session paths check this
+    /// before receiving upload bytes, while the operation commands
+    /// (`InstallProgramAuthorized`, `RevokeAuthorized`) still re-check
+    /// at the effect boundary. Replies with the derived participant ID.
+    AuthorizeScope {
+        token: JoinCapability,
+        required: WorldScopes,
+        reply: oneshot::Sender<Result<u64>>,
+    },
     Chat {
         token: JoinCapability,
         text: String,
@@ -158,6 +173,32 @@ pub(crate) enum WorldCommand {
         token: JoinCapability,
         author_key: [u8; 32],
         reply: oneshot::Sender<Result<u64>>,
+    },
+    EntityInput {
+        token: JoinCapability,
+        entity_ref: String,
+        input: Vec<u8>,
+        reply: oneshot::Sender<Result<WorldEvent>>,
+    },
+    ExportEntity {
+        handoff_id: String,
+        entity_ref: String,
+        source_region: String,
+        target_region: String,
+        prior_owner_epoch: u64,
+        reply: oneshot::Sender<Result<HandoffTransferState>>,
+    },
+    ImportEntity {
+        handoff_id: String,
+        entity_ref: String,
+        source_region: String,
+        target_region: String,
+        prior_owner_epoch: u64,
+        program_module_hash: String,
+        payload_schema: String,
+        payload: Vec<u8>,
+        payload_digest: String,
+        reply: oneshot::Sender<Result<HandoffTransferState>>,
     },
     Snapshot {
         token: JoinCapability,
@@ -302,14 +343,27 @@ pub(crate) enum WorldCommand {
         reply: oneshot::Sender<Result<AdminEventHistory>>,
     },
     /// Atomically capture the journal and subscribe to subsequent durable changes.
+    /// When the captured journal is large enough to hold an over-bound entry,
+    /// a second source is returned as a probe: the caller scans it OUTSIDE
+    /// the actor (#8095), because awaiting the scan here would suspend all
+    /// command processing for the duration of a full journal read.
     ReplicationFeed {
         reply: oneshot::Sender<
             Result<(
                 String,
                 JournalSnapshotSource,
+                Option<JournalSnapshotSource>,
                 broadcast::Receiver<ReplicationUpdate>,
             )>,
         >,
+    },
+    /// Serialized forced compaction after an out-of-actor probe found an
+    /// oversized legacy entry (#8095). Compaction itself stays an actor
+    /// operation; only the scan moved out.
+    ReplicationCompact {
+        ordinal: usize,
+        encoded_size: usize,
+        reply: oneshot::Sender<Result<()>>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
@@ -354,6 +408,13 @@ pub(crate) struct WorldActor {
     /// by the replica open path; a writer never runs this way.
     pub(crate) read_only: bool,
     pub(crate) program_healthy: bool,
+    /// Durable transfers whose journal append succeeded but whose program
+    /// apply failed (#3902): their receipts sit in the core dedupe ledger
+    /// yet no live program has applied their events. The requirement is
+    /// tracked independently of `program_healthy`: an exact retry must not
+    /// acknowledge one of these receipts until a program — the current
+    /// one or an installed replacement — has actually applied the event.
+    pub(crate) pending_transfer_replays: Vec<HandoffTransferState>,
     /// Times a `view` or `layout` call trapped. Counted for `id world stats`
     /// (F11.17): a trapping view degrades to an error screen, not a poisoned
     /// world, so this counter is the only place the failure is recorded.
@@ -383,6 +444,17 @@ pub(crate) struct WorldActor {
     /// device re-enumeration. `None` when the host cannot describe
     /// its device — `device.info` then refuses with `unknown_cap`.
     pub(crate) device_manifest: Option<crate::world_caps::DeviceManifest>,
+    /// Request ids the restored program already listed in `wants` when the
+    /// world opened. Restart semantics: a reopen is not a fresh world. The
+    /// requests may have executed before the restart, and
+    /// [`handled_requests`](Self::handled_requests) is memory-only, so the
+    /// actor cannot tell done from never-run. The first `after_change`
+    /// passes therefore refuse these ids with `actor_denied` / `restarted`
+    /// instead of executing them, then drop them from this set; ids the
+    /// program issues after the open execute normally. Only
+    /// [`spawn_restored`](WorldHandle::spawn_restored)
+    /// seeds this set; every other constructor leaves it empty.
+    pub(crate) stale_wants_at_open: BTreeSet<String>,
     /// The participant whose input is being processed. Requests the program
     /// makes in response are checked against that participant's scopes.
     pub(crate) acting: Option<u64>,
@@ -629,6 +701,382 @@ impl WorldActor {
         Ok(())
     }
 
+    fn export_entity(
+        &mut self,
+        handoff_id: String,
+        entity_ref: String,
+        source_region: String,
+        target_region: String,
+        prior_owner_epoch: u64,
+    ) -> Result<HandoffTransferState> {
+        self.check_storage()?;
+        ensure!(self.program_healthy, "world program is unavailable");
+        ensure!(
+            self.journal.is_some(),
+            "entity export requires a durable world journal"
+        );
+        ensure!(
+            self.core.limits.region_sharded,
+            "entity export requires a region-sharded world"
+        );
+        ensure!(
+            handoff_id.len() == 32 && handoff_id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "handoff ID must be 128-bit hexadecimal"
+        );
+        core::validate_entity_ref(&entity_ref)?;
+        for (name, value) in [
+            ("source region", source_region.as_str()),
+            ("target region", target_region.as_str()),
+        ] {
+            ensure!(!value.trim().is_empty(), "{name} must not be empty");
+            ensure!(value.len() <= 256, "{name} exceeds 256 bytes");
+            ensure!(
+                !value.chars().any(char::is_control),
+                "{name} contains a control character"
+            );
+        }
+        ensure!(
+            source_region != target_region,
+            "source and target regions match"
+        );
+        let program_module_hash = self
+            .core
+            .active_module_hash
+            .clone()
+            .context("world has no installed program for entity export")?;
+        // Exact-retry recovery: if this export already committed (its reply
+        // was lost, or the actor restarted and replayed it), return the
+        // stored receipt instead of preparing a duplicate the core would
+        // refuse. A stored export whose fields differ from the request is
+        // not a retry — it falls through and validate_entity_export
+        // rejects the conflicting handoff ID / entity.
+        if let Some(existing) = self.core.handoff_transfers.iter().find(|transfer| {
+            transfer.direction == HandoffDirection::Export && transfer.handoff_id == handoff_id
+        }) && existing.entity_ref == entity_ref
+            && existing.source_region == source_region
+            && existing.target_region == target_region
+            && existing.prior_owner_epoch == prior_owner_epoch
+            && existing.program_module_hash == program_module_hash
+        {
+            ensure!(
+                !self.transfer_replay_pending(HandoffDirection::Export, &handoff_id),
+                "entity export {handoff_id:?} is durably recorded but has not been applied; replay required"
+            );
+            return Ok(existing.clone());
+        }
+        let request = EntityTransferRequest::Export {
+            handoff_id: handoff_id.clone(),
+            entity_ref: entity_ref.clone(),
+            source_region: source_region.clone(),
+            target_region: target_region.clone(),
+            prior_owner_epoch,
+            program_module_hash: program_module_hash.clone(),
+        };
+        let EntityTransferPlan::Export {
+            payload_schema,
+            payload,
+            app_event,
+        } = self.program.prepare_entity_transfer(&request)?
+        else {
+            bail!("world program returned an import plan for an export request");
+        };
+        ensure!(
+            !payload_schema.trim().is_empty() && payload_schema.len() <= 128,
+            "entity transfer payload schema must be 1..=128 bytes"
+        );
+        ensure!(
+            !payload_schema.chars().any(char::is_control),
+            "entity transfer payload schema contains a control character"
+        );
+        ensure!(
+            payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
+            "entity transfer payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+        );
+        let payload_digest = hex_encode(blake3::hash(&payload).as_bytes());
+        let event_text = serde_json::json!({
+            "protocol": "world.entity-transfer.v1",
+            "direction": "export",
+            "handoff_id": handoff_id,
+            "entity_ref": entity_ref,
+            "source_region": source_region,
+            "target_region": target_region,
+            "prior_owner_epoch": prior_owner_epoch,
+            "module_hash": program_module_hash,
+            "payload_schema": payload_schema,
+            "payload_digest": payload_digest,
+            "app_event": app_event,
+        })
+        .to_string();
+        ensure!(
+            event_text.len() <= crate::world_caps::MAX_EVENT_BYTES,
+            "entity transfer event exceeds {} bytes",
+            crate::world_caps::MAX_EVENT_BYTES
+        );
+        let source_event = WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System { event: event_text },
+        };
+        let transfer = HandoffTransferState {
+            handoff_id: handoff_id.clone(),
+            entity_ref: entity_ref.clone(),
+            source_region: source_region.clone(),
+            target_region: target_region.clone(),
+            direction: HandoffDirection::Export,
+            prior_owner_epoch,
+            new_owner_epoch: None,
+            program_module_hash: program_module_hash.clone(),
+            payload_schema: payload_schema.clone(),
+            payload_digest: payload_digest.clone(),
+            payload: Some(payload.clone()),
+            event: source_event.clone(),
+        };
+        self.core.validate_entity_export(&transfer)?;
+
+        // The durable entry is the source-side fence. Install it before
+        // applying the prepared event so no subsequent command can mutate
+        // this entity, even when the program rejects the post-append update.
+        self.persist(JournalEntry::EntityExported {
+            handoff_id,
+            entity_ref,
+            source_region,
+            target_region,
+            prior_owner_epoch,
+            source_event: source_event.clone(),
+            payload_schema,
+            program_module_hash,
+            payload,
+            payload_digest,
+        })?;
+        self.core.record_entity_export(transfer.clone());
+        if let Err(error) = self.program.update(&source_event) {
+            self.pending_transfer_replays.push(transfer);
+            self.program_healthy = false;
+            tracing::error!("world program rejected a durable entity export: {error:#}");
+            return Err(
+                error.context("world program rejected a durable entity export; replay required")
+            );
+        }
+        let records = match program_records(self.program.as_mut()) {
+            Ok(records) => records.unwrap_or_default(),
+            Err(error) => {
+                self.program_healthy = false;
+                tracing::error!("world program records failed after entity export: {error:#}");
+                return Err(error.context(
+                    "world program failed after a durable entity export; replay required",
+                ));
+            }
+        };
+        self.republished(records, self.core.sequence);
+        let _ = self.view_changed.send(self.core.sequence);
+        Ok(transfer)
+    }
+
+    /// Whether a durably recorded transfer is still waiting for a program
+    /// to apply it (#3902): while it is, its stored receipt is withheld
+    /// from exact retries instead of being acknowledged.
+    fn transfer_replay_pending(&self, direction: HandoffDirection, handoff_id: &str) -> bool {
+        self.pending_transfer_replays
+            .iter()
+            .any(|pending| pending.direction == direction && pending.handoff_id == handoff_id)
+    }
+
+    fn import_entity(
+        &mut self,
+        handoff_id: String,
+        entity_ref: String,
+        source_region: String,
+        target_region: String,
+        prior_owner_epoch: u64,
+        program_module_hash: String,
+        payload_schema: String,
+        payload: Vec<u8>,
+        payload_digest: String,
+    ) -> Result<HandoffTransferState> {
+        self.check_storage()?;
+        ensure!(self.program_healthy, "world program is unavailable");
+        ensure!(
+            self.journal.is_some(),
+            "entity import requires a durable world journal"
+        );
+        ensure!(
+            self.core.limits.region_sharded,
+            "entity import requires a region-sharded world"
+        );
+        ensure!(
+            handoff_id.len() == 32 && handoff_id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "handoff ID must be 128-bit hexadecimal"
+        );
+        core::validate_entity_ref(&entity_ref)?;
+        for (name, value) in [
+            ("source region", source_region.as_str()),
+            ("target region", target_region.as_str()),
+        ] {
+            ensure!(!value.trim().is_empty(), "{name} must not be empty");
+            ensure!(value.len() <= 256, "{name} exceeds 256 bytes");
+            ensure!(
+                !value.chars().any(char::is_control),
+                "{name} contains a control character"
+            );
+        }
+        ensure!(
+            source_region != target_region,
+            "source and target regions match"
+        );
+        // Validate the envelope before any mutation (design #2818 \§3):
+        // the module hash and payload schema must be ones this destination
+        // runs, and the payload must hash to the digest the source recorded.
+        let active_module_hash = self
+            .core
+            .active_module_hash
+            .clone()
+            .context("world has no installed program for entity import")?;
+        ensure!(
+            program_module_hash == active_module_hash,
+            "entity import program module hash does not match the destination program"
+        );
+        ensure!(
+            !payload_schema.trim().is_empty() && payload_schema.len() <= 128,
+            "entity transfer payload schema must be 1..=128 bytes"
+        );
+        ensure!(
+            !payload_schema.chars().any(char::is_control),
+            "entity transfer payload schema contains a control character"
+        );
+        ensure!(
+            payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
+            "entity transfer payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+        );
+        ensure!(
+            payload_digest == hex_encode(blake3::hash(&payload).as_bytes()),
+            "entity transfer payload digest does not match"
+        );
+        let new_owner_epoch = prior_owner_epoch
+            .checked_add(1)
+            .context("entity import owner epoch overflow")?;
+        // Exact-retry recovery: if this import already committed (its reply
+        // was lost, or the actor restarted and replayed it), return the
+        // stored receipt instead of applying the entity twice. A stored
+        // import whose fields differ from the request is not a retry \— it
+        // falls through and validate_entity_import rejects the conflicting
+        // handoff ID / entity, failing closed, never overwriting.
+        if let Some(existing) = self.core.handoff_transfers.iter().find(|transfer| {
+            transfer.direction == HandoffDirection::Import && transfer.handoff_id == handoff_id
+        }) && existing.entity_ref == entity_ref
+            && existing.source_region == source_region
+            && existing.target_region == target_region
+            && existing.prior_owner_epoch == prior_owner_epoch
+            && existing.new_owner_epoch == Some(new_owner_epoch)
+            && existing.program_module_hash == program_module_hash
+            && existing.payload_schema == payload_schema
+            && existing.payload_digest == payload_digest
+        {
+            ensure!(
+                !self.transfer_replay_pending(HandoffDirection::Import, &handoff_id),
+                "entity import {handoff_id:?} is durably recorded but has not been applied; replay required"
+            );
+            return Ok(existing.clone());
+        }
+        let request = EntityTransferRequest::Import {
+            handoff_id: handoff_id.clone(),
+            entity_ref: entity_ref.clone(),
+            source_region: source_region.clone(),
+            target_region: target_region.clone(),
+            prior_owner_epoch,
+            program_module_hash: program_module_hash.clone(),
+            payload_schema: payload_schema.clone(),
+            payload: payload.clone(),
+            payload_digest: payload_digest.clone(),
+        };
+        let EntityTransferPlan::Import { app_event } =
+            self.program.prepare_entity_transfer(&request)?
+        else {
+            bail!("world program returned an export plan for an import request");
+        };
+        let event_text = serde_json::json!({
+            "protocol": "world.entity-transfer.v1",
+            "direction": "import",
+            "handoff_id": handoff_id,
+            "entity_ref": entity_ref,
+            "source_region": source_region,
+            "target_region": target_region,
+            "prior_owner_epoch": prior_owner_epoch,
+            "new_owner_epoch": new_owner_epoch,
+            "module_hash": program_module_hash,
+            "payload_schema": payload_schema,
+            "payload_digest": payload_digest,
+            "payload_hex": hex_encode(&payload),
+            "app_event": app_event,
+        })
+        .to_string();
+        ensure!(
+            event_text.len() <= crate::world_caps::MAX_EVENT_BYTES,
+            "entity transfer event exceeds {} bytes",
+            crate::world_caps::MAX_EVENT_BYTES
+        );
+        let destination_event = WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System { event: event_text },
+        };
+        let transfer = HandoffTransferState {
+            handoff_id: handoff_id.clone(),
+            entity_ref: entity_ref.clone(),
+            source_region: source_region.clone(),
+            target_region: target_region.clone(),
+            direction: HandoffDirection::Import,
+            prior_owner_epoch,
+            new_owner_epoch: Some(new_owner_epoch),
+            program_module_hash: program_module_hash.clone(),
+            payload_schema: payload_schema.clone(),
+            payload_digest: payload_digest.clone(),
+            payload: None,
+            event: destination_event.clone(),
+        };
+        self.core.validate_entity_import(&transfer)?;
+
+        // Persist-before-apply: the durable entry is the import receipt.
+        // Record it in the dedupe ledger before applying the prepared
+        // event, so a retry after a crash observes the receipt instead of
+        // applying the entity twice. The receipt is returned only after
+        // the program applies the event; a post-append failure withholds
+        // it and recovery replays the durable entry.
+        self.persist(JournalEntry::EntityImported {
+            handoff_id,
+            entity_ref,
+            source_region,
+            target_region,
+            prior_owner_epoch,
+            new_owner_epoch,
+            program_module_hash,
+            payload_schema,
+            payload_digest,
+            destination_event: destination_event.clone(),
+        })?;
+        self.core.record_entity_import(transfer.clone());
+        if let Err(error) = self.program.update(&destination_event) {
+            self.pending_transfer_replays.push(transfer);
+            self.program_healthy = false;
+            tracing::error!("world program rejected a durable entity import: {error:#}");
+            return Err(
+                error.context("world program rejected a durable entity import; replay required")
+            );
+        }
+        let records = match program_records(self.program.as_mut()) {
+            Ok(records) => records.unwrap_or_default(),
+            Err(error) => {
+                self.program_healthy = false;
+                tracing::error!("world program records failed after entity import: {error:#}");
+                return Err(error.context(
+                    "world program failed after a durable entity import; replay required",
+                ));
+            }
+        };
+        self.republished(records, self.core.sequence);
+        let _ = self.view_changed.send(self.core.sequence);
+        Ok(transfer)
+    }
+
     /// Publish freshly recomputed records. Participant events push their own
     /// view frame right after the event; host events signal the views watch.
     fn republished(&mut self, records: Records, sequence: u64) {
@@ -691,7 +1139,9 @@ impl WorldActor {
     /// repeat while the program reacts to delivered results, so a chain of
     /// asks settles inside one change. A read-only replica never runs this:
     /// program requests are side effects (chat.say, schedule.at) that must
-    /// not originate from a replica.
+    /// not originate from a replica. Requests the program already listed
+    /// at a restored open are refused, not executed (see
+    /// [`stale_wants_at_open`](Self::stale_wants_at_open)).
     pub(crate) async fn after_change(&mut self) {
         if self.read_only {
             return;
@@ -740,6 +1190,22 @@ impl WorldActor {
                 self.handled_requests.retain(|id| current.contains(id));
             }
             for request in fresh {
+                // Pre-restart intent is never re-executed with world
+                // authority: the side effect may already have happened, and
+                // there is no acting participant to attribute a repeat to.
+                // Refusing (rather than executing) keeps non-idempotent
+                // providers (chat.say today; kv / http.fetch / notify as
+                // they land) to at-most-once per id across a reopen; the
+                // program re-issues the id afterwards if it still wants the
+                // effect, and that new intent executes normally.
+                if self.stale_wants_at_open.remove(&request.id) {
+                    let refusal = crate::world_caps::result_event(
+                        &request.id,
+                        Err(CapError::actor_denied_with("restarted")),
+                    );
+                    self.deliver(refusal).await;
+                    continue;
+                }
                 let outcome = self.execute(&request);
                 self.deliver(crate::world_caps::result_event(&request.id, outcome))
                     .await;
@@ -767,7 +1233,7 @@ impl WorldActor {
                         "time.tick interval {ms}ms is below the world minimum {}ms",
                         self.core.limits.min_tick_ms
                     ));
-                    self.deliver(crate::world_caps::subscription_refused_event(&spec, error))
+                    self.deliver(crate::world_caps::subscription_refused_event(&spec, &error))
                         .await;
                 }
                 continue;
@@ -784,7 +1250,7 @@ impl WorldActor {
                 Decision::Deny(error) => {
                     let spec = sub.spec();
                     if self.denied_subs.insert(spec.clone()) {
-                        self.deliver(crate::world_caps::subscription_refused_event(&spec, error))
+                        self.deliver(crate::world_caps::subscription_refused_event(&spec, &error))
                             .await;
                     }
                 }
@@ -968,8 +1434,17 @@ impl WorldActor {
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, CapError> {
         let records = self.records_sender.borrow().1.clone();
-        let prefix = args.get("prefix").and_then(serde_json::Value::as_str);
-        let after = args.get("after").and_then(serde_json::Value::as_str);
+        // #7899: a present-but-non-string prefix/after is bad_args,
+        // not "omitted" — treating it as omitted silently widens a
+        // scoped read to every record, or restarts pagination.
+        let prefix = match args.get("prefix") {
+            None => None,
+            Some(value) => Some(value.as_str().ok_or(CapError::bad_args())?),
+        };
+        let after = match args.get("after") {
+            None => None,
+            Some(value) => Some(value.as_str().ok_or(CapError::bad_args())?),
+        };
         let mut page: Vec<serde_json::Value> = Vec::new();
         let mut used = 0usize;
         let mut last_included: Option<String> = None;
@@ -1514,6 +1989,13 @@ impl WorldActor {
             WorldCommand::ParticipantId { token, reply } => {
                 let _ = reply.send(self.core.authorize(&token, WorldScopes::JOIN));
             }
+            WorldCommand::AuthorizeScope {
+                token,
+                required,
+                reply,
+            } => {
+                let _ = reply.send(self.core.authorize(&token, required));
+            }
             WorldCommand::BindAuthorKey {
                 token,
                 author_key,
@@ -1616,6 +2098,95 @@ impl WorldActor {
                 if let Ok(event) = &result {
                     let _ = self.event_sender.send(event.clone());
                 }
+                let _ = reply.send(result);
+            }
+            WorldCommand::EntityInput {
+                token,
+                entity_ref,
+                input,
+                reply,
+            } => {
+                // Refuse before touching the program: a replica must not
+                // run entity inputs through its program instance.
+                if let Err(error) = self.check_writable() {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
+                let result = match self.core.prepare_entity_input(&token, &entity_ref, &input) {
+                    Ok(_) if self.storage_failed => Err(anyhow::anyhow!(
+                        "world storage failed; the world is read-only"
+                    )),
+                    Ok(candidate) if self.program_healthy => {
+                        self.acting = Some(candidate.participant_id);
+                        match self
+                            .program
+                            .update(&candidate)
+                            .and_then(|()| program_records(self.program.as_mut()))
+                        {
+                            Ok(records) => self
+                                .persist(JournalEntry::Committed {
+                                    event: candidate.clone(),
+                                })
+                                .and_then(|()| self.core.commit_prepared(candidate))
+                                .inspect(|event| {
+                                    self.republished(records.unwrap_or_default(), event.sequence);
+                                }),
+                            Err(error) => {
+                                self.program_healthy = false;
+                                Err(error.context("world program rejected entity input"))
+                            }
+                        }
+                    }
+                    Ok(_) => Err(anyhow::anyhow!(
+                        "world program is unavailable after a previous failure"
+                    )),
+                    Err(error) => Err(error),
+                };
+                if let Ok(event) = &result {
+                    let _ = self.event_sender.send(event.clone());
+                }
+                let _ = reply.send(result);
+            }
+            WorldCommand::ExportEntity {
+                handoff_id,
+                entity_ref,
+                source_region,
+                target_region,
+                prior_owner_epoch,
+                reply,
+            } => {
+                let result = self.export_entity(
+                    handoff_id,
+                    entity_ref,
+                    source_region,
+                    target_region,
+                    prior_owner_epoch,
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::ImportEntity {
+                handoff_id,
+                entity_ref,
+                source_region,
+                target_region,
+                prior_owner_epoch,
+                program_module_hash,
+                payload_schema,
+                payload,
+                payload_digest,
+                reply,
+            } => {
+                let result = self.import_entity(
+                    handoff_id,
+                    entity_ref,
+                    source_region,
+                    target_region,
+                    prior_owner_epoch,
+                    program_module_hash,
+                    payload_schema,
+                    payload,
+                    payload_digest,
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::Snapshot { token, reply } => {
@@ -1852,16 +2423,74 @@ impl WorldActor {
                         self.core.active_module_provenance = provenance;
                         self.core.active_seed = seed;
                         self.program = replacement;
-                        self.program_healthy = true;
+                        // The replacement starts from the same transfer
+                        // history a journal restore would apply to it
+                        // (#3902): restore retains every handoff transfer
+                        // event across an install, so the live install
+                        // replays the full retained history here too -
+                        // not only the transfers the previous program
+                        // never applied. Anything less would let a
+                        // restart change application state. Transfers
+                        // whose replay fails stay pending, their receipts
+                        // stay withheld (see transfer_replay_pending),
+                        // and health is declared only once none remain.
+                        let mut still_pending = Vec::new();
+                        let mut first_replay_error = None;
+                        for transfer in self.core.handoff_transfers.clone() {
+                            match self.program.update(&transfer.event) {
+                                Ok(()) => {}
+                                Err(error) => {
+                                    tracing::error!(
+                                        "world program rejected a transfer replay after install: {error:#}"
+                                    );
+                                    if first_replay_error.is_none() {
+                                        first_replay_error = Some(error);
+                                    }
+                                    still_pending.push(transfer);
+                                }
+                            }
+                        }
+                        self.pending_transfer_replays = still_pending;
+                        self.program_healthy = self.pending_transfer_replays.is_empty();
                         self.compaction_off = false;
                         // A new program starts with a clean slate.
                         self.handled_requests.clear();
                         self.denied_subs.clear();
                         self.active_subs.clear();
                         self.ticks.clear();
-                        self.republished(new_records, event.sequence);
-                        let _ = self.event_sender.send(event.clone());
-                        Ok(event)
+                        // The records computed before the replay describe
+                        // the replacement without the transfers it just
+                        // applied; recompute them from the replayed state
+                        // before publishing, so an imported entity is
+                        // visible in records() as soon as the install is
+                        // acknowledged.
+                        match program_records(self.program.as_mut()) {
+                            Ok(records) => {
+                                self.republished(records.unwrap_or_default(), event.sequence);
+                                if let Some(error) = first_replay_error {
+                                    // The install stands (it is journaled),
+                                    // but recovery is incomplete: report the
+                                    // replay failure as the install result
+                                    // instead of acknowledging success while
+                                    // the world stays unhealthy (#3902).
+                                    Err(error.context(
+                                        "world program rejected a retained transfer replay after install",
+                                    ))
+                                } else {
+                                    let _ = self.event_sender.send(event.clone());
+                                    Ok(event)
+                                }
+                            }
+                            Err(error) => {
+                                self.program_healthy = false;
+                                tracing::error!(
+                                    "world program records failed after transfer replay on install: {error:#}"
+                                );
+                                Err(error.context(
+                                    "world program records failed after transfer replay on install",
+                                ))
+                            }
+                        }
                     }
                     Err(error) => Err(error),
                 };
@@ -2152,17 +2781,55 @@ impl WorldActor {
                         "world storage failed; replication feed is unavailable"
                     ))
                 } else {
-                    // Subscribe before capturing the image. The actor is the
-                    // only journal owner and processes commands serially, so
-                    // no durable append can fall between these two operations.
-                    let updates = self.replication_sender.subscribe();
-                    let world_id = self.core.world_id().to_owned();
-                    self.journal
-                        .as_mut()
-                        .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))
-                        .and_then(|journal| journal.replication_snapshot_source())
-                        .map(|snapshot_source| (world_id, snapshot_source, updates))
+                    async {
+                        // Subscribe before capturing the image. The actor is
+                        // the only journal owner and processes commands
+                        // serially, so no durable append can fall between
+                        // these operations.
+                        let updates = self.replication_sender.subscribe();
+                        let world_id = self.core.world_id().to_owned();
+                        let snapshot_source = self
+                            .journal
+                            .as_mut()
+                            .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))?
+                            .replication_snapshot_source()?;
+
+                        // A small journal cannot contain an over-bound line,
+                        // so keep its existing fast path: no probe source and
+                        // no attempt to serialize a checkpoint. A large one
+                        // gets a second source as a probe for the CALLER to
+                        // scan outside the actor (#8095): awaiting the scan
+                        // here suspended every other command, tick, and
+                        // schedule for the duration of a full journal read.
+                        // If the probe finds an oversized entry, the caller
+                        // sends ReplicationCompact (still a serialized actor
+                        // operation) and builds its feed again from the
+                        // compacted image.
+                        let probe_source = if snapshot_source.byte_len
+                            > super::replication::MAX_REPLICATION_PAYLOAD_BYTES as u64
+                        {
+                            Some(
+                                self.journal
+                                    .as_mut()
+                                    .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))?
+                                    .replication_snapshot_source()?,
+                            )
+                        } else {
+                            None
+                        };
+
+                        Ok((world_id, snapshot_source, probe_source, updates))
+                    }
+                    .await
                 };
+                let _ = reply.send(result);
+            }
+            WorldCommand::ReplicationCompact {
+                ordinal,
+                encoded_size,
+                reply,
+            } => {
+                let result = self.force_compact_for_replication(ordinal, encoded_size);
                 let _ = reply.send(result);
             }
             WorldCommand::CapsInfo { reply } => {
@@ -2210,6 +2877,67 @@ impl WorldActor {
         }
     }
 
+    /// Re-compact a legacy journal only when a feed discovers an entry that
+    /// cannot fit the v1 per-entry payload bound. Unlike policy-driven
+    /// compaction, this intentionally ignores `checkpoint_due()`.
+    fn force_compact_for_replication(&mut self, ordinal: usize, encoded_size: usize) -> Result<()> {
+        let unavailable = if self.read_only {
+            Some("the world is read-only")
+        } else if self.compaction_off {
+            Some("compaction was disabled after an earlier failure")
+        } else if self.storage_failed {
+            Some("world storage has failed")
+        } else if !self.program_healthy {
+            Some("the active program is unhealthy")
+        } else if self.core.active_module_hash.is_none() {
+            Some("there is no active program to checkpoint")
+        } else if self.journal.is_none() {
+            Some("the world has no durable journal to compact")
+        } else {
+            None
+        };
+        if let Some(reason) = unavailable {
+            return Err(oversized_journal_compaction_error(
+                ordinal,
+                encoded_size,
+                reason,
+            ));
+        }
+
+        let started = std::time::Instant::now();
+        let Some(journal) = self.journal.as_mut() else {
+            return Err(oversized_journal_compaction_error(
+                ordinal,
+                encoded_size,
+                "the world has no durable journal to compact",
+            ));
+        };
+        let compacted = compact_journal(&mut self.core, self.program.as_mut(), journal.as_mut());
+        match compacted {
+            Ok(true) => {
+                self.metrics.record_checkpoint(started.elapsed());
+                self.publish_replication_reset();
+                Ok(())
+            }
+            Ok(false) => {
+                self.compaction_off = true;
+                Err(oversized_journal_compaction_error(
+                    ordinal,
+                    encoded_size,
+                    "the active program cannot provide a checkpoint snapshot",
+                ))
+            }
+            Err(error) => {
+                self.compaction_off = true;
+                Err(oversized_journal_compaction_error(
+                    ordinal,
+                    encoded_size,
+                    &format!("forced compaction failed: {error:#}"),
+                ))
+            }
+        }
+    }
+
     fn publish_replication_reset(&mut self) {
         let Some(journal) = self.journal.as_mut() else {
             return;
@@ -2228,10 +2956,24 @@ impl WorldActor {
     }
 }
 
+fn oversized_journal_compaction_error(
+    ordinal: usize,
+    encoded_size: usize,
+    reason: &str,
+) -> anyhow::Error {
+    anyhow::anyhow!(
+        "oversized legacy journal entry at ordinal {ordinal} is {encoded_size} encoded bytes, exceeding MAX_REPLICATION_PAYLOAD_BYTES={}; replication needs compaction before it can continue, but {reason}",
+        super::replication::MAX_REPLICATION_PAYLOAD_BYTES
+    )
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod replication_feed_tests {
     use super::*;
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use tempfile::TempDir;
 
     struct SnapshotProgram;
@@ -2240,6 +2982,235 @@ mod replication_feed_tests {
         fn snapshot(&mut self) -> Result<Option<String>> {
             Ok(Some("{}".to_owned()))
         }
+    }
+
+    struct CountingSnapshotProgram {
+        snapshot_calls: Arc<AtomicUsize>,
+    }
+
+    impl WorldProgram for CountingSnapshotProgram {
+        fn snapshot(&mut self) -> Result<Option<String>> {
+            self.snapshot_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some("recompacted-state".to_owned()))
+        }
+    }
+
+    struct FeedJournal {
+        version: u32,
+        entries: Vec<JournalEntry>,
+        compactions: Arc<AtomicUsize>,
+        source_captures: Arc<AtomicUsize>,
+    }
+
+    impl WorldJournal for FeedJournal {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            self.entries.push(entry.clone());
+            Ok(())
+        }
+
+        fn replication_snapshot(&mut self) -> Result<JournalSnapshot> {
+            Ok(JournalSnapshot {
+                header_version: self.version,
+                bytes: self.entries.iter().flat_map(journal_entry_line).collect(),
+            })
+        }
+
+        fn replication_snapshot_source(&mut self) -> Result<JournalSnapshotSource> {
+            self.source_captures.fetch_add(1, Ordering::SeqCst);
+            let bytes: Vec<u8> = self.entries.iter().flat_map(journal_entry_line).collect();
+            Ok(JournalSnapshotSource::from_reader(
+                self.version,
+                bytes.len() as u64,
+                Cursor::new(bytes),
+            ))
+        }
+
+        fn replication_header_version(&self) -> Option<u32> {
+            Some(self.version)
+        }
+
+        fn compact(&mut self, entries: &[JournalEntry]) -> Result<()> {
+            self.compactions.fetch_add(1, Ordering::SeqCst);
+            self.entries = entries.to_vec();
+            if let Some(JournalEntry::Created { version, .. }) = self.entries.first() {
+                self.version = *version;
+            }
+            Ok(())
+        }
+    }
+
+    fn legacy_oversized_checkpoint() -> Vec<JournalEntry> {
+        vec![
+            JournalEntry::Created {
+                world_id: "lobby".to_owned(),
+                version: 1,
+            },
+            JournalEntry::Checkpoint {
+                sequence: 0,
+                module_hash: "legacy-module".to_owned(),
+                seed: 0,
+                provenance: None,
+                execution_profile: None,
+                caps_ceiling: None,
+                schedules: None,
+                transfers: None,
+                lease: None,
+                snapshot: "x".repeat(super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES),
+                events: Vec::new(),
+                admin_history: None,
+                open_presence: None,
+            },
+        ]
+    }
+
+    // ---- Property coverage for the oversized scanner (#7890 Codex P1) ----
+    // Oracle for both properties: an independent first-over-bound-line scan
+    // of the serialized journal lines — a line (entry bytes including the
+    // trailing newline) is oversized iff its length exceeds
+    // MAX_REPLICATION_PAYLOAD_BYTES, and the scanner must name the FIRST
+    // such line's ordinal and length, or None when there is none.
+
+    fn prop_filler(len: usize, special: u8) -> String {
+        // Mostly plain bytes, with JSON-escaped and multibyte characters
+        // mixed in so serialized sizes differ from char counts.
+        let mut out = String::with_capacity(len);
+        for i in 0..len {
+            out.push(match (i as u8).wrapping_add(special) % 16 {
+                0 => '"',
+                1 => '\\',
+                2 => '\u{e9}',
+                3 => '\u{1f980}',
+                _ => 'x',
+            });
+        }
+        out
+    }
+
+    fn prop_checkpoint(snapshot: String) -> JournalEntry {
+        JournalEntry::Checkpoint {
+            sequence: 0,
+            module_hash: "prop-module".to_owned(),
+            seed: 0,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            lease: None,
+            snapshot,
+            events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
+        }
+    }
+
+    fn prop_entry() -> impl proptest::strategy::Strategy<Value = JournalEntry> {
+        use proptest::prelude::*;
+        prop_oneof![
+            any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                participant_id,
+                by: None,
+            }),
+            proptest::collection::vec((0..24_usize, any::<u8>()), 0..=4).prop_map(|parts| {
+                JournalEntry::CapsGranted {
+                    granted: parts
+                        .into_iter()
+                        .map(|(len, special)| prop_filler(len, special))
+                        .collect(),
+                }
+            }),
+            // Snapshot sizes straddle the payload bound: below, around, above.
+            prop_oneof![
+                (0..=200_usize, any::<u8>()),
+                (
+                    super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES - 600
+                        ..=super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES + 600,
+                    any::<u8>(),
+                ),
+                (
+                    super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES + 1
+                        ..=super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES + 8192,
+                    any::<u8>(),
+                ),
+            ]
+            .prop_map(|(len, special)| prop_checkpoint(prop_filler(len, special))),
+        ]
+    }
+
+    fn prop_bounded_entry() -> impl proptest::strategy::Strategy<Value = JournalEntry> {
+        use proptest::prelude::*;
+        // Every entry bounded far below the payload limit by construction;
+        // the journal TOTAL still ranges past it via the entry count.
+        prop_oneof![
+            any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                participant_id,
+                by: None,
+            }),
+            (0..=20_000_usize, any::<u8>())
+                .prop_map(|(len, special)| prop_checkpoint(prop_filler(len, special))),
+        ]
+    }
+
+    #[test]
+    fn scanner_matches_first_over_bound_line_oracle() {
+        use proptest::prelude::*;
+        proptest!(ProptestConfig::with_cases(48), |(entries in proptest::collection::vec(prop_entry(), 1..=10))| {
+            let lines: Vec<Vec<u8>> = entries.iter().map(journal_entry_line).collect();
+            let oracle = lines
+                .iter()
+                .enumerate()
+                .find(|(_, line)| line.len() > super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES)
+                .map(|(ordinal, line)| (ordinal, line.len()));
+            let bytes: Vec<u8> = lines.into_iter().flatten().collect();
+            let source = JournalSnapshotSource::from_reader(1, bytes.len() as u64, Cursor::new(bytes));
+            let scanned = source.first_oversized_entry().unwrap();
+            prop_assert_eq!(scanned, oracle);
+        });
+    }
+
+    #[test]
+    fn bounded_journals_never_compact_at_feed_build() {
+        use proptest::prelude::*;
+        proptest!(ProptestConfig::with_cases(24), |(entries in proptest::collection::vec(prop_bounded_entry(), 1..=24))| {
+            // Oracle first: no serialized line may exceed the bound.
+            let lines: Vec<Vec<u8>> = entries.iter().map(journal_entry_line).collect();
+            prop_assert!(lines
+                .iter()
+                .all(|line| line.len() <= super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES));
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let compactions = Arc::new(AtomicUsize::new(0));
+                let source_captures = Arc::new(AtomicUsize::new(0));
+                let journal = FeedJournal {
+                    version: 1,
+                    entries,
+                    compactions: Arc::clone(&compactions),
+                    source_captures: Arc::clone(&source_captures),
+                };
+                let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+                core.active_module_hash = Some("prop-module".to_owned());
+                let mut actor = WorldActor::for_test(
+                    core,
+                    Box::new(SnapshotProgram),
+                    Some(Box::new(journal)),
+                );
+                let (reply, response) = oneshot::channel();
+                actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+                let (_world_id, _source, probe_source, _updates) =
+                    response.await.unwrap().expect("feed capture");
+                if let Some(probe) = probe_source {
+                    // The caller-side scan (WorldHandle::replication_feed's
+                    // step) must find nothing, so no ReplicationCompact is
+                    // ever sent for a bounded journal.
+                    let scanned = probe.first_oversized_entry().unwrap();
+                    assert_eq!(scanned, None);
+                }
+                assert_eq!(compactions.load(Ordering::SeqCst), 0);
+            });
+        });
     }
 
     struct BumpingJournal {
@@ -2458,9 +3429,344 @@ mod replication_feed_tests {
         assert_eq!(snapshot.bytes, std::fs::read(path).unwrap());
         assert!(snapshot.bytes.ends_with(b"\n"));
     }
+
+    #[tokio::test]
+    async fn legacy_oversized_checkpoint_is_recompacted_at_feed_build() {
+        use crate::world::{
+            MAX_REPLICATION_PAYLOAD_BYTES, ReplicationEnvelope, ReplicationKind,
+            ReplicationTracker, SignedReplicationEnvelope, chain_base_cursor, chain_payload,
+            frame_digest, split_entry_payload,
+        };
+
+        let snapshot_calls = Arc::new(AtomicUsize::new(0));
+        let compactions = Arc::new(AtomicUsize::new(0));
+        let source_captures = Arc::new(AtomicUsize::new(0));
+        let journal = FeedJournal {
+            version: 1,
+            entries: legacy_oversized_checkpoint(),
+            compactions: Arc::clone(&compactions),
+            source_captures: Arc::clone(&source_captures),
+        };
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        // Restored legacy worlds are never `checkpoint_due` (nothing has been
+        // committed since restore), so this must not matter to the feed.
+        assert!(!core.checkpoint_due());
+        core.active_module_hash = Some("test-module-hash".to_owned());
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(CountingSnapshotProgram {
+                snapshot_calls: Arc::clone(&snapshot_calls),
+            }),
+            Some(Box::new(journal)),
+        );
+        let mut existing_updates = actor.replication_sender.subscribe();
+
+        // The feed flow since #8095: the actor returns a probe source, the
+        // CALLER scans it outside the actor, a serialized ReplicationCompact
+        // command compacts, and the feed is rebuilt from the compacted image.
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, _pre_compact_source, probe_source, _pre_compact_updates) =
+            response.await.unwrap().expect("first feed capture");
+        assert_eq!(
+            compactions.load(Ordering::SeqCst),
+            0,
+            "the actor must not compact (or scan) during ReplicationFeed"
+        );
+        let probe = probe_source.expect("a >256 KiB journal must yield a probe source");
+        let (ordinal, encoded_size) = probe
+            .first_oversized_entry()
+            .unwrap()
+            .expect("the legacy fixture holds an oversized entry");
+        let (reply, response) = oneshot::channel();
+        actor
+            .handle(WorldCommand::ReplicationCompact {
+                ordinal,
+                encoded_size,
+                reply,
+            })
+            .await;
+        response
+            .await
+            .unwrap()
+            .expect("legacy oversized journal must re-compact at feed build");
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, snapshot_source, _probe_source, mut updates) = response
+            .await
+            .unwrap()
+            .expect("feed rebuilt after compaction");
+        assert_eq!(compactions.load(Ordering::SeqCst), 1);
+        assert_eq!(snapshot_calls.load(Ordering::SeqCst), 1);
+        let ReplicationUpdate::Reset(reset) = existing_updates.try_recv().unwrap() else {
+            panic!("feed-time compaction must publish a reset to existing feeds");
+        };
+
+        let snapshot = snapshot_source.read().unwrap();
+        assert_eq!(reset.bytes, snapshot.bytes);
+        let chunks = split_entry_payload(&snapshot.bytes).unwrap();
+        assert!(!chunks.is_empty());
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.len() <= MAX_REPLICATION_PAYLOAD_BYTES)
+        );
+
+        // End to end: split chunks frame and verify exactly like the network
+        // feed does, with a cursor chaining every accepted payload.
+        const NONCE: [u8; 16] = [7; 16];
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let source = *key.verifying_key().as_bytes();
+        let mut tracker =
+            ReplicationTracker::new("lobby", source, snapshot.header_version, NONCE).unwrap();
+        let mut previous_frame_digest = [0; 32];
+        let mut cursor = chain_base_cursor("lobby", &source, snapshot.header_version);
+        let mut received = Vec::new();
+        for (index, payload) in chunks.iter().enumerate() {
+            let envelope = if index == 0 {
+                ReplicationEnvelope::snapshot(
+                    "lobby",
+                    source,
+                    snapshot.header_version,
+                    NONCE,
+                    previous_frame_digest,
+                    payload.clone(),
+                )
+                .unwrap()
+            } else {
+                ReplicationEnvelope::tail(
+                    "lobby",
+                    source,
+                    snapshot.header_version,
+                    NONCE,
+                    cursor,
+                    previous_frame_digest,
+                    payload.clone(),
+                )
+                .unwrap()
+            };
+            cursor = envelope.cursor_after;
+            let frame = SignedReplicationEnvelope::sign(envelope, &key)
+                .unwrap()
+                .encode_frame()
+                .unwrap();
+            previous_frame_digest = frame_digest(&frame);
+            received.extend_from_slice(&tracker.accept(&frame).unwrap().payload);
+        }
+        let terminal = ReplicationEnvelope::terminal(
+            "lobby",
+            source,
+            snapshot.header_version,
+            NONCE,
+            cursor,
+            previous_frame_digest,
+        );
+        assert_eq!(
+            tracker
+                .accept(
+                    &SignedReplicationEnvelope::sign(terminal, &key)
+                        .unwrap()
+                        .encode_frame()
+                        .unwrap()
+                )
+                .unwrap()
+                .kind,
+            ReplicationKind::Terminal
+        );
+        assert_eq!(received, snapshot.bytes);
+        let mut expected = chain_base_cursor("lobby", &source, snapshot.header_version);
+        for chunk in split_entry_payload(&snapshot.bytes).unwrap() {
+            expected = chain_payload(expected, &chunk).unwrap();
+        }
+        assert_eq!(tracker.cursor(), expected);
+        assert!(
+            updates.try_recv().is_err(),
+            "the feed starts after its own compaction reset"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_oversized_checkpoint_without_a_program_is_actionable() {
+        use crate::world::MAX_REPLICATION_PAYLOAD_BYTES;
+
+        let snapshot_calls = Arc::new(AtomicUsize::new(0));
+        let compactions = Arc::new(AtomicUsize::new(0));
+        let source_captures = Arc::new(AtomicUsize::new(0));
+        let journal = FeedJournal {
+            version: 1,
+            entries: legacy_oversized_checkpoint(),
+            compactions: Arc::clone(&compactions),
+            source_captures: Arc::clone(&source_captures),
+        };
+        let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        assert!(core.active_module_hash.is_none());
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(CountingSnapshotProgram {
+                snapshot_calls: Arc::clone(&snapshot_calls),
+            }),
+            Some(Box::new(journal)),
+        );
+
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, _source, probe_source, _updates) =
+            response.await.unwrap().expect("first feed capture");
+        let probe = probe_source.expect("a >256 KiB journal must yield a probe source");
+        let (ordinal, encoded_size) = probe
+            .first_oversized_entry()
+            .unwrap()
+            .expect("the legacy fixture holds an oversized entry");
+        let (reply, response) = oneshot::channel();
+        actor
+            .handle(WorldCommand::ReplicationCompact {
+                ordinal,
+                encoded_size,
+                reply,
+            })
+            .await;
+        let error = response
+            .await
+            .unwrap()
+            .expect_err("compaction without a program must fail the feed");
+        let message = format!("{error:#}");
+        let legacy_bytes: Vec<u8> = legacy_oversized_checkpoint()
+            .iter()
+            .flat_map(journal_entry_line)
+            .collect();
+        let encoded_size = legacy_bytes
+            .split_inclusive(|byte| *byte == b'\n')
+            .nth(1)
+            .expect("fixture must hold an oversized checkpoint")
+            .len();
+        assert!(
+            message.contains("ordinal 1"),
+            "error must name the entry ordinal, got: {message}"
+        );
+        assert!(
+            message.contains(&encoded_size.to_string()),
+            "error must name the encoded size, got: {message}"
+        );
+        assert!(
+            message.contains(&MAX_REPLICATION_PAYLOAD_BYTES.to_string()),
+            "error must name the bound, got: {message}"
+        );
+        assert!(
+            message.contains("compaction"),
+            "error must ask for compaction, got: {message}"
+        );
+        assert!(
+            !message.contains("not a sequence of complete entries")
+                && !message.contains("not complete journal entries"),
+            "oversized-entry refusal must stay distinguishable from a malformed payload, got: {message}"
+        );
+        assert_eq!(compactions.load(Ordering::SeqCst), 0);
+        assert_eq!(snapshot_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn oversized_probe_does_not_block_the_actor() {
+        // #8095 acceptance: while a >256 KiB journal scan is in flight (here:
+        // captured but deliberately not yet scanned), the actor keeps
+        // processing other commands. Before the fix, ReplicationFeed awaited
+        // the scan inside handle, so every command queued behind it.
+        let snapshot_calls = Arc::new(AtomicUsize::new(0));
+        let compactions = Arc::new(AtomicUsize::new(0));
+        let source_captures = Arc::new(AtomicUsize::new(0));
+        let journal = FeedJournal {
+            version: 1,
+            entries: legacy_oversized_checkpoint(),
+            compactions: Arc::clone(&compactions),
+            source_captures: Arc::clone(&source_captures),
+        };
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("test-module-hash".to_owned());
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(CountingSnapshotProgram {
+                snapshot_calls: Arc::clone(&snapshot_calls),
+            }),
+            Some(Box::new(journal)),
+        );
+
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, _source, probe_source, _updates) =
+            response.await.unwrap().expect("first feed capture");
+        let probe = probe_source.expect("a >256 KiB journal must yield a probe source");
+        assert_eq!(compactions.load(Ordering::SeqCst), 0);
+        assert_eq!(snapshot_calls.load(Ordering::SeqCst), 0);
+
+        // The scan has not run, yet the actor answers another command —
+        // the probe waits on the caller's side of the command channel.
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::CapsInfo { reply }).await;
+        let _report = response.await.unwrap();
+
+        // Now the caller scans, compacts through the serialized command,
+        // and rebuilds the feed — the legacy outcome, without the stall.
+        let (ordinal, encoded_size) = probe
+            .first_oversized_entry()
+            .unwrap()
+            .expect("the legacy fixture holds an oversized entry");
+        let (reply, response) = oneshot::channel();
+        actor
+            .handle(WorldCommand::ReplicationCompact {
+                ordinal,
+                encoded_size,
+                reply,
+            })
+            .await;
+        response.await.unwrap().expect("compaction succeeds");
+        assert_eq!(compactions.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn feed_without_an_oversized_entry_keeps_the_fast_path() {
+        let snapshot_calls = Arc::new(AtomicUsize::new(0));
+        let compactions = Arc::new(AtomicUsize::new(0));
+        let source_captures = Arc::new(AtomicUsize::new(0));
+        let journal = FeedJournal {
+            version: 1,
+            entries: vec![JournalEntry::Created {
+                world_id: "lobby".to_owned(),
+                version: 1,
+            }],
+            compactions: Arc::clone(&compactions),
+            source_captures: Arc::clone(&source_captures),
+        };
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("test-module-hash".to_owned());
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(CountingSnapshotProgram {
+                snapshot_calls: Arc::clone(&snapshot_calls),
+            }),
+            Some(Box::new(journal)),
+        );
+
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, snapshot_source, probe_source, mut updates) = response
+            .await
+            .unwrap()
+            .expect("a small journal must keep the fast path");
+        assert!(
+            probe_source.is_none(),
+            "a small journal cannot hold an over-bound entry: no probe (#8095)"
+        );
+        // Behavior, not timing: no compaction ran, the program was never
+        // serialized, and the actor captured exactly one journal source.
+        assert_eq!(compactions.load(Ordering::SeqCst), 0);
+        assert_eq!(snapshot_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(source_captures.load(Ordering::SeqCst), 1);
+        assert!(snapshot_source.read().is_ok());
+        assert!(updates.try_recv().is_err());
+    }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod device_info_tests {
     use super::*;
     use crate::world_caps::{CapError, DeviceManifest};
@@ -2573,6 +3879,7 @@ impl WorldActor {
             storage_failed: false,
             read_only: false,
             program_healthy,
+            pending_transfer_replays: Vec::new(),
             view_failures: 0,
             compaction_off: false,
             event_sender: events,
@@ -2586,6 +3893,7 @@ impl WorldActor {
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
             overdue_at_open,
+            stale_wants_at_open: BTreeSet::new(),
             acting: None,
             acting_session: None,
             device_manifest: None,

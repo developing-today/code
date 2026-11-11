@@ -61,6 +61,10 @@ export interface Config {
   digestsDir: string;
   /** Append-only notification state/send/suppression log (#3317). */
   notificationsFile: string;
+  /** Needs-Drew question store (#8568): fleet workers blocked on Drew. */
+  needsDrewFile: string;
+  /** Stack-health state written by the sentinel intake extension (#8568). */
+  stackHealthFile: string;
   /** Versioned item-history JSONL (#3981) the forecast contract
    * (#3984) derives from: one cutoff per line, read via
    * ItemHistoryStore. */
@@ -83,6 +87,13 @@ export interface Config {
   coverageSnapshotFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
+  /** The standing OpenCode server's own state file (service-prod.json):
+   * url + password for the server the fleet actually runs on. The
+   * aggregator reads it as the second laptop attention leg (#1116) —
+   * the OpenChamber-managed server it used to read has been gone since
+   * 2026-10-29, which left attention single-legged on the collector
+   * feed until the 2026-11-10 fixture incident. */
+  opencodeServerStateFile: string;
   kaneo: {
     baseUrl: string;
     /** Kaneo's client URL — the Origin its auth accepts (better-auth). */
@@ -171,6 +182,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_NOTIFICATIONS_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "notifications.jsonl"),
     ),
+    needsDrewFile: s(
+      env.PM_AGG_NEEDS_DREW_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "needs-drew.json"),
+    ),
+    stackHealthFile: s(
+      env.PM_AGG_STACK_HEALTH_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "stack-health.json"),
+    ),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
       join(
@@ -197,6 +216,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
       join(homedir(), ".config", "openchamber", "managed-opencode", "state.json"),
+    ),
+    opencodeServerStateFile: s(
+      env.PM_AGG_OPENCODE_SERVER_STATE,
+      join(homedir(), ".local", "state", "opencode", "service-prod.json"),
     ),
     kaneo: {
       baseUrl: s(env.KANEO_URL, "http://127.0.0.1:5173"),

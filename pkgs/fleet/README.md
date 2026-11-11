@@ -116,6 +116,70 @@ default.nix                 the four variant packages (see below)
 smoke.sh                    per-variant smoke suite (post-build)
 ```
 
+## Versioning — derived per-app versions (#8566; policy #5790)
+
+A fleet binary's version is **derived, never hand-maintained**. The
+workspace `version = "0.1.0"` in `Cargo.toml` is only the release-line
+base cargo requires; the version a deployed binary reports — the one
+`fleet version`, `fleet capabilities` (JSON `build.derived_version`)
+and every `--version` surface print as `Derived version:` — is baked
+at build time by `crates/fleet/build.rs` from the derivation in
+`crates/fleet/src/derived_version.rs`, through the same channel that
+reports the source rev (`FLEET_SOURCE_REV`): a packaged build with no
+git history receives it as `$FLEET_DERIVED_VERSION`, computed by the
+release tooling where the history exists.
+
+Derivation (nearest `<app>/vX.Y.Z` tag on the build commit's history;
+the app is this workspace's short name, `fleet`):
+
+| build state | reported version |
+| --- | --- |
+| exactly on the tag | `X.Y.Z` |
+| on `main`, N commits after the tag | `X.Y.(Z+1)-dev.N+g<shorthash>` |
+| on a feature branch, N commits after | `X.Y.(Z+1)-dev.N+g<shorthash>.<branch-slug>` |
+| no `<app>/v*` tag yet | `0.1.0-dev.N+g<shorthash>` (bare `0.1.0-dev` if no history is available) |
+
+The `+g<hash>` suffix is what guarantees no two distinct commits ever
+report the same version string; the patch-bump + `-dev.N` form is what
+makes the string sort after the tag it descends from and before its
+own release.
+
+### Tag and release procedure (ruled on #5790, 2026-11-06)
+
+1. **Per-app tags.** A release is cut by tagging the exact tested
+   commit `<short-app-name>/vX.Y.Z` — for this workspace,
+   `fleet/vX.Y.Z`. The short app name is the tag prefix for ALL apps
+   (one policy, no per-app mixing); app names used in tags and
+   deploys must be unique across apps — if a short name would
+   collide, fix the app name, not the policy.
+2. **First tag and 0.x discipline.** Each app's first tag is
+   `0.1.0`. Versions stay in 0.x: minor for feature releases, patch
+   for fixes, and **no major-version bumps** until a separate 1.0
+   decision.
+3. **Releases are tag builds only.** Build the release artifact
+   from the tagged commit and verify the artifact itself reports
+   the clean version: `./result/bin/fleet version` must show
+   `Derived version: X.Y.Z`. A packaged (nix) release build takes
+   the version through the package's `derivedVersion` argument —
+   the build source carries no `.git`, so the release tooling
+   computes the version where the history exists and passes it in;
+   a packaged build without one reports the rev-derived prerelease
+   form `0.1.0-dev+g<rev>`, never a clean release string. Builds
+   deployed from `main` are
+   **prereleases** (their `-dev.N` strings say so) — deploying one
+   never makes it a release.
+4. **Repo tags.** At every release point (not every commit, not
+   every deploy), also cut `repo/v<YYYYMMDD>.<minor>.<patch>` —
+   the date is the major segment; within a date, a release point
+   including any app feature increments minor and resets patch, a
+   fix-only or repeat point increments patch; minor/patch may
+   reset to `0.0` on a new date. A repo **prerelease** tag on a
+   deploy from main is also fine and does not make the deploy a
+   release.
+5. **Deploy truth.** What a target runs is read from the deployed
+   binary's own `Derived version:` line, never from paperwork
+   (that read is the #5760 deployed-state check's input).
+
 ## Variants
 
 Capability surface = compiled features ∩ invocation-name profile ∩

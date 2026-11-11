@@ -195,6 +195,25 @@ describe("buildQueueView (#1160)", () => {
     expect(view.nextUp[0].blockedBy).toEqual(["Prerequisite (queued)"]);
   });
 
+  test("same-horizon next-up candidates keep insertion order across sources (#8352)", () => {
+    // Oracle: with the dead priority tier removed, the next-up sort is
+    // horizonRank then insertion sequence — candidates are collected
+    // orchestration first, then the Project pool, and neither source
+    // order nor cross-source order is disturbed by title or ref.
+    const view = buildQueueView({
+      board: [],
+      pool: [
+        poolItem({ ref: "developing-today/code#61", title: "Alpha pool", status: "queued", horizon: "today" }),
+        poolItem({ ref: "developing-today/code#62", title: "Mike pool", status: "queued", horizon: "today" }),
+      ],
+      items: new Map(),
+      orchestration: section([task("Zulu orch", "queued", "today", { ref: "developing-today/code#60" })]),
+      now: NOW,
+    });
+    expect(view.nextUp.map((item) => item.title)).toEqual(["Zulu orch", "Alpha pool", "Mike pool"]);
+    expect(view.nextUp.map((item) => item.source)).toEqual(["orchestration", "project-pool", "project-pool"]);
+  });
+
   test("keeps lined-up tasks with invalid refs but omits their URLs", () => {
     const view = buildQueueView({
       board: [],

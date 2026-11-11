@@ -474,6 +474,8 @@ mkdir -p "$TMP/full"
 ln -s "$FULL_OUT/bin/fleet" "$TMP/full/repo-queue"
 run "repo-queue: --help renders the queue commands" 0 "Commands: validate" "$TMP/full/repo-queue" --help
 run "repo-queue: --version reports the fleet release" 0 "repo-queue 0.1.0" "$TMP/full/repo-queue" --version
+run "repo-queue: --version reports the derived version" 0 "Derived version: " "$TMP/full/repo-queue" --version
+run "fleet: version reports the derived version" 0 "Derived version: " "$FULL_OUT/bin/fleet" version
 run "fleet queue: --help renders the queue commands" 0 "Commands: validate" "$FULL_OUT/bin/fleet" queue --help
 
 # Client -> broker wiring: health reaches the scratch queue-broker,

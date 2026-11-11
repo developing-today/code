@@ -6,6 +6,7 @@ import {
   type RoadmapGrain,
   type TodayView,
   allRefs,
+  buildQuotaActions,
   commentStream,
   executionStrip,
   freshness,
@@ -26,8 +27,10 @@ import { diffCoverage, staleIssueState, type CoverageSnapshotFile } from "./cove
 import { DIGEST_SECTION_LIMIT, type Digest, type DigestKind } from "./digest.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { formatForecastSummary, type ForecastContract } from "./forecast-contract.ts";
+import type { FlowAnalytics } from "./flow-analytics.ts";
+import { flowChartsHtml } from "./flow-charts.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
-import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT } from "./board-policy.ts";
+import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT, selectVisibleDoneCards } from "./board-policy.ts";
 import { summarizeWipLanes } from "./wip-limits.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
 import {
@@ -43,7 +46,7 @@ import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCo
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { activityCoverageHtml, gapsHtml, type ActivityCoverage, type GapRecord } from "./activity.ts";
 import type { AuditEvent } from "./events.ts";
-import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
+import { AA_PLAN_FACTS, aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import {
   applyInequalityFilters,
   bandIndex,
@@ -59,6 +62,7 @@ import { summarizeDns } from "./dns.ts";
 import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import type { NotificationRollup } from "./notifications.ts";
+import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
 import type { QueueView, QueueRow } from "./queue-view.ts";
@@ -113,6 +117,7 @@ import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./project
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
+import { spendCardHtml, unattributedSpendHtml, type SpendCardsView } from "./spend-cards.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
@@ -219,12 +224,22 @@ if (!window.__dashAuthorPickerHook) {
  * posts to the issue (the aggregator holds no GitHub credentials).
  */
 const COMMENT_SCRIPT = `<script>${DASH_AFTER_JS}
+const commentOperatorTokenKey = "pm-aggregator.operator-token";
+const savedCommentOperatorToken = () => {
+  try { return localStorage.getItem(commentOperatorTokenKey) || ""; } catch { return ""; }
+};
 document.addEventListener("submit", async (ev) => {
   const form = ev.target;
   if (!(form instanceof HTMLFormElement) || !form.classList.contains("cform")) return;
   ev.preventDefault();
   const err = form.querySelector(".err");
   const data = new FormData(form);
+  let operatorToken = String(data.get("operatorToken") || "").trim();
+  if (operatorToken) {
+    try { localStorage.setItem(commentOperatorTokenKey, operatorToken); } catch { /* send this request even if storage is unavailable */ }
+  } else {
+    operatorToken = savedCommentOperatorToken();
+  }
   const kind = String(data.get("kind") || "note");
   const [akind, aid, asession] = String(data.get("author") || "drew|drew|").split("|");
   const labelEl = form.querySelector('option[value="' + CSS.escape(String(data.get("author"))) + '"]');
@@ -237,7 +252,8 @@ document.addEventListener("submit", async (ev) => {
     ...(kind === "github" ? { githubRef: String(data.get("githubRef") || "") } : {}),
   };
   const post = async (p) => {
-    const res = await fetch("/api/comments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(p) });
+    const headers = { "content-type": "application/json", ...(operatorToken ? { authorization: "Bearer " + operatorToken } : {}) };
+    const res = await fetch("/api/comments", { method: "POST", headers, body: JSON.stringify(p) });
     if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
   };
   try {
@@ -248,6 +264,13 @@ document.addEventListener("submit", async (ev) => {
     }
     window.__dashAfter(form, "✓ sent · pending — the orchestrator picks it up on its next pass");
   } catch (e) { if (err) err.textContent = "Not posted: " + e.message; }
+});
+document.addEventListener("click", (ev) => {
+  const button = ev.target;
+  if (!(button instanceof HTMLButtonElement) || !button.matches("[data-forget-operator-token]")) return;
+  try { localStorage.removeItem(commentOperatorTokenKey); } catch { /* storage may be disabled */ }
+  const input = button.closest(".cform")?.querySelector('input[name="operatorToken"]');
+  if (input instanceof HTMLInputElement) input.value = "";
 });
 document.addEventListener("change", (ev) => {
   const t = ev.target;
@@ -585,6 +608,9 @@ export function authorBadge(a: DashAuthor): string {
 }
 
 export function dashCommentHtml(c: DashComment, showObject = false): string {
+  const verificationChip = c.authorVerified === true
+    ? `<span class="badge">verified</span>`
+    : `<span class="badge">unverified</span>`;
   const kindChip =
     c.kind === "message"
       ? `<span class="badge msg">✉ message to Muse</span> <span class="muted">${c.triageState === "triaged" ? "triaged by the orchestrator" : "awaiting triage"}</span>`
@@ -593,12 +619,12 @@ export function dashCommentHtml(c: DashComment, showObject = false): string {
             c.githubState === "posted"
               ? `posted${c.githubUrl ? ` — <a href="${esc(c.githubUrl)}">view</a>` : ""}`
               : c.githubState === "failed"
-                ? `posting failed ${relTime(c.createdAt)} — no automatic retry exists; a fleet poster must post it by hand${c.githubError ? ` — last error: ${esc(c.githubError)}` : ""}`
+                ? `posting failed ${relTime(c.githubFailedAt ?? c.createdAt)} — no automatic retry exists; a fleet poster must post it by hand${c.githubError ? ` — last error: ${esc(c.githubError)}` : ""}`
                 : `pending — will post to ${esc(c.githubRef ?? "")}`
           }</span>`
         : `<span class="badge">note</span>`;
   const obj = showObject ? ` <span class="muted">on <code>${esc(c.objectRef)}</code></span>` : "";
-  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author)} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
+  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author)} ${verificationChip} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
 }
 
 export interface CommentFormOpts {
@@ -640,6 +666,8 @@ export function commentFormHtml(objectRef: string, opts: CommentFormOpts): strin
     : "";
   return `<form class="cform" data-object="${esc(objectRef)}">
 <label>Comment as</label><select name="author" data-author-picker>${authorOptions}</select>
+<label>Operator token <span class="muted">(needed for verified Drew/Muse posts after setup; saved only in this browser)</span></label><input type="password" name="operatorToken" autocomplete="off" placeholder="Paste operator token when issued">
+<button type="button" data-forget-operator-token>Forget saved token</button>
 <label>Kind</label><div class="kinds">
 <label><input type="radio" name="kind" value="note" checked> Note — read when this is next picked up</label>
 <label><input type="radio" name="kind" value="message"> ✉ Message to Muse — the orchestrator triages it on its next pass</label>
@@ -1499,14 +1527,10 @@ export function renderBoardBody(
       let visibleItems = colItems;
       let doneNote = "";
       if (k === "done" && colItems.length > DONE_STRIP_RENDER_LIMIT) {
-        const sorted = [...colItems].sort(
-          (a, b) => (Date.parse(b.updatedAt ?? "") || 0) - (Date.parse(a.updatedAt ?? "") || 0),
-        );
+        visibleItems = selectVisibleDoneCards(colItems, { showAll: renderOpts?.showAllDone ?? false });
         if (renderOpts?.showAllDone) {
-          visibleItems = sorted;
           doneNote = ` — showing all, newest first; <a href="/board">show fewer</a>`;
         } else {
-          visibleItems = sorted.slice(0, DONE_STRIP_RENDER_LIMIT);
           doneNote = ` — showing the ${DONE_STRIP_RENDER_LIMIT} most recent; <a href="/board?done=all">show all ${colItems.length}</a>`;
         }
       }
@@ -1600,10 +1624,11 @@ export function renderBoard(
 
 /** The Datastar shell for / (#1444): heading + intro paint at once;
  *  the board itself streams in from /frag/board. */
-export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDetail, viewQuery = ""): string {
+  const fragBoard = viewQuery ? `/frag/board?${viewQuery}` : "/frag/board";
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')"><div class="skel">Loading the board…</div></div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('${fragBoard}')" data-on-dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
     provenance,
     "/board",
     ACTION_SCRIPT,
@@ -1664,7 +1689,7 @@ export function forecastSummaryHtml(contracts: ForecastContract[] | undefined): 
   return `<div class="forecast">${lines}</div>`;
 }
 
-function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow, forecasts?: Map<RefKey, ForecastContract[]>): string {
+function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow, forecasts?: Map<RefKey, ForecastContract[]>, spend?: SpendCardsView | null): string {
   const parts: string[] = [];
   if (!drill.epic) {
     parts.push(`<p class="muted">No epic yet — no Project epic matches this roadmap row.</p>`);
@@ -1696,6 +1721,10 @@ function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow, forecasts?: Map<
     const fc = forecastSummaryHtml(forecasts?.get(drill.epic.ref));
     if (fc) parts.push(fc);
   }
+  if (drill.epic) {
+    const card = spend?.byScope.get(drill.epic.ref);
+    if (card) parts.push(spendCardHtml(card));
+  }
   if (row.notes.trim()) parts.push(`<p class="notes">${esc(row.notes)}</p>`);
   return `<details class="roadmap-drill"><summary>Epic &amp; issues</summary>${parts.join("")}</details>`;
 }
@@ -1708,6 +1737,7 @@ function roadmapCard(
   annotations?: Map<string, RoadmapAnnotation[]>,
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1717,7 +1747,7 @@ function roadmapCard(
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
-  const expansion = drill ? roadmapDrilldown(drill, row, forecasts) : "";
+  const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
   const notes = annotations?.get(row.subject) ?? [];
   const annotationHtml = notes.length
     ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
@@ -1741,6 +1771,7 @@ function timelineTable(
   annotations?: Map<string, RoadmapAnnotation[]>,
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1750,7 +1781,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
@@ -1772,6 +1803,8 @@ export function renderRoadmap(
   viewQuery = "",
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
+  flowAnalytics?: FlowAnalytics,
+  spend?: SpendCardsView | null,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1792,9 +1825,9 @@ export function renderRoadmap(
     : "";
   let body: string;
   if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const byTheme = new Map<string, RoadmapRow[]>();
@@ -1807,7 +1840,7 @@ export function renderRoadmap(
           .map(([theme, themeRows]) => {
             const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
             const cards = (laneRows: RoadmapRow[]) =>
-              laneRows.map((row) => roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts)).join("");
+              laneRows.map((row) => roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts, spend)).join("");
             const lanes = dg.lanes
               .map((lane) => {
                 const laneRows = lane.rows.filter((row) => (row.area || "Unthemed") === theme);
@@ -1825,7 +1858,7 @@ export function renderRoadmap(
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}${spend?.unattributed ? unattributedSpendHtml(spend.unattributed) : ""}${flowAnalytics ? flowChartsHtml(flowAnalytics) : ""}`,
     provenance,
     "/roadmap",
     "",
@@ -3441,6 +3474,7 @@ export function renderTodayBody(
   queueStale = false,
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
+  const quotaActions = buildQuotaActions(quota, AA_PLAN_FACTS);
   // "-direct" display rule (#6125), judged over this view's pool set.
   const poolDisplayNames = providerDisplayNames(quota.pools.map((p) => p.provider));
   const displayPoolProvider = (name: string) => poolDisplayNames.get(name) ?? name;
@@ -3451,9 +3485,17 @@ export function renderTodayBody(
       `<div class="banner drew"><strong>${drewTotal} item${drewTotal === 1 ? "" : "s"} in the user queue</strong> — <a href="/attention#drew">review them</a></div>`,
     );
   }
-  if (walled.length) {
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /attention's orchestrator tier, derived once above — never a
+  // second list. Walled pools without a typed action still banner.
+  for (const a of quotaActions) {
     alerts.push(
-      `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${displayPoolProvider(p.provider)} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
+      `<div class="banner"><strong>Quota action:</strong> ${esc(a.title)} — ${esc(a.detail)} <a href="${esc(a.href)}">quota</a></div>`,
+    );
+  }
+  for (const p of walled.filter((p) => !quotaActions.some((a) => a.poolId === p.id))) {
+    alerts.push(
+      `<div class="banner"><strong>Walled pools:</strong> ${esc(`${displayPoolProvider(p.provider)} (${p.plan})`)} — <a href="/quota">quota</a></div>`,
     );
   }
   const wipViolations = (today.wipLanes ?? []).flatMap((lane) => [
@@ -3484,13 +3526,19 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
+  const quotaObjectives = quotaActions.map((a) => ({
+    title: a.title,
+    detail: a.detail,
+    chip: "quota · action",
+  }));
+  const allObjectives = [...today.objectives, ...quotaObjectives];
   // #6174: an objective ref comes from publisher lined-up data and is
   // only sometimes a GitHub ref — tracked-goal items carry their goal id,
   // and refUrl throws on those, which 500ed the whole /today render (the
   // Today-page sibling of the #6149 Needs-you fix). Mirror tierItemCard:
   // GitHub refs link, everything else renders as plain code.
-  const objectives = today.objectives.length
-    ? today.objectives
+  const objectives = allObjectives.length
+    ? allObjectives
         .map(
           (o, i) =>
             `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
@@ -5048,29 +5096,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
   // price within 25% of the band leader; the scale select multiplies all
   // three. Lane charts visualize the same near-leader choices as the
   // comparison tables; they do not recalculate band membership.
-  function logEdges(vals, n) {
-    var xs = vals.filter(function (v) { return v != null && v > 0; });
-    if (!xs.length) return [];
-    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
-    if (mn === mx) return [mn, mx];
-    var edges = [];
-    for (var i = 0; i <= n; i++) edges.push(mn * Math.pow(mx / mn, i / n));
-    return edges;
-  }
-  function scoreEdges(rows, n) {
-    var xs = rows.map(function (p) { return p.score; }).filter(function (v) { return v != null; });
-    if (!xs.length) return [];
-    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
-    var edges = [];
-    for (var i = 0; i <= n; i++) edges.push(mn + ((mx - mn) * i) / n);
-    return edges;
-  }
-  function bandIndex(v, edges) {
-    for (var i = 0; i < edges.length - 1; i++) {
-      if (v >= edges[i] && (i === edges.length - 2 ? v <= edges[i + 1] : v < edges[i + 1])) return i;
-    }
-    return -1;
-  }
+  // logEdges/scoreEdges/bandIndex come from the aa-explorer-computations.js import above (#7562): no inline copies here - an inline definition would shadow the tested module implementation.
   function chipFor(p, leader) {
     var notes = [];
     if (leader && leader.key !== p.key) {
@@ -5659,7 +5685,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
   });
   function csvCell(v) { return '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"'; }
   var dlJsonEl = document.getElementById("xf-dl-json");
-  if (dlJsonEl) dlJsonEl.addEventListener("click", function () { downloadFile("cost-explorer-data.json", JSON.stringify(DATA, null, 2), "application/json"); });
+  if (dlJsonEl) dlJsonEl.addEventListener("click", function () { downloadFile("cost-explorer-data-" + String(DATA.batch || "latest").slice(0, 8) + ".json", JSON.stringify(DATA, null, 2), "application/json"); });
   var dlCsvEl = document.getElementById("xf-dl-csv");
   if (dlCsvEl) dlCsvEl.addEventListener("click", function () {
     var lines = [];
@@ -5819,13 +5845,37 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance, 
 </div>`
     : `<div class="banner">The collector has not carried the fleet catalog yet — it is built from the same <code>.opencode/opencode.jsonc</code> read as the coverage section and appears once a collector build that knows it has run. No catalog is shown rather than a stale one.</div>`;
   const explorerJson = jsonForScript(
-    JSON.stringify({ points: aaPoints(s), caiPoints: s.cai ? aaCaiPoints(s.cai) : [], catalog: catalog ?? null }),
+    JSON.stringify({
+      batch: s.batch,
+      points: aaPoints(s),
+      caiPoints: s.cai ? aaCaiPoints(s.cai) : [],
+      catalog: catalog ?? null,
+    }),
   );
+  // #3302: dataset-version selector. The selected batch scopes the whole
+  // explorer (charts, tables, recommendations) because the server hands
+  // renderAa that batch's section; downloads read the same embedded DATA.
+  const batches = s.batches ?? [];
+  const latestBatch = batches.find((b) => b.latest)?.importBatch ?? batches[0]?.importBatch ?? s.batch;
+  const selectedIsLatest = s.batch === latestBatch;
+  const batchOptions = batches
+    .map(
+      (b) =>
+        `<option value="${esc(b.importBatch)}"${b.importBatch === s.batch ? " selected" : ""}>${esc(b.label)}${b.importBatch === latestBatch ? " (latest)" : ""}${b.cached ? "" : " — not cached yet"}</option>`,
+    )
+    .join("");
+  const batchSelector =
+    batches.length > 1
+      ? `<div class="card" id="aa-batch-picker"><label><strong>Dataset version</strong>
+<select id="xf-batch" onchange="location.href = this.value ? '/aa?batch=' + encodeURIComponent(this.value) : '/aa'">${batchOptions}</select></label>
+<span class="muted">Older versions show that import's rankings, thresholds, timings and coding-agent rows. The latest is the default. Token prices remain the current <code>v_current_prices</code> overlay, not a historical price snapshot.</span></div>`
+      : "";
   const body = `<h1>Cost Explorer</h1>
 ${s.stale ? `<div class="banner">The latest collection failed (${esc(s.staleReason ?? "unknown error")}) — showing the last good data, collected ${fmtDate(s.generatedAt)}. It refreshes automatically on the next successful collection.</div>` : ""}
-<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${s.cai ? ` · ${s.cai.length} Coding Agent Index observations` : ""}${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
+${batchSelector}
+<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${s.cai ? ` · ${s.cai.length} Coding Agent Index observations` : ""}${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>${selectedIsLatest ? " (latest)" : " (historical version)"}. Machine-first: <a href="/api/aa.json${selectedIsLatest ? "" : `?batch=${encodeURIComponent(s.batch)}`}">/api/aa.json${selectedIsLatest ? "" : `?batch=${encodeURIComponent(s.batch)}`}</a>.</p>
 <div class="card"><strong>Provenance</strong><br>
-<span class="muted">These are the import snapshot's figures, not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A new import (coding-plan-watch) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change.</span>
+<span class="muted">These are the import snapshot's figures, not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A new import (coding-plan-watch) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change. Token prices come from <code>v_current_prices</code>, a current-price overlay that is not scoped to the selected dataset version.</span>
 <ul>${sourcesHtml || '<li class="muted">source files not recorded for this batch</li>'}</ul></div>
 <div class="xtabs" role="tablist"><button type="button" class="xtab" data-xtab="aa">AA Explorer</button><button type="button" class="xtab" data-xtab="models">Model Explorer</button></div>
 <div class="card xpl-filters" id="xpl-filters">
@@ -6374,6 +6424,9 @@ export function projectsBodyHtml(
     /** Shared forecast contracts by item ref (#3984): the same objects
      * /api/forecasts.json serves, rendered as one-line summaries. */
     forecasts?: Map<RefKey, ForecastContract[]>;
+    /** Spend beside progress (#4824): the #4823 rollup store's
+     * reader view. Absent/null: cards render exactly as before. */
+    spend?: SpendCardsView | null;
   } = {},
 ): string {
   const base = opts.basePath ?? "/projects";
@@ -6436,9 +6489,11 @@ export function projectsBodyHtml(
         : "";
       const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
+      const spendCard = opts.spend?.byScope.get(p.ref);
+      const spendHtml = spendCard ? spendCardHtml(spendCard) : "";
       const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
       const forecastHtml = forecastSummaryHtml(opts.forecasts?.get(p.ref));
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
@@ -6450,7 +6505,7 @@ ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
 <p class="muted">Live services: ${serviceHomeLinks()
     .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
     .join(" · ")}</p>
-${cards || '<p class="muted">No items in this area.</p>'}`;
+${cards || '<p class="muted">No items in this area.</p>'}${opts.spend?.unattributed ? unattributedSpendHtml(opts.spend.unattributed) : ""}`;
   return body;
 }
 
@@ -6467,6 +6522,7 @@ export function renderProjects(
     basePath?: string;
     briefs?: Map<RefKey, ItemBrief>;
     forecasts?: Map<RefKey, ForecastContract[]>;
+    spend?: SpendCardsView | null;
   } = {},
 ): string {
   return layout(
@@ -6567,12 +6623,16 @@ export function renderProgram(
     /** Prebuilt briefs (#1279), e.g. with comment activity folded in. */
     briefs?: Map<RefKey, ItemBrief>;
     forecasts?: Map<RefKey, ForecastContract[]>;
+    /** The #4829 flow twin the #4830 charts render on this page. */
+    flowAnalytics?: FlowAnalytics;
+    /** Spend beside progress (#4824) for the pool section. */
+    spend?: SpendCardsView | null;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
@@ -6595,7 +6655,7 @@ ${poolSummaryHtml(live)}
 ${orchestrationHtml(live)}
 <h2>The PM dashboard's own record</h2>
 <p class="muted">This dashboard's architecture, what's built, what's next, and its long-term roadmap live on its project page: <a href="/program/pm-dashboard">PM dashboard →</a>. Its tracked issues, resolved live:</p>
-${trackedTable(live.tracked)}${poolSectionHtml}`;
+${trackedTable(live.tracked)}${poolSectionHtml}${poolSection?.flowAnalytics ? flowChartsHtml(poolSection.flowAnalytics) : ""}`;
   return layout(
     "Program status",
     body,
@@ -6752,6 +6812,24 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
 
+  const rankedBlockersHtml = g.rankedBlockers.length
+    ? `<ol class="epic-graph-list">${g.rankedBlockers
+        .map((blocker) => {
+          const stateText = blocker.state === null ? "outside this pool; status unknown — unresolved" : "open unresolved blocker";
+          const downstream = blocker.downstreamItems
+            .map((item) => {
+              const weightText = item.effortWeight === null ? "unsized" : `effort weight ${item.effortWeight}`;
+              const additionalBlockers = item.additionalBlockers.length
+                ? `additional unresolved blockers: ${item.additionalBlockers.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}`
+                : "no additional unresolved blockers";
+              return `<li><a href="${esc(item.issueUrl)}">${esc(item.ref)}</a> (${weightText}) — ${additionalBlockers}</li>`;
+            })
+            .join("");
+          return `<li><a href="${esc(blocker.issueUrl)}">${esc(blocker.ref)}</a> (${stateText}) — ${blocker.downstreamCount} distinct open downstream item${blocker.downstreamCount === 1 ? "" : "s"}; known effort weight ${blocker.knownEffortWeight}; ${blocker.unsizedCount} unsized contributor${blocker.unsizedCount === 1 ? "" : "s"}: <ul>${downstream}</ul></li>`;
+        })
+        .join("")}</ol>`
+    : `<p class="muted">No unresolved blocker has open downstream work in this epic.</p>`;
+
   // SVG: hierarchy edges solid grey, dependency edges dashed amber —
   // distinct by dash and color, and named in the legend text.
   const pos = new Map(g.nodes.map((n) => [n.ref, n]));
@@ -6814,7 +6892,7 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     })
     .join("")}</ul>`;
 
-  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Blocked in this epic</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
 }
 
 export function renderProgramProject(
@@ -7043,7 +7121,7 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
   const formQuietStart = formSub?.quiet?.start ?? "23:00";
   const formQuietEnd = formSub?.quiet?.end ?? "07:00";
   const body = `<h1>Alerts</h1>
-<p class="muted">The alert throat (#3676): every sentinel posts to one intake; this page is the ack surface. Critical incidents push immediately to subscribed browsers; an unacknowledged critical escalates once after ${view.ackWindowMin} minutes. Warnings are recorded here and in the ledger — no push in v1. Machine-first: <a href="/api/alerts.json">/api/alerts.json</a>.</p>
+<p class="muted">The alert throat (#3676): every sentinel posts to one intake; this page is the ack surface. Critical incidents push immediately to subscribed browsers; an unacknowledged critical escalates once after ${view.ackWindowMin} minutes. Warnings are recorded here and in the ledger — no push in v1. Machine-first: <a href="/api/alerts.json">/api/alerts.json</a>. Per-class toggles, quiet hours, and per-class test sends live on the <a href="/alerts/preferences">notification preferences page</a>.</p>
 <style>.incident:target { outline: 2px solid #1f6feb; }</style>
 <h2>Push delivery on this browser</h2>
 <div class="card" id="push-panel">
@@ -7218,6 +7296,187 @@ document.getElementById("push-test").addEventListener("click", async () => {
   return layout("Alerts", body, provenance, "/alerts", script);
 }
 
+// --- Notification preferences page (#3318, slice (d) of #1254) ------------
+
+export interface NotificationPreferencesView {
+  available: boolean;
+  subscriptions: PushSubscriptionRow[];
+}
+
+/** The /alerts/preferences page: per-class subscription toggles,
+ * quiet-hours editing, this browser's subscription state, and a
+ * send-test button per class. Preferences are subscription state —
+ * saving writes through the same /api/push/subscriptions upsert the
+ * Alerts form uses (provided-classes merge: only the keys sent
+ * change), and the engine reads the stored map via classEnabled /
+ * inQuietHours on its next tick, so a toggle here IS the next
+ * engine decision. The route is /alerts/preferences, not
+ * /notifications: that route is the #3319 measurement page and
+ * stays read-only. */
+export function renderNotificationPreferences(
+  view: NotificationPreferencesView,
+  provenance: Provenance,
+  vapidPublicKey: string,
+): string {
+  if (!view.available) {
+    return layout(
+      "Notification preferences",
+      `<h1>Notification preferences</h1><p class="muted">The alerts ledger (Supabase <code>alerts</code> schema) is unreachable from this process right now — subscription preferences cannot be read or saved until it is back. The rest of the dashboard is unaffected.</p>`,
+      provenance,
+      "/alerts/preferences",
+    );
+  }
+  // Same initial-state rule as the Alerts form: render the newest
+  // stored subscription's saved truth server-side; the client
+  // script refines it to this browser's own subscription.
+  const formSub = [...view.subscriptions].sort((a, b) => (a.last_seen_at < b.last_seen_at ? 1 : -1))[0];
+  const quietOn = !formSub || formSub.quiet?.enabled !== false;
+  const quietStart = formSub?.quiet?.start ?? "23:00";
+  const quietEnd = formSub?.quiet?.end ?? "07:00";
+  const classRows = NOTIFICATION_CLASSES.map((c) => {
+    const checked = !formSub || (formSub.classes?.[c.id] ?? NOTIFICATION_CLASS_DEFAULTS[c.id]) !== false;
+    return `<div class="card"><p><label><input type="checkbox" id="pref-class-${c.id}"${checked ? " checked" : ""}> <strong>${esc(c.label)}</strong> <span class="muted">(<code>${esc(c.id)}</code>)</span></label><br>
+<span class="muted">${esc(c.blurb)}</span></p>
+<button data-test-class="${esc(c.id)}">Send a test ${esc(c.id)} notification</button></div>`;
+  }).join("\n");
+  const body = `<h1>Notification preferences</h1>
+<p class="muted">Per-class push preferences for this browser's subscription (#3318, slice (d) of the #1254 design). Toggling a class or editing quiet hours and saving changes the stored subscription; the notification engine reads the stored values on its next tick, so the change is the next engine decision. This browser's subscription state is shown below. Machine-first: <a href="/api/alerts/preferences.json">/api/alerts/preferences.json</a>. The <a href="/notifications">/notifications</a> page stays the read-only measurement roll-up (#3319).</p>
+<h2>This browser</h2>
+<div class="card" id="pref-panel">
+<span id="pref-status" class="muted">checking…</span>
+<p><button id="pref-enable">Enable push on this browser</button>
+<button id="pref-disable">Disable push on this browser</button></p>
+</div>
+<h2>Classes</h2>
+${classRows}
+<div class="card"><p><label><input type="checkbox" id="pref-quiet-enabled"${quietOn ? " checked" : ""}> <strong>Quiet hours</strong></label><br>
+<span class="muted">Pause non-urgent notifications between <input type="time" id="pref-quiet-start" value="${quietStart}"${quietOn ? "" : " disabled"}> and <input type="time" id="pref-quiet-end" value="${quietEnd}"${quietOn ? "" : " disabled"}> (Chicago time). Untick for no time-of-day limit at all. Incident alerts always come through immediately, quiet hours or not; digest-only notifications wait for the quiet window to end.</span></p>
+<button data-test-class="digest">Send a test digest notification</button>
+<span class="muted">The digest is the one list-shaped landing allowed: the attention view filtered to the digest's refs.</span></div>
+<p><button id="pref-save">Save preferences</button><br><span id="pref-test-result" class="muted"></span></p>
+<h2>Subscriptions (${view.subscriptions.length})</h2>
+${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") : `<p class="muted">No push subscriptions yet — enable push above.</p>`}`;
+  const script = `<script>
+const VAPID = ${JSON.stringify(vapidPublicKey)};
+const SUBS = ${JSON.stringify(view.subscriptions.map((s) => ({ endpoint: s.endpoint, classes: s.classes, quiet: s.quiet })))};
+const CLASS_IDS = ${JSON.stringify(NOTIFICATION_CLASSES.map((c) => c.id))};
+const status = document.getElementById("pref-status");
+const DENIED_TEXT = "Notifications are blocked for this site on this device. On iPhone: Settings → Notifications → this app — allow notifications; or delete the home-screen app, re-add it, and tap Allow when asked. On a computer: the lock icon in the address bar → site settings → Notifications → Allow.";
+const PLAIN_ERRORS = {
+  denied: DENIED_TEXT,
+  dismissed: "The notification prompt was closed without a choice — nothing was turned on. Tap Enable push again and choose Allow.",
+  unsupported: "Push isn't available in this browser — open this page in your regular browser (Chrome, Safari, or Firefox), or install the dashboard to the home screen on iPhone first.",
+  "subscribe-failed": "The browser couldn't register for push — check the connection and try again.",
+  "save-failed": "Your choice couldn't be saved on the server — try again.",
+  "not-subscribed": "This browser isn't subscribed yet — enable push first.",
+};
+function showError(e) {
+  status.textContent = PLAIN_ERRORS[e && e.code] || "Something went wrong — try again.";
+}
+function syncQuietInputs() {
+  const on = document.getElementById("pref-quiet-enabled").checked;
+  document.getElementById("pref-quiet-start").disabled = !on;
+  document.getElementById("pref-quiet-end").disabled = !on;
+}
+document.getElementById("pref-quiet-enabled").addEventListener("change", syncQuietInputs);
+function applyPrefs(mine) {
+  if (mine.classes) {
+    for (const id of CLASS_IDS) {
+      if (typeof mine.classes[id] === "boolean") document.getElementById("pref-class-" + id).checked = mine.classes[id];
+    }
+  }
+  if (mine.quiet) {
+    document.getElementById("pref-quiet-enabled").checked = mine.quiet.enabled !== false;
+    if (mine.quiet.start) document.getElementById("pref-quiet-start").value = mine.quiet.start;
+    if (mine.quiet.end) document.getElementById("pref-quiet-end").value = mine.quiet.end;
+    syncQuietInputs();
+  }
+}
+function pushSupportedHere() {
+  return "PushManager" in window && "Notification" in window && "serviceWorker" in navigator;
+}
+function waitForPmPush() {
+  if (window.pmPush) return Promise.resolve(window.pmPush);
+  return new Promise((resolve) => {
+    let n = 0;
+    const t = setInterval(() => {
+      n++;
+      if (window.pmPush || n > 60) { clearInterval(t); resolve(window.pmPush || null); }
+    }, 50);
+  });
+}
+async function refreshStatus() {
+  if (!pushSupportedHere()) {
+    status.textContent = "Push isn't available in this browser yet — open this page in your regular browser, or install the dashboard to the home screen on iPhone first.";
+    return;
+  }
+  const pm = await waitForPmPush();
+  if (!pm) { status.textContent = "The push controls are still loading — reload the page if this sticks."; return; }
+  const sub = await pm.current().catch(() => null);
+  if (sub) {
+    status.textContent = "This browser is subscribed — pushes will land here, shaped by the preferences below.";
+    const mine = SUBS.find((s) => s.endpoint === sub.endpoint) || (SUBS.length === 1 ? SUBS[0] : null);
+    if (mine) applyPrefs(mine);
+  } else if (pm.permission() === "denied") {
+    status.textContent = DENIED_TEXT;
+  } else {
+    status.textContent = "This browser is not subscribed yet — tap Enable push to subscribe it with the preferences below.";
+  }
+}
+refreshStatus();
+syncQuietInputs();
+function prefs() {
+  const classes = {};
+  for (const id of CLASS_IDS) classes[id] = document.getElementById("pref-class-" + id).checked;
+  return {
+    classes,
+    quiet: {
+      enabled: document.getElementById("pref-quiet-enabled").checked,
+      start: document.getElementById("pref-quiet-start").value || "23:00",
+      end: document.getElementById("pref-quiet-end").value || "07:00",
+      tz: "America/Chicago",
+    },
+  };
+}
+document.getElementById("pref-enable").addEventListener("click", async () => {
+  try { await window.pmPush.subscribe(VAPID, prefs()); location.reload(); } catch (e) { showError(e); }
+});
+document.getElementById("pref-save").addEventListener("click", async () => {
+  try {
+    const p = prefs();
+    await window.pmPush.updatePrefs(p);
+    const on = CLASS_IDS.filter((id) => p.classes[id]);
+    status.textContent = "Saved — classes on: " + (on.length ? on.join(", ") : "none") + "; " + (p.quiet.enabled ? "quiet hours on, " + p.quiet.start + "–" + p.quiet.end + "." : "quiet hours off, no time-of-day limit.");
+  } catch (e) { showError(e); }
+});
+document.getElementById("pref-disable").addEventListener("click", async () => {
+  try { await window.pmPush.unsubscribe(); location.reload(); } catch (e) { showError(e); }
+});
+document.querySelectorAll("[data-test-class]").forEach((b) => b.addEventListener("click", async () => {
+  const out = document.getElementById("pref-test-result");
+  const cls = b.dataset.testClass;
+  out.textContent = "sending test " + cls + "…";
+  try {
+    const r = await fetch("/api/push/test-class", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ class: cls }) });
+    if (!r.ok) { out.textContent = "The test couldn't be sent — the server answered HTTP " + r.status + "."; return; }
+    const s = await r.json();
+    if (!s.subscriptions) {
+      out.textContent = "No subscriptions yet — enable push first, then try the test.";
+    } else if (s.eligible === 0) {
+      out.textContent = "No subscription has the " + cls + " class on — turn it on above, save, then test again.";
+    } else if (s.sent > 0) {
+      out.textContent = "Test " + cls + " sent to " + s.sent + " subscription" + (s.sent === 1 ? "" : "s") + " — tapping it lands on " + s.url + ".";
+    } else {
+      out.textContent = "The test reached no device (" + s.errors + " failed, " + s.gone + " no longer there) — the subscriptions may be stale; disable push and enable it again.";
+    }
+  } catch (e) {
+    out.textContent = "The test couldn't be sent — network or server error.";
+  }
+}));
+</script>`;
+  return layout("Notification preferences", body, provenance, "/alerts/preferences", script);
+}
+
 // --- Notifications page (#3319, notification measurement) -------------------
 
 export interface NotificationsPageView {
@@ -7253,7 +7512,7 @@ export function renderNotifications(view: NotificationsPageView, provenance: Pro
     ? `<h2>Default-off proposals</h2>${proposals
         .map(
           (c) =>
-            `<div class="card"><strong>Proposal: default class <code>${esc(c.class)}</code> off</strong> — acted-on ratio ${pct(c.ratio)} over the rolling window (${c.acted} of ${c.sent} sends acted on within 24h), under the 10% threshold.<br><span class="muted">Proposal only — this page never changes a preference or a default. Turning a class off by default is Drew's call, made on the Alerts page's subscription preferences.</span></div>`,
+            `<div class="card"><strong>Proposal: default class <code>${esc(c.class)}</code> off</strong> — acted-on ratio ${pct(c.ratio)} over the rolling window (${c.acted} of ${c.sent} sends acted on within 24h), under the 10% threshold.<br><span class="muted">Proposal only — this page never changes a preference or a default. Turning a class off by default is Drew's call, made on the <a href="/alerts/preferences">notification preferences page</a>.</span></div>`,
         )
         .join("")}`
     : `<h2>Default-off proposals</h2><p class="muted">No class is under the 10% acted-on threshold over the rolling window.</p>`;

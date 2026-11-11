@@ -349,6 +349,45 @@ describe("quota-current overlay", () => {
     expect(pool.freshness?.state).toBe("error");
     expect(pool.windows.map((w) => w.percent)).toEqual([11]);
   });
+
+  test("a lapsed entry survives ingest as a terminal lapse, not an error and without stale percentages", () => {
+    const at = iso(5 * 60_000);
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({
+            serviceId: "opencode-go",
+            providerId: "opencode-go",
+            state: "lapsed",
+            measuredAt: at,
+            error: "No active OpenCode Go subscription on the selected Console account",
+            windows: [{ ...win("monthly", 62, at), state: "lapsed" }],
+          }),
+        ]),
+      ),
+    );
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.providers[0].state).toBe("lapsed");
+    const view = baseView();
+    view.pools.push(pool("opencode-go", [{ name: "monthly", unit: "other", limit: 100, used: 62, percent: 62, resetsAt: null }]));
+    view.choices = {
+      hasHeadroom: ["opencode-go"],
+      burnBeforeReset: ["opencode-go"],
+      doNotStart: ["opencode-go"],
+    };
+    const out = overlayQuotaCurrent(view, parsed!, NOW);
+    const go = out.pools.find((p) => p.id === "opencode-go")!;
+    expect(go.state).toBe("lapsed");
+    expect(go.freshness?.state).toBe("lapsed");
+    expect(go.freshness?.error).toContain("No active OpenCode Go subscription");
+    // The dated percentage is not presented as a current reading.
+    expect(go.windows).toEqual([]);
+    // Guidance must not continue recommending a cancelled workspace.
+    expect(out.choices.hasHeadroom).not.toContain("opencode-go");
+    expect(out.choices.burnBeforeReset).not.toContain("opencode-go");
+    expect(out.choices.doNotStart).not.toContain("opencode-go");
+    expect(out.gatherer?.providers.find((p) => p.serviceId === "opencode-go")?.state).toBe("lapsed");
+  });
 });
 
 describe("parseQuotaCurrent", () => {
@@ -417,6 +456,24 @@ describe("overlayTursoUsage (#1049)", () => {
       ["databases", 3, "count", 3],
       ["storage", 1.053323, "gb", 21.066],
     ]);
+  });
+  test("prototype-spelling Turso windows are ignored like unknown names", () => {
+    const at = iso(5 * 60_000);
+    const names = ["databases", "constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "unknown-window"];
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          measuredAt: at,
+          windows: names.map((name) => tursoWin(name, 3, 3, at)),
+        }),
+      ]),
+      NOW,
+    );
+    expect(out[0].metrics.map((metric) => metric.id)).toEqual(["databases"]);
   });
   test("an error entry keeps the dated card and adds a dated conflict flag", () => {
     const at = iso(5 * 60_000);
@@ -709,23 +766,23 @@ describe("stale-path newest pick is finite-gated (#2253)", () => {
   });
 });
 
-describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
+describe("overlay: alternate ChatGPT pool (_openai.alt)", () => {
   test("gatherer windows land on the alternate pool, never on the main pool", () => {
     const view = baseView();
-    view.pools.push(pool("openai.alternate", []));
+    view.pools.push(pool("_openai.alt", []));
     const out = overlayQuotaCurrent(
       view,
       file([
         entry({
-          providerId: "openai.alternate",
-          serviceId: "openai.alternate",
+          providerId: "_openai.alt",
+          serviceId: "_openai.alt",
           credentialLabel: "OpenAI Alternate (Student - popesdrew)",
           windows: [win("5h", 100, iso(5 * 60_000)), win("weekly", 42, iso(5 * 60_000))],
         }),
       ]),
       NOW,
     );
-    const alt = out.pools.find((p) => p.id === "openai.alternate")!;
+    const alt = out.pools.find((p) => p.id === "_openai.alt")!;
     expect(alt.windows.map((w) => [w.name, w.percent])).toEqual([
       ["5-hour", 100],
       ["weekly", 42],

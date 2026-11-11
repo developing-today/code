@@ -158,7 +158,18 @@ fn markdown_to_prosemirror_inner(markdown: &str, recover_orphans: bool) -> Value
     // source and append them as the same PM nodes the referenced path
     // produces.
     if recover_orphans {
-        preserve_unreferenced_footnote_definitions(&mut doc, &protected, newline_token.as_deref());
+        let footnote_link_references = preserve_unreferenced_footnote_definitions(
+            &mut doc,
+            &protected,
+            newline_token.as_deref(),
+        );
+        preserve_unreferenced_link_reference_definitions(
+            &mut doc,
+            root,
+            &protected,
+            &footnote_link_references,
+            newline_token.as_deref(),
+        );
     }
     doc
 }
@@ -247,5104 +258,16 @@ fn strip_quote_depth(line: &str, depth: usize) -> Option<&str> {
     Some(rest)
 }
 
-/// Fence tracking for the source scans below: a fence opens with a
-/// run of >= 3 backticks or tildes and closes only with a run of the
-/// SAME character at least as long (CommonMark) -- a three-backtick
-/// line inside a four-backtick block is content, not a close (Codex
-/// P2 on the first #1565 cut, which toggled on any fence-shaped line).
-#[derive(Default)]
-struct FenceTracker {
-    open: Option<(char, usize)>,
-}
-
-/// The line to feed the FenceTracker: a fence delimiter may sit
-/// up to three columns in from its container's content edge
-/// (CommonMark), but strip_container_prefixes leaves those columns
-/// in place (`>   ```` arrives as two leading spaces), and
-/// FenceTracker::feed anchors the run at the first character -- so
-/// an indented opening fence inside a blockquote was missed and
-/// the "code" interior was scanned as live text (Codex P2 on
-/// #1565's twenty-fourth cut). Removing up to three leading spaces
-/// here keeps the four-column distinction: a line still indented
-/// after this (or tab-led, which is four columns at column 0)
-/// reaches the tracker space-led and opens no fence, exactly like
-/// indented code.
-fn fence_feed_line(line: &str) -> &str {
-    let spaces = line.chars().take_while(|&c| c == ' ').count().min(3);
-    &line[spaces..]
-}
-
-impl FenceTracker {
-    /// Feed one line (already stripped of up to three leading
-    /// spaces). Returns true when the line is a fence delimiter.
-    fn feed(&mut self, stripped: &str) -> bool {
-        let ch = match stripped.chars().next() {
-            Some(c @ ('`' | '~')) => c,
-            _ => return false,
-        };
-        let run = stripped.chars().take_while(|&c| c == ch).count();
-        if run < 3 {
-            return false;
-        }
-        if self.open.is_none() && ch == '`' && stripped[run..].contains('`') {
-            // A backtick fence's info string cannot contain a
-            // backtick (CommonMark), so a line like ```a`b opens
-            // no fence at all (Codex P2 on #1565's eighth cut).
-            return false;
-        }
-        match self.open {
-            None => {
-                self.open = Some((ch, run));
-                true
-            }
-            Some((open_ch, open_run)) => {
-                if ch == open_ch && run >= open_run && stripped[run..].trim().is_empty() {
-                    self.open = None;
-                    true
-                } else {
-                    false
-                }
-            }
-        }
-    }
-
-    fn in_fence(&self) -> bool {
-        self.open.is_some()
-    }
-
-    /// Forget any open fence: a fence opened inside a container
-    /// ends implicitly when the container ends, with no closing
-    /// delimiter line (Codex P2 on #1565's tenth cut).
-    fn reset(&mut self) {
-        self.open = None;
-    }
-}
-
-/// HTML-block tracking for the source scans below (Codex P2 on
-/// #1565's second cut): comrak parses a raw HTML block -- a comment,
-/// a script/pre/style/textarea element, a block-level tag, or a lone
-/// complete tag -- as literal content until its CommonMark end
-/// condition (the closing marker for comments/CDATA/PIs/tag-bodies,
-/// a blank line for plain block tags). A definition-shaped line in
-/// that interior is literal text, exactly as in a fence; without this
-/// tracking the pre-scan synthesized a live footnote out of a
-/// comment's interior and a save then moved it outside the comment.
-#[derive(Default)]
-struct HtmlBlockTracker {
-    /// What ends the open block: a literal closing marker, or a
-    /// blank line for block-tag (type 6/7) blocks.
-    end: Option<HtmlBlockEnd>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum HtmlBlockEnd {
-    Marker(&'static str),
-    BlankLine,
-}
-
-/// The CommonMark type-6 block-level tag names.
-const HTML_BLOCK_TAGS: &[&str] = &[
-    "address",
-    "article",
-    "aside",
-    "base",
-    "basefont",
-    "blockquote",
-    "body",
-    "caption",
-    "center",
-    "col",
-    "colgroup",
-    "dd",
-    "details",
-    "dialog",
-    "dir",
-    "div",
-    "dl",
-    "dt",
-    "fieldset",
-    "figcaption",
-    "figure",
-    "footer",
-    "form",
-    "frame",
-    "frameset",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "head",
-    "header",
-    "hr",
-    "html",
-    "iframe",
-    "legend",
-    "li",
-    "link",
-    "main",
-    "menu",
-    "menuitem",
-    "nav",
-    "noframes",
-    "ol",
-    "optgroup",
-    "option",
-    "p",
-    "param",
-    "search",
-    "section",
-    "summary",
-    "table",
-    "tbody",
-    "td",
-    "tfoot",
-    "th",
-    "thead",
-    "title",
-    "tr",
-    "track",
-    "ul",
-];
-
-/// Whether `trimmed` (a whole line, both ends trimmed) is exactly
-/// one complete HTML open or closing tag -- CommonMark type 7: a
-/// tag name (a letter, then letters/digits/`-`), then for an open
-/// tag any number of whitespace-separated attributes (a name, with
-/// an optional `=` and an unquoted, single-quoted, or
-/// double-quoted value), optional whitespace, an optional `/`,
-/// and the final `>`. A closing tag is `</name`, optional
-/// whitespace, `>`. Anything else angle-delimited is NOT a tag:
-/// an autolink like `<https://example.com>` (the `:` after the
-/// name is not whitespace, `/`, or `>`), or a tag-shaped line with
-/// junk where an attribute should be. Treating every
-/// angle-delimited string as an HTML block opened a
-/// blank-line-ended block on the autolink line and swallowed the
-/// heading and the valid orphan definition after it (Codex P2 on
-/// #1565's seventeenth cut).
-fn is_complete_html_tag(trimmed: &str) -> bool {
-    let bytes = trimmed.as_bytes();
-    if bytes.len() < 3 || bytes[0] != b'<' || bytes[bytes.len() - 1] != b'>' {
-        return false;
-    }
-    let inner = &trimmed[1..trimmed.len() - 1];
-    let b = inner.as_bytes();
-    let (closing, mut pos) = if b.first() == Some(&b'/') {
-        (true, 1)
-    } else {
-        (false, 0)
-    };
-    if !b.get(pos).is_some_and(|c| c.is_ascii_alphabetic()) {
-        return false;
-    }
-    let name_start = pos;
-    pos += 1;
-    while b
-        .get(pos)
-        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-')
-    {
-        pos += 1;
-    }
-    // Type 1 names never open a type 7 block with an OPENING tag
-    // (they are handled as marker-ended blocks above); a line
-    // naming one that reaches here did not match the type-1
-    // boundary rule either. The exclusion applies only to opening
-    // tags: a complete CLOSING tag of any name opens a type-7
-    // block, so `</pre>` makes the following definition-shaped
-    // line its literal interior -- rejecting it recovered that
-    // line as a live definition (Codex P2 on #1565's
-    // twenty-first cut).
-    if !closing
-        && ["script", "pre", "style", "textarea"]
-            .contains(&inner[name_start..pos].to_ascii_lowercase().as_str())
-    {
-        return false;
-    }
-    if closing {
-        while b.get(pos).is_some_and(|c| c.is_ascii_whitespace()) {
-            pos += 1;
-        }
-        return pos == inner.len();
-    }
-    loop {
-        let ws_start = pos;
-        while b.get(pos).is_some_and(|c| c.is_ascii_whitespace()) {
-            pos += 1;
-        }
-        let had_ws = pos > ws_start;
-        match b.get(pos) {
-            None => return true,
-            Some(b'/') => return pos + 1 == inner.len(),
-            Some(_) if had_ws => {
-                // Attribute name, then an optional `= value`.
-                if !b
-                    .get(pos)
-                    .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_' || *c == b':')
-                {
-                    return false;
-                }
-                pos += 1;
-                while b.get(pos).is_some_and(|c| {
-                    c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b':')
-                }) {
-                    pos += 1;
-                }
-                let mut p2 = pos;
-                while b.get(p2).is_some_and(|c| c.is_ascii_whitespace()) {
-                    p2 += 1;
-                }
-                if b.get(p2) == Some(&b'=') {
-                    p2 += 1;
-                    while b.get(p2).is_some_and(|c| c.is_ascii_whitespace()) {
-                        p2 += 1;
-                    }
-                    match b.get(p2) {
-                        Some(q @ (b'"' | b'\'')) => {
-                            let q = *q;
-                            p2 += 1;
-                            while b.get(p2).is_some_and(|c| *c != q) {
-                                p2 += 1;
-                            }
-                            if b.get(p2).is_none() {
-                                return false;
-                            }
-                            p2 += 1;
-                        }
-                        Some(_) => {
-                            let vstart = p2;
-                            while b.get(p2).is_some_and(|c| {
-                                !c.is_ascii_whitespace()
-                                    && !matches!(c, b'"' | b'\'' | b'=' | b'<' | b'>' | b'`')
-                            }) {
-                                p2 += 1;
-                            }
-                            if p2 == vstart {
-                                return false;
-                            }
-                        }
-                        None => return false,
-                    }
-                    pos = p2;
-                }
-            }
-            Some(_) => return false,
-        }
-    }
-}
-
-impl HtmlBlockTracker {
-    fn in_html(&self) -> bool {
-        self.end.is_some()
-    }
-
-    /// Forget any open block: a block opened inside a container
-    /// ends implicitly when the container ends, with no closing
-    /// line (Codex P2 on #1565's eleventh cut, mirroring
-    /// FenceTracker::reset).
-    fn reset(&mut self) {
-        self.end = None;
-    }
-
-    /// Feed one line (already stripped of up to three leading
-    /// spaces). Returns true when the line belongs to an HTML block
-    /// (its opening line, interior, or closing line).
-    /// `may_open_type7` is the caller's paragraph context: a type-7
-    /// block (a lone complete inline tag) cannot interrupt a
-    /// paragraph, so when the previous line is paragraph content
-    /// the caller passes false and a type-7 opening is refused
-    /// (Codex P2 on #1565's eighteenth cut). Types 1-6 can
-    /// interrupt a paragraph and are always eligible.
-    fn feed(&mut self, stripped: &str, may_open_type7: bool) -> bool {
-        if let Some(end) = self.end {
-            match end {
-                HtmlBlockEnd::Marker(marker) => {
-                    if stripped.to_ascii_lowercase().contains(marker) {
-                        self.end = None;
-                    }
-                }
-                HtmlBlockEnd::BlankLine => {
-                    if stripped.trim().is_empty() {
-                        self.end = None;
-                    }
-                }
-            }
-            return true;
-        }
-        let Some(rest) = stripped.strip_prefix('<') else {
-            return false;
-        };
-        let lower = stripped.to_ascii_lowercase();
-        // Marker-ended blocks (CommonMark types 1-5). The tag-named
-        // prefixes require a name boundary: `<prefix>` is not a
-        // `<pre>` block (nor `<scripture>` a `<script>`), it is a
-        // generic tag block ending at a blank line (Codex P2 on
-        // #1565's sixth cut).
-        for (prefix, marker) in [
-            ("<!--", "-->"),
-            ("<![cdata[", "]]>"),
-            ("<?", "?>"),
-            ("<script", "</script>"),
-            ("<pre", "</pre>"),
-            ("<style", "</style>"),
-            ("<textarea", "</textarea>"),
-        ] {
-            // The tag-named prefixes follow the CommonMark type-1
-            // boundary exactly: whitespace, '>', or end-of-line
-            // after the name. Anything else (`<pre/>`, `<prex>`)
-            // is a generic tag block ending at a blank line, not a
-            // marker-ended block (Codex P2 on #1565's tenth cut).
-            let boundary_ok = !prefix[1..].chars().all(|c| c.is_ascii_alphabetic())
-                || match lower.as_bytes().get(prefix.len()) {
-                    None => true,
-                    Some(b) => b.is_ascii_whitespace() || *b == b'>',
-                };
-            // CDATA is case-sensitive (CommonMark): only the
-            // exact uppercase `<![CDATA[` opens a marker-ended
-            // block; `<![cdata[` is ordinary text (Codex P2 on
-            // #1565's sixteenth cut). Tag names stay
-            // case-insensitive.
-            let (hay, prefix) = if prefix == "<![cdata[" {
-                (stripped, "<![CDATA[")
-            } else {
-                (lower.as_str(), prefix)
-            };
-            if boundary_ok && hay.starts_with(prefix) {
-                if !hay[prefix.len()..].contains(marker) {
-                    self.end = Some(HtmlBlockEnd::Marker(marker));
-                }
-                return true;
-            }
-        }
-        if rest.starts_with('!')
-            && rest[1..]
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_uppercase())
-        {
-            // Declaration (type 5 covers <![CDATA[ above; a <!X
-            // declaration ends at '>').
-            if !rest.contains('>') {
-                self.end = Some(HtmlBlockEnd::Marker(">"));
-            }
-            return true;
-        }
-        // Tag-ended blocks (types 6 and 7): a block-level tag, or a
-        // lone complete open/closing tag on the line.
-        let tag_body = rest.strip_prefix('/').unwrap_or(rest);
-        let tag_name: String = tag_body
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-            .collect::<String>()
-            .to_ascii_lowercase();
-        if tag_name.is_empty() {
-            return false;
-        }
-        if HTML_BLOCK_TAGS.contains(&tag_name.as_str())
-            && tag_name_boundary_ok(tag_body, tag_name.len())
-        {
-            self.end = Some(HtmlBlockEnd::BlankLine);
-            return true;
-        }
-        let trimmed = stripped.trim_end();
-        if is_complete_html_tag(trimmed) {
-            if !may_open_type7 {
-                return false;
-            }
-            self.end = Some(HtmlBlockEnd::BlankLine);
-            return true;
-        }
-        let _ = rest;
-        false
-    }
-}
-
-/// Strip block-container prefixes (blockquote `>`, list markers
-/// `-`/`*`/`+`/ordered) from a line, repeatedly, for fence detection:
-/// a fence opened inside a list item or blockquote still makes its
-/// content literal (Codex P2 on #1565's fourth cut -- `- ```` followed
-/// by an indented definition-shaped line parsed as code by comrak,
-/// but the scanner missed the opening fence behind the `- ` marker
-/// and recovered the interior line as a live definition).
-fn strip_container_prefixes(line: &str) -> &str {
-    let mut rest = line;
-    loop {
-        let t = rest.trim_start_matches(' ');
-        if let Some(r) = t.strip_prefix('>') {
-            rest = r.strip_prefix(' ').unwrap_or(r);
-            continue;
-        }
-        let bytes = t.as_bytes();
-        let marker_len = if bytes.len() >= 2
-            && matches!(bytes[0], b'-' | b'*' | b'+')
-            && (bytes[1] == b' ' || bytes[1] == b'\t')
-        {
-            Some(1)
-        } else {
-            let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
-            if digits >= 1
-                && digits <= 9
-                && matches!(t.as_bytes().get(digits), Some(b'.') | Some(b')'))
-                && matches!(t.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t'))
-            {
-                Some(digits + 1)
-            } else {
-                None
-            }
-        };
-        let Some(marker_len) = marker_len else { break };
-        rest = strip_marker_padding(&t[marker_len..], marker_len);
-    }
-    rest
-}
-
-/// The content after a list marker, CommonMark-style: one to
-/// four columns of padding after the marker are the item's
-/// content indent and are stripped with the marker; FIVE or
-/// more columns mean the content is an indented code block
-/// whose indentation starts after a single padding column, so
-/// only that one column is stripped and the remaining
-/// indentation survives. Removing all the padding turned
-/// `-     ``` ` into a fence opener the document does not have,
-/// and the phantom fence then suppressed the valid reference
-/// definition after it (Codex P2 on #1565's twenty-first cut).
-fn strip_marker_padding(after: &str, marker_end_col: usize) -> &str {
-    let mut col = marker_end_col;
-    let mut end = 0;
-    for c in after.chars() {
-        match c {
-            ' ' => {
-                col += 1;
-                end += 1;
-            }
-            '\t' => {
-                col += 4 - (col % 4);
-                end += 1;
-            }
-            _ => break,
-        }
-    }
-    if col - marker_end_col > 4 {
-        // Keep all but the first padding character (spaces and
-        // tabs are one byte each, so this is a byte offset too).
-        &after[after.chars().next().map_or(0, |_| 1)..]
-    } else {
-        &after[end..]
-    }
-}
-
-/// The container structure of a recorded container prefix, as
-/// a string of marker kinds with all spacing removed: `> ` and
-/// `>` are the same blockquote level, so a fence opened under
-/// one spelling closes under the other (Codex P2 on #1565's
-/// nineteenth cut). Byte-exact prefix matching left such a
-/// fence open and suppressed the definitions after it.
-fn container_signature(prefix: &str) -> String {
-    let mut sig = String::new();
-    let mut rest = prefix;
-    loop {
-        let t = rest.trim_start_matches([' ', '\t']);
-        if let Some(r) = t.strip_prefix('>') {
-            sig.push('>');
-            rest = r;
-            continue;
-        }
-        let bytes = t.as_bytes();
-        if bytes.len() >= 2
-            && matches!(bytes[0], b'-' | b'*' | b'+')
-            && (bytes[1] == b' ' || bytes[1] == b'\t')
-        {
-            sig.push('*');
-            rest = &t[1..];
-            continue;
-        }
-        let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
-        if digits >= 1
-            && digits <= 9
-            && matches!(t.as_bytes().get(digits), Some(b'.') | Some(b')'))
-            && matches!(t.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t'))
-        {
-            sig.push('#');
-            rest = &t[digits + 1..];
-            continue;
-        }
-        break;
-    }
-    sig
-}
-
-/// Strip at most `levels` container levels (blockquote `>`,
-/// list markers) from a line, mirroring
-/// strip_container_prefixes' per-level shapes.
-fn strip_container_levels(line: &str, levels: usize) -> &str {
-    let mut rest = line;
-    for _ in 0..levels {
-        let t = rest.trim_start_matches(' ');
-        if let Some(r) = t.strip_prefix('>') {
-            rest = r.strip_prefix(' ').unwrap_or(r);
-            continue;
-        }
-        let bytes = t.as_bytes();
-        let marker_len = if bytes.len() >= 2
-            && matches!(bytes[0], b'-' | b'*' | b'+')
-            && (bytes[1] == b' ' || bytes[1] == b'\t')
-        {
-            Some(1)
-        } else {
-            let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
-            if digits >= 1
-                && digits <= 9
-                && matches!(t.as_bytes().get(digits), Some(b'.') | Some(b')'))
-                && matches!(t.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t'))
-            {
-                Some(digits + 1)
-            } else {
-                None
-            }
-        };
-        let Some(marker_len) = marker_len else { break };
-        rest = strip_marker_padding(&t[marker_len..], marker_len);
-    }
-    rest
-}
-
-/// Whether `stripped` (a line stripped of up to three leading
-/// spaces) carries the recorded container `prefix`, matched
-/// STRUCTURALLY rather than byte-for-byte: the line's own
-/// leading container levels (as many as the recorded prefix
-/// has) must have the same signature as the recorded prefix.
-fn carries_container_prefix(stripped: &str, prefix: &str) -> bool {
-    if prefix.is_empty() {
-        return false;
-    }
-    let levels = container_signature(prefix).chars().count();
-    if levels == 0 {
-        return false;
-    }
-    let own = &stripped[..stripped.len() - strip_container_levels(stripped, levels).len()];
-    !own.is_empty() && container_signature(own) == container_signature(prefix)
-}
-
-/// A footnote definition block found by the source pre-scan (#1565):
-/// its label and the block's verbatim source (the `[^label]:` line
-/// plus any indented continuation lines, trailing blank lines cut).
-struct FootnoteDefinitionBlock {
-    label: String,
-    source: String,
-    /// Zero-based line index of the definition's opening line, for
-    /// interleaving with other source segments in document order.
-    line: usize,
-}
-
-/// The label of a footnote definition starting on `line` (already
-/// stripped of up to three leading spaces), or `None` when the line
-/// does not start one. A definition opens as `[^label]:`.
-fn footnote_definition_label(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("[^")?;
-    // The label ends at the FIRST ']' and a ':' must follow it
-    // immediately. Searching for "]:" instead accepted `a]b` as the
-    // label of `[^a]b]: note` -- a definition comrak does not
-    // recognize, whose probe then looped recovery forever (Codex P1).
-    let close = rest.find(']')?;
-    if !rest[close + 1..].starts_with(':') {
-        return None;
-    }
-    let label = &rest[..close];
-    if label.is_empty() || label.contains('[') {
-        return None;
-    }
-    Some(label.to_string())
-}
-
-/// A thematic break: at least three of the same `-`, `*`, or `_`,
-/// spaces and tabs aside (CommonMark).
-fn is_thematic_break(stripped: &str) -> bool {
-    let compact: String = stripped
-        .chars()
-        .filter(|c| *c != ' ' && *c != '\t')
-        .collect();
-    let first = compact.chars().next();
-    compact.len() >= 3
-        && matches!(first, Some('-' | '*' | '_'))
-        && compact.chars().all(|c| Some(c) == first)
-}
-
-/// A setext heading underline: only `=`s (level 1) or `-`s (level 2).
-fn is_setext_underline(stripped: &str) -> bool {
-    let t = stripped.trim();
-    (!t.is_empty() && t.chars().all(|c| c == '=')) || (!t.is_empty() && t.chars().all(|c| c == '-'))
-}
-
-/// Whether a line starts a new block and so cannot be a lazy
-/// paragraph continuation of a footnote definition: another
-/// definition, an ATX heading, a fence, a blockquote, a thematic
-/// break, an HTML block opener, or a list/blockquote container line.
-/// Whether a line is an ATX heading: 1-6 `#`s followed by a
-/// space, a tab, or end-of-line (CommonMark). `#hashtag` is
-/// paragraph text, not a heading (Codex P2 on #1565's tenth cut).
-fn is_atx_heading(stripped: &str) -> bool {
-    let hashes = stripped.bytes().take_while(|&b| b == b'#').count();
-    (1..=6).contains(&hashes)
-        && matches!(
-            stripped.as_bytes().get(hashes),
-            None | Some(b' ') | Some(b'\t')
-        )
-}
-
-/// Whether the character after a block-level tag name is a valid
-/// name boundary: whitespace, `/`, `>`, or end-of-line (CommonMark
-/// type 6). `<div=foo>` has no boundary after `div`, so it is
-/// literal paragraph text, not an HTML block (Codex P2 on
-/// #1565's sixteenth cut).
-fn tag_name_boundary_ok(tag_body: &str, name_len: usize) -> bool {
-    matches!(
-        tag_body.as_bytes().get(name_len),
-        None | Some(b' ') | Some(b'\t') | Some(b'>') | Some(b'/')
-    )
-}
-
-/// Whether a line opens an HTML block that can INTERRUPT a
-/// paragraph (CommonMark types 1-6): a comment, a CDATA section,
-/// a processing instruction, a declaration, a script/pre/style/
-/// textarea element, or a block-level tag (opening or closing).
-/// A lone inline tag (`<em>`, `<a>`) is type 7, which cannot
-/// interrupt a paragraph: as a footnote definition's next line it
-/// is a lazy continuation of the definition's paragraph, not a
-/// new block (Codex P2 on #1565's eleventh cut).
-fn is_html_block_start(stripped: &str) -> bool {
-    let Some(rest) = stripped.strip_prefix('<') else {
-        return false;
-    };
-    let lower = stripped.to_ascii_lowercase();
-    if lower.starts_with("<!--") || stripped.starts_with("<![CDATA[") || lower.starts_with("<?") {
-        return true;
-    }
-    if rest.starts_with('!')
-        && rest[1..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_uppercase())
-    {
-        return true;
-    }
-    // Type 1 elements, with the tracker's name boundary
-    // (whitespace, '>', or end-of-line after the name).
-    for name in ["script", "pre", "style", "textarea"] {
-        if lower[1..].starts_with(name)
-            && matches!(
-                lower.as_bytes().get(1 + name.len()),
-                None | Some(b' ') | Some(b'\t') | Some(b'>')
-            )
-        {
-            return true;
-        }
-    }
-    let tag_body = rest.strip_prefix('/').unwrap_or(rest);
-    let tag_name: String = tag_body
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-        .collect::<String>()
-        .to_ascii_lowercase();
-    HTML_BLOCK_TAGS.contains(&tag_name.as_str()) && tag_name_boundary_ok(tag_body, tag_name.len())
-}
-
-/// Whether a stripped line is an ordered list marker whose
-/// start number cannot interrupt a paragraph: CommonMark lets
-/// only a list starting at 1 do that, so `2. text` after a
-/// paragraph line is its lazy continuation, not a new block
-/// (Codex P2 on #1565's thirteenth cut).
-fn is_non_interrupting_ordered_marker(stripped: &str) -> bool {
-    let digits = stripped.chars().take_while(|c| c.is_ascii_digit()).count();
-    if digits == 0 || digits > 9 {
-        return false;
-    }
-    if !matches!(stripped.as_bytes().get(digits), Some(b'.') | Some(b')')) {
-        return false;
-    }
-    if !matches!(
-        stripped.as_bytes().get(digits + 1),
-        Some(b' ') | Some(b'\t')
-    ) {
-        return false;
-    }
-    stripped[..digits].parse::<u64>().ok() != Some(1)
-}
-
-/// Whether a stripped line opens a code fence: a run of >= 3
-/// backticks or tildes whose info string is valid -- a backtick
-/// fence's info string cannot contain a backtick (CommonMark), so
-/// a line like ```a`b is paragraph text, not a fence (Codex P2 on
-/// #1565's fifteenth cut). Mirrors FenceTracker's opening rule.
-fn is_fence_opener(stripped: &str) -> bool {
-    let Some(ch) = stripped.chars().next() else {
-        return false;
-    };
-    if ch != '`' && ch != '~' {
-        return false;
-    }
-    let run = stripped.chars().take_while(|&c| c == ch).count();
-    run >= 3 && !(ch == '`' && stripped[run..].contains('`'))
-}
-
-/// The fence a line opens, as (fence char, run length), when the
-/// line is a fence opener.
-fn fence_opener_run(stripped: &str) -> Option<(char, usize)> {
-    if !is_fence_opener(stripped) {
-        return None;
-    }
-    let ch = stripped.chars().next()?;
-    Some((ch, stripped.chars().take_while(|&c| c == ch).count()))
-}
-
-/// Whether a line closes a fence opened with the given char and run
-/// length: a run of the same char at least as long, followed by
-/// nothing but spaces and tabs (a closing fence carries no info
-/// string, CommonMark). The fence chars are ASCII, so the run
-/// length is also the byte count.
-fn is_fence_closer(stripped: &str, ch: char, run: usize) -> bool {
-    let count = stripped.chars().take_while(|&c| c == ch).count();
-    count >= run && stripped[count..].trim().is_empty()
-}
-
-/// The indentation of a line in columns: a space is one column
-/// and a tab advances to the next multiple of four, so the two
-/// spellings ` \t` and `    ` are the same four columns
-/// (CommonMark) -- a literal prefix check accepts neither the
-/// mixed spelling nor other space/tab combinations (Codex P2 on
-/// #1565's fifteenth cut).
-fn indentation_columns(line: &str) -> usize {
-    let mut col = 0;
-    for c in line.chars() {
-        match c {
-            ' ' => col += 1,
-            '\t' => col += 4 - (col % 4),
-            _ => break,
-        }
-    }
-    col
-}
-
-/// Whether a line is blank in the Markdown sense: nothing but
-/// spaces and tabs. Unicode-aware trimming also treats a line of
-/// nonbreaking spaces as blank, but CommonMark does not -- such a
-/// line is paragraph text, and resetting block state on it
-/// promoted the following definition-shaped line out of its
-/// paragraph (Codex P2 on #1565's twenty-ninth cut).
-fn is_blank_line(line: &str) -> bool {
-    line.chars().all(|c| c == ' ' || c == '\t')
-}
-
-/// Remove exactly `columns` leading indentation columns, accounting for
-/// tabs advancing to the next multiple of four. Used to inspect content
-/// inside a footnote continuation without erasing additional indentation
-/// that may make the line an indented code block.
-fn strip_indentation_columns(line: &str, columns: usize) -> &str {
-    let mut col = 0;
-    for (index, c) in line.char_indices() {
-        let next = match c {
-            ' ' => col + 1,
-            '\t' => col + 4 - (col % 4),
-            _ => return line,
-        };
-        if next >= columns {
-            return &line[index + c.len_utf8()..];
-        }
-        col = next;
-    }
-    line
-}
-
-/// Whether a stripped line carries a list marker as its outermost
-/// container prefix (a bullet, or an ordered marker): such a line
-/// starts a new list item. The marker shapes mirror
-/// strip_container_prefixes' first level.
-fn starts_with_list_marker(stripped: &str) -> bool {
-    let bytes = stripped.as_bytes();
-    if bytes.len() >= 2
-        && matches!(bytes[0], b'-' | b'*' | b'+')
-        && (bytes[1] == b' ' || bytes[1] == b'\t')
-    {
-        return true;
-    }
-    let digits = stripped.chars().take_while(|c| c.is_ascii_digit()).count();
-    digits >= 1
-        && digits <= 9
-        && matches!(stripped.as_bytes().get(digits), Some(b'.') | Some(b')'))
-        && matches!(
-            stripped.as_bytes().get(digits + 1),
-            Some(b' ') | Some(b'\t')
-        )
-}
-
-fn starts_new_block(stripped: &str) -> bool {
-    // A link reference definition is deliberately NOT here: it
-    // cannot interrupt a paragraph, so a reference-shaped line
-    // after a footnote definition's first line is a lazy
-    // continuation of that paragraph (Codex P2 on #1565's
-    // twelfth cut).
-    footnote_definition_label(stripped).is_some()
-        || is_atx_heading(stripped)
-        || stripped.starts_with('>')
-        || is_fence_opener(stripped)
-        || is_thematic_break(stripped)
-        || (strip_container_prefixes(stripped) != stripped
-            && !is_non_interrupting_ordered_marker(stripped))
-        || is_html_block_start(stripped)
-}
-
-/// Scan `markdown` for top-level footnote definition blocks (#1565).
-/// Fence-aware like `protect_newline_destinations`: a definition-shaped
-/// line inside a fenced code block is literal text, not a definition.
-/// A block runs from its `[^label]:` line through the following blank
-/// or indented (>= 4 spaces / tab) lines -- the CommonMark continuation
-/// rule for footnote definitions. The harness is shape-generic so the
-/// #1004 link-reference-definition fix can share it later.
-fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBlock> {
-    let lines: Vec<&str> = markdown.lines().collect();
-    let mut blocks = Vec::new();
-    let mut fence = FenceTracker::default();
-    let mut fence_prefix = String::new();
-    let mut html_prefix = String::new();
-    let mut html = HtmlBlockTracker::default();
-    // Block-start eligibility, mirroring
-    // collect_link_reference_definitions: a type-7 HTML opening
-    // cannot interrupt a paragraph, so the tracker may only open
-    // one where a block can start (Codex P2 on #1565's eighteenth
-    // cut: `Body` / `<em>` / `# Heading` / `[^real]: note` -- the
-    // tracker opened at `<em>` and swallowed the heading and the
-    // definition as HTML interior). Blank lines, block starts,
-    // fences, HTML blocks and definitions leave the next line
-    // eligible; paragraph text does not.
-    let mut at_block_start = true;
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        // Indentation in COLUMNS, like the reference collector:
-        // a tab advances to the next multiple of 4, so a
-        // tab-indented line is indented code (indent 4), not a
-        // paragraph line at indent 0. Counting spaces only left
-        // `\tcode` looking like paragraph text, which refused
-        // the HTML block after it and recovered the definition-
-        // shaped line inside it as a footnote (Codex P2 on
-        // #1565's twentieth cut).
-        let indent = indentation_columns(line);
-        let stripped = line.trim_start_matches(' ');
-        // An already-open HTML block sees every line, however
-        // indented: an indented closing marker still closes it,
-        // and gating this feed on indent left the tracker open
-        // forever, suppressing every later definition (Codex P2
-        // on #1565's seventh cut). The indent limit applies only
-        // to recognizing an OPENING line.
-        // Container prefixes are stripped for an HTML block's
-        // OPENING line too: a block opened inside a list item
-        // (`- <!--`) still makes its interior literal, and feeding
-        // only the unstripped line missed the opening behind the
-        // marker (Codex P2 on #1565's eighth cut).
-        let container_stripped = strip_container_prefixes(stripped);
-        // While an HTML block is open, feed it lines relative to
-        // the container it opened in: a blank line inside a
-        // blockquote is just `>` once spaces are stripped, and
-        // feeding that literal line kept the tracker open past the
-        // block's end, suppressing what follows it (Codex P2 on
-        // #1565's ninth cut). Mirrors fence_prefix below.
-        // (The recorded prefix's exact bytes vary -- `> ` vs `>`
-        // on a blank quote line -- so relativity is computed by
-        // re-stripping this line's own container prefixes.)
-        // An HTML block opened inside a blockquote ends implicitly
-        // when the container ends, exactly like a fence (tenth
-        // cut): a following line carrying no container prefix at
-        // all is outside the quote, so a marker-ended block (a
-        // comment) is over even without its closing marker (Codex
-        // P2 on #1565's eleventh cut: `> <!--` / `> hidden` /
-        // blank / `[^real]: note` -- the tracker stayed open and
-        // treated the real definition as comment interior).
-        // (The blockquote clause above is the tenth/eleventh cut;
-        // the list clause is the fifteenth: a non-blank line at
-        // column zero carrying no container prefix is outside the
-        // item, exactly as for a list-scoped fence.)
-        if html.in_html()
-            && !html_prefix.is_empty()
-            && !stripped.starts_with(&html_prefix)
-            && strip_container_prefixes(stripped) == stripped
-            && (html_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
-        {
-            html.reset();
-            html_prefix.clear();
-        }
-        let html_line = if html.in_html() && !html_prefix.is_empty() {
-            container_stripped
-        } else {
-            stripped
-        };
-        let was_in_html = html.in_html();
-        if !fence.in_fence()
-            && (indent <= 3 || html.in_html())
-            && (html.feed(html_line, at_block_start)
-                || html.feed(container_stripped, at_block_start))
-        {
-            if !was_in_html && html.in_html() {
-                // Opened on this line (via the container-stripped
-                // form when a container prefix is present): remember
-                // the prefix for the block's interior lines.
-                html_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
-            }
-            if !html.in_html() {
-                html_prefix.clear();
-            }
-            at_block_start = true;
-            i += 1;
-            continue;
-        }
-        // Container prefixes are stripped to find a fence's OPENING
-        // line, and the opening line's prefix is remembered: while
-        // the fence is open, only lines carrying THAT prefix are
-        // de-prefixed (a fence genuinely inside a blockquote closes
-        // on a prefixed delimiter), while a container-shaped line
-        // inside a top-level fence stays literal (Codex P2 on
-        // #1565's fifth and sixth cuts).
-        // A fence opened inside a blockquote ends implicitly
-        // when the container ends: a following line carrying no
-        // container prefix at all is outside the quote, so the
-        // fence is over even without a closing delimiter (Codex
-        // P2 on #1565's tenth cut: `> ``` ` / `> code` / blank /
-        // `[^real]: note` -- the scanner kept the fence open and
-        // skipped the real definition).
-        // A fence opened inside a list item ends the same way
-        // (fourteenth cut): a non-blank line at column zero carrying
-        // no container prefix is outside the item, so the fence is
-        // over even without a closing delimiter (`- ``` ` / `  code`
-        // / blank / `[^real]: note` -- the scanner kept the
-        // list-scoped fence open and skipped the real definition).
-        // A fence opened inside a list item ends when a SIBLING
-        // item starts: the sibling's marker line sits at column
-        // zero and carries a marker just like the opening line,
-        // so the container-end check below mistakes it for a
-        // continuation of the same item and the fence swallows
-        // the sibling's content (Codex P2 on #1565's twenty-ninth
-        // cut: `- ``` ` / `- [url]: /target` -- the scan stayed
-        // inside the fence and the sibling's definition was
-        // never seen). A sibling is a new container, not a
-        // continuation.
-        if fence.in_fence()
-            && !fence_prefix.is_empty()
-            && indent == 0
-            && starts_with_list_marker(&fence_prefix)
-            && starts_with_list_marker(stripped)
-        {
-            fence.reset();
-            fence_prefix.clear();
-        }
-        if fence.in_fence()
-            && !fence_prefix.is_empty()
-            && !carries_container_prefix(stripped, &fence_prefix)
-            && strip_container_prefixes(stripped) == stripped
-            && (fence_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
-        {
-            fence.reset();
-            fence_prefix.clear();
-        }
-        let fence_line = if fence.in_fence() {
-            if carries_container_prefix(stripped, &fence_prefix) {
-                strip_container_levels(stripped, container_signature(&fence_prefix).chars().count())
-            } else {
-                stripped
-            }
-        } else {
-            container_stripped
-        };
-        let was_in_fence = fence.in_fence();
-        if indent <= 3 && fence.feed(fence_feed_line(fence_line)) {
-            if was_in_fence {
-                fence_prefix.clear();
-            } else {
-                fence_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
-            }
-            // A fence delimiter is a block boundary: after an
-            // (empty) fenced block the next line is block-eligible
-            // again, so a type-7 HTML block may open there -- the
-            // reference collector already reset this; without it
-            // `Body` / ``` ``` ``` / `<em>` / `[^fake]: ...` kept
-            // the paragraph's ineligibility, refused the tag, and
-            // recovered the fake definition (Codex P2 on #1565's
-            // nineteenth cut).
-            at_block_start = true;
-            i += 1;
-            continue;
-        }
-        if fence.in_fence() || html.in_html() {
-            at_block_start = true;
-            i += 1;
-            continue;
-        }
-        if indent > 3 {
-            // An indented line is indented code at a block start,
-            // but indented code cannot interrupt a paragraph: when
-            // the previous line was paragraph text this line is
-            // its continuation and the paragraph state survives --
-            // resetting eligibility here let a following type-7
-            // tag open an HTML block mid-paragraph and swallow
-            // the heading and the genuine definition after it
-            // (Codex P2 on #1565's twenty-second cut). At a block
-            // start the state is already eligible, so either way
-            // it is left untouched.
-            i += 1;
-            continue;
-        }
-        if is_blank_line(stripped) {
-            at_block_start = true;
-            i += 1;
-            continue;
-        }
-        let Some(label) = footnote_definition_label(stripped) else {
-            // A plain line is paragraph text (next line not
-            // block-eligible) unless it starts a block itself (a
-            // heading, a list item, a thematic break, ...).
-            // A setext underline also ends the paragraph when one
-            // precedes it, exactly as the reference collector
-            // handles it: `Body` / `===` is a heading, so a type-7
-            // HTML block may open on the next line and swallow a
-            // definition-shaped line as its literal interior;
-            // without this the underline left the paragraph open,
-            // the tag was refused, and the fake definition was
-            // recovered (Codex P2 on #1565's twentieth cut). A
-            // lone underline at a block start is paragraph text
-            // itself, so the gate is !at_block_start.
-            let setext_ends_paragraph = is_setext_underline(stripped) && !at_block_start;
-            // A container line's eligibility follows its CONTENT,
-            // exactly as the reference collector's fourteenth cut:
-            // `- Body` is paragraph text inside the item, so the
-            // next line is its continuation -- a type-7 HTML tag
-            // there (`  <em>`) cannot open a block, and treating
-            // the marker line itself as a block start let the HTML
-            // tracker open at the tag and swallow the heading and
-            // the genuine definition after it (Codex P2 on #1565's
-            // twenty-third cut). Only item/quote content that
-            // itself ends or starts a block (blank, heading, break,
-            // setext, a new block) leaves the next line eligible.
-            let container_eligible = if strip_container_prefixes(stripped) != stripped {
-                let c = container_stripped;
-                Some(
-                    c.trim().is_empty()
-                        || is_atx_heading(c)
-                        || is_thematic_break(c)
-                        || (is_setext_underline(c) && !at_block_start)
-                        || starts_new_block(c),
-                )
-            } else {
-                None
-            };
-            at_block_start = container_eligible.unwrap_or_else(|| starts_new_block(stripped))
-                || setext_ends_paragraph;
-            i += 1;
-            continue;
-        };
-        let mut source_lines: Vec<&str> = vec![line];
-        let mut last_content = 0;
-        // Lazy continuation eligibility: the previous line carried
-        // paragraph content. The opening line counts only when its
-        // body is paragraph text: a body that itself starts a
-        // block (`[^a]: # Heading`) cannot accept an unindented
-        // lazy continuation, so the next line starts fresh at the
-        // top level -- treating any nonempty body as content let
-        // the inner loop swallow a following HTML block's opening
-        // line and recover the definition-shaped line inside it
-        // (Codex P2 on #1565's twenty-first cut).
-        let opening_body = stripped[label.len() + 4..].trim_start_matches(' ');
-        let mut prev_is_content =
-            !opening_body.trim().is_empty() && !starts_new_block(opening_body);
-        // A fence opened by the definition's own content -- on the
-        // opening line (`[^a]: ``` `) or on a later indented line --
-        // makes the lines it covers literal fence content, never
-        // paragraph content: they cannot enable an unindented lazy
-        // continuation. Classifying each continuation line
-        // independently treated `code` inside the fence as a
-        // paragraph line, swallowed the following `<em>` into the
-        // definition, and promoted the definition-shaped line
-        // inside the HTML block to a real footnote (Codex P2 on
-        // #1565's twenty-seventh cut). Tracked across continuation
-        // lines until the closing fence.
-        let mut def_fence = fence_opener_run(opening_body);
-        // An HTML block opened by the definition's own content --
-        // on the opening line (`[^a]: <!--`) or on a later indented
-        // line -- makes the lines it covers literal HTML content,
-        // never paragraph content, exactly like def_fence above:
-        // while it is open an unindented line is NOT a lazy
-        // continuation (HTML blocks take no lazy continuations),
-        // so the definition ends there and the outer scan's own
-        // HTML tracker owns the line. Ignoring the state let the
-        // loop lazy-consume a top-level `<em>` into the definition,
-        // bypass the outer tracker, and promote the
-        // definition-shaped line inside that top-level block to a
-        // real footnote (Codex P2 on #1565's twenty-eighth cut).
-        let mut def_html = HtmlBlockTracker::default();
-        def_html.feed(opening_body, true);
-        let mut j = i + 1;
-        while j < lines.len() {
-            let next = lines[j];
-            if is_blank_line(next) {
-                source_lines.push(next);
-                // A blank line ends a blank-line-terminated HTML
-                // block inside the definition (marker-ended blocks
-                // ignore it), mirroring the outer scans.
-                def_html.feed("", true);
-                prev_is_content = false;
-                j += 1;
-                continue;
-            }
-            if indentation_columns(next) >= 4 {
-                source_lines.push(next);
-                last_content = source_lines.len() - 1;
-                // Lazy-continuation eligibility follows THIS line's
-                // block type, not its mere presence: an indented
-                // block line (`    # Heading`) is a new block inside
-                // the definition and cannot accept an unindented
-                // lazy paragraph continuation, so a following
-                // `<em>` starts a top-level HTML block whose
-                // definition-shaped interior is literal -- setting
-                // content unconditionally consumed the tag into the
-                // definition and then collected the literal line as
-                // a real footnote (Codex P2 on #1565's twenty-third
-                // cut). Mirrors the opening-body check above.
-                let content = strip_indentation_columns(next, 4);
-                // The first four columns continue the footnote. Any
-                // remaining four columns are still an indented code
-                // block, not paragraph content eligible for an
-                // unindented lazy continuation (Codex P2 on #1565's
-                // twenty-fifth cut).
-                // A setext underline under paragraph content ends
-                // that paragraph (it becomes a heading inside the
-                // definition), so it leaves no lazy-continuation
-                // eligibility either -- without this, `[^a]: Title`
-                // / `    ===` kept eligibility, the following
-                // unindented `<em>` was swallowed as a lazy
-                // continuation, and the definition-shaped line
-                // inside the HTML block was promoted to a real
-                // footnote (Codex P2 on #1565's twenty-sixth cut).
-                // A setext-shaped line with NO preceding paragraph
-                // is itself paragraph text and stays eligible,
-                // mirroring the outer scan's !at_block_start gate.
-                if let Some((fence_ch, fence_run)) = def_fence {
-                    // Inside a fence opened by this definition:
-                    // the line is literal fence content until the
-                    // closing fence, and is never paragraph content
-                    // (twenty-seventh cut).
-                    // A closing fence allows at most three
-                    // columns of indentation relative to the
-                    // footnote container: a delimiter retaining
-                    // four is indented code, not a closer, and
-                    // accepting it ended the fence early and let
-                    // the lines after it be misclassified
-                    // (Codex P2 on #1565's twenty-ninth cut).
-                    if indentation_columns(content) <= 3
-                        && is_fence_closer(content.trim_start_matches(' '), fence_ch, fence_run)
-                    {
-                        def_fence = None;
-                    }
-                    prev_is_content = false;
-                // A NEW HTML opening is refused at four or more
-                // container-relative indentation columns: that
-                // line is indented code inside the footnote, not
-                // a block opener -- trimming all its spaces first
-                // opened a phantom block and misclassified the
-                // real paragraph after it (Codex P2 on #1565's
-                // twenty-ninth cut). An already-open block is
-                // still fed every line.
-                } else if (def_html.in_html() || indentation_columns(content) < 4)
-                    && def_html.feed(content.trim_start_matches(' '), !prev_is_content)
-                {
-                    // Inside an HTML block opened by this
-                    // definition (or opening one on this line):
-                    // the line is HTML content, never paragraph
-                    // content (twenty-eighth cut). A type-7 opening
-                    // is refused while a paragraph is open, exactly
-                    // as in the outer scans -- the tag is then
-                    // paragraph text and falls through to the
-                    // classification below on a later line shape.
-                    prev_is_content = false;
-                } else if indentation_columns(content) < 4 {
-                    if let Some(opened) = fence_opener_run(content.trim_start_matches(' ')) {
-                        // An indented fence opener inside the
-                        // definition opens a fence for the lines
-                        // that follow (twenty-seventh cut).
-                        def_fence = Some(opened);
-                        prev_is_content = false;
-                    } else {
-                        prev_is_content = !content.trim().is_empty()
-                            && !starts_new_block(content.trim_start_matches(' '))
-                            && !(prev_is_content && is_setext_underline(content));
-                    }
-                } else if prev_is_content {
-                    // Overindented (eight-plus columns in total)
-                    // with a paragraph already open: indented code
-                    // cannot interrupt a paragraph, so the line
-                    // continues that paragraph and lazy eligibility
-                    // survives -- resetting it truncated the
-                    // definition at the following unindented line
-                    // and deleted that text on save (Codex P2 on
-                    // #1565's twenty-eighth cut: `[^a]: First.` /
-                    // eight-space continuation / `second.` lost
-                    // `second.`).
-                } else {
-                    prev_is_content = false;
-                }
-                j += 1;
-                continue;
-            }
-            // Lazy paragraph continuation (Codex P2 on #1565's
-            // eighth cut): comrak continues a footnote definition's
-            // paragraph onto a following unindented line that does
-            // not start a new block (`[^a]: First line.` /
-            // `second line.`); collecting only indented lines
-            // truncated the definition and lost the continuation
-            // on save.
-            if prev_is_content
-                && !def_html.in_html()
-                && !starts_new_block(next.trim_start_matches(' '))
-            {
-                source_lines.push(next);
-                last_content = source_lines.len() - 1;
-                // An unindented setext underline lazy-continued
-                // onto the definition's paragraph ends it the same
-                // way (twenty-sixth cut): the paragraph becomes a
-                // heading, so the next line starts fresh.
-                prev_is_content = !is_setext_underline(next);
-                j += 1;
-                continue;
-            }
-            break;
-        }
-        source_lines.truncate(last_content + 1);
-        blocks.push(FootnoteDefinitionBlock {
-            label,
-            source: source_lines.join("\n"),
-            line: i,
-        });
-        at_block_start = true;
-        i = j;
-    }
-    blocks
-}
-
-/// Append a PM `footnote_definition` node for every definition in
-/// `markdown` that the comrak conversion did not already carry (#1565).
-/// A label comrak emitted a node for is referenced (or at least
-/// carried) and is left exactly as today; only the definitions comrak
-/// dropped are synthesized, in source order, at the end of the doc.
-/// The document's link reference definitions (`[label]: dest` lines,
-/// footnote definitions excluded), verbatim, for the synthesis probe:
-/// a reference-style link inside an unreferenced footnote resolves
-/// against definitions elsewhere in the document, and a probe without
-/// them converts the link to literal text (Codex P2).
-/// The text after a link reference definition's destination, given
-/// everything after its `]:` (accumulated across the definition's
-/// lines). None while the destination itself is still incomplete --
-/// nothing collected yet, or an unterminated angle destination.
-fn link_reference_definition_title_text(after: &str) -> Option<&str> {
-    let text = after.trim();
-    if text.is_empty() {
-        return None;
-    }
-    let rest = if let Some(inner) = text.strip_prefix('<') {
-        // The destination ends at the first UNESCAPED '>': an
-        // escaped `\>` is destination text, and ending there left
-        // the remainder to be read as (invalid) trailing title
-        // text, dropping a valid definition (Codex P2 on #1565's
-        // twenty-first cut).
-        let pos = find_unescaped(inner, '>')?;
-        &inner[pos + 1..]
-    } else {
-        let end = text.find(char::is_whitespace).unwrap_or(text.len());
-        &text[end..]
-    };
-    Some(rest.trim_start())
-}
-
-/// The byte index of the first occurrence of `target` in `s`
-/// outside a backslash escape (same escape rule as
-/// contains_unescaped).
-fn find_unescaped(s: &str, target: char) -> Option<usize> {
-    let mut escaped = false;
-    for (i, c) in s.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if c == '\\' {
-            escaped = true;
-            continue;
-        }
-        if c == target {
-            return Some(i);
-        }
-    }
-    None
-}
-
-/// Whether `s` contains `closer` outside a backslash escape: a
-/// `\x` pair makes `x` literal text, and a `\\` pair is a
-/// literal backslash, so the character after it counts again.
-fn contains_unescaped(s: &str, closer: char) -> bool {
-    let mut escaped = false;
-    for c in s.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if c == '\\' {
-            escaped = true;
-            continue;
-        }
-        if c == closer {
-            return true;
-        }
-    }
-    false
-}
-
-/// Whether a link reference definition needs more lines: its
-/// destination has not arrived yet, or a title that was started
-/// (double quote, single quote, or open paren) has not closed
-/// (Codex P2 on #1565's seventh cut -- definitions legitimately
-/// span lines, with the destination or the title on a following
-/// line).
-fn link_reference_definition_needs_more(after: &str) -> bool {
-    let Some(title) = link_reference_definition_title_text(after) else {
-        return true;
-    };
-    if title.is_empty() {
-        return false;
-    }
-    let closer = match title.as_bytes()[0] {
-        b'"' => '"',
-        0x27 => 0x27 as char,
-        b'(' => ')',
-        _ => return false,
-    };
-    // An ESCAPED delimiter is title text, not the closer: in
-    // `"first \"quoted` the title is still open, and treating it
-    // as complete stopped collection before the closing line, so
-    // the probe received an unterminated definition and the
-    // recovered footnote lost its link (Codex P2 on #1565's
-    // seventeenth cut).
-    !contains_unescaped(&title[1..], closer)
-}
-
-/// Whether an accumulated candidate is a VALID link reference
-/// definition: a destination is present and whatever follows it
-/// is empty or a complete title. `link_reference_definition_title_text`
-/// alone returns Some for ANY trailing text, including a bare word
-/// (`[bad]: /bad extra`), which is not a title at all -- such a
-/// line is no definition, and the lines around it stay one
-/// paragraph (Codex P2 on #1565's twentieth cut).
-fn link_reference_definition_is_valid(after: &str) -> bool {
-    // The destination itself must be syntactically valid, not
-    // merely followed by an empty or complete title: `/bad(` has
-    // an unmatched parenthesis, so the line is no definition at
-    // all, the definition-shaped line after it stays paragraph
-    // text, and synthesis must not promote it (Codex P2 on
-    // #1565's twenty-fourth cut).
-    if !link_reference_destination_is_valid(after) {
-        return false;
-    }
-    let Some(title) = link_reference_definition_title_text(after) else {
-        return false;
-    };
-    if title.is_empty() {
-        return true;
-    }
-    // A complete title must END the definition: text after the
-    // closing delimiter (`[bad]: /bad "title" extra`) is not a
-    // title at all, and accepting it collected the next line as
-    // its own definition out of what is really one paragraph
-    // (Codex P2 on #1565's twenty-second cut).
-    let closer = match title.as_bytes()[0] {
-        b'"' => '"',
-        0x27 => '\'',
-        b'(' => ')',
-        _ => return false,
-    };
-    match find_unescaped(&title[1..], closer) {
-        Some(end) => {
-            // A parenthesized title cannot contain an unescaped
-            // `(`: `(a(b)` is not a title, so the candidate is
-            // no definition and the following definition-shaped
-            // line stays paragraph text instead of being
-            // promoted on its own (Codex P2 on #1565's
-            // twenty-ninth cut).
-            !(closer == ')' && contains_unescaped(&title[1..1 + end], '('))
-                && title[end + 2..].trim().is_empty()
-        }
-        None => false,
-    }
-}
-
-/// Whether the destination at the start of the accumulated
-/// after-colon text is syntactically a link destination: an
-/// angle destination ends at its unescaped `>` with no unescaped
-/// `<` or line ending inside; a bare destination is non-empty,
-/// contains no control characters, and keeps its parentheses
-/// balanced (escapes exempt) -- the CommonMark destination
-/// grammar. `/bad(` fails the balance check even though nothing
-/// follows it, which the title-only validation above accepted.
-fn link_reference_destination_is_valid(after: &str) -> bool {
-    let text = after.trim();
-    if text.is_empty() {
-        return false;
-    }
-    if let Some(inner) = text.strip_prefix('<') {
-        let Some(pos) = find_unescaped(inner, '>') else {
-            return false;
-        };
-        let dest = &inner[..pos];
-        // A title after an angle destination must be separated
-        // from the closing `>` by whitespace: `</bad>"title"`
-        // has no separator, so the candidate is no definition at
-        // all and the lines around it stay one paragraph (Codex
-        // P2 on #1565's twenty-ninth cut).
-        let rest = &inner[pos + 1..];
-        let separated = rest.is_empty() || rest.starts_with(char::is_whitespace);
-        return separated && !dest.contains('\n') && !contains_unescaped(dest, '<');
-    }
-    let end = text.find(char::is_whitespace).unwrap_or(text.len());
-    let dest = &text[..end];
-    if dest.is_empty() {
-        return false;
-    }
-    let mut depth = 0usize;
-    let mut escaped = false;
-    for c in dest.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' => escaped = true,
-            '(' => depth += 1,
-            ')' => {
-                if depth == 0 {
-                    return false;
-                }
-                depth -= 1;
-            }
-            c if c.is_control() => return false,
-            _ => {}
-        }
-    }
-    depth == 0
-}
-
-/// Whether anything follows the destination in the accumulated
-/// after-colon text (a title, complete or still arriving).
-fn link_reference_definition_has_title(after: &str) -> bool {
-    link_reference_definition_title_text(after).is_some_and(|t| !t.is_empty())
-}
-
-/// Whether a stripped line opens a link reference definition
-/// (`[label]:`), footnote definitions excluded by the caller.
-/// The index of the first UNESCAPED `]` in `s`: a `\]` inside
-/// a reference label is label text, not the label's end (Codex
-/// P2 on #1565's twelfth cut). Shared by the shape check and the
-/// collector's destination extraction so they can never disagree
-/// about where the label ends.
-fn find_label_close(s: &str) -> Option<usize> {
-    let mut escaped = false;
-    for (i, c) in s.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if c == '\\' {
-            escaped = true;
-            continue;
-        }
-        if c == ']' {
-            return Some(i);
-        }
-    }
-    None
-}
-
-/// The closing bracket of a valid link reference label. CommonMark
-/// labels cannot be empty/whitespace-only, contain an unescaped opening
-/// bracket, or exceed 999 characters. Keeping this check with the shape
-/// check prevents a malformed `[]:` candidate from splitting a paragraph
-/// and promoting the next definition during synthesis (Codex P2 on
-/// #1565's twenty-fifth cut).
-fn link_reference_definition_label_close(s: &str) -> Option<usize> {
-    if !s.starts_with('[') {
-        return None;
-    }
-    let close = find_label_close(s)?;
-    let label = &s[1..close];
-    if label.trim().is_empty() || label.chars().count() > 999 {
-        return None;
-    }
-    let mut escaped = false;
-    for c in label.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' => escaped = true,
-            '[' => return None,
-            _ => {}
-        }
-    }
-    Some(close)
-}
-
-fn is_link_reference_definition_start(stripped: &str) -> bool {
-    match link_reference_definition_label_close(stripped) {
-        Some(close) => stripped[close + 1..].starts_with(':'),
-        None => false,
-    }
-}
-
-fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
-    let mut fence = FenceTracker::default();
-    let mut fence_prefix = String::new();
-    let mut html_prefix = String::new();
-    let mut html = HtmlBlockTracker::default();
-    let mut defs = Vec::new();
-    // A link reference definition is only a definition where it can
-    // START a block: a definition-shaped line continuing a paragraph
-    // is paragraph text, and promoting it into the synthesis context
-    // would resolve references the document itself does not honor
-    // (Codex P2 on #1565's fifth cut). Track block-start eligibility:
-    // blank lines, headings, fences, HTML blocks, list/blockquote
-    // lines and other definitions leave the next line block-eligible;
-    // paragraph text does not.
-    let mut at_block_start = true;
-    // Inside a footnote definition's block (until a blank line or
-    // a new block starter), a reference-shaped line is the
-    // footnote's own lazy continuation, not a standalone
-    // definition: collecting it would make the synthesis context
-    // resolve as a link what the document keeps literal (Codex
-    // P2 on #1565's twelfth cut).
-    let mut in_footnote_block = false;
-    let lines: Vec<&str> = markdown.lines().collect();
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        // Indentation in COLUMNS: a tab advances to the next
-        // multiple of 4, so a tab-indented line is indented code
-        // (indent 4), not a paragraph line at indent 0 (Codex P2
-        // on #1565's sixteenth cut).
-        let indent = {
-            let mut col = 0usize;
-            for c in line.chars() {
-                match c {
-                    ' ' => col += 1,
-                    '\t' => col += 4 - (col % 4),
-                    _ => break,
-                }
-            }
-            col
-        };
-        let stripped = line.trim_start_matches(' ');
-        if is_blank_line(stripped) {
-            // A blank line ENDS a blank-line-terminated HTML block;
-            // the tracker must see it or it suppresses every later
-            // definition (Codex P2 on #1565's sixth cut).
-            // A fully blank line carries no container prefix, so a
-            // container-scoped HTML block is over (eleventh cut).
-            if html.in_html() && html_prefix.contains('>') {
-                html.reset();
-                html_prefix.clear();
-            }
-            html.feed(stripped, true);
-            in_footnote_block = false;
-            at_block_start = true;
-            i += 1;
-            continue;
-        }
-        // An already-open HTML block sees every line, however
-        // indented: an indented closing marker still closes it,
-        // and gating this feed on indent left the tracker open
-        // forever, suppressing every later definition (Codex P2
-        // on #1565's seventh cut). The indent limit applies only
-        // to recognizing an OPENING line.
-        let container_stripped = strip_container_prefixes(stripped);
-        // While an HTML block is open, feed it lines relative to
-        // the container it opened in: a blank line inside a
-        // blockquote is just `>` once spaces are stripped, and
-        // feeding that literal line kept the tracker open past the
-        // block's end, suppressing what follows it (Codex P2 on
-        // #1565's ninth cut). Mirrors fence_prefix below.
-        // (The recorded prefix's exact bytes vary -- `> ` vs `>`
-        // on a blank quote line -- so relativity is computed by
-        // re-stripping this line's own container prefixes.)
-        // An HTML block opened inside a blockquote ends implicitly
-        // when the container ends, exactly like a fence (tenth
-        // cut): a following line carrying no container prefix at
-        // all is outside the quote, so a marker-ended block (a
-        // comment) is over even without its closing marker (Codex
-        // P2 on #1565's eleventh cut: `> <!--` / `> hidden` /
-        // blank / `[^real]: note` -- the tracker stayed open and
-        // treated the real definition as comment interior).
-        // (The blockquote clause above is the tenth/eleventh cut;
-        // the list clause is the fifteenth: a non-blank line at
-        // column zero carrying no container prefix is outside the
-        // item, exactly as for a list-scoped fence.)
-        if html.in_html()
-            && !html_prefix.is_empty()
-            && !stripped.starts_with(&html_prefix)
-            && strip_container_prefixes(stripped) == stripped
-            && (html_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
-        {
-            html.reset();
-            html_prefix.clear();
-        }
-        let html_line = if html.in_html() && !html_prefix.is_empty() {
-            container_stripped
-        } else {
-            stripped
-        };
-        let was_in_html = html.in_html();
-        if !fence.in_fence()
-            && (indent <= 3 || html.in_html())
-            && (html.feed(html_line, at_block_start)
-                || html.feed(container_stripped, at_block_start))
-        {
-            if !was_in_html && html.in_html() {
-                // Opened on this line (via the container-stripped
-                // form when a container prefix is present): remember
-                // the prefix for the block's interior lines.
-                html_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
-            }
-            if !html.in_html() {
-                html_prefix.clear();
-            }
-            at_block_start = true;
-            i += 1;
-            continue;
-        }
-        // A fence opened inside a blockquote ends implicitly
-        // when the container ends: a following line carrying no
-        // container prefix at all is outside the quote, so the
-        // fence is over even without a closing delimiter (Codex
-        // P2 on #1565's tenth cut: `> ``` ` / `> code` / blank /
-        // `[^real]: note` -- the scanner kept the fence open and
-        // skipped the real definition).
-        // A fence opened inside a list item ends the same way
-        // (fourteenth cut): a non-blank line at column zero carrying
-        // no container prefix is outside the item, so the fence is
-        // over even without a closing delimiter (`- ``` ` / `  code`
-        // / blank / `[^real]: note` -- the scanner kept the
-        // list-scoped fence open and skipped the real definition).
-        // A fence opened inside a list item ends when a SIBLING
-        // item starts: the sibling's marker line sits at column
-        // zero and carries a marker just like the opening line,
-        // so the container-end check below mistakes it for a
-        // continuation of the same item and the fence swallows
-        // the sibling's content (Codex P2 on #1565's twenty-ninth
-        // cut: `- ``` ` / `- [url]: /target` -- the scan stayed
-        // inside the fence and the sibling's definition was
-        // never seen). A sibling is a new container, not a
-        // continuation.
-        if fence.in_fence()
-            && !fence_prefix.is_empty()
-            && indent == 0
-            && starts_with_list_marker(&fence_prefix)
-            && starts_with_list_marker(stripped)
-        {
-            fence.reset();
-            fence_prefix.clear();
-        }
-        if fence.in_fence()
-            && !fence_prefix.is_empty()
-            && !carries_container_prefix(stripped, &fence_prefix)
-            && strip_container_prefixes(stripped) == stripped
-            && (fence_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
-        {
-            fence.reset();
-            fence_prefix.clear();
-        }
-        let fence_line = if fence.in_fence() {
-            if carries_container_prefix(stripped, &fence_prefix) {
-                strip_container_levels(stripped, container_signature(&fence_prefix).chars().count())
-            } else {
-                stripped
-            }
-        } else {
-            container_stripped
-        };
-        let was_in_fence = fence.in_fence();
-        if indent <= 3 && fence.feed(fence_feed_line(fence_line)) {
-            if was_in_fence {
-                fence_prefix.clear();
-            } else {
-                fence_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
-            }
-            at_block_start = true;
-            i += 1;
-            continue;
-        }
-        if fence.in_fence() || html.in_html() || indent > 3 {
-            i += 1;
-            continue;
-        }
-        if let Some(label) = footnote_definition_label(stripped) {
-            // A footnote definition is its own leaf block; a link
-            // definition after it starts a fresh block. The block
-            // only swallows a following reference-shaped line as
-            // its lazy continuation when the opening body is
-            // paragraph text: a body that itself starts a block
-            // (`[^a]: # Heading`) cannot accept a lazy
-            // continuation, so the next line is a fresh top-level
-            // block and a reference definition there is real
-            // (Codex P2 on #1565's twenty-ninth cut). Mirrors
-            // scan_footnote_definition_blocks' opening-body rule.
-            let opening_body = stripped[label.len() + 4..].trim_start_matches(' ');
-            in_footnote_block = !opening_body.trim().is_empty() && !starts_new_block(opening_body);
-            at_block_start = true;
-            i += 1;
-            continue;
-        }
-        // Reference definitions inside a container are
-        // document-global (Codex P2 on #1565's tenth cut):
-        // detect the definition on the container-stripped line;
-        // the original line is still collected verbatim below.
-        let def_stripped = if is_link_reference_definition_start(stripped) {
-            stripped
-        } else {
-            container_stripped
-        };
-        // The container this line sits in (empty at the top
-        // level): a definition that opens inside a container
-        // continues on lines carrying that same container, and
-        // those continuation lines are processed RELATIVE to it
-        // -- in the multiline-label accumulation below and in the
-        // destination/title collection loop (Codex P2 on #1565's
-        // twenty-eighth cut).
-        let def_container_prefix = &stripped[..stripped.len() - container_stripped.len()];
-        let def_container_levels = container_signature(def_container_prefix).chars().count();
-        // A reference label may itself span lines (fourteenth
-        // cut): `[long\nlabel]: https://example.com` is a valid
-        // definition whose label normalizes to `long label`, but
-        // the single-line shape check sees only `[long` and
-        // rejects it before the continuation logic can run, so the
-        // definition never reaches the synthesis context and a
-        // recovered footnote's `[target][long label]` saves as
-        // literal brackets instead of a hyperlink. When neither
-        // stripped form closes a label on this line, accumulate
-        // lines until the closing `]:` arrives.
-        let multiline_start: Option<(Vec<&str>, String, usize)> =
-            if is_link_reference_definition_start(def_stripped) {
-                None
-            } else {
-                let candidate = if stripped.starts_with('[') {
-                    stripped
-                } else {
-                    container_stripped
-                };
-                if !candidate.starts_with('[')
-                    || candidate.starts_with("[^")
-                    || find_label_close(candidate).is_some()
-                {
-                    None
-                } else {
-                    let mut text = candidate.to_string();
-                    let mut j = i + 1;
-                    let mut found = None;
-                    while j < lines.len() && text.len() < 1000 {
-                        let next = lines[j].trim_start_matches(' ');
-                        // Read the segment relative to the
-                        // candidate's container (twenty-eighth
-                        // cut): `> label]: ...` contributes
-                        // `label]: ...` to the label text.
-                        let next = if def_container_levels > 0
-                            && carries_container_prefix(next, def_container_prefix)
-                        {
-                            strip_container_levels(next, def_container_levels)
-                        } else {
-                            next
-                        };
-                        if is_blank_line(next) {
-                            break;
-                        }
-                        // A line that starts a new block interrupts
-                        // the paragraph the label is accumulating
-                        // in, so the label cannot span it: stop
-                        // here instead of accumulating across the
-                        // interruption and accepting a phantom
-                        // multiline label out of lines that are
-                        // really a heading plus paragraph text
-                        // (Codex P2 on #1565's twenty-ninth cut:
-                        // `[long` / `# Heading` / `label]: /bad`).
-                        if starts_new_block(next) || is_setext_underline(next) {
-                            break;
-                        }
-                        text.push('\n');
-                        text.push_str(next);
-                        if let Some(close) = find_label_close(&text) {
-                            if text[close + 1..].starts_with(':') {
-                                if link_reference_definition_label_close(&text).is_some() {
-                                    found = Some((
-                                        lines[i..=j].to_vec(),
-                                        text[close + 2..].to_string(),
-                                        j + 1,
-                                    ));
-                                }
-                            }
-                            break;
-                        }
-                        j += 1;
-                    }
-                    found
-                }
-            };
-        let single_start = if is_link_reference_definition_start(def_stripped) {
-            link_reference_definition_label_close(def_stripped)
-                .map(|close| (vec![line], def_stripped[close + 2..].to_string(), i + 1))
-        } else {
-            None
-        };
-        // A line carrying a list marker starts a NEW list item
-        // and so a fresh block: `- [url]: ...` after `- Body` is a
-        // definition in its own item, not a continuation of the
-        // first item's paragraph, and it likewise ends any footnote
-        // block in progress (Codex P2 on #1565's fifteenth cut). A
-        // non-1 ordered marker is excepted: it cannot interrupt a
-        // paragraph (thirteenth cut), so it starts no item here.
-        let new_list_item =
-            starts_with_list_marker(stripped) && !is_non_interrupting_ordered_marker(stripped);
-        if (at_block_start || new_list_item)
-            && (!in_footnote_block || new_list_item)
-            && (single_start.is_some() || multiline_start.is_some())
-        {
-            let Some((mut block, mut after, mut j)) = single_start.or(multiline_start) else {
-                continue;
-            };
-            // Rollback point for a title attempted on a FOLLOWING
-            // line (twenty-first cut): (block length, `after`, j)
-            // before the first such line is appended. A title that
-            // never completes does not invalidate the destination
-            // already collected -- the candidate stays a valid
-            // destination-only definition and the title-looking
-            // line remains paragraph text (Codex P2 on #1565's
-            // twenty-first cut).
-            let mut title_rollback: Option<(usize, String, usize)> = None;
-            // Collect the COMPLETE definition block: the destination
-            // or the title may sit on following lines, and collecting
-            // only the opening line degraded the reference to literal
-            // text or silently dropped its title (Codex P2 on
-            // #1565's seventh cut).
-            while j < lines.len() {
-                let next = lines[j];
-                let next_stripped = next.trim_start_matches(' ');
-                // A continuation line inside the definition's own
-                // container is processed relative to that
-                // container: the boundary check below mistook the
-                // continuing `>` marker of `> [url]:` /
-                // `> /target` for a new block and stopped before
-                // the destination, so the collector returned no
-                // definition and a recovered footnote lost its
-                // hyperlink on save (Codex P2 on #1565's
-                // twenty-eighth cut). The ORIGINAL line is still
-                // what `block` collects verbatim for the probe.
-                let next_stripped = if def_container_levels > 0
-                    && carries_container_prefix(next_stripped, def_container_prefix)
-                {
-                    strip_container_levels(next_stripped, def_container_levels)
-                } else {
-                    next_stripped
-                };
-                if is_blank_line(next_stripped) {
-                    break;
-                }
-                if link_reference_definition_needs_more(&after) {
-                    // Still waiting for the destination or an
-                    // unclosed title. A definition-shaped line while
-                    // the destination is missing starts its own
-                    // block instead of serving as a destination. A
-                    // `#fragment` line is NOT definition-shaped: it
-                    // is a valid destination token (an ATX heading
-                    // needs whitespace or end-of-line after the
-                    // hashes), so it is collected below (Codex P2
-                    // on #1565's seventeenth cut).
-                    // The boundary check also applies while an
-                    // angle destination is still unterminated: a
-                    // block-starting line cannot be swallowed
-                    // into the destination, and consuming it took
-                    // the heading AND the valid definition after
-                    // it down with the discarded candidate (Codex
-                    // P2 on #1565's nineteenth cut). A line
-                    // containing an unescaped '>' may still close
-                    // the destination and is consumed.
-                    let pending_angle_destination = {
-                        let t = after.trim_start();
-                        t.starts_with('<') && !contains_unescaped(&t[1..], '>')
-                    };
-                    if (after.trim().is_empty()
-                        || (pending_angle_destination && !contains_unescaped(next_stripped, '>')))
-                        && (footnote_definition_label(next_stripped).is_some()
-                            || is_link_reference_definition_start(next_stripped)
-                            || is_atx_heading(next_stripped)
-                            || next_stripped.starts_with('>')
-                            || next_stripped.starts_with('`'))
-                    {
-                        break;
-                    }
-                    block.push(next);
-                    after.push('\n');
-                    after.push_str(next_stripped);
-                    j += 1;
-                    continue;
-                }
-                // Complete so far, but a title line still belongs to
-                // this definition.
-                if !link_reference_definition_has_title(&after)
-                    && matches!(
-                        next_stripped.as_bytes().first().copied(),
-                        Some(b'"') | Some(0x27) | Some(b'(')
-                    )
-                {
-                    if title_rollback.is_none() {
-                        title_rollback = Some((block.len(), after.clone(), j));
-                    }
-                    block.push(next);
-                    after.push('\n');
-                    after.push_str(next_stripped);
-                    j += 1;
-                    continue;
-                }
-                break;
-            }
-            if link_reference_definition_is_valid(&after) {
-                defs.push((i, block.join("\n")));
-                at_block_start = true;
-                i = j;
-            } else if let Some((cp_len, _, cp_j)) = title_rollback
-                .filter(|(_, cp_after, _)| link_reference_definition_is_valid(cp_after))
-            {
-                // The following-line title never completed: keep
-                // the valid destination-only definition and let
-                // the title-looking line be reprocessed as the
-                // paragraph text it is (twenty-first cut).
-                block.truncate(cp_len);
-                defs.push((i, block.join("\n")));
-                at_block_start = true;
-                i = cp_j;
-            } else {
-                // Not a definition at all (twentieth cut): the
-                // opening line is paragraph text, so the next line
-                // is its continuation -- resetting block-start
-                // eligibility here collected the following line as
-                // its own definition (`[bad]: /bad extra` /
-                // `[url]: /target` are one paragraph; `[url]` in
-                // it is no definition), and synthesis then turned
-                // it into a real definition in the probe. Advance
-                // one line only, as paragraph text.
-                at_block_start = false;
-                i += 1;
-            }
-            continue;
-        }
-        // Any other line: headings and container lines end a
-        // paragraph (next line may start a block); plain text is a
-        // paragraph line (next line is its continuation).
-        // Thematic breaks and setext underlines also end a
-        // paragraph: after `---` a reference definition starts a
-        // new block and comrak honors it, but treating `---` as
-        // paragraph text left the next line ineligible and the
-        // definition was omitted from the synthesis context
-        // (Codex P2 on #1565's eighth cut).
-        // A setext underline ends a paragraph only when a
-        // paragraph precedes it: a lone `=` at a block start is
-        // itself paragraph text, and a definition-shaped line
-        // after it is that paragraph's continuation, not a
-        // definition (Codex P2 on #1565's ninth cut).
-        if is_atx_heading(stripped) || is_thematic_break(stripped) || starts_new_block(stripped) {
-            in_footnote_block = false;
-        }
-        let setext_ends_paragraph = is_setext_underline(stripped) && !at_block_start;
-        // A blockquote line's eligibility follows its CONTENT
-        // (eleventh cut): `> Body` is paragraph text inside the
-        // quote, so a definition-shaped line continuing it inside
-        // the quote is paragraph text too, not a definition --
-        // promoting it resolved references the document does not
-        // honor. Only quote content that itself ends or starts a
-        // block (blank, heading, break, setext, a new block)
-        // leaves the next line eligible. Non-quote container
-        // lines (list items) keep the older rule.
-        let quote_eligible = stripped.starts_with('>').then(|| {
-            let c = container_stripped;
-            c.trim().is_empty()
-                || is_atx_heading(c)
-                || is_thematic_break(c)
-                || (is_setext_underline(c) && !at_block_start)
-                || starts_new_block(c)
-        });
-        // A list item line's eligibility follows its CONTENT too
-        // (fourteenth cut): `- Body` is paragraph text inside the
-        // item, so an indented definition-shaped line continuing
-        // it (`  [url]: ...`) is paragraph text, not a reference
-        // definition -- the older rule left every container line
-        // block-eligible and promoted it into the synthesis
-        // context. Only item content that itself ends or starts a
-        // block leaves the next line eligible, mirroring the
-        // blockquote rule above.
-        let list_eligible =
-            if quote_eligible.is_none() && strip_container_prefixes(stripped) != stripped {
-                let c = container_stripped;
-                Some(
-                    c.trim().is_empty()
-                        || is_atx_heading(c)
-                        || is_thematic_break(c)
-                        || (is_setext_underline(c) && !at_block_start)
-                        || starts_new_block(c),
-                )
-            } else {
-                None
-            };
-        at_block_start = is_atx_heading(stripped)
-            || quote_eligible
-                .or(list_eligible)
-                .unwrap_or_else(|| strip_container_prefixes(stripped) != stripped)
-            || is_thematic_break(stripped)
-            || setext_ends_paragraph;
-        i += 1;
-    }
-    defs
-}
-
-fn preserve_unreferenced_footnote_definitions(
-    doc: &mut Value,
-    markdown: &str,
-    newline_token: Option<&str>,
-) {
-    let carried: Vec<String> = doc["content"]
-        .as_array()
-        .map(|content| {
-            content
-                .iter()
-                .filter(|n| n["type"] == "footnote_definition")
-                .filter_map(|n| n["attrs"]["label"].as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let reference_defs = collect_link_reference_definitions(markdown);
-    let blocks = scan_footnote_definition_blocks(markdown);
-    let orphans: Vec<&FootnoteDefinitionBlock> = blocks
-        .iter()
-        .filter(|block| !carried.contains(&block.label))
-        .collect();
-    // ONE augmented parse recovers every orphan (Codex P2 on #1565's
-    // fifth cut): the probe references every orphan label and carries
-    // EVERY scanned definition block (orphan and carried alike) plus
-    // the document's link reference definitions as resolution context
-    // -- an unreferenced definition may itself reference a footnote
-    // the main parse already carried (`[^outer]: See [^inner].` where
-    // [^inner] is carried), and a probe without that definition
-    // degrades the reference to escaped literal text (third cut). A
-    // per-orphan probe scaled quadratically with the number of
-    // orphans.
-    let recovered = synthesize_footnote_definitions(&orphans, &blocks, &reference_defs);
-    let mut synthesized = Vec::new();
-    // Duplicate labels (fourteenth cut): the scanner keeps every
-    // source block, but synthesis resolves one node per label, so
-    // appending per block cloned the same node for each duplicate
-    // and overwrote the later bodies on save. Append the resolved
-    // definition once per label -- the first definition wins,
-    // matching how the document itself resolves duplicates.
-    let mut seen_labels = std::collections::HashSet::new();
-    for block in &orphans {
-        if !seen_labels.insert(block.label.clone()) {
-            continue;
-        }
-        if let Some(node) = recovered.get(&block.label) {
-            let mut node = node.clone();
-            // The probe parsed the PROTECTED source, whose link
-            // destinations carry the newline placeholder token; the
-            // outer restore ran before this node existed, so restore
-            // the token here or it would be saved into the URL
-            // (Codex P2).
-            if let Some(token) = newline_token {
-                restore_attr_newlines(&mut node, token);
-            }
-            synthesized.push(node);
-        }
-    }
-    if !synthesized.is_empty()
-        && let Some(content) = doc["content"].as_array_mut()
-    {
-        content.extend(synthesized);
-    }
-}
-
-/// Build the PM nodes for every unreferenced definition in ONE
-/// augmented parse: a probe document that references every orphan
-/// label (so comrak emits each definition) and carries every
-/// definition block plus the document's link reference definitions
-/// as resolution context, so references inside a definition resolve
-/// exactly as they would in the document. Going through the same
-/// conversion guarantees the synthesized nodes have exactly the
-/// shape the referenced path produces (#1031 block children
-/// included). Returns the first node per label, keyed by label.
-fn synthesize_footnote_definitions(
-    orphans: &[&FootnoteDefinitionBlock],
-    all_blocks: &[FootnoteDefinitionBlock],
-    reference_defs: &[(usize, String)],
-) -> std::collections::HashMap<String, Value> {
-    let mut nodes = std::collections::HashMap::new();
-    if orphans.is_empty() {
-        return nodes;
-    }
-    let mut probe = String::new();
-    for block in orphans {
-        probe.push_str(&format!("x[^{}]\n\n", block.label));
-    }
-    // Footnote blocks and link reference definitions interleave in
-    // DOCUMENT order (Codex P2 on #1565's eighth cut): reference
-    // definitions are global and the first definition wins, so
-    // appending every collected definition after the footnote
-    // blocks reversed precedence whenever a footnote block carried
-    // a nested (indented) definition of a label the document had
-    // already defined at top level.
-    let mut segments: Vec<(usize, &str)> = all_blocks
-        .iter()
-        .map(|block| (block.line, block.source.as_str()))
-        .chain(
-            reference_defs
-                .iter()
-                .map(|(line, text)| (*line, text.as_str())),
-        )
-        .collect();
-    segments.sort_by_key(|(line, _)| *line);
-    for (_, text) in segments {
-        probe.push_str(text);
-        probe.push_str("\n\n");
-    }
-    let doc = markdown_to_prosemirror_inner(&probe, false);
-    if let Some(content) = doc["content"].as_array() {
-        for n in content {
-            if n["type"] == "footnote_definition" {
-                if let Some(label) = n["attrs"]["label"].as_str() {
-                    nodes.entry(label.to_string()).or_insert_with(|| n.clone());
-                }
-            }
-        }
-    }
-    nodes
-}
-
-/// Replace each newline inside an angle-form link/image destination
-/// (`](<...>)` inline, `]: <...>` reference definition) with a token
-/// comrak keeps verbatim in the parsed URL, returning the protected
-/// source and the token used (`None` when no destination needed
-/// protection). Literal contexts are skipped — a destination-shaped
-/// string inside a fenced code block, an inline code span, or an
-/// indented code block is literal text, not a link (#1707). Fence
-/// tracking respects the opening fence's character and length. A
-/// candidate destination that hits a blank line — including a
-/// whitespace-only one — or another `<` before its closing `>` is
-/// not a destination and is left alone.
-fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
-    if !markdown.contains('\n') {
-        return (markdown.to_string(), None);
-    }
-    let mut token = String::from("idweb-newline-0-token");
-    let mut counter = 0;
-    while markdown.contains(&token) {
-        counter += 1;
-        token = format!("idweb-newline-{counter}-token");
-    }
-    let bytes = markdown.as_bytes();
-    let mut out = String::with_capacity(markdown.len());
-    let mut i = 0;
-    // The open fence, when inside one: its character and run length.
-    // A closing fence must use the same character and be at least as
-    // long as the opener — a shorter fence line inside a longer
-    // fence is literal content, not the end of the block (#1707).
-    let mut fence: Option<(u8, usize)> = None;
-    // Whether the current line is a fence line (opens, closes, or is
-    // checked against an open fence): its backticks are fence syntax,
-    // never an inline code span opener.
-    let mut fence_line = false;
-    // The open inline code span's backtick run length, when inside
-    // one: span content is literal text, so a destination-shaped
-    // string inside it must not be protected (#1707).
-    let mut span: Option<usize> = None;
-    // Whether the current line is an indented code block line
-    // (4+ space indent at the start of a block): literal text too.
-    let mut in_indented = false;
-    let mut prev_line_blank = true;
-    let mut prev_line_indented = false;
-    let mut protected_any = false;
-    while i < bytes.len() {
-        // Line-start classification: fences, indented code blocks.
-        if i == 0 || bytes[i - 1] == b'\n' {
-            let mut j = i;
-            while j < bytes.len() && bytes[j] == b' ' {
-                j += 1;
-            }
-            let indent = j - i;
-            let line_blank = j >= bytes.len() || bytes[j] == b'\n';
-            // Fences are recognised at up to 3 spaces of indent.
-            let fence_run =
-                if indent <= 3 && j < bytes.len() && (bytes[j] == b'`' || bytes[j] == b'~') {
-                    let ch = bytes[j];
-                    let mut n = 0;
-                    while j + n < bytes.len() && bytes[j + n] == ch {
-                        n += 1;
-                    }
-                    if n >= 3 { Some((ch, n)) } else { None }
-                } else {
-                    None
-                };
-            let was_in_fence = fence.is_some();
-            match (fence, fence_run) {
-                (None, Some(open)) => fence = Some(open),
-                (Some((ch, n)), Some((cch, cn))) if cch == ch && cn >= n => fence = None,
-                _ => {}
-            }
-            fence_line = fence_run.is_some() && (was_in_fence || fence.is_some());
-            // An indented code block starts on a 4+ indented line
-            // after a blank line (or at the start, or continuing an
-            // indented block); a 4+ indented line inside a paragraph
-            // is a lazy continuation, not code.
-            in_indented = indent >= 4 && fence.is_none() && (prev_line_blank || prev_line_indented);
-            prev_line_indented = in_indented || (indent >= 4 && line_blank && prev_line_indented);
-            prev_line_blank = line_blank;
-        }
-        let literal_line = fence.is_some() || in_indented || fence_line;
-        if !literal_line
-            && span.is_none()
-            && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <"))
-        {
-            let lt = if markdown[i..].starts_with("](<") {
-                i + 2
-            } else {
-                i + 3
-            };
-            // Find the closing '>' before any blank line (a line of
-            // only spaces/tabs between the newlines is blank too —
-            // the paragraph break ends any destination, #1707) or a
-            // nested '<'.
-            let mut end = None;
-            let mut k = lt + 1;
-            while k < bytes.len() {
-                match bytes[k] {
-                    b'>' => {
-                        end = Some(k);
-                        break;
-                    }
-                    b'<' => break,
-                    b'\n' => {
-                        let mut m = k + 1;
-                        while m < bytes.len()
-                            && (bytes[m] == b' ' || bytes[m] == b'\t' || bytes[m] == b'\r')
-                        {
-                            m += 1;
-                        }
-                        if m >= bytes.len() || bytes[m] == b'\n' {
-                            break;
-                        }
-                        k += 1;
-                    }
-                    _ => k += 1,
-                }
-            }
-            if let Some(gt) = end {
-                let dest = &markdown[lt + 1..gt];
-                if dest.contains('\n') {
-                    out.push_str(&markdown[i..=lt]);
-                    out.push_str(&dest.replace('\n', &token));
-                    i = gt;
-                    protected_any = true;
-                    continue;
-                }
-            }
-        }
-        // Inline code span tracking (#1707): a run of backticks
-        // outside fences/indented code opens a span closed by a run
-        // of the same length; everything between is literal. Fence
-        // lines were already classified at line start, so a run seen
-        // here at a line start is a span only when it did not form a
-        // fence (shorter than 3, or inside a fence — but fence lines
-        // never reach here as non-literal).
-        if !literal_line && bytes[i] == b'`' {
-            let mut n = 0;
-            while i + n < bytes.len() && bytes[i + n] == b'`' {
-                n += 1;
-            }
-            match span {
-                None => span = Some(n),
-                Some(open) if n == open => span = None,
-                _ => {}
-            }
-            out.push_str(&markdown[i..i + n]);
-            i += n;
-            continue;
-        }
-        let Some(ch) = markdown[i..].chars().next() else {
-            break;
-        };
-        let ch_len = ch.len_utf8();
-        out.push_str(&markdown[i..i + ch_len]);
-        i += ch_len;
-    }
-    if protected_any {
-        (out, Some(token))
-    } else {
-        (markdown.to_string(), None)
-    }
-}
-
-/// Whether `line` is a GFM table delimiter row (`| --- | :---: |`,
-/// `--- | ---`, …): optional outer pipes, every cell a run of dashes
-/// with an optional alignment colon on each side. The line must contain
-/// a pipe — a bare `---` is a setext underline or thematic break, and
-/// every table comrak itself renders carries pipes in its delimiter
-/// row.
-fn is_table_delimiter_row(line: &str) -> bool {
-    let trimmed = line.trim();
-    if !trimmed.contains('-') || !trimmed.contains('|') {
-        return false;
-    }
-    let body = trimmed.strip_prefix('|').unwrap_or(trimmed);
-    let body = body.strip_suffix('|').unwrap_or(body);
-    if body.trim().is_empty() {
-        return false;
-    }
-    body.split('|').all(|cell| {
-        let cell = cell.trim();
-        let cell = cell.strip_prefix(':').unwrap_or(cell);
-        let cell = cell.strip_suffix(':').unwrap_or(cell);
-        !cell.is_empty() && cell.bytes().all(|b| b == b'-')
-    })
-}
-
-/// Whether the byte at `i` is backslash-escaped: preceded by an odd
-/// number of backslashes.
-fn byte_is_escaped(bytes: &[u8], i: usize) -> bool {
-    let mut backslashes = 0;
-    let mut j = i;
-    while j > 0 && bytes[j - 1] == b'\\' {
-        backslashes += 1;
-        j -= 1;
-    }
-    backslashes % 2 == 1
-}
-
-/// Escape every unescaped pipe inside a code span on a single line
-/// (#1424). A code span opens at an unescaped backtick run and closes
-/// at the next run of exactly the same length on the same line; an
-/// unmatched run is literal text and is left alone, as is everything
-/// outside code spans (plain-text pipes are the row syntax itself).
-fn escape_code_span_pipes_in_line(line: &str) -> String {
-    let bytes = line.as_bytes();
-    let mut out = String::with_capacity(line.len() + 8);
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'`' && !byte_is_escaped(bytes, i) {
-            let mut run = 0;
-            while i + run < bytes.len() && bytes[i + run] == b'`' {
-                run += 1;
-            }
-            // Find the closing run of exactly `run` backticks.
-            let mut close = None;
-            let mut j = i + run;
-            while j < bytes.len() {
-                if bytes[j] == b'`' {
-                    let mut r = 0;
-                    while j + r < bytes.len() && bytes[j + r] == b'`' {
-                        r += 1;
-                    }
-                    if r == run {
-                        close = Some((j, j + r));
-                        break;
-                    }
-                    j += r;
-                } else {
-                    j += 1;
-                }
-            }
-            if let Some((close_start, close_end)) = close {
-                out.push_str(&line[i..i + run]);
-                let mut backslashes = 0usize;
-                for ch in line[i + run..close_start].chars() {
-                    if ch == '|' && backslashes % 2 == 0 {
-                        out.push('\\');
-                    }
-                    if ch == '\\' {
-                        backslashes += 1;
-                    } else {
-                        backslashes = 0;
-                    }
-                    out.push(ch);
-                }
-                out.push_str(&line[close_start..close_end]);
-                i = close_end;
-                continue;
-            }
-            out.push_str(&line[i..i + run]);
-            i += run;
-            continue;
-        }
-        let ch_len = line[i..].chars().next().unwrap().len_utf8();
-        out.push_str(&line[i..i + ch_len]);
-        i += ch_len;
-    }
-    out
-}
-
-/// Escape pipes inside code spans in the rows of every table in
-/// `markdown` (#1424): the header row (identified by the delimiter row
-/// that follows it), and the body rows that follow the delimiter row
-/// up to the next blank line. Lines outside tables are returned
-/// untouched — outside a table `\|` inside a code span is literal
-/// text, not an escape, so escaping there would corrupt the span.
-/// Fenced code blocks are skipped for the same reason (#2362): a
-/// table example inside a fence is literal text comrak renders
-/// verbatim, not a live table — the fence tracking mirrors
-/// `protect_newline_destinations`.
-/// A fence delimiter line (CommonMark §4.5): up to three leading
-/// spaces, then a run of at least three backticks or tildes. Either
-/// character toggles — the same approximation
-/// `protect_newline_destinations` makes.
-fn is_fence_line(line: &str) -> bool {
-    let mut spaces = 0;
-    let mut chars = line.chars();
-    let first = loop {
-        match chars.next() {
-            Some(' ') => {
-                spaces += 1;
-                if spaces > 3 {
-                    return false;
-                }
-            }
-            Some(c) => break c,
-            None => return false,
-        }
-    };
-    if first != '`' && first != '~' {
-        return false;
-    }
-    1 + chars.take_while(|&c| c == first).count() >= 3
-}
-
-fn escape_table_code_span_pipes(markdown: &str) -> String {
-    if !markdown.contains('`') || !markdown.contains('|') {
-        return markdown.to_string();
-    }
-    let lines: Vec<&str> = markdown.split_inclusive('\n').collect();
-    let mut out = String::with_capacity(markdown.len() + 16);
-    let mut in_table = false;
-    let mut in_fence = false;
-    for (idx, raw) in lines.iter().enumerate() {
-        let line = raw.strip_suffix('\n').unwrap_or(raw);
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        let ending = &raw[line.len()..];
-        if is_fence_line(line) {
-            in_fence = !in_fence;
-            if in_fence {
-                // A table cannot span a fence; a delimiter-looking
-                // row inside the fence must not arm `in_table` for
-                // whatever follows the fence either.
-                in_table = false;
-            }
-            out.push_str(raw);
-            continue;
-        }
-        if in_fence {
-            out.push_str(raw);
-            continue;
-        }
-        if is_table_delimiter_row(line) {
-            in_table = true;
-            out.push_str(raw);
-            continue;
-        }
-        if in_table && line.trim().is_empty() {
-            in_table = false;
-        }
-        let header_row = lines
-            .get(idx + 1)
-            .is_some_and(|next| is_table_delimiter_row(next));
-        if in_table || header_row {
-            out.push_str(&escape_code_span_pipes_in_line(line));
-            out.push_str(ending);
-        } else {
-            out.push_str(raw);
-        }
-    }
-    out
-}
-
-/// Restore protected newlines in the converted document: the token
-/// only ever stands inside a link `href` or image `src` attr (the
-/// parse produced it from a destination), so only those string attrs
-/// are rewritten — literal text that happens to contain the token
-/// string is untouched.
-fn restore_attr_newlines(value: &mut Value, token: &str) {
-    match value {
-        Value::Object(map) => {
-            for (key, val) in map.iter_mut() {
-                if (key == "href" || key == "src")
-                    && let Value::String(text) = val
-                    && text.contains(token)
-                {
-                    *text = text.replace(token, "\n");
-                } else {
-                    restore_attr_newlines(val, token);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                restore_attr_newlines(item, token);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Active marks being applied to inline content.
-#[derive(Clone)]
-struct Mark {
-    mark_type: &'static str,
-    attrs: Option<Value>,
-}
-
-/// Canonical mark nesting order, outermost first (#944).
-///
-/// Both conversion directions agree on this order, so a marked text node
-/// has exactly one markdown spelling: the parse direction sorts the marks
-/// it emits into this order (see [`text_node_with_marks`]) and the save
-/// direction sorts incoming marks into this order before wrapping (see
-/// `create_marked_text`). Without the shared order, `**[text](url)` and
-/// `[**text**](url)` converted into each other on every save — the parse
-/// direction appends marks outermost-first (wrapper arms push as they
-/// nest) while the save direction treated the array as innermost-first.
-fn mark_nesting_rank(mark_type: &str) -> u8 {
-    match mark_type {
-        "link" => 0,
-        "strong" => 1,
-        "em" => 2,
-        "strikethrough" => 3,
-        "code" => 4,
-        _ => 5,
-    }
-}
-
-/// Convert a comrak AST node to `ProseMirror` JSON.
-fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
-    let data = node.data.borrow();
-
-    match &data.value {
-        NodeValue::Document => {
-            let content = collect_block_children(node);
-            json!({
-                "type": "doc",
-                "content": if content.is_empty() {
-                    vec![json!({"type": "paragraph"})]
-                } else {
-                    content
-                }
-            })
-        }
-
-        NodeValue::Paragraph => {
-            let content = collect_inline_children(node, active_marks);
-            if content.is_empty() {
-                json!({"type": "paragraph"})
-            } else {
-                json!({
-                    "type": "paragraph",
-                    "content": content
-                })
-            }
-        }
-
-        NodeValue::Heading(heading) => {
-            let content = collect_inline_children(node, active_marks);
-            let mut node_json = json!({
-                "type": "heading",
-                "attrs": {"level": heading.level}
-            });
-            if !content.is_empty() {
-                node_json["content"] = json!(content);
-            }
-            node_json
-        }
-
-        NodeValue::BlockQuote => {
-            let content = collect_block_children(node);
-            json!({
-                "type": "blockquote",
-                "content": if content.is_empty() {
-                    vec![json!({"type": "paragraph"})]
-                } else {
-                    content
-                }
-            })
-        }
-
-        NodeValue::CodeBlock(code_block) => {
-            let text = &code_block.literal;
-            // Remove trailing newline if present (ProseMirror doesn't expect it)
-            let text = text.strip_suffix('\n').unwrap_or(text);
-
-            let mut node_json = json!({"type": "code_block"});
-
-            // Add params attribute if there's an info string
-            if !code_block.info.is_empty() {
-                node_json["attrs"] = json!({"params": code_block.info});
-            }
-
-            if !text.is_empty() {
-                node_json["content"] = json!([{"type": "text", "text": text}]);
-            }
-
-            node_json
-        }
-
-        NodeValue::ThematicBreak => {
-            json!({"type": "horizontal_rule"})
-        }
-
-        NodeValue::FrontMatter(text) => {
-            json!({
-                "type": "front_matter",
-                "attrs": {
-                    "text": text,
-                }
-            })
-        }
-
-        NodeValue::List(_) => {
-            // #1370: a mixed task/plain list converts to several sibling
-            // lists (see convert_list_runs); block parents splice them in
-            // via collect_block_children. A direct call gets the first
-            // run - the remaining call sites are the document root and
-            // list-item collection, where a list is always reached
-            // through its parent's block children instead.
-            convert_list_runs(node)
-                .into_iter()
-                .next()
-                .unwrap_or(Value::Null)
-        }
-
-        NodeValue::Item(_) => {
-            let content = collect_block_children(node);
-            json!({
-                "type": "list_item",
-                "content": if content.is_empty() {
-                    vec![json!({"type": "paragraph"})]
-                } else {
-                    content
-                }
-            })
-        }
-
-        NodeValue::Text(text) => text_node_with_marks(text.as_ref(), active_marks),
-
-        NodeValue::SoftBreak => {
-            // Soft breaks become spaces in ProseMirror
-            text_node_with_marks(" ", active_marks)
-        }
-
-        NodeValue::LineBreak => {
-            json!({"type": "hard_break"})
-        }
-
-        NodeValue::Code(code) => {
-            // Inline code - add code mark to the text
-            let mut marks = active_marks.to_vec();
-            marks.push(Mark {
-                mark_type: "code",
-                attrs: None,
-            });
-            text_node_with_marks(&code.literal, &marks)
-        }
-
-        NodeValue::Emph => {
-            // Emphasis - collect children with em mark added
-            let mut marks = active_marks.to_vec();
-            marks.push(Mark {
-                mark_type: "em",
-                attrs: None,
-            });
-            // Return children directly (will be flattened by caller)
-            json!(collect_inline_children(node, &marks))
-        }
-
-        NodeValue::Strong => {
-            // Strong - collect children with strong mark added
-            let mut marks = active_marks.to_vec();
-            marks.push(Mark {
-                mark_type: "strong",
-                attrs: None,
-            });
-            json!(collect_inline_children(node, &marks))
-        }
-
-        NodeValue::Link(link) => {
-            // Link - collect children with link mark added
-            // #5745: neutralize executable/unknown URL schemes at this
-            // single entry point — every Markdown link (typed, imported,
-            // or collaborative, which reaches this converter via
-            // collab.rs) carries the sanitized href from here on.
-            let mut marks = active_marks.to_vec();
-            let mut attrs = json!({"href": sanitize_link_url(&link.url)});
-            if !link.title.is_empty() {
-                attrs["title"] = json!(link.title);
-            }
-            marks.push(Mark {
-                mark_type: "link",
-                attrs: Some(attrs),
-            });
-            let children = collect_inline_children(node, &marks);
-            if children.is_empty() {
-                // #996: an empty-text link has no inline children to
-                // carry the link mark, so without this the mark — and
-                // the href — vanish and save emits nothing. Synthesize
-                // an empty text node carrying the mark; the save side
-                // wraps it back into a Link node (create_marked_text),
-                // so `[](url)` round-trips.
-                return json!(vec![text_node_with_marks("", &marks)]);
-            }
-            json!(children)
-        }
-
-        NodeValue::Image(image) => {
-            let mut attrs = json!({
-                "src": sanitize_image_url(&image.url)
-            });
-
-            // #1417: store the alt in markdown form, not flattened plain
-            // text - get_text_content dropped emphasis/strong/code-span
-            // structure, so `![*alt*](/x)` saved back as `![alt](/x)`.
-            // The PM image node carries `alt` as a plain string
-            // (editor.ts schema), so that string IS the markdown source
-            // for the alt; the save direction re-parses it into inline
-            // nodes (see json_to_ast's image special case). Plain-text
-            // alts are unchanged by this encoding. Editor limitation:
-            // the alt popover shows/edits the markdown form (e.g.
-            // `*alt*`), which is the documented trade-off for #1417.
-            let alt = get_alt_markdown(node);
-            if !alt.is_empty() {
-                attrs["alt"] = json!(alt);
-            }
-
-            if !image.title.is_empty() {
-                attrs["title"] = json!(image.title);
-            }
-
-            // #880: an image inside a link arrives here with a link mark in
-            // active_marks (the Link arm is a mark wrapper). Carry the link
-            // on the image node itself — the editor schema has no way to
-            // wrap an image node in a mark — so the href survives to save.
-            if let Some(link_mark) = active_marks.iter().find(|m| m.mark_type == "link")
-                && let Some(link_attrs) = &link_mark.attrs
-            {
-                if let Some(href) = link_attrs["href"].as_str() {
-                    attrs["linkHref"] = json!(href);
-                }
-                if let Some(link_title) = link_attrs["title"].as_str() {
-                    attrs["linkTitle"] = json!(link_title);
-                }
-            }
-
-            // #1407: emphasis/strong/strikethrough wrapping an image
-            // ride on the image node as a `marks` array (the text-node
-            // shape) — like the link above, the editor schema cannot
-            // wrap an image node in a mark, so the marks travel on the
-            // node and the save direction re-wraps (see the image case
-            // in json_to_ast). The link stays in linkHref (#880).
-            let wrap_marks: Vec<Value> = active_marks
-                .iter()
-                .filter(|m| matches!(m.mark_type, "em" | "strong" | "strikethrough"))
-                .map(|m| json!({"type": m.mark_type}))
-                .collect();
-            let mut image_node = json!({
-                "type": "image",
-                "attrs": attrs
-            });
-            if !wrap_marks.is_empty() {
-                image_node["marks"] = json!(wrap_marks);
-            }
-            image_node
-        }
-
-        // Unsupported nodes - pass through as best we can
-        NodeValue::HtmlBlock(html) => {
-            // Check if this is an <img> tag with width/height, or the
-            // combined <a><img /></a> sized linked image form (#893)
-            let trimmed = html.literal.trim();
-            if let Some(img_node) = parse_linked_img_tag(trimmed).or_else(|| parse_img_tag(trimmed))
-            {
-                // Wrap in paragraph since this is block-level
-                return json!({
-                    "type": "paragraph",
-                    "content": [img_node]
-                });
-            }
-            // Convert HTML blocks to code blocks (safe fallback), with
-            // a provenance attr (#982, cf. the #880 linkHref precedent):
-            // in PM shape a converted block is otherwise identical to an
-            // authored ```html fence, so the save direction uses
-            // `htmlBlock` to tell them apart and emit a real HtmlBlock
-            // for converted blocks while authored fences stay fenced.
-            let text = html.literal.strip_suffix('\n').unwrap_or(&html.literal);
-            if text.is_empty() {
-                json!({"type": "paragraph"})
-            } else {
-                json!({
-                    "type": "code_block",
-                    "attrs": {"params": "html", "htmlBlock": true},
-                    "content": [{"type": "text", "text": text}]
-                })
-            }
-        }
-
-        NodeValue::HtmlInline(html) => {
-            // Check if this is an <img> tag with width/height, or the
-            // combined <a><img /></a> form in a single literal (#893; the
-            // split form is merged in collect_inline_children)
-            if let Some(img_attrs) = parse_linked_img_tag(html).or_else(|| parse_img_tag(html)) {
-                return img_attrs;
-            }
-            // #943: other inline HTML passes through as an html_inline
-            // atom node carrying the raw tag, so the save direction emits
-            // it verbatim (NodeValue::HtmlInline) instead of the comrak
-            // text renderer backslash-escaping it as literal text.
-            json!({
-                "type": "html_inline",
-                "attrs": {"html": html}
-            })
-        }
-
-        NodeValue::Table(table) => {
-            let children = collect_block_children(node);
-            let mut table_json = json!({
-                "type": "table",
-                "content": if children.is_empty() {
-                    vec![json!({"type": "table_row", "content": [{"type": "table_cell", "content": [{"type": "paragraph"}]}]})]
-                } else {
-                    children
-                }
-            });
-            // #881: carry column alignments on the table node (absent = all
-            // None, exactly as before) so the delimiter row survives save.
-            if table
-                .alignments
-                .iter()
-                .any(|a| !matches!(a, comrak::nodes::TableAlignment::None))
-            {
-                let alignments: Vec<Value> = table
-                    .alignments
-                    .iter()
-                    .map(|a| {
-                        json!(match a {
-                            comrak::nodes::TableAlignment::Left => "left",
-                            comrak::nodes::TableAlignment::Center => "center",
-                            comrak::nodes::TableAlignment::Right => "right",
-                            comrak::nodes::TableAlignment::None => "none",
-                        })
-                    })
-                    .collect();
-                table_json["attrs"] = json!({ "alignments": alignments });
-            }
-            table_json
-        }
-
-        NodeValue::TableRow(is_header) => {
-            let cell_type = if *is_header {
-                "table_header"
-            } else {
-                "table_cell"
-            };
-            let children: Vec<Value> = node
-                .children()
-                .map(|child| {
-                    // Table cells contain inline content in comrak,
-                    // but ProseMirror needs block content (paragraphs)
-                    let inline_content = collect_inline_children(child, active_marks);
-                    let content = if inline_content.is_empty() {
-                        vec![json!({"type": "paragraph"})]
-                    } else {
-                        vec![json!({"type": "paragraph", "content": inline_content})]
-                    };
-                    json!({
-                        "type": cell_type,
-                        "content": content
-                    })
-                })
-                .collect();
-            json!({
-                "type": "table_row",
-                "content": children
-            })
-        }
-
-        NodeValue::TableCell => {
-            // Fallback: normally handled by TableRow above
-            let inline_content = collect_inline_children(node, active_marks);
-            let content = if inline_content.is_empty() {
-                vec![json!({"type": "paragraph"})]
-            } else {
-                vec![json!({"type": "paragraph", "content": inline_content})]
-            };
-            json!({
-                "type": "table_cell",
-                "content": content
-            })
-        }
-
-        NodeValue::TaskItem(task) => {
-            // Task items have a checked state (symbol present = checked)
-            let checked = task.symbol.is_some();
-            let content = collect_block_children(node);
-            json!({
-                "type": "task_list_item",
-                "attrs": { "checked": checked },
-                "content": if content.is_empty() {
-                    vec![json!({"type": "paragraph"})]
-                } else {
-                    content
-                }
-            })
-        }
-
-        NodeValue::Strikethrough => {
-            // Strikethrough - collect children with strikethrough mark added
-            let mut marks = active_marks.to_vec();
-            marks.push(Mark {
-                mark_type: "strikethrough",
-                attrs: None,
-            });
-            json!(collect_inline_children(node, &marks))
-        }
-
-        NodeValue::FootnoteReference(reference) => {
-            // #945: carry the reference as a dedicated inline atom node so
-            // the save direction can emit [^label] again instead of the
-            // reference being dropped / backslash-escaped as plain text.
-            json!({
-                "type": "footnote_reference",
-                "attrs": {"label": reference.name}
-            })
-        }
-
-        NodeValue::FootnoteDefinition(definition) => {
-            // #945: carry the definition as a dedicated node with the
-            // label, mirroring the reference arm. #1031: carry its BLOCK
-            // children (paragraphs, lists, code blocks) as blocks —
-            // flattening them to inline content fused multi-paragraph
-            // definitions into one run of text on save and silently
-            // dropped code blocks (their literal has no child nodes).
-            json!({
-                "type": "footnote_definition",
-                "attrs": {"label": definition.name},
-                "content": collect_block_children(node)
-            })
-        }
-
-        // Other unsupported nodes
-        _ => {
-            // Try to get text content and return as paragraph
-            let text = get_text_content(node);
-            if text.is_empty() {
-                json!(null)
-            } else {
-                json!({
-                    "type": "paragraph",
-                    "content": [{"type": "text", "text": text}]
-                })
-            }
-        }
-    }
-}
-
-/// Create a text node with the given marks.
-fn text_node_with_marks(text: &str, marks: &[Mark]) -> Value {
-    // An empty text node with no marks carries nothing and is dropped,
-    // but an empty text node WITH marks is information-bearing: it is
-    // the only representation of an empty-text link (#996).
-    if text.is_empty() && marks.is_empty() {
-        return json!(null);
-    }
-
-    let mut node = json!({
-        "type": "text",
-        "text": text
-    });
-
-    if !marks.is_empty() {
-        // #944: emit marks in the canonical nesting order so every
-        // spelling of the same marked text parses to the same PM doc.
-        let mut sorted: Vec<Mark> = marks.to_vec();
-        sorted.sort_by_key(|m| mark_nesting_rank(m.mark_type));
-        let marks_json: Vec<Value> = sorted
-            .iter()
-            .map(|m| {
-                if let Some(attrs) = &m.attrs {
-                    json!({"type": m.mark_type, "attrs": attrs})
-                } else {
-                    json!({"type": m.mark_type})
-                }
-            })
-            .collect();
-        node["marks"] = json!(marks_json);
-    }
-
-    node
-}
-
-/// Collect block-level children of a node.
-fn collect_block_children<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
-    let children: Vec<&AstNode<'a>> = node.children().collect();
-    let mut out = Vec::new();
-    for (idx, child) in children.iter().enumerate() {
-        // #1370: comrak's renderer separates adjacent lists with
-        // <!-- end list --> comments, and the split sibling lists this
-        // change emits are adjacent by construction - so on reparse the
-        // separator comes back as an HtmlBlock between the lists. It is
-        // a separator, not content: drop it when a neighbouring sibling
-        // is a list. An authored <!-- end list --> comment NOT next to
-        // a list still converts exactly as before (an htmlBlock
-        // code_block, #982).
-        if is_end_list_separator(child)
-            && ((idx > 0 && matches!(children[idx - 1].data.borrow().value, NodeValue::List(_)))
-                || children
-                    .get(idx + 1)
-                    .is_some_and(|c| matches!(c.data.borrow().value, NodeValue::List(_))))
-        {
-            continue;
-        }
-        if matches!(child.data.borrow().value, NodeValue::List(_)) {
-            // #1370: a list converts to one or more sibling lists.
-            out.extend(convert_list_runs(child));
-        } else {
-            let converted = convert_node(child, &[]);
-            if !converted.is_null() {
-                out.push(converted);
-            }
-        }
-    }
-    out
-}
-
-/// True for the HtmlBlock comrak's renderer emits between adjacent
-/// lists (see collect_block_children).
-fn is_end_list_separator<'a>(node: &'a AstNode<'a>) -> bool {
-    match &node.data.borrow().value {
-        NodeValue::HtmlBlock(html) => html.literal.trim() == "<!-- end list -->",
-        _ => false,
-    }
-}
-
-/// Convert a comrak list node to one or more ProseMirror list nodes.
-///
-/// A pure list converts exactly as before (#997/#1036 attrs carried from
-/// the source list). #1370: a list mixing task items with plain items
-/// used to take its type from the first child only and convert the rest
-/// by their own kind, producing a `task_list` holding a `list_item` (or
-/// a plain list holding a `task_list_item`) - a shape the save-side
-/// placement validation and the editor schema both forbid, so the
-/// document could not be saved at all. Instead, group the items into
-/// runs of one kind and emit one sibling list per run, in source order.
-/// Ordered runs carry an `order` start offset by the items before them
-/// so numbering renders unchanged; `tight` is carried from the source
-/// list to every run. Placement validation and the editor schema are
-/// untouched: every emitted list is pure.
-/// #1380: the PM `delimiter` attr spelling for a comrak ordered-list
-/// delimiter (`.` vs `)`). The editor schema mirrors these spellings.
-fn delimiter_attr(delimiter: ListDelimType) -> &'static str {
-    match delimiter {
-        ListDelimType::Period => "period",
-        ListDelimType::Paren => "paren",
-    }
-}
-
-/// #1380: read the PM `delimiter` attr back to a comrak delimiter.
-/// Absent or unknown (legacy PM docs stored by the old codec, which
-/// dropped the delimiter) defaults to Period - exactly how the old
-/// codec saved every ordered list.
-fn delimiter_from_attrs(json: &Value) -> ListDelimType {
-    match json["attrs"]["delimiter"].as_str() {
-        Some("paren") => ListDelimType::Paren,
-        _ => ListDelimType::Period,
-    }
-}
-
-fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
-    let (list_type, start, tight, delimiter) = match &node.data.borrow().value {
-        NodeValue::List(list) => (list.list_type, list.start, list.tight, list.delimiter),
-        _ => return Vec::new(),
-    };
-    // (is_task, items before this run, converted items)
-    let mut runs: Vec<(bool, usize, Vec<Value>)> = Vec::new();
-    let mut seen = 0usize;
-    for child in node.children() {
-        let is_task = matches!(child.data.borrow().value, NodeValue::TaskItem(_));
-        let item = convert_node(child, &[]);
-        if item.is_null() {
-            continue;
-        }
-        match runs.last_mut() {
-            Some((kind, _, items)) if *kind == is_task => items.push(item),
-            _ => runs.push((is_task, seen, vec![item])),
-        }
-        seen += 1;
-    }
-    runs.into_iter()
-        .map(|(is_task, offset, content)| match (is_task, list_type) {
-            (true, ListType::Ordered) => json!({
-                "type": "task_list",
-                "attrs": {"order": start + offset, "tight": tight, "delimiter": delimiter_attr(delimiter)},
-                "content": content
-            }),
-            (true, ListType::Bullet) => json!({
-                "type": "task_list",
-                "attrs": {"tight": tight},
-                "content": content
-            }),
-            (false, ListType::Ordered) => json!({
-                "type": "ordered_list",
-                "attrs": {"order": start + offset, "tight": tight, "delimiter": delimiter_attr(delimiter)},
-                "content": content
-            }),
-            (false, ListType::Bullet) => json!({
-                "type": "bullet_list",
-                "attrs": {"tight": tight},
-                "content": content
-            }),
-        })
-        .collect()
-}
-
-/// Collect list item children of a list node.
-#[allow(dead_code)]
-fn collect_list_items<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
-    node.children()
-        .map(|child| convert_node(child, &[]))
-        .filter(|v| !v.is_null())
-        .collect()
-}
-
-/// The literal of an `HtmlInline` node, if `node` is one.
-fn html_inline_literal<'a>(node: &'a AstNode<'a>) -> Option<String> {
-    if let NodeValue::HtmlInline(html) = &node.data.borrow().value {
-        Some(html.clone())
-    } else {
-        None
-    }
-}
-
-/// Detect the split sized-linked-image sequence at the head of `children`
-/// (#893): an `<a href="...">` `HtmlInline`, an `<img ... />` `HtmlInline`,
-/// and the closing `</a>` `HtmlInline`. Comrak splits the HTML form the
-/// save direction emits for a sized linked image into those three sibling
-/// nodes; merged here they become one image node carrying `linkHref`, and
-/// neither anchor piece falls through as literal text. The closing tag is
-/// optional in the match (consumed when present) so a missing one cannot
-/// strand the opening tag as text either. Returns the merged image node
-/// and how many siblings it consumed.
-fn linked_image_sequence<'a>(children: &[&'a AstNode<'a>]) -> Option<(Value, usize)> {
-    if children.len() < 2 {
-        return None;
-    }
-    let (href, link_title) = parse_anchor_tag(&html_inline_literal(children[0])?)?;
-    let img = parse_img_tag(&html_inline_literal(children[1])?)?;
-    let consumed = if children.len() >= 3
-        && html_inline_literal(children[2]).is_some_and(|h| h.trim().eq_ignore_ascii_case("</a>"))
-    {
-        3
-    } else {
-        2
-    };
-    Some((image_with_link(img, &href, link_title.as_deref()), consumed))
-}
-
-/// Collect inline children of a node, flattening nested mark wrappers.
-fn collect_inline_children<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Vec<Value> {
-    let mut result = Vec::new();
-    let children: Vec<&AstNode<'a>> = node.children().collect();
-    let mut index = 0;
-
-    while index < children.len() {
-        // #893: merge a split <a><img /></a> sequence before the pieces
-        // are converted individually (see linked_image_sequence).
-        if let Some((img, consumed)) = linked_image_sequence(&children[index..]) {
-            result.push(img);
-            index += consumed;
-            continue;
-        }
-
-        let child = children[index];
-        index += 1;
-        let child_data = child.data.borrow();
-
-        // Check if this is a mark wrapper (Emph, Strong, Link)
-        let is_mark_wrapper = matches!(
-            child_data.value,
-            NodeValue::Emph | NodeValue::Strong | NodeValue::Link(_) | NodeValue::Strikethrough
-        );
-        drop(child_data);
-
-        let converted = convert_node(child, active_marks);
-        if is_mark_wrapper {
-            // Convert returns an array of children with marks applied
-            if let Some(arr) = converted.as_array() {
-                for item in arr {
-                    if !item.is_null() {
-                        result.push(item.clone());
-                    }
-                }
-            }
-        } else if !converted.is_null() {
-            result.push(converted);
-        }
-    }
-
-    result
-}
-
-/// Get all text content from a node and its descendants.
-fn get_text_content<'a>(node: &'a AstNode<'a>) -> String {
-    let mut text = String::new();
-    collect_text(node, &mut text);
-    text
-}
-
-/// Recursively collect text from a node.
-fn collect_text<'a>(node: &'a AstNode<'a>, text: &mut String) {
-    let data = node.data.borrow();
-
-    match &data.value {
-        NodeValue::Text(t) => text.push_str(t.as_ref()),
-        NodeValue::Code(c) => text.push_str(&c.literal),
-        NodeValue::SoftBreak => text.push(' '),
-        NodeValue::LineBreak => text.push('\n'),
-        _ => {
-            drop(data);
-            for child in node.children() {
-                collect_text(child, text);
-            }
-        }
-    }
-}
-
-/// #1417: serialize an image alt subtree back to markdown form.
-///
-/// The inverse of the save direction's alt re-parse: emphasis, strong,
-/// strikethrough, code spans and links keep their markup; literal text
-/// is escaped so characters that were literal in the source (e.g. an
-/// escaped `\\*`) stay literal when the stored form is re-parsed on
-/// save. Nested images/links inside an alt are serialized recursively,
-/// so a nested-link alt round-trips instead of flattening.
-fn get_alt_markdown<'a>(node: &'a AstNode<'a>) -> String {
-    let mut out = String::new();
-    for child in node.children() {
-        collect_alt_markdown(child, &mut out);
-    }
-    out
-}
-
-fn collect_alt_markdown<'a>(node: &'a AstNode<'a>, out: &mut String) {
-    let data = node.data.borrow();
-    match &data.value {
-        NodeValue::Text(t) => {
-            for ch in t.chars() {
-                if matches!(ch, '\\' | '*' | '_' | '`' | '[' | ']') {
-                    out.push('\\');
-                }
-                out.push(ch);
-            }
-        }
-        NodeValue::Code(c) => {
-            // Fence with one more backtick than the longest run inside.
-            let longest = c
-                .literal
-                .split(|ch| ch != '`')
-                .map(str::len)
-                .max()
-                .unwrap_or(0);
-            let fence = "`".repeat(longest + 1);
-            out.push_str(&fence);
-            if c.literal.starts_with('`') || c.literal.ends_with('`') {
-                out.push(' ');
-                out.push_str(&c.literal);
-                out.push(' ');
-            } else {
-                out.push_str(&c.literal);
-            }
-            out.push_str(&fence);
-        }
-        NodeValue::SoftBreak => out.push(' '),
-        NodeValue::LineBreak => out.push('\n'),
-        NodeValue::HtmlInline(html) => out.push_str(html),
-        NodeValue::Emph => {
-            drop(data);
-            out.push('*');
-            for child in node.children() {
-                collect_alt_markdown(child, out);
-            }
-            out.push('*');
-        }
-        NodeValue::Strong => {
-            drop(data);
-            out.push_str("**");
-            for child in node.children() {
-                collect_alt_markdown(child, out);
-            }
-            out.push_str("**");
-        }
-        NodeValue::Strikethrough => {
-            drop(data);
-            out.push_str("~~");
-            for child in node.children() {
-                collect_alt_markdown(child, out);
-            }
-            out.push_str("~~");
-        }
-        NodeValue::Link(link) => {
-            let url = link.url.clone();
-            let title = link.title.clone();
-            drop(data);
-            out.push('[');
-            for child in node.children() {
-                collect_alt_markdown(child, out);
-            }
-            out.push_str("](");
-            out.push_str(&url);
-            if !title.is_empty() {
-                out.push_str(" \"");
-                out.push_str(&title.replace('"', "\\\""));
-                out.push_str("\"");
-            }
-            out.push(')');
-        }
-        NodeValue::Image(link) => {
-            let url = link.url.clone();
-            let title = link.title.clone();
-            drop(data);
-            out.push_str("![");
-            for child in node.children() {
-                collect_alt_markdown(child, out);
-            }
-            out.push_str("](");
-            out.push_str(&url);
-            if !title.is_empty() {
-                out.push_str(" \"");
-                out.push_str(&title.replace('"', "\\\""));
-                out.push_str("\"");
-            }
-            out.push(')');
-        }
-        _ => {
-            drop(data);
-            for child in node.children() {
-                collect_alt_markdown(child, out);
-            }
-        }
-    }
-}
-
-/// #1417: re-parse a stored markdown-form alt into inline AST nodes in
-/// `arena` (the save direction). Returns the paragraph's children,
-/// detached and ready to append under an Image node. Falls back to a
-/// single plain Text node when the alt does not parse to a paragraph
-/// (defensive; plain alts parse to exactly that anyway).
-fn alt_markdown_to_nodes<'a>(arena: &'a Arena<'a>, alt: &str) -> Vec<&'a AstNode<'a>> {
-    let options = commonmark_options();
-    let root = parse_document(arena, alt, &options);
-    if let Some(paragraph) = root
-        .children()
-        .find(|n| matches!(n.data.borrow().value, NodeValue::Paragraph))
-    {
-        let nodes: Vec<&'a AstNode<'a>> = paragraph.children().collect();
-        for n in &nodes {
-            n.detach();
-        }
-        if !nodes.is_empty() {
-            return nodes;
-        }
-    }
-    vec![&*arena.alloc(AstNode::from(NodeValue::Text(alt.to_owned().into())))]
-}
-
-/// Escape a value for a double-quoted HTML attribute (#873): `&` first, so
-/// the entities introduced here are not themselves re-escaped, then the
-/// quote that would terminate the value, and `<`.
-fn escape_attr_value(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-}
-
-/// Decode the entities [`escape_attr_value`] can emit (plus `&gt;`/`&apos;`
-/// and numeric single-quote) in one left-to-right pass, so `&amp;quot;`
-/// decodes to the literal text `&quot;`, never to `"`.
-fn decode_attr_entities(value: &str) -> String {
-    if !value.contains('&') {
-        return value.to_owned();
-    }
-    let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(idx) = rest.find('&') {
-        out.push_str(&rest[..idx]);
-        let tail = &rest[idx..];
-        let (decoded, len) = if let Some(t) = tail.strip_prefix("&quot;") {
-            ('"', tail.len() - t.len())
-        } else if let Some(t) = tail.strip_prefix("&amp;") {
-            ('&', tail.len() - t.len())
-        } else if let Some(t) = tail.strip_prefix("&lt;") {
-            ('<', tail.len() - t.len())
-        } else if let Some(t) = tail.strip_prefix("&gt;") {
-            ('>', tail.len() - t.len())
-        } else if let Some(t) = tail.strip_prefix("&apos;") {
-            ('\'', tail.len() - t.len())
-        } else if let Some(t) = tail.strip_prefix("&#39;") {
-            ('\'', tail.len() - t.len())
-        } else {
-            out.push('&');
-            rest = &tail[1..];
-            continue;
-        };
-        out.push(decoded);
-        rest = &tail[len..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Parse the attributes of an HTML tag, starting just past its `<name`
-/// prefix (`tag_len` bytes: 4 for `<img`, 2 for `<a`).
-///
-/// Parses attribute-by-attribute instead of searching substrings (#872):
-/// a substring search for `src="` also matches `data-src="`, and
-/// attribute-looking text inside an earlier quoted value (e.g. `title=`
-/// inside `alt="..."`) was extracted as a real attribute. Scanning
-/// name=value pairs left to right records whole attribute names only, and
-/// a quoted value is consumed as that attribute's value alone. First
-/// occurrence of a name wins (HTML duplicate-attribute rule).
-fn parse_tag_attrs(html: &str, tag_len: usize) -> std::collections::HashMap<String, String> {
-    let bytes = html.as_bytes();
-    let mut pos = tag_len;
-    let mut map = std::collections::HashMap::new();
-    while pos < bytes.len() {
-        // Skip separators between attributes (whitespace, '/' of '/>').
-        while pos < bytes.len() && (bytes[pos].is_ascii_whitespace() || bytes[pos] == b'/') {
-            pos += 1;
-        }
-        if pos >= bytes.len() || bytes[pos] == b'>' {
-            break;
-        }
-        // Attribute name: up to '=', whitespace, '/' or '>'.
-        let name_start = pos;
-        while pos < bytes.len()
-            && !bytes[pos].is_ascii_whitespace()
-            && !matches!(bytes[pos], b'=' | b'/' | b'>')
-        {
-            pos += 1;
-        }
-        if pos == name_start {
-            break;
-        }
-        let name = html[name_start..pos].to_ascii_lowercase();
-        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-            pos += 1;
-        }
-        let mut value = String::new();
-        if pos < bytes.len() && bytes[pos] == b'=' {
-            pos += 1;
-            while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-                pos += 1;
-            }
-            if pos < bytes.len() && matches!(bytes[pos], b'"' | b'\'') {
-                let quote = bytes[pos];
-                pos += 1;
-                let value_start = pos;
-                while pos < bytes.len() && bytes[pos] != quote {
-                    pos += 1;
-                }
-                value = decode_attr_entities(&html[value_start..pos]);
-                if pos < bytes.len() {
-                    pos += 1; // closing quote
-                }
-            } else {
-                let value_start = pos;
-                while pos < bytes.len() && !bytes[pos].is_ascii_whitespace() && bytes[pos] != b'>' {
-                    pos += 1;
-                }
-                value = decode_attr_entities(&html[value_start..pos]);
-            }
-        }
-        // First occurrence wins (HTML duplicate-attribute rule).
-        map.entry(name).or_insert(value);
-    }
-    map
-}
-
-/// Parse an `<img>` width/height value into a pixel count (#2180,
-/// grammar pinned by triage task 3225). The whole stack is
-/// numeric-pixel -- the PM node stores a JSON number, the emitter
-/// writes bare integers, the editor renders `${width}px` -- so only
-/// lossless normalizations are accepted: trim surrounding
-/// whitespace, strip ONE trailing `px` suffix (ASCII
-/// case-insensitive), then the rest must be a pixel integer, where a
-/// decimal form counts only when its value is exactly integral
-/// (`200.0` -> 200, `200.5` refused). Percents, other units, and
-/// junk return `None`; the caller warns instead of dropping the
-/// value silently, as the pre-#2180 bare-`u64` parse did.
-fn parse_integral_decimal(raw: &str) -> Option<u64> {
-    let (negative, raw) = if let Some(raw) = raw.strip_prefix('-') {
-        (true, raw)
-    } else {
-        (false, raw.strip_prefix('+').unwrap_or(raw))
-    };
-
-    let (mantissa, exponent) = if let Some(index) = raw.find(|ch| matches!(ch, 'e' | 'E')) {
-        (&raw[..index], raw[index + 1..].parse::<i32>().ok()?)
-    } else {
-        (raw, 0)
-    };
-    let (integer, fractional) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    if integer.is_empty() && fractional.is_empty() {
-        return None;
-    }
-    if !integer.bytes().all(|byte| byte.is_ascii_digit())
-        || !fractional.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return None;
-    }
-
-    let mut digits = String::with_capacity(integer.len() + fractional.len());
-    digits.push_str(integer);
-    digits.push_str(fractional);
-    let significant = digits.trim_start_matches('0');
-    if significant.is_empty() {
-        // Keep the exact zero spellings accepted by the former float parser,
-        // including -0.0, without converting through f64.
-        return Some(0);
-    }
-
-    let fractional_digits = i32::try_from(fractional.len()).ok()?;
-    let scale = exponent.checked_sub(fractional_digits)?;
-    let integer = if scale >= 0 {
-        let trailing_zeroes = usize::try_from(scale).ok()?;
-        if significant.len().checked_add(trailing_zeroes)? > 20 {
-            return None;
-        }
-        let mut integer = String::with_capacity(significant.len() + trailing_zeroes);
-        integer.push_str(significant);
-        integer.push_str(&"0".repeat(trailing_zeroes));
-        integer.parse::<u64>().ok()?
-    } else {
-        let trailing_zeroes = usize::try_from(scale.checked_neg()?).ok()?;
-        if trailing_zeroes > significant.len() {
-            return None;
-        }
-        let split = significant.len() - trailing_zeroes;
-        if significant[split..].bytes().any(|byte| byte != b'0') {
-            return None;
-        }
-        significant[..split].parse::<u64>().ok()?
-    };
-
-    if negative && integer != 0 {
-        return None;
-    }
-    Some(integer)
-}
-
-fn parse_dimension(raw: &str) -> Option<u64> {
-    let trimmed = raw.trim();
-    // Byte-wise suffix check: slicing the string at len()-2 to test
-    // the suffix would panic when that offset falls inside a multibyte
-    // UTF-8 character (e.g. fullwidth digits). When the last two bytes
-    // are the ASCII bytes p/x, len()-2 is a char boundary, so the
-    // slice below is safe.
-    let bytes = trimmed.as_bytes();
-    let body = if bytes.len() >= 2 && bytes[bytes.len() - 2..].eq_ignore_ascii_case(b"px") {
-        &trimmed[..trimmed.len() - 2]
-    } else {
-        trimmed
-    };
-    if let Ok(n) = body.parse::<u64>() {
-        return Some(n);
-    }
-    parse_integral_decimal(body)
-}
-
-/// Parse an HTML `<img>` tag and extract attributes into a `ProseMirror` image node.
-///
-/// Returns `Some(json)` if the input looks like `<img src="..." ... />`, otherwise `None`.
-fn find_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> Option<usize> {
-    haystack
-        .as_bytes()
-        .windows(needle.len())
-        .position(|candidate| candidate.eq_ignore_ascii_case(needle))
-}
-
-fn parse_img_tag(html: &str) -> Option<Value> {
-    let trimmed = html.trim();
-    let bytes = trimmed.as_bytes();
-    if !bytes
-        .get(..4)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<img"))
-        || !matches!(
-            bytes.get(4).copied(),
-            Some(after_name) if after_name.is_ascii_whitespace() || after_name == b'>'
-        )
-    {
-        return None;
-    }
-
-    let parsed = parse_tag_attrs(trimmed, 4);
-    let attr = |name: &str| parsed.get(name).map(String::as_str);
-
-    let src = sanitize_image_url(attr("src")?); // src is required
-    let mut attrs = json!({"src": src});
-
-    if let Some(alt) = attr("alt") {
-        attrs["alt"] = json!(alt);
-    }
-    if let Some(title) = attr("title") {
-        attrs["title"] = json!(title);
-    }
-    if let Some(w) = attr("width") {
-        match parse_dimension(w) {
-            Some(n) => attrs["width"] = json!(n),
-            None => tracing::warn!("dropping unsupported image width {w:?} in <img> import"),
-        }
-    }
-    if let Some(h) = attr("height") {
-        match parse_dimension(h) {
-            Some(n) => attrs["height"] = json!(n),
-            None => tracing::warn!("dropping unsupported image height {h:?} in <img> import"),
-        }
-    }
-
-    Some(json!({
-        "type": "image",
-        "attrs": attrs
-    }))
-}
-
-/// #5745: the allowed-scheme oracle for link URLs.
-///
-/// A link URL is safe iff, after removing the characters browsers strip
-/// while parsing a URL (TAB/LF/CR anywhere, leading C0 controls and
-/// spaces), it either has no scheme at all — a relative or internal
-/// reference, a fragment, a query, or a protocol-relative `//host/path`
-/// reference, none of which can name an executable scheme — or its
-/// scheme is exactly `http`, `https`, or `mailto` (case-insensitive).
-/// Everything else (`javascript:`, `data:`, `vbscript:`, any unknown
-/// scheme, and any obfuscation of those the stripping above exposes)
-/// is unsafe. This explicit allowed set is the oracle every link test
-/// for #5745 checks against; do not rely on browser sanitization.
-fn link_url_is_safe(url: &str) -> bool {
-    let probe: String = url
-        .chars()
-        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
-        .collect();
-    let probe = probe.trim_start_matches(|c: char| c.is_ascii_control() || c == ' ');
-    // A scheme exists only when a `:` precedes any `/`, `?`, or `#`.
-    let mut scheme_end = None;
-    for (i, c) in probe.char_indices() {
-        match c {
-            ':' => {
-                scheme_end = Some(i);
-                break;
-            }
-            '/' | '?' | '#' => break,
-            _ => {}
-        }
-    }
-    let Some(colon) = scheme_end else {
-        return true; // no scheme: relative / fragment / query / protocol-relative
-    };
-    let scheme = &probe[..colon];
-    let mut chars = scheme.chars();
-    let valid_scheme = !scheme.is_empty()
-        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
-    if !valid_scheme {
-        // A `:` in the first segment whose prefix is not a scheme
-        // (e.g. a relative path containing a colon) is not a scheme.
-        return true;
-    }
-    matches!(
-        scheme.to_ascii_lowercase().as_str(),
-        "http" | "https" | "mailto"
-    )
-}
-
-/// #5745: return `url` unchanged when [`link_url_is_safe`], else the
-/// inert fragment `"#"`. The link text and mark survive; only the
-/// executable target is removed, and `"#"` re-parses as a safe
-/// fragment, so sanitized documents are a stable round-trip fixpoint.
-fn sanitize_link_url(url: &str) -> String {
-    if link_url_is_safe(url) {
-        url.to_owned()
-    } else {
-        "#".to_owned()
-    }
-}
-
-/// #6364: the image-specific allowed-scheme oracle.
-///
-/// Image URLs allow relative/internal references and `http`/`https`, plus
-/// data URLs whose media type is one of the supported raster formats. SVG is
-/// deliberately excluded because it can contain active content. As with
-/// links, inspect the scheme after stripping TAB/LF/CR and leading C0
-/// controls/spaces so browser URL parsing cannot expose an obfuscated scheme.
-fn image_url_is_safe(url: &str) -> bool {
-    let probe: String = url
-        .chars()
-        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
-        .collect();
-    let probe = probe.trim_start_matches(|c: char| c.is_ascii_control() || c == ' ');
-
-    // A scheme exists only when a `:` precedes any `/`, `?`, or `#`.
-    let mut scheme_end = None;
-    for (i, c) in probe.char_indices() {
-        match c {
-            ':' => {
-                scheme_end = Some(i);
-                break;
-            }
-            '/' | '?' | '#' => break,
-            _ => {}
-        }
-    }
-    let Some(colon) = scheme_end else {
-        return true;
-    };
-
-    let scheme = &probe[..colon];
-    let mut chars = scheme.chars();
-    let valid_scheme = !scheme.is_empty()
-        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
-    if !valid_scheme {
-        // Match the link oracle: a colon in a segment that is not a valid
-        // scheme (for example a relative path) does not introduce a scheme.
-        return true;
-    }
-
-    let Some((raw_scheme, _)) = url.split_once(':') else {
-        return true;
-    };
-    if raw_scheme.chars().any(|c| matches!(c, '\t' | '\n' | '\r')) {
-        return false;
-    }
-
-    let scheme = scheme.to_ascii_lowercase();
-    match scheme.as_str() {
-        "http" | "https" => true,
-        "data" => {
-            // Reject control-character spellings in the scheme or data URL
-            // header, even if removing them would produce an allowed MIME
-            // type. Controls in the encoded payload do not affect the scheme
-            // or media type and are left untouched.
-            let Some((header, _)) = url.split_once(',') else {
-                return false;
-            };
-            if header.chars().any(|c| matches!(c, '\t' | '\n' | '\r')) {
-                return false;
-            }
-            let Some((metadata, _)) = probe[colon + 1..].split_once(',') else {
-                return false;
-            };
-            let media_type = metadata.split(';').next().unwrap_or_default();
-            matches!(
-                media_type.to_ascii_lowercase().as_str(),
-                "image/png"
-                    | "image/gif"
-                    | "image/jpeg"
-                    | "image/webp"
-                    | "image/avif"
-                    | "image/bmp"
-            )
-        }
-        _ => false,
-    }
-}
-
-/// #6364: return `url` unchanged for an allowed image URL, otherwise the
-/// inert fragment `#`. Keeping only the target neutralized preserves the
-/// image node and makes the sanitized document a stable round-trip fixpoint.
-fn sanitize_image_url(url: &str) -> String {
-    if image_url_is_safe(url) {
-        url.to_owned()
-    } else {
-        "#".to_owned()
-    }
-}
-
-/// Parse an HTML `<a ...>` opening tag, returning its `href` and optional
-/// `title`. Returns `None` for anything else, including an anchor with no
-/// (or an empty) `href`.
-fn parse_anchor_tag(html: &str) -> Option<(String, Option<String>)> {
-    let trimmed = html.trim();
-    let after_name = trimmed.as_bytes().get(2).copied()?;
-    if !trimmed
-        .as_bytes()
-        .get(..2)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<a"))
-        || !(after_name.is_ascii_whitespace() || after_name == b'>')
-    {
-        return None;
-    }
-    let parsed = parse_tag_attrs(trimmed, 2);
-    let href = parsed.get("href")?;
-    if href.is_empty() {
-        return None;
-    }
-    let title = parsed.get("title").filter(|t| !t.is_empty()).cloned();
-    // #5745: a raw-HTML anchor wrapping an image gets the same
-    // allowed-scheme treatment as a Markdown link; an unsafe href is
-    // neutralized (not dropped, which would strand the raw anchor tag
-    // as a verbatim html_inline atom carrying the executable URL).
-    Some((sanitize_link_url(href), title))
-}
-
-/// Attach a wrapping anchor's link to an image node (#880/#893), in the
-/// same `linkHref`/`linkTitle` attrs the markdown `Image` arm produces.
-fn image_with_link(mut img: Value, href: &str, link_title: Option<&str>) -> Value {
-    img["attrs"]["linkHref"] = json!(href);
-    if let Some(title) = link_title {
-        img["attrs"]["linkTitle"] = json!(title);
-    }
-    img
-}
-
-/// Parse the combined `<a href="..."><img ... /></a>` form (#893) — the
-/// sized linked image emission when comrak keeps it in a single literal
-/// (e.g. an `HtmlBlock`) instead of splitting it into sibling `HtmlInline`
-/// nodes (that split form is merged in `collect_inline_children`).
-fn parse_linked_img_tag(html: &str) -> Option<Value> {
-    let trimmed = html.trim();
-    let (href, link_title) = parse_anchor_tag(trimmed)?;
-    let img_start = find_ascii_case_insensitive(trimmed, b"<img")?;
-    if !trimmed[..img_start].trim_end().ends_with('>')
-        || find_ascii_case_insensitive(&trimmed[img_start..], b"</a>").is_none()
-    {
-        return None;
-    }
-    let img = parse_img_tag(&trimmed[img_start..])?;
-    Some(image_with_link(img, &href, link_title.as_deref()))
-}
-
-/// Placement categories for the #1043 validation walk. A node whose type
-/// is not listed here is left to `json_to_ast`, which reports it as
-/// `ConversionError::UnknownType` — validation never masks that error.
-/// (`front_matter` is intentionally unlisted: its doc-first-child rule
-/// needs the child index, so `validate_placement` checks it directly.)
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Placement {
-    /// Block-level node (`paragraph`, `table`, lists, …).
-    Block,
-    /// Inline node (`text`, `image`, `hard_break`, …).
-    Inline,
-    /// `list_item` — only legal directly inside a bullet/ordered list.
-    ListItem,
-    /// `task_list_item` — only legal directly inside a `task_list`.
-    TaskListItem,
-    /// `table_row` — only legal directly inside a `table`.
-    TableRow,
-    /// `table_header` / `table_cell` — only legal inside a `table_row`.
-    TableCell,
-}
-
-fn placement_of(node_type: &str) -> Option<Placement> {
-    match node_type {
-        "paragraph"
-        | "heading"
-        | "blockquote"
-        | "code_block"
-        | "horizontal_rule"
-        | "bullet_list"
-        | "ordered_list"
-        | "task_list"
-        | "table"
-        | "footnote_definition" => Some(Placement::Block),
-        "text" | "image" | "hard_break" | "html_inline" | "footnote_reference" => {
-            Some(Placement::Inline)
-        }
-        "list_item" => Some(Placement::ListItem),
-        "task_list_item" => Some(Placement::TaskListItem),
-        "table_row" => Some(Placement::TableRow),
-        "table_header" | "table_cell" => Some(Placement::TableCell),
-        _ => None,
-    }
-}
-
-/// Whether a child of category `child` may appear directly inside a
-/// parent of type `parent`. Mirrors the comrak AST containment rules for
-/// the node kinds this codec emits, at the `ProseMirror` level.
-fn placement_allowed(parent: &str, child: Placement) -> bool {
-    match parent {
-        // The document and block containers hold blocks only.
-        "doc" | "blockquote" | "list_item" | "task_list_item" => child == Placement::Block,
-        // Inline containers hold inline content only.
-        "paragraph" | "heading" => child == Placement::Inline,
-        "bullet_list" | "ordered_list" => child == Placement::ListItem,
-        "task_list" => child == Placement::TaskListItem,
-        "table" => child == Placement::TableRow,
-        "table_row" => child == Placement::TableCell,
-        // PM table cells wrap blocks (unwrapped during conversion) and
-        // footnote definitions carry inline content on the PM side
-        // (re-wrapped during conversion, #945); both shapes are legal.
-        "table_header" | "table_cell" | "footnote_definition" => {
-            child == Placement::Block || child == Placement::Inline
-        }
-        "code_block" => false,
-        // Inline leaves and anything unlisted impose no child rules here;
-        // structural surprises inside them are json_to_ast's to report.
-        _ => true,
-    }
-}
-
-/// Validate block/inline placement over a `ProseMirror` document before
-/// conversion (#1043). `json_to_ast` places any known node type anywhere;
-/// a misplaced node (a `text` node directly under `doc`, a `paragraph`
-/// inside a `paragraph`, …) produces an ill-formed comrak AST that
-/// panics the formatter in debug builds and silently emits invalid
-/// markdown in release builds. Reject those documents up front with
-/// `ConversionError::MisplacedNode` instead.
-fn validate_placement(doc: &Value) -> Result<(), ConversionError> {
-    fn walk(
-        node: &Value,
-        parent: Option<&str>,
-        index_in_parent: Option<usize>,
-    ) -> Result<(), ConversionError> {
-        let Some(node_type) = node["type"].as_str() else {
-            // Missing type: json_to_ast reports MissingType; keep that
-            // error's precedence.
-            return Ok(());
-        };
-        // #1369: `front_matter` is legal only as the first child of `doc`
-        // (comrak only parses it there). Anything else is misplaced.
-        if node_type == "front_matter" {
-            let first_child_of_doc = parent == Some("doc") && index_in_parent == Some(0);
-            if !first_child_of_doc {
-                return Err(ConversionError::MisplacedNode {
-                    parent: parent.unwrap_or("<root>").to_owned(),
-                    child: node_type.to_owned(),
-                });
-            }
-        } else if let Some(parent_type) = parent
-            && let Some(category) = placement_of(node_type)
-            && !placement_allowed(parent_type, category)
-        {
-            return Err(ConversionError::MisplacedNode {
-                parent: parent_type.to_owned(),
-                child: node_type.to_owned(),
-            });
-        }
-        // code_block content is literal text children only.
-        if node_type == "code_block" {
-            if let Some(content) = node["content"].as_array() {
-                for child in content {
-                    if child["type"].as_str() != Some("text") {
-                        return Err(ConversionError::MisplacedNode {
-                            parent: node_type.to_owned(),
-                            child: child["type"].as_str().unwrap_or("<missing>").to_owned(),
-                        });
-                    }
-                }
-            }
-            return Ok(());
-        }
-        // front_matter carries no PM child content (its payload is the
-        // `text` attr); nothing to recurse into.
-        if node_type == "front_matter" {
-            if node["content"].as_array().is_some_and(|c| !c.is_empty()) {
-                return Err(ConversionError::MisplacedNode {
-                    parent: node_type.to_owned(),
-                    child: "<content>".to_owned(),
-                });
-            }
-            return Ok(());
-        }
-        if let Some(content) = node["content"].as_array() {
-            for (idx, child) in content.iter().enumerate() {
-                walk(child, Some(node_type), Some(idx))?;
-            }
-        }
-        Ok(())
-    }
-    walk(doc, None, None)
-}
-
-/// Convert `ProseMirror` JSON document to markdown text.
-///
-/// Unknown marks are skipped by design (#1045): marks outside the
-/// codec's vocabulary (`em`, `strong`, `strikethrough`, `link`, plus
-/// the `code` mark handled specially by `create_marked_text`) are
-/// dropped while the marked text itself is kept verbatim. This
-/// differs from unknown *nodes*, which return
-/// `ConversionError::UnknownType`, because an unknown inline style
-/// can be shed without corrupting the document text. Known marks
-/// render byte-identically whether or not unknown marks are present.
-///
-/// # Arguments
-///
-/// * `doc` - The `ProseMirror` JSON document.
-///
-/// # Returns
-///
-/// The markdown text, or an error if conversion fails.
-///
-/// # Errors
-///
-/// Returns `ConversionError` if the JSON structure is invalid.
-pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
-    validate_placement(doc)?;
-    let arena = Arena::new();
-    let root = json_to_ast(&arena, doc)?;
-    // #1418: hoist delimiter-mark edge spaces that a word character
-    // touches out of their wrappers, before rendering (see
-    // `hoist_delimiter_edge_spaces`).
-    hoist_delimiter_edge_spaces(&arena, root);
-    // #1496: force info-less code blocks inside blockquotes onto the
-    // renderer's fenced branch via a placeholder info string, stripped
-    // from the rendered output below (see
-    // `force_fenced_code_blocks_in_blockquotes`).
-    let fence_tokens = force_fenced_code_blocks_in_blockquotes(root);
-    // #1019: comrak's renderer percent-encodes a space in a link/image
-    // destination (`my notes.md` -> `my%20notes.md`) instead of emitting
-    // the <...> angle form, silently breaking relative file links and
-    // mutating the PM href on reparse. #1423: the same mangling hits the
-    // other whitespace characters — a tab is encoded to %09 and a newline
-    // destroys the link outright (`% `). The renderer has no angle-form
-    // option, so swap each whitespace-carrying destination for a unique
-    // placeholder before rendering and restore it as <raw destination>
-    // afterwards.
-    let substitutions = substitute_spaced_destinations(root);
-    let mut output = String::new();
-    format_commonmark(root, &commonmark_options(), &mut output)?;
-    for (placeholder, raw) in substitutions {
-        output = output.replace(&placeholder, &format!("<{raw}>"));
-    }
-    for token in fence_tokens {
-        output = strip_fence_placeholder(&output, &token);
-    }
-    let output = restore_github_alert_markers(&output);
-    Ok(strip_end_list_separators(doc, &output))
-}
-
-/// Undo the CommonMark renderer's escaping of a GitHub alert marker when
-/// the marker is the first content of its blockquote. Markers elsewhere
-/// (for example, followed by words on the same line) remain ordinary
-/// escaped text. GitHub requires the marker to be the first thing in the
-/// blockquote.
-///
-/// The scan skips fenced code blocks and raw HTML blocks: those are
-/// literal content, so a line like `> \[\!NOTE\]` inside one is authored
-/// text, not a renderer-escaped marker, and rewriting it would silently
-/// change the code (Codex P2 on the first cut).
-fn restore_github_alert_markers(markdown: &str) -> String {
-    let mut output = String::with_capacity(markdown.len());
-    let mut quote_has_content = [false; 64];
-    let mut fence = FenceTracker::default();
-    let mut fence_depth: Option<usize> = None;
-    let mut html = HtmlBlockTracker::default();
-    let mut html_depth: Option<usize> = None;
-    let mut at_block_start = true;
-
-    for line in markdown.split_inclusive('\n') {
-        let content_start = line.trim_start_matches(' ');
-        let leading_spaces = line.len() - content_start.len();
-        let (depth, rest) = split_quote_prefix(content_start);
-
-        // Four columns of indentation is code, and the markers below only
-        // apply inside a blockquote. A quote nested deeper than the table
-        // is left untouched rather than risking an out-of-range walk.
-        if leading_spaces > 3 || depth >= quote_has_content.len() {
-            quote_has_content.fill(false);
-            fence.reset();
-            fence_depth = None;
-            html.reset();
-            html_depth = None;
-            output.push_str(line);
-            at_block_start = leading_spaces > 3 || rest.trim().is_empty();
-            continue;
-        }
-
-        // An open fence or HTML block owns every following line of its
-        // container, including lines that look like quote markers: that
-        // is exactly the literal-code case above.
-        if let Some(opened_at) = fence_depth {
-            match strip_quote_depth(content_start, opened_at) {
-                Some(body) => {
-                    fence.feed(fence_feed_line(body));
-                    if !fence.in_fence() {
-                        fence_depth = None;
-                    }
-                    output.push_str(line);
-                    at_block_start = false;
-                    continue;
-                }
-                None => {
-                    fence.reset();
-                    fence_depth = None;
-                }
-            }
-        }
-        if let Some(opened_at) = html_depth {
-            match strip_quote_depth(content_start, opened_at) {
-                Some(body) => {
-                    html.feed(body, at_block_start);
-                    if !html.in_html() {
-                        html_depth = None;
-                    }
-                    output.push_str(line);
-                    at_block_start = false;
-                    continue;
-                }
-                None => {
-                    html.reset();
-                    html_depth = None;
-                }
-            }
-        }
-
-        // A fence or HTML block opening on this line makes its interior
-        // literal from here on.
-        if fence.feed(fence_feed_line(rest)) {
-            fence_depth = Some(depth);
-            output.push_str(line);
-            at_block_start = false;
-            continue;
-        }
-        if html.feed(rest, at_block_start) {
-            html_depth = Some(depth);
-            output.push_str(line);
-            at_block_start = false;
-            continue;
-        }
-
-        // Nothing outside a blockquote can open an alert, and a line
-        // outside one ends every quote that was open.
-        if depth == 0 {
-            quote_has_content.fill(false);
-            output.push_str(line);
-            at_block_start = rest.trim().is_empty() || starts_new_block(rest);
-            continue;
-        }
-
-        for seen in quote_has_content.iter_mut().skip(depth + 1) {
-            *seen = false;
-        }
-
-        let trimmed = rest.trim();
-        // Comrak emits a hard break with a trailing backslash. Ignore that
-        // renderer syntax while recognizing the marker; the suffix is kept
-        // intact when replacing the escaped marker below.
-        let hardbreak = trimmed.ends_with('\\');
-        let marker_token = trimmed.strip_suffix('\\').unwrap_or(trimmed);
-        let marker = match marker_token {
-            r"\[\!NOTE\]" => Some("[!NOTE]"),
-            r"\[\!TIP\]" => Some("[!TIP]"),
-            r"\[\!IMPORTANT\]" => Some("[!IMPORTANT]"),
-            r"\[\!WARNING\]" => Some("[!WARNING]"),
-            r"\[\!CAUTION\]" => Some("[!CAUTION]"),
-            _ => None,
-        };
-        // A marker only opens an alert when nothing above it in the
-        // quote -- at any depth -- has content yet. Marking ancestors
-        // when a deeper line carries content keeps the marker of a
-        // later paragraph in an outer quote escaped (Codex P2).
-        let quote_is_empty = depth > 0 && !quote_has_content[..=depth].iter().any(|seen| *seen);
-        if quote_is_empty
-            && !rest.starts_with(' ')
-            && !rest.starts_with('\t')
-            && let Some(marker) = marker
-        {
-            let marker_start = line.find(marker_token).unwrap_or(0);
-            let marker_end = marker_start + marker_token.len();
-            output.push_str(&line[..marker_start]);
-            output.push_str(marker);
-            let suffix = &line[marker_end..];
-            output.push_str(if hardbreak {
-                suffix.strip_prefix('\\').unwrap_or(suffix)
-            } else {
-                suffix
-            });
-            for seen in quote_has_content.iter_mut().take(depth + 1).skip(1) {
-                *seen = true;
-            }
-        } else {
-            output.push_str(line);
-            if !trimmed.is_empty() {
-                for seen in quote_has_content.iter_mut().take(depth + 1).skip(1) {
-                    *seen = true;
-                }
-            }
-        }
-        at_block_start = trimmed.is_empty() || starts_new_block(rest);
-    }
-
-    output
-}
-
-/// The start number a PM list renders with in Markdown, when it
-/// renders as an ordered list: ordered_list always (attrs.order,
-/// default 1); a task_list only when it carries attrs.order (#1370
-/// ordered task runs render as `1. [ ]`). Bullet-rendering lists and
-/// non-lists return None.
-fn ordered_start(node: &Value) -> Option<u64> {
-    let order = node["attrs"]["order"].as_u64();
-    match node["type"].as_str() {
-        Some("ordered_list") => Some(order.unwrap_or(1)),
-        Some("task_list") => order,
-        _ => None,
-    }
-}
-
-fn list_kind(node: &Value) -> Option<&str> {
-    match node["type"].as_str() {
-        Some(k @ ("bullet_list" | "ordered_list" | "task_list")) => Some(k),
-        _ => None,
-    }
-}
-
-/// The tightness a PM list effectively renders with: the stored
-/// `attrs.tight` when present; for a legacy task_list without the
-/// attribute, the same inference json_to_ast applies (loose if any
-/// item has more than one block child, else tight); bullet/ordered
-/// lists without the attribute render loose (json_to_ast defaults
-/// them to false). Boundary decisions in collect_boundary_kinds must
-/// use this, not the raw attribute: comparing raw attrs mistook a
-/// legacy tight task list for loose (CodeRabbit review, PR #3258).
-fn effective_tight(node: &Value) -> bool {
-    if let Some(tight) = node["attrs"]["tight"].as_bool() {
-        return tight;
-    }
-    if node["type"].as_str() == Some("task_list") {
-        return !node["content"].as_array().is_some_and(|items| {
-            items.iter().any(|item| {
-                item["content"]
-                    .as_array()
-                    .is_some_and(|blocks| blocks.len() > 1)
-            })
-        });
-    }
-    false
-}
-
-/// #1397: comrak's renderer separates adjacent list siblings with an
-/// `<!-- end list -->` comment - renderer-internal markup that lands in
-/// the user's file. Where the two lists are of DIFFERENT PM kinds the
-/// comment is the only thing keeping them apart, and it is not needed:
-/// a change of list type ends a list on reparse all by itself (and the
-/// #1370 parse-side split rebuilds task/plain runs), so the separator
-/// line is dropped and the lists sit directly adjacent in the text -
-/// tight lists stay tight, loose lists keep their blank lines. Where
-/// the kinds are the SAME (two ordered lists, two task lists) dropping
-/// it would merge the lists and lose restart/order information, so the
-/// separator stays for those pairs. It also stays for a DIFFERENT-kind
-/// pair that renders as the same ordered Markdown list (an ordered_list
-/// next to a task_list carrying `attrs.order`, or vice versa) when the
-/// second list does not start exactly where the first list's numbering
-/// ends: merging those on reparse renumbers the second run and loses
-/// its restart (Codex review, PR #3258). If the lines found in the output
-/// do not line up one-to-one with the boundaries computed from the doc,
-/// the output is returned untouched.
-/// The fence run a rendered line opens or closes, if any: returns the
-/// fence character and the remainder of the line starting at the run.
-/// List-marker prefixes are stripped first (blockquote `>` markers and
-/// indentation, then bullet / ordered / task-checkbox markers, repeated
-/// for nested items), because a code block that is a list item's first
-/// block renders its opening fence immediately after the marker
-/// (`- ``` `). Plain lines return their own trimmed remainder.
-fn list_fence_rest(line: &str) -> Option<(char, &str)> {
-    let mut rest = line.trim_start_matches(['>', ' ']).trim_start();
-    loop {
-        let mut stripped = false;
-        for marker in ["- ", "+ ", "* ", "[ ] ", "[x] ", "[X] "] {
-            if let Some(r) = rest.strip_prefix(marker) {
-                rest = r.trim_start();
-                stripped = true;
-                break;
-            }
-        }
-        if stripped {
-            continue;
-        }
-        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
-        if digits > 0 {
-            let after = &rest[digits..];
-            for marker in [". ", ") "] {
-                if let Some(r) = after.strip_prefix(marker) {
-                    rest = r.trim_start();
-                    stripped = true;
-                    break;
-                }
-            }
-        }
-        if !stripped {
-            break;
-        }
-    }
-    if rest.starts_with("```") {
-        Some(('`', rest))
-    } else if rest.starts_with("~~~") {
-        Some(('~', rest))
-    } else {
-        None
-    }
-}
-
-/// Whether a list's first item renders empty (no text, no block content
-/// beyond empty paragraphs): an empty list item cannot interrupt a
-/// paragraph under CommonMark, whatever its marker (Codex review,
-/// PR #3258: `- a\n\n1.\n2. b` saved without the blank reparsed the
-/// empty `1.` as lazy continuation text and lost the ordered list).
-fn list_starts_with_empty_item(list: &Value) -> bool {
-    let Some(first) = list["content"].as_array().and_then(|items| items.first()) else {
-        return false;
-    };
-    fn node_is_empty(node: &Value) -> bool {
-        if node["text"].as_str().is_some_and(|t| !t.trim().is_empty()) {
-            return false;
-        }
-        match node["type"].as_str() {
-            Some("paragraph" | "list_item" | "task_list_item" | "text") | None => {}
-            Some(_) => return false,
-        }
-        node["content"]
-            .as_array()
-            .is_none_or(|parts| parts.iter().all(node_is_empty))
-    }
-    node_is_empty(first)
-}
-
-fn strip_end_list_separators(doc: &Value, output: &str) -> String {
-    // Recompute with kinds: the drop decision needs them, so collect
-    // (prev_kind, kind, tight_pair, merge_safe, needs_blank) tuples
-    // alongside.
-    let mut kinds: Vec<(String, String, bool, bool, bool)> = Vec::new();
-    collect_boundary_kinds(doc, &mut kinds);
-    if kinds.is_empty() {
-        return output.to_string();
-    }
-    let is_separator_line =
-        |line: &str| line.trim_start_matches(['>', ' ']).trim() == "<!-- end list -->";
-    let is_blank_line = |line: &str| line.trim_start_matches(['>', ' ']).trim().is_empty();
-    let lines: Vec<&str> = output.lines().collect();
-    // Codex review, PR #3258: a separator-looking line inside a fenced
-    // code block is authored content, not renderer markup - it must
-    // neither count toward the boundary correspondence nor be dropped.
-    // Track fence state (``` / ~~~, optionally blockquote-prefixed) and
-    // only treat lines outside fences as separators.
-    let mut in_fence = false;
-    let mut fence_char = '`';
-    let mut fence_len = 0usize;
-    // Codex review, PR #3258: raw HTML blocks are literal content too.
-    // A backtick-only line inside one (e.g. a <div> wrapping a ``` line)
-    // is not a fence opener, and a separator-looking line inside the
-    // block is authored HTML, not renderer markup. Track HTML block
-    // state (CommonMark: the block runs until a blank line; an HTML
-    // comment block runs until its --> closer) and exclude its lines
-    // from both fence tracking and separator counting.
-    let mut in_html = false;
-    let mut html_is_comment = false;
-    let mut is_separator: Vec<bool> = Vec::with_capacity(lines.len());
-    for line in &lines {
-        let html_probe = line.trim_start_matches(['>', ' ']).trim();
-        if in_html {
-            is_separator.push(false);
-            if html_is_comment {
-                if html_probe.contains("-->") {
-                    in_html = false;
-                    html_is_comment = false;
-                }
-            } else if html_probe.is_empty() {
-                in_html = false;
-            }
-            continue;
-        }
-        if !in_fence && !is_separator_line(line) {
-            let second = html_probe.chars().nth(1);
-            let opens_html = html_probe.starts_with('<')
-                && second.is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'));
-            if opens_html {
-                is_separator.push(false);
-                if html_probe.starts_with("<!--") {
-                    if !html_probe[4..].contains("-->") {
-                        in_html = true;
-                        html_is_comment = true;
-                    }
-                } else {
-                    in_html = true;
-                }
-                continue;
-            }
-        }
-        // Codex review, PR #3258: a fence can open immediately after a
-        // list marker (a list item whose first block is a code block
-        // renders as `- ``` `): strip any list-marker prefixes (bullet,
-        // ordered, task checkbox, nested) before looking for the fence
-        // run, or the opener is missed, the fence's literal content is
-        // counted as a separator, and the closing fence is mistaken
-        // for an opener that hides the real separator.
-        let fence_rest = list_fence_rest(line);
-        let fence_marker = fence_rest.map(|(c, _)| c);
-        match fence_marker {
-            Some(c) if !in_fence => {
-                in_fence = true;
-                fence_char = c;
-                fence_len = fence_rest
-                    .map(|(_, rest)| rest.chars().take_while(|&ch| ch == c).count())
-                    .unwrap_or(0);
-                is_separator.push(false);
-            }
-            // CodeRabbit review, PR #3258: a fence closes only on a
-            // BARE run of the fence character at least as long as the
-            // opener. A content line such as ```rust starts with the
-            // marker but is not a closer; ending the fence there let a
-            // separator-looking line later in the code block be counted
-            // (and dropped) as renderer markup, losing authored lines.
-            Some(c)
-                if c == fence_char
-                    && fence_rest.is_some_and(|(_, rest)| {
-                        rest.trim_end().chars().all(|ch| ch == c)
-                            && rest.trim_end().len() >= fence_len
-                    }) =>
-            {
-                in_fence = false;
-                is_separator.push(false);
-            }
-            _ => is_separator.push(!in_fence && is_separator_line(line)),
-        }
-    }
-    let found = is_separator.iter().filter(|b| **b).count();
-    if found != kinds.len() {
-        return output.to_string();
-    }
-    let mut boundary = kinds.iter();
-    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
-    let mut idx = 0;
-    while idx < lines.len() {
-        let line = lines[idx];
-        if is_separator[idx] {
-            match boundary.next() {
-                Some((a, b, tight_pair, merge_safe, needs_blank)) if a != b && *merge_safe => {
-                    // Drop the separator. The renderer also puts a blank
-                    // line on each side of it; with the comment gone,
-                    // blanks between the lists would fuse them into ONE
-                    // loose list on reparse. A tight pair keeps no blank
-                    // line at all; a loose pair keeps exactly one. A
-                    // needs_blank pair also keeps exactly one: an ordered
-                    // list starting above 1 cannot interrupt the previous
-                    // item's paragraph, so with no blank line at all its
-                    // first line reparses as a lazy continuation and the
-                    // list is lost (Codex review, PR #3258).
-                    let prev_blank = kept.last().is_some_and(|l| is_blank_line(l));
-                    let next_blank = lines.get(idx + 1).is_some_and(|l| is_blank_line(l));
-                    if prev_blank && next_blank {
-                        if *tight_pair && !*needs_blank {
-                            kept.pop();
-                        }
-                        idx += 1; // skip the following blank line too
-                    }
-                }
-                _ => kept.push(line),
-            }
-        } else {
-            kept.push(line);
-        }
-        idx += 1;
-    }
-    let mut out = kept.join("\n");
-    if output.ends_with('\n') {
-        out.push('\n');
-    }
-    out
-}
-
-/// (prev PM kind, PM kind, both tight, merge-safe, needs-blank) for every list
-/// adjacency in the doc, in render order, interleaved with authored
-/// htmlBlocks (recorded as ("", "", false, false, false) so they consume a
-/// separator-line slot but are never dropped - see
-/// strip_end_list_separators' caller contract). Merge-safe is false
-/// only when dropping the separator would merge two ordered-rendering
-/// lists whose numbering does not continue across the boundary.
-fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, bool, bool)>) {
-    let Some(content) = node["content"].as_array() else {
-        return;
-    };
-    let mut prev_list: Option<&Value> = None;
-    // Effective tight of the current consecutive bullet_list run's
-    // FIRST list (the tight json_to_ast's coalesce renders with).
-    let mut bullet_run_tight: Option<bool> = None;
-    for child in content {
-        let kind = list_kind(child);
-        if let (Some(prev), Some(kind)) = (prev_list, kind)
-            && !(list_kind(prev) == Some("bullet_list") && kind == "bullet_list")
-        {
-            // Codex review, PR #3258: when prev is a bullet_list that
-            // json_to_ast coalesced with earlier bullet siblings, the
-            // rendered list carries the FIRST sibling's tight, so the
-            // boundary must compare that effective tightness - the last
-            // original sibling's attr can differ and silently loosens
-            // the following run on reparse.
-            let prev_tight = if list_kind(prev) == Some("bullet_list") {
-                bullet_run_tight.unwrap_or_else(|| effective_tight(prev))
-            } else {
-                effective_tight(prev)
-            };
-            let child_tight = effective_tight(child);
-            let tight_pair = prev_tight && child_tight;
-            // Two lists that both render as ordered Markdown merge into
-            // one list on reparse if the separator goes; the merge is
-            // lossless only when the second list starts exactly where
-            // the first list's numbering ends (start + item count), so
-            // convert_list_runs recomputes the same run orders.
-            let ordered_merge_safe = match (ordered_start(prev), ordered_start(child)) {
-                (Some(prev_start), Some(next_start)) => {
-                    let prev_count = prev["content"].as_array().map_or(0, |c| c.len()) as u64;
-                    // attrs.order comes from the request's PM JSON; a
-                    // crafted start near u64::MAX must not overflow the
-                    // sum (debug builds panic, release builds wrap and
-                    // could drop a separator that should stay).
-                    prev_start.checked_add(prev_count) == Some(next_start)
-                }
-                _ => true,
-            };
-            // Codex review, PR #3258: two lists that render as the same
-            // Markdown list family (bullet-rendering: bullet_list and
-            // order-less task_list; ordered-rendering: ordered_list and
-            // ordered task_list) merge into ONE list on reparse when the
-            // separator drops, and convert_list_runs then copies one
-            // run's tight onto both. When their tight attributes differ
-            // that silently loosens/tightens a run and breaks the save
-            // fixpoint, so the separator stays. Different families split
-            // on reparse by marker type and keep their own tightness.
-            let renders_ordered = |n: &Value| ordered_start(n).is_some();
-            let tight_differs = prev_tight != child_tight;
-            let tight_merge_safe =
-                !(renders_ordered(prev) == renders_ordered(child) && tight_differs);
-            let merge_safe = ordered_merge_safe && tight_merge_safe;
-            // Codex review, PR #3258: an ordered-rendering list that
-            // starts above 1 cannot interrupt a paragraph, so when the
-            // previous list does not itself render ordered, the boundary
-            // must keep a blank line or the second list's first line
-            // reparses as a lazy continuation of the previous item.
-            // The empty-item guard (below) applies only across
-            // different rendered list families: within one family the
-            // two runs reparse as a single list, where an empty sibling
-            // item needs no blank - keeping one would loosen the merged
-            // list and break the save fixpoint (Codex review, PR #3258).
-            let needs_blank = (matches!(ordered_start(child), Some(start) if start != 1)
-                && ordered_start(prev).is_none())
-                || (list_starts_with_empty_item(child)
-                    && renders_ordered(prev) != renders_ordered(child));
-            out.push((
-                list_kind(prev).unwrap_or_default().to_string(),
-                kind.to_string(),
-                tight_pair,
-                merge_safe,
-                needs_blank,
-            ));
-        }
-        if child["type"].as_str() == Some("code_block")
-            && child["attrs"]["htmlBlock"].as_bool() == Some(true)
-            && child["content"].as_array().is_some_and(|parts| {
-                parts
-                    .iter()
-                    .filter_map(|n| n["text"].as_str())
-                    .collect::<String>()
-                    .trim()
-                    == "<!-- end list -->"
-            })
-        {
-            out.push((String::new(), String::new(), false, false, false));
-        }
-        // Codex review, PR #3258: lists inside a table cell are
-        // flattened to text by append_table_cell_child and emit no
-        // separator, so boundaries collected there have no line in
-        // the output to correspond to - skip the cell's subtree.
-        if !matches!(child["type"].as_str(), Some("table_header" | "table_cell")) {
-            collect_boundary_kinds(child, out);
-        }
-        if kind.is_some() {
-            if kind == Some("bullet_list") {
-                if prev_list.is_none_or(|p| list_kind(p) != Some("bullet_list")) {
-                    bullet_run_tight = Some(effective_tight(child));
-                }
-            } else {
-                bullet_run_tight = None;
-            }
-            prev_list = Some(child);
-        } else {
-            prev_list = None;
-            bullet_run_tight = None;
-        }
-    }
-}
-
-/// Whether a node value is a delimiter-mark wrapper (#1418): the
-/// marks whose markdown spelling is a delimiter run (`*`/`**`/`~~`)
-/// subject to CommonMark flanking rules. Link (bracket syntax) and
-/// code (backtick syntax) tolerate edge spaces and are excluded.
-fn is_delimiter_wrapper(value: &NodeValue) -> bool {
-    matches!(
-        value,
-        NodeValue::Emph | NodeValue::Strong | NodeValue::Strikethrough
-    )
-}
-
-/// The first text leaf of a mark chain, descending first children
-/// through mark wrappers (#1418). `None` when the first inline is
-/// anything else (an image or html node is a different mechanism —
-/// #1407/#1412 — and keeps the legacy behaviour).
-fn first_text_leaf<'a>(node: &'a AstNode<'a>) -> Option<&'a AstNode<'a>> {
-    let mut current = node;
-    loop {
-        let child = current.first_child()?;
-        let value = child.data.borrow().value.clone();
-        match value {
-            NodeValue::Text(_) => return Some(child),
-            _ if is_mark_wrapper(&value) => current = child,
-            _ => return None,
-        }
-    }
-}
-
-/// The last text leaf of a mark chain; mirror of `first_text_leaf`.
-fn last_text_leaf<'a>(node: &'a AstNode<'a>) -> Option<&'a AstNode<'a>> {
-    let mut current = node;
-    loop {
-        let child = current.last_child()?;
-        let value = child.data.borrow().value.clone();
-        match value {
-            NodeValue::Text(_) => return Some(child),
-            _ if is_mark_wrapper(&value) => current = child,
-            _ => return None,
-        }
-    }
-}
-
-/// The last character a node renders as inline content (#1418):
-/// text/code literals verbatim, breaks as whitespace, mark wrappers
-/// by their last inline descendant. Anything else yields `None`
-/// (treated as a non-word neighbour).
-fn last_rendered_char(node: &AstNode<'_>) -> Option<char> {
-    match &node.data.borrow().value {
-        NodeValue::Text(literal) => literal.to_string().chars().last(),
-        NodeValue::Code(code) => code.literal.chars().last(),
-        NodeValue::LineBreak | NodeValue::SoftBreak => Some('\n'),
-        value if is_mark_wrapper(value) => node.last_child().and_then(last_rendered_char),
-        _ => None,
-    }
-}
-
-/// The first character a node renders as; mirror of
-/// `last_rendered_char`.
-fn first_rendered_char(node: &AstNode<'_>) -> Option<char> {
-    match &node.data.borrow().value {
-        NodeValue::Text(literal) => literal.to_string().chars().next(),
-        NodeValue::Code(code) => code.literal.chars().next(),
-        NodeValue::LineBreak | NodeValue::SoftBreak => Some('\n'),
-        value if is_mark_wrapper(value) => node.first_child().and_then(first_rendered_char),
-        _ => None,
-    }
-}
-
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// Whether the inline character immediately before `node` is a word
-/// character (#1418), climbing through mark-wrapper ancestors while
-/// `node` sits at their leading edge. No rendered neighbour (block
-/// boundary) is not a word character.
-fn preceded_by_word_char(node: &AstNode<'_>) -> bool {
-    let mut current = node;
-    loop {
-        if let Some(prev) = current.previous_sibling() {
-            return last_rendered_char(prev).is_some_and(is_word_char);
-        }
-        match current.parent() {
-            Some(parent) if is_mark_wrapper(&parent.data.borrow().value) => current = parent,
-            _ => return false,
-        }
-    }
-}
-
-/// Whether the inline character immediately after `node` is a word
-/// character; mirror of `preceded_by_word_char`.
-fn followed_by_word_char(node: &AstNode<'_>) -> bool {
-    let mut current = node;
-    loop {
-        if let Some(next) = current.next_sibling() {
-            return first_rendered_char(next).is_some_and(is_word_char);
-        }
-        match current.parent() {
-            Some(parent) if is_mark_wrapper(&parent.data.borrow().value) => current = parent,
-            _ => return false,
-        }
-    }
-}
-
-/// Replace a text leaf's literal, detaching the leaf (and any mark
-/// wrappers it leaves childless) when the replacement is empty
-/// (#1418: a span whose whole text was edge spaces).
-fn set_text_leaf_text(leaf: &AstNode<'_>, new_text: &str) {
-    if !new_text.is_empty() {
-        leaf.data.borrow_mut().value = NodeValue::Text(new_text.to_owned().into());
-        return;
-    }
-    let mut current = leaf.parent();
-    leaf.detach();
-    while let Some(node) = current {
-        if !is_mark_wrapper(&node.data.borrow().value) || node.first_child().is_some() {
-            break;
-        }
-        current = node.parent();
-        node.detach();
-    }
-}
-
-/// Hoist one edge of one delimiter wrapper (#1418): move its leading
-/// (or trailing) spaces to a plain text node just outside the wrapper
-/// — but still inside any outer non-delimiter wrapper such as a link,
-/// which is exactly the sibling position next to this wrapper — when
-/// a word character touches the wrapper on that side.
-fn hoist_one_edge<'a>(arena: &'a Arena<'a>, wrapper: &'a AstNode<'a>, leading: bool) {
-    let touches_word = if leading {
-        preceded_by_word_char(wrapper)
-    } else {
-        followed_by_word_char(wrapper)
-    };
-    if !touches_word {
-        return;
-    }
-    let Some(leaf) = (if leading {
-        first_text_leaf(wrapper)
-    } else {
-        last_text_leaf(wrapper)
-    }) else {
-        return;
-    };
-    let text = match &leaf.data.borrow().value {
-        NodeValue::Text(literal) => literal.to_string(),
-        _ => return,
-    };
-    let spaces_len = if leading {
-        text.len() - text.trim_start_matches(' ').len()
-    } else {
-        text.len() - text.trim_end_matches(' ').len()
-    };
-    if spaces_len == 0 {
-        return;
-    }
-    let (spaces, rest) = if leading {
-        (text[..spaces_len].to_owned(), text[spaces_len..].to_owned())
-    } else {
-        (
-            text[text.len() - spaces_len..].to_owned(),
-            text[..text.len() - spaces_len].to_owned(),
-        )
-    };
-    // Insert the hoisted spaces while the wrapper is still attached:
-    // shrinking the leaf afterwards may detach the wrapper itself
-    // (a span whose whole text was edge spaces), and the space node
-    // must stay at the wrapper's position when that happens.
-    let space_node = arena.alloc(AstNode::from(NodeValue::Text(spaces.into())));
-    if leading {
-        wrapper.insert_before(space_node);
-    } else {
-        wrapper.insert_after(space_node);
-    }
-    set_text_leaf_text(leaf, &rest);
-}
-
-/// #1418: a delimiter-mark span whose text starts or ends with a
-/// space saves with that space inside the delimiters, and comrak
-/// renders it as an `&#32;` entity (`a*&#32;b*`). When a word
-/// character touches the span on that side, the emitted form fails
-/// CommonMark flanking rules on reparse and the mark is destroyed.
-/// Hoist such edge spaces out of the delimiter wrappers so the saved
-/// form reparses with the mark intact; the space becomes unmarked,
-/// which renders identically. Edges a word character does not touch
-/// (paragraph boundaries, space/punctuation neighbours, spans padded
-/// on both edges) keep the `&#32;` form, which round-trips as-is.
-/// Working on the converted AST — after #968's chain merging — means
-/// only true span edges are considered: an edge space shared with a
-/// neighbouring run of the same span is interior here, not an edge.
-fn hoist_delimiter_edge_spaces<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>) {
-    let wrappers: Vec<&AstNode<'a>> = root
-        .descendants()
-        .filter(|node| is_delimiter_wrapper(&node.data.borrow().value))
-        .collect();
-    // Reverse document order: inner wrappers before their outers (a
-    // space hoisted out of an inner wrapper may still sit at the
-    // outer wrapper's edge and be hoisted again by its turn), and a
-    // wrapper's own leading edge before its trailing edge.
-    for wrapper in wrappers.into_iter().rev() {
-        hoist_one_edge(arena, wrapper, true);
-        hoist_one_edge(arena, wrapper, false);
-    }
-}
-
-/// #1496: comrak's CommonMark renderer emits an info-less code block
-/// as an INDENTED block whenever it can (its fenced branch requires a
-/// non-empty info string, the global `prefer_fenced` option, or a few
-/// literal edge cases). Inside a blockquote the indented form drops
-/// the quote prefix for every following sibling, so the saved file
-/// reparses as two blockquotes and everything after the code block
-/// leaves the quote. Give each info-less code block inside a
-/// blockquote a placeholder info string so the renderer takes the
-/// fenced branch, and return the placeholders for stripping from the
-/// rendered output — the same placeholder-and-restore pattern as
-/// `substitute_spaced_destinations`. Code blocks outside blockquotes
-/// are fenced by the global `prefer_fenced` render option (#954); this
-/// placeholder is kept as belt-and-braces for the quoted shape.
-fn force_fenced_code_blocks_in_blockquotes<'a>(root: &'a AstNode<'a>) -> Vec<String> {
-    let mut tokens: Vec<String> = Vec::new();
-    let mut stack: Vec<(&AstNode<'a>, bool)> = vec![(root, false)];
-    while let Some((node, ancestor_is_blockquote)) = stack.pop() {
-        let in_blockquote =
-            ancestor_is_blockquote || matches!(node.data.borrow().value, NodeValue::BlockQuote);
-        for child in node.children() {
-            stack.push((child, in_blockquote));
-        }
-        if !in_blockquote {
-            continue;
-        }
-        let mut data = node.data.borrow_mut();
-        if let NodeValue::CodeBlock(code_block) = &mut data.value
-            && code_block.info.is_empty()
-        {
-            // The trailing `-end` keeps placeholders prefix-free
-            // (`-1-end` is not a prefix of `-10-end`); restoration is
-            // positional regardless (see `strip_fence_placeholder`).
-            let token = format!("idweb-blockquote-fence-{}-end", tokens.len());
-            code_block.info.clone_from(&token);
-            tokens.push(token);
-        }
-    }
-    tokens
-}
-
-/// Remove a #1496 fence placeholder from rendered output — ONLY at
-/// its generated fence-info position: a run of >= 3 backticks
-/// immediately before the placeholder and a newline immediately after
-/// it (the renderer's fence line shape). A plain `str::replace` would
-/// also strip the placeholder text anywhere else it occurs (user prose,
-/// code content) and, with prefix-sharing placeholders, corrupt
-/// neighbouring blocks' info strings (Codex review on PR #3770).
-fn strip_fence_placeholder(output: &str, token: &str) -> String {
-    let mut result = String::with_capacity(output.len());
-    let mut rest = output;
-    while let Some(pos) = rest.find(token) {
-        let before = &rest[..pos];
-        let after = &rest[pos + token.len()..];
-        let fence_run = before.chars().rev().take_while(|c| *c == '`').count();
-        if fence_run >= 3 && after.starts_with('\n') {
-            result.push_str(before);
-            rest = after;
-        } else {
-            result.push_str(&rest[..pos + token.len()]);
-            rest = after;
-        }
-    }
-    result.push_str(rest);
-    result
-}
-
-/// Replace every link/image destination containing whitespace (space,
-/// tab, newline, …) with a unique placeholder token, returning
-/// (placeholder, raw destination) pairs for restoration after rendering
-/// (#1019, #1423). The token is a valid bare destination (no whitespace
-/// or characters comrak encodes), so the renderer emits it verbatim
-/// exactly where the destination belongs. Reference-style links flow
-/// through here too: comrak resolves a reference definition into the
-/// referencing link's `url`, and the PM model stores that href directly,
-/// so no separate definition path exists in this codec.
-fn substitute_spaced_destinations<'a>(root: &'a AstNode<'a>) -> Vec<(String, String)> {
-    let mut substitutions: Vec<(String, String)> = Vec::new();
-    let mut stack: Vec<&AstNode<'a>> = vec![root];
-    while let Some(node) = stack.pop() {
-        stack.extend(node.children());
-        let mut data = node.data.borrow_mut();
-        let url = match &mut data.value {
-            NodeValue::Link(link) | NodeValue::Image(link) => &mut link.url,
-            _ => continue,
-        };
-        if !url.contains(char::is_whitespace) {
-            continue;
-        }
-        if let Some(index) = substitutions
-            .iter()
-            .position(|(_, raw)| raw.as_str() == url.as_str())
-        {
-            *url = substitutions[index].0.clone();
-        } else {
-            let placeholder = format!(
-                "idweb-spaced-destination-{}-placeholder",
-                substitutions.len()
-            );
-            let raw = std::mem::take(url);
-            *url = placeholder.clone();
-            substitutions.push((placeholder, raw));
-        }
-    }
-    substitutions
-}
-
-/// Whether a converted AST node is block-level (as opposed to inline).
-/// Used by the footnote_definition save path (#1031) to tell carried
-/// block children apart from legacy inline children.
-fn is_block_node(node: &AstNode<'_>) -> bool {
-    matches!(
-        node.data.borrow().value,
-        NodeValue::Paragraph
-            | NodeValue::Heading(_)
-            | NodeValue::BlockQuote
-            | NodeValue::List(_)
-            | NodeValue::Item(_)
-            | NodeValue::TaskItem(_)
-            | NodeValue::CodeBlock(_)
-            | NodeValue::HtmlBlock(_)
-            | NodeValue::ThematicBreak
-            | NodeValue::FrontMatter(_)
-            | NodeValue::Table(_)
-            | NodeValue::FootnoteDefinition(_)
-    )
-}
-
-/// Convert `ProseMirror` JSON to comrak AST.
-/// Whether a JSON node is a `text` node carrying no marks (#1420).
-/// Marked runs protect their edge spaces with the marked-span mechanism
-/// (#1418); unmarked runs have no such protection, so the save direction
-/// normalizes their edge whitespace instead (see
-/// `normalize_inline_child_json`).
-fn is_unmarked_text_json(node: &Value) -> bool {
-    node["type"].as_str() == Some("text")
-        && node["marks"]
-            .as_array()
-            .is_none_or(|marks| marks.is_empty())
-}
-
-/// Whether a JSON node is a `hard_break` — the boundary between two
-/// rendered lines inside one block (#1420).
-fn is_hard_break_json(node: &Value) -> bool {
-    node["type"].as_str() == Some("hard_break")
-}
-
-/// Whether an unmarked text node renders as nothing but edge whitespace
-/// (empty, or spaces/tabs only). Such a node never shields a neighbour's
-/// edge from the line boundary: at a line edge its own whitespace is
-/// normalized away too, and mid-line it is a separator either way (#1420).
-fn is_whitespace_only_text_json(node: &Value) -> bool {
-    is_unmarked_text_json(node)
-        && node["text"]
-            .as_str()
-            .unwrap_or("")
-            .chars()
-            .all(|c| c == ' ' || c == '\t')
-}
-
-/// Whether a hard break has no rendered content after it before the
-/// block ends. Whitespace-only text and further breaks do not make a
-/// trailing break interior content. This is the placement boundary for
-/// #1388: CommonMark cannot spell a break after the last content of a
-/// block, so normalize it away before building the comrak AST.
-fn hard_break_is_trailing(content: &[Value], idx: usize) -> bool {
-    content[idx + 1..]
-        .iter()
-        .all(|sibling| is_hard_break_json(sibling) || is_whitespace_only_text_json(sibling))
-}
-
-/// Apply the save-side hard-break placement policy for a block's inline
-/// children (#1388, transferring the #1492 placements): a hard break at
-/// block end is dropped explicitly (the renderer silently drops it); a
-/// heading is single-line CommonMark content, so an interior break
-/// degrades to a space instead of becoming an unspellable backslash-newline.
-/// Other interior paragraph breaks retain their existing LineBreak form.
-fn normalize_hard_break_placement(node_type: &str, content: &[Value]) -> Vec<Value> {
-    if !matches!(node_type, "heading" | "paragraph") {
-        return content.to_vec();
-    }
-
-    let mut normalized = Vec::with_capacity(content.len());
-    for (idx, child) in content.iter().enumerate() {
-        if !is_hard_break_json(child) {
-            normalized.push(child.clone());
-            continue;
-        }
-        if hard_break_is_trailing(content, idx) {
-            continue;
-        }
-        if node_type == "heading" {
-            normalized.push(json!({"type": "text", "text": " "}));
-        } else {
-            normalized.push(child.clone());
-        }
-    }
-    normalized
-}
-
-/// Whether scanning `siblings` (in render order) reaches a line edge —
-/// the start/end of the block or a `hard_break` — before any content
-/// that renders something (#1420).
-fn reaches_line_edge(siblings: impl Iterator<Item = Value>) -> bool {
-    for sibling in siblings {
-        if is_hard_break_json(&sibling) {
-            return true;
-        }
-        if !is_whitespace_only_text_json(&sibling) {
-            return false;
-        }
-    }
-    true
-}
-
-/// #1420: normalize one inline child of a block before conversion.
-///
-/// Unmarked text runs are written verbatim on save, but CommonMark
-/// reparse strips edge whitespace (up to 3 leading spaces per line,
-/// trailing spaces ignored) and deletes a whitespace-only paragraph
-/// outright, so the saved file and the reopened doc disagreed. The
-/// pinned policy is normalize-at-save: trim an unmarked run's leading
-/// spaces when it sits at a line start (block start or just after a
-/// `hard_break`) and its trailing spaces when it sits at a line end
-/// (block end or just before a `hard_break`), so the first saved file
-/// is already the fixpoint. A whitespace-only run at a line edge
-/// becomes an empty text node, so a whitespace-only paragraph saves as
-/// an EMPTY paragraph instead of vanishing text. Interior runs (word
-/// separators between words/marks) and marked runs are untouched.
-fn normalize_inline_child_json(content: &[Value], idx: usize) -> std::borrow::Cow<'_, Value> {
-    let child = &content[idx];
-    if !is_unmarked_text_json(child) {
-        return std::borrow::Cow::Borrowed(child);
-    }
-    let trim_start = reaches_line_edge(content[..idx].iter().rev().cloned());
-    let trim_end = reaches_line_edge(content[idx + 1..].iter().cloned());
-    if !trim_start && !trim_end {
-        return std::borrow::Cow::Borrowed(child);
-    }
-    let text = child["text"].as_str().unwrap_or("");
-    let mut normalized = text;
-    if trim_start {
-        normalized = normalized.trim_start_matches([' ', '\t']);
-    }
-    if trim_end {
-        normalized = normalized.trim_end_matches([' ', '\t']);
-    }
-    if normalized == text {
-        return std::borrow::Cow::Borrowed(child);
-    }
-    let mut owned = child.clone();
-    owned["text"] = json!(normalized);
-    std::borrow::Cow::Owned(owned)
-}
-
+mod markdown_scan;
+mod markdown_serialization;
+mod parse_helpers;
+mod prosemirror_json;
+
+pub(crate) use markdown_scan::*;
+pub use markdown_serialization::prosemirror_to_markdown;
+pub(crate) use markdown_serialization::*;
+pub(crate) use parse_helpers::*;
+pub(crate) use prosemirror_json::*;
 fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>, ConversionError> {
     let node_type = json["type"].as_str().ok_or(ConversionError::MissingType)?;
 
@@ -6272,7 +1195,7 @@ pub fn raw_text_to_prosemirror(text: &str) -> Value {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -6918,6 +1841,159 @@ mod tests {
             markdown_to_prosemirror(original),
             "saving and reopening must keep all blocks inside one blockquote: {saved:?}"
         );
+    }
+
+    #[test]
+    fn test_blockquote_leading_block_round_trips_without_extra_blank_lines() {
+        // #1002: comrak's formatter inserts empty quote lines before a
+        // quote's first block when it is a fence, table, or rule unless
+        // the save path strips them. Inputs use the renderer's canonical
+        // spellings (padded table delimiters, `-----` rules, `"> "` blank
+        // quote lines), so the first save is byte-identical and stable.
+        // The last two cases are controls: quotes starting with a
+        // paragraph, and a paragraph-then-fence quote whose single
+        // interior separator must survive.
+        for original in [
+            "> ```rust\n> code\n> ```\n",
+            "> | a | b |\n> | --- | --- |\n> | 1 | 2 |\n",
+            "> -----\n> \n> after\n",
+            "> > ```rust\n> > code\n> > ```\n",
+            "> ```rust\n> code\n> ```\n\n> second\n",
+            "> paragraph\n",
+            "> # heading\n",
+            "> - item\n",
+            "> paragraph\n> \n> ```rust\n> code\n> ```\n",
+        ] {
+            let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+            assert_eq!(saved, original, "first save polluted {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&saved),
+                markdown_to_prosemirror(original),
+                "structure changed for {original:?}"
+            );
+            let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+            assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+        }
+        // Unpadded table delimiters still take comrak's canonical padded
+        // spelling (pre-existing behaviour, also outside quotes), but the
+        // save must not add leading blank quote lines and must reopen to
+        // the same document.
+        let unpadded = "> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(unpadded)).unwrap();
+        assert_eq!(
+            saved, "> | a | b |\n> | --- | --- |\n> | 1 | 2 |\n",
+            "table canonicalized without leading blanks: {saved:?}"
+        );
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(unpadded),
+            "table structure changed"
+        );
+    }
+
+    #[test]
+    fn test_top_level_fence_with_quote_like_content_round_trips() {
+        // #8665: strip_leading_blank_quote_lines had no fence state, so
+        // a top-level fenced block whose first content lines are `> `
+        // and `> text` lost its first line on save — the fence opener
+        // reset the quote-run scan and the literal code content was
+        // stripped as if it led a blockquote.
+        for original in [
+            "```\n> \n> text\n```\n",
+            "```rust\n> \n> text\n```\n",
+            "```\n> \n> text\n```\n\n> quote\n",
+        ] {
+            let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+            assert_eq!(saved, original, "first save polluted {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&saved),
+                markdown_to_prosemirror(original),
+                "structure changed for {original:?}"
+            );
+            let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+            assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+        }
+        // Control: quote-like lines inside a blockquote's own fence are
+        // content too — structure and fixpoint must hold.
+        let quoted = "> ```\n> \n> text\n> ```\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(quoted)).unwrap();
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(quoted),
+            "quoted fence structure changed: {saved:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for quoted fence");
+        // Tilde fences are canonicalized to backticks by the renderer,
+        // but their content must survive intact and reach a fixpoint.
+        let tilde = "~~~\n> \n> text\n~~~\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(tilde)).unwrap();
+        assert_eq!(
+            saved, "```\n> \n> text\n```\n",
+            "tilde fence content changed: {saved:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for tilde fence");
+    }
+
+    #[test]
+    fn test_list_fence_does_not_suppress_quote_cleanup() {
+        // PR #8678 Codex P2: a list item whose first block is fenced
+        // code renders its opener behind the item marker (- ```), so
+        // the fence scan missed it and mistook the closing delimiter
+        // for a new fence; the phantom fence then suppressed the
+        // #1002 leading-blank cleanup for every later quote in the
+        // document. The rule-first quote below needs that cleanup.
+        let original = "- ```\n  code\n  ```\n\n> -----\n> \n> after\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+        assert_eq!(saved, original, "first save polluted {original:?}");
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(original),
+            "structure changed for {original:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+    }
+
+    #[test]
+    fn test_html_comment_fence_does_not_suppress_quote_cleanup() {
+        // PR #8678 Codex P2, second round: a fence-shaped line inside
+        // a raw HTML comment is literal content, not a fence opener.
+        // Treating it as one opened a phantom fence that suppressed
+        // the #1002 cleanup for the rest of the document (the
+        // rule-first quote below needs it).
+        let original = "<!--\n```\n-->\n\n> -----\n> \n> after\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+        assert_eq!(saved, original, "first save polluted {original:?}");
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(original),
+            "structure changed for {original:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+    }
+
+    #[test]
+    fn test_indented_html_comment_terminator_releases_cleanup() {
+        // PR #8678 Codex P2, third round: the htmlBlock serialization
+        // path preserves indentation, so a comment terminator can be
+        // indented four spaces. The scan's indent limit applies to
+        // opening detection, not to an already-active block: the
+        // terminator must still be fed, or html state leaks into the
+        // rest of the document and suppresses the #1002 cleanup for
+        // the rule-first quote below.
+        let original = "<!--\n    -->\n\n> -----\n> \n> after\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+        assert_eq!(saved, original, "first save polluted {original:?}");
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(original),
+            "structure changed for {original:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for {original:?}");
     }
 
     #[test]
@@ -7798,6 +2874,37 @@ mod tests {
     }
 
     #[test]
+    fn test_fence_first_blockquote_marker_stays_escaped() {
+        // #7563: a blockquote whose first block is a fenced code block
+        // HAS content, so a standalone escaped marker line in a later
+        // paragraph is authored literal text, not an alert opener: it
+        // must stay escaped, hard break intact. The restore scan's
+        // fence branches never marked quote_has_content, so the quote
+        // still counted as empty and the marker was unescaped.
+        let original = "> ```\n> code\n> ```\n>\n> \\[\\!NOTE\\]\\\n> Body.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains(r"\[\!NOTE\]"),
+            "marker after a fence-first block must stay escaped: {first:?}"
+        );
+        assert_eq!(first, second, "fence-first quote must be a save fixpoint");
+    }
+
+    #[test]
+    fn test_html_first_blockquote_marker_stays_escaped() {
+        // #7563: the HTML-block sibling of the fence-first case,
+        // pinned directly on the restore scan: in the saved spelling
+        // an HTML block as the quote's first block is content, so the
+        // later escaped marker line (hard break intact) is authored
+        // text and passes through byte-identical. (No two_saves form:
+        // the renderer splits an HTML-first quote ahead of the marker
+        // paragraph into a separate blockquote, where the marker
+        // legitimately IS the first content.)
+        let saved = "> <div>\n> html\n> </div>\n>\n> \\[\\!NOTE\\]\\\n> Body.\n";
+        assert_eq!(restore_github_alert_markers(saved), saved);
+    }
+
+    #[test]
     fn test_strong_link_roundtrip_fixpoint() {
         // Both spellings of a bold link canonicalize to the link-outermost
         // form and are byte-stable from the first save on (#944).
@@ -8224,6 +3331,323 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_unused_link_reference_definitions_survive_roundtrip() {
+        let original =
+            "Body text with no reference.\n\n[a]: https://a.example\n[b]: https://b.example\n";
+        let doc = markdown_to_prosemirror(original);
+        let recovered: Vec<&Value> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["type"] == "code_block" && node["attrs"]["htmlBlock"] == true)
+            .collect();
+        assert_eq!(
+            recovered.len(),
+            2,
+            "both unused definitions are retained: {doc}"
+        );
+
+        let (first, second) = two_saves(original);
+        for definition in ["[a]: https://a.example", "[b]: https://b.example"] {
+            assert!(
+                first.contains(definition),
+                "{definition} survives: {first:?}"
+            );
+        }
+        assert_eq!(first, second, "unused definitions round-trip to a fixpoint");
+    }
+
+    #[test]
+    fn test_front_matter_definition_is_not_recovered() {
+        // Codex P2 / CodeRabbit on PR #5949: a definition-shaped line
+        // inside front matter is metadata; recovering it appended a
+        // duplicate outside the block on every save.
+        let original = "---\n[docs]: https://example.com\n---\n\nBody\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(
+            first.matches("[docs]:").count(),
+            1,
+            "front-matter definition is not duplicated: {first:?}"
+        );
+        assert_eq!(first, second, "front-matter round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_dots_line_does_not_close_front_matter_for_definition_collection() {
+        // Codex P2 on PR #5949 (fresh round): comrak's front-matter
+        // parser requires the configured `---` closing delimiter; a
+        // `...` line does not close the block, so the opening lines
+        // are ordinary Markdown and `[url]: /target` is a real
+        // definition the orphan footnote's link resolves through.
+        let original = "---\n[url]: /target\n...\n\n[^n]: [label][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[label](/target)"),
+            "footnote link resolves through the definition: {first:?}"
+        );
+        assert_eq!(first, second, "dots-delimiter round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_quoted_multiline_definition_label_matches_without_container() {
+        // Codex P2 on PR #5949 (fresh round): the quoted definition's
+        // label spans two lines; stripping only the first line's
+        // container left the continuation's `>` in the matching key,
+        // so the unused definition was keyed as the used label
+        // `long > label` and silently dropped.
+        let original =
+            "[long > label]\n\n[long > label]: /used\n\n> [long\n> label]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("/keep"),
+            "unused quoted multiline definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[long > label]: /used"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "quoted-multiline round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_code_span_bracket_does_not_end_link_text() {
+        // Codex P2 on PR #5949 (fresh round): in `[x`]...` the first
+        // closing bracket belongs to an inline code span; the link's
+        // explicit label is `used`, and keying the use as `x\`` made
+        // the genuinely unused `[x`]` definition look consumed.
+        let original = "[x`]\u{60}][used]\n\n[used]: /used-target\n[x`]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("(/used-target)"),
+            "explicit reference resolves: {first:?}"
+        );
+        assert!(
+            first.contains("[x`]: /keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[used]: /used-target"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "code-span-bracket round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_quoted_multiline_reference_use_ignores_containers() {
+        // Codex P2 on PR #5949 (round 4): the quoted shortcut link's
+        // label spans two lines; joining the raw source lines kept
+        // the continuation's `>` in the used key, so the use was
+        // keyed `long > label` and the genuinely unused definition
+        // with that literal label was discarded as consumed.
+        let original = "> [long\n> label]\n\n[long label]: /used\n[long > label]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[long > label]: /keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[long label]: /used"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "quoted-multiline-use round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_inline_html_bracket_does_not_end_link_text() {
+        // Codex P2 on PR #5949 (round 4): the `]` inside an inline
+        // HTML attribute is not the link-text boundary; the link's
+        // explicit label is `used`, and keying the use as the HTML
+        // fragment made the genuinely unused definition look
+        // consumed.
+        let original =
+            "[<i x=\"]\">label</i>][used]\n\n[used]: /used\n[<i x=\"]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("(/used)"),
+            "explicit reference resolves: {first:?}"
+        );
+        assert!(
+            first.contains("/keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[used]: /used"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "inline-html-bracket round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_link_use_detection_scoped_to_node_columns() {
+        // Codex P2 / CodeRabbit on PR #5949: the literal code span
+        // sharing the line must not decide the real link's label.
+        let original = "`[unused]` [used]\n\n[unused]: /keep\n[used]: /used-target\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[used](/used-target)"),
+            "real shortcut reference resolves: {first:?}"
+        );
+        assert!(
+            !first.contains("[used]: /used-target"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert!(
+            first.contains("[unused]: /keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert_eq!(first, second, "column-scoped round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_multiline_title_literal_marker_survives() {
+        // Codex P2 on PR #5949: a multiline title's continuation line
+        // is title text, not a list container.
+        let original = "Body\n\n[r]: /target \"first\n2. second\"\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("\"first\n2. second\""),
+            "multiline title survives verbatim: {first:?}"
+        );
+        assert_eq!(first, second, "multiline-title round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_autolink_brackets_are_not_a_reference_use() {
+        // Codex P2 on PR #5949: the bracket inside an autolink URL
+        // must not mark the reference definition as used.
+        let original = "<https://example.com/[r]>\n\n[r]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[r]: /keep"),
+            "unused definition beside an autolink is preserved: {first:?}"
+        );
+        assert_eq!(first, second, "autolink round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_escaped_label_definition_stays_unused() {
+        // Codex P2 on PR #5949 (CommonMark example 545): `[a!]`
+        // consumes only the `[a!]` definition; the escaped-label
+        // definition `[a\!]` is a different label and is unused,
+        // so it must be preserved, not dropped as consumed.
+        let original = "[a!]\n\n[a\\!]: /keep\n[a!]: /used-target\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[a\\!](/used-target)"),
+            "unescaped reference resolves to its own definition: {first:?}"
+        );
+        assert!(
+            first.contains("[a\\!]: /keep"),
+            "escaped-label definition is preserved as unused: {first:?}"
+        );
+        assert_eq!(first, second, "escaped-label round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_backslash_label_stays_distinct() {
+        // CodeRabbit on PR #5949: `[a\\b]` and `[ab]` are different
+        // labels; using one must not consume the other's definition.
+        let original = "[ab]\n\n[a\\b]: /keep\n[ab]: /used-target\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[ab](/used-target)"),
+            "used label resolves: {first:?}"
+        );
+        assert!(
+            first.contains("[a\\b]: /keep"),
+            "backslash label definition is preserved: {first:?}"
+        );
+        assert_eq!(first, second, "backslash-label round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_used_link_reference_definitions_keep_inline_link_behavior() {
+        for (original, expected_link) in [
+            (
+                "[one][r]\n\n[r]: https://r.example\n",
+                "[one](https://r.example)",
+            ),
+            (
+                "[text][]\n\n[text]: https://r.example\n",
+                "[text](https://r.example)",
+            ),
+            ("[r]\n\n[r]: https://r.example\n", "[r](https://r.example)"),
+            (
+                "![alt][image]\n\n[image]: https://r.example/image.png\n",
+                "![alt](https://r.example/image.png)",
+            ),
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.contains(expected_link),
+                "resolved link preserved: {first:?}"
+            );
+            assert!(
+                !first.contains("]: https://r.example"),
+                "used definition consumed: {first:?}"
+            );
+            assert_eq!(first, second, "used-reference round-trip is a fixpoint");
+        }
+    }
+
+    #[test]
+    fn test_link_reference_definitions_only_document_survives_roundtrip() {
+        let original = "[a]: https://a.example\n[b]: https://b.example\n";
+        let (first, second) = two_saves(original);
+        for definition in ["[a]: https://a.example", "[b]: https://b.example"] {
+            assert!(
+                first.contains(definition),
+                "definitions-only document preserves {definition}: {first:?}"
+            );
+        }
+        assert!(
+            !first.trim().is_empty(),
+            "definitions-only document does not save empty: {first:?}"
+        );
+        assert_eq!(first, second, "definitions-only round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_link_reference_definition_recovery_respects_literal_contexts() {
+        let original = "```\n[fenced]: https://fenced.example\n```\n\n    [indented]: https://indented.example\n\n<!--\n[html]: https://html.example\n-->\n\n> [quoted]: https://quoted.example\n";
+        let doc = markdown_to_prosemirror(original);
+        let recovered: Vec<&Value> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| {
+                node["type"] == "code_block"
+                    && node["attrs"]["htmlBlock"] == true
+                    && node["content"][0]["text"] == "[quoted]: https://quoted.example"
+            })
+            .collect();
+        assert_eq!(
+            recovered.len(),
+            1,
+            "only the real blockquote definition is recovered: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[quoted]: https://quoted.example"),
+            "real quoted definition survives after hoisting to document scope: {first:?}"
+        );
+        assert!(
+            first.contains("```\n[fenced]: https://fenced.example"),
+            "fenced sample remains code only: {first:?}"
+        );
+        assert!(
+            first.contains("```\n[indented]: https://indented.example"),
+            "indented sample remains code only: {first:?}"
+        );
+        assert!(
+            first.contains("<!--\n[html]: https://html.example"),
+            "HTML sample remains literal HTML: {first:?}"
+        );
+        assert_eq!(first, second, "literal-context round-trip is a fixpoint");
+    }
+
+    #[test]
     fn test_footnote_roundtrip_fixpoint() {
         // #945: a footnote reference + definition round-trip open->save
         // intact — emitted as [^label] syntax, never backslash-escaped,
@@ -8257,7 +3681,6 @@ mod tests {
         assert_eq!(first, second, "multi-footnote round-trip is a fixpoint");
     }
 
-    #[test]
     #[test]
     fn test_unreferenced_footnote_definition_survives_save() {
         // #1565: a definition nothing references is dropped by comrak

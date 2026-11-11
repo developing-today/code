@@ -72,6 +72,89 @@ def _auth_header_args() -> List[str]:
     except Exception:
         return []
 
+
+# --- Verified-read server transport (#7770 Phase 2: #7367, #7760) ---
+#
+# The seam contract (design #7770, decision 2): EVERY OpenCode server
+# call in this module goes through _server_request - one authenticated
+# transport - and every verdict is taken from the HTTP status plus the
+# body's shape. A curl exit code is never a verdict: curl -s exits 0
+# on a 401/404, which is how an auth error body used to read as a gone
+# session and a failed DELETE as a completed one (#7367).
+
+def _server_request(method: str, path: str, body: Any = None,
+                    timeout: int = 5):
+    """One authenticated server call. Returns (status, payload):
+    status is the HTTP status int, or None when no status was
+    captured (transport failure - the reply is UNKNOWN); payload is
+    the parsed JSON body, or None when the body is empty or not
+    JSON. The auth header rides on every call; its value is never
+    logged or returned."""
+    cmd = ["curl", "-s", "-m", str(timeout), "-w", "\n%{http_code}"]
+    if method != "GET":
+        cmd += ["-X", method]
+    if body is not None:
+        cmd += ["-H", "Content-Type: application/json",
+                "-d", json.dumps(body)]
+    cmd += _auth_header_args()
+    cmd.append(f"{OPENCODE_URL}{path}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except Exception:
+        return None, None
+    raw = result.stdout or ""
+    text, sep, status_text = raw.rpartition("\n")
+    if not sep or not status_text.strip().isdigit():
+        # No status captured: without it there is no verified read,
+        # whatever curl's exit code says.
+        return None, None
+    payload = None
+    if text.strip():
+        try:
+            payload = json.loads(text)
+        except Exception:
+            payload = None
+    return int(status_text.strip()), payload
+
+
+def _unwrap_envelope(payload):
+    """The writer's envelope: {"data": ...} unwraps to its data;
+    anything else passes through unchanged."""
+    if isinstance(payload, dict) and "data" in payload:
+        return payload["data"]
+    return payload
+
+
+def _is_2xx(status) -> bool:
+    return status is not None and 200 <= status < 300
+
+
+def _get_session(session_id: str):
+    """Verified per-id session read. Returns (verdict, session):
+    "ok" with the session dict on a 2xx carrying a session object
+    with an id; "gone" only on a 404 from this GET (contract
+    decision 2: gone is a 404 verdict, never a body-shape
+    accident); "unknown" with None for every other outcome - auth
+    failures, 5xx, transport failures and mis-shaped 2xx bodies
+    never authorize an action."""
+    status, payload = _server_request(
+        "GET", f"/api/session/{session_id}", timeout=5)
+    if status == 404:
+        return "gone", None
+    if _is_2xx(status):
+        session = _unwrap_envelope(payload)
+        if isinstance(session, dict) and session.get("id"):
+            return "ok", session
+    return "unknown", None
+
+
+def _delete_session(session_id: str) -> bool:
+    """DELETE through the verified transport: True only on a 2xx
+    verdict. A non-2xx delete did not happen, whatever curl said."""
+    status, _payload = _server_request(
+        "DELETE", f"/api/session/{session_id}", timeout=5)
+    return _is_2xx(status)
+
 # Concurrency cap
 CONCURRENCY_CAP = 36
 
@@ -99,12 +182,18 @@ def ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: "int | None", skips: List[Dict]) -> None:
+def log_fire(mode: str, candidates: "List[Dict] | None", launched: List[Dict], cap_room: "int | None", skips: List[Dict]) -> None:
     """Append a fire log entry to fires.jsonl.
 
     cap_room is the measured available-slot count, or None when the
-    fire exited before the cap step ran (#7732): null means unknown,
-    never a placeholder 0, which would read as a saturated fleet.
+    cap is unknown (#7732): null means unknown, never a placeholder
+    0 (which would read as a saturated fleet) and never the cap
+    step's -1 sentinel, which is an internal return value, not a
+    measurement. candidates is likewise None when candidate
+    discovery itself failed: candidates_seen null (I could not
+    read) is a different state from [] (I read, and the queue was
+    empty) — the #7770 Phase 4 audit found the gate exit logging
+    the two identically.
     """
     ensure_state_dir()
     
@@ -119,20 +208,6 @@ def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: 
     
     with FIRES_FILE.open("a") as f:
         f.write(json.dumps(fire_entry) + "\n")
-
-
-def _http_get(url: str, timeout: int = 10) -> Optional[Dict]:
-    """Helper to make HTTP GET requests using urllib."""
-    try:
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            data = json.loads(response.read())
-            if isinstance(data, dict) and "data" in data:
-                return data["data"]
-            return data
-    except (urllib.error.URLError, json.JSONDecodeError, Exception) as e:
-        print(f"Warning: HTTP GET {url} failed: {e}")
-        return None
 
 
 def run_poll() -> Dict[str, Any]:
@@ -198,9 +273,10 @@ def get_active_root_session_count() -> int:
         active_ids = poll.fetch_active_ids()
         if active_ids is None:
             return -1  # Unknown
-        return poll.count_active_roots(
+        count = poll.count_active_roots(
             sessions, int(time.time() * 1000), active_ids
         )
+        return -1 if count is None else count
     except Exception as e:
         print(f"Warning: Could not get active session count: {e}")
         return -1  # Unknown
@@ -232,38 +308,25 @@ def supervision_step(mode: str) -> List[Dict]:
                 session_id = prog.get("session_id") or task.get("session_id")
                 if lane == "opencode" and session_id:
 
-                    # Check if session exists and is progressing
-                    try:
-                        session_response = subprocess.run(
-                            ["curl", "-s", "-m", "5", *_auth_header_args(),
-                             f"{OPENCODE_URL}/api/session/{session_id}"],
-                            capture_output=True,
-                            text=True
-                        )
-
-                        if session_response.returncode == 0:
-                            session = json.loads(session_response.stdout)
-                            if isinstance(session, dict) and "data" in session:
-                                session = session["data"]
-                            if not isinstance(session, dict) or not session.get("id"):
-                                # Error body, not a session object:
-                                # the session is gone from the server.
-                                session = None
-                            else:
-                                # Check for terminal state
-                                has_terminal = any(
-                                    marker in str(session.get("outcome", "") or "") or
-                                    marker in str((session.get("time") or {}).get("idle", "") or "")
-                                    for marker in ["idle", "outcome", "completed", "failed"]
-                                )
-
-                                if not has_terminal:
-                                    # Session exists and is active - nothing to do
-                                    continue
-                        # else: Session gone from server or error
-                    except Exception:
-                        # Could not verify session - leave bound
+                    # Check if session exists and is progressing.
+                    # The verdict comes from the verified transport:
+                    # "gone" is a 404 from the per-id GET; "unknown"
+                    # (auth failure, 5xx, transport failure, mis-shaped
+                    # body) never authorizes recovery - the task stays
+                    # bound (#7367, #7770 decision 2).
+                    verdict, session = _get_session(session_id)
+                    if verdict == "unknown":
                         continue
+                    if verdict == "ok":
+                        # Check for terminal state
+                        has_terminal = any(
+                            marker in str(session.get("outcome", "") or "") or
+                            marker in str((session.get("time") or {}).get("idle", "") or "")
+                            for marker in ["idle", "outcome", "completed", "failed"]
+                        )
+                        if not has_terminal:
+                            # Session exists and is active - nothing to do
+                            continue
 
                     # Session is gone or stuck - check if recovery is possible
                     # Check task attempts and lease
@@ -305,15 +368,10 @@ def supervision_step(mode: str) -> List[Dict]:
         session_id = candidate["session_id"]
         
         try:
-            # Delete the zero-message session
-            delete_result = subprocess.run(
-                ["curl", "-s", "-m", "5", "-X", "DELETE", *_auth_header_args(),
-                 f"{OPENCODE_URL}/api/session/{session_id}"],
-                capture_output=True,
-                text=True
-            )
-            
-            if delete_result.returncode == 0:
+            # Delete the zero-message session. Only a verified 2xx
+            # DELETE counts: a non-2xx delete did not happen, and the
+            # binding must not be cleared over a live session (#7367).
+            if _delete_session(session_id):
                 # Attempt recovery via atomic bind operation
                 bind_result = subprocess.run(
                     [
@@ -341,26 +399,30 @@ def supervision_step(mode: str) -> List[Dict]:
     return recovery_candidates
 
 
-def gate_step() -> bool:
+def gate_step() -> Optional[bool]:
     """
     Step 2: Gate - check if there are any unbound opencode-lane candidates.
-    
-    Returns True if there are candidates to process, False otherwise.
+
+    Returns True if there are candidates to process, False if the
+    (verified) candidate list holds none, and None when discovery
+    itself failed: an unreadable queue is UNKNOWN, not empty
+    (#7770 contract — unknown never authorizes a side effect and
+    is never recorded as a measurement).
     """
     try:
         poll_data = run_poll()
         candidates = poll_data.get("candidates", [])
-        
+
         # Filter for unbound opencode-lane tasks
         unbound_opencode = [
             c for c in candidates
             if c.get("lane") == "opencode" and not c.get("session_id")
         ]
-        
+
         return len(unbound_opencode) > 0
     except Exception as e:
         print(f"Gate check failed: {e}")
-        return False
+        return None
 
 
 def cap_step() -> int:
@@ -379,20 +441,13 @@ def cap_step() -> int:
 
 
 def _post_prompt(session_id: str, prompt: str) -> bool:
-    """One prompt POST; True iff the server accepted it."""
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-f", "-m", "15", "-X", "POST",
-             "-H", "Content-Type: application/json",
-             *_auth_header_args(),
-             "-d", json.dumps({"text": prompt}),
-             f"{OPENCODE_URL}/api/session/{session_id}/prompt"],
-            capture_output=True,
-            text=True,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+    """One prompt POST through the verified transport; True iff the
+    server answered 2xx. A non-2xx POST did not land, whatever
+    curl's exit code says."""
+    status, _payload = _server_request(
+        "POST", f"/api/session/{session_id}/prompt",
+        body={"text": prompt}, timeout=15)
+    return _is_2xx(status)
 
 
 def _get_messages(session_id: str) -> Optional[List]:
@@ -404,23 +459,15 @@ def _get_messages(session_id: str) -> Optional[List]:
     The v2 endpoint is /message, not /messages: on the standing
     server the latter 404s with an empty body, which without -f used
     to parse as [] and turn every unknown read into "zero messages"
-    (#3026). -f makes that non-2xx a failure and strict parsing keeps
-    an empty or error body from masquerading as a confirmed list."""
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-f", "-m", "5", *_auth_header_args(),
-             f"{OPENCODE_URL}/api/session/{session_id}/message"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            return None
-        data = json.loads(result.stdout)
-        if isinstance(data, dict):
-            data = data.get("data")
-        return data if isinstance(data, list) else None
-    except Exception:
+    (#3026). The verified transport makes that non-2xx a non-read
+    and strict parsing keeps an empty or error body from
+    masquerading as a confirmed list."""
+    status, payload = _server_request(
+        "GET", f"/api/session/{session_id}/message", timeout=5)
+    if not _is_2xx(status):
         return None
+    data = _unwrap_envelope(payload)
+    return data if isinstance(data, list) else None
 
 
 def _send_prompt(session_id: str, prompt: str) -> bool:
@@ -445,29 +492,26 @@ def _send_prompt(session_id: str, prompt: str) -> bool:
 CLAIMANT_WORKER = "opencode-claimant"
 
 
-def _collect_parked_handoffs(queue: str, want: int) -> Dict[int, Dict]:
-    """Collect up to `want` parked recorded handoffs from `queue`
-    WITHOUT naming a task id (#8097 Rule 1): each
+def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
+    """Collect up to `want` recorded handoffs from `queue`'s
+    handoff sink WITHOUT naming a task id (#8097 Rule 1): each
     `repo-queue claim --handoff` lets the BROKER pick the next
-    parked handoff (its ordinary pick order), claimed as the
-    claimant, so the launch flow below has a live claim to bind
-    against. Returns {task_id: claimed row}.
+    sink row (its ordinary pick order), claimed as the claimant,
+    so the launch flow below has a live claim to bind against.
+    Returns {task_id: claimed row}.
 
-    The handing-off lane parks the task as its handoff sink, so
-    without collection the task is never in the claimed state the
-    launch flow binds against — it waited out the park timer, was
-    re-claimed by the next shift wave, handed off, and parked again
-    (#7907/#6533). Collection used to name the task
-    (`claim --task <id>`); that by-id claim is now the special-case
-    verb (one-off revivals), and this default path does not depend
-    on it — the broker's handoff pick only ever returns a parked
-    recorded opencode handoff (unbound yield progress), never a
-    live claim or a genuine wait park.
+    A handed-off task rests in the sink (status 'handed_off',
+    #8234), so without collection it is never in the claimed state
+    the launch flow binds against. Collection used to name the
+    task (`claim --task <id>`); that by-id claim is now the
+    special-case verb (one-off revivals), and this default path
+    does not depend on it — the broker's handoff pick only ever
+    returns a sink row (status 'handed_off', unbound opencode
+    yield), never a live claim or a genuine wait park.
 
     The claim declares the claimant's family, --platform
-    openchamber (#8097 Rule 2): a parked handoff whose item
-    carries the `muse` selector is not the opencode claimant's
-    to collect.
+    openchamber (#8097 Rule 2): a sink row whose item carries the
+    `muse` selector is not the opencode claimant's to collect.
     """
     collected: Dict[int, Dict] = {}
     for _ in range(max(want, 0)):
@@ -496,7 +540,6 @@ def _collect_parked_handoffs(queue: str, want: int) -> Dict[int, Dict]:
             break
         collected[claimed_id] = row
     return collected
-
 
 
 HELD_ISSUE_LABELS = {"held", "user/owned", "do-not-merge", "do-not-auto-edit"}
@@ -597,20 +640,20 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
         ]
         
         # Parked handoff sink (#8097 Rule 1): collect this fire's
-        # parked candidates' claims up front, grouped by queue,
+        # sink candidates' claims up front, grouped by queue,
         # without naming any task id — one broker-picked handoff
-        # claim per discovered parked candidate. A parked
-        # candidate whose id is not in `collected` when its turn
-        # comes was not collected (its pick lost a race or the
-        # broker had nothing claimable) and is skipped below —
-        # the binding is never improvised.
-        parked_by_queue: Dict[str, int] = {}
+        # claim per discovered sink candidate. A sink candidate
+        # whose id is not in `collected` when its turn comes was
+        # not collected (its pick lost a race or the broker had
+        # nothing claimable) and is skipped below — the binding is
+        # never improvised.
+        handed_off_by_queue: Dict[str, int] = {}
         for c in unbound_opencode:
-            if c.get("status") == "parked":
-                parked_by_queue[c["queue"]] = parked_by_queue.get(c["queue"], 0) + 1
+            if c.get("status") == "handed_off":
+                handed_off_by_queue[c["queue"]] = handed_off_by_queue.get(c["queue"], 0) + 1
         collected: Dict[int, Dict] = {}
-        for queue_name, want in parked_by_queue.items():
-            collected.update(_collect_parked_handoffs(queue_name, want))
+        for queue_name, want in handed_off_by_queue.items():
+            collected.update(_collect_handed_offs(queue_name, want))
 
         for candidate in unbound_opencode:
             if cap_room <= 0:
@@ -625,18 +668,19 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             issue = candidate.get("issue", "")
             packet = candidate.get("packet", {})
 
-            # Parked handoff sink: the candidate was handed off and
-            # then parked by its claiming lane, so no live claim
-            # existed to bind against until the collection above
-            # claimed it (as the claimant; the launched session
-            # then works under the claimant's worker identity). A
-            # candidate the collection did not claim is skipped —
-            # the binding is never improvised.
-            if candidate.get("status") == "parked":
+            # Handoff sink: the candidate was handed off by its
+            # claiming lane and rests in the sink (status
+            # 'handed_off'), so no live claim existed to bind
+            # against until the collection above claimed it (as
+            # the claimant; the launched session then works under
+            # the claimant's worker identity). A candidate the
+            # collection did not claim is skipped — the binding
+            # is never improvised.
+            if candidate.get("status") == "handed_off":
                 if task_id not in collected:
                     skips.append({
                         "task_id": task_id,
-                        "reason": "parked_claim_failed"
+                        "reason": "sink_claim_failed"
                     })
                     continue
                 candidate["status"] = "claimed"
@@ -706,38 +750,29 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             }
             
             try:
-                # Create session using curl (POST), with the server's
-                # Basic auth — unauthenticated calls are rejected.
-                create_cmd = ["curl", "-s", "-m", "10", "-X", "POST",
-                             "-H", "Content-Type: application/json",
-                             *_auth_header_args(),
-                             "-d", json.dumps(session_create_body),
-                             f"{OPENCODE_URL}/api/session"]
+                # Create session through the verified transport,
+                # with the server's Basic auth - unauthenticated
+                # calls are rejected (#7367).
+                status, create_payload = _server_request(
+                    "POST", "/api/session", body=session_create_body,
+                    timeout=10)
+                if not _is_2xx(status):
+                    raise RuntimeError(
+                        f"Session creation failed: http status "
+                        f"{status if status is not None else 'unknown'}"
+                        + (" (unauthorized)" if status == 401 else ""))
 
-                create_result = subprocess.run(
-                    create_cmd,
-                    capture_output=True,
-                    text=True
-                )
-
-                if create_result.returncode != 0:
-                    raise RuntimeError(f"Session creation failed: {create_result.stderr}")
-
-                session = json.loads(create_result.stdout)
-                if isinstance(session, dict) and "data" in session:
-                    session = session["data"]
+                session = _unwrap_envelope(create_payload)
                 session_id = session.get("id") if isinstance(session, dict) else None
                 if not session_id:
                     raise RuntimeError(
-                        f"Session creation returned no id: {create_result.stdout[:200]}")
+                        f"Session creation returned no id: "
+                        f"{str(create_payload)[:200]}")
 
                 # Verify location before proceeding
                 if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
                     # Wrong location - delete and skip
-                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE",
-                                 *_auth_header_args(),
-                                 f"{OPENCODE_URL}/api/session/{session_id}"]
-                    subprocess.run(delete_cmd, capture_output=True)
+                    _delete_session(session_id)
                     skips.append({
                         "task_id": task_id,
                         "reason": "session_wrong_location"
@@ -760,10 +795,7 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                 
                 if bind_result.returncode != 0:
                     # Bind failed - delete session and skip
-                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE",
-                                 *_auth_header_args(),
-                                 f"{OPENCODE_URL}/api/session/{session_id}"]
-                    subprocess.run(delete_cmd, capture_output=True)
+                    _delete_session(session_id)
                     skips.append({
                         "task_id": task_id,
                         "reason": "bind_failed"
@@ -787,6 +819,7 @@ Issue: {issue}
 Packet: {json.dumps(_prompt_safe_packet(packet), indent=2)}
 
 You are a build agent working on this opencode-lane task.
+Build discipline: run heavy cargo builds/tests through ~/tools/cargo-target-broker exec --repo <repo short name> --profile <test|dev|release> -- cargo ... so they use a leased pooled target dir (code#6797); never use a per-worktree CARGO_TARGET_DIR and never blank RUSTC_WRAPPER. ~/tools/fleet-build-lock is an accepted equivalent wrapper.
 Use --worker {worker_id} for all queue CLI operations.
 Heartbeat while working to keep the claim lease alive.
 Finish with a queue terminal verb (complete, park, block, or fail) carrying --worker {worker_id} and --execution '{{"lane": "opencode", "session_id": "{session_id}"}}'.
@@ -796,7 +829,8 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
                     "task_id": task_id,
                     "session_id": session_id,
                     "worker_id": worker_id,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                    "queue": candidate.get("queue"),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 if not _send_prompt(session_id, prompt):
                     entry["prompt_failed"] = True
@@ -830,19 +864,24 @@ def main():
     # Step 2: Gate
     print("Running gate step...")
     has_candidates = gate_step()
-    
+
+    if has_candidates is None:
+        print("Gate check failed: candidate discovery unknown. Exiting.")
+        log_fire(mode, None, [], None, [{"reason": "gate_unknown"}])
+        return 1
+
     if not has_candidates:
         print("No unbound opencode-lane candidates found. Exiting.")
         log_fire(mode, [], [], None, [{"reason": "no_candidates"}])
         return 0
-    
+
     # Step 3: Cap
     print("Running cap step...")
     cap_room = cap_step()
-    
+
     if cap_room == -1:
         print("Warning: Could not determine cap room. Exiting.")
-        log_fire(mode, [], [], -1, [{"reason": "cap_unknown"}])
+        log_fire(mode, [], [], None, [{"reason": "cap_unknown"}])
         return 1
     
     if cap_room <= 0:

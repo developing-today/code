@@ -18,12 +18,20 @@ import {
   findTierItem,
   questionIdForOption,
 } from "./tier-items.ts";
-import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
+import {
+  authorizeCommentAuthor,
+  commentKindCounts,
+  CommentsStore,
+  queuedComments,
+  validateNewComment,
+} from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
+import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
 import { EventsStore, emitEvent, pageEvents } from "./events.ts";
 import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
+import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
 import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
@@ -35,6 +43,7 @@ import {
   ACTIVITY_SOURCE_COVERAGE,
 } from "./activity.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
+import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -45,7 +54,18 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
+import { AA_PLAN_FACTS } from "./aa.ts";
+import {
+  getNeedsDrew,
+  listOpenNeedsDrew,
+  raiseNeedsDrew,
+  recordAnswer,
+  shouldFetchNeedsDrewCensus,
+  validateNeedsDrew,
+  type NeedsDrewCensus,
+  type NeedsDrewQuestion,
+} from "./needs-drew.ts";
+import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -57,7 +77,7 @@ import {
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { allRefs, buildAttention, deriveToday, filterAttentionViewByRefs, projectPace, type RoadmapGrain } from "./derive.ts";
+import { allRefs, buildAttention, buildQuotaActions, deriveToday, filterAttentionViewByRefs, projectPace, quotaActionTierItems, type RoadmapGrain } from "./derive.ts";
 import {
   reconcileRoadmap,
   roadmapDriftReport,
@@ -67,6 +87,8 @@ import {
 import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
 import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
+import { SpendRollupStore } from "./spend-rollups.ts";
+import { buildSpendCards, type SpendCardsView } from "./spend-cards.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
   PROJECT_CONFIGS,
@@ -118,6 +140,8 @@ import { buildDigest, listDigestArchives, readDigestArchive, type Digest, type D
 import { timingSafeEqual } from "node:crypto";
 import {
   getAlertsStore,
+  requestAlertTick,
+  sendClassTestPush,
   sendTestPush,
   startAlertEngine,
   toPublicSubscription,
@@ -125,10 +149,17 @@ import {
   validateNewSubscription,
 } from "./alerts.ts";
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
-import { resolveBwsSecret } from "./secrets.ts";
+import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
-import { renderAlerts, renderNotifications, renderDigest, esc } from "./render.ts";
-import { deriveSoleDoorPoolIds, rollupNotificationSends, type NotificationSnapshot } from "./notifications.ts";
+import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
+import {
+  deriveSoleDoorPoolIds,
+  isNotificationTestClass,
+  NOTIFICATION_CLASS_DEFAULTS,
+  NOTIFICATION_CLASSES,
+  rollupNotificationSends,
+  type NotificationSnapshot,
+} from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import { searchWork } from "./search-view.ts";
@@ -139,7 +170,9 @@ import { buildQueueView, queueInputsStale } from "./queue-view.ts";
 import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
 import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
+import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
 import { ItemHistoryStore } from "./item-history.ts";
+import { computeFlowAnalytics } from "./flow-analytics.ts";
 import {
   FORECAST_CONTRACT_VERSION,
   quotaForecastContract,
@@ -166,6 +199,18 @@ const commentsStore = new CommentsStore(cfg.commentsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
+const spendRollupStore = new SpendRollupStore(cfg.snapshotsDir);
+/** #4824: the Projects/Roadmap spend-beside-progress view over the
+ * #4823 rollup store. A failed read renders no spend block (the
+ * store's absence is already the honest state — ingestion is a
+ * separate slice); it never fabricates zeroed cards. */
+const loadSpendCards = async (): Promise<SpendCardsView | null> => {
+  try {
+    return buildSpendCards(await spendRollupStore.readAll());
+  } catch {
+    return null;
+  }
+};
 
 async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
   const targets = [...items.values()].filter((item) =>
@@ -469,6 +514,16 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+/** Same response shape as {@link json} without the 2-space pretty-print:
+ *  the board JSON legitimately carries seconds of data and the pretty
+ *  form adds ~10% bytes for nothing a machine consumer reads (#5082). */
+function jsonCompact(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
 function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
@@ -502,6 +557,99 @@ async function alertsIntakeAuthorized(req: Request): Promise<boolean> {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// --- Needs-Drew questions (#8568) ------------------------------------------
+
+/** The token-carrying answer-page URL for a raised question. */
+function needsDrewAnswerUrl(item: NeedsDrewQuestion): string {
+  return `${cfg.publicOrigin}/answer/${encodeURIComponent(item.ledgerId)}?t=${item.token}`;
+}
+
+const ANSWER_PAGE_STYLE = `<style>
+  body { font-family: system-ui, sans-serif; background: #0e1117; color: #e6edf3; margin: 0; padding: 2rem 1rem; }
+  main { max-width: 40rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; line-height: 1.35; }
+  .context { color: #9da7b1; white-space: pre-wrap; }
+  .links a { color: #58a6ff; display: block; margin: 0.35rem 0; overflow-wrap: anywhere; }
+  .options { display: grid; gap: 0.6rem; margin: 1.2rem 0; }
+  button.option { text-align: left; padding: 0.8rem 1rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; }
+  button.option:hover { border-color: #58a6ff; }
+  textarea { width: 100%; min-height: 4.5rem; box-sizing: border-box; background: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 0.5rem; padding: 0.6rem; }
+  button.submit { margin-top: 0.6rem; padding: 0.7rem 1.2rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 0; background: #1f6feb; color: #fff; cursor: pointer; }
+  .confirm { border: 1px solid #238636; border-radius: 0.5rem; padding: 1rem; }
+</style>`;
+
+/** Render GET /answer/<ledgerId>. The caller has already verified the
+ * token; the 403 shape renders nothing about the question. */
+function renderAnswerPage(item: NeedsDrewQuestion): string {
+  const links = item.links
+    .filter((l) => /^https?:\/\//.test(l))
+    .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
+    .join("");
+  if (item.answer) {
+    const chosen = item.answer.optionId
+      ? (item.options.find((o) => o.id === item.answer?.optionId)?.label ?? item.answer.optionId)
+      : null;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+<div class="confirm"><p>Answered${chosen ? `: <strong>${esc(chosen)}</strong>` : ""}.</p>
+${item.answer.freeText ? `<p>${esc(item.answer.freeText)}</p>` : ""}
+<p class="context">Recorded at ${esc(item.answer.at)} — the fleet worker has been unblocked.</p></div>
+</main></body></html>`;
+  }
+  const buttons = item.options
+    .map((o) => `<button class="option" type="button" data-option="${esc(o.id)}">${esc(o.label)}</button>`)
+    .join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Needs Drew — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+${item.context ? `<p class="context">${esc(item.context)}</p>` : ""}
+${links ? `<div class="links">${links}</div>` : ""}
+<div class="options">${buttons}</div>
+<label>Or answer in your own words (optional, sent with a tapped option or on its own):
+<textarea id="freeText" placeholder="Free-text answer"></textarea></label>
+<button class="submit" type="button" id="sendText">Send free-text answer</button>
+<p id="status" class="context"></p>
+<script>
+const token = ${JSON.stringify(item.token)};
+const endpoint = ${JSON.stringify(`/api/needs-drew/${encodeURIComponent(item.ledgerId)}/answer`)};
+async function answer(payload) {
+  const status = document.getElementById('status');
+  status.textContent = 'Sending…';
+  try {
+    const res = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, ...payload }) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    status.textContent = 'Answer recorded — thank you. The fleet worker has been unblocked.';
+    document.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  } catch { status.textContent = 'Sending failed — please try again.'; }
+}
+document.querySelectorAll('button.option').forEach((b) => {
+  b.addEventListener('click', () => {
+    const freeText = document.getElementById('freeText').value.trim();
+    answer({ optionId: b.dataset.option, ...(freeText ? { freeText } : {}) });
+  });
+});
+document.getElementById('sendText').addEventListener('click', () => {
+  const freeText = document.getElementById('freeText').value.trim();
+  if (!freeText) { document.getElementById('status').textContent = 'Write an answer first, or tap an option above.'; return; }
+  answer({ freeText });
+});
+</script>
+</main></body></html>`;
+}
+
+function renderAnswerForbidden(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>Answer link not available</h1>
+<p class="context">This answer link is unknown or its token does not match. Nothing about the question is shown without the correct link.</p>
+</main></body></html>`;
+}
+
 /** The PWA manifest (#3315 slice a, landed with #3676): start_url is
  * the attention view per the design; icons incl. maskable + iOS. */
 const PWA_MANIFEST = {
@@ -531,11 +679,39 @@ function emptyUsageView(): UsageView {
   return { services: [], uninstrumentedServices: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
 }
 
-async function boardContext() {
+async function loadBoardContext() {
   const board = await source.board().catch(() => []);
   const refs = allRefs(board);
   const items = await source.items(refs).catch(() => new Map());
   return { board, items };
+}
+
+// #5082: the board assembly is the stack's most expensive read — a
+// Kaneo login + poll with per-project task pagination, one projector
+// /links call per card, and the items() closure over every ref — and
+// every board-family request used to pay it in full. Under ordinary
+// fleet load the assembly outlives the 10 s dashboard deadline
+// (assembly-deadline.ts), so /board, /api/board.json, and the overview
+// (which embeds the board) 503'd even with every upstream healthy;
+// concurrent cold loads each started their own assembly and multiplied
+// the damage (measured 2026-11-08: 3 concurrent -> 3 assemblies, all
+// 503). The assembly now gets the /today contract (#1179): a short TTL
+// serves warm hits from the last successful read, and concurrent cold
+// requests share one in-flight load.
+//
+// The cache sits BELOW the variant split, which is what makes it safe
+// for every consumer: ?done=all, saved-view filters, and the HTML/JSON
+// renderers are all derived per request from this one context
+// (boardJsonBody / boardJsonViewBody / renderBoard), so no variant can
+// ever be served another variant's body. Provenance stays truthful the
+// same way it does for /today: prov()/provDetail() are still read live
+// per request at the call sites. Fail-soft fallbacks (an empty board
+// when Kaneo is down) are the honest degraded state of the read and
+// are cached as-is until expiry, exactly as #1179 documents; a
+// throwing load is never cached.
+const boardContextCache = new TodayCache<Awaited<ReturnType<typeof loadBoardContext>>>(TODAY_CACHE_TTL_MS);
+async function boardContext(): Promise<Awaited<ReturnType<typeof loadBoardContext>>> {
+  return boardContextCache.get(loadBoardContext);
 }
 
 /** All shared forecast contracts (#3984): epic-completion + stall-risk
@@ -741,8 +917,19 @@ async function attentionContext(opts: { census?: boolean } = {}) {
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
   const watchdog = await deriveWatchdogItems(diagnosis);
+  const quota = await source.quota().catch(() => null);
+  const view = buildAttention(feed, summary, Date.now(), diagnosis, watchdog);
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /today, as orchestrator-tier task items — derived once here from
+  // the same pure function, so entries clear on every surface the
+  // moment their source condition no longer holds.
+  const quotaItems = quota ? quotaActionTierItems(buildQuotaActions(quota, AA_PLAN_FACTS)) : [];
+  if (quota) {
+    view.orchestratorExtra = [...view.orchestratorExtra, ...quotaItems];
+  }
   return {
-    view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog),
+    view,
+    quotaItems,
     coverage,
     orchestration: summary,
     diagnosis,
@@ -886,7 +1073,7 @@ async function queueContext() {
 /** The render inputs the overview (front door, #1134) assembles:
  *  the attention view, the Project pool, quota, the health view, and
  *  the board — the same contexts the dedicated pages render from. */
-async function overviewContext() {
+async function loadOverviewContext() {
   const [{ view }, pool, quota, health, { board, items }, orchestration, actionsByObject] = await Promise.all([
     attentionContext(),
     source.projects().catch(() => [] as ProjectPoolItem[]),
@@ -897,6 +1084,44 @@ async function overviewContext() {
     actionsStore.byObject().catch(() => new Map()),
   ]);
   return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
+}
+
+// #5082: same contract as the board assembly above — the overview
+// fan-out (attention + pool + quota + health + board + orchestration)
+// was re-run live on every /, /frag/overview, and /api/overview.json
+// request and tripped the same 10 s deadline. The per-request
+// derivations (deriveOverview / renderOverview) and the provenance
+// reads stay live; only the assembly is cached. The board leg inside
+// rides the boardContext cache, so a cold overview and a cold board
+// share one board assembly.
+const overviewContextCache = new TodayCache<Awaited<ReturnType<typeof loadOverviewContext>>>(TODAY_CACHE_TTL_MS);
+async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverviewContext>>> {
+  return overviewContextCache.get(loadOverviewContext);
+}
+
+/** The live-source half of the /program assembly (#1046 + #1121): the
+ *  items closure for the program refs, the Project pool, the roadmap,
+ *  orchestration, and the coverage census inputs. Everything
+ *  view-dependent (saved-view filtering, briefs, forecasts, the
+ *  render) is derived per request from this bundle in the handler. */
+async function loadProgramSources() {
+  const [items, pool, rows, orchestration, census, poolAvailable] = await Promise.all([
+    source.items(programRefs()).catch(() => new Map()),
+    source.projects().catch(() => []),
+    source.roadmap().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+  ]);
+  return { items, pool, rows, orchestration, census, poolAvailable };
+}
+
+// #5082: /program is a bounded dashboard route with the same failure
+// shape — its source fan-out ran live on every request. Same TTL +
+// single-flight contract as the board/overview assemblies above.
+const programSourcesCache = new TodayCache<Awaited<ReturnType<typeof loadProgramSources>>>(TODAY_CACHE_TTL_MS);
+async function programSources(): Promise<Awaited<ReturnType<typeof loadProgramSources>>> {
+  return programSourcesCache.get(loadProgramSources);
 }
 
 // -- Saved views (#1276) -------------------------------------------------
@@ -929,18 +1154,6 @@ async function resolveView(url: URL): Promise<ResolvedView | null> {
     return view ? { filters: view.filters, view } : null;
   }
   return null;
-}
-
-function ghItemLike(item: GhItem, pool?: ProjectPoolItem | null): ViewItemLike {
-  return {
-    ref: item.ref,
-    repo: item.ref.replace(/#\d+$/, ""),
-    area: item.projectArea ?? pool?.area ?? null,
-    horizon: item.projectHorizon ?? pool?.horizon ?? null,
-    owner: item.author,
-    state: item.state,
-    epic: pool?.epicRef ?? null,
-  };
 }
 
 function poolItemLike(item: ProjectPoolItem): ViewItemLike {
@@ -980,23 +1193,6 @@ function eventFilterFromUrl(
     search: url.searchParams.get("q") ?? undefined,
     itemContext,
   };
-}
-
-/** A board card / roadmap row matches when its own fields match, or
- *  when any canonical item it links to matches. */
-function linkedLike(
-  own: ViewItemLike,
-  links: readonly { ref: RefKey }[],
-  items: Map<RefKey, GhItem>,
-  poolByRef: Map<RefKey, ProjectPoolItem>,
-  filters: ViewFilters,
-): boolean {
-  if (itemMatchesView(own, filters)) return true;
-  for (const l of links) {
-    const item = items.get(l.ref);
-    if (item && itemMatchesView(ghItemLike(item, poolByRef.get(l.ref)), filters)) return true;
-  }
-  return false;
 }
 
 /** Apply a preference view verb to the views store (#1276). Returns a
@@ -1067,6 +1263,15 @@ async function handler(req: Request): Promise<Response> {
   const prov = () => source.provenance();
   const provDetail = () => source.provenanceDetail?.();
 
+  // --- #3978: freshness delivery for browsers ------------------------------
+  // GET /freshness/stream (SSE) and GET /api/freshness-events.json read the
+  // #3977 journal only. Scope is server-derived from the page name; a caller
+  // cannot widen it, and no notice carries source payload or a secret.
+  if (req.method === "GET" && (path === "/freshness/stream" || path === "/api/freshness-events.json")) {
+    const delivery = await freshnessDeliveryResponse(req, url, { reader: freshnessStore });
+    if (delivery !== null) return delivery;
+  }
+
   // --- Author identities for the on-demand picker (#1179) ------------------
   // List pages render author pickers with the standing identities only;
   // the full standing + per-session list is fetched once, on first use.
@@ -1080,6 +1285,11 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewRoadmapAnnotation(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const annotationAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!annotationAccess.ok) return json({ error: annotationAccess.error }, annotationAccess.status);
+      parsed.value.author = annotationAccess.author;
       const rows = await source.roadmap().catch(() => []);
       if (!rows.some((row) => row.subject === parsed.value.objectRef)) {
         return json({ error: "objectRef is not a current roadmap row" }, 404);
@@ -1118,11 +1328,27 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const commentAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!commentAccess.ok) return json({ error: commentAccess.error }, commentAccess.status);
+      parsed.value.author = commentAccess.author;
+      // #941: a privileged author additionally requires the operator
+      // token when one is configured (fail closed on a secret-store
+      // outage); with no secret configured the write stays unverified.
+      // Runs on the Access-derived author above, so the two gates
+      // compose: identity first, privilege second.
+      const authorization = authorizeCommentAuthor(
+        parsed.value.author,
+        req.headers.get("authorization"),
+        await resolveBwsSecretLookup("pm-aggregator.comments-operator-token"),
+      );
+      if (!authorization.ok) return json({ error: authorization.error }, authorization.status);
       // #1509: a persistence failure is a server error, not bad input -
       // only the validation/body-parse path above earns a 400.
       let comment;
       try {
-        comment = await commentsStore.add(parsed.value);
+        comment = await commentsStore.add(parsed.value, { authorVerified: authorization.authorVerified });
       } catch (err) {
         return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
@@ -1162,6 +1388,11 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewAction(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: gate every action write, including non-triage and
+      // preference actions, on the configured Access identity.
+      const actionAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!actionAccess.ok) return json({ error: actionAccess.error }, actionAccess.status);
+      parsed.value.author = actionAccess.author;
       // #1291/#1293: checks that need the currently published item —
       // option/survey membership, required-question coverage, proposal
       // identity, the access/policy auto ban. Enforced only when the
@@ -1274,6 +1505,9 @@ async function handler(req: Request): Promise<Response> {
         deduped?: boolean;
         error?: string;
       }[] = [];
+      // One enforcer for the whole batch: the request's JWT is
+      // verified once, not once per action (see access-identity.ts).
+      const enforceBatchAuthor = createAccessAuthorEnforcer(req);
       for (const [index, raw] of entries.entries()) {
         const objectRef =
           typeof raw === "object" && raw !== null && typeof (raw as { objectRef?: unknown }).objectRef === "string"
@@ -1284,6 +1518,12 @@ async function handler(req: Request): Promise<Response> {
           results.push({ index, objectRef, ok: false, error: parsed.error });
           continue;
         }
+        const batchAccess = await enforceBatchAuthor(parsed.value.author);
+        if (!batchAccess.ok) {
+          results.push({ index, objectRef, ok: false, error: batchAccess.error });
+          continue;
+        }
+        parsed.value.author = batchAccess.author;
         if (parsed.value.kind === "triage" && section) {
           const problem = checkActionAgainstItem(
             parsed.value,
@@ -1519,17 +1759,7 @@ async function handler(req: Request): Promise<Response> {
         }),
       );
     }
-    const poolByRef = act.poolByRef;
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
-    );
-    const keptRefs = new Set<string>();
-    for (const b of keptBoard) for (const l of b.links) keptRefs.add(l.ref);
-    const keptItems = new Map(
-      [...items].filter(
-        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
-      ),
-    );
+    const { board: keptBoard, items: keptItems } = filterBoardForView(board, items, act.poolByRef, resolved.filters);
     return html(
       renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, {
         showAllDone: url.searchParams.get("done") === "all",
@@ -1538,7 +1768,16 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
-    const wrapped = `<div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')">${renderBoardBody(board, items, counts, act)}</div>`;
+    // #8521: the fragment twin applies the same saved view as /board
+    // (PR #4013 missed it), and its refresh URLs re-name the view so
+    // a reload does not silently drop the filter. #7937: the same
+    // treatment for ?done=all — the fragment renders the full Done
+    // strip when the flag is present (PR #3855 wired it only into
+    // /board), and fragBoardUrl carries it across refreshes.
+    const fragUrl = fragBoardUrl(url.searchParams);
+    const resolved = await resolveView(url);
+    const view = resolved ? filterBoardForView(board, items, act.poolByRef, resolved.filters) : { board, items };
+    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on-dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
     return sseResponse(ssePatch("#board-main", wrapped));
   }
 
@@ -1592,6 +1831,10 @@ async function handler(req: Request): Promise<Response> {
       orchestrationStatus,
     });
     const forecasts = (await allForecastContracts(pool)).byRef;
+    // #4830: the same twin /api/flow-analytics.json serves, computed
+    // the same way — the Roadmap charts render exactly this object.
+    const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
+    const spendCards = await loadSpendCards();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -1623,29 +1866,17 @@ async function handler(req: Request): Promise<Response> {
           viewQuery,
           briefs,
           forecasts,
+          flowAnalytics,
+          spendCards,
         ),
       );
     }
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike(
-        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
-        r.links,
-        items,
-        poolByRef,
-        resolved.filters,
-      ),
-    );
     // Codex P2, PR #4013: items linked from a KEPT row keep their
     // metadata (links/badges in roadmapCard) even when they fail the
     // item filter themselves — same rule the board handler applies.
-    const keptRefs = new Set<string>();
-    for (const r of keptRows) for (const l of r.links) keptRefs.add(l.ref);
-    const keptItems = new Map(
-      [...items].filter(
-        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
-      ),
-    );
+    // Shared with /api/roadmap.json via filterRoadmapForView (#8723).
+    const { rows: keptRows, items: keptItems } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
     return html(
       renderRoadmap(
         keptRows,
@@ -1660,8 +1891,22 @@ async function handler(req: Request): Promise<Response> {
         viewQuery,
         briefs,
         forecasts,
+        flowAnalytics,
+        spendCards,
       ),
     );
+  }
+
+  if (path === "/api/flow-analytics.json") {
+    // #4829 (step 2 of #1281): the flow-analytics JSON twin — the
+    // exact numbers the step-3 charts (#4830) will render, computed
+    // from the #3981 item-history store. Every group carries its
+    // computation window and gap signal via the shared window block.
+    const cutoffs = await itemHistoryStore.readAll().catch(() => []);
+    return json({
+      generatedAt: new Date().toISOString(),
+      ...computeFlowAnalytics(cutoffs),
+    });
   }
 
   if (path === "/api/forecasts.json") {
@@ -1768,10 +2013,10 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/aa") {
-    return html(renderAa(await source.aa(), prov(), provDetail()));
+    return html(renderAa(await source.aa(url.searchParams.get("batch")), prov(), provDetail()));
   }
   if (path === "/api/aa.json") {
-    const section = await source.aa();
+    const section = await source.aa(url.searchParams.get("batch"));
     return json(section ?? { status: "absent", reason: "no AA explorer section in the fleet feed yet" });
   }
 
@@ -1881,16 +2126,11 @@ async function handler(req: Request): Promise<Response> {
     // registry in src/project-config.ts; the live half derived from
     // the same Source the other views read (items / projects /
     // roadmap / orchestration), each facet failing soft on its own.
-    const [items, pool, rows, orchestration, formOpts, actionsByObject, census, poolAvailable] = await Promise.all([
-      source.items(programRefs()).catch(() => new Map()),
-      source.projects().catch(() => []),
-      source.roadmap().catch(() => []),
-      source.orchestration().catch(() => null),
-      commentFormOpts(),
-      actionsStore.byObject(),
-      source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
-      source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
-    ]);
+    // #5082: the live-source fan-out rides the programSources cache
+    // (TTL + single-flight); the local-store reads and everything
+    // view-dependent below stay per-request.
+    const [{ items, pool, rows, orchestration, census, poolAvailable }, formOpts, actionsByObject] =
+      await Promise.all([programSources(), commentFormOpts(), actionsStore.byObject()]);
     // #1276 (Codex P2, PR #4013): /projects redirects here with the
     // view parameters preserved, but this handler never resolved the
     // view — apply it to the pool before rendering, exactly as
@@ -1922,6 +2162,12 @@ async function handler(req: Request): Promise<Response> {
         identities: formOpts.identities,
         briefs,
         forecasts: (await allForecastContracts(viewPool)).byRef,
+        // #4830: the Projects page (merged into /program, #1497)
+        // renders the #4829 twin as charts, computed as the endpoint
+        // computes it.
+        flowAnalytics: computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => [])),
+        // #4824: spend beside progress on the pool cards.
+        spend: await loadSpendCards(),
       }),
     );
   }
@@ -1990,17 +2236,25 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/board.json") {
     const { board, items } = await boardContext();
+    const showAllDone = url.searchParams.get("done") === "all";
     const resolved = await resolveView(url);
-    if (!resolved) return json({ board, items: [...items.values()] });
+    if (!resolved) return jsonCompact(boardJsonBody(board, items, { showAllDone }));
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+    // Filter the policy-eligible board against the full item lookup
+    // BEFORE the done-strip limit (#8058): limiting first dropped a
+    // view's matching done cards outside the global newest 100.
+    // boardJsonViewBody then applies the limit and restricts the
+    // shipped items to the selected cards, so the response stays
+    // bounded as #5082 requires — the full closure is only a lookup.
+    const bounded = boardJsonViewBody(
+      board,
+      items,
+      (b) =>
+        linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+      { showAllDone },
     );
-    const keptItems = [...items.values()].filter((it) =>
-      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
-    );
-    return json({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
+    return jsonCompact({ board: bounded.board, items: bounded.items, view: resolved.view?.id ?? null });
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
@@ -2018,18 +2272,10 @@ async function handler(req: Request): Promise<Response> {
     }
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike(
-        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
-        r.links,
-        items,
-        poolByRef,
-        resolved.filters,
-      ),
-    );
-    const keptItems = [...items.values()].filter((it) =>
-      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
-    );
+    // #8723: the same rule as the HTML twin -- items linked from a
+    // kept row ship even when they fail the view themselves.
+    const { rows: keptRows, items: keptItemMap } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
+    const keptItems = [...keptItemMap.values()];
     const annotatedKeptRows = await Promise.all(
       keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
     );
@@ -2098,11 +2344,16 @@ async function handler(req: Request): Promise<Response> {
     // HTML renders — the array shape itself is unchanged (Codex P2
     // on PR #2431). #3317: include non-session needs-drew items too,
     // matching the full queue rendered by the attention page.
-    const { view } = await attentionContext();
+    const { view, quotaItems } = await attentionContext();
     return json([
       ...view.all,
       ...view.drewExtra.map((i) => ({ ...i, tier: "needs-drew" as const })),
       ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
+      // #1174 (Codex P2, PR #4695): the synthesized quota tasks ride along
+      // in the same TierItem shape — this endpoint is the machine-first
+      // interface the attention page advertises, so the quota tasks must
+      // be discoverable here, not only in the HTML orchestrator tier.
+      ...quotaItems.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
     ]);
   }
   if (path === "/api/coverage.json") {
@@ -2222,19 +2473,139 @@ async function handler(req: Request): Promise<Response> {
     return json(summary);
   }
 
+  // Per-class test sends (#3318): one test per preference class,
+  // honouring the stored class toggles, landing per design §3.
+  if (path === "/api/push/test-class") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+    let cls: unknown;
+    try {
+      cls = ((await readJsonBody(req)) as { class?: unknown })?.class;
+    } catch {
+      return json({ error: "invalid test-class body" }, 400);
+    }
+    if (!isNotificationTestClass(cls)) return json({ error: "unknown notification class" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const summary = await sendClassTestPush(store, cfg.publicOrigin, cls);
+    return json(summary);
+  }
+
   // --- Alert throat (#3676): incident intake + ack/close --------------
   if (req.method === "POST" && path === "/api/alerts") {
     if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
     try {
-      const parsed = validateNewIncident(await readJsonBody(req));
+      const rawBody: unknown = await readJsonBody(req);
+      const parsed = validateNewIncident(rawBody);
       if (!parsed.ok) return json({ error: parsed.error }, 400);
       const { incident, created } = await store.postIncident(parsed.value);
-      return json({ incident, created }, created ? 201 : 200);
+      const status = created ? 201 : 200;
+      // #8568 producer extensions: exactly one of needsDrew /
+      // stackHealth may ride an incident post. The incident insert
+      // above is unchanged; a VALIDATION failure of an extension is a
+      // 400 (the poster's bug should be loud at the poster), while a
+      // store failure is logged and never fails the incident post.
+      const ext =
+        rawBody && typeof rawBody === "object" && !Array.isArray(rawBody)
+          ? (rawBody as Record<string, unknown>)
+          : {};
+      const hasNeedsDrew = ext.needsDrew !== undefined;
+      const hasStackHealth = ext.stackHealth !== undefined;
+      if (hasNeedsDrew && hasStackHealth) {
+        return json({ error: "needsDrew and stackHealth are mutually exclusive" }, 400);
+      }
+      if (hasNeedsDrew) {
+        const v = validateNeedsDrew(ext.needsDrew);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source);
+          requestAlertTick();
+          return json(
+            { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
+            status,
+          );
+        } catch (err) {
+          console.error(
+            `alerts intake: needsDrew raise failed (${err instanceof Error ? err.message : "error"})`,
+          );
+          return json({ incident, created }, status);
+        }
+      }
+      if (hasStackHealth) {
+        const v = validateStackHealth(ext.stackHealth);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          await setStackHealth(cfg.stackHealthFile, v.value);
+          if (v.value.state === "up") {
+            await store.closeOpenIncidentByKey(parsed.value.source, parsed.value.key);
+          }
+          requestAlertTick();
+        } catch (err) {
+          console.error(
+            `alerts intake: stackHealth update failed (${err instanceof Error ? err.message : "error"})`,
+          );
+        }
+        return json({ incident, created }, status);
+      }
+      return json({ incident, created }, status);
     } catch (err) {
       return json({ error: `invalid incident: ${err instanceof Error ? err.message : err}` }, 400);
     }
+  }
+  // --- Needs-Drew answers (#8568) --------------------------------------
+  const needsDrewAnswerMatch = /^\/api\/needs-drew\/([^/]+)\/answer$/.exec(path);
+  if (req.method === "POST" && needsDrewAnswerMatch) {
+    const ledgerId = decodePathSegment(needsDrewAnswerMatch[1]);
+    if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);
+    let body: { token?: unknown; optionId?: unknown; freeText?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid answer body" }, 400);
+    }
+    // No bearer: the per-question token is the authority.
+    const item = await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    if (!item || typeof body.token !== "string" || body.token !== item.token) {
+      return json({ error: "unknown question or bad token" }, 403);
+    }
+    const optionId = typeof body.optionId === "string" ? body.optionId : undefined;
+    if (optionId !== undefined && !item.options.some((o) => o.id === optionId)) {
+      return json({ error: "optionId is not one of the question options" }, 400);
+    }
+    const freeText = typeof body.freeText === "string" ? body.freeText : undefined;
+    if (body.freeText !== undefined && freeText === undefined) {
+      return json({ error: "freeText must be a string" }, 400);
+    }
+    if (optionId === undefined && !freeText?.trim()) {
+      return json({ error: "optionId or freeText required" }, 400);
+    }
+    const updated = await recordAnswer(cfg.needsDrewFile, ledgerId, {
+      ...(optionId !== undefined ? { optionId } : {}),
+      ...(freeText !== undefined ? { freeText } : {}),
+      via: "api",
+    });
+    if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
+    return json({
+      ledgerId,
+      answered: true,
+      answer: {
+        ...(updated.answer.optionId !== undefined ? { optionId: updated.answer.optionId } : {}),
+        ...(updated.answer.freeText !== undefined ? { freeText: updated.answer.freeText } : {}),
+        at: updated.answer.at,
+        via: updated.answer.via,
+      },
+    });
+  }
+  const answerPageMatch = /^\/answer\/([^/]+)$/.exec(path);
+  if (req.method === "GET" && answerPageMatch) {
+    const ledgerId = decodePathSegment(answerPageMatch[1]);
+    const token = url.searchParams.get("t") ?? "";
+    const item = ledgerId === null ? null : await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    // Unknown question or token mismatch: 403, and the question is
+    // never rendered — the token is the only authority here.
+    if (!item || !token || token !== item.token) return html(renderAnswerForbidden(), 403);
+    return html(renderAnswerPage(item));
   }
   const alertActionMatch = /^\/api\/alerts\/([\w-]+)\/(ack|close)$/.exec(path);
   if (req.method === "POST" && alertActionMatch) {
@@ -2282,6 +2653,33 @@ async function handler(req: Request): Promise<Response> {
               VAPID_PUBLIC_KEY,
             ),
           )
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+  }
+  if (path === "/alerts/preferences" || path === "/api/alerts/preferences.json") {
+    // #3318: subscription preferences — per-class toggles, quiet
+    // hours, this-browser state, per-class test sends. Writes go
+    // through the existing /api/push/subscriptions upsert; this
+    // route only reads the stored subscriptions for the form.
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/alerts/preferences"
+        ? html(renderNotificationPreferences({ available: false, subscriptions: [] }, prov(), VAPID_PUBLIC_KEY))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const subscriptions = await store.listSubscriptions();
+      if (path === "/api/alerts/preferences.json")
+        return json({
+          available: true,
+          subscriptions: subscriptions.map(toPublicSubscription),
+          classes: NOTIFICATION_CLASSES,
+          defaults: NOTIFICATION_CLASS_DEFAULTS,
+        });
+      return html(renderNotificationPreferences({ available: true, subscriptions }, prov(), VAPID_PUBLIC_KEY));
+    } catch {
+      return path === "/alerts/preferences"
+        ? html(renderNotificationPreferences({ available: false, subscriptions: [] }, prov(), VAPID_PUBLIC_KEY))
         : json({ error: "alerts store unavailable" }, 503);
     }
   }
@@ -2523,16 +2921,29 @@ if (source.ingestSnapshots) {
 // The alert throat's engine (#3676): the ~60s delivery/escalation
 // tick (live mode only, fail-soft — see src/alerts.ts).
 startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
-  const [attention, quota, health, actions, comments] = await Promise.all([
-    attentionContext(),
-    source.quota().catch(() => emptyQuotaView()),
-    healthContext(false),
-    actionsStore.all().catch(() => []),
-    commentsStore.all().catch(() => []),
-  ]);
+  const [attention, quota, health, actions, comments, needsDrewRaised, stackHealthDown, stackHealthStates] =
+    await Promise.all([
+      attentionContext(),
+      source.quota().catch(() => emptyQuotaView()),
+      healthContext(false),
+      actionsStore.all().catch(() => []),
+      commentsStore.all().catch(() => []),
+      listOpenNeedsDrew(cfg.needsDrewFile).catch(() => []),
+      listStackHealthDown(cfg.stackHealthFile).catch(() => []),
+      readStackHealthStates(cfg.stackHealthFile).catch(() => ({})),
+    ]);
   const drewActivity = [
     ...actions.filter((action) => action.author.kind === "drew").map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
     ...comments.filter((comment) => comment.author.kind === "drew").map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
   ];
-  return { attention: attention.view, quota, health, drewActivity, soleDoorPoolIds: deriveSoleDoorPoolIds(quota) };
+  return {
+    attention: attention.view,
+    quota,
+    health,
+    drewActivity,
+    soleDoorPoolIds: deriveSoleDoorPoolIds(quota),
+    needsDrewRaised,
+    stackHealthDown,
+    stackHealthStates,
+  };
 });

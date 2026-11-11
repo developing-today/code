@@ -52,7 +52,7 @@ function signOidc(repository: string): string {
 // (#5120), so the suite pins a fixture project (no service-role key: the
 // queue stays disabled, as these tests intend).
 process.env.SUPABASE_URL ??= "https://fixture.supabase.co";
-const { handler } = await import("../src/server.ts");
+const { handler, taskStatusView, sessionStatusView } = await import("../src/server.ts");
 
 function sessionsRequest(token: string, body: Record<string, unknown>): Request {
   return new Request("http://x/v1/sessions", {
@@ -128,5 +128,100 @@ describe("POST /v1/sessions body cap is measured in UTF-8 bytes (issue #3010)", 
     const token = signOidc("developing-today/code");
     const res = await handler(sessionsRequest(token, { ...base, prompt: "a".repeat(260_000) }));
     expect(res.status).toBe(502);
+  });
+});
+
+describe("taskStatusView / sessionStatusView (#5555)", () => {
+  test("task view surfaces status/worker/progress and payload repo/kind, never the packet body", () => {
+    const view = taskStatusView({
+      id: 42,
+      queue: "repo-health-code-pilot",
+      title: "Fix the thing",
+      status: "claimed",
+      worker_id: "repo-worker-code",
+      lane_id: "code-m",
+      attempts: 2,
+      max_attempts: 6,
+      claimed_at: "2026-11-09T00:00:00Z",
+      lease_until: "2026-11-09T01:00:00Z",
+      created_at: "2026-11-08T00:00:00Z",
+      updated_at: "2026-11-09T00:30:00Z",
+      completed_at: null,
+      progress: { stage: "executing" },
+      result: null,
+      last_error: null,
+      dedupe_key: "repo-health:v1:fix:developing-today/code:issue:1",
+      payload: { repo: "developing-today/code", kind: "small_fix", prompt: "verbatim caller prompt" },
+      body: "packet body text",
+    } as never);
+    expect(view.task_id).toBe(42);
+    expect(view.status).toBe("claimed");
+    expect(view.worker_id).toBe("repo-worker-code");
+    expect(view.progress).toEqual({ stage: "executing" });
+    expect(view.repo).toBe("developing-today/code");
+    expect(view.kind).toBe("small_fix");
+    expect("body" in view).toBe(false);
+    expect("payload" in view).toBe(false);
+    expect(JSON.stringify(view)).not.toContain("verbatim caller prompt");
+  });
+
+  test("task view without a payload reports null repo/kind", () => {
+    const view = taskStatusView({ id: 7, queue: "q", status: "queued", dedupe_key: "k" } as never);
+    expect(view.repo).toBeNull();
+    expect(view.kind).toBeNull();
+    expect(view.worker_id).toBeNull();
+  });
+
+  test("session view picks id/title and the location directory", () => {
+    const view = sessionStatusView({
+      id: "ses_1",
+      title: "work",
+      location: { directory: "/home/user/git/code" },
+      time: { created: 1, updated: 2 },
+      extra: "not forwarded",
+    });
+    expect(view.session_id).toBe("ses_1");
+    expect(view.directory).toBe("/home/user/git/code");
+    expect(view.time).toEqual({ created: 1, updated: 2 });
+    expect("extra" in view).toBe(false);
+  });
+
+  test("session view of a non-object payload yields null fields, not a throw", () => {
+    const view = sessionStatusView("nope");
+    expect(view.session_id).toBeNull();
+    expect(view.title).toBeNull();
+    expect(view.directory).toBeNull();
+  });
+});
+
+describe("GET /v1/tasks/:id and /v1/sessions/:id read routes (#5555)", () => {
+  test("GET /v1/tasks/:id without auth is 401", async () => {
+    const res = await handler(new Request("http://x/v1/tasks/42"));
+    expect(res.status).toBe(401);
+  });
+
+  test("GET /v1/sessions/:id without auth is 401", async () => {
+    const res = await handler(new Request("http://x/v1/sessions/ses_1"));
+    expect(res.status).toBe(401);
+  });
+
+  test("GET /v1/tasks/:id with a non-numeric id is 400, before any queue access", async () => {
+    const token = signOidc("developing-today/code");
+    const res = await handler(new Request("http://x/v1/tasks/abc", { headers: { authorization: `Bearer ${token}` } }));
+    expect(res.status).toBe(400);
+  });
+
+  test("GET /v1/sessions/:id with malformed percent-encoding is 400, before any upstream call", async () => {
+    const token = signOidc("developing-today/code");
+    const res = await handler(new Request("http://x/v1/sessions/%ZZ", { headers: { authorization: `Bearer ${token}` } }));
+    expect(res.status).toBe(400);
+  });
+
+  test("GET /v1/tasks/:id authenticated reaches the queue (502 while unconfigured here)", async () => {
+    const token = signOidc("developing-today/code");
+    const res = await handler(new Request("http://x/v1/tasks/42", { headers: { authorization: `Bearer ${token}` } }));
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("queue unavailable");
   });
 });
