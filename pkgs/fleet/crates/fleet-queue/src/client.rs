@@ -845,6 +845,58 @@ pub(crate) fn list_limit_or_default(raw: Option<i64>) -> Result<i64, String> {
     validate_list_limit(raw.unwrap_or(LIST_LIMIT_DEFAULT))
 }
 
+/// One page of a `list` fetch (#7871): a single /list response
+/// reliably carries at most ~100 rows — above that the reply comes
+/// back unusable and, before this fix, the client rendered it as a
+/// silent "(no tasks)" with exit 0. `cmd_list` therefore fetches
+/// any limit in pages of this size, advancing an offset the broker
+/// honors on both backends (PostgREST `offset=` and Turso
+/// `OFFSET`), so a large --limit returns rows page by page instead
+/// of one oversized response.
+pub(crate) const LIST_PAGE_SIZE: i64 = 100;
+
+/// The (offset, page_limit) requests that fetch `limit` rows in
+/// pages of LIST_PAGE_SIZE (#7871). Pure, so the paging plan is
+/// unit-testable without a broker. Oracle: the pages are
+/// contiguous, non-overlapping, in ascending offset order, and
+/// their page_limits sum to exactly `limit`.
+pub(crate) fn list_pages(limit: i64) -> Vec<(i64, i64)> {
+    let mut pages = Vec::new();
+    let mut offset = 0;
+    while offset < limit {
+        let page = LIST_PAGE_SIZE.min(limit - offset);
+        pages.push((offset, page));
+        offset += page;
+    }
+    pages
+}
+
+/// The /list `offset` for a broker request (#7871): absent means
+/// the first page; a negative value is never interpolated into a
+/// query — it clamps to 0. The client only ever sends offsets its
+/// own paging plan produced; the broker re-derives the value here
+/// because it is the trust boundary for non-CLI callers.
+pub(crate) fn list_offset_or_default(raw: Option<i64>) -> i64 {
+    raw.unwrap_or(0).max(0)
+}
+
+/// The rows of a /list envelope (#7871): the `rows` field must be
+/// present and an array. Before this guard, a malformed or
+/// truncated broker reply (which parses to a Null body) fell
+/// through `unwrap_or_default` in cmd_list and printed
+/// "(no tasks)" with exit 0 — a silent empty that reads as "task
+/// does not exist". A reply we cannot read is an error, never an
+/// empty list.
+pub(crate) fn list_rows(resp: &Value) -> Result<Vec<Value>, String> {
+    resp.get("rows")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .ok_or_else(|| {
+            "queue-broker /list reply had no rows array — refusing to report an empty list"
+                .to_string()
+        })
+}
+
 /// The accepted ranges for the queue duration flags (#6420; design
 /// #6448 Phase 3 pin, same as `list --limit`: out-of-range is
 /// REJECTED, never clamped, at both the client and the broker).
@@ -1360,7 +1412,15 @@ fn find_task_row(rows: &[Value], task_id: i64) -> Option<&Value> {
 fn cmd_list(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
-        &["queue", "status", "limit", "not-before", "lane", "worker"],
+        &[
+            "queue",
+            "status",
+            "limit",
+            "not-before",
+            "lane",
+            "worker",
+            "task",
+        ],
         &[],
     );
     reject_extra_pos("list", &args, 0);
@@ -1368,23 +1428,38 @@ fn cmd_list(rest: &[String]) -> i32 {
         Ok(limit) => limit,
         Err(e) => die(2, &e),
     };
-    let resp = call(
-        "/list",
-        &json!({
-            "queue": opt_queue(&args),
-            "status": args.get("status"),
-            "limit": limit,
-            "not_before": args.get("not-before"),
-            "lane": args.get("lane"),
-            "worker": args.get("worker"),
-        }),
-    );
-    let resp = unwrap_ok(resp);
-    let rows = resp
-        .get("rows")
-        .and_then(|r| r.as_array())
-        .cloned()
-        .unwrap_or_default();
+    // #7871: fetch in pages of LIST_PAGE_SIZE (see list_pages) — a
+    // single oversized /list response comes back unusable and used
+    // to render as a silent "(no tasks)". `--task <id>` narrows to
+    // one task regardless of status ordering, so a worker can
+    // verify a just-completed task's status from list output even
+    // when the done list is thousands of rows long.
+    let mut rows: Vec<Value> = Vec::new();
+    for (offset, page_limit) in list_pages(limit) {
+        let resp = call(
+            "/list",
+            &json!({
+                "queue": opt_queue(&args),
+                "status": args.get("status"),
+                "limit": page_limit,
+                "offset": offset,
+                "not_before": args.get("not-before"),
+                "lane": args.get("lane"),
+                "worker": args.get("worker"),
+                "task": args.get_i64("task"),
+            }),
+        );
+        let resp = unwrap_ok(resp);
+        let page = match list_rows(&resp) {
+            Ok(page) => page,
+            Err(e) => die(3, &e),
+        };
+        let short_page = (page.len() as i64) < page_limit;
+        rows.extend(page);
+        if short_page {
+            break;
+        }
+    }
     if rows.is_empty() {
         println!("(no tasks)");
         return 0;
@@ -3357,6 +3432,46 @@ mod tests {
         // Absent --limit keeps the existing default of 20.
         assert_eq!(list_limit_or_default(None), Ok(20));
         assert_eq!(list_limit_or_default(Some(0)), validate_list_limit(0));
+    }
+
+    #[test]
+    fn list_pages_cover_the_limit_exactly() {
+        // #7871 oracle: pages are contiguous, ascending, and sum
+        // to the requested limit; no page exceeds LIST_PAGE_SIZE
+        // (the per-response row ceiling the bug tracks).
+        assert_eq!(list_pages(1), vec![(0, 1)]);
+        assert_eq!(list_pages(20), vec![(0, 20)]);
+        assert_eq!(list_pages(LIST_PAGE_SIZE), vec![(0, LIST_PAGE_SIZE)]);
+        assert_eq!(
+            list_pages(LIST_PAGE_SIZE + 1),
+            vec![(0, LIST_PAGE_SIZE), (LIST_PAGE_SIZE, 1)]
+        );
+        let pages = list_pages(LIST_LIMIT_MAX);
+        assert_eq!(pages.len() as i64, LIST_LIMIT_MAX / LIST_PAGE_SIZE);
+        assert_eq!(pages.iter().map(|(_, n)| n).sum::<i64>(), LIST_LIMIT_MAX);
+        for (i, (offset, n)) in pages.iter().enumerate() {
+            assert_eq!(*offset, i as i64 * LIST_PAGE_SIZE);
+            assert!(*n >= 1 && *n <= LIST_PAGE_SIZE);
+        }
+        // Offsets clamp at 0, absent means the first page.
+        assert_eq!(list_offset_or_default(None), 0);
+        assert_eq!(list_offset_or_default(Some(-5)), 0);
+        assert_eq!(list_offset_or_default(Some(200)), 200);
+    }
+
+    #[test]
+    fn list_rows_rejects_a_reply_without_a_rows_array() {
+        // #7871: the silent-empty path — a truncated broker reply
+        // parses to Null, and an ok-envelope may still lack rows.
+        // Both must be errors, never an empty list.
+        assert!(list_rows(&Value::Null).is_err());
+        assert!(list_rows(&json!({"ok": true})).is_err());
+        assert!(list_rows(&json!({"ok": true, "rows": {}})).is_err());
+        assert_eq!(list_rows(&json!({"ok": true, "rows": []})), Ok(vec![]));
+        assert_eq!(
+            list_rows(&json!({"ok": true, "rows": [{"id": 7}]})),
+            Ok(vec![json!({"id": 7})])
+        );
     }
 
     #[test]

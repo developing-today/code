@@ -5939,7 +5939,17 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         sql += " AND (not_before IS NULL OR not_before <= ?)";
         args.push(Arg::Text(nb.to_string()));
     }
-    sql += &format!(" ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT {limit}");
+    // #7871: --task narrows to one task id (the PostgREST /list
+    // path applies the same filter), and the client's paged fetch
+    // advances OFFSET page by page.
+    if let Some(id) = req_i64(req, "task") {
+        sql += " AND id = ?";
+        args.push(Arg::Int(id));
+    }
+    let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
+    sql += &format!(
+        " ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
+    );
     let json_cols: &[&str] = if rich {
         &["progress", "payload", "blocked_deps"]
     } else {
