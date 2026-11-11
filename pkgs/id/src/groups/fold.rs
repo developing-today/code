@@ -326,6 +326,25 @@ impl Projection {
         self.active_devices(group, account).len()
     }
 
+    /// The effective role of `device` in `group` at the head of the events (P8.3): the
+    /// role of the account that authorized the device, capped by the grant's scope. A
+    /// device authorized by several accounts takes the greatest of their capped roles.
+    /// `None` when the device holds no active grant in the group: never granted, revoked,
+    /// voided, or its account no longer a member. The settled `devices` list is already
+    /// filtered to active grants, so only the account's current role remains to check.
+    pub fn device_role(&self, group: &Hash, device: &Key) -> Option<Role> {
+        let view = self.groups.get(group)?;
+        self.devices
+            .iter()
+            .filter(|grant| grant.group == *group && grant.device == *device)
+            .filter_map(|grant| {
+                view.members
+                    .get(&grant.account)
+                    .map(|role| (*role).min(grant.scope))
+            })
+            .max()
+    }
+
     /// All active authorized devices across all members in `group` at the head of the events (P8.3).
     pub fn group_active_devices(&self, group: &Hash) -> BTreeSet<Key> {
         let Some(view) = self.groups.get(group) else {

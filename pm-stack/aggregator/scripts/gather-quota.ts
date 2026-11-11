@@ -342,7 +342,7 @@ async function runMetaRenewal(tickAt: string): Promise<void> {
 
 interface ProviderRun {
   id: string;
-  state: "ok" | "error";
+  state: "ok" | "error" | "lapsed";
   ms: number;
   entries: QuotaCurrentEntry[];
   error?: string;
@@ -376,13 +376,28 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
     }
     return { id, state: "error", ms: Date.now() - t0, entries, error: reason };
   }
-  const firstBad = entries.find((e) => e.state !== "ok");
+  const firstFailure = entries.find((e) => e.state !== "ok" && e.state !== "lapsed");
+  // A run whose only non-ok rows are planned lapses is terminal, not
+  // failed: reporting it as "error" would trip #1268 retention and
+  // replace the lapsed rows with last-known ok readings, hiding the
+  // lapse the hub must show.
+  const onlyLapsed = entries.length > 0 && entries.every((e) => e.state === "lapsed");
   return {
     id,
-    state: anyOk ? "ok" : "error",
+    state: anyOk ? "ok" : onlyLapsed ? "lapsed" : "error",
     ms: Date.now() - t0,
     entries,
-    ...(!anyOk && firstBad?.error ? { error: firstBad.error } : {}),
+    // A partially-failed run still surfaces its first failure: a
+    // folded provider (codex answers one row per OpenAI credential)
+    // must not let one credential's ok row hide a sibling credential's
+    // error from the heartbeat — 2026-11-10 the codex run read "ok"
+    // with no error while the openai.main and _openai credentials were
+    // both failing token_expired at the provider.
+    ...(firstFailure?.error
+      ? { error: firstFailure.error }
+      : onlyLapsed
+        ? { error: entries.find((e) => e.state === "lapsed")?.error }
+        : {}),
   };
 }
 
@@ -687,16 +702,40 @@ async function main(): Promise<number> {
   // #1268: an errored run with no ok row of its own retains the
   // provider's last-known ok entries from the previous tick instead
   // of replacing them with fresh error rows (or with nothing, on a
-  // whole-fetch timeout). The heartbeat below still reports the run
-  // as an error, with its reason and the retained row count.
+  // whole-fetch timeout). Preserve confirmed lapse rows alongside
+  // retained siblings: retention must never erase a terminal state
+  // reported by this tick.
   const prevEntries = await readPreviousEntries();
   if (prevEntries.length) {
     for (const run of runs) {
-      if (run.state !== "error" || run.entries.some((e) => e.state === "ok")) continue;
+      // #8294: a Meta session lapse is temporary (remedy: re-auth on
+      // the hub), unlike the terminal Go lapse — the pool keeps its
+      // last good windows visible as stale rows while lapsed, so a
+      // lapsed Meta run engages retention exactly like an error run,
+      // and its own credential's readings are retained too.
+      const metaLapsed = run.state === "lapsed" && run.id === "meta";
+      if ((run.state !== "error" && !metaLapsed) || run.entries.some((e) => e.state === "ok")) continue;
       const retained = lastKnownEntries(prevEntries, run.id);
       if (retained.length) {
-        run.entries = markRetained(retained, tickAt);
-        run.retained = true;
+        const lapsed = run.entries.filter((e) => e.state === "lapsed");
+        // Do not retain the previous ok reading for the same credential
+        // that has just reported a lapse. Other credentials in the same
+        // provider run may still retain their last-known readings.
+        // (Meta is the exception, per the #8294 note above: its lapse
+        // is the pool's own session, and retaining its last good
+        // windows beside the lapsed row is the point.)
+        const retainedSiblings = metaLapsed
+          ? retained
+          : retained.filter(
+              (previous) =>
+                !lapsed.some((current) =>
+                  (current.credentialId && previous.credentialId === current.credentialId) ||
+                  (current.credentialLabel &&
+                    previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
+                ),
+            );
+        run.entries = [...markRetained(retainedSiblings, tickAt), ...lapsed];
+        run.retained = retainedSiblings.length > 0;
       }
     }
   }

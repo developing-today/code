@@ -79,7 +79,7 @@ function freshDoc(overrides: Partial<SupabaseExportDoc> = {}): SupabaseExportDoc
     status: "partial",
     measuredAt: "2026-10-29T14:55:00Z",
     project: "muse-dev2",
-    ref: "keihfchslgjetkmnmzra",
+    ref: "fixture-project-ref",
     metrics: [
       {
         id: "db-size",

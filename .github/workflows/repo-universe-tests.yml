@@ -5,7 +5,7 @@ name: repo-universe tests
 # The repo-universe regression suites — test_generate.py (generator:
 # overrides survival, idempotence, classification, owned coverage,
 # #1650) and test_check_issues.py (checker: delta semantics, PR
-# filtering, failed-fetch state preservation, #1651) — 16 tests in
+# filtering, failed-fetch state preservation, #1651) — 36 tests in
 # total, were enumerated by no workflow and had no documented CI
 # runner. The systemd timer runs check_issues.py in production but
 # never its tests, so generator/checker regressions surfaced only as
@@ -18,11 +18,14 @@ name: repo-universe tests
 # when any test fails, which fails the job.
 #
 # Trigger policy matches the house pattern since 5a94833ea3:
-# dispatch/schedule only, no push/pull_request triggers.
+# dispatch/schedule only (schedule: daily 05:37 UTC), no push/pull_request triggers.
 # CI tier policy: see .github/ci-policy.md.
 
 on:
   workflow_dispatch:
+  schedule:
+    # Daily at 05:37 UTC, off the hour, away from the other dailies.
+    - cron: "37 5 * * *"
 
 permissions:
   contents: read

@@ -11,8 +11,10 @@ name: program-tending
 # 2026-11-02) after this scaffold lands.
 #
 # Ownership rules (from #1352, enforced in slice 1 stubs):
-# - Never touch held / do-not-merge / user-owned PRs.
-# - Drew's own feature PRs: check-in comment at 7 days only, never a packet.
+# - Never touch held / do-not-merge / user-owned PRs (hold labels only:
+#   `held`, `user/owned`, `do-not-merge`, `do-not-auto-edit`).
+# - PRs labeled `user/owned`: check-in comment at 7 days only, never a packet
+#   (authorship alone never marks a PR held — Drew ruling 2026-11-07, #7077).
 # - user/review is reported, never re-decided.
 
 on:

@@ -20,7 +20,8 @@ use redb::{ReadableDatabase, ReadableTable};
 
 use super::resolve::{self, author_of};
 use super::{
-    ACTIONS, APPLIED, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt, decode_stored,
+    ACTIONS, APPLIED, DEVICE_OPS, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt,
+    decode_stored,
 };
 use crate::chat::{CHAT_MESSAGE_KIND, ChatRecord, project, visible_history};
 use crate::groups::policy::{History, Policy};
@@ -128,9 +129,10 @@ impl EventStore {
         let (stored, forks, headers) = {
             let events = txn.open_table(EVENTS)?;
             let actions = txn.open_table(ACTIONS)?;
+            let device_ops = txn.open_table(DEVICE_OPS)?;
             let forks = txn.open_table(FORKS)?;
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &forks, &proof_headers)?
+            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
         let resolved = resolve::resolve(&stored, &forks, &headers)?;
         Ok(resolved
@@ -162,9 +164,10 @@ impl EventStore {
         let (stored, forks, headers) = {
             let events = txn.open_table(EVENTS)?;
             let actions = txn.open_table(ACTIONS)?;
+            let device_ops = txn.open_table(DEVICE_OPS)?;
             let forks = txn.open_table(FORKS)?;
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &forks, &proof_headers)?
+            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
         let resolved = resolve::resolve(&stored, &forks, &headers)?;
         if !resolve::roster_of(&resolved, group).contains(reader) {

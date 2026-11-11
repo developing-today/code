@@ -162,6 +162,41 @@ export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "_antigravity.claude-gpt";
 export const ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
 export const ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
 
+export const OPENAI_MAIN_SERVICE_ID = "openai.main";
+export const OPENAI_ALTERNATE_SERVICE_ID = "openai.alternate";
+export const OPENAI_SELF_SERVICE_ID = "_openai";
+
+/**
+ * Which OpenAI pool a folded `codex` entry belongs to, from the
+ * credential's human label / the instance name the fork stamps on the
+ * folded result. The fork's codex provider folds every OpenAI instance
+ * credential (openai.main, openai.alternate, _openai) into its
+ * per-credential answer under the bare provider id "codex"
+ * (foldInstanceCredentials), and serviceIdFor historically filed ALL
+ * of those rows under "openai.main" — so the alternate account's 5h
+ * window landed in the snapshot store as openai.main|5h (its values
+ * mirror openai.alternate|5h tick-for-tick in usage-2026-11.jsonl)
+ * and its weekly competed under main's key in the #1624 max-collapse
+ * (2026-11-04: main|weekly published 100 with the ALTERNATE window's
+ * reset label while main's own read was ~17). Like goPoolServiceId,
+ * the label is the only stable gatherer-side signal: instance ids are
+ * config names, credential ids are opaque row ids the mapping would
+ * have to hardcode. Unmatched entries yield null and keep the
+ * historical fallback (serviceIdFor: openai.main, the base provider's
+ * own pool) — never a fabricated pool row.
+ */
+export function codexPoolServiceId(entry: {
+  credentialLabel?: string | null;
+  providerName?: string | null;
+}): string | null {
+  const text = `${entry.credentialLabel ?? ""} ${entry.providerName ?? ""}`.toLowerCase();
+  if (text.includes("alternate")) return OPENAI_ALTERNATE_SERVICE_ID;
+  if (text.includes("_openai") || text.includes("self-contained") || text.includes("self contained"))
+    return OPENAI_SELF_SERVICE_ID;
+  if (text.includes("main")) return OPENAI_MAIN_SERVICE_ID;
+  return null;
+}
+
 /**
  * Which split Go pool a per-workspace entry belongs to, from the
  * credential's human label. OpenCode credential labels are user-set; on
@@ -265,7 +300,9 @@ export function entriesWithPoolSplits(entries: readonly QuotaCurrentEntry[]): Qu
   for (const entry of entries) {
     if (entry.providerId === "opencode-go") {
       // Unconfigured rows are host state, not pool state: the pools keep
-      // their dated reads until a real read (ok or error) arrives.
+      // their dated reads until a real read (ok, error, or lapsed) arrives.
+      // Lapsed rows split exactly like error rows — one terminal row per
+      // workspace pool — so the hub names the planned lapse instead of a failure.
       const serviceId = goPoolServiceId(entry);
       if (serviceId && entry.state !== "unconfigured") out.push({ ...entry, serviceId });
     } else if (entry.providerId === "antigravity" || entry.providerId === "_antigravity") {
@@ -395,6 +432,47 @@ export function entryFromFileExport(
   return entry;
 }
 
+/**
+ * A configured OpenCode Go result whose Console answers "no active
+ * subscription" is a planned lapse (#1118, Drew ruled both plans stay
+ * cancelled) — a terminal state of its own, never a provider failure.
+ */
+export function isGoLapseResult(result: QuotaProviderResult): boolean {
+  return (
+    canonicalProviderId(result.providerId) === "opencode-go" &&
+    !result.ok &&
+    result.configured &&
+    typeof result.error === "string" &&
+    result.error.includes("No active OpenCode Go subscription")
+  );
+}
+
+/** The remedy every Meta session-lapse surface must name (#8294). */
+export const META_SESSION_LAPSE_REMEDY =
+  "dev.meta.ai portal session is logged out; re-auth (re-login) in the hub browser profile to restore Meta quota reads";
+
+/**
+ * A configured Meta result that failed because the dev.meta.ai portal
+ * session lapsed (#8294). The Meta read rides a live browser session
+ * on the hub (there is no stored credential — see meta-renewal.ts);
+ * when that session expires, the provider leg fails session-class
+ * ("unauthorized", or the exporter's "session-expired" shape) rather
+ * than with a provider error. A lapsed session has a known remedy
+ * (re-auth on the hub) and is not a provider failure, so — following
+ * the OpenCode Go lapse template (#1161 / PR #7898) — it classifies
+ * as "lapsed", never "error". Unlike the Go lapse this one is
+ * temporary: the gatherer retains the pool's last good windows as
+ * stale rows alongside the lapsed entry (see gather-quota.ts).
+ */
+export function isMetaSessionLapseResult(result: QuotaProviderResult): boolean {
+  if (canonicalProviderId(result.providerId) !== "_muse" || result.ok || !result.configured) {
+    return false;
+  }
+  if (result.failureClass === "unauthorized") return true;
+  const error = typeof result.error === "string" ? result.error : "";
+  return /unauthorized|session-expired|session expired|logged out/i.test(error);
+}
+
 /** Map one provider result onto a quota-current entry. */
 export function entryFromResult(result: QuotaProviderResult, tickIso: string): QuotaCurrentEntry {
   let measuredAt = tickIso;
@@ -402,12 +480,27 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     const fetchedDate = new Date(result.fetchedAt);
     if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
   }
-  const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
+  const state: QuotaCurrentEntry["state"] = result.ok
+    ? "ok"
+    : isGoLapseResult(result) || isMetaSessionLapseResult(result)
+      ? "lapsed"
+      : result.configured
+        ? "error"
+        : "unconfigured";
   const providerId = canonicalProviderId(result.providerId);
+  // Folded codex rows carry one credential per OpenAI instance; file
+  // each under its own pool (codexPoolServiceId) instead of the base
+  // provider's pool, or a sibling account's windows contaminate
+  // openai.main's rows and snapshot series.
+  const serviceId =
+    providerId === "codex"
+      ? (codexPoolServiceId({ credentialLabel: result.credentialLabel, providerName: result.providerName }) ??
+        serviceIdFor(providerId))
+      : serviceIdFor(providerId);
   const entry: QuotaCurrentEntry = {
     providerId,
     providerName: result.providerName ?? providerId,
-    serviceId: serviceIdFor(providerId),
+    serviceId,
     state,
     measuredAt,
     source: GATHERER_SOURCE,
@@ -426,11 +519,24 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   if (result.credentialSource) entry.credentialSource = result.credentialSource;
   if (result.planLabel) entry.planLabel = result.planLabel;
   if (result.error) entry.error = safeProviderReason(result.error);
+  if (isMetaSessionLapseResult(result)) {
+    // Name the remedy on the entry itself: this text is what the pool
+    // note surfaces (quota-current freshness.error), so a lapsed Meta
+    // session reads as an actionable re-auth state, not a bare error.
+    entry.error = `session lapsed: ${entry.error ?? "unauthorized"} — ${META_SESSION_LAPSE_REMEDY}`;
+  }
   if (typeof result.failureClass === "string" && result.failureClass !== "") entry.failureClass = result.failureClass;
   if (typeof result.lastSuccessAt === "number" && Number.isFinite(result.lastSuccessAt) && result.lastSuccessAt > 0) {
     entry.lastSuccessAt = new Date(result.lastSuccessAt).toISOString();
   }
   if (result.usage != null) entry.usage = result.usage;
+
+  if (state === "lapsed") {
+    // The provider may leave old usage alongside its lapse signal.
+    // Preserve the raw response for evidence, but never publish those
+    // percentages as a fresh quota window.
+    return entry;
+  }
 
   const pushWindow = (name: string, raw: RawWindow | null | undefined): void => {
     const pct = isFiniteNumber(raw?.usedPercent) ? raw.usedPercent : null;

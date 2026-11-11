@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use anyhow::{Result, bail};
 use iroh_base::EndpointId;
 use serde::{Deserialize, Serialize};
 
@@ -228,9 +229,18 @@ pub struct ResolvedConfig {
 /// 5. Override topic/secret with CLI values (if `Some`).
 /// 6. If `no_default_bootstrap` is `true`, drop all default bootstrap
 ///    nodes (keep only CLI-provided ones).
-/// 7. If `no_default_topic` is `true`, drop the default topic and
-///    secret (keep only CLI-provided values; if none, fall back to
-///    hardcoded constants to avoid empty values).
+/// 7. If `no_default_topic` is `true`, the topic and secret resolve
+///    together as a pair: both CLI values when both are provided, or
+///    both hardcoded constants when neither is. A single-sided CLI
+///    pair is refused with an error naming the missing half, so a
+///    custom value is never paired with the public default for the
+///    other half.
+///
+/// # Errors
+///
+/// Returns an error naming the missing flag when `no_default_topic`
+/// is `true` and exactly one of `cli_topic` / `cli_topic_secret` is
+/// provided.
 ///
 /// # Arguments
 ///
@@ -247,7 +257,7 @@ pub fn resolve_config(
     replace_defaults: bool,
     no_default_bootstrap: bool,
     no_default_topic: bool,
-) -> ResolvedConfig {
+) -> Result<ResolvedConfig> {
     let defs = defaults();
 
     // --- Bootstrap ---
@@ -268,46 +278,61 @@ pub fn resolve_config(
     let mut seen = std::collections::HashSet::new();
     bootstrap.retain(|v| seen.insert(v.clone()));
 
-    // --- Topic ---
-    let topic = if let Some(t) = cli_topic {
-        // CLI takes precedence
-        t.to_owned()
-    } else if no_default_topic {
-        // Skip defaults — use hardcoded constant as last resort to
-        // avoid an empty topic name
-        DEFAULT_TOPIC.to_owned()
-    } else if replace_defaults {
-        // Only conf file value
-        defs.topic
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TOPIC.to_owned())
+    // --- Topic + Secret (resolved as a pair) ---
+    // Under `no_default_topic` the two halves must come from the same
+    // source: both CLI-provided, or both hardcoded. Anything else
+    // would pair a private value with the public default half.
+    let (topic, topic_secret) = if no_default_topic {
+        match (cli_topic, cli_topic_secret) {
+            (Some(t), Some(s)) => (t.to_owned(), s.as_bytes().to_vec()),
+            (None, None) => (DEFAULT_TOPIC.to_owned(), DEFAULT_TOPIC_SECRET.to_vec()),
+            (Some(_), None) => {
+                bail!(
+                    "--no-default-topic with --topic requires --topic-secret: refusing to pair a custom topic with the public default secret"
+                );
+            }
+            (None, Some(_)) => {
+                bail!(
+                    "--no-default-topic with --topic-secret requires --topic: refusing to pair a custom secret with the public default topic"
+                );
+            }
+        }
     } else {
-        // Conf file value, falling back to hardcoded
-        defs.topic
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TOPIC.to_owned())
+        let topic = if let Some(t) = cli_topic {
+            // CLI takes precedence
+            t.to_owned()
+        } else if replace_defaults {
+            // Only conf file value
+            defs.topic
+                .clone()
+                .unwrap_or_else(|| DEFAULT_TOPIC.to_owned())
+        } else {
+            // Conf file value, falling back to hardcoded
+            defs.topic
+                .clone()
+                .unwrap_or_else(|| DEFAULT_TOPIC.to_owned())
+        };
+
+        // --- Topic Secret ---
+        let topic_secret = if let Some(s) = cli_topic_secret {
+            s.as_bytes().to_vec()
+        } else if replace_defaults {
+            defs.topic_secret
+                .as_ref()
+                .map_or_else(|| DEFAULT_TOPIC_SECRET.to_vec(), |s| s.as_bytes().to_vec())
+        } else {
+            defs.topic_secret
+                .as_ref()
+                .map_or_else(|| DEFAULT_TOPIC_SECRET.to_vec(), |s| s.as_bytes().to_vec())
+        };
+        (topic, topic_secret)
     };
 
-    // --- Topic Secret ---
-    let topic_secret = if let Some(s) = cli_topic_secret {
-        s.as_bytes().to_vec()
-    } else if no_default_topic {
-        DEFAULT_TOPIC_SECRET.to_vec()
-    } else if replace_defaults {
-        defs.topic_secret
-            .as_ref()
-            .map_or_else(|| DEFAULT_TOPIC_SECRET.to_vec(), |s| s.as_bytes().to_vec())
-    } else {
-        defs.topic_secret
-            .as_ref()
-            .map_or_else(|| DEFAULT_TOPIC_SECRET.to_vec(), |s| s.as_bytes().to_vec())
-    };
-
-    ResolvedConfig {
+    Ok(ResolvedConfig {
         bootstrap,
         topic,
         topic_secret,
-    }
+    })
 }
 
 /// How often servers broadcast a [`PeerAnnouncement`] over gossip.
@@ -1262,7 +1287,7 @@ node1
 
     #[test]
     fn test_resolve_config_all_defaults() {
-        let cfg = resolve_config(&[], None, None, false, false, false);
+        let cfg = resolve_config(&[], None, None, false, false, false).unwrap();
         assert_eq!(cfg.topic, "id-peer-discovery-v1");
         assert_eq!(cfg.topic_secret, b"id-public-discovery-v1");
         assert!(cfg.bootstrap.is_empty()); // no bootstrap in default conf
@@ -1278,7 +1303,8 @@ node1
             false,
             false,
             false,
-        );
+        )
+        .unwrap();
         assert_eq!(cfg.bootstrap, vec!["node1"]);
         assert_eq!(cfg.topic, "custom-topic");
         assert_eq!(cfg.topic_secret, b"custom-secret");
@@ -1287,14 +1313,14 @@ node1
     #[test]
     fn test_resolve_config_no_default_bootstrap() {
         let cli_bs = vec!["cli-node".to_owned()];
-        let cfg = resolve_config(&cli_bs, None, None, false, true, false);
+        let cfg = resolve_config(&cli_bs, None, None, false, true, false).unwrap();
         // Only CLI bootstrap, no defaults
         assert_eq!(cfg.bootstrap, vec!["cli-node"]);
     }
 
     #[test]
     fn test_resolve_config_no_default_topic() {
-        let cfg = resolve_config(&[], None, None, false, false, true);
+        let cfg = resolve_config(&[], None, None, false, false, true).unwrap();
         // Falls back to hardcoded constant
         assert_eq!(cfg.topic, DEFAULT_TOPIC);
         assert_eq!(cfg.topic_secret, DEFAULT_TOPIC_SECRET);
@@ -1309,7 +1335,8 @@ node1
             false,
             false,
             true,
-        );
+        )
+        .unwrap();
         // CLI takes precedence even when no_default_topic is set
         assert_eq!(cfg.topic, "cli-topic");
         assert_eq!(cfg.topic_secret, b"cli-secret");
@@ -1317,7 +1344,7 @@ node1
 
     #[test]
     fn test_resolve_config_replace_defaults() {
-        let cfg = resolve_config(&[], None, None, true, false, false);
+        let cfg = resolve_config(&[], None, None, true, false, false).unwrap();
         // replace_defaults uses conf file values (which match hardcoded for default conf)
         assert_eq!(cfg.topic, "id-peer-discovery-v1");
     }
@@ -1326,7 +1353,7 @@ node1
     fn test_resolve_config_cli_bootstrap_appended_to_defaults() {
         // Even with no default bootstrap in the conf file, CLI nodes are appended
         let cli_bs = vec!["a".to_owned(), "b".to_owned()];
-        let cfg = resolve_config(&cli_bs, None, None, false, false, false);
+        let cfg = resolve_config(&cli_bs, None, None, false, false, false).unwrap();
         assert_eq!(cfg.bootstrap, vec!["a", "b"]);
     }
 
@@ -1339,7 +1366,28 @@ node1
             "a".to_owned(),
             "c".to_owned(),
         ];
-        let cfg = resolve_config(&cli_bs, None, None, false, false, false);
+        let cfg = resolve_config(&cli_bs, None, None, false, false, false).unwrap();
         assert_eq!(cfg.bootstrap, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_resolve_config_no_default_topic_with_only_cli_topic_is_refused() {
+        let err = resolve_config(&[], Some("my-private-net"), None, false, false, true)
+            .expect_err("single-sided --topic under --no-default-topic must be refused");
+        // The error names the missing half so the caller knows what to add.
+        assert!(
+            err.to_string().contains("requires --topic-secret"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_config_no_default_topic_with_only_cli_secret_is_refused() {
+        let err = resolve_config(&[], None, Some("my-private-secret"), false, false, true)
+            .expect_err("single-sided --topic-secret under --no-default-topic must be refused");
+        assert!(
+            err.to_string().contains("requires --topic:"),
+            "unexpected error: {err:#}"
+        );
     }
 }

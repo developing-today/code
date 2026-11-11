@@ -1753,6 +1753,7 @@ pub fn render_text(view: &DirectoryView) -> String {
 mod tests {
     use super::*;
     use crate::artifact::HomeServer;
+    use crate::envelope_outbox::{MAX_FINISHED_ENTRIES, Outcome};
     use ed25519_dalek::SigningKey;
 
     fn node() -> String {
@@ -1925,6 +1926,70 @@ mod tests {
             deliveries(&outbox, &ann)[0].status,
             "refused: no such account"
         );
+    }
+
+    #[test]
+    fn deliveries_keeps_the_newest_finished_entries_and_all_pending_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(dir.path().join("outbox.jsonl")).unwrap();
+        let total_finished = MAX_FINISHED_ENTRIES + 3;
+
+        for index in 0..total_finished {
+            let id = format!("delivery-{index:03}");
+            let envelope = Envelope {
+                kind: EnvelopeKind::FriendRequest,
+                from: "ann".to_owned(),
+                to: format!("recipient-{index:03}"),
+                audience: "club".to_owned(),
+                id: id.clone(),
+                request: None,
+                at: 0,
+                signature: "00".to_owned(),
+            };
+            outbox.enqueue(&node(), envelope).unwrap();
+            outbox.record(&id, 0, Outcome::Delivered).unwrap();
+        }
+
+        for id in ["pending-now", "pending-later"] {
+            outbox
+                .enqueue(
+                    &node(),
+                    Envelope {
+                        kind: EnvelopeKind::FriendRequest,
+                        from: "ann".to_owned(),
+                        to: id.to_owned(),
+                        audience: "club".to_owned(),
+                        id: id.to_owned(),
+                        request: None,
+                        at: 0,
+                        signature: "00".to_owned(),
+                    },
+                )
+                .unwrap();
+        }
+        outbox
+            .record("pending-later", 0, Outcome::Retry("down".to_owned()))
+            .unwrap();
+
+        let shown = deliveries(&outbox, "admin");
+        assert_eq!(shown.len(), MAX_FINISHED_ENTRIES + 2);
+        assert_eq!(
+            shown
+                .iter()
+                .filter(|delivery| delivery.status == "delivered")
+                .count(),
+            MAX_FINISHED_ENTRIES
+        );
+        assert_eq!(
+            shown
+                .iter()
+                .filter(|delivery| delivery.status == "not yet delivered")
+                .count(),
+            2
+        );
+        assert!(!shown.iter().any(|delivery| delivery.to == "recipient-000"));
+        assert!(shown.iter().any(|delivery| delivery.to == "pending-now"));
+        assert!(shown.iter().any(|delivery| delivery.to == "pending-later"));
     }
 
     #[test]

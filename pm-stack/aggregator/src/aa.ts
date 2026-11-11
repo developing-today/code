@@ -606,6 +606,14 @@ export interface AaPlanFact {
   /** List-rate dollars of usage per $1 paid, when the plan meters so. */
   multiplier: number | null;
   note: string;
+  /** Typed cancellation source data (#1174): the plan is cancelled and
+   *  its paid period ends on this ISO date. The quota-action derivation
+   *  (buildQuotaActions) reads THESE fields — never the note prose —
+   *  so update them with the registry when a plan changes. */
+  cancelled?: boolean;
+  periodEndsAt?: string;
+  /** Concrete next step while the cancelled period still has time left. */
+  renewalAction?: string;
 }
 
 export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
@@ -1155,6 +1163,37 @@ export function aaSectionFromSupabase(
     ...(cai && cai.length ? { cai } : {}),
     ...(prices && prices.length ? { prices } : {}),
   };
+}
+
+/**
+ * Re-derive a section's current-price overlay from `prices` (#8211).
+ *
+ * The batch-bound payload (rankings, configs, thresholds, test runs,
+ * sources, cai, coverage, catalog membership) is untouched; only the
+ * two price-derived facets move: the section's `prices` list and each
+ * catalog entry's `rate`, recomputed through the same lookup
+ * `aaCatalogFromConfig` uses (full id, then bare model part). This is
+ * what lets a cached historical batch report current rates at serve
+ * time without refetching any of its batch-bound measurements: the
+ * overlay is batch-independent by definition (`v_current_prices`), so
+ * freezing it into the per-batch cache was the defect. The input
+ * section is not mutated.
+ */
+export function aaApplyPriceOverlay(section: AaSection, prices: AaPrice[]): AaSection {
+  const rates = catalogRates(prices);
+  const out: AaSection = { ...section };
+  if (section.catalog) {
+    out.catalog = section.catalog.map((entry) => ({
+      ...entry,
+      rate: rates.get(entry.id) ?? rates.get(`part:${normalizeModelName(modelPart(entry.id))}`) ?? null,
+    }));
+  }
+  if (prices.length) {
+    out.prices = [...prices];
+  } else {
+    delete out.prices;
+  }
+  return out;
 }
 
 /** Structural check shared by the collector and the live source. */

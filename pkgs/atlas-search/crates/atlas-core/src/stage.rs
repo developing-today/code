@@ -17,6 +17,10 @@
 //!   v1 DDL from the versioned artifact [`STAGE_V1_DDL`];
 //! * [`Registry`] records units and looks them up;
 //! * [`Registry::provision`] is the one tool that does both.
+//! * [`Registry::promote`] is the merge-on-close transition, gated on
+//!   the embedding-model contract (#7648, M6 of the #6060 decision
+//!   record): a unit is promoted only when its database's recorded
+//!   `atlas_manifest` `embedding_model` equals the mandated model.
 //!
 //! Deliberately out of scope here (later slices of #5669): the
 //! aggregator/embedder and merge-on-close promotion, the physical core
@@ -31,7 +35,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Error, Result};
-use crate::shards::Tier;
+use crate::shards::{EMBEDDING_MODEL_ID, Tier};
 
 /// The staging schema version this build knows how to provision and
 /// read. Bump only together with a new `atlas_stage_vN.sql` artifact;
@@ -339,6 +343,70 @@ impl Registry {
         }
         Ok(())
     }
+
+    /// Promote a unit into a tier: the merge-on-close transition to
+    /// [`UnitState::Merged`], gated on the embedding-model contract
+    /// (#7648, contract point M6 of the #6060 decision record — one
+    /// embedding model for every Atlas tier).
+    ///
+    /// Before the unit's state moves, the model recorded in its
+    /// database's `atlas_manifest` `embedding_model` key (stamped by
+    /// the embed pipeline when the unit's vectors were written, the
+    /// M1/M2 key) must equal the mandated model
+    /// ([`EMBEDDING_MODEL_ID`]). A unit recording a different model is
+    /// refused with an error naming the unit and both model ids, and
+    /// a unit recording no model at all is refused as unknown
+    /// provenance — the same refusal shard discovery applies
+    /// (#7646), so a source whose embedding step ran a non-mandated
+    /// model cannot be promoted silently (#6019 ingestion inherits
+    /// this gate by promoting through here). On refusal the unit's
+    /// state does not change.
+    pub fn promote(&self, unit_id: &str, now: &str) -> Result<()> {
+        let unit = self.lookup(unit_id)?.ok_or_else(|| {
+            Error::fatal(format!("registry: no staging unit {unit_id:?} to promote"))
+        })?;
+        assert_unit_embedding_model(&unit)?;
+        self.set_state(unit_id, UnitState::Merged, now)
+    }
+}
+
+/// The staging unit's recorded `embedding_model`, if its database
+/// carries an `atlas_manifest` with that key.
+fn recorded_embedding_model(db_uri: &str) -> Result<Option<String>> {
+    let conn = open(Path::new(db_uri))?;
+    let has_manifest: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'atlas_manifest')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| Error::backend(format!("staging: reading {db_uri} manifest: {e}")))?;
+    if !has_manifest {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT value FROM atlas_manifest WHERE \"key\" = 'embedding_model'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|e| Error::backend(format!("staging: reading {db_uri} embedding_model: {e}")))
+}
+
+/// The M6 gate behind [`Registry::promote`]: the unit's recorded
+/// embedding model must be the mandated one.
+fn assert_unit_embedding_model(unit: &StagingUnit) -> Result<()> {
+    match recorded_embedding_model(&unit.db_uri)? {
+        Some(got) if got == EMBEDDING_MODEL_ID => Ok(()),
+        Some(got) => Err(Error::fatal(format!(
+            "staging: refusing to promote unit {}: its atlas_manifest records embedding_model `{got}`, not the mandated `{EMBEDDING_MODEL_ID}`; vectors from different embedding models are not comparable",
+            unit.unit_id
+        ))),
+        None => Err(Error::fatal(format!(
+            "staging: refusing to promote unit {}: its database records no `embedding_model` in atlas_manifest, so its embedding provenance is unknown; the mandated model is `{EMBEDDING_MODEL_ID}`",
+            unit.unit_id
+        ))),
+    }
 }
 
 fn row_to_unit(row: &rusqlite::Row<'_>) -> rusqlite::Result<StagingUnit> {
@@ -462,6 +530,87 @@ mod tests {
             "2026-11-08T00:00:00Z",
         )
         .expect("retry after cleanup must succeed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn stamp_embedding_model(db: &Path, model: &str) {
+        let conn = Connection::open(db).expect("open unit db");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS atlas_manifest (\"key\" TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        )
+        .expect("manifest ddl");
+        conn.execute(
+            "INSERT OR REPLACE INTO atlas_manifest VALUES ('embedding_model', ?1)",
+            params![model],
+        )
+        .expect("stamp model");
+    }
+
+    fn provision_unit(dir: &Path, reg: &Registry, unit_id: &str) -> std::path::PathBuf {
+        let db = dir.join(format!("{unit_id}.db"));
+        reg.provision(
+            &db,
+            unit_id,
+            "repo-worker-code",
+            Tier::Internal,
+            "2026-11-10T00:00:00Z",
+        )
+        .expect("provision unit");
+        db
+    }
+
+    /// Oracle: the #7648 acceptance, both directions. A unit whose
+    /// manifest names the mandated model promotes (state becomes
+    /// merged); a unit naming any other model is refused with an
+    /// error naming the unit and both model ids, and stays
+    /// unpromoted; a unit with no recorded model is refused as
+    /// unknown provenance.
+    #[test]
+    fn promote_asserts_the_mandated_embedding_model() {
+        let dir =
+            std::env::temp_dir().join(format!("atlas-stage-unit-{}-promote", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let reg = Registry::in_memory().expect("registry");
+
+        // Mandated model: promotion succeeds exactly as a state move.
+        let db = provision_unit(&dir, &reg, "unit-good");
+        stamp_embedding_model(&db, EMBEDDING_MODEL_ID);
+        reg.promote("unit-good", "2026-11-10T01:00:00Z")
+            .expect("mandated model must promote");
+        assert_eq!(
+            reg.lookup("unit-good").expect("lookup").expect("unit").state,
+            UnitState::Merged
+        );
+
+        // Non-mandated model: refusal naming unit and both ids, and
+        // the unit stays unpromoted.
+        let db = provision_unit(&dir, &reg, "unit-bad");
+        stamp_embedding_model(&db, "some-other-model-v9");
+        let err = reg
+            .promote("unit-bad", "2026-11-10T01:00:00Z")
+            .expect_err("non-mandated model must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("unit-bad"), "{msg}");
+        assert!(msg.contains("some-other-model-v9"), "{msg}");
+        assert!(msg.contains(EMBEDDING_MODEL_ID), "{msg}");
+        assert_eq!(
+            reg.lookup("unit-bad").expect("lookup").expect("unit").state,
+            UnitState::Open
+        );
+
+        // No recorded model: refused as unknown provenance, state
+        // unchanged.
+        let _db = provision_unit(&dir, &reg, "unit-unknown");
+        let err = reg
+            .promote("unit-unknown", "2026-11-10T01:00:00Z")
+            .expect_err("unknown provenance must be refused");
+        assert!(err.to_string().contains("unit-unknown"), "{err}");
+        assert_eq!(
+            reg.lookup("unit-unknown").expect("lookup").expect("unit").state,
+            UnitState::Open
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

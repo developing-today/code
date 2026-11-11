@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/homeutil"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/plugin/opencode/skills"
 	"io"
@@ -682,6 +683,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	// enum with three values is not two booleans.
 	remote := fs.Bool("remote", false, "run the script on the daemon rather than here")
 	local := fs.Bool("local", false, "run the script in this process (the default when the daemon is local)")
+	remoteFile := fs.Bool("remote-file", false,
+		"with --remote, send the script's name and let the daemon resolve it on its own script search path (#2168), instead of sending the file's text")
 	// parseFlags binds everything the registry declares for this command that
 	// the hand-written flags above have not already claimed, then folds what
 	// was given into the resolved settings.
@@ -802,6 +805,12 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if werr != nil {
 		return werr
 	}
+	if *remoteFile && inline {
+		return errors.New("--remote-file names a script for the daemon to resolve; inline source has no name to resolve")
+	}
+	if *remoteFile && !elsewhere {
+		return errors.New("--remote-file asks the daemon to resolve the script name, so it only applies to a remote run; drop it, or add --remote")
+	}
 	// One identifier for this execution, used by the artifact index to group
 	// what the script produced and by a stream consumer to name the run.
 	runID := execsvc.NewRunID()
@@ -850,7 +859,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if elsewhere {
 		return a.execOnDaemon(ctx, c, fs, inline, ns, sessionKey, eo,
 			execRemoteFlags{timeout: *timeout, runtime: *rt, permissions: *perms,
-				export: *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag})
+				export: *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag,
+				remoteFile: *remoteFile})
 	}
 	// This process is about to start the script, so it checks first. The
 	// daemon would refuse a script it was asked to run; this one is not asked.
@@ -1061,6 +1071,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		opts.Env["MCPX_TRANSPORT_BEARER_TOKEN"] = tok
 	}
 	opts.TypeCheck = shape.typecheck
+	opts.TypeCheckOnError = shape.checkOnError
+	opts.TypeCheckOnUnsupported = shape.checkOnUnsupported
 	opts.Imports = shape.imports
 	opts.ImportsOnDynamic = shape.importsOnDynamic
 	opts.ImportsOnMissing = shape.importsOnMissing
@@ -1779,7 +1791,10 @@ func (a *App) CmdInit(ctx context.Context, args []string) error {
 	}
 	path := ".mcpx.json"
 	if *global {
-		home, _ := os.UserHomeDir()
+		home, err := homeutil.Home()
+		if err != nil {
+			return err
+		}
 		path = filepath.Join(home, ".config", "mcpx", "config.json")
 	}
 	if _, err := os.Stat(path); err == nil && !*force {
@@ -1985,25 +2000,44 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 
 	if subcmd == "install" {
 		dest := toDir
+		globalDest := func(parts ...string) (string, error) {
+			home, err := homeutil.Home()
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(append([]string{home}, parts...)...), nil
+		}
 		if dest == "" {
 			switch agent {
 			case "claude":
 				if st, err := os.Stat(".claude"); err == nil && st.IsDir() {
 					dest = ".claude/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".claude", "skills")
+					gd, err := globalDest(".claude", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			case "codex":
 				if st, err := os.Stat(".codex"); err == nil && st.IsDir() {
 					dest = ".codex/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".codex", "skills")
+					gd, err := globalDest(".codex", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			case "agy":
 				if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
 					dest = ".agents/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".gemini", "antigravity", "skills")
+					gd, err := globalDest(".gemini", "antigravity", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			default:
 				if st, err := os.Stat(".opencode"); err == nil && st.IsDir() {
@@ -2011,7 +2045,11 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 				} else if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
 					dest = ".agents/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".config", "opencode", "skills")
+					gd, err := globalDest(".config", "opencode", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			}
 		}
@@ -2309,18 +2347,18 @@ type scriptFlags struct {
 type scriptShape struct {
 	// hooks carries the autonomy gate so the caller can report which
 	// configured phases were withheld, and why.
-	hooks                      *hookGate
-	env                        map[string]string
-	typecheck                  string
-	imports, importsOnDynamic  string
-	importsOnMissing           string
-	importsCrossProject        string
-	importsNetwork             string
-	launcher, launcherName     string
-	allowRepeat                []string
-	captureConsole             bool
-	prefix, suffix             []string
-	before, onSuccess, onError []string
+	hooks                                       *hookGate
+	env                                         map[string]string
+	typecheck, checkOnError, checkOnUnsupported string
+	imports, importsOnDynamic                   string
+	importsOnMissing                            string
+	importsCrossProject                         string
+	importsNetwork                              string
+	launcher, launcherName                      string
+	allowRepeat                                 []string
+	captureConsole                              bool
+	prefix, suffix                              []string
+	before, onSuccess, onError                  []string
 }
 
 // inlineSource splices prefix and suffix lines around a snippet. A snippet is
@@ -2424,6 +2462,8 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	// Read the canonical setting after resolution so legacy path, variable,
 	// and flag spellings all pass through the same value normalization.
 	sh.typecheck = a.Settings().String("script.check")
+	sh.checkOnError = a.Settings().String("script.checkOnError")
+	sh.checkOnUnsupported = a.Settings().String("script.checkOnUnsupported")
 
 	// No short flag spelling: the registry value is the whole story, from
 	// the generated --script-imports flag, a variable, or the config file.
