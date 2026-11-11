@@ -158,7 +158,18 @@ fn markdown_to_prosemirror_inner(markdown: &str, recover_orphans: bool) -> Value
     // source and append them as the same PM nodes the referenced path
     // produces.
     if recover_orphans {
-        preserve_unreferenced_footnote_definitions(&mut doc, &protected, newline_token.as_deref());
+        let footnote_link_references = preserve_unreferenced_footnote_definitions(
+            &mut doc,
+            &protected,
+            newline_token.as_deref(),
+        );
+        preserve_unreferenced_link_reference_definitions(
+            &mut doc,
+            root,
+            &protected,
+            &footnote_link_references,
+            newline_token.as_deref(),
+        );
     }
     doc
 }
@@ -3182,6 +3193,322 @@ mod tests {
             doc["content"][0]["content"][0]["marks"][0]["attrs"]["href"], "a\tb.md",
             "PM href unmutated (reference definition)"
         );
+    }
+
+    #[test]
+    fn test_unused_link_reference_definitions_survive_roundtrip() {
+        let original =
+            "Body text with no reference.\n\n[a]: https://a.example\n[b]: https://b.example\n";
+        let doc = markdown_to_prosemirror(original);
+        let recovered: Vec<&Value> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["type"] == "code_block" && node["attrs"]["htmlBlock"] == true)
+            .collect();
+        assert_eq!(
+            recovered.len(),
+            2,
+            "both unused definitions are retained: {doc}"
+        );
+
+        let (first, second) = two_saves(original);
+        for definition in ["[a]: https://a.example", "[b]: https://b.example"] {
+            assert!(
+                first.contains(definition),
+                "{definition} survives: {first:?}"
+            );
+        }
+        assert_eq!(first, second, "unused definitions round-trip to a fixpoint");
+    }
+
+    #[test]
+    fn test_front_matter_definition_is_not_recovered() {
+        // Codex P2 / CodeRabbit on PR #5949: a definition-shaped line
+        // inside front matter is metadata; recovering it appended a
+        // duplicate outside the block on every save.
+        let original = "---\n[docs]: https://example.com\n---\n\nBody\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(
+            first.matches("[docs]:").count(),
+            1,
+            "front-matter definition is not duplicated: {first:?}"
+        );
+        assert_eq!(first, second, "front-matter round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_dots_line_does_not_close_front_matter_for_definition_collection() {
+        // Codex P2 on PR #5949 (fresh round): comrak's front-matter
+        // parser requires the configured `---` closing delimiter; a
+        // `...` line does not close the block, so the opening lines
+        // are ordinary Markdown and `[url]: /target` is a real
+        // definition the orphan footnote's link resolves through.
+        let original = "---\n[url]: /target\n...\n\n[^n]: [label][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[label](/target)"),
+            "footnote link resolves through the definition: {first:?}"
+        );
+        assert_eq!(first, second, "dots-delimiter round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_quoted_multiline_definition_label_matches_without_container() {
+        // Codex P2 on PR #5949 (fresh round): the quoted definition's
+        // label spans two lines; stripping only the first line's
+        // container left the continuation's `>` in the matching key,
+        // so the unused definition was keyed as the used label
+        // `long > label` and silently dropped.
+        let original =
+            "[long > label]\n\n[long > label]: /used\n\n> [long\n> label]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("/keep"),
+            "unused quoted multiline definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[long > label]: /used"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "quoted-multiline round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_code_span_bracket_does_not_end_link_text() {
+        // Codex P2 on PR #5949 (fresh round): in `[x`]...` the first
+        // closing bracket belongs to an inline code span; the link's
+        // explicit label is `used`, and keying the use as `x\`` made
+        // the genuinely unused `[x`]` definition look consumed.
+        let original = "[x`]\u{60}][used]\n\n[used]: /used-target\n[x`]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("(/used-target)"),
+            "explicit reference resolves: {first:?}"
+        );
+        assert!(
+            first.contains("[x`]: /keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[used]: /used-target"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "code-span-bracket round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_quoted_multiline_reference_use_ignores_containers() {
+        // Codex P2 on PR #5949 (round 4): the quoted shortcut link's
+        // label spans two lines; joining the raw source lines kept
+        // the continuation's `>` in the used key, so the use was
+        // keyed `long > label` and the genuinely unused definition
+        // with that literal label was discarded as consumed.
+        let original = "> [long\n> label]\n\n[long label]: /used\n[long > label]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[long > label]: /keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[long label]: /used"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "quoted-multiline-use round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_inline_html_bracket_does_not_end_link_text() {
+        // Codex P2 on PR #5949 (round 4): the `]` inside an inline
+        // HTML attribute is not the link-text boundary; the link's
+        // explicit label is `used`, and keying the use as the HTML
+        // fragment made the genuinely unused definition look
+        // consumed.
+        let original =
+            "[<i x=\"]\">label</i>][used]\n\n[used]: /used\n[<i x=\"]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("(/used)"),
+            "explicit reference resolves: {first:?}"
+        );
+        assert!(
+            first.contains("/keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[used]: /used"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "inline-html-bracket round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_link_use_detection_scoped_to_node_columns() {
+        // Codex P2 / CodeRabbit on PR #5949: the literal code span
+        // sharing the line must not decide the real link's label.
+        let original = "`[unused]` [used]\n\n[unused]: /keep\n[used]: /used-target\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[used](/used-target)"),
+            "real shortcut reference resolves: {first:?}"
+        );
+        assert!(
+            !first.contains("[used]: /used-target"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert!(
+            first.contains("[unused]: /keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert_eq!(first, second, "column-scoped round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_multiline_title_literal_marker_survives() {
+        // Codex P2 on PR #5949: a multiline title's continuation line
+        // is title text, not a list container.
+        let original = "Body\n\n[r]: /target \"first\n2. second\"\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("\"first\n2. second\""),
+            "multiline title survives verbatim: {first:?}"
+        );
+        assert_eq!(first, second, "multiline-title round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_autolink_brackets_are_not_a_reference_use() {
+        // Codex P2 on PR #5949: the bracket inside an autolink URL
+        // must not mark the reference definition as used.
+        let original = "<https://example.com/[r]>\n\n[r]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[r]: /keep"),
+            "unused definition beside an autolink is preserved: {first:?}"
+        );
+        assert_eq!(first, second, "autolink round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_escaped_label_definition_stays_unused() {
+        // Codex P2 on PR #5949 (CommonMark example 545): `[a!]`
+        // consumes only the `[a!]` definition; the escaped-label
+        // definition `[a\!]` is a different label and is unused,
+        // so it must be preserved, not dropped as consumed.
+        let original = "[a!]\n\n[a\\!]: /keep\n[a!]: /used-target\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[a\\!](/used-target)"),
+            "unescaped reference resolves to its own definition: {first:?}"
+        );
+        assert!(
+            first.contains("[a\\!]: /keep"),
+            "escaped-label definition is preserved as unused: {first:?}"
+        );
+        assert_eq!(first, second, "escaped-label round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_backslash_label_stays_distinct() {
+        // CodeRabbit on PR #5949: `[a\\b]` and `[ab]` are different
+        // labels; using one must not consume the other's definition.
+        let original = "[ab]\n\n[a\\b]: /keep\n[ab]: /used-target\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[ab](/used-target)"),
+            "used label resolves: {first:?}"
+        );
+        assert!(
+            first.contains("[a\\b]: /keep"),
+            "backslash label definition is preserved: {first:?}"
+        );
+        assert_eq!(first, second, "backslash-label round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_used_link_reference_definitions_keep_inline_link_behavior() {
+        for (original, expected_link) in [
+            (
+                "[one][r]\n\n[r]: https://r.example\n",
+                "[one](https://r.example)",
+            ),
+            (
+                "[text][]\n\n[text]: https://r.example\n",
+                "[text](https://r.example)",
+            ),
+            ("[r]\n\n[r]: https://r.example\n", "[r](https://r.example)"),
+            (
+                "![alt][image]\n\n[image]: https://r.example/image.png\n",
+                "![alt](https://r.example/image.png)",
+            ),
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.contains(expected_link),
+                "resolved link preserved: {first:?}"
+            );
+            assert!(
+                !first.contains("]: https://r.example"),
+                "used definition consumed: {first:?}"
+            );
+            assert_eq!(first, second, "used-reference round-trip is a fixpoint");
+        }
+    }
+
+    #[test]
+    fn test_link_reference_definitions_only_document_survives_roundtrip() {
+        let original = "[a]: https://a.example\n[b]: https://b.example\n";
+        let (first, second) = two_saves(original);
+        for definition in ["[a]: https://a.example", "[b]: https://b.example"] {
+            assert!(
+                first.contains(definition),
+                "definitions-only document preserves {definition}: {first:?}"
+            );
+        }
+        assert!(
+            !first.trim().is_empty(),
+            "definitions-only document does not save empty: {first:?}"
+        );
+        assert_eq!(first, second, "definitions-only round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_link_reference_definition_recovery_respects_literal_contexts() {
+        let original = "```\n[fenced]: https://fenced.example\n```\n\n    [indented]: https://indented.example\n\n<!--\n[html]: https://html.example\n-->\n\n> [quoted]: https://quoted.example\n";
+        let doc = markdown_to_prosemirror(original);
+        let recovered: Vec<&Value> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| {
+                node["type"] == "code_block"
+                    && node["attrs"]["htmlBlock"] == true
+                    && node["content"][0]["text"] == "[quoted]: https://quoted.example"
+            })
+            .collect();
+        assert_eq!(
+            recovered.len(),
+            1,
+            "only the real blockquote definition is recovered: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[quoted]: https://quoted.example"),
+            "real quoted definition survives after hoisting to document scope: {first:?}"
+        );
+        assert!(
+            first.contains("```\n[fenced]: https://fenced.example"),
+            "fenced sample remains code only: {first:?}"
+        );
+        assert!(
+            first.contains("```\n[indented]: https://indented.example"),
+            "indented sample remains code only: {first:?}"
+        );
+        assert!(
+            first.contains("<!--\n[html]: https://html.example"),
+            "HTML sample remains literal HTML: {first:?}"
+        );
+        assert_eq!(first, second, "literal-context round-trip is a fixpoint");
     }
 
     fn test_footnote_roundtrip_fixpoint() {

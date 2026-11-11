@@ -303,8 +303,41 @@ pub(crate) fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, 
     // P2 on #1565's twelfth cut).
     let mut in_footnote_block = false;
     let lines: Vec<&str> = markdown.lines().collect();
+    // Front matter (a leading `---` block) is carried by the
+    // front_matter node, not parsed as Markdown: a definition-shaped
+    // line inside it is metadata text. Collecting it appended a
+    // second copy outside the metadata, and every save collected
+    // both copies and added another (Codex P2 on PR #5949). Skip
+    // the block's lines entirely; an unterminated leading `---` is
+    // a thematic break, not front matter, and is not skipped.
+    // The boundaries must be the parser's own (comrak
+    // split_off_front_matter): the document must open with a line
+    // that is exactly the `---` delimiter (after an optional BOM),
+    // and only a later line that is exactly `---` closes the block.
+    // Accepting whitespace-trimmed delimiters or a `...` closing
+    // line skipped definitions comrak treats as real, so an orphan
+    // footnote referencing one saved its link as literal bracketed
+    // text and lost the destination (Codex P2 on PR #5949, fresh
+    // round).
+    let front_matter_end = if lines
+        .first()
+        .is_some_and(|l| l.trim_start_matches('\u{feff}') == "---")
+    {
+        lines
+            .iter()
+            .skip(1)
+            .position(|l| *l == "---")
+            .map(|pos| pos + 2)
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let mut i = 0;
     while i < lines.len() {
+        if i < front_matter_end {
+            i += 1;
+            continue;
+        }
         let line = lines[i];
         // Indentation in COLUMNS: a tab advances to the next
         // multiple of 4, so a tab-indented line is indented code
@@ -793,7 +826,7 @@ pub(crate) fn preserve_unreferenced_footnote_definitions(
     doc: &mut Value,
     markdown: &str,
     newline_token: Option<&str>,
-) {
+) -> std::collections::HashSet<String> {
     let carried: Vec<String> = doc["content"]
         .as_array()
         .map(|content| {
@@ -820,7 +853,8 @@ pub(crate) fn preserve_unreferenced_footnote_definitions(
     // degrades the reference to escaped literal text (third cut). A
     // per-orphan probe scaled quadratically with the number of
     // orphans.
-    let recovered = synthesize_footnote_definitions(&orphans, &blocks, &reference_defs);
+    let (recovered, footnote_link_references) =
+        synthesize_footnote_definitions(&orphans, &blocks, &reference_defs);
     let mut synthesized = Vec::new();
     // Duplicate labels (fourteenth cut): the scanner keeps every
     // source block, but synthesis resolves one node per label, so
@@ -851,6 +885,332 @@ pub(crate) fn preserve_unreferenced_footnote_definitions(
     {
         content.extend(synthesized);
     }
+    footnote_link_references
+}
+
+/// Preserve link-reference definitions that comrak consumed during parsing
+/// only when no parsed link or image refers to them. Recovered definitions
+/// use the existing HTML-block provenance shape: it carries their original
+/// Markdown through ProseMirror and the save path emits it verbatim, while
+/// avoiding a second schema node for a source-only construct.
+pub(crate) fn preserve_unreferenced_link_reference_definitions<'a>(
+    doc: &mut Value,
+    root: &'a AstNode<'a>,
+    markdown: &str,
+    footnote_link_references: &std::collections::HashSet<String>,
+    newline_token: Option<&str>,
+) {
+    let mut used = footnote_link_references.clone();
+    let lines: Vec<&str> = markdown.lines().collect();
+    collect_used_link_reference_labels(root, &lines, &mut used);
+
+    let definitions = collect_link_reference_definitions(markdown);
+    let Some(content) = doc["content"].as_array_mut() else {
+        return;
+    };
+    for (_, source) in definitions {
+        let Some(label) = link_reference_definition_label(&source) else {
+            continue;
+        };
+        if used.contains(&label) {
+            continue;
+        }
+        let source = strip_reference_definition_containers(&source);
+        let source = newline_token.map_or(source.clone(), |token| source.replace(token, "\n"));
+        content.push(json!({
+            "type": "code_block",
+            "attrs": {"params": "html", "htmlBlock": true},
+            "content": [{"type": "text", "text": source}]
+        }));
+    }
+}
+
+/// Remove the container prefixes that enclose a collected reference
+/// definition, so the recovered source is a top-level definition.
+/// Only the FIRST line's container levels are stripped from the
+/// following lines: a continuation line's own content is never
+/// re-interpreted as a container, so a literal marker inside a
+/// multiline title (`[r]: /target "first\n2. second"`) survives
+/// verbatim instead of losing its `2. ` (Codex P2 on PR #5949).
+fn strip_reference_definition_containers(source: &str) -> String {
+    let mut lines = source.lines();
+    let Some(first) = lines.next() else {
+        return String::new();
+    };
+    let first_stripped = strip_container_prefixes(first);
+    let levels = container_signature(&first[..first.len() - first_stripped.len()])
+        .chars()
+        .count();
+    let mut out = vec![first_stripped.trim_start_matches([' ', '\t']).to_string()];
+    for line in lines {
+        let relative = if levels > 0 {
+            strip_container_levels(line, levels)
+        } else {
+            line
+        };
+        out.push(relative.trim_start_matches([' ', '\t']).to_string());
+    }
+    out.join("\n")
+}
+
+/// Collect the labels of link/image references the parse actually
+/// resolved, from each node's own source span.
+fn collect_used_link_reference_labels<'a>(
+    node: &'a AstNode<'a>,
+    lines: &[&str],
+    used: &mut std::collections::HashSet<String>,
+) {
+    let (is_link, start_line, start_col, end_line, end_col) = {
+        let data = node.data.borrow();
+        (
+            matches!(&data.value, NodeValue::Link(_) | NodeValue::Image(_)),
+            data.sourcepos.start.line,
+            data.sourcepos.start.column,
+            data.sourcepos.end.line,
+            data.sourcepos.end.column,
+        )
+    };
+    if is_link && start_line > 0 && end_line >= start_line && end_line <= lines.len() {
+        // Slice each line to the node's own columns (comrak columns
+        // are 1-based byte columns, the end column inclusive):
+        // examining whole lines let bracketed text sharing the line
+        // -- a code span, a neighbouring link -- decide this node's
+        // label, so the genuinely unused definition was discarded
+        // and the consumed one appended (Codex P2 on PR #5949).
+        // The container levels enclosing the link, derived from
+        // the first line's prefix before the node's own start
+        // column: a multiline label inside a blockquote kept its
+        // continuation lines' `>` in the joined source, so the use
+        // was keyed `long > label` instead of `long label` -- the
+        // consumed definition was re-appended as unused and the
+        // genuinely unused one whose literal label is
+        // `long > label` was discarded as consumed (Codex P2 on
+        // PR #5949, round 4). The end column is a raw-line column,
+        // so it shifts by the stripped prefix length on the
+        // end line.
+        let first_line = lines[start_line - 1];
+        let prefix = first_line.get(..start_col.saturating_sub(1)).unwrap_or("");
+        let levels = container_signature(prefix).chars().count();
+        let mut parts = Vec::new();
+        for line_no in start_line..=end_line {
+            let raw = lines[line_no - 1];
+            let (line, stripped) = if line_no > start_line && levels > 0 {
+                let stripped_line = strip_container_levels(raw, levels);
+                (stripped_line, raw.len() - stripped_line.len())
+            } else {
+                (raw, 0)
+            };
+            let from = if line_no == start_line {
+                start_col.saturating_sub(1)
+            } else {
+                0
+            };
+            let to = if line_no == end_line {
+                end_col.saturating_sub(stripped)
+            } else {
+                line.len()
+            };
+            parts.push(line.get(from..to).unwrap_or(line).to_string());
+        }
+        let source = parts.join("\n");
+        if let Some(label) = link_reference_use_label(&source) {
+            used.insert(label);
+        }
+    }
+    for child in node.children() {
+        collect_used_link_reference_labels(child, lines, used);
+    }
+}
+
+/// The normalized label of a collected reference definition's
+/// source text, or None when the source opens no label.
+fn link_reference_definition_label(source: &str) -> Option<String> {
+    // Strip the enclosing containers from EVERY line before keying:
+    // a multiline label inside a blockquote keeps its continuation
+    // lines' `>` under a first-line-only strip, so the key became
+    // `long > label` instead of `long label` and the unused quoted
+    // definition matched a different used label and was dropped
+    // (Codex P2 on PR #5949, fresh round).
+    // strip_reference_definition_containers removes exactly the
+    // first line's container levels from the following lines.
+    let stripped = strip_reference_definition_containers(source.trim_start());
+    let start = stripped.find('[')?;
+    let candidate = &stripped[start..];
+    let close = find_label_close(candidate)?;
+    Some(normalize_link_reference_label(&candidate[1..close]))
+}
+
+/// The AST source span is a parsed link/image, so a bracketed label with no
+/// following inline destination is either a shortcut reference or the first
+/// half of an explicit reference. Its explicit second label takes precedence;
+/// an empty second label is CommonMark's collapsed-reference form.
+fn link_reference_use_label(source: &str) -> Option<String> {
+    let source = source.trim_start();
+    let source = source.strip_prefix('!').unwrap_or(source);
+    // An autolink's span opens with '<', and a bracket inside its
+    // URL is not a reference label: <https://example.com/[r]> uses
+    // no reference definition, and marking `r` used silently dropped
+    // the genuinely unused `[r]` definition on save (Codex P2 on
+    // PR #5949).
+    if source.starts_with('<') {
+        return None;
+    }
+    let start = source.find('[')?;
+    let candidate = &source[start..];
+    let close = find_balanced_label_close(candidate)?;
+    let first = &candidate[1..close];
+    let after = candidate[close + 1..].trim_start();
+    if after.starts_with('(') {
+        return None;
+    }
+    if let Some(explicit) = after.strip_prefix('[') {
+        let end = find_label_close(explicit)?;
+        let second = &explicit[..end];
+        return Some(normalize_link_reference_label(
+            if second.trim().is_empty() {
+                first
+            } else {
+                second
+            },
+        ));
+    }
+    Some(normalize_link_reference_label(first))
+}
+
+/// The byte index of the `]` closing the label opened at the
+/// start of `source`, honouring nested brackets and backslash
+/// escapes; None when the label never closes.
+fn find_balanced_label_close(source: &str) -> Option<usize> {
+    // Brackets inside an inline code span are literal text, not
+    // link-text structure: in `[x`]...` the first `]` closes the
+    // code span, and treating it as the link-text boundary keyed
+    // the use as `x\`` instead of the explicit label, so the
+    // genuinely unused definition was discarded as consumed
+    // (Codex P2 on PR #5949, fresh round). A backtick run with no
+    // matching run is literal text and its brackets still count.
+    let chars: Vec<(usize, char)> = source.char_indices().collect();
+    let mut depth = 0usize;
+    let mut escaped = false;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let (index, ch) = chars[i];
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+        match ch {
+            '\\' => {
+                escaped = true;
+                i += 1;
+            }
+            '`' => {
+                let run = chars[i..]
+                    .iter()
+                    .take_while(|(_, c)| *c == '`')
+                    .count();
+                // Find a closing run of exactly the same length.
+                let mut j = i + run;
+                let mut closed_at = None;
+                while j < chars.len() {
+                    if chars[j].1 == '`' {
+                        let r = chars[j..]
+                            .iter()
+                            .take_while(|(_, c)| *c == '`')
+                            .count();
+                        if r == run {
+                            closed_at = Some(j + r);
+                            break;
+                        }
+                        j += r;
+                    } else {
+                        j += 1;
+                    }
+                }
+                match closed_at {
+                    Some(end) => i = end,
+                    None => i += run,
+                }
+            }
+            '<' => {
+                // Inline HTML is not link-text structure: a `]`
+                // inside a tag -- notably inside a quoted attribute
+                // value, as in `[<i x="]">label</i>][used]` -- does
+                // not end the link text. Treating it as the boundary
+                // keyed the use as the HTML fragment instead of the
+                // explicit label, so the genuinely unused
+                // definition was discarded as consumed (Codex P2 on
+                // PR #5949, round 4). Skip a well-formed tag,
+                // respecting quoted attribute values; a `<` that
+                // opens no tag is literal text and its brackets
+                // still count.
+                let opens_tag = matches!(chars.get(i + 1), Some((_, c))
+                    if c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'));
+                if opens_tag {
+                    let mut j = i + 1;
+                    let mut quote = None;
+                    let mut closed_at = None;
+                    while j < chars.len() {
+                        let c = chars[j].1;
+                        match quote {
+                            Some(q) => {
+                                if c == q {
+                                    quote = None;
+                                }
+                            }
+                            None => match c {
+                                '"' | '\'' => quote = Some(c),
+                                '>' => {
+                                    closed_at = Some(j + 1);
+                                    break;
+                                }
+                                _ => {}
+                            },
+                        }
+                        j += 1;
+                    }
+                    match closed_at {
+                        Some(end) => i = end,
+                        None => i += 1,
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            '[' => {
+                depth += 1;
+                i += 1;
+            }
+            ']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Normalize a link reference label for matching, mirroring the
+/// parser's own key (comrak `normalize_label`): collapse internal
+/// whitespace and fold case — and nothing else. Backslash escapes
+/// are NOT resolved: comrak matches the raw label text, so `[a\!]`
+/// and `[a!]` are distinct labels (CommonMark example 545) and an
+/// escaped definition the document never used must survive as
+/// unused. Unescaping punctuation here (an earlier CodeRabbit
+/// suggestion on PR #5949) diverged from the parser and silently
+/// dropped those definitions (Codex P2 on PR #5949). A backslash
+/// before a non-punctuation character was literal under both
+/// readings, so `[a\\b]` and `[ab]` stay distinct either way.
+fn normalize_link_reference_label(label: &str) -> String {
+    label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Build the PM nodes for every unreferenced definition in ONE
@@ -866,10 +1226,13 @@ pub(crate) fn synthesize_footnote_definitions(
     orphans: &[&FootnoteDefinitionBlock],
     all_blocks: &[FootnoteDefinitionBlock],
     reference_defs: &[(usize, String)],
-) -> std::collections::HashMap<String, Value> {
+) -> (
+    std::collections::HashMap<String, Value>,
+    std::collections::HashSet<String>,
+) {
     let mut nodes = std::collections::HashMap::new();
     if orphans.is_empty() {
-        return nodes;
+        return (nodes, std::collections::HashSet::new());
     }
     let mut probe = String::new();
     for block in orphans {
@@ -896,6 +1259,11 @@ pub(crate) fn synthesize_footnote_definitions(
         probe.push_str(text);
         probe.push_str("\n\n");
     }
+    let arena = Arena::new();
+    let root = parse_document(&arena, &probe, &commonmark_options());
+    let lines: Vec<&str> = probe.lines().collect();
+    let mut used_link_references = std::collections::HashSet::new();
+    collect_used_link_reference_labels(root, &lines, &mut used_link_references);
     let doc = markdown_to_prosemirror_inner(&probe, false);
     if let Some(content) = doc["content"].as_array() {
         for n in content {
@@ -906,7 +1274,7 @@ pub(crate) fn synthesize_footnote_definitions(
             }
         }
     }
-    nodes
+    (nodes, used_link_references)
 }
 
 /// Replace each newline inside an angle-form link/image destination
