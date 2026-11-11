@@ -232,7 +232,7 @@ pub mod repl;
 #[cfg(feature = "sandbox")]
 pub use id_worlds::sandbox;
 #[cfg(feature = "sandbox")]
-pub mod world_dev;
+pub use id_worlds::world_dev;
 pub use id_store::search;
 #[cfg(feature = "world")]
 pub mod seitan;
@@ -263,7 +263,7 @@ pub use id_caps::world_caps;
 pub use id_worlds::world_cache;
 pub use id_worlds::world_compile;
 #[cfg(feature = "world")]
-pub mod world_doctor;
+pub use id_worlds::world_doctor;
 #[cfg(feature = "world")]
 pub use id_worlds::world_fixture;
 
@@ -278,7 +278,7 @@ pub use id_worlds::world_native;
 #[cfg(feature = "world")]
 pub use id_worlds::world_net;
 #[cfg(feature = "world")]
-pub mod world_replication_net;
+pub use id_worlds::world_replication_net;
 #[cfg(feature = "world")]
 pub use id_core::world_presentation;
 #[cfg(feature = "world")]
@@ -286,7 +286,7 @@ pub use id_worlds::world_records;
 #[cfg(feature = "world")]
 pub use id_worlds::world_session;
 #[cfg(feature = "ssh")]
-pub mod world_ssh;
+pub use id_worlds::world_ssh;
 #[cfg(feature = "world")]
 pub use id_worlds::world_store;
 #[cfg(feature = "world")]

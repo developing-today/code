@@ -3655,7 +3655,7 @@ mod tests {
         let blobs: iroh_blobs::api::Store = MemStore::new().into();
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let service = WorldService::new(world, Some("admin".to_owned())).with_blob_store(blobs);
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm").to_vec();
         let hash = crate::world_session::module_hash(&wasm);
         service
             .install_wasm(Some("admin"), wasm, 99, &hash)
@@ -3771,7 +3771,7 @@ mod tests {
         let blobs: iroh_blobs::api::Store = MemStore::new().into();
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let service = WorldService::new(world, Some("admin".to_owned())).with_blob_store(blobs);
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm").to_vec();
         let hash = crate::world_session::module_hash(&wasm);
         service
             .install_wasm(Some("admin"), wasm, 99, &hash)

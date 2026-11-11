@@ -1885,7 +1885,7 @@ mod tests {
         // start at the compiled program's initial state, apply inputs
         // through the actor, and leave nothing behind for the next
         // launch (disposability / no remote side effects).
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let world = DevScratchWorld::launch(wasm, 7).await.unwrap();
         assert!(
             world
@@ -1957,7 +1957,7 @@ mod tests {
         // Oracle: the fixture's recorded expectation is the live
         // counter world's records after the same inputs; a candidate
         // that replays to those records matches and does not block.
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let (fixture, _) =
             counter_fixture(wasm, Some(crate::world_session::module_hash(wasm))).await;
         let gate = fixture_gate(wasm, 7, "counter.jsonl", &fixture).unwrap();
@@ -1973,7 +1973,7 @@ mod tests {
         // Oracle: the same fixture with a tampered expectation — the
         // replayed records cannot equal it, so the gate mismatches
         // and blocks promotion (the design's promotion-gate case).
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let (mut fixture, _) =
             counter_fixture(wasm, Some(crate::world_session::module_hash(wasm))).await;
         fixture
@@ -1994,7 +1994,7 @@ mod tests {
         // dev (ordinary replay/verify refuse via check_module), the
         // gate reports the cross-module fact, and the comparison
         // itself still decides promotion.
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let other = crate::world_session::module_hash(b"a different module entirely");
         let (fixture, _) = counter_fixture(wasm, Some(other)).await;
         let gate = fixture_gate(wasm, 7, "counter.jsonl", &fixture).unwrap();
@@ -2008,7 +2008,7 @@ mod tests {
         // Oracle: a fixture that records no expected records has
         // nothing to compare — the gate must say not_compared with
         // the reason instead of passing silently, and must not block.
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let (mut fixture, _) =
             counter_fixture(wasm, Some(crate::world_session::module_hash(wasm))).await;
         fixture.header.records = None;
@@ -2375,7 +2375,7 @@ mod fuzz_tests {
         // counts cannot break within one case (a case applies at
         // most MAX_FUZZ_SEQUENCE inputs, so count <= 64 < 1000):
         // the campaign must run the whole budget and find nothing.
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let decl = counter_decl(vec![
             FuzzInvariant::NoTrap,
             FuzzInvariant::RecordsValidJson,
@@ -2451,7 +2451,7 @@ mod fuzz_tests {
         // the reported counterexample must replay to the violation:
         // applying the reported inputs to a fresh world reaches
         // count = 3, the first value above the bound.
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let decl = counter_decl(vec![FuzzInvariant::NumericBounds {
             key: "count".to_owned(),
             min: Some(serde_json::Number::from(0)),
@@ -2576,7 +2576,7 @@ mod watch_tests {
         // built from the current snapshot must promote, bump the
         // F12.9 version, and keep count=2 live — a restart-from-zero
         // (count=0) would prove the swap discarded the state.
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let mut session = DevSession::launch(wasm, 7, "snap-a".to_owned())
             .await
             .unwrap();
@@ -2611,7 +2611,7 @@ mod watch_tests {
         // while the sources already sit at snap-c is discarded
         // without touching the active world, and the discard is
         // recorded in the last-good diagnostics.
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let mut session = DevSession::launch(wasm, 7, "snap-a".to_owned())
             .await
             .unwrap();
@@ -2635,7 +2635,7 @@ mod watch_tests {
         // whose recorded expectation the candidate cannot reproduce
         // blocks the swap; the active world keeps its records and
         // version.
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let mut session = DevSession::launch(wasm, 7, "snap-a".to_owned())
             .await
             .unwrap();
@@ -2680,7 +2680,7 @@ mod watch_tests {
     async fn promote_keeps_last_good_when_the_candidate_cannot_launch() {
         // Oracle: invariant 3 for the launch stage — module bytes
         // the sandbox refuses never become the active program.
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let mut session = DevSession::launch(wasm, 7, "snap-a".to_owned())
             .await
             .unwrap();

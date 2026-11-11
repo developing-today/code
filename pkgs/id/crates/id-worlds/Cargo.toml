@@ -12,6 +12,9 @@ license = "MIT OR Apache-2.0"
 #
 # Step 5a brought the leaves, seam 6's cross-world bridge
 # (`groups::worlds`) and the blob gate's `FoldedWorlds` adapter.
+# Step 5b brought the runtime core, and step 5c the remainder
+# (`world_dev`, `world_doctor`, `world_ssh`, `world_replication_net`).
+#
 # Step 5b brings the runtime core: `world`, `world_session`, the
 # sandbox and its compile/fixture/native paths, the hub, net and
 # store, `world_records` and `shell_contract` — and, with them, the
@@ -37,6 +40,9 @@ default = []
 # The wasmtime dependency lives inside id-worlds (design feature
 # mapping); the facade's `sandbox` feature forwards here.
 sandbox = ["dep:wasmtime", "id-caps/sandbox", "id-core/sandbox"]
+# The russh dependency lives inside id-worlds (design feature
+# mapping); the facade `ssh` feature forwards here.
+ssh = ["dep:russh"]
 
 [dependencies]
 anyhow = "1"
@@ -60,6 +66,7 @@ libc = "0.2"
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
+russh = { version = "=0.65.0", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -86,6 +93,7 @@ id-sync = { path = "../id-sync", default-features = false, features = [
 proptest = "1.12"
 tokio = { version = "1", features = ["test-util"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+vt100 = "=0.16.2"
 wat = "=1.261.0"
 
 [lints.rust]
