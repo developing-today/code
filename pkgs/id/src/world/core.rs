@@ -277,9 +277,15 @@ fn owner_epoch_after(transfer: &HandoffTransferState) -> u64 {
 }
 
 /// Enforce the epoch chain against the transfers already recorded for
-/// the entity, if any: the new transfer's prior epoch must continue the
-/// latest recorded transfer. First crossings are unconstrained (the
-/// epoch originates with the caller's ownership claim).
+/// the entity, if any. While the entity is local (its latest transfer is
+/// an import), the next crossing must depart from exactly the epoch the
+/// import landed at. While it is away (its latest transfer is an
+/// export), ownership advances abroad - one step per crossing on other
+/// shards - so a returning transfer may chain from any epoch at or
+/// beyond the one the export left at, but never an older one: a stale
+/// epoch would supersede the fence with an outdated ownership claim.
+/// First crossings are unconstrained (the epoch originates with the
+/// caller's ownership claim).
 fn ensure_epoch_chains(
     transfer: &HandoffTransferState,
     prior_transfers: &[HandoffTransferState],
@@ -289,8 +295,12 @@ fn ensure_epoch_chains(
         .rev()
         .find(|prior| prior.entity_ref == transfer.entity_ref)
     {
+        let chained = match latest.direction {
+            HandoffDirection::Export => transfer.prior_owner_epoch >= latest.prior_owner_epoch,
+            HandoffDirection::Import => transfer.prior_owner_epoch == owner_epoch_after(latest),
+        };
         ensure!(
-            transfer.prior_owner_epoch == owner_epoch_after(latest),
+            chained,
             "handoff {:?} claims prior owner epoch {} for entity {:?}, but the latest recorded transfer leaves it at epoch {}",
             transfer.handoff_id,
             transfer.prior_owner_epoch,

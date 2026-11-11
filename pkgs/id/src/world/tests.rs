@@ -927,6 +927,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn advanced_epoch_return_import_is_accepted() {
+        let (mut actor, _, _, _, _) = transfer_actor(b"entity".to_vec(), false);
+        export(&mut actor).await.unwrap();
+        assert!(actor.core.entity_is_fenced("entity-1"));
+
+        // The real round trip: the entity was imported on the other shard
+        // (advancing ownership 7 -> 8) and exported back from there, so
+        // the return import chains from epoch 8 even though this shard
+        // last saw it at 7. That is a legitimate advance, not staleness
+        // (#3902).
+        let payload = b"entity".to_vec();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ImportEntity {
+                handoff_id: "56".repeat(16),
+                entity_ref: "entity-1".to_owned(),
+                source_region: "region-b".to_owned(),
+                target_region: "region-a".to_owned(),
+                prior_owner_epoch: 8,
+                program_module_hash: "module-hash".to_owned(),
+                payload_schema: "test/v1".to_owned(),
+                payload_digest: hex_encode(blake3::hash(&payload).as_bytes()),
+                payload,
+                reply,
+            })
+            .await;
+        let imported = response.await.unwrap().unwrap();
+        assert_eq!(imported.new_owner_epoch, Some(9));
+        assert!(!actor.core.entity_is_fenced("entity-1"));
+    }
+
+    #[tokio::test]
     async fn entity_input_on_a_read_only_replica_never_reaches_the_program() {
         let (mut actor, token, _, _, applied) = transfer_actor(b"entity".to_vec(), false);
         actor.read_only = true;
