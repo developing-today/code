@@ -456,6 +456,74 @@ pub struct TursoBackend {
 
 type TErr = String;
 
+/// The canonical fleet lane registry (#6853): every lane id a
+/// fleet worker may claim with, and the worker that owns it. The
+/// queue binding is the one-queue default ("*": the lane may claim
+/// any stream; see lane_queue_binds). Registrations for
+/// session-scoped lanes (UUID ids) are created by their sessions
+/// and are deliberately NOT part of the canonical set.
+fn canonical_lanes() -> Vec<(&'static str, &'static str)> {
+    let mut lanes: Vec<(&'static str, &'static str)> = Vec::new();
+    for c in 'a'..='z' {
+        // Leak-free: the ids are built from a fixed alphabet by a
+        // match on the letter so the strings stay 'static.
+        lanes.push((code_lane_id(c), "repo-worker-code"));
+    }
+    lanes.push(("opencode-a", "repo-worker-opencode"));
+    lanes.push(("opencode-b", "repo-worker-opencode"));
+    lanes.push(("openchamber-a", "repo-worker-openchamber"));
+    lanes.push(("openchamber-b", "repo-worker-openchamber"));
+    lanes.push(("nix-a", "repo-worker-nix"));
+    lanes.push(("nix-b", "repo-worker-nix"));
+    lanes
+}
+
+fn code_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "code-a",
+        'b' => "code-b",
+        'c' => "code-c",
+        'd' => "code-d",
+        'e' => "code-e",
+        'f' => "code-f",
+        'g' => "code-g",
+        'h' => "code-h",
+        'i' => "code-i",
+        'j' => "code-j",
+        'k' => "code-k",
+        'l' => "code-l",
+        'm' => "code-m",
+        'n' => "code-n",
+        'o' => "code-o",
+        'p' => "code-p",
+        'q' => "code-q",
+        'r' => "code-r",
+        's' => "code-s",
+        't' => "code-t",
+        'u' => "code-u",
+        'v' => "code-v",
+        'w' => "code-w",
+        'x' => "code-x",
+        'y' => "code-y",
+        'z' => "code-z",
+        _ => unreachable!("code lane letters are a..=z"),
+    }
+}
+
+/// The registry seed statement (#6853): INSERT OR IGNORE, so it
+/// restores a missing registration and can never resurrect or
+/// re-enable a lane whose row already exists in any state.
+fn lane_seed_sql() -> String {
+    let values: Vec<String> = canonical_lanes()
+        .iter()
+        .map(|(id, worker)| format!("('{id}', '{worker}', '*', 1)"))
+        .collect();
+    format!(
+        "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES {}",
+        values.join(", ")
+    )
+}
+
 impl TursoBackend {
     pub fn new(url: String, token: String, agent: ureq::Agent) -> Self {
         Self {
@@ -631,6 +699,15 @@ impl TursoBackend {
     pub fn ensure_schema(&self) -> Result<(), TErr> {
         let stmts: Vec<(&str, Vec<Arg>)> = SCHEMA.iter().map(|s| (*s, Vec::new())).collect();
         self.pipeline(&stmts)?;
+        // #6853: seed the canonical lane registry. Registrations
+        // used to be hand-inserted rows with no code-owned seed, so
+        // a store rebuild/restore silently dropped lanes that were
+        // not in whoever's seed set — openchamber-a/b were disabled
+        // on 2026-11-08 (rows present) and unknown by 2026-11-11
+        // (rows gone). INSERT OR IGNORE fills only MISSING rows: an
+        // existing registration — including a lane Drew disabled
+        // (enabled = 0) — is never overwritten by the seed.
+        self.exec(&lane_seed_sql(), &[])?;
         // Additive task columns land here for databases created
         // before them: #8097 Rule 2's tasks.platform (the optional
         // coarse platform selector — existing rows read NULL: unset,
@@ -6812,6 +6889,43 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn canonical_lanes_cover_every_fleet_lane_6853() {
+        // #6853 oracle: the registry the broker seeds contains every
+        // lane id the fleet runs — code-a..z, opencode-a/b,
+        // openchamber-a/b, nix-a/b — each owned by its worker, with
+        // no duplicates. The 2026-11-11 outage was exactly the two
+        // openchamber ids missing from this set.
+        let lanes = canonical_lanes();
+        assert_eq!(lanes.len(), 32);
+        let mut ids: Vec<&str> = lanes.iter().map(|(id, _)| *id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 32, "duplicate lane ids in the canonical set");
+        let owner = |id: &str| lanes.iter().find(|(l, _)| *l == id).map(|(_, w)| *w);
+        assert_eq!(owner("openchamber-a"), Some("repo-worker-openchamber"));
+        assert_eq!(owner("openchamber-b"), Some("repo-worker-openchamber"));
+        assert_eq!(owner("opencode-a"), Some("repo-worker-opencode"));
+        assert_eq!(owner("opencode-b"), Some("repo-worker-opencode"));
+        assert_eq!(owner("nix-a"), Some("repo-worker-nix"));
+        assert_eq!(owner("nix-b"), Some("repo-worker-nix"));
+        assert_eq!(owner("code-a"), Some("repo-worker-code"));
+        assert_eq!(owner("code-z"), Some("repo-worker-code"));
+    }
+
+    #[test]
+    fn lane_seed_sql_is_insert_or_ignore_over_the_canonical_set() {
+        // #6853 oracle: the seed can only fill missing rows — an
+        // existing registration (in particular a lane disabled via
+        // enabled = 0) is never overwritten, so seeding at every
+        // broker start cannot undo a disable.
+        let sql = lane_seed_sql();
+        assert!(sql.starts_with("INSERT OR IGNORE INTO lanes"), "{sql}");
+        for (id, _) in canonical_lanes() {
+            assert!(sql.contains(&format!("('{id}'")), "seed misses {id}");
+        }
+    }
 
     #[test]
     fn claim_lease_is_the_requested_lease_not_the_heartbeat_default() {
