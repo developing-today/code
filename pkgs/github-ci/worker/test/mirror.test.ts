@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCommentTouch,
   buildIssueRow,
+  deletionBlocks,
   buildPrRow,
   isAgentNote,
   labelsOf,
@@ -288,6 +289,80 @@ describe("mirror writers (#8580)", () => {
     expect(values).toContain("8580");
   });
 
+  it("deletionBlocks absorbs items at or before the marker version", () => {
+    // Oracle: the projector's deletionBlocks rule (#6782) — a
+    // deletion marker at or after the incoming item's source
+    // timestamp absorbs the item; only a strictly newer item passes.
+    expect(deletionBlocks(null, "2026-11-11T02:00:00Z")).toBe(false);
+    expect(deletionBlocks("2026-11-11T03:00:00Z", "2026-11-11T02:00:00Z")).toBe(
+      true,
+    );
+    expect(deletionBlocks("2026-11-11T03:00:00Z", "2026-11-11T03:00:00Z")).toBe(
+      true,
+    );
+    expect(deletionBlocks("2026-11-11T03:00:00Z", "2026-11-11T04:00:00Z")).toBe(
+      false,
+    );
+    // No provable order: a marker absorbs an unversioned item, and a
+    // versionless marker still absorbs.
+    expect(deletionBlocks("2026-11-11T03:00:00Z", null)).toBe(true);
+    expect(deletionBlocks("", "2026-11-11T02:00:00Z")).toBe(true);
+    expect(deletionBlocks(null, null)).toBe(false);
+  });
+
+  it("mirrorIssueEvent writes a tombstone on an issues deleted delivery", async () => {
+    const stmts = capturePipeline();
+    await mirrorIssueEvent(env, { ...issuePayload, action: "deleted" }, REPO);
+    const tomb = stmts.find((s) =>
+      s.sql.includes("INSERT INTO github_mirror_tombstones"),
+    );
+    expect(tomb).toBeDefined();
+    const values = (tomb?.args ?? []).map((a) => a.value);
+    expect(values).toContain(REPO);
+    expect(values).toContain("8580");
+    // The marker carries the deleted issue's own updated_at: that is
+    // the version delayed pre-deletion deliveries are compared to.
+    expect(values).toContain("2026-11-11T02:00:00Z");
+  });
+
+  it("both insertion paths carry the tombstone guard in SQL", async () => {
+    // The guard is encoded in the statements themselves (atomic
+    // with the write), in every path that can create a mirror row:
+    // the snapshot upsert and the comment seed + update.
+    let stmts = capturePipeline();
+    await mirrorIssueEvent(env, issuePayload, REPO);
+    const upsert = stmts.find((s) =>
+      s.sql.includes("INSERT INTO github_mirror_issues"),
+    );
+    expect(upsert?.sql).toContain("FROM github_mirror_tombstones");
+    expect(upsert?.sql).toContain("m.gh_updated_at >= ?");
+    stmts = capturePipeline();
+    await mirrorCommentEvent(
+      env,
+      {
+        action: "created",
+        issue: {
+          number: 8580,
+          comments: 4,
+          updated_at: "2026-11-11T02:00:00Z",
+        },
+        comment: { id: 777, body: "a plain comment" },
+        repository: { full_name: REPO },
+      },
+      REPO,
+    );
+    const seed = stmts.find((s) =>
+      s.sql.includes(
+        "INSERT INTO github_mirror_issues (repo, number, mirrored_at)",
+      ),
+    );
+    expect(seed?.sql).toContain("FROM github_mirror_tombstones");
+    const update = stmts.find((s) =>
+      s.sql.startsWith("UPDATE github_mirror_issues"),
+    );
+    expect(update?.sql).toContain("FROM github_mirror_tombstones");
+  });
+
   it("mirrorCommentEvent guards the note pointer by creation order", async () => {
     const stmts = capturePipeline();
     await mirrorCommentEvent(
@@ -350,7 +425,8 @@ describe("mirror writers (#8580)", () => {
     expect(update?.sql).toContain("THEN COALESCE(?, comments_gh_updated_at)");
     expect(update?.sql).not.toMatch(/\n\s+gh_updated_at = CASE/);
     const values = (update?.args ?? []).map((a) => a.value);
-    expect(values.filter((v) => v === "2026-11-11T04:00:00Z")).toHaveLength(5);
+    // 5 count-version binds (CASE guards + COALESCE) plus 2 in the tombstone guard.
+    expect(values.filter((v) => v === "2026-11-11T04:00:00Z")).toHaveLength(7);
     expect(values).toContain("5");
     // buildCommentTouch carries the version off the issue object.
     const touch = buildCommentTouch(

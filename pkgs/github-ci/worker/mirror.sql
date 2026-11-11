@@ -42,3 +42,14 @@ CREATE TABLE IF NOT EXISTS github_mirror_meta (
   repo TEXT PRIMARY KEY,
   last_webhook_at TEXT, last_webhook_event TEXT,
   last_backfill_at TEXT);
+
+-- Deletion tombstones: an issues "deleted" delivery removes the
+-- mirror row and records the deleted issue's updated_at here, so a
+-- delayed pre-deletion snapshot or comment is absorbed by the
+-- marker instead of resurrecting the row (the projector's
+-- deletionBlocks rule; Codex P2 on PR #8604).
+CREATE TABLE IF NOT EXISTS github_mirror_tombstones (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  gh_updated_at TEXT,
+  mirrored_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number));

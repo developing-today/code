@@ -27,7 +27,15 @@
  * redelivered note never replaces a newer stored pointer. An issues
  * "deleted" delivery removes the mirror row outright: a deleted
  * issue must leave the read model, not be re-upserted by its own
- * deletion event (projector precedent, #4210).
+ * deletion event (projector precedent, #4210). The deletion also
+ * leaves a tombstone (github_mirror_tombstones, keyed by repo +
+ * number, carrying the deleted issue's updated_at): a delayed
+ * pre-deletion snapshot or comment arriving after the deletion is
+ * absorbed by the marker instead of resurrecting the row, in both
+ * insertion paths — the snapshot upsert and the comment seed — as
+ * the projector's deletionBlocks does (Codex P2, PR #8604). A
+ * snapshot strictly newer than the marker (the issue genuinely
+ * recreated or restored afterwards) is not blocked.
  *
  * Comment counts carry their own version, stored separately from the
  * snapshot version (comments_gh_updated_at, NOT gh_updated_at): an
@@ -78,6 +86,11 @@ export const MIRROR_DDL: string[] = [
      repo TEXT PRIMARY KEY,
      last_webhook_at TEXT, last_webhook_event TEXT,
      last_backfill_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS github_mirror_tombstones (
+     repo TEXT NOT NULL, number INTEGER NOT NULL,
+     gh_updated_at TEXT,
+     mirrored_at TEXT NOT NULL,
+     PRIMARY KEY (repo, number))`,
 ];
 
 type Obj = Record<string, unknown>;
@@ -278,6 +291,42 @@ async function ensureMirrorColumns(q: Turso): Promise<void> {
   }
 }
 
+/**
+ * The tombstone rule (projector deletionBlocks, #6782, carried to
+ * the mirror by Codex P2 on PR #8604): a deletion marker whose
+ * version is at or after the incoming item's source version absorbs
+ * the item. `markerVersion` is null when no marker row exists, and
+ * the empty string when a marker row exists without a recorded
+ * version — that marker still absorbs, because the deletion is a
+ * fact even when its timestamp was not captured. An item whose own
+ * version is unknown cannot prove it post-dates the deletion, so a
+ * marker absorbs it too; only a strictly newer source version
+ * passes.
+ */
+export function deletionBlocks(
+  markerVersion: string | null,
+  sourceUpdatedAt: string | null,
+): boolean {
+  if (markerVersion === null) return false;
+  if (sourceUpdatedAt === null) return true;
+  if (markerVersion === "") return true;
+  return markerVersion >= sourceUpdatedAt;
+}
+
+/**
+ * The tombstone guard: the SQL spelling of deletionBlocks, embedded
+ * in every insertion path (the issue and PR snapshot upserts, the
+ * comment seed, and the comment update). It binds, in order: repo,
+ * number, source version, source version. Encoding the check in the
+ * statement itself keeps it atomic with the write it guards — no
+ * read-then-write window, and no extra pipeline round-trip.
+ */
+const TOMBSTONE_GUARD_SQL = `NOT EXISTS (
+              SELECT 1 FROM github_mirror_tombstones m
+              WHERE m.repo = ? AND m.number = ?
+                AND (? IS NULL OR m.gh_updated_at IS NULL
+                     OR m.gh_updated_at >= ?))`;
+
 async function mirrorBatch(
   env: SinkEnv,
   event: string,
@@ -304,6 +353,23 @@ export async function mirrorIssueEvent(
         sql: "DELETE FROM github_mirror_issues WHERE repo = ? AND number = ?",
         args: [tArg(repo), iArg(num(issue, "number"))],
       },
+      {
+        // The tombstone: evidence of the deletion, carrying the
+        // deleted issue's version, so a delayed pre-deletion
+        // delivery cannot resurrect the row (Codex P2, PR #8604).
+        // A later deletion of a recreated issue refreshes it.
+        sql: `INSERT INTO github_mirror_tombstones (repo, number, gh_updated_at, mirrored_at)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(repo, number) DO UPDATE SET
+                gh_updated_at = excluded.gh_updated_at,
+                mirrored_at = excluded.mirrored_at`,
+        args: [
+          tArg(repo),
+          iArg(num(issue, "number")),
+          tArg(str(issue, "updated_at")),
+          tArg(queueNow()),
+        ],
+      },
     ]);
     return;
   }
@@ -317,7 +383,8 @@ export async function mirrorIssueEvent(
       sql: `INSERT INTO github_mirror_issues (repo, number, title, body_hash, state,
               labels, assignees, comments, comments_gh_updated_at, author,
               html_url, gh_created_at, gh_updated_at, mirrored_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE ${TOMBSTONE_GUARD_SQL}
             ON CONFLICT(repo, number) DO UPDATE SET
               title = excluded.title, body_hash = excluded.body_hash,
               state = excluded.state, labels = excluded.labels,
@@ -355,6 +422,10 @@ export async function mirrorIssueEvent(
         tArg(row.gh_created_at),
         tArg(row.gh_updated_at),
         tArg(queueNow()),
+        tArg(row.repo),
+        iArg(row.number),
+        tArg(row.gh_updated_at),
+        tArg(row.gh_updated_at),
       ],
     },
   ]);
@@ -377,7 +448,8 @@ export async function mirrorPrEvent(
               state, merged, draft, head_sha, head_ref, base_ref, labels,
               assignees, comments, comments_gh_updated_at, author, html_url,
               gh_created_at, gh_updated_at, mirrored_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE ${TOMBSTONE_GUARD_SQL}
             ON CONFLICT(repo, number) DO UPDATE SET
               title = excluded.title, body_hash = excluded.body_hash,
               state = excluded.state, merged = excluded.merged,
@@ -423,6 +495,10 @@ export async function mirrorPrEvent(
         tArg(row.gh_created_at),
         tArg(row.gh_updated_at),
         tArg(queueNow()),
+        tArg(row.repo),
+        iArg(row.number),
+        tArg(row.gh_updated_at),
+        tArg(row.gh_updated_at),
       ],
     },
   ]);
@@ -454,9 +530,18 @@ export async function mirrorCommentEvent(
     : "github_mirror_issues";
   await mirrorBatch(env, "issue_comment", repo, [
     {
-      sql: `INSERT INTO ${table} (repo, number, mirrored_at) VALUES (?, ?, ?)
+      sql: `INSERT INTO ${table} (repo, number, mirrored_at) SELECT ?, ?, ?
+            WHERE ${TOMBSTONE_GUARD_SQL}
             ON CONFLICT(repo, number) DO NOTHING`,
-      args: [tArg(touch.repo), iArg(touch.number), tArg(queueNow())],
+      args: [
+        tArg(touch.repo),
+        iArg(touch.number),
+        tArg(queueNow()),
+        tArg(touch.repo),
+        iArg(touch.number),
+        tArg(touch.ghUpdatedAt),
+        tArg(touch.ghUpdatedAt),
+      ],
     },
     {
       sql: `UPDATE ${table} SET
@@ -480,7 +565,7 @@ export async function mirrorCommentEvent(
                  AND (latest_agent_note_id IS NULL
                       OR ? >= latest_agent_note_id)
                 THEN ? ELSE latest_agent_note_url END
-            WHERE repo = ? AND number = ?`,
+            WHERE repo = ? AND number = ? AND ${TOMBSTONE_GUARD_SQL}`,
       args: [
         tArg(touch.ghUpdatedAt),
         tArg(touch.ghUpdatedAt),
@@ -497,6 +582,10 @@ export async function mirrorCommentEvent(
         tArg(touch.agentNoteUrl),
         tArg(touch.repo),
         iArg(touch.number),
+        tArg(touch.repo),
+        iArg(touch.number),
+        tArg(touch.ghUpdatedAt),
+        tArg(touch.ghUpdatedAt),
       ],
     },
     // A deleted agent note never becomes the pointer (above), and a
