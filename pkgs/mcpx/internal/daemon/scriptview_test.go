@@ -6,9 +6,13 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1092,5 +1096,99 @@ func TestHookReplacementTextOracle(t *testing.T) {
 	})
 	if !ok || text != "recovered answer" {
 		t.Errorf("a string replacement is carried verbatim: %q, %v", text, ok)
+	}
+}
+
+// Oracle: cancelling a command-backed tool terminates its whole
+// process group (Codex P2 on PR #8317, seventh round). The command
+// spawns a worker (sleep) in its group and waits; when the call
+// times out, the worker must die with the command instead of
+// running on and performing side effects after the failure.
+func TestScriptViewCommandTimeoutKillsSpawnedWorkers(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "worker.pid")
+	r := scriptRegistry(t, map[string]*config.Server{
+		"ops": {Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"spawn": {Command: "sh", Args: []string{"-c", "sleep 60 & echo $! > " + pidFile + "; wait"}, Description: "spawns a worker and waits", Timeout: "300ms"},
+		}}},
+	})
+	_, err := r.Call(scriptCtx(t), "ops", "spawn", config.CallContext{}, map[string]any{})
+	var unknown ErrUnknownOutcome
+	if err == nil || (!strings.Contains(err.Error(), "did not finish within 300ms") && !errors.As(err, &unknown)) {
+		t.Fatalf("want the timeout (or its unknown-outcome recording), got %v", err)
+	}
+	var pid int
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, rerr := os.ReadFile(pidFile); rerr == nil {
+			pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+			if pid > 0 {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if pid <= 0 {
+		t.Fatal("the command never recorded its worker pid")
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return // the worker is gone: the group was terminated
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("worker %d survived the call's timeout: the process group was not terminated", pid)
+}
+
+// Oracle: a file-backed tool forwards the caller's call settings
+// into its execution (Codex P2 on PR #8317, seventh round). The
+// caller sent pool.callTimeout in the call-settings header; the
+// script's MCPX_SETTINGS environment -- the channel the generated
+// client's nested calls ride on -- must carry exactly that header
+// value, as the ordinary exec path already forwards it.
+func TestScriptFileToolForwardsCallSettings(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "settings.ts")
+	body := "const g = globalThis as any;\n" +
+		"let v = \"\";\n" +
+		"try { v = g.process?.env?.MCPX_SETTINGS ?? \"\"; } catch {}\n" +
+		"if (!v) { try { v = g.Deno?.env?.get(\"MCPX_SETTINGS\") ?? \"\"; } catch {} }\n" +
+		"console.log(JSON.stringify({ settings: v }));\n"
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"settings": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	req := httptest.NewRequest(http.MethodPost, "/v1/call", nil)
+	req.Header.Set(CallSettingsHeader, `{"pool.callTimeout":"5s"}`)
+	ctx := withCallSettings(scriptCtx(t), srv.callSettings(req))
+	raw, err := srv.reg.Call(ctx, "ops", "settings", config.CallContext{}, map[string]any{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if res.IsError {
+		t.Fatalf("a clean run is not an error: %s", raw)
+	}
+	joined := ""
+	for _, c := range res.Content {
+		joined += c.Text
+	}
+	if !strings.Contains(joined, "pool.callTimeout") || !strings.Contains(joined, "5s") {
+		t.Errorf("the caller's call settings must reach the script via MCPX_SETTINGS, got: %s", raw)
 	}
 }

@@ -583,3 +583,29 @@ func TestPythonDecoratorsAreNotPlaceholders(t *testing.T) {
 		}
 	}
 }
+
+// Oracle: a Python placeholder inside a continued expression is not
+// a decorator (Codex P2 on PR #8317, seventh round). The decorator
+// exemption covers an `@name` at a statement boundary; a leading
+// `@who` inside an unclosed bracket is an argument of the continued
+// call, and leaving it unsubstituted made the rendered script a
+// SyntaxError at execution. The same holds after a trailing
+// backslash. A real decorator in the same body still renders
+// untouched.
+func TestPythonPlaceholderInsideContinuedExpressionIsSubstituted(t *testing.T) {
+	src := "# @param who:string\nfrom dataclasses import dataclass\n\n@dataclass\nclass Greeter:\n    pass\n\nprint(\n    @who\n)\njoined = str(\n    @who)\n"
+	r := recipes.Parse("greeter", "/tmp/greeter.py", src)
+	out, err := r.Render(map[string]any{"who": "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "@who") {
+		t.Errorf("a placeholder inside a continued expression must substitute:\n%s", out)
+	}
+	if !strings.Contains(out, "@dataclass") {
+		t.Errorf("a decorator at a statement boundary must stay untouched:\n%s", out)
+	}
+	if n := strings.Count(out, `"world"`); n != 2 {
+		t.Errorf("both continued placeholders must render the value, found %d:\n%s", n, out)
+	}
+}

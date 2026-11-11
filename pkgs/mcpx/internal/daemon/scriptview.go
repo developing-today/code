@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
@@ -152,6 +153,26 @@ func callScriptView(ctx context.Context, pl *pool.Pool, tool string, tv *config.
 	defer cancel()
 
 	cmd := exec.CommandContext(cctx, tv.Command, tv.Args...)
+	// The command runs in its own process group, and cancellation
+	// terminates the group, not only the immediate process: a worker
+	// the command spawned must not outlive a timed-out or cancelled
+	// call and keep performing side effects after the tool reported
+	// failure (Codex P2 on PR #8317). The runner's two execution
+	// paths handle their processes the same way (TERM the group,
+	// then KILL after the shutdown grace).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		pid := cmd.Process.Pid
+		_ = syscall.Kill(-pid, syscall.SIGTERM)
+		go func() {
+			time.Sleep(defaults.ShutdownGrace)
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}()
+		return nil
+	}
 	if resolved != nil {
 		cmd.Env = scriptCommandEnv(resolved)
 	}
@@ -276,7 +297,7 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 		s.reg.asks.attachRunToRun(parent, runID)
 	}
 	mcpclient.NoteToolCallDispatched(ctx)
-	req := execsvc.Request{Source: rendered, SourceName: view.Path, Opts: opts, RunID: runID}
+	req := execsvc.Request{Source: rendered, SourceName: view.Path, Opts: opts, RunID: runID, CallSettings: callSettingsHeaderValue(callSettingsFrom(ctx))}
 	cleanup := func() {}
 	if file, cf, ferr := materializeDeclaredScript(view.Path, rendered); ferr == nil {
 		// Run the rendered body as a file in a directory holding
@@ -286,7 +307,7 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 		// materialised the body under a generated name in its
 		// cache directory, where no sibling exists (Codex P2 on
 		// PR #8317).
-		req = execsvc.Request{File: file, Opts: opts, RunID: runID}
+		req = execsvc.Request{File: file, Opts: opts, RunID: runID, CallSettings: callSettingsHeaderValue(callSettingsFrom(ctx))}
 		cleanup = cf
 	}
 	defer cleanup()

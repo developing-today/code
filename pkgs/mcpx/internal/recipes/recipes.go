@@ -528,7 +528,39 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 	code := scanCodeFor(r.Source, lang)
 	var b strings.Builder
 	offset := 0
+	depth := 0
+	lineContinued := false
 	for _, line := range strings.Split(r.Source, "\n") {
+		// A Python placeholder at the start of a line is a decorator
+		// only at a statement boundary. Inside an unclosed bracket, or
+		// after a trailing backslash, the line continues the previous
+		// expression and a leading @name there is an argument, not a
+		// decorator (Codex P2 on PR #8317). The scanCode mask decides
+		// what counts: brackets and backslashes inside strings and
+		// comments are not code and open no continuation.
+		continued := depth > 0 || lineContinued
+		lineCode := code[offset : offset+len(line)]
+		for i, isCode := range lineCode {
+			if !isCode {
+				continue
+			}
+			switch line[i] {
+			case '(', '[', '{':
+				depth++
+			case ')', ']', '}':
+				if depth > 0 {
+					depth--
+				}
+			}
+		}
+		lineContinued = false
+		for i := len(line) - 1; i >= 0; i-- {
+			if line[i] == ' ' || line[i] == '\t' {
+				continue
+			}
+			lineContinued = lineCode[i] && line[i] == '\\'
+			break
+		}
 		if declLine.MatchString(line) {
 			// The declaration is consumed. Leaving it in would be harmless
 			// but the rendered script is what a diagnostic reports line
@@ -548,7 +580,7 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 			offset += len(line) + 1
 			continue
 		}
-		b.WriteString(substituteFor(line, code[offset:offset+len(line)], lits, lang))
+		b.WriteString(substituteFor(line, code[offset:offset+len(line)], lits, lang, continued))
 		b.WriteString("\n")
 		offset += len(line) + 1
 	}
@@ -564,12 +596,16 @@ func substitute(line string, code []bool, lits map[string]string) string {
 }
 
 // substituteFor is substitute in the body's language: a Python
-// decorator (an `@name` as the first thing on its line) is language
-// syntax, never a placeholder, so it is copied through even when a
-// placeholder of the same name exists (Codex P2 on PR #8317).
-func substituteFor(line string, code []bool, lits map[string]string, lang string) string {
+// decorator (an `@name` as the first thing on its line, at a statement
+// boundary) is language syntax, never a placeholder, so it is copied
+// through even when a placeholder of the same name exists (Codex P2
+// on PR #8317). A leading `@name` on a continued line -- inside an
+// unclosed bracket or after a trailing backslash -- is an argument
+// in a continued expression, not a decorator, and substitutes like
+// any other placeholder; Render passes that context as continued.
+func substituteFor(line string, code []bool, lits map[string]string, lang string, continued ...bool) string {
 	firstCode := -1
-	if lang == langPython {
+	if lang == langPython && (len(continued) == 0 || !continued[0]) {
 		firstCode = len(line) - len(strings.TrimLeft(line, " \t"))
 	}
 	var b strings.Builder
