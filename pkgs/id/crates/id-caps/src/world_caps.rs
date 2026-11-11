@@ -43,7 +43,7 @@
 //!
 //! This module holds the pure parts: the schema and its bounds, the catalog of
 //! capability names, and the grant policy with its usage accounting. The
-//! actor in [`crate::world`] executes providers because they need the world.
+//! actor in the facade's `world` module executes providers because they need the world.
 //!
 //! ## Refusal codes
 //!
@@ -834,8 +834,8 @@ pub fn parse_wants(text: &str) -> Result<Wants> {
     // A duplicate key is a parse error (#7621, the #6520 rule): the
     // version check and the entry bounds below must see the document as
     // written, never a last-wins collapse of it.
-    let value: serde_json::Value =
-        crate::json_unique::parse_json_without_duplicate_keys(text).context("wants is not JSON")?;
+    let value: serde_json::Value = id_core::json_unique::parse_json_without_duplicate_keys(text)
+        .context("wants is not JSON")?;
     let object = value.as_object().context("wants must be a JSON object")?;
     if let Some(version) = object.get("v") {
         ensure!(

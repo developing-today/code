@@ -257,7 +257,7 @@ pub use id_core::waiting;
 #[cfg(feature = "world")]
 pub mod world;
 #[cfg(feature = "world")]
-pub use id_core::world_caps;
+pub use id_caps::world_caps;
 #[cfg(feature = "world")]
 pub mod world_cache;
 pub mod world_compile;
@@ -268,10 +268,10 @@ pub mod world_fixture;
 #[cfg(feature = "world")]
 pub mod world_hub;
 #[cfg(feature = "world")]
-pub use id_core::world_limits;
+pub use id_caps::world_limits;
 pub(crate) mod world_line;
 #[cfg(feature = "world")]
-pub mod world_manifest;
+pub use id_caps::world_manifest;
 #[cfg(feature = "world")]
 pub mod world_native;
 #[cfg(feature = "world")]
