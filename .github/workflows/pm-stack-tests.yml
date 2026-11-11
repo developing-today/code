@@ -147,6 +147,23 @@ jobs:
           fi
           echo "pm-stack Python suites: test_poll.py + test_claimant.py + test/test_claimant.py (#7670) + grist discovery passed."
 
+      # Bun suite for #6091: pm-stack/opencode-claimant/
+      # test/install.test.mjs (13 tests, the #3278 typo'd-flag
+      # install guard) was run by no workflow — #5951 wired only
+      # the claimant Python suite above. The suite imports
+      # bun:test, so the runner is bun (node --test fails on it).
+      # The file is named explicitly and asserted to exist first,
+      # so a green run cannot be a silently skipped suite; any
+      # failure in the suite fails the job.
+      - name: Test claimant install bun suite
+        working-directory: pm-stack/opencode-claimant
+        run: |
+          if [ ! -f test/install.test.mjs ]; then
+            echo "::error::Missing suite file pm-stack/opencode-claimant/test/install.test.mjs — the claimant install suite was not run."
+            exit 1
+          fi
+          bun test test/install.test.mjs
+
       # Python suite for #6217: pm-stack/external-comms/
       # test_push_quarantine.py (6 tests, the pinning suite for the
       # #6154 external-comms pusher fix) was run by no workflow, so a
