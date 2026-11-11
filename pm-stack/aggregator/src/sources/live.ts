@@ -8,8 +8,8 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
-import { isAaSection } from "../aa.ts";
-import { aaCacheFileName, isAaBatchCacheEntry } from "../aa-batches.ts";
+import { aaApplyPriceOverlay, isAaSection } from "../aa.ts";
+import { aaCacheFileName, aaPricesFingerprint, isAaBatchCacheEntry } from "../aa-batches.ts";
 import { isBatchUuid } from "../aa-batch-sql.ts";
 import { isDnsSection } from "../dns.ts";
 import {
@@ -1824,16 +1824,46 @@ export function liveSource(
             // the old catalog and coverage with no warning, so honour the
             // index's cache-validity flag.
             const staleCache = batchList.find((b) => b.importBatch === batch)?.cached === false;
-            provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt}${staleCache ? " · awaiting rebuild" : ""})`;
-            return staleCache
-              ? {
-                  ...parsed.section,
-                  batches: batchList,
-                  stale: true,
-                  staleReason:
-                    "this version is awaiting rebuilding — its opencode config or the current-price overlay changed since it was built",
-                }
-              : { ...parsed.section, batches: batchList };
+            if (staleCache) {
+              provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt} · awaiting rebuild)`;
+              return {
+                ...parsed.section,
+                batches: batchList,
+                stale: true,
+                staleReason:
+                  "this version is awaiting rebuilding — its opencode config or the current-price overlay changed since it was built",
+              };
+            }
+            // #8211: the cached payload is batch-bound, but its prices are
+            // the batch-independent current overlay (v_current_prices).
+            // When the entry was built under a different overlay than the
+            // feed's latest section now carries, re-derive the served
+            // section's prices and catalog rates from the current overlay
+            // instead of serving the frozen snapshot — no batch data is
+            // refetched. When the feed carries no current overlay to
+            // refresh from, frozen prices are served stale-marked, never
+            // silently.
+            const currentPrices =
+              feed?.aa && isAaSection(feed.aa) && feed.aa.status === "ok" ? feed.aa.prices : undefined;
+            if (currentPrices !== undefined) {
+              if ((parsed.pricesFingerprint ?? null) === aaPricesFingerprint(currentPrices)) {
+                provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt})`;
+                return { ...parsed.section, batches: batchList };
+              }
+              provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt} · price overlay refreshed at serve)`;
+              return { ...aaApplyPriceOverlay(parsed.section, currentPrices), batches: batchList };
+            }
+            provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt})`;
+            if (parsed.section.prices?.length) {
+              return {
+                ...parsed.section,
+                batches: batchList,
+                stale: true,
+                staleReason:
+                  "the current price overlay is unavailable in the latest feed, so this version's token prices are shown as collected and may be out of date",
+              };
+            }
+            return { ...parsed.section, batches: batchList };
           }
         } catch {
           // No cache file yet — fall through to the honest absent form.
