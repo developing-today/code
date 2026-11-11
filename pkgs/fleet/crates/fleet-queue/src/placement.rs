@@ -999,7 +999,7 @@ impl Adapter for BlacksmithAdapter {
     fn surface(&self) -> &Value {
         &self.inner.surface
     }
-    fn eligible(&self, job: &Job, _ctx: &Ctx, gh: &dyn Gh) -> (bool, String) {
+    fn eligible(&self, job: &Job, ctx: &Ctx, gh: &dyn Gh) -> (bool, String) {
         if surf_str(&self.inner.surface, "owner") == "dezren39" {
             return (
                 false,
@@ -1023,6 +1023,21 @@ impl Adapter for BlacksmithAdapter {
                 format!(
                     "app token cannot be minted for {repo} \u{2014} surface is \
                      unreachable by the App"
+                ),
+            );
+        }
+        // The budget binds pinned surfaces too (Codex round-4 on
+        // PR #8325): a --surface pin is a placement choice, not a
+        // paid-usage authorization. Remaining minutes already include
+        // the registry paid cap and any explicit
+        // --allow-paid-blacksmith allowance carried on the job.
+        let (free, paid_cap, used) = self.budget(job, ctx);
+        if free + paid_cap - used <= 0.0 {
+            return (
+                false,
+                format!(
+                    "blacksmith budget spent: {used:.0} of {free:.0} free                      min/mo used (+{paid_cap:.0} paid cap allowed) \u{2014} \
+                     pass --allow-paid-blacksmith to authorize paid minutes"
                 ),
             );
         }
@@ -2466,6 +2481,26 @@ mod tests {
             Err(e) => e,
         };
         assert!(err2.0.contains("no such surface"), "{}", err2.0);
+    }
+
+    #[test]
+    fn pinned_blacksmith_budget_spent_is_ineligible() {
+        let reg = registry();
+        let gh = FakeGh::default();
+        let mut j = job();
+        j.surface_pin = Some("fleet-org-blacksmith".to_string());
+        let c = ctx(&[], 3000.0, false);
+        let err = match decide(&reg, &j, &c, &gh) {
+            Ok(_) => panic!("pinned blacksmith with spent budget must die"),
+            Err(e) => e,
+        };
+        assert!(err.0.contains("budget spent"), "{}", err.0);
+        j.allow_paid_blacksmith = 250.0;
+        let (ad, _r) = decide(&reg, &j, &c, &gh).unwrap();
+        assert_eq!(
+            surf_str(ad.unwrap().surface(), "id"),
+            "fleet-org-blacksmith"
+        );
     }
 
     #[test]
