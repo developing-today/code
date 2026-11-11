@@ -223,7 +223,11 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
                     .and_then(|v| v.get("value").and_then(|x| x.as_str()).map(str::to_string));
                 match fetched {
                     Some(val) => {
-                        got.write().unwrap().insert(key.clone(), val);
+                        // Stamp the value with ITS fetch time, not
+                        // the batch's install time (Codex, PR #8491):
+                        // a slow sibling fetch must not make this
+                        // value look fresher than it is.
+                        got.write().unwrap().insert(key.clone(), (val, now_unix()));
                     }
                     None => {
                         failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -276,7 +280,7 @@ struct InstallOutcome {
 /// Install one refresh's fetches into the cache, per secret (#6767).
 ///
 /// - a listed secret whose fetch succeeded takes the new value and
-///   this refresh's timestamp;
+///   its own fetch timestamp;
 /// - a listed secret whose fetch failed keeps its previous value
 ///   AND its previous timestamp — a failure never evicts and never
 ///   makes a stale value look fresh (#5504's rule, per secret);
@@ -290,7 +294,7 @@ struct InstallOutcome {
 fn install_refresh(
     state: &Arc<State>,
     listed: &[(String, String)],
-    fetched: HashMap<String, String>,
+    fetched: HashMap<String, (String, u64)>,
     now: u64,
 ) -> Option<InstallOutcome> {
     if fetched.is_empty() && !listed.is_empty() {
@@ -313,12 +317,12 @@ fn install_refresh(
         }
         for (_, key) in listed {
             match fetched.get(key) {
-                Some(v) => {
+                Some((v, at)) => {
                     secrets.insert(
                         key.clone(),
                         CachedSecret {
                             value: v.clone(),
-                            fetched_at_unix: now,
+                            fetched_at_unix: *at,
                         },
                     );
                     installed += 1;
@@ -987,9 +991,9 @@ mod tests {
             ("id-b".to_string(), "beta".to_string()),
             ("id-d".to_string(), "delta".to_string()),
         ];
-        let fetched: HashMap<String, String> = [
-            ("alpha".to_string(), "new-alpha".to_string()),
-            ("delta".to_string(), "fresh-delta".to_string()),
+        let fetched: HashMap<String, (String, u64)> = [
+            ("alpha".to_string(), ("new-alpha".to_string(), 190)),
+            ("delta".to_string(), ("fresh-delta".to_string(), 200)),
         ]
         .into_iter()
         .collect();
@@ -999,11 +1003,14 @@ mod tests {
         assert_eq!(outcome.removed, 1);
         assert_eq!(outcome.total, 3);
         let secrets = state.secrets.read().unwrap();
+        // Alpha keeps its own fetch time (190), not the install
+        // time (200): a value fetched before a rotation must never
+        // claim a timestamp after it (Codex, PR #8491).
         assert_eq!(
             secrets.get("alpha"),
             Some(&CachedSecret {
                 value: "new-alpha".to_string(),
-                fetched_at_unix: 200
+                fetched_at_unix: 190
             })
         );
         assert_eq!(
