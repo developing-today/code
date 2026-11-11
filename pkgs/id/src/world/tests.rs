@@ -1883,6 +1883,117 @@ mod tests {
         assert_eq!(oversized_result["error"], "bad_args");
     }
 
+    /// #7899 regression probe: asks records.read with malformed and
+    /// well-formed prefix/after shapes and captures every result.
+    #[derive(Debug, Default)]
+    struct RecordsReadShapeProbe {
+        answered: BTreeSet<String>,
+        results: BTreeMap<String, serde_json::Value>,
+    }
+
+    impl WorldProgram for RecordsReadShapeProbe {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                let value: serde_json::Value =
+                    serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                if value["cap"] == "result"
+                    && let Some(id) = value["id"].as_str()
+                {
+                    self.answered.insert(id.to_owned());
+                    self.results.insert(id.to_owned(), value);
+                }
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let requests: Vec<serde_json::Value> = [
+                ("omitted", serde_json::json!({})),
+                ("valid-prefix", serde_json::json!({"prefix": "co"})),
+                ("valid-after", serde_json::json!({"after": "count"})),
+                ("prefix-number", serde_json::json!({"prefix": 123})),
+                ("prefix-null", serde_json::json!({"prefix": null})),
+                ("prefix-object", serde_json::json!({"prefix": {"x": 1}})),
+                ("prefix-array", serde_json::json!({"prefix": ["co"]})),
+                ("prefix-bool", serde_json::json!({"prefix": true})),
+                ("after-number", serde_json::json!({"after": 123})),
+                ("after-null", serde_json::json!({"after": null})),
+                ("after-object", serde_json::json!({"after": {"x": 1}})),
+            ]
+            .into_iter()
+            .filter(|(id, _)| !self.answered.contains(*id))
+            .map(|(id, args)| serde_json::json!({"id": id, "cap": "records.read", "args": args}))
+            .collect();
+            Ok(Some(
+                serde_json::json!({"v": 1, "requests": requests}).to_string(),
+            ))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            // The probe publishes the dataset itself: the actor
+            // replaces the published records with the program's own
+            // records() output between wants rounds, so a dataset
+            // injected from outside would not survive to the later
+            // requests. The keys are constant across rounds, which
+            // keeps every control deterministic.
+            Ok(Some(
+                serde_json::json!({
+                    "count": {"n": 1},
+                    "other": {"n": 1},
+                    "zebra": {"n": 1},
+                    "results": self.results,
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn records_read_rejects_a_non_string_prefix_or_after() {
+        // Oracle: issue #7899 — a supplied non-string prefix/after is
+        // bad_args, never a silent "omitted" that widens the read to
+        // every record or restarts pagination; omitted and string
+        // shapes behave exactly as before.
+        let mut core = world(128);
+        core.ledger
+            .set_granted(BTreeSet::from(["records.read".to_owned()]));
+        let mut actor =
+            WorldActor::for_test(core, Box::new(RecordsReadShapeProbe::default()), None);
+
+        actor.after_change().await;
+
+        let records = actor.records_sender.borrow().1.clone();
+        let results = &records["results"];
+        let keys = |id: &str| -> Vec<String> {
+            results[id]["value"]["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|entry| entry["key"].as_str().map(str::to_owned))
+                .collect()
+        };
+        // Controls: omitted reads everything, a string prefix scopes,
+        // a string after continues from the cursor.
+        assert_eq!(results["omitted"]["ok"], true, "{}", results["omitted"]);
+        assert_eq!(keys("omitted"), ["count", "other", "results", "zebra"]);
+        assert_eq!(keys("valid-prefix"), ["count"]);
+        assert_eq!(keys("valid-after"), ["other", "results", "zebra"]);
+        // Every present-but-non-string shape is bad_args.
+        for id in [
+            "prefix-number",
+            "prefix-null",
+            "prefix-object",
+            "prefix-array",
+            "prefix-bool",
+            "after-number",
+            "after-null",
+            "after-object",
+        ] {
+            assert_eq!(results[id]["ok"], false, "{id}: {}", results[id]);
+            assert_eq!(results[id]["error"], "bad_args", "{id}: {}", results[id]);
+        }
+    }
+
     /// #7942: `device.info` driven through the public `WorldHandle`
     /// spawn path — the manifest supplied at spawn comes back in the
     /// result event, twice (the cached copy serves repeated requests;
