@@ -750,5 +750,185 @@ class TestHttpsContext(unittest.TestCase):
                 self.assertTrue(ctx.check_hostname)
 
 
+UNKNOWN = ("unknown", "unknown", "unknown")
+
+
+class TestLockReadersWrongShapes(unittest.TestCase):
+    """#6847: every flake.lock reader is total over wrong shapes.
+
+    A non-object node, a null/non-object original/locked, a
+    non-string type/ref/rev, and a missing node/root are treated the
+    way discover_inputs has always treated a missing node — the input
+    is skipped / reported unknown — never a raw AttributeError /
+    TypeError / KeyError. The mid-run case matters most: locked.rev
+    as a number passes discovery (which never reads it) and used to
+    crash get_input_info inside the execution loop, after earlier
+    inputs had already been updated.
+    """
+
+    def _module(self, script_dir: Path):
+        return runpy.run_path(str(script_dir / "update-nixpkgs-inputs.py"))
+
+    def _lock(self, node, root_inputs=None, nodes_extra=None):
+        nodes = {"root": {"inputs": root_inputs or {"nixpkgs": "nixpkgs-node"}}}
+        if node is not _MISSING:
+            nodes["nixpkgs-node"] = node
+        if nodes_extra:
+            nodes.update(nodes_extra)
+        return {"nodes": nodes, "root": "root", "version": 7}
+
+    def _readers(self, mod):
+        return (
+            mod["discover_inputs"],
+            mod["get_input_info"],
+            mod["get_input_ref"],
+            mod["get_locked_rev"],
+        )
+
+    def test_well_formed_lock_unchanged_in_both_copies(self):
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                discover, info, ref, locked_rev = self._readers(self._module(script_dir))
+                self.assertEqual(discover(FLAKE_LOCK, None), ["nixpkgs"])
+                self.assertEqual(
+                    info(FLAKE_LOCK, "nixpkgs"),
+                    ("0123456789ab", "github:NixOS/nixpkgs", "(default)"),
+                )
+                self.assertIsNone(ref(FLAKE_LOCK, "nixpkgs"))
+                self.assertEqual(
+                    locked_rev(FLAKE_LOCK, "nixpkgs"),
+                    "0123456789abcdef0123456789abcdef01234567",
+                )
+
+    def test_wrong_shape_nodes_are_skipped_in_both_copies(self):
+        good_original = {"type": "github", "owner": "NixOS", "repo": "nixpkgs"}
+        good_locked = {"type": "github", "rev": "a" * 40}
+        # (node, discover, info, ref, locked_rev)
+        cases = {
+            "node is a string": ("nixpkgs-node", [], UNKNOWN, None, None),
+            "node is null": (None, [], UNKNOWN, None, None),
+            "node is a list": (["nixpkgs"], [], UNKNOWN, None, None),
+            "node missing from nodes": (_MISSING, [], UNKNOWN, None, None),
+            # original unusable: discovery cannot match, but the
+            # locked entry still reports (the readers' original ->
+            # locked fallback chains), with owner/repo unknown.
+            "original is null": (
+                {"original": None, "locked": good_locked},
+                [],
+                ("aaaaaaaaaaaa", "github:?/?", "(default)"),
+                None,
+                "a" * 40,
+            ),
+            "original is a string": (
+                {"original": "github", "locked": good_locked},
+                [],
+                ("aaaaaaaaaaaa", "github:?/?", "(default)"),
+                None,
+                "a" * 40,
+            ),
+            "original.type is a number": (
+                {"original": {**good_original, "type": 7}, "locked": good_locked},
+                [],
+                ("aaaaaaaaaaaa", "github:NixOS/nixpkgs", "(default)"),
+                None,
+                "a" * 40,
+            ),
+            # locked unusable: discovery matches on original; the rev
+            # readers report unknown/None instead of crashing.
+            "locked is null": (
+                {"original": good_original, "locked": None},
+                ["nixpkgs"],
+                ("unknown", "github:NixOS/nixpkgs", "(default)"),
+                None,
+                None,
+            ),
+        }
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                discover, info, ref, locked_rev = self._readers(self._module(script_dir))
+                for name, (node, want_discover, want_info, want_ref, want_rev) in cases.items():
+                    with self.subTest(shape=name):
+                        lock = self._lock(node)
+                        self.assertEqual(discover(lock, None), want_discover)
+                        self.assertEqual(info(lock, "nixpkgs"), want_info)
+                        self.assertEqual(ref(lock, "nixpkgs"), want_ref)
+                        self.assertEqual(locked_rev(lock, "nixpkgs"), want_rev)
+
+    def test_non_string_rev_never_crashes_the_execution_loop_readers(self):
+        # The dangerous shape: discovery passes it (rev is not read
+        # there), so get_input_info/get_locked_rev must not crash
+        # when the execution loop reaches this input.
+        node = {
+            "original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs"},
+            "locked": {"type": "github", "rev": 123},
+        }
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                discover, info, ref, locked_rev = self._readers(self._module(script_dir))
+                lock = self._lock(node)
+                self.assertEqual(discover(lock, None), ["nixpkgs"])
+                self.assertIsNone(locked_rev(lock, "nixpkgs"))
+                rev, url, _ = info(lock, "nixpkgs")
+                self.assertEqual(rev, "unknown")
+                self.assertEqual(url, "github:NixOS/nixpkgs")
+
+    def test_non_string_ref_is_unclassifiable_in_both_copies(self):
+        node = {
+            "original": {
+                "type": "github",
+                "owner": "NixOS",
+                "repo": "nixpkgs",
+                "ref": 7,
+            },
+            "locked": {"type": "github", "rev": "a" * 40},
+        }
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                discover, info, ref, locked_rev = self._readers(self._module(script_dir))
+                lock = self._lock(node)
+                self.assertEqual(discover(lock, None), [])
+                self.assertEqual(discover(lock, "master"), [])
+                self.assertIsNone(ref(lock, "nixpkgs"))
+
+    def test_missing_root_and_missing_nodes_in_both_copies(self):
+        locks = (
+            {"nodes": {"nixpkgs-node": {"original": {}}}},
+            {"root": "root", "version": 7},
+            {"nodes": None},
+            {"nodes": {"root": None}},
+            {"nodes": {"root": {"inputs": None}}},
+            ["not", "an", "object"],
+        )
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                discover, info, ref, locked_rev = self._readers(self._module(script_dir))
+                for lock in locks:
+                    self.assertEqual(discover(lock, None), [])
+                    self.assertEqual(
+                        info(lock, "nixpkgs"), ("unknown", "unknown", "unknown")
+                    )
+                    self.assertIsNone(ref(lock, "nixpkgs"))
+                    self.assertIsNone(locked_rev(lock, "nixpkgs"))
+
+    def test_pin_input_refuses_a_wrong_shape_node_in_both_copies(self):
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                mod = self._module(script_dir)
+                tree = Path(tempfile.mkdtemp(prefix="uni-shape-pin-"))
+                (tree / "flake.lock").write_text(
+                    json.dumps(self._lock("nixpkgs-node"))
+                )
+                self.assertFalse(
+                    mod["pin_input"]("nixpkgs", tree, {"rev": "a" * 40})
+                )
+
+
+class _Missing:
+    pass
+
+
+_MISSING = _Missing()
+
+
 if __name__ == "__main__":
     unittest.main()
