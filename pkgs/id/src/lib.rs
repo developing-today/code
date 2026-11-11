@@ -267,6 +267,8 @@ pub mod world_doctor;
 #[cfg(feature = "world")]
 pub mod world_fixture;
 #[cfg(feature = "world")]
+mod session_host;
+
 pub mod world_hub;
 #[cfg(feature = "world")]
 pub use id_caps::world_limits;
