@@ -19,6 +19,7 @@ const unpackr = new Unpackr({ useRecords: false, structuredClone: true });
 
 const MSG_AUTH = 8;
 const MSG_AUTH_OK = 9;
+const MSG_NEW_VERSION = 7;
 const MSG_INIT = 0;
 
 /** Minimal WebSocket stand-in: records sent frames, lets the test drive
@@ -151,6 +152,60 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
     const second = FakeWebSocket.instances[1];
     second.open();
     expect(second.firstFrame()).toEqual([MSG_AUTH, "NEW_TOKEN_B"]);
+
+    conn.disconnect();
+  });
+
+  // Oracle (#7854): the frame-field validation contract — a
+  // refreshed token is adopted only when it is a non-empty string,
+  // and NEW_VERSION fires only for string hash/name. Malformed
+  // frames are dropped, leaving the current token untouched.
+  it.each([
+    ["numeric", 12345],
+    ["object", { token: "nested" }],
+  ])("AUTH_OK with a %s token is dropped and the reconnect re-sends the old token", (_kind, badToken) => {
+    const onTokenRefresh = vi.fn();
+    const conn = track(
+      initCollab("ws://example.test/collab", makeContainer(), "doc-1", "notes.md", "OLD_TOKEN_A", onTokenRefresh),
+    );
+
+    const first = FakeWebSocket.instances[0];
+    first.open();
+    first.deliver([MSG_AUTH_OK, "client-1", "alice", badToken]);
+    expect(onTokenRefresh).not.toHaveBeenCalled();
+
+    first.drop();
+    vi.advanceTimersByTime(1_000);
+    const second = FakeWebSocket.instances[1];
+    second.open();
+    expect(second.firstFrame()).toEqual([MSG_AUTH, "OLD_TOKEN_A"]);
+
+    conn.disconnect();
+  });
+
+  it("NEW_VERSION with a non-string hash is dropped; the string control fires", () => {
+    const onNewVersion = vi.fn();
+    const conn = track(
+      initCollab(
+        "ws://example.test/collab",
+        makeContainer(),
+        "doc-1",
+        "notes.md",
+        null,
+        undefined,
+        undefined,
+        undefined,
+        onNewVersion,
+      ),
+    );
+
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    socket.deliver([MSG_NEW_VERSION, { x: 1 }, "notes.md"]);
+    expect(onNewVersion).not.toHaveBeenCalled();
+
+    socket.deliver([MSG_NEW_VERSION, "abc123hash", "notes.md"]);
+    expect(onNewVersion).toHaveBeenCalledWith("abc123hash", "notes.md");
 
     conn.disconnect();
   });
