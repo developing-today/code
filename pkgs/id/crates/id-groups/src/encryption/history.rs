@@ -3,7 +3,7 @@
 //! A welcome carries the group secrets the joiner may read. `Full` carries every secret the adder
 //! holds, so the joiner reads the whole history. `Recent(n)` carries the newest `n`, so the joiner
 //! reads the last `n` epochs and no older ones. A world sets its mode in its policy
-//! ([`crate::groups::policy::History`]). The default is `full`.
+//! ([`id_store::policy::History`]). The default is `full`.
 //!
 //! An epoch is a group secret. Creating the group, a removal and an explicit update each mint one,
 //! and an add does not, so a window of `n` covers the last `n` rotations and not the last `n`
@@ -23,7 +23,7 @@ use p2panda_encryption::data_scheme::group_secret::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::groups::policy::History;
+use id_store::policy::History;
 
 /// How long a joiner waits for a member to answer a history request before it gives up (P4.6).
 pub const HISTORY_WAIT: Duration = Duration::from_secs(30);

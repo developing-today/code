@@ -80,6 +80,7 @@ impl WorldCommand {
             Self::SetFileScope { .. } => "SetFileScope",
             Self::PolicyInfo { .. } => "PolicyInfo",
             Self::Metrics { .. } => "Metrics",
+            Self::ProgramHealth { .. } => "ProgramHealth",
             Self::AdminEventHistory { .. } => "AdminEventHistory",
             Self::ReplicationFeed { .. } => "ReplicationFeed",
             Self::ReplicationCompact { .. } => "ReplicationCompact",
@@ -337,6 +338,15 @@ pub(crate) enum WorldCommand {
     /// recorded by the actor, the journal path, and the session layer.
     Metrics {
         reply: oneshot::Sender<MetricsSnapshot>,
+    },
+    /// Whether the program is still healthy: false once the actor has
+    /// latched a guest failure (an input, records, or wants call that
+    /// trapped). Answered in command order, and the run loop awaits
+    /// `after_change` after each command before receiving the next, so
+    /// a health query sent after an input observes that input's
+    /// post-input `after_change` outcome.
+    ProgramHealth {
+        reply: oneshot::Sender<bool>,
     },
     /// Admin-only consistent snapshot for replayable fixture export.
     AdminEventHistory {
@@ -2756,6 +2766,11 @@ impl WorldActor {
                 // falsify the audit actor. Participant-readable queries are
                 // not administrative actions and stay out of the audit trail.
                 let _ = reply.send(metrics);
+            }
+            WorldCommand::ProgramHealth { reply } => {
+                // No audit record, for the same reason as Metrics above:
+                // a participant-readable state query, not an admin action.
+                let _ = reply.send(self.program_healthy);
             }
             WorldCommand::AdminEventHistory { reply } => {
                 let result = (|| -> Result<AdminEventHistory> {

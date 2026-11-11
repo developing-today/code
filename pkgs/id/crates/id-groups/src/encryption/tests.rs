@@ -28,7 +28,7 @@ use super::*;
 use crate::groups::{
     Body, Create, Event, GroupView, Key, MemberOp, Policy, Role, Scheme, Template, fold,
 };
-use crate::rejection::Reason;
+use id_core::rejection::Reason;
 
 fn person(seed: u8) -> (Key, VerifyingKey) {
     let verifying = SigningKey::from_bytes(&[seed; 32]).verifying_key();
@@ -904,7 +904,7 @@ fn test_a_full_welcome_above_the_cap_is_split_and_reassembled() {
 fn test_a_welcome_within_one_frame_is_one_chunk() {
     let mut cast = Cast::new(&[1, 2, 3, 4]);
     let (add, _) = full_welcome(&mut cast, 2);
-    let chunks = split(&add, crate::world_session::MAX_FRAME_BYTES).expect("split");
+    let chunks = split(&add, id_core::frames::MAX_FRAME_BYTES).expect("split");
     assert_eq!(chunks.len(), 1);
     let mut joiner = Reassembly::default();
     assert!(joiner.push(&chunks[0]).expect("one chunk").is_some());
