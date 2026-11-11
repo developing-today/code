@@ -1,8 +1,10 @@
-"""Contract tests for the program-tending scaffold (issue #1352, slice 1/3).
+"""Contract tests for program-tending (issue #1352, slices 1+2 of 3).
 
-The scaffold is read-only by design: every section reports a verified
-no-action, the runner never fails on a per-repo fetch error, and the
-run log always covers all five sections with the hard-stop labels named.
+Slice 1 contracts: the scaffold sections report verified no-actions,
+the runner never fails on a per-repo fetch error, and the run log
+always covers all five sections with the hard-stop labels named.
+Slice 2 contracts: epics/roadmaps compute real actions in dry-run
+without writing anything, and live mode posts through _gh_write only.
 """
 
 import io
@@ -148,6 +150,271 @@ class GhApiAuthHeaderTest(unittest.TestCase):
                 pt._gh_api("/repos/x/y/issues")
         self.assertIsNone(captured["req"].get_header("Authorization"))
 
+
+
+
+class Slice2EpicsTest(unittest.TestCase):
+    """Slice 2 epics: child progress, silence check-ins, completion."""
+
+    NOW = None  # set in setUp
+
+    def setUp(self):
+        import datetime as dt
+
+        self.now = dt.datetime(2026, 11, 11, tzinfo=dt.timezone.utc)
+
+    def fake_api(self, epic, children, comments=None):
+        def api(path):
+            if "labels=epic" in path:
+                return [epic]
+            if "/comments" in path:
+                return comments or []
+            for number, child in children.items():
+                if path.endswith(f"/issues/{number}"):
+                    return [child]
+            return []
+
+        return api
+
+    def test_silent_epic_gets_planned_status_comment(self):
+        epic = {
+            "number": 100,
+            "title": "Epic A",
+            "updated_at": "2026-10-20T00:00:00Z",
+            "labels": [],
+            "body": "- [ ] #101 first child\n- [x] #102 done child",
+        }
+        children = {
+            101: {"number": 101, "state": "open", "title": "First", "labels": []},
+            102: {"number": 102, "state": "closed", "title": "Done", "labels": []},
+        }
+        with mock.patch.object(pt, "_gh_api", self.fake_api(epic, children)):
+            section = pt.section_epics(
+                ["developing-today/code"], False, self.now, 12
+            )
+        self.assertEqual(len(section["actions"]), 1)
+        self.assertEqual(section["actions"][0]["kind"], "epic-status-comment")
+        self.assertFalse(section["actions"][0]["live"])
+        entry = section["checked"][0]
+        self.assertEqual(entry["children"], {"total": 2, "open": 1, "closed": 1, "unverified": 0})
+        self.assertEqual(entry["body_vs_reality_mismatches"], 0)
+        self.assertGreaterEqual(entry["silent_days"], 7)
+
+    def test_body_vs_reality_mismatch_counted(self):
+        epic = {
+            "number": 100,
+            "title": "Epic A",
+            "updated_at": "2026-11-10T00:00:00Z",
+            "labels": [],
+            "body": "- [x] #101 claimed done but open",
+        }
+        children = {
+            101: {"number": 101, "state": "open", "title": "First", "labels": []},
+        }
+        with mock.patch.object(pt, "_gh_api", self.fake_api(epic, children)):
+            section = pt.section_epics(
+                ["developing-today/code"], False, self.now, 12
+            )
+        self.assertEqual(section["checked"][0]["body_vs_reality_mismatches"], 1)
+        self.assertEqual(section["actions"], [])
+
+    def test_all_children_closed_proposes_completion(self):
+        epic = {
+            "number": 100,
+            "title": "Epic A",
+            "updated_at": "2026-11-10T00:00:00Z",
+            "labels": [],
+            "body": "- [x] #102 done child",
+        }
+        children = {
+            102: {"number": 102, "state": "closed", "title": "Done", "labels": []},
+        }
+        with mock.patch.object(pt, "_gh_api", self.fake_api(epic, children)):
+            section = pt.section_epics(
+                ["developing-today/code"], False, self.now, 12
+            )
+        self.assertEqual(len(section["actions"]), 1)
+        self.assertEqual(section["actions"][0]["kind"], "epic-completion-comment")
+
+    def test_hard_stop_epic_skipped(self):
+        epic = {
+            "number": 100,
+            "title": "Epic A",
+            "updated_at": "2026-10-01T00:00:00Z",
+            "labels": [{"name": "held"}],
+            "body": "- [ ] #101 first child",
+        }
+        with mock.patch.object(pt, "_gh_api", self.fake_api(epic, {})):
+            section = pt.section_epics(
+                ["developing-today/code"], False, self.now, 12
+            )
+        self.assertEqual(section["actions"], [])
+        self.assertIn("hard-stop", section["checked"][0]["disposition"])
+
+    def test_recently_tended_epic_skipped(self):
+        epic = {
+            "number": 100,
+            "title": "Epic A",
+            "updated_at": "2026-10-20T00:00:00Z",
+            "labels": [],
+            "body": "- [ ] #101 first child",
+        }
+        children = {
+            101: {"number": 101, "state": "open", "title": "First", "labels": []},
+        }
+        comments = [
+            {
+                "body": "check-in <!-- program-tending:epics -->",
+                "created_at": "2026-11-10T00:00:00Z",
+            }
+        ]
+        with mock.patch.object(
+            pt, "_gh_api", self.fake_api(epic, children, comments)
+        ):
+            section = pt.section_epics(
+                ["developing-today/code"], False, self.now, 12
+            )
+        self.assertEqual(section["actions"], [])
+        self.assertIn("tended within 7 days", section["checked"][0]["disposition"])
+
+    def test_live_epic_comment_posts(self):
+        epic = {
+            "number": 100,
+            "title": "Epic A",
+            "updated_at": "2026-10-20T00:00:00Z",
+            "labels": [],
+            "body": "- [ ] #101 first child",
+        }
+        children = {
+            101: {"number": 101, "state": "open", "title": "First", "labels": []},
+        }
+        with mock.patch.object(pt, "_gh_api", self.fake_api(epic, children)):
+            with mock.patch.object(
+                pt, "_gh_write", return_value={"id": 555}
+            ) as write:
+                section = pt.section_epics(
+                    ["developing-today/code"], True, self.now, 12
+                )
+        self.assertTrue(section["actions"][0]["live"])
+        self.assertEqual(section["actions"][0]["comment_id"], 555)
+        self.assertIn("/issues/100/comments", write.call_args[0][0])
+
+
+class Slice2RoadmapsTest(unittest.TestCase):
+    """Slice 2 roadmaps: certain drift by PR, ambiguous drift flagged."""
+
+    ROADMAP = (
+        "# Roadmap\n"
+        "## Now\n"
+        "1. Landed thing (#201).\n"
+        "2. Mixed thing (#202, #203).\n"
+        "3. Open thing (#203).\n"
+        "## Done\n"
+        "- Finished (#204).\n"
+        "- Wrongly done (#203).\n"
+    )
+
+    def setUp(self):
+        import datetime as dt
+        import tempfile
+
+        self.now = dt.datetime(2026, 11, 11, tzinfo=dt.timezone.utc)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "ROADMAP.md").write_text(self.ROADMAP)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fake_api(self, path):
+        if "state=all" in path:
+            return [
+                {"number": 201, "state": "closed"},
+                {"number": 202, "state": "closed"},
+                {"number": 203, "state": "open"},
+                {"number": 204, "state": "closed"},
+            ]
+        return []
+
+    def test_drift_classification(self):
+        with mock.patch.object(pt, "_gh_api", self.fake_api):
+            certain, ambiguous = pt._roadmap_drift(self.root)
+        self.assertEqual(len(certain), 1)
+        self.assertIn("Landed thing", certain[0]["text"])
+        reasons = sorted(e["reason"] for e in ambiguous)
+        self.assertEqual(len(ambiguous), 2)
+        self.assertIn("forward item mixes closed and open refs", reasons)
+        self.assertIn("Done-section item references an open issue", reasons)
+
+    def test_dry_run_plans_without_touching_files(self):
+        with mock.patch.object(pt, "_gh_api", self.fake_api):
+            section = pt.section_roadmaps(
+                ["developing-today/code"], False, self.now, 12, self.root
+            )
+        kinds = sorted(a["kind"] for a in section["actions"])
+        self.assertEqual(kinds, ["roadmap-drift-flag", "roadmap-drift-pr"])
+        pr_action = next(
+            a for a in section["actions"] if a["kind"] == "roadmap-drift-pr"
+        )
+        self.assertEqual(pr_action["items_removed"], 1)
+        self.assertFalse(pr_action["live"])
+        self.assertEqual((self.root / "ROADMAP.md").read_text(), self.ROADMAP)
+
+    def test_live_flag_posts_comment_and_label(self):
+        calls = []
+
+        def fake_write(path, payload):
+            calls.append(path)
+            return {"id": 777}
+
+        with mock.patch.object(pt, "_gh_api", self.fake_api):
+            with mock.patch.object(pt, "_gh_write", fake_write):
+                with mock.patch.object(
+                    pt,
+                    "_open_drift_pr",
+                    return_value={"kind": "roadmap-drift-pr", "live": True},
+                ):
+                    section = pt.section_roadmaps(
+                        ["developing-today/code"], True, self.now, 12, self.root
+                    )
+        flag = next(
+            a for a in section["actions"] if a["kind"] == "roadmap-drift-flag"
+        )
+        self.assertTrue(flag["live"])
+        self.assertEqual(flag["comment_id"], 777)
+        self.assertTrue(any("/comments" in c for c in calls))
+        self.assertTrue(any("/labels" in c for c in calls))
+
+    def test_remove_lines(self):
+        target = self.root / "ROADMAP.md"
+        pt._remove_lines(target, {3})
+        self.assertNotIn("Landed thing", target.read_text())
+        self.assertIn("Open thing", target.read_text())
+
+
+class GhApiSingleObjectTest(unittest.TestCase):
+    """_gh_api returns a one-item list for single-object endpoints."""
+
+    def test_dict_response_wrapped(self):
+        class FakeResp:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b'{"number": 7, "state": "open"}'
+
+        with mock.patch.object(
+            pt.urllib.request, "urlopen", return_value=FakeResp()
+        ):
+            self.assertEqual(
+                pt._gh_api("/repos/x/y/issues/7"),
+                [{"number": 7, "state": "open"}],
+            )
 
 
 if __name__ == "__main__":
