@@ -21,6 +21,13 @@
  * stored row's (an equal timestamp re-applies, keeping redelivery
  * idempotent; a NULL stored timestamp — a comment-seeded row — always
  * accepts the first full snapshot).
+ *
+ * The agent-note pointer follows the same discipline by comment id
+ * (GitHub comment ids are issued in creation order): an older or
+ * redelivered note never replaces a newer stored pointer. An issues
+ * "deleted" delivery removes the mirror row outright: a deleted
+ * issue must leave the read model, not be re-upserted by its own
+ * deletion event (projector precedent, #4210).
  */
 import { Turso, iArg, tArg, type TursoArg } from "./turso";
 import { queueNow, type SinkEnv } from "./sink";
@@ -241,6 +248,16 @@ export async function mirrorIssueEvent(
   payload: Obj,
   repo: string,
 ): Promise<void> {
+  if (payload.action === "deleted") {
+    const issue = (payload.issue ?? {}) as Obj;
+    await mirrorBatch(env, "issues", repo, [
+      {
+        sql: "DELETE FROM github_mirror_issues WHERE repo = ? AND number = ?",
+        args: [tArg(repo), iArg(num(issue, "number"))],
+      },
+    ]);
+    return;
+  }
   const row = buildIssueRow(
     payload,
     repo,
@@ -340,7 +357,10 @@ export async function mirrorPrEvent(
 
 /**
  * Apply an `issue_comment` payload: refresh the comments count and, when
- * the comment is an agent note, the latest-agent-note pointer. Only the
+ * the comment is an agent note, the latest-agent-note pointer — replaced
+ * only when the incoming note is at least as new as the stored one
+ * (comment ids are creation order), so a delayed or redelivered older
+ * note never overwrites the pointer to a newer note. Only the
  * comment fields move — title/state stay with the issues/PR events and
  * the backfill sweep. A row the mirror has never seen is seeded minimal
  * (the sweep fills the rest).
@@ -362,12 +382,24 @@ export async function mirrorCommentEvent(
     },
     {
       sql: `UPDATE ${table} SET comments = ?, mirrored_at = ?,
-              latest_agent_note_id = COALESCE(?, latest_agent_note_id),
-              latest_agent_note_url = COALESCE(?, latest_agent_note_url)
+              latest_agent_note_id = CASE
+                WHEN ? IS NOT NULL
+                 AND (latest_agent_note_id IS NULL
+                      OR ? >= latest_agent_note_id)
+                THEN ? ELSE latest_agent_note_id END,
+              latest_agent_note_url = CASE
+                WHEN ? IS NOT NULL
+                 AND (latest_agent_note_id IS NULL
+                      OR ? >= latest_agent_note_id)
+                THEN ? ELSE latest_agent_note_url END
             WHERE repo = ? AND number = ?`,
       args: [
         iArg(touch.comments),
         tArg(queueNow()),
+        iArg(touch.agentNoteId),
+        iArg(touch.agentNoteId),
+        iArg(touch.agentNoteId),
+        iArg(touch.agentNoteId),
         iArg(touch.agentNoteId),
         tArg(touch.agentNoteUrl),
         tArg(touch.repo),

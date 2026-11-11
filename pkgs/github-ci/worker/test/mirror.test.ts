@@ -261,13 +261,64 @@ describe("mirror writers (#8580)", () => {
     const sql = stmts.map((s) => s.sql).join("\n");
     expect(sql).toContain("ON CONFLICT(repo, number) DO NOTHING");
     expect(sql).toContain("UPDATE github_mirror_issues SET comments");
-    expect(sql).toContain("latest_agent_note_id = COALESCE");
+    expect(sql).toContain("latest_agent_note_id = CASE");
+    expect(sql).toContain("OR ? >= latest_agent_note_id");
     const update = stmts.find((s) =>
       s.sql.startsWith("UPDATE github_mirror_issues"),
     );
     const values = (update?.args ?? []).map((a) => a.value);
     expect(values).toContain("777");
     expect(values).toContain("4");
+  });
+
+  it("mirrorIssueEvent deletes the row on an issues deleted delivery", async () => {
+    const stmts = capturePipeline();
+    await mirrorIssueEvent(
+      env,
+      { ...issuePayload, action: "deleted" },
+      REPO,
+    );
+    const sql = stmts.map((s) => s.sql).join("\n");
+    // A deleted issue leaves the read model (projector precedent, #4210):
+    // no upsert of its final snapshot, and the meta stamp still lands.
+    expect(sql).toContain(
+      "DELETE FROM github_mirror_issues WHERE repo = ? AND number = ?",
+    );
+    expect(sql).not.toContain("INSERT INTO github_mirror_issues");
+    expect(sql).toContain("INSERT INTO github_mirror_meta");
+    const del = stmts.find((s) => s.sql.startsWith("DELETE FROM"));
+    const values = (del?.args ?? []).map((a) => a.value);
+    expect(values).toContain(REPO);
+    expect(values).toContain("8580");
+  });
+
+  it("mirrorCommentEvent guards the note pointer by creation order", async () => {
+    const stmts = capturePipeline();
+    await mirrorCommentEvent(
+      env,
+      {
+        action: "created",
+        issue: { number: 8580, comments: 4 },
+        comment: {
+          id: 777,
+          html_url: "https://example.invalid/issues/8580#c777",
+          body: "🤖 **Agent note** · checkpoint\n<!-- agent-note:v1 agent=repo-worker-code -->",
+        },
+        repository: { full_name: REPO },
+      },
+      REPO,
+    );
+    const update = stmts.find((s) =>
+      s.sql.startsWith("UPDATE github_mirror_issues SET comments"),
+    );
+    // Both pointer fields move only when the incoming note id is at
+    // least the stored one, so an older redelivery cannot overwrite
+    // the pointer to a newer note.
+    expect(update?.sql).toContain("latest_agent_note_id = CASE");
+    expect(update?.sql).toContain("latest_agent_note_url = CASE");
+    expect(update?.sql).toContain("OR ? >= latest_agent_note_id");
+    const values = (update?.args ?? []).map((a) => a.value);
+    expect(values.filter((v) => v === "777")).toHaveLength(5);
   });
 
   it("mirrorCommentEvent clears a pointer naming the deleted note", async () => {
@@ -294,7 +345,7 @@ describe("mirror writers (#8580)", () => {
     expect(clearValues).toContain("777");
     expect(clearValues).toContain("8580");
     // The comments update itself assigns no pointer for a deletion:
-    // its COALESCE note args carry no value.
+    // its CASE note args carry no value.
     const update = stmts.find((s) =>
       s.sql.startsWith("UPDATE github_mirror_issues SET comments"),
     );
