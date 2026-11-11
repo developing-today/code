@@ -147,6 +147,14 @@ pub struct ServeInfo {
     /// Defaults to empty so lock files written before #2145 still parse.
     #[serde(default)]
     pub web_bindings: Vec<String>,
+    /// Process start time of the serve instance (Linux: /proc/<pid>/stat
+    /// field 22, clock ticks since boot), tying the lock to the exact
+    /// process incarnation that wrote it (#3040). Defaults to None so
+    /// lock files written before this field still parse; None also on
+    /// platforms where the start time cannot be read — those locks fall
+    /// back to PID-existence liveness only.
+    #[serde(default)]
+    pub start_time: Option<u64>,
 }
 
 impl ServeInfo {
@@ -184,7 +192,7 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
     let info: ServeInfo = serde_json::from_str(&contents).ok()?;
 
     // Check if process is still alive
-    if !is_process_alive(info.pid) {
+    if !is_process_alive(info.pid, info.start_time) {
         // Stale lock file - remove it
         let _ = afs::remove_file(SERVE_LOCK).await;
         return None;
@@ -208,7 +216,40 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
 /// `true` if the process exists, `false` otherwise.
 #[allow(clippy::cast_possible_wrap)] // The Unix branch validates the PID before casting.
 #[allow(unsafe_code)] // Required for libc::kill
-pub fn is_process_alive(pid: u32) -> bool {
+/// Start time of a process on Linux (/proc/<pid>/stat field 22:
+/// clock ticks since boot at which the process started). Together
+/// with the PID this identifies one process incarnation: a reused
+/// PID has a different start time. Returns None where the value
+/// cannot be read (non-Linux, or the process is already gone).
+#[cfg(target_os = "linux")]
+fn get_process_start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // comm (field 2) is parenthesised and may contain spaces or parens;
+    // the remaining fields follow the final ')'. starttime is field 22
+    // overall, i.e. index 19 of the fields after comm.
+    let after_comm = &stat[stat.rfind(')')? + 1..];
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    fields.get(19).and_then(|f| f.parse().ok())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn get_process_start_time(_pid: u32) -> Option<u64> {
+    None
+}
+
+pub fn is_process_alive(pid: u32, expected_start_time: Option<u64>) -> bool {
+    // #3040: a recorded start time that does not match the process now
+    // holding the PID means the PID was reused by an unrelated process;
+    // the lock is stale no matter what the existence probe says. When
+    // either side has no start time (old lock, non-Linux), fall back
+    // to existence only.
+    if let Some(expected) = expected_start_time {
+        if let Some(actual) = get_process_start_time(pid) {
+            if actual != expected {
+                return false;
+            }
+        }
+    }
     #[cfg(unix)]
     {
         // PIDs read from the serve lock are untrusted u32 values. Zero checks
@@ -263,6 +304,7 @@ pub async fn create_serve_lock(
         addrs: addrs.iter().map(ToString::to_string).collect(),
         web_port,
         web_bindings,
+        start_time: get_process_start_time(std::process::id()),
     };
     let contents = serde_json::to_string_pretty(&info)?;
     afs::write(SERVE_LOCK, contents).await?;
@@ -3220,14 +3262,29 @@ mod tests {
     #[test]
     fn test_is_process_alive_current_process() {
         let pid = std::process::id();
-        assert!(is_process_alive(pid));
+        assert!(is_process_alive(pid, get_process_start_time(pid)));
+    }
+
+    #[test]
+    fn test_is_process_alive_reused_pid() {
+        // #3040: this live process holding the PID, but a lock recording
+        // a different start time names a dead incarnation of the PID —
+        // the answer must be stale (false), not alive. Linux-only: the
+        // start time is read from /proc there.
+        #[cfg(target_os = "linux")]
+        {
+            let pid = std::process::id();
+            let actual = get_process_start_time(pid).expect("own start time is readable");
+            assert!(is_process_alive(pid, Some(actual)));
+            assert!(!is_process_alive(pid, Some(actual + 1)));
+        }
     }
 
     #[test]
     fn test_is_process_alive_pid_zero() {
         #[cfg(unix)]
         {
-            assert!(!is_process_alive(0));
+            assert!(!is_process_alive(0, None));
         }
     }
 
@@ -3235,8 +3292,8 @@ mod tests {
     fn test_is_process_alive_pid_out_of_i32_range() {
         #[cfg(unix)]
         {
-            assert!(!is_process_alive(i32::MAX as u32 + 1));
-            assert!(!is_process_alive(u32::MAX));
+            assert!(!is_process_alive(i32::MAX as u32 + 1, None));
+            assert!(!is_process_alive(u32::MAX, None));
         }
     }
 
@@ -3246,7 +3303,7 @@ mod tests {
         // Note: On non-Unix this always returns true
         #[cfg(unix)]
         {
-            assert!(!is_process_alive(999_999_999));
+            assert!(!is_process_alive(999_999_999, None));
         }
     }
 
@@ -3260,7 +3317,7 @@ mod tests {
         #[cfg(unix)]
         {
             assert!(
-                is_process_alive(1),
+                is_process_alive(1, None),
                 "pid 1 exists and must read as alive (EPERM is not death)"
             );
         }
@@ -3279,6 +3336,7 @@ mod tests {
             addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:8080".to_owned()],
             web_port: Some(3000),
             web_bindings: vec!["127.0.0.1:3000".to_owned()],
+            start_time: None,
         };
 
         assert_eq!(info.node_id, node_id.to_string());
@@ -3300,6 +3358,7 @@ mod tests {
             addrs: vec!["127.0.0.1:8080".to_owned()],
             web_port: None,
             web_bindings: Vec::new(),
+            start_time: None,
         };
 
         let cloned = info.clone();
@@ -3317,6 +3376,7 @@ mod tests {
             addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:9090".to_owned()],
             web_port: Some(3001),
             web_bindings: vec!["127.0.0.1:3001".to_owned(), "[::1]:3001".to_owned()],
+            start_time: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -3335,6 +3395,7 @@ mod tests {
             addrs: vec!["127.0.0.1:5555".to_owned()],
             web_port: None,
             web_bindings: Vec::new(),
+            start_time: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
