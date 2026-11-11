@@ -260,7 +260,11 @@ push_targets_main() {
     # (inline_collect) must strip each line first (Codex P2, PR
     # #8513 round 14): flattening first puts a closing bracket
     # that follows a comment inside that comment, and the filter
-    # it closes is silently discarded.
+    # it closes is silently discarded. Every filter-value path
+    # strips through this helper, never a quote-naive substitution
+    # (Codex P2, round 15): a # inside a quoted pattern is data,
+    # not a comment, and truncating there discards the rest of
+    # the filter.
     function strip_comment(str,   j, c, q) {
       q = ""
       for (j = 1; j <= length(str); j++) {
@@ -514,7 +518,7 @@ push_targets_main() {
       sub(/[[:space:]]+$/, "", subkey_a)
       val = substr(line, ind + 1)
       sub(/^[^:]*:[[:space:]]*/, "", val)
-      if (subkey_a == "branches" || subkey_a == "branches-ignore" || subkey_a == "tags" || subkey_a == "tags-ignore") sub(/[[:space:]]#.*/, "", val)
+      if (subkey_a == "branches" || subkey_a == "branches-ignore" || subkey_a == "tags" || subkey_a == "tags-ignore") val = strip_comment(val)
       if ((subkey_a == "branches" || subkey_a == "branches-ignore") && flow_unclosed(val)) anchor_flow_key = subkey_a
       if (subkey_a == "branches") {
         anchor_seen_branches[cur_anchor] = 1
@@ -528,8 +532,7 @@ push_targets_main() {
       next
     }
     !inpush && cur_anchor != "" && anchor_flow_key != "" {
-      seg = $0
-      sub(/[[:space:]]#.*/, "", seg)
+      seg = strip_comment($0)
       k = unquoted_close(seg)
       if (k > 0) {
         seg = substr(seg, 1, k - 1)
@@ -553,7 +556,7 @@ push_targets_main() {
       }
       if (ind != anchor_seq_indent) next
       sub(/^ +-[[:space:]]*/, "", item)
-      if (subkey_a == "branches" || subkey_a == "branches-ignore" || subkey_a == "tags" || subkey_a == "tags-ignore") sub(/[[:space:]]#.*/, "", item)
+      if (subkey_a == "branches" || subkey_a == "branches-ignore" || subkey_a == "tags" || subkey_a == "tags-ignore") item = strip_comment(item)
       if (subkey_a == "branches") {
         anchor_seen_branches[cur_anchor] = 1
         anchor_branches[cur_anchor] = anchor_branches[cur_anchor] " " clean(item)
@@ -579,7 +582,7 @@ push_targets_main() {
       sub(/[[:space:]]+$/, "", subkey)
       val = substr(line, ind + 1)
       sub(/^[^:]*:[[:space:]]*/, "", val)
-      if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", val)
+      if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") val = strip_comment(val)
       if ((subkey == "branches" || subkey == "branches-ignore") && flow_unclosed(val)) flow_key = subkey
       if (subkey == "branches") {
         seen_branches = 1
@@ -594,8 +597,7 @@ push_targets_main() {
       next
     }
     inpush && flow_key != "" {
-      seg = $0
-      sub(/[[:space:]]#.*/, "", seg)
+      seg = strip_comment($0)
       k = unquoted_close(seg)
       if (k > 0) {
         seg = substr(seg, 1, k - 1)
@@ -619,7 +621,7 @@ push_targets_main() {
       }
       if (ind != seq_indent) next
       sub(/^ +-[[:space:]]*/, "", item)
-      if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", item)
+      if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") item = strip_comment(item)
       if (subkey == "branches") {
         seen_branches = 1
         seen_branch_filter = 1

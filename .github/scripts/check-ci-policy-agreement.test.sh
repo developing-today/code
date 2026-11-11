@@ -911,6 +911,53 @@ if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-spaced_colon_inline.out
 fi
 echo "pass: inline branches with a spaced colon keeps the main leg waived"
 
+# Round-15 (Codex P2): a # inside a quoted filter pattern is
+# data, not a comment — truncating the value there discards the
+# rest of the filter, including a main entry that excludes or
+# includes main.
+build_tree "$TMP/filter-quoted_hash_ignore"
+wf_raw "$TMP/filter-quoted_hash_ignore" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore: ['release # marker', main]
+EOF
+bash "$SCRIPT" "$TMP/filter-quoted_hash_ignore" >"$TMP/filter-quoted_hash_ignore.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-quoted_hash_ignore.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-quoted_hash_ignore.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-quoted_hash_ignore.out"; then
+  echo "FAIL: a quoted # in branches-ignore discarded the main exclusion" >&2
+  exit 1
+fi
+echo "pass: a quoted hash in branches-ignore does not discard the main exclusion"
+
+build_tree "$TMP/filter-quoted_hash_branches"
+wf_raw "$TMP/filter-quoted_hash_branches" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: ["release # marker", main]
+EOF
+if bash "$SCRIPT" "$TMP/filter-quoted_hash_branches" >"$TMP/filter-quoted_hash_branches.out" 2>&1; then
+  echo "FAIL: checker missed branches including main after a quoted hash" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-quoted_hash_branches.out"
+echo "pass: a quoted hash in branches does not discard the main inclusion"
+
+build_tree "$TMP/filter-quoted_hash_anchor"
+wf_raw "$TMP/filter-quoted_hash_anchor" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch: &excl
+    branches-ignore: ['release # marker', main]
+  push: *excl
+EOF
+bash "$SCRIPT" "$TMP/filter-quoted_hash_anchor" >"$TMP/filter-quoted_hash_anchor.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-quoted_hash_anchor.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-quoted_hash_anchor.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-quoted_hash_anchor.out"; then
+  echo "FAIL: a quoted # in an anchored branches-ignore discarded the main exclusion" >&2
+  exit 1
+fi
+echo "pass: a quoted hash in an anchored branches-ignore does not discard the main exclusion"
+
 # Codex P1 regression on #8513: generated coverage for the parser.
 # Equivalent YAML representations of the same logical push filter
 # must yield the same verdict. Oracle: an independent Python
