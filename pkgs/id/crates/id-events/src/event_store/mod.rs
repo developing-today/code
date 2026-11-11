@@ -60,7 +60,7 @@ use redb::{
     ReadableTable, StorageError, TableDefinition, WriteTransaction,
 };
 
-use crate::chain::{self, Event};
+use id_store::chain::{self, Event};
 
 mod chat;
 mod claims;
@@ -72,7 +72,7 @@ pub mod sync;
 mod waiting_rows;
 mod writer_set;
 
-use crate::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
+use id_core::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
 pub use id_store::event_types::{Ingest, Refusal};
 use ingest::{is_present, is_proof_header, present_in};
 use waiting_rows::{Mirror, Row};
@@ -370,7 +370,7 @@ impl BlockList for EventStore {
     fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
         // A read error invents no block: the seam fails open, and the
         // store's error still surfaces on the store's own read paths.
-        EventStore::is_blocked(self, kind, value, crate::time::unix_ms()).unwrap_or(false)
+        EventStore::is_blocked(self, kind, value, id_core::time::unix_ms()).unwrap_or(false)
     }
 }
 
@@ -617,7 +617,7 @@ impl EventStore {
                 // `after`: the note it revises and the parent revisions it builds on are
                 // dependencies too, so a surviving revision keeps its note and its whole
                 // parent history alive through a prune (#3814).
-                if let Some(crate::notes::NoteOp::Revise {
+                if let Some(id_store::notes::NoteOp::Revise {
                     note,
                     parents: note_parents,
                     ..
@@ -631,7 +631,7 @@ impl EventStore {
                 // optional pinned revision are dependencies too, so a surviving link
                 // keeps them alive through a prune; otherwise rebuilding the link
                 // projection after the prune would fail with UnknownTarget (#3816).
-                if let Some(crate::note_links::NoteLinkOp::Assert {
+                if let Some(id_store::note_links::NoteLinkOp::Assert {
                     source,
                     revision,
                     target,
@@ -1423,7 +1423,7 @@ impl EventStore {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::chain::{ChainExt, sign};
+    use id_store::chain::{ChainExt, sign};
     use p2panda_core::SigningKey;
 
     fn key(n: u8) -> SigningKey {
