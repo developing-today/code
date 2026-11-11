@@ -690,6 +690,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checkpoint_carried_transfer_replays_after_install_on_restore() {
+        let (mut actor, _, _, _, _) = transfer_actor(b"entity".to_vec(), false);
+        let receipt = import(&mut actor).await.unwrap();
+
+        // Compact the import into a checkpoint: the transfer now sits in
+        // the checkpoint ledger (transfers), and its event never enters a
+        // restored replay on its own. A program install journaled after
+        // the checkpoint must still hand the transfer to the replacement
+        // when the journal is restored (#3902).
+        let install = WorldEvent {
+            sequence: receipt.event.sequence + 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "module-hash".to_owned(),
+                seed: 0,
+                provenance: None,
+                trust: None,
+            },
+        };
+        let restored = WorldCore::restore(
+            "source",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+            [
+                JournalEntry::Created {
+                    world_id: "source".to_owned(),
+                    version: JOURNAL_VERSION_REGION_HANDOFF,
+                },
+                JournalEntry::Checkpoint {
+                    sequence: receipt.event.sequence,
+                    module_hash: "module-hash".to_owned(),
+                    seed: 0,
+                    provenance: None,
+                    execution_profile: None,
+                    caps_ceiling: None,
+                    schedules: None,
+                    transfers: Some(vec![receipt.clone()]),
+                    lease: None,
+                    snapshot: "snapshot".to_owned(),
+                    events: Vec::new(),
+                    admin_history: None,
+                    open_presence: None,
+                },
+                JournalEntry::Committed { event: install },
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.handoff_transfers().len(), 1);
+        assert_eq!(
+            restored.replay,
+            vec![receipt.event.clone()],
+            "the checkpoint-carried import replays into the replacement after restore"
+        );
+    }
+
+    #[tokio::test]
     async fn install_publishes_records_recomputed_after_transfer_replay() {
         let (mut actor, _, journal, _, _) = transfer_actor(b"entity".to_vec(), true);
         assert!(import(&mut actor).await.is_err());

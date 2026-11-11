@@ -1064,13 +1064,17 @@ impl WorldCore {
                             // replacement program has not applied them,
                             // and dropping them would leave a stored
                             // receipt acknowledgable for a transfer the
-                            // current program never saw (#3902).
-                            let transfer_events: Vec<&WorldEvent> = core
+                            // current program never saw (#3902). Rebuild
+                            // the replay from the ledger instead of
+                            // filtering the events already replayed: a
+                            // transfer compacted into a checkpoint sits
+                            // in the ledger without ever entering the
+                            // replay, and filtering would lose it here.
+                            replay = core
                                 .handoff_transfers
                                 .iter()
-                                .map(|transfer| &transfer.event)
+                                .map(|transfer| transfer.event.clone())
                                 .collect();
-                            replay.retain(|event| transfer_events.contains(&event));
                         }
                         WorldEventKind::Input(_) => replay.push(event.clone()),
                         WorldEventKind::EntityInput { entity_ref, .. } => {
