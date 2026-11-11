@@ -22,9 +22,12 @@
 //!   first effective Explorer binding; with no Explorer listener
 //!   the publish fails before anything is saved.
 //! - **Unpublish:** atomically save the candidate set *before*
-//!   removing the live route or stopping the listener — those
-//!   in-process removals are non-failing, and a crash after the
-//!   save restarts from the new set, so the order is safe.
+//!   removing the live route or stopping the listener — a crash
+//!   after the save restarts from the new set, so the order is
+//!   safe. Listener closes are infallible; a mount removal that
+//!   fails (its contract: the route was not removed) restores
+//!   the pre-op registry in memory and on disk before the error
+//!   propagates, so the durable and live sets still agree.
 //! - **Restore (boot):** apply the persisted set through the same
 //!   resource path; a failure part-way rolls back what was applied
 //!   and fails loudly, matching slice 1's fail-loud load contract.
@@ -79,6 +82,12 @@ pub trait MountSink: Send {
     fn mount(&mut self, world: &str, path: &str) -> Result<()>;
 
     /// Remove the mount at `path`, restoring the Explorer route.
+    ///
+    /// Contract: an error means the mount was NOT removed — the
+    /// route is still live. The manager relies on this to keep the
+    /// persisted registry and the live set in agreement when a
+    /// removal fails (it restores the registry entry; see
+    /// [`PublicationManager::unpublish`]).
     fn unmount(&mut self, path: &str) -> Result<()>;
 }
 
@@ -234,6 +243,11 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
     /// candidate set cannot be persisted (the live set is then
     /// untouched).
     pub fn unpublish(&mut self, placement: &Placement) -> Result<Publication> {
+        // Snapshot for recovery: if removing the live mount fails
+        // after the candidate set has been persisted, the pre-op
+        // registry is restored (memory and disk) so the durable
+        // set and the live set never silently disagree.
+        let previous = self.registry.clone();
         let mut candidate = self.registry.clone();
         let removed = candidate.unpublish(placement)?;
         candidate
@@ -241,17 +255,39 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
             .context("persisting the publications registry")?;
         self.registry = candidate;
 
-        match placement {
+        // Act on the REMOVED record's placement, never the caller's
+        // spelling: the registry's match normalises spellings
+        // (`/arena/`, `//arena`) that canonicalize_mount_path
+        // rejects outright, and the stored placement is the
+        // canonical path publish saved. Resolving the caller's
+        // spelling here would fail after the removal was already
+        // persisted, stranding a live mount no registry names.
+        match &removed.placement {
             Placement::Listener { addr } => {
                 if let Some(listener) = self.listeners.remove(addr) {
                     listener.close();
                 }
             }
             Placement::PathMount { path } => {
-                let canonical = crate::publications::canonicalize_mount_path(path)?;
-                if self.mounted.iter().any(|mounted| mounted == &canonical) {
-                    self.mounts.unmount(&canonical)?;
-                    self.mounted.retain(|mounted| mounted != &canonical);
+                if self.mounted.iter().any(|mounted| mounted == path) {
+                    if let Err(error) = self.mounts.unmount(path) {
+                        // The sink's contract is that an error
+                        // means the route was NOT removed, so the
+                        // live set is unchanged: restore the durable
+                        // set to match it before propagating.
+                        let restored = previous.save(&self.registry_path).is_ok();
+                        self.registry = previous;
+                        return Err(error).context(format!(
+                            "removing the live mount at {path} failed; the publication \
+                             was restored to the registry{}",
+                            if restored {
+                                ""
+                            } else {
+                                " in memory (restoring it on disk also failed)"
+                            }
+                        ));
+                    }
+                    self.mounted.retain(|mounted| mounted != path);
                 }
             }
         }
@@ -315,13 +351,38 @@ mod tests {
     use crate::publications::KNOWN_EXPLORER_ROUTES;
     use std::sync::{Arc, Mutex};
 
-    #[derive(Default)]
     struct FakeState {
         next_port: u16,
         fail_addrs: Vec<SocketAddr>,
         closed: Vec<SocketAddr>,
         mounted: Vec<String>,
         unmounted: Vec<String>,
+        // Failure injection + live-state tracking for the model
+        // test: `live_listeners` / `live_mounts` are the CURRENT
+        // live sets (the `mounted` / `unmounted` logs above are
+        // append-only history).
+        explorer: bool,
+        fail_mounts: Vec<String>,
+        fail_unmounts: Vec<String>,
+        live_listeners: Vec<SocketAddr>,
+        live_mounts: Vec<String>,
+    }
+
+    impl Default for FakeState {
+        fn default() -> Self {
+            Self {
+                next_port: 0,
+                fail_addrs: Vec::new(),
+                closed: Vec::new(),
+                mounted: Vec::new(),
+                unmounted: Vec::new(),
+                explorer: true,
+                fail_mounts: Vec::new(),
+                fail_unmounts: Vec::new(),
+                live_listeners: Vec::new(),
+                live_mounts: Vec::new(),
+            }
+        }
     }
 
     struct FakeListener {
@@ -335,7 +396,9 @@ mod tests {
         }
 
         fn close(self: Box<Self>) {
-            self.state.lock().unwrap().closed.push(self.actual);
+            let mut state = self.state.lock().unwrap();
+            state.closed.push(self.actual);
+            state.live_listeners.retain(|addr| *addr != self.actual);
         }
     }
 
@@ -356,6 +419,7 @@ mod tests {
             } else {
                 addr
             };
+            state.live_listeners.push(actual);
             Ok(Box::new(FakeListener {
                 actual,
                 state: self.state.clone(),
@@ -365,21 +429,32 @@ mod tests {
 
     struct FakeMounts {
         state: Arc<Mutex<FakeState>>,
-        explorer: bool,
     }
 
     impl MountSink for FakeMounts {
         fn has_explorer(&self) -> bool {
-            self.explorer
+            self.state.lock().unwrap().explorer
         }
 
         fn mount(&mut self, _world: &str, path: &str) -> Result<()> {
-            self.state.lock().unwrap().mounted.push(path.to_string());
+            let mut state = self.state.lock().unwrap();
+            ensure!(
+                !state.fail_mounts.iter().any(|failed| failed == path),
+                "mount at {path} failed (fake)"
+            );
+            state.mounted.push(path.to_string());
+            state.live_mounts.push(path.to_string());
             Ok(())
         }
 
         fn unmount(&mut self, path: &str) -> Result<()> {
-            self.state.lock().unwrap().unmounted.push(path.to_string());
+            let mut state = self.state.lock().unwrap();
+            ensure!(
+                !state.fail_unmounts.iter().any(|failed| failed == path),
+                "unmount at {path} failed (fake): the route was not removed"
+            );
+            state.unmounted.push(path.to_string());
+            state.live_mounts.retain(|mounted| mounted != path);
             Ok(())
         }
     }
@@ -431,6 +506,7 @@ mod tests {
             registry: Registry,
             explorer: bool,
         ) -> PublicationManager<FakeFactory, FakeMounts> {
+            self.state.lock().unwrap().explorer = explorer;
             PublicationManager::new(
                 registry,
                 self.file.clone(),
@@ -443,7 +519,6 @@ mod tests {
                 },
                 FakeMounts {
                     state: self.state.clone(),
-                    explorer,
                 },
             )
         }
@@ -555,7 +630,6 @@ mod tests {
             },
             FakeMounts {
                 state: fx.state.clone(),
-                explorer: true,
             },
         );
         assert!(manager.publish(listener_pub("127.0.0.1:4001")).is_err());
@@ -632,5 +706,296 @@ mod tests {
                 .is_err()
         );
         fx.cleanup();
+    }
+
+    #[test]
+    fn unpublish_accepts_a_noncanonical_spelling_and_unmounts() {
+        // Regression pin for the PR #7195 Codex P2 (2026-11-11): the
+        // registry match normalises `/arena/`, but resolving that
+        // spelling after the removal was persisted used to fail,
+        // stranding a live mount no registry named.
+        let fx = Fixture::new("unpublish-spelling");
+        let mut manager = fx.manager(Registry::default(), true);
+        manager.publish(mount_pub("/arena", false)).unwrap();
+        let removed = manager
+            .unpublish(&Placement::PathMount {
+                path: "/arena/".to_string(),
+            })
+            .unwrap();
+        assert_eq!(
+            removed.placement,
+            Placement::PathMount {
+                path: "/arena".to_string()
+            }
+        );
+        assert_eq!(
+            fx.state.lock().unwrap().unmounted,
+            vec!["/arena".to_string()]
+        );
+        assert!(fx.state.lock().unwrap().live_mounts.is_empty());
+        assert!(manager.registry().publications.is_empty());
+        fx.cleanup();
+    }
+
+    #[test]
+    fn unpublish_unmount_failure_restores_the_publication() {
+        // Regression pin for the PR #7195 Codex P2 (2026-11-11): an
+        // unmount failure after the removal was persisted used to
+        // leave the route live but unnamed by any registry, and a
+        // retry then failed with "nothing published".
+        let fx = Fixture::new("unpublish-unmount-fails");
+        let mut manager = fx.manager(Registry::default(), true);
+        manager.publish(mount_pub("/arena", false)).unwrap();
+        fx.state
+            .lock()
+            .unwrap()
+            .fail_unmounts
+            .push("/arena".to_string());
+        assert!(
+            manager
+                .unpublish(&Placement::PathMount {
+                    path: "/arena".to_string(),
+                })
+                .is_err()
+        );
+        // Everything is exactly as it was before the failed call.
+        assert_eq!(manager.registry().publications.len(), 1);
+        assert_eq!(Registry::load(&fx.file).unwrap().publications.len(), 1);
+        assert_eq!(
+            fx.state.lock().unwrap().live_mounts,
+            vec!["/arena".to_string()]
+        );
+        // And a retry with the failure cleared succeeds.
+        fx.state.lock().unwrap().fail_unmounts.clear();
+        manager
+            .unpublish(&Placement::PathMount {
+                path: "/arena".to_string(),
+            })
+            .unwrap();
+        assert!(manager.registry().publications.is_empty());
+        assert!(fx.state.lock().unwrap().live_mounts.is_empty());
+        fx.cleanup();
+    }
+
+    // ---- Model-based state-machine coverage (PR #7195 Codex P1) ----
+    //
+    // Oracle: the module doc's transactional ordering, stated as a
+    // reference model — after EVERY operation the manager's
+    // registry, the on-disk registry, and the live listener/mount
+    // sets agree with the model, and a failed operation changes
+    // none of them. Generated publish/unpublish sequences run
+    // against bind, save, mount, and unmount failure injection.
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        PublishListener(usize),
+        PublishMount(usize),
+        UnpublishListener(usize),
+        UnpublishMount(usize, usize),
+        ToggleBindFail(usize),
+        ToggleMountFail(usize),
+        ToggleUnmountFail(usize),
+        ToggleSaveFail,
+        ToggleExplorer,
+    }
+
+    fn op_strategy() -> impl proptest::strategy::Strategy<Value = Op> {
+        use proptest::prelude::*;
+        prop_oneof![
+            (0..2usize).prop_map(Op::PublishListener),
+            (0..2usize).prop_map(Op::PublishMount),
+            (0..2usize).prop_map(Op::UnpublishListener),
+            (0..2usize, 0..3usize).prop_map(|(path, spelling)| Op::UnpublishMount(path, spelling)),
+            (0..2usize).prop_map(Op::ToggleBindFail),
+            (0..2usize).prop_map(Op::ToggleMountFail),
+            (0..2usize).prop_map(Op::ToggleUnmountFail),
+            Just(Op::ToggleSaveFail),
+            Just(Op::ToggleExplorer),
+        ]
+    }
+
+    fn toggle(list: &mut Vec<String>, value: &str) {
+        if let Some(position) = list.iter().position(|item| item == value) {
+            list.remove(position);
+        } else {
+            list.push(value.to_string());
+        }
+    }
+
+    fn run_model_case(ops: &[Op]) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let case = NEXT.fetch_add(1, Ordering::SeqCst);
+        let fx = Fixture::new(&format!("model-{case}"));
+        let mut manager = fx.manager(Registry::default(), true);
+
+        const LISTENER_ADDRS: [&str; 2] = ["127.0.0.1:4001", "127.0.0.1:4002"];
+        const MOUNT_PATHS: [&str; 2] = ["/arena", "/world"];
+        let mut desired: Vec<Publication> = Vec::new();
+        let mut save_broken = false;
+
+        for op in ops {
+            // Apply toggles to the fakes, and compute the model's
+            // prediction for manager operations from the documented
+            // contract — not from the manager's internals.
+            match op {
+                Op::ToggleBindFail(index) => {
+                    let addr: SocketAddr = LISTENER_ADDRS[*index].parse().unwrap();
+                    let mut state = fx.state.lock().unwrap();
+                    if let Some(position) = state.fail_addrs.iter().position(|item| *item == addr) {
+                        state.fail_addrs.remove(position);
+                    } else {
+                        state.fail_addrs.push(addr);
+                    }
+                }
+                Op::ToggleMountFail(index) => {
+                    toggle(
+                        &mut fx.state.lock().unwrap().fail_mounts,
+                        MOUNT_PATHS[*index],
+                    );
+                }
+                Op::ToggleUnmountFail(index) => {
+                    toggle(
+                        &mut fx.state.lock().unwrap().fail_unmounts,
+                        MOUNT_PATHS[*index],
+                    );
+                }
+                Op::ToggleSaveFail => {
+                    save_broken = !save_broken;
+                    // Break saves without touching the registry file
+                    // itself: save writes `<file>.tmp` first, and a
+                    // directory there makes the write fail.
+                    let temp = fx.file.with_extension("json.tmp");
+                    if save_broken {
+                        std::fs::create_dir_all(&temp).unwrap();
+                    } else {
+                        let _ = std::fs::remove_dir_all(&temp);
+                    }
+                }
+                Op::ToggleExplorer => {
+                    let mut state = fx.state.lock().unwrap();
+                    state.explorer = !state.explorer;
+                }
+                Op::PublishListener(index) => {
+                    let publication = listener_pub(LISTENER_ADDRS[*index]);
+                    let state = fx.state.lock().unwrap();
+                    let predicted = !desired.contains(&publication)
+                        && !state
+                            .fail_addrs
+                            .contains(&LISTENER_ADDRS[*index].parse::<SocketAddr>().unwrap())
+                        && !save_broken;
+                    drop(state);
+                    let result = manager.publish(publication.clone());
+                    assert_eq!(result.is_ok(), predicted, "op {op:?}");
+                    if predicted {
+                        desired.push(publication);
+                    }
+                }
+                Op::PublishMount(index) => {
+                    let publication = mount_pub(MOUNT_PATHS[*index], true);
+                    let state = fx.state.lock().unwrap();
+                    let predicted = !desired.contains(&publication)
+                        && state.explorer
+                        && !state
+                            .fail_mounts
+                            .iter()
+                            .any(|path| path == MOUNT_PATHS[*index])
+                        && !save_broken;
+                    drop(state);
+                    let result = manager.publish(publication.clone());
+                    assert_eq!(result.is_ok(), predicted, "op {op:?}");
+                    if predicted {
+                        desired.push(publication);
+                    }
+                }
+                Op::UnpublishListener(index) => {
+                    let placement = Placement::Listener {
+                        addr: LISTENER_ADDRS[*index].parse().unwrap(),
+                    };
+                    let position = desired
+                        .iter()
+                        .position(|existing| existing.placement == placement);
+                    let predicted = position.is_some() && !save_broken;
+                    let result = manager.unpublish(&placement);
+                    assert_eq!(result.is_ok(), predicted, "op {op:?}");
+                    if predicted {
+                        desired.remove(position.unwrap());
+                    }
+                }
+                Op::UnpublishMount(index, spelling) => {
+                    let canonical = MOUNT_PATHS[*index];
+                    let spelled = match spelling {
+                        0 => canonical.to_string(),
+                        1 => format!("{canonical}/"),
+                        _ => format!("/{canonical}"),
+                    };
+                    let placement = Placement::PathMount { path: spelled };
+                    let position = desired.iter().position(|existing| {
+                        existing.placement
+                            == Placement::PathMount {
+                                path: canonical.to_string(),
+                            }
+                    });
+                    let unmount_fails = fx
+                        .state
+                        .lock()
+                        .unwrap()
+                        .fail_unmounts
+                        .iter()
+                        .any(|path| path == canonical);
+                    let predicted = position.is_some() && !save_broken && !unmount_fails;
+                    let result = manager.unpublish(&placement);
+                    assert_eq!(result.is_ok(), predicted, "op {op:?}");
+                    if predicted {
+                        desired.remove(position.unwrap());
+                    }
+                }
+            }
+
+            // The invariant, after every operation: the manager's
+            // registry, the on-disk registry, and the live sets all
+            // equal the model.
+            assert_eq!(manager.registry().publications, desired, "after {op:?}");
+            assert_eq!(
+                Registry::load(&fx.file).unwrap().publications,
+                desired,
+                "disk after {op:?}"
+            );
+            let state = fx.state.lock().unwrap();
+            let mut live_addrs = state.live_listeners.clone();
+            live_addrs.sort();
+            let mut model_addrs: Vec<SocketAddr> = desired
+                .iter()
+                .filter_map(|publication| match &publication.placement {
+                    Placement::Listener { addr } => Some(*addr),
+                    Placement::PathMount { .. } => None,
+                })
+                .collect();
+            model_addrs.sort();
+            assert_eq!(live_addrs, model_addrs, "live listeners after {op:?}");
+            let model_mounts: Vec<String> = desired
+                .iter()
+                .filter_map(|publication| match &publication.placement {
+                    Placement::PathMount { path } => Some(path.clone()),
+                    Placement::Listener { .. } => None,
+                })
+                .collect();
+            assert_eq!(state.live_mounts, model_mounts, "live mounts after {op:?}");
+            assert_eq!(manager.list().len(), desired.len(), "list after {op:?}");
+        }
+        fx.cleanup();
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        #[test]
+        fn manager_matches_the_reference_model(
+            ops in proptest::collection::vec(op_strategy(), 1..14)
+        ) {
+            run_model_case(&ops);
+        }
     }
 }
