@@ -610,7 +610,10 @@ fn run_serve_role(role: ServeRole, config: &fleet_config::Config) -> i32 {
         ServeRole::Proxy => {
             #[cfg(feature = "proxy-serve")]
             {
-                fleet_proxy::serve::run(config)
+                // Co-hosted: the proxy's idle-exit is disabled so an
+                // idle proxy cannot exit the shared process (#8394
+                // Codex P1); the supervisor above owns the lifetime.
+                fleet_proxy::serve::run_cohosted(config)
             }
             #[cfg(not(feature = "proxy-serve"))]
             {

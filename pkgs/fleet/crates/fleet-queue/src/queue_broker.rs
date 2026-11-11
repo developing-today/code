@@ -1254,12 +1254,18 @@ pub fn run() -> i32 {
                     token: secrets_token.clone(),
                     agent: agent.clone(),
                 })]);
-                match resolver.resolve(crate::turso_queue::TURSO_TOKEN_SECRET_NAME) {
+                match resolve_with_startup_retry(
+                    &resolver,
+                    crate::turso_queue::TURSO_TOKEN_SECRET_NAME,
+                    Duration::from_secs(30),
+                ) {
                     Ok(v) => v.expose().to_string(),
                     Err(e) => {
                         crate::log::info(
                             "queue-broker",
-                            &format!("turso backend token resolve failed: {e}"),
+                            &format!(
+                                "turso backend token resolve failed after 30s of retries: {e}"
+                            ),
                         );
                         return 3;
                     }
@@ -1656,5 +1662,83 @@ mod tests {
             validate_durations("/list", &json!({"lease_seconds": 0})),
             Ok(())
         );
+    }
+}
+
+/// Resolve `name` through `resolver`, retrying until `budget`
+/// elapses. Startup only: a co-hosted or freshly started
+/// secrets-broker binds before its first vault refresh completes
+/// and answers 503 while its cache is cold, so a one-shot resolve
+/// races its readiness and the whole serve list exits (#8394
+/// Codex P2). Bounded: once the budget is spent the last error is
+/// returned and the caller fails exactly as the one-shot did.
+fn resolve_with_startup_retry(
+    resolver: &Resolver,
+    name: &str,
+    budget: Duration,
+) -> Result<SecretValue, SecretError> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match resolver.resolve(name) {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod startup_retry_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A source that answers Unavailable for the first `fail_first`
+    /// calls, then resolves — the cold secrets-broker shape.
+    struct FlakySource {
+        calls: AtomicUsize,
+        fail_first: usize,
+    }
+
+    impl SecretSource for FlakySource {
+        fn source_name(&self) -> &'static str {
+            "flaky-test"
+        }
+        fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) < self.fail_first {
+                return Err(SecretError::Unavailable {
+                    source: "flaky-test",
+                    name: name.to_string(),
+                    detail: "cold cache".to_string(),
+                });
+            }
+            Ok(SecretValue::from_resolved("tok".to_string()))
+        }
+    }
+
+    #[test]
+    fn startup_retry_outlasts_a_cold_source() {
+        let resolver = Resolver::new(vec![Box::new(FlakySource {
+            calls: AtomicUsize::new(0),
+            fail_first: 3,
+        })]);
+        let v = resolve_with_startup_retry(&resolver, "some.token", Duration::from_secs(5))
+            .expect("retry should reach the warmed source");
+        assert_eq!(v.expose(), "tok");
+    }
+
+    #[test]
+    fn startup_retry_gives_up_within_budget() {
+        let resolver = Resolver::new(vec![Box::new(FlakySource {
+            calls: AtomicUsize::new(0),
+            fail_first: usize::MAX,
+        })]);
+        let start = std::time::Instant::now();
+        let r = resolve_with_startup_retry(&resolver, "some.token", Duration::from_millis(300));
+        assert!(r.is_err());
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 }
