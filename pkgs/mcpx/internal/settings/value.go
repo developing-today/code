@@ -137,7 +137,7 @@ func (s *Set) WithOverrides(ov map[string]string, detail string) *Set {
 	}
 	copied := make(map[string]string, len(ov))
 	for k, v := range ov {
-		copied[k] = v
+		copied[s.schema.canonicalPath(k)] = v
 	}
 	return &Set{schema: s.schema, base: s, override: copied, overrideDetail: detail}
 }
@@ -148,6 +148,7 @@ func (s *Set) WithOverrides(ov map[string]string, detail string) *Set {
 // that skips the parser is the one way to get an invalid value into a running
 // process.
 func (s *Set) SetRuntime(path, raw string) error {
+	path = s.schema.canonicalPath(path)
 	set, ok := s.schema.Lookup(path)
 	if !ok {
 		return fmt.Errorf("unknown setting %q", path)
@@ -168,6 +169,7 @@ func (s *Set) SetRuntime(path, raw string) error {
 // ClearRuntime drops a runtime override, so the value falls back to whatever
 // the flags, environment and files said. Reports whether one was there.
 func (s *Set) ClearRuntime(path string) bool {
+	path = s.schema.canonicalPath(path)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, had := s.override[path]
@@ -178,6 +180,7 @@ func (s *Set) ClearRuntime(path string) bool {
 // RuntimeOverride reports the runtime override for path, if one is in force.
 // A caller that changes it and may have to undo the change reads it first.
 func (s *Set) RuntimeOverride(path string) (string, bool) {
+	path = s.schema.canonicalPath(path)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	v, ok := s.override[path]
@@ -203,6 +206,7 @@ func (s *Set) RuntimeOverrides() map[string]string {
 // twice in one file. Across layers there is no conflict, only precedence, and
 // treating that as an error would make configuration files useless.
 func (s *Set) Apply(path, raw string, origin Origin) error {
+	path = s.schema.canonicalPath(path)
 	set, ok := s.schema.Lookup(path)
 	if !ok {
 		return fmt.Errorf("unknown setting %q", path)
@@ -239,6 +243,7 @@ func (s *Set) Apply(path, raw string, origin Origin) error {
 // to its ceiling when it has one (Setting.ClampedBy), so no reader can
 // observe a value above it.
 func (s *Set) Value(path string) (*Value, bool) {
+	path = s.schema.canonicalPath(path)
 	v, ok := s.unclamped(path)
 	if !ok {
 		return v, ok
@@ -550,6 +555,9 @@ func Validate(set Setting, raw string) error {
 			// and artifacts.gcInterval / transport.sseKeepAlive fall back
 			// to a default when non-positive, so they keep accepting it.
 			return fmt.Errorf("%s must be a positive duration, got %q", set.Path, raw)
+		}
+		if set.Path == "proxy.timeout" && d <= 0 {
+			return fmt.Errorf("proxy.timeout must be greater than zero, got %q", raw)
 		}
 		if set.Path == "protoTasks.maxTTL" && d > 0 && d < time.Millisecond {
 			// Store.Start clamps in whole milliseconds; a positive

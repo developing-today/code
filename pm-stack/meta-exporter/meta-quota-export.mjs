@@ -29,8 +29,19 @@
  *                    an auth page; the laptop session needs a human
  *                    re-login. Exit 3.
  *   cdp-unavailable  the browser debug port did not answer. Exit 4.
- *   no-console-page  browser is up but no dev.meta.ai tab is open.
- *                    Exit 5.
+ *   no-console-page  browser is up, no dev.meta.ai tab is open, and
+ *                    creating one via the CDP targets API failed.
+ *                    Exit 5. (Since task 9492 / issue #5121 the exporter
+ *                    owns its tab: it creates a dev.meta.ai target when
+ *                    none exists and closes only the target it created.)
+ *   page-not-ready   the browser (helium-cdp) answers CDP but its
+ *                    renderer is wedged: the readiness probe's target
+ *                    never navigates/evaluates, or a created tab never
+ *                    finishes loading. Names the browser, not the tab.
+ *                    Exit 8. Before failing, the exporter attempts ONE
+ *                    bounded helium-cdp.service restart (max once per
+ *                    15 min, recorded in the export document as
+ *                    `recovery`) and re-probes. (issue #5487)
  *   unparseable      an endpoint answered something whose shape this
  *                    parser does not recognise. Exit 6.
  *   fetch-failed     network/other error inside the page. Exit 7.
@@ -38,25 +49,26 @@
  * laptop is down nothing runs, so consumers derive it from the age of
  * latest.json (> 2 ticks = > 30 min without a fresh document).
  */
-import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 export const SOURCE = "file-export/meta-laptop";
 export const DEFAULT_TEAM_ID = "1073226932208501"; // "My Team" (#1167)
 
 export class ExportError extends Error {
-  constructor(status, exitCode, detail) {
+  constructor(status, exitCode, detail, recovery = null) {
     super(detail);
     this.status = status;
     this.exitCode = exitCode;
+    this.recovery = recovery;
   }
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
-const MIN_EPOCH_SECONDS = 1_577_836_800; // 2020-01-01T00:00:00Z
-const MAX_EPOCH_SECONDS = 4_102_444_800; // 2100-01-01T00:00:00Z
 
 /** Parse a subscription-quota payload into export windows. Throws on
  * any shape drift — fail-closed, never partial zeros. The one tolerated
@@ -68,18 +80,7 @@ export function parseSubscriptionQuota(payload) {
   if (!q || typeof q !== "object") {
     throw new ExportError("unparseable", 6, "subscription-quota: subscription_quota object missing");
   }
-  // Plain decimal spellings only (#2789). Number() also accepts "",
-  // whitespace-only, hex ("0x10" -> 16), and scientific ("1e2" -> 100)
-  // strings, which turned drifted fields into real measurements (a ""
-  // used value exported as a measured 0% window). Reject every
-  // non-decimal spelling here so drift fails closed at the parse;
-  // surrounding whitespace is drift too, not a spelling.
-  const DECIMAL = /^[0-9]+(\.[0-9]+)?$/;
-  const num = (v) => {
-    if (typeof v === "number") return v;
-    if (typeof v === "string" && DECIMAL.test(v)) return Number(v);
-    return NaN;
-  };
+  const num = (v) => (typeof v === "string" || typeof v === "number" ? Number(v) : NaN);
   const windowUsed = num(q.window_weighted_used);
   const windowLimit = num(q.window_weighted_limit);
   const weeklyUsed = num(q.weekly_weighted_used);
@@ -91,19 +92,6 @@ export function parseSubscriptionQuota(payload) {
       throw new ExportError("unparseable", 6, `subscription-quota: field ${k} not a finite number`);
     }
   }
-  const epochSecondsField = (v, label) => {
-    if (!Number.isFinite(v) || v < 0) {
-      throw new ExportError("unparseable", 6, `subscription-quota: field ${label} not a finite number`);
-    }
-    if (v < MIN_EPOCH_SECONDS || v > MAX_EPOCH_SECONDS) {
-      throw new ExportError(
-        "unparseable",
-        6,
-        `subscription-quota: field ${label} outside the supported epoch-seconds range`,
-      );
-    }
-    return v;
-  };
   // A window the console has not started yet (no usage recorded in it)
   // has no reset: window_resets_at / weekly_resets_at comes back null
   // or the field is omitted entirely (observed live 2026-10-29, #1301:
@@ -111,12 +99,9 @@ export function parseSubscriptionQuota(payload) {
   // export, including the healthy weekly window and free credits).
   // Tolerate exactly that shape — emit the window with resetAt: null.
   // A missing reset on a window WITH recorded usage, and any malformed
-  // reset value, still fail closed. An empty/whitespace-only reset
-  // string is treated like an absent reset: it carries no reading, so
-  // on a zero-usage window it is tolerated, and on a window with usage
-  // it fails closed exactly like the absent case.
+  // reset value, still fail closed.
   const resetField = (raw, used, label) => {
-    if (raw === null || raw === undefined || (typeof raw === "string" && raw.trim() === "")) {
+    if (raw === null || raw === undefined) {
       if (used === 0) return null;
       throw new ExportError(
         "unparseable",
@@ -124,7 +109,11 @@ export function parseSubscriptionQuota(payload) {
         `subscription-quota: field ${label} absent but the window has recorded usage`,
       );
     }
-    return epochSecondsField(num(raw), label);
+    const v = num(raw);
+    if (!Number.isFinite(v) || v < 0) {
+      throw new ExportError("unparseable", 6, `subscription-quota: field ${label} not a finite number`);
+    }
+    return v;
   };
   const windowReset = resetField(q.window_resets_at, windowUsed, "windowReset");
   const weeklyReset = resetField(q.weekly_resets_at, weeklyUsed, "weeklyReset");
@@ -136,18 +125,9 @@ export function parseSubscriptionQuota(payload) {
   }
   const shortName = durationSecs === 18_000 ? "5h" : durationSecs === 3_600 ? "1h" : `window-${durationSecs}s`;
   const iso = (epochSecs) => new Date(epochSecs * 1000).toISOString();
-  // as_of is console metadata, not a measurement: an absent or
-  // empty value means "the console didn't say when" and stays null,
-  // while any other non-decimal spelling fails closed — never the
-  // 1970 epoch that Number("") used to produce.
-  const asOfRaw = q.as_of;
-  let consoleAsOf = null;
-  if (!(asOfRaw === null || asOfRaw === undefined || (typeof asOfRaw === "string" && asOfRaw.trim() === ""))) {
-    consoleAsOf = iso(epochSecondsField(num(asOfRaw), "as_of"));
-  }
   return {
     tier: typeof q.tier === "string" ? q.tier : null,
-    consoleAsOf,
+    consoleAsOf: Number.isFinite(num(q.as_of)) ? iso(num(q.as_of)) : null,
     windows: [
       { name: shortName, usedPct: round2((windowUsed / windowLimit) * 100), resetAt: windowReset === null ? null : iso(windowReset) },
       { name: "weekly", usedPct: round2((weeklyUsed / weeklyLimit) * 100), resetAt: weeklyReset === null ? null : iso(weeklyReset) },
@@ -158,13 +138,7 @@ export function parseSubscriptionQuota(payload) {
 /** Parse a billing-banner payload into remaining free credits (USD). */
 export function parseBillingBanner(payload) {
   const minor = payload?.remaining_minor_units;
-  // Minor units are a count of cents: only a nonnegative safe integer is a
-  // well-shaped value. A fractional value (1050.5) is shape drift, not
-  // a fractional dollar amount of credit — fail closed (#2510). No domain-specific maximum is
-  // imposed: there is no authoritative upstream bound, and
-  // Number.MAX_SAFE_INTEGER (via isSafeInteger) is a representation-safety
-  // limit, not a business cap.
-  if (typeof minor !== "number" || !Number.isSafeInteger(minor) || minor < 0) {
+  if (typeof minor !== "number" || !Number.isFinite(minor) || minor < 0) {
     throw new ExportError("unparseable", 6, "billing-banner: remaining_minor_units missing/invalid");
   }
   if (payload.currency !== "USD") {
@@ -178,14 +152,14 @@ export function parseBillingBanner(payload) {
  * an absent read must stay absent, never become a fake $0. */
 export function parsePaygBalance(iframeText) {
   if (typeof iframeText !== "string") return null;
-  const m = iframeText.match(/Current balance\s*\n?\s*\$\s*([\d,]+(?:\.\d{2})?)(?![\d.,])/);
+  const m = iframeText.match(/Current balance\s*\n?\s*\$\s*([\d,]+(?:\.\d{2})?)/);
   if (!m) return null;
   const v = Number(m[1].replace(/,/g, ""));
   return Number.isFinite(v) ? v : null;
 }
 
-export function successDocument({ measuredAt, parsed, freeCreditsUsd, paygBalanceUsd }) {
-  return {
+export function successDocument({ measuredAt, parsed, freeCreditsUsd, paygBalanceUsd, recovery = null }) {
+  const doc = {
     service: "meta",
     source: SOURCE,
     status: "ok",
@@ -196,10 +170,12 @@ export function successDocument({ measuredAt, parsed, freeCreditsUsd, paygBalanc
     freeCreditsUsd,
     paygBalanceUsd,
   };
+  if (recovery) doc.recovery = recovery;
+  return doc;
 }
 
-export function failureDocument({ attemptedAt, status, detail }) {
-  return {
+export function failureDocument({ attemptedAt, status, detail, recovery = null }) {
+  const doc = {
     service: "meta",
     source: SOURCE,
     status,
@@ -207,134 +183,43 @@ export function failureDocument({ attemptedAt, status, detail }) {
     attemptedAt,
     detail,
   };
+  if (recovery) doc.recovery = recovery;
+  return doc;
 }
 
 // ---------- CDP plumbing (only used by the main run) ----------
 
-const DEFAULT_TIMEOUTS = Object.freeze({
-  httpMs: 10_000,
-  websocketOpenMs: 10_000,
-  commandMs: 30_000,
-});
-
-async function httpJson(url, timeoutMs = DEFAULT_TIMEOUTS.httpMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-    return await res.json();
-  } catch (error) {
-    if (controller.signal.aborted) {
-      throw new Error(`HTTP request timed out after ${timeoutMs}ms`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
+async function httpJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  return res.json();
 }
 
-export function connectWs(
-  wsUrl,
-  {
-    openTimeoutMs = DEFAULT_TIMEOUTS.websocketOpenMs,
-    commandTimeoutMs = DEFAULT_TIMEOUTS.commandMs,
-    WebSocketImpl = WebSocket,
-  } = {},
-) {
+function connectWs(wsUrl) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocketImpl(wsUrl);
+    const ws = new WebSocket(wsUrl);
     const pending = new Map();
     let id = 0;
-    let state = "connecting";
-
-    const rejectPending = (error) => {
-      for (const [pendingId, call] of pending) {
-        clearTimeout(call.timer);
-        pending.delete(pendingId);
-        call.reject(error);
-      }
-    };
-    const closeSocket = () => {
-      try {
-        ws.close();
-      } catch {
-        // Closing a socket that is already closing is harmless.
-      }
-    };
-    const fail = (error) => {
-      if (state === "connecting") {
-        state = "closed";
-        clearTimeout(openTimer);
-        reject(error);
-      } else if (state === "open") {
-        state = "closed";
-        rejectPending(error);
-      }
-    };
-    const openTimer = setTimeout(() => {
-      fail(new Error(`websocket open timed out after ${openTimeoutMs}ms`));
-      closeSocket();
-    }, openTimeoutMs);
-
     ws.onmessage = (ev) => {
-      let message;
-      try {
-        message = JSON.parse(ev.data);
-      } catch (error) {
-        fail(new Error(`invalid websocket response: ${error.message}`));
-        closeSocket();
-        return;
-      }
-      if (message.id != null && pending.has(message.id)) {
-        const call = pending.get(message.id);
-        pending.delete(message.id);
-        clearTimeout(call.timer);
-        if (message.error) call.reject(new Error(JSON.stringify(message.error)));
-        else call.resolve(message.result);
+      const m = JSON.parse(ev.data);
+      if (m.id && pending.has(m.id)) {
+        const p = pending.get(m.id);
+        pending.delete(m.id);
+        if (m.error) p.reject(new Error(JSON.stringify(m.error)));
+        else p.resolve(m.result);
       }
     };
-    ws.onopen = () => {
-      if (state !== "connecting") return;
-      state = "open";
-      clearTimeout(openTimer);
+    ws.onopen = () =>
       resolve({
         send: (method, params = {}) =>
           new Promise((res, rej) => {
-            if (state !== "open") {
-              rej(new Error("websocket is not open"));
-              return;
-            }
-            const requestId = ++id;
-            const timer = setTimeout(() => {
-              pending.delete(requestId);
-              rej(new Error(`websocket ${method} timed out after ${commandTimeoutMs}ms`));
-            }, commandTimeoutMs);
-            pending.set(requestId, { resolve: res, reject: rej, timer });
-            try {
-              ws.send(JSON.stringify({ id: requestId, method, params }));
-            } catch (error) {
-              pending.delete(requestId);
-              clearTimeout(timer);
-              rej(error);
-            }
+            const i = ++id;
+            pending.set(i, { resolve: res, reject: rej });
+            ws.send(JSON.stringify({ id: i, method, params }));
           }),
-        close: () => {
-          if (state === "open") {
-            state = "closed";
-            rejectPending(new Error("websocket closed by client"));
-          }
-          closeSocket();
-        },
+        close: () => ws.close(),
       });
-    };
-    ws.onerror = (event) => {
-      fail(new Error(`websocket error: ${event.message ?? "unknown"}`));
-      closeSocket();
-    };
-    ws.onclose = () => {
-      fail(new Error("websocket closed before response"));
-    };
+    ws.onerror = (e) => reject(new Error(`websocket error: ${e.message ?? "unknown"}`));
   });
 }
 
@@ -403,20 +288,23 @@ async function fetchQuotaPayloads(client, teamId) {
 
 /** Best-effort PAYG balance from the billing iframe's DOM text.
  * Absence is reported as null, never invented. */
-async function fetchPaygBalance(cdpBase, { timeouts, WebSocketImpl } = {}) {
+async function fetchPaygBalance(cdpBase) {
   try {
-    const targets = await httpJson(`${cdpBase}/json/list`, timeouts.httpMs);
+    const targets = await httpJson(`${cdpBase}/json/list`);
     const frame = targets.find(
       (t) => t.type === "iframe" && typeof t.url === "string" && t.url.includes("billing.dev.meta.ai"),
     );
     if (!frame?.webSocketDebuggerUrl) return null;
-    const client = await connectWs(frame.webSocketDebuggerUrl, {
-      openTimeoutMs: timeouts.websocketOpenMs,
-      commandTimeoutMs: timeouts.commandMs,
-      WebSocketImpl,
-    });
+    const client = await connectWs(frame.webSocketDebuggerUrl);
     try {
-      const text = await evaluate(client, "document.body ? document.body.innerText : ''");
+      // Bound the read (Codex review on PR #6333): a frame that accepts
+      // CDP but never answers Runtime.evaluate must not hang the whole
+      // export — withTimeout resolves null, which parses to a null
+      // (absent) balance, never an invented one.
+      const text = await withTimeout(
+        evaluate(client, "document.body ? document.body.innerText : ''"),
+        10000,
+      );
       return parsePaygBalance(text);
     } finally {
       client.close();
@@ -435,79 +323,269 @@ async function writeOutputs(outDir, doc) {
   await appendFile(join(outDir, "history.jsonl"), `${JSON.stringify(doc)}\n`, "utf8");
 }
 
-/** Run one export and always write either its success or failure document. */
-export async function exportAndWrite({ outDir, ...runOptions } = {}) {
+
+async function createTarget(cdpBase, url) {
+  const res = await fetch(`${cdpBase}/json/new?${encodeURIComponent(url)}`, { method: "PUT" });
+  if (!res.ok) throw new Error(`HTTP ${res.status} creating target`);
+  return res.json();
+}
+
+async function closeTarget(cdpBase, id) {
   try {
-    const doc = await run(runOptions);
-    await writeOutputs(outDir, doc);
-    return { doc, exitCode: 0, error: null, outputError: null };
-  } catch (error) {
-    const err =
-      error instanceof ExportError
-        ? error
-        : new ExportError("fetch-failed", 7, `unexpected: ${error.message ?? String(error)}`);
-    const doc = failureDocument({
-      attemptedAt: new Date().toISOString(),
-      status: err.status,
-      detail: err.message,
-    });
-    let outputError = null;
-    try {
-      await writeOutputs(outDir, doc);
-    } catch (writeError) {
-      outputError = writeError;
-    }
-    return { doc, exitCode: err.exitCode, error: err, outputError };
+    await fetch(`${cdpBase}/json/close/${id}`);
+  } catch {
+    // best effort: a target that is already gone needs no closing
   }
 }
 
-export async function run({
-  cdpPort = 19222,
-  outDir,
-  teamId = DEFAULT_TEAM_ID,
-  timeouts = {},
-  WebSocketImpl = WebSocket,
-} = {}) {
-  const deadlines = { ...DEFAULT_TIMEOUTS, ...timeouts };
+/** Race a promise against a timeout; resolves null on timeout.
+ * CDP calls into a busy renderer can hang indefinitely, and the
+ * systemd unit kills the whole run at 2 minutes, so no single CDP
+ * call in the created-tab path may block unbounded. */
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
+
+
+// ---------- Readiness probe + bounded recovery (issue #5487) ----------
+
+export const HELIUM_UNIT = "helium-cdp.service";
+export const RESTART_MIN_INTERVAL_MS = 15 * 60 * 1000;
+export const PAGE_NOT_READY_EXIT = 8;
+
+/** Readiness probe: create a throwaway target, navigate it to a data:
+ * URL, and evaluate `1` on it — each step timeout-raced. A healthy
+ * renderer answers in ~1 s; a wedged one (CDP answers /json/new but
+ * Page.navigate / Runtime.evaluate never reply) fails the probe.
+ * Returns { ok: true } or { ok: false, detail }. Never throws. */
+export async function probeCdpReadiness({ cdpBase, timeoutMs = 10000, deps = {} } = {}) {
+  const create = deps.createTarget ?? createTarget;
+  const connect = deps.connectWs ?? connectWs;
+  const close = deps.closeTarget ?? closeTarget;
+  const stepMs = Math.max(1000, Math.floor(timeoutMs / 2));
+  let target = null;
+  let client = null;
+  try {
+    target = await withTimeout(create(cdpBase, "about:blank"), stepMs);
+    if (!target?.id || !target?.webSocketDebuggerUrl) {
+      return { ok: false, detail: "probe: creating a target returned no usable target" };
+    }
+    client = await withTimeout(connect(target.webSocketDebuggerUrl), stepMs);
+    if (!client) return { ok: false, detail: "probe: websocket to the probe target never opened" };
+    const nav = await withTimeout(
+      client.send("Page.navigate", { url: "data:text/html,<title>probe</title>ok" }),
+      stepMs,
+    );
+    if (nav === null) {
+      return { ok: false, detail: `probe: Page.navigate never replied within ${stepMs}ms — renderer wedged` };
+    }
+    const val = await withTimeout(evaluate(client, "1"), stepMs);
+    if (val !== 1) {
+      return { ok: false, detail: `probe: Runtime.evaluate never replied within ${stepMs}ms — renderer wedged` };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, detail: `probe: ${e.message}` };
+  } finally {
+    try { client?.close(); } catch { /* best effort */ }
+    if (target?.id) await close(cdpBase, target.id);
+  }
+}
+
+/** Pure cooldown check for the bounded restart. */
+export function restartAllowed(lastRestartAtIso, nowMs) {
+  if (!lastRestartAtIso) return true;
+  const last = Date.parse(lastRestartAtIso);
+  if (!Number.isFinite(last)) return true;
+  return nowMs - last >= RESTART_MIN_INTERVAL_MS;
+}
+
+function execFileAsync(file, args) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { timeout: 30000 }, (err) => (err ? reject(err) : resolve()));
+  });
+}
+
+/** Attempt ONE bounded helium-cdp restart, at most once per
+ * RESTART_MIN_INTERVAL_MS, with the attempt persisted next to the
+ * export outputs so the bound holds across ticks. Returns a recovery
+ * record for the export document either way. */
+export async function attemptBoundedRestart({ outDir, now = new Date(), restart } = {}) {
+  const at = now.toISOString();
+  const statePath = outDir ? join(outDir, ".helium-restart.json") : null;
+  let last = null;
+  if (statePath) {
+    try { last = JSON.parse(await readFile(statePath, "utf8")).lastRestartAt ?? null; } catch { last = null; }
+  }
+  if (!restartAllowed(last, now.getTime())) {
+    return { action: "restart", unit: HELIUM_UNIT, at, result: "skipped-cooldown", lastRestartAt: last };
+  }
+  const doRestart = restart ?? (() => execFileAsync("systemctl", ["--user", "restart", HELIUM_UNIT]));
+  // Persist the attempt BEFORE calling restart (Codex review on
+  // PR #6333): a restart that rejects or times out must still obey the
+  // once-per-interval bound — callers such as the Meta session keeper
+  // can re-invoke the exporter independently of its timer.
+  if (statePath) {
+    try {
+      await mkdir(outDir, { recursive: true });
+      await writeFile(statePath, `${JSON.stringify({ lastRestartAt: at })}\n`, "utf8");
+    } catch { /* the record in the export document still stands */ }
+  }
+  try {
+    await doRestart();
+  } catch (e) {
+    return { action: "restart", unit: HELIUM_UNIT, at, result: "restart-failed", detail: e.message };
+  }
+  return { action: "restart", unit: HELIUM_UNIT, at, result: "restarted" };
+}
+
+/** Drive the created page to dev.meta.ai and wait until its document
+ * is usable on that origin; returns the final href. Throws
+ * no-console-page when the tab does not finish loading in time.
+ * Notes from live debugging (issue #5121, 2026-11-04): a target made
+ * via PUT /json/new lists the requested URL but its document stays
+ * about:blank until an explicit Page.navigate; and under laptop load
+ * the renderer can take tens of seconds to answer Runtime.evaluate,
+ * so every poll is timeout-raced and treated as still-loading. */
+async function waitForPageReady(client, timeoutMs = 75000) {
+  await withTimeout(client.send("Page.enable"), 5000);
+  await withTimeout(
+    client.send("Page.navigate", { url: "https://dev.meta.ai/" }),
+    5000,
+  );
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await withTimeout(
+      evaluate(client, "document.readyState + '|' + location.href"),
+      4000,
+    );
+    if (typeof state === "string") {
+      const [ready, href] = state.split("|");
+      if (
+        (ready === "complete" || ready === "interactive") &&
+        href &&
+        href.startsWith("https://dev.meta.ai")
+      ) {
+        return href;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new ExportError(
+    "page-not-ready",
+    PAGE_NOT_READY_EXIT,
+    `helium-cdp page not ready: created dev.meta.ai tab did not finish loading within ${Math.round(timeoutMs / 1000)}s — the browser renderer, not the tab, is the culprit (issue #5487)`,
+  );
+}
+
+export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID, probeFn, restartFn } = {}) {
   const attemptedAt = new Date().toISOString();
   const cdpBase = `http://127.0.0.1:${cdpPort}`;
   let targets;
   try {
-    targets = await httpJson(`${cdpBase}/json/list`, deadlines.httpMs);
+    targets = await httpJson(`${cdpBase}/json/list`);
   } catch (e) {
     throw new ExportError("cdp-unavailable", 4, `CDP ${cdpBase}/json/list unreachable: ${e.message}`);
   }
-  const page = targets.find(
+  // Readiness probe (issue #5487): CDP answering /json/list does NOT
+  // mean a page can load — a wedged renderer answers every cheap
+  // health signal while Page.navigate hangs forever. Probe first;
+  // on a wedge, try ONE bounded helium-cdp restart and re-probe;
+  // if still wedged, fail as page-not-ready naming the browser.
+  const probe = probeFn ?? ((base) => probeCdpReadiness({ cdpBase: base }));
+  let recovery = null;
+  const firstProbe = await probe(cdpBase);
+  if (!firstProbe.ok) {
+    recovery = await attemptBoundedRestart({ outDir, restart: restartFn });
+    if (recovery.result === "restarted") {
+      const secondProbe = await probe(cdpBase);
+      if (!secondProbe.ok) {
+        throw new ExportError(
+          "page-not-ready",
+          PAGE_NOT_READY_EXIT,
+          `helium-cdp wedged: ${secondProbe.detail}; still not ready after a bounded ${HELIUM_UNIT} restart`,
+          recovery,
+        );
+      }
+      // The pre-restart target list is stale (Codex review on
+      // PR #6333): its dev.meta.ai entry carries the old debugger URL.
+      // Re-fetch before selecting or creating the console page.
+      try {
+        targets = await httpJson(`${cdpBase}/json/list`);
+      } catch (e) {
+        throw new ExportError("cdp-unavailable", 4, `CDP ${cdpBase}/json/list unreachable after restart: ${e.message}`, recovery);
+      }
+    } else {
+      throw new ExportError(
+        "page-not-ready",
+        PAGE_NOT_READY_EXIT,
+        `helium-cdp wedged: ${firstProbe.detail}; bounded restart not performed (${recovery.result})`,
+        recovery,
+      );
+    }
+  }
+  let page = targets.find(
     (t) => t.type === "page" && typeof t.url === "string" && t.url.startsWith("https://dev.meta.ai"),
   );
-  if (!page?.webSocketDebuggerUrl) {
-    throw new ExportError("no-console-page", 5, "browser is up but no dev.meta.ai tab is open");
-  }
-  const effectiveTeam =
-    new URL(page.url).searchParams.get("team_id") ?? teamId;
-  const client = await connectWs(page.webSocketDebuggerUrl, {
-    openTimeoutMs: deadlines.websocketOpenMs,
-    commandTimeoutMs: deadlines.commandMs,
-    WebSocketImpl,
-  });
-  let bodies;
+  // Own the tab (issue #5121): when no dev.meta.ai target exists and CDP
+  // answers, create one, use it, and close only the target we created.
+  // cdp-unavailable above stays a real failure (exit 4).
+  let createdTargetId = null;
   try {
-    bodies = await fetchQuotaPayloads(client, effectiveTeam);
+    if (!page?.webSocketDebuggerUrl) {
+      let created;
+      try {
+        created = await createTarget(cdpBase, "https://dev.meta.ai/");
+      } catch (e) {
+        throw new ExportError(
+          "no-console-page",
+          5,
+          `browser is up but no dev.meta.ai tab is open and creating one failed: ${e.message}`,
+        );
+      }
+      if (!created?.id || !created?.webSocketDebuggerUrl) {
+        throw new ExportError(
+          "no-console-page",
+          5,
+          "browser is up but no dev.meta.ai tab is open and the created target has no debugger URL",
+        );
+      }
+      createdTargetId = created.id;
+      page = { ...created, url: created.url || "https://dev.meta.ai/" };
+    }
+    const client = await connectWs(page.webSocketDebuggerUrl);
+    let bodies;
+    try {
+      let teamUrl = page.url;
+      if (createdTargetId) {
+        teamUrl = await waitForPageReady(client);
+      }
+      let teamParam = null;
+      try {
+        teamParam = new URL(teamUrl).searchParams.get("team_id");
+      } catch {
+        teamParam = null;
+      }
+      bodies = await fetchQuotaPayloads(client, teamParam ?? teamId);
+    } finally {
+      client.close();
+    }
+    const parsed = parseSubscriptionQuota(bodies.quota);
+    const freeCreditsUsd = parseBillingBanner(bodies.banner);
+    const paygBalanceUsd = await fetchPaygBalance(cdpBase);
+    return successDocument({
+      measuredAt: new Date().toISOString(),
+      parsed,
+      freeCreditsUsd,
+      paygBalanceUsd,
+      recovery,
+    });
   } finally {
-    client.close();
+    if (createdTargetId) await closeTarget(cdpBase, createdTargetId);
   }
-  const parsed = parseSubscriptionQuota(bodies.quota);
-  const freeCreditsUsd = parseBillingBanner(bodies.banner);
-  const paygBalanceUsd = await fetchPaygBalance(cdpBase, {
-    timeouts: deadlines,
-    WebSocketImpl,
-  });
-  return successDocument({
-    measuredAt: new Date().toISOString(),
-    parsed,
-    freeCreditsUsd,
-    paygBalanceUsd,
-  });
 }
 
 async function main() {
@@ -519,19 +597,39 @@ async function main() {
   const outDir = opt("--out-dir", join(homedir(), "atlas", "meta-quota-export"));
   const cdpPort = Number(opt("--cdp-port", "19222"));
   const teamId = opt("--team-id", process.env.META_TEAM_ID ?? DEFAULT_TEAM_ID);
-  const outcome = await exportAndWrite({ cdpPort, outDir, teamId });
-  if (outcome.exitCode === 0) {
-    const { doc } = outcome;
+  try {
+    const doc = await run({ cdpPort, outDir, teamId });
+    await writeOutputs(outDir, doc);
     console.log(JSON.stringify({ status: doc.status, measuredAt: doc.measuredAt, outDir }));
-    return;
+  } catch (e) {
+    const err =
+      e instanceof ExportError
+        ? e
+        : new ExportError("fetch-failed", 7, `unexpected: ${e.message ?? String(e)}`);
+    const doc = failureDocument({
+      attemptedAt: new Date().toISOString(),
+      status: err.status,
+      detail: err.message,
+      recovery: err.recovery ?? null,
+    });
+    try {
+      await writeOutputs(outDir, doc);
+    } catch (writeErr) {
+      console.error(`meta-quota-export: could not write outputs: ${writeErr.message}`);
+    }
+    console.error(`meta-quota-export: ${err.status}: ${err.message}`);
+    process.exit(err.exitCode);
   }
-  if (outcome.outputError) {
-    console.error(`meta-quota-export: could not write outputs: ${outcome.outputError.message}`);
-  }
-  console.error(`meta-quota-export: ${outcome.error.status}: ${outcome.error.message}`);
-  process.exit(outcome.exitCode);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (isMain) {
   await main();
 }

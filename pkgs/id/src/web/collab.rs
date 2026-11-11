@@ -273,6 +273,40 @@ impl Document {
         self.version.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Atomically accept a batch of steps submitted at `base_version`
+    /// (#2968).
+    ///
+    /// Holds the steps write lock across the version check, the append,
+    /// and the version bump, so two sockets submitting at the same base
+    /// version cannot both pass the check: exactly one is accepted and
+    /// the other observes the winner's bumped version. Returns the new
+    /// version on success, or the current version on mismatch. Broadcast
+    /// and Ack stay with the caller, after this lock has been released.
+    pub async fn try_apply_steps(
+        &self,
+        base_version: u64,
+        steps: &[serde_json::Value],
+        client_id: u64,
+    ) -> Result<u64, u64> {
+        let mut doc_steps = self.steps.write().await;
+        let current_version = self.version();
+        if base_version != current_version {
+            return Err(current_version);
+        }
+        for step in steps {
+            doc_steps.push((
+                Step { data: step.clone() },
+                serde_json::Value::Number(client_id.into()),
+            ));
+        }
+        let new_version = self
+            .version
+            .fetch_add(steps.len() as u64, std::sync::atomic::Ordering::SeqCst)
+            + steps.len() as u64;
+        drop(doc_steps);
+        Ok(new_version)
+    }
+
     /// Increment client count when a client connects.
     /// Returns the new count.
     pub fn client_connected(&self) -> usize {
@@ -473,6 +507,16 @@ pub enum CollabMessage {
     },
 }
 
+/// True when `data` is exactly one complete `MessagePack` value with no bytes after it.
+fn is_single_msgpack_value(data: &[u8]) -> bool {
+    let mut cursor = std::io::Cursor::new(data);
+    let mut de = rmp_serde::Deserializer::new(&mut cursor);
+    if serde::de::IgnoredAny::deserialize(&mut de).is_err() {
+        return false;
+    }
+    usize::try_from(cursor.position()).is_ok_and(|consumed| consumed == data.len())
+}
+
 impl CollabMessage {
     /// Encode message to `MessagePack` bytes.
     pub fn encode(&self) -> Vec<u8> {
@@ -519,6 +563,13 @@ impl CollabMessage {
     /// Decode message from `MessagePack` bytes.
     pub fn decode(data: &[u8]) -> Option<Self> {
         use rmp_serde::decode::from_slice;
+
+        // A frame is exactly one MessagePack value: refuse trailing bytes so a
+        // message has one byte spelling and a concatenated second message is
+        // never silently dropped (#6349).
+        if !is_single_msgpack_value(data) {
+            return None;
+        }
 
         // MessagePack tuples are encoded as arrays. The first element is the message type.
         // We decode the whole thing for each message type. This is slightly inefficient
@@ -635,6 +686,11 @@ fn extract_binary(msg: &Message) -> Option<Vec<u8>> {
 
 /// Apply one versioned client step batch, rejecting oversized batches before
 /// changing document history, version, or broadcasting an update.
+///
+/// The version check, the append, and the version bump happen atomically
+/// under the document steps lock (#2968), so two sockets submitting at the
+/// same base version cannot both be accepted. The broadcast and log happen
+/// after that lock has been released.
 async fn apply_steps(
     doc: &Document,
     version: u64,
@@ -647,25 +703,12 @@ async fn apply_steps(
         ));
     }
 
-    let current_version = doc.version();
-    if version != current_version {
-        return Err(format!(
-            "Version mismatch: expected {current_version}, got {version}"
-        ));
-    }
-
-    let mut doc_steps = doc.steps.write().await;
-    for step in steps {
-        doc_steps.push((
-            Step { data: step.clone() },
-            serde_json::Value::Number(client_id.into()),
-        ));
-    }
-    drop(doc_steps);
-
-    use std::sync::atomic::Ordering;
-    let new_version =
-        doc.version.fetch_add(steps.len() as u64, Ordering::SeqCst) + steps.len() as u64;
+    let new_version = doc
+        .try_apply_steps(version, steps, client_id)
+        .await
+        .map_err(|current_version| {
+            format!("Version mismatch: expected {current_version}, got {version}")
+        })?;
 
     let update = CollabMessage::Update {
         steps: steps.to_vec(),
@@ -715,6 +758,9 @@ async fn store_and_broadcast_cursor(
 
     {
         let mut cursors = doc.cursors.write().await;
+        // #1790: server-side cursor lifecycle logging — a cursor is
+        // first seen when its client_id enters the map.
+        let first_seen = !cursors.contains_key(&client_id_str);
         cursors.insert(
             client_id_str,
             CursorPosition {
@@ -726,6 +772,13 @@ async fn store_and_broadcast_cursor(
                 disconnected_at: None,
             },
         );
+        if first_seen {
+            tracing::info!(
+                "[cursor-lifecycle] first-seen client={} name={:?}",
+                client_id,
+                effective_name
+            );
+        }
     }
 
     let cursor_msg = CollabMessage::Cursor {
@@ -1245,7 +1298,7 @@ async fn handle_collab_socket(
                 if cursor.disconnected_at.is_some() {
                     cursors.remove(&client_id_for_task);
                     tracing::info!(
-                        "[collab] Removed cursor {} after 5m disconnect timeout",
+                        "[cursor-lifecycle] removed client={} after 5m disconnect timeout",
                         client_id_for_task
                     );
                 } else {
@@ -1286,6 +1339,72 @@ async fn handle_collab_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_try_apply_steps_concurrent_same_base_version() {
+        // #2968: sockets submitting Steps at the same base version must
+        // not diverge. Exactly one is accepted; every other observes the
+        // winner's bumped version and is rejected; the stored steps and
+        // version reflect only the winner.
+        //
+        // The test holds the steps write lock while the submitters
+        // arrive, modelling the production window: steps-lock contention
+        // (e.g. a join catch-up read) parks a socket between its version
+        // check and its append, so a check done before acquiring the
+        // lock is stale for every parked submitter at once. Under the
+        // pre-fix ordering several submitters pass the stale check and
+        // are all accepted (Ok(1), Ok(2), ...); with the check inside
+        // the lock exactly one wins, deterministically.
+        use std::sync::Arc;
+        let doc = Arc::new(Document::new());
+        let gate = doc.steps.write().await;
+        let mut handles = Vec::new();
+        for client_id in 1..=4u64 {
+            let doc = Arc::clone(&doc);
+            handles.push(tokio::spawn(async move {
+                let steps = vec![serde_json::json!({
+                    "stepType": "replace",
+                    "marker": client_id,
+                })];
+                (client_id, doc.try_apply_steps(0, &steps, client_id).await)
+            }));
+        }
+        // Let every submitter arrive at the steps lock.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        drop(gate);
+        let mut winners: Vec<u64> = Vec::new();
+        for handle in handles {
+            let (client_id, result) = handle.await.unwrap();
+            match result {
+                Ok(1) => winners.push(client_id),
+                Err(1) => {}
+                other => panic!(
+                    "submitter {client_id} got {other:?}: only Ok(1) for the single winner and Err(1) for every loser are possible"
+                ),
+            }
+        }
+        assert_eq!(winners.len(), 1, "exactly one submission must be accepted");
+        assert_eq!(doc.version(), 1, "version reflects only the winner's step");
+        let stored = doc.steps.read().await;
+        assert_eq!(stored.len(), 1, "only the winner's step is stored");
+        assert_eq!(stored[0].0.data["marker"], winners[0]);
+        assert_eq!(stored[0].1, serde_json::json!(winners[0]));
+    }
+
+    #[tokio::test]
+    async fn test_try_apply_steps_sequential_versions() {
+        // Single-client sequential flow: a submission at the current
+        // version is accepted and bumps it; a replay at the stale base
+        // version is rejected; the next submission at the new version
+        // succeeds.
+        let doc = Document::new();
+        let step = vec![serde_json::json!({ "stepType": "replace" })];
+        assert_eq!(doc.try_apply_steps(0, &step, 7).await, Ok(1));
+        assert_eq!(doc.try_apply_steps(0, &step, 7).await, Err(1));
+        assert_eq!(doc.try_apply_steps(1, &step, 7).await, Ok(2));
+        assert_eq!(doc.version(), 2);
+        assert_eq!(doc.steps.read().await.len(), 2);
+    }
 
     #[allow(clippy::unwrap_used, clippy::panic)]
     #[test]
@@ -1576,6 +1695,174 @@ mod tests {
 
         // Malformed data
         assert!(CollabMessage::decode(&[0x93, 0x00]).is_none());
+    }
+
+    #[test]
+    fn test_collab_message_decode_refuses_trailing_bytes() {
+        let msgs = [
+            CollabMessage::Auth {
+                token: "secret-token".to_owned(),
+            },
+            CollabMessage::Steps {
+                version: 3,
+                steps: vec![serde_json::json!({"a": 1})],
+                client_id: 7,
+            },
+            CollabMessage::Ack { version: 42 },
+        ];
+        for m in msgs {
+            let bytes = m.encode();
+            assert_eq!(
+                CollabMessage::decode(&bytes).map(|d| d.encode()),
+                Some(bytes.clone())
+            );
+            let mut with_byte = bytes.clone();
+            with_byte.push(0xff);
+            assert!(CollabMessage::decode(&with_byte).is_none());
+            let mut with_garbage = bytes.clone();
+            with_garbage.extend_from_slice(b"garbage!!");
+            assert!(CollabMessage::decode(&with_garbage).is_none());
+            let mut with_second = bytes.clone();
+            with_second.extend_from_slice(&bytes);
+            assert!(CollabMessage::decode(&with_second).is_none());
+        }
+    }
+
+    #[test]
+    fn test_collab_message_decode_refuses_every_variant_with_suffix() {
+        let msgs = [
+            CollabMessage::Init {
+                version: 1,
+                doc: serde_json::json!({"t": "doc"}),
+                mode: "raw".to_owned(),
+            },
+            CollabMessage::Update {
+                steps: vec![serde_json::json!(1)],
+                client_ids: vec![2],
+            },
+            CollabMessage::Cursor {
+                client_id: 1,
+                head: 2,
+                anchor: 3,
+                name: Some("n".to_owned()),
+                idle_secs: Some(4),
+            },
+            CollabMessage::Error {
+                error: "e".to_owned(),
+            },
+            CollabMessage::CursorRemove { client_id: 9 },
+            CollabMessage::NewVersion {
+                hash: "h".to_owned(),
+                name: "n".to_owned(),
+            },
+            CollabMessage::AuthOk {
+                client_id: "client-1".to_owned(),
+                name: Some("n".to_owned()),
+                token: Some("t".to_owned()),
+            },
+        ];
+        for m in msgs {
+            let bytes = m.encode();
+            assert!(CollabMessage::decode(&bytes).is_some(), "{m:?} round-trips");
+            let mut suffixed = bytes;
+            suffixed.push(0x00);
+            assert!(CollabMessage::decode(&suffixed).is_none(), "{m:?} + suffix");
+        }
+    }
+
+    // Property coverage for the #6349 framing invariant (Codex P1 on PR
+    // #6553): for every generated valid message and every nonempty suffix,
+    // the message round-trips and the suffixed frame is rejected.
+    use proptest::prelude::*;
+
+    fn arb_json_value() -> impl Strategy<Value = serde_json::Value> {
+        let leaf = prop_oneof![
+            Just(serde_json::Value::Null),
+            any::<bool>().prop_map(serde_json::Value::Bool),
+            any::<i64>().prop_map(|n| serde_json::json!(n)),
+            any::<String>().prop_map(serde_json::Value::String),
+        ];
+        leaf.prop_recursive(3, 16, 4, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..4).prop_map(serde_json::Value::Array),
+                proptest::collection::vec((any::<String>(), inner), 0..4)
+                    .prop_map(|pairs| { serde_json::Value::Object(pairs.into_iter().collect()) }),
+            ]
+        })
+    }
+
+    fn arb_collab_message() -> impl Strategy<Value = CollabMessage> {
+        prop_oneof![
+            (any::<u64>(), arb_json_value(), any::<String>())
+                .prop_map(|(version, doc, mode)| CollabMessage::Init { version, doc, mode },),
+            (
+                any::<u64>(),
+                proptest::collection::vec(arb_json_value(), 0..4),
+                any::<u64>(),
+            )
+                .prop_map(|(version, steps, client_id)| CollabMessage::Steps {
+                    version,
+                    steps,
+                    client_id,
+                }),
+            (
+                proptest::collection::vec(arb_json_value(), 0..4),
+                proptest::collection::vec(any::<u64>(), 0..4),
+            )
+                .prop_map(|(steps, client_ids)| CollabMessage::Update { steps, client_ids }),
+            any::<u64>().prop_map(|version| CollabMessage::Ack { version }),
+            (
+                any::<u64>(),
+                any::<u32>(),
+                any::<u32>(),
+                proptest::option::of(any::<String>()),
+                proptest::option::of(any::<u64>()),
+            )
+                .prop_map(|(client_id, head, anchor, name, idle_secs)| {
+                    CollabMessage::Cursor {
+                        client_id,
+                        head,
+                        anchor,
+                        name,
+                        idle_secs,
+                    }
+                }),
+            any::<String>().prop_map(|error| CollabMessage::Error { error }),
+            any::<u64>().prop_map(|client_id| CollabMessage::CursorRemove { client_id }),
+            (any::<String>(), any::<String>())
+                .prop_map(|(hash, name)| CollabMessage::NewVersion { hash, name }),
+            any::<String>().prop_map(|token| CollabMessage::Auth { token }),
+            (
+                any::<String>(),
+                proptest::option::of(any::<String>()),
+                proptest::option::of(any::<String>()),
+            )
+                .prop_map(|(client_id, name, token)| CollabMessage::AuthOk {
+                    client_id,
+                    name,
+                    token,
+                }),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn test_collab_message_decode_refuses_arbitrary_suffixes(
+            msg in arb_collab_message(),
+            suffix in proptest::collection::vec(any::<u8>(), 1..32),
+        ) {
+            let bytes = msg.encode();
+            // The valid message round-trips byte-for-byte.
+            prop_assert_eq!(
+                CollabMessage::decode(&bytes).map(|d| d.encode()),
+                Some(bytes.clone())
+            );
+            // Any nonempty suffix makes the frame undecodable: the frame is
+            // exactly one MessagePack value (#6349).
+            let mut suffixed = bytes;
+            suffixed.extend_from_slice(&suffix);
+            prop_assert!(CollabMessage::decode(&suffixed).is_none());
+        }
     }
 
     #[test]

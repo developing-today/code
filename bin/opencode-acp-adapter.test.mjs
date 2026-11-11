@@ -34,9 +34,30 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function startStubServe(script) {
   const calls = [];
   const sseClients = new Set();
+  let sessionStatus = {};
+  let statusResponseDelay = 0;
+  let onStatusRequest = null;
+  let promptAsyncResponseDelay = 0;
   const emit = (event) => {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) res.write(payload);
+  };
+  const serveControls = {
+    setStatus: (status) => {
+      sessionStatus = status;
+    },
+    setStatusResponseDelay: (ms) => {
+      statusResponseDelay = ms;
+    },
+    onStatusRequest: (handler) => {
+      onStatusRequest = handler;
+    },
+    setPromptAsyncDelay: (ms) => {
+      promptAsyncResponseDelay = ms;
+    },
+    dropEventStreams: () => {
+      for (const res of sseClients) res.destroy();
+    },
   };
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -63,15 +84,36 @@ function startStubServe(script) {
         res.on('close', () => sseClients.delete(res));
         return;
       }
+      if (req.method === 'GET' && url.pathname === '/api/session/active') {
+        // v2 active set, driven by the setStatus control: sessions
+        // whose status type is busy/retry are the active ones.
+        const statusSnapshot = sessionStatus;
+        onStatusRequest?.();
+        const sendActive = () => {
+          const activeMap = {};
+          for (const [id, s] of Object.entries(statusSnapshot)) {
+            if (s && (s.type === 'busy' || s.type === 'retry')) activeMap[id] = s;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ data: activeMap }));
+        };
+        if (statusResponseDelay) setTimeout(sendActive, statusResponseDelay);
+        else sendActive();
+        return;
+      }
       if (req.method === 'POST' && url.pathname === '/api/session') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ data: { id: SESSION_ID } }));
         return;
       }
       if (req.method === 'POST' && url.pathname === `/api/session/${SESSION_ID}/prompt`) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ data: { id: 'msg_test1', sessionID: SESSION_ID, type: 'user' } }));
-        setImmediate(() => script(emit, body));
+        const respondPrompt = () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ data: { id: 'msg_test1', sessionID: SESSION_ID, type: 'user' } }));
+          setImmediate(() => script(emit, body, serveControls));
+        };
+        if (promptAsyncResponseDelay) setTimeout(respondPrompt, promptAsyncResponseDelay);
+        else respondPrompt();
         return;
       }
       if (req.method === 'POST' && /\/permission\/.+\/reply$/.test(url.pathname)) {
@@ -91,7 +133,7 @@ function startStubServe(script) {
   });
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
-      resolve({ server, calls, port: server.address().port });
+      resolve({ server, calls, port: server.address().port, controls: serveControls });
     });
   });
 }
@@ -197,6 +239,26 @@ test('initialize negotiates ACP v1 and advertises prompt capabilities', async (t
   assert.equal(init.agentInfo.name, 'opencode-acp-adapter');
 });
 
+test('a JSON null line on stdin is ignored and the adapter keeps answering (#6919)', async (t) => {
+  const { acp } = await setup(t, textEvents());
+  // `null` is valid JSON but not a message object; before the fix its
+  // destructure in dispatch threw and the process exited (code 1), so
+  // every later request went unanswered. Other non-object JSON values
+  // (42, "hi", true) were already harmless no-ops.
+  acp.child.stdin.write('null\n');
+  acp.child.stdin.write('42\n');
+  await sleep(150);
+  assert.equal(acp.child.exitCode, null, 'adapter still running after a null line');
+  const again = await Promise.race([
+    acp.request('initialize', { protocolVersion: 1, clientCapabilities: {} }),
+    sleep(3000).then(() => {
+      throw new Error('adapter did not answer initialize after a null line');
+    }),
+  ]);
+  assert.equal(again.protocolVersion, 1);
+  assert.equal(again.agentInfo.name, 'opencode-acp-adapter');
+});
+
 test('session/new creates the session on the shared serve with cwd as directory', async (t) => {
   const { stub, acp } = await setup(t, textEvents());
   const result = await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
@@ -279,6 +341,138 @@ test('session/cancel interrupts on the serve and the prompt resolves cancelled',
   );
 });
 
+test('prompt completed during an event-stream drop is reconciled on reconnect (#4617)', async (t) => {
+  let promptCount = 0;
+  const script = (emit, body, serve) => {
+    promptCount += 1;
+    if (promptCount === 1) {
+      serve.setStatus({ [SESSION_ID]: { type: 'busy' } });
+      // The stream drops mid-prompt and the server finishes the prompt
+      // during the gap: no completion event ever reaches the adapter, and
+      // the session leaves the active set. Without reconciliation the
+      // ACP request would hang forever.
+      setTimeout(() => {
+        serve.dropEventStreams();
+        serve.setStatus({});
+      }, 50);
+      return;
+    }
+    emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
+  };
+  const { stub, acp } = await setup(t, script);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const result = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'long task' }],
+  });
+  assert.equal(result.stopReason, 'end_turn');
+  assert.ok(
+    stub.calls.find((c) => c.method === 'GET' && c.pathname === '/api/session/active'),
+    'adapter queried /api/session/active after reconnecting',
+  );
+  // The session is not wedged: a later prompt is accepted and completes.
+  const second = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'again' }],
+  });
+  assert.equal(second.stopReason, 'end_turn');
+});
+
+test('reconciliation does not finish a newer prompt using a stale active-set snapshot', async (t) => {
+  let promptCount = 0;
+  let secondPromptIdleEmitted = false;
+  const script = (emit, body, serve) => {
+    promptCount += 1;
+    if (promptCount === 1) {
+      serve.setStatus({});
+      serve.setStatusResponseDelay(500);
+      // Deliver the first prompt's completion over the reconnected stream
+      // while the active-set response is delayed. The client will start another
+      // prompt before the stale snapshot arrives.
+      serve.onStatusRequest(() => {
+        emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
+      });
+      setTimeout(() => serve.dropEventStreams(), 50);
+      return;
+    }
+    serve.setStatus({ [SESSION_ID]: { type: 'busy' } });
+    setTimeout(() => {
+      secondPromptIdleEmitted = true;
+      serve.setStatus({});
+      emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
+    }, 1000);
+  };
+  const { acp } = await setup(t, script);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+
+  const first = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'first task' }],
+  });
+  assert.equal(first.stopReason, 'end_turn');
+
+  const second = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'second task' }],
+  });
+  assert.equal(second.stopReason, 'end_turn');
+  assert.equal(secondPromptIdleEmitted, true, 'new prompt waited for its own completion event');
+});
+
+test('reconciliation does not finish a prompt whose submission is still in flight', async (t) => {
+  // The prompt POST stays in flight while the stream drops and
+  // reconnects. The active-set snapshot taken during reconciliation predates
+  // server-side execution (idle/absent), so without the submitted guard
+  // the prompt would resolve end_turn early and its later streamed output
+  // would be discarded as orphan events.
+  const script = (emit) => {
+    emit({ type: 'session.text.delta', data: { sessionID: SESSION_ID, delta: 'late output' } });
+    emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
+  };
+  const { stub, acp } = await setup(t, script);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  stub.controls.setPromptAsyncDelay(2500);
+  const promptPromise = acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'slow submission' }],
+  });
+  // The prompt entry is registered as soon as the POST reaches the stub,
+  // while the prompt response (submission) is still delayed.
+  await acp.waitFor(
+    () => stub.calls.find((c) => c.pathname.endsWith('/prompt')),
+    'prompt POST to reach the stub',
+  );
+  // Drop the stream mid-submission with the session absent from the active set:
+  // reconnect reconciliation must leave the unsubmitted entry alone.
+  stub.controls.setStatus({});
+  stub.controls.dropEventStreams();
+  const result = await promptPromise;
+  assert.equal(result.stopReason, 'end_turn');
+  const chunks = acp.notifications
+    .filter((n) => n.method === 'session/update' && n.params.update.sessionUpdate === 'agent_message_chunk')
+    .map((n) => n.params.update.content.text);
+  assert.equal(chunks.join(''), 'late output', 'streamed output after reconcile was not discarded');
+});
+
+test('a cancel arriving after a finished prompt does not mark the next prompt cancelled (#4618)', async (t) => {
+  const { acp } = await setup(t, textEvents());
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const first = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'first' }],
+  });
+  assert.equal(first.stopReason, 'end_turn');
+  acp.notify('session/cancel', { sessionId: SESSION_ID });
+  // Let the stray cancel handler run against a completed prompt before the
+  // next prompt starts; the regression is deterministic without a pause.
+  await sleep(50);
+  const second = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'second' }],
+  });
+  assert.equal(second.stopReason, 'end_turn');
+});
+
 // ---------------------------------------------------------------------------
 // #4615: the configured gateway launch path (acpx spawns the adapter
 // with no OPENCODE_SERVER_PASSWORD) must still authenticate, by
@@ -333,4 +527,139 @@ test('malformed credential state file warns on stderr and sends no auth header',
   assert.equal(create.authorization, null);
   await acp.waitFor(() => acp.stderr().includes('not valid JSON') || null, 'stderr warning');
   assert.ok(acp.stderr().includes(authFile), 'warning names the state file');
+});
+
+// ---------------------------------------------------------------------------
+// --server validation (#6939): bad values fail fast at startup with a
+// usage error on stderr naming --server, before any ACP traffic. The
+// helper spawns the adapter with the given argv and collects its exit.
+// ---------------------------------------------------------------------------
+function runAdapterRaw(args, env = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(binDir, 'opencode-acp-adapter.mjs'), ...args], {
+      env: {
+        ...process.env,
+        OPENCODE_SERVER_PASSWORD: '',
+        OPENCODE_AUTH_FILE: path.join(binDir, 'nonexistent-auth-fixture.json'),
+        ...env,
+      },
+    });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.stdin.end();
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`adapter did not exit fast for argv ${JSON.stringify(args)}; stderr so far: ${stderr}`));
+    }, 5000);
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stderr });
+    });
+  });
+}
+
+test('#6939 trailing --server fails fast naming --server', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /usage error/);
+  assert.match(stderr, /--server/);
+});
+
+test('#6939 --server= (empty) fails fast naming --server', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server=']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /usage error/);
+  assert.match(stderr, /--server/);
+});
+
+test('#6939 --server "" (empty value) fails fast naming --server', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server', '']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /--server/);
+});
+
+test('#6939 flag-like --server value fails fast naming the value', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server', '--bogus-flag']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /--server/);
+  assert.match(stderr, /--bogus-flag/);
+});
+
+test('#6939 non-URL --server value fails fast naming the value', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server', 'notaurl']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /--server/);
+  assert.match(stderr, /notaurl/);
+});
+
+test('#6939 non-http(s) --server value fails fast', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server', 'ftp://example.invalid']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /--server/);
+  assert.match(stderr, /http/);
+});
+
+test('#6939 a typo\'d flag fails fast instead of silently dialling the default', async () => {
+  const { code, stderr } = await runAdapterRaw(['--sever', 'http://127.0.0.1:9']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /unknown argument/);
+  assert.match(stderr, /--sever/);
+});
+
+test('#6939 a non-URL OPENCODE_ACP_SERVER env value fails fast naming the env var', async () => {
+  const { code, stderr } = await runAdapterRaw([], { OPENCODE_ACP_SERVER: 'also-not-a-url' });
+  assert.notEqual(code, 0);
+  assert.match(stderr, /OPENCODE_ACP_SERVER/);
+});
+
+test('late terminal event from a reconciled prompt does not finish the next prompt (#4617)', async (t) => {
+  // Prompt 1 finishes during a stream drop and is completed by
+  // reconciliation, but the serve's own execution.succeeded for it was
+  // already in flight on the reconnected stream. That late event
+  // carries only the session id; without the stale-event fence it
+  // would finish prompt 2 while prompt 2 is still running.
+  let promptCount = 0;
+  let genuineCompletionEmitted = false;
+  const script = (emit, body, serve) => {
+    promptCount += 1;
+    if (promptCount === 1) {
+      serve.setStatus({ [SESSION_ID]: { type: 'busy' } });
+      setTimeout(() => {
+        serve.dropEventStreams();
+        serve.setStatus({});
+      }, 50);
+      return;
+    }
+    serve.setStatus({ [SESSION_ID]: { type: 'busy' } });
+    // The stale terminal event for prompt 1 arrives while prompt 2 runs.
+    setTimeout(() => {
+      emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
+    }, 200);
+    // Prompt 2's own completion, after it leaves the active set.
+    setTimeout(() => {
+      genuineCompletionEmitted = true;
+      serve.setStatus({});
+      emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
+    }, 900);
+  };
+  const { acp } = await setup(t, script);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const first = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'first task' }],
+  });
+  assert.equal(first.stopReason, 'end_turn');
+  const second = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'second task' }],
+  });
+  assert.equal(second.stopReason, 'end_turn');
+  assert.equal(
+    genuineCompletionEmitted,
+    true,
+    'second prompt waited for its own completion event, not the stale one',
+  );
 });

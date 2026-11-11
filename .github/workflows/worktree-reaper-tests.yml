@@ -1,0 +1,68 @@
+name: worktree-reaper tests
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Test verification for infra/worktree-reaper (#5946).
+#
+# The worktree reaper's safety-gate suite was not run by any workflow,
+# so regressions in the destructive reap gates could go unnoticed. This
+# workflow runs the suite on dispatch, following the house pattern for
+# test workflows. Main tier only: not a merge gate.
+#
+# The run explicitly names the test directory and file pattern, checks
+# that the file exists, and fails if unittest discovers zero tests, so a
+# green run can never be a silently skipped suite.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worktree-reaper-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: "full (main tier): worktree-reaper tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Verify test discovery is nonempty
+        run: |
+          test_dir=infra/worktree-reaper/tests
+          test_pattern=test_worktree_reaper.py
+          if [ ! -f "$test_dir/$test_pattern" ]; then
+            echo "::error::$test_dir/$test_pattern is missing — the suite was not run."
+            exit 1
+          fi
+          python3 - "$test_dir" "$test_pattern" <<'PY'
+          import sys
+          import unittest
+
+          test_dir, test_pattern = sys.argv[1:]
+          suite = unittest.defaultTestLoader.discover(
+              start_dir=test_dir,
+              pattern=test_pattern,
+          )
+          count = suite.countTestCases()
+          if count == 0:
+              raise SystemExit(
+                  f"No tests discovered in {test_dir}/{test_pattern} — the suite was not run."
+              )
+          print(f"Discovered {count} test(s) in {test_dir}/{test_pattern}.")
+          PY
+
+      - name: Run the worktree-reaper test suite
+        run: >-
+          python3 -m unittest discover
+          -s infra/worktree-reaper/tests
+          -p test_worktree_reaper.py
+          -v

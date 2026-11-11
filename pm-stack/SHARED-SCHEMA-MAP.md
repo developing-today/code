@@ -38,7 +38,17 @@ service's current source of truth and native restore path.
 | `usage-snapshot-outbox.jsonl` ([producer handoff](../nixos/services/pm-stack/default.nix#L242-L244); [drain contract](aggregator/scripts/collect-fleet-feed.ts#L62-L64)) | usage writers / fleet-feed-collector | No for records not yet drained; source writers may not retain them | `shared_events` or `agg_` ingestion, final representation deferred |
 | `aa-last-good.json` beside the feed ([path and reuse contract](aggregator/scripts/collect-fleet-feed.ts#L401-L408)) | fleet-feed-collector | Yes as a cache; refreshed from Supabase and config when needed | `agg_` cache |
 | Supabase `alerts.incidents`, `alerts.incident_events`, `alerts.push_subscriptions`, `alerts.notification_sends` ([store and writes](aggregator/src/alerts.ts#L275-L310), [incident mutations](aggregator/src/alerts.ts#L340-L363), [send ledger](aggregator/src/alerts.ts#L448-L460); [schema/location](aggregator/README.md#L299-L310)) | aggregator alerts service | No; acknowledgement state, subscriptions, and delivery history are writable durable records | `agg_` alerts; `incident_events` maps to `shared_events` |
-| Drill state under `~/.local/state/pm-drills/` ([default state path](aggregator/scripts/kill-collector-drill.sh#L41-L49); [unit](aggregator/systemd/kill-collector-drill.service#L1-L10)) | aggregator drill scripts | Yes; run results/locks/incident flags are operational drill artifacts | `agg_` operational, or omit from shared tables as ephemeral |
+| Drill state under `~/.local/state/pm-drills/` ([default state path](aggregator/scripts/kill-collector-drill.sh#L41-L49)) | laptop-only aggregator drill script | Yes; run results/locks/incident flags are operational drill artifacts | `agg_` operational, or omit from shared tables as ephemeral |
+
+#### First action/event column contract (#6103)
+
+The first Move 1 store group is now specified by the versioned
+[action/event schema contract](shared-schema/README.md): `public.agg_actions`
+owns the aggregator's `actions.json` records, and `public.shared_events`
+holds their cross-service outcomes. The paired up/down migration and
+disposable PostgreSQL test are under `shared-schema/`. This is DDL and a
+contract only; `actions.json` / `events.json` remain authoritative, with no
+rows copied and no live reader or writer changed.
 
 Read-only producer inputs (quota register/view, OpenChamber state, Cloudflare
 and Supabase exports, DNS/orchestration/charge/launch records) are not
@@ -76,17 +86,21 @@ checked-in default is not proof the deployed instance is local SQLite.
 
 ## Registry backup legs and current coverage
 
-For `pmp_links`, the intended recovery legs are the PM dashboard archive's
-three destinations: local dated archive, Cloudflare R2, and Google Drive
-([backup destinations](../nixos/home/pm-dashboard-backup.sh#L1-L11),
-[R2/Drive uploads](../nixos/home/pm-dashboard-backup.sh#L522-L538)). But the
-current archive manifest stages aggregator files and does **not** include
-`projector.db` or a `pmp_links` export ([manifest](../nixos/home/pm-dashboard-backup.sh#L307-L334),
-[staged files](../nixos/home/pm-dashboard-backup.sh#L346-L354)). Thus no
-existing backup leg for the link registry is evidenced: adding it to and
-verifying all three legs is a prerequisite for a later migration, not a
-change made by this inventory slice. The aggregator's distinct `registry.json`
-is already a required archive member ([manifest lines 321-327](../nixos/home/pm-dashboard-backup.sh#L321-L327)).
+For `pmp_links`, the recovery legs are the PM dashboard archive's three
+destinations: local dated archive, Cloudflare R2, and Google Drive
+([backup destinations](../nixos/home/pm-dashboard-backup.sh#L1-L11)). As of
+the #1744 P0 slice (task 9251), every archive run stages a `pmp_links`-only
+export (`projector/pmp_links.sql`: schema + rows dumped from the ACTUAL
+configured projector database) as a conditionally-required manifest member —
+required whenever a projector DB is present at the configured path, so a
+missing or corrupt export fails the run before any upload. The rest of
+`projector.db` (a rebuildable projection) is deliberately NOT archived.
+Restore is replaying the SQL file into a scratch SQLite database;
+`nixos/home/pm-dashboard-backup-pmp-links.test.sh` proves export,
+manifest inclusion, links-only content, and restore integrity against
+fixture databases, and the three legs inherit coverage because all three
+copy the same sha256-verified archive tarball. The aggregator's distinct
+`registry.json` is already a required archive member.
 Kaneo/Grist/Pad dumps are only included when the optional external dump script
 exists ([conditional dump step](../nixos/home/pm-dashboard-backup.sh#L275-L299));
 the #3142 design also calls for their own verified native restore paths.

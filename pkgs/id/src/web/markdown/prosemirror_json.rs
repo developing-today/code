@@ -4,11 +4,65 @@ use comrak::nodes::{AstNode, ListDelimType, ListType, NodeValue};
 use comrak::{Arena, parse_document};
 use serde_json::{Value, json};
 
+use super::parse_helpers::{sanitize_image_url, sanitize_link_url};
+
 use super::{ConversionError, commonmark_options};
+
+/// Keep the line break after an exact GitHub alert marker in a blockquote.
+/// The editor normally turns CommonMark soft breaks into spaces, which would
+/// make an alert marker followed by its body indistinguishable from ordinary
+/// text such as `[!NOTE] extra words` when the document is saved again.
+///
+/// Only a blockquote whose FIRST child is a paragraph can open with an
+/// alert marker: when the first child is another block (a nested quote, a
+/// list, a fence), GitHub does not treat a later `[!NOTE]` line as an
+/// alert, so promoting its break would change authored plain text
+/// (Codex P2 on the first cut).
+pub(super) fn preserve_github_alert_marker_breaks<'a>(node: &'a AstNode<'a>) {
+    if matches!(&node.data.borrow().value, NodeValue::BlockQuote) {
+        if let Some(first_block) = node.children().next()
+            && matches!(&first_block.data.borrow().value, NodeValue::Paragraph)
+        {
+            let mut first_line = String::new();
+            for child in first_block.children() {
+                let (text, is_break, is_other) = {
+                    let data = child.data.borrow();
+                    match &data.value {
+                        NodeValue::Text(text) => (Some(text.to_string()), false, false),
+                        NodeValue::SoftBreak | NodeValue::LineBreak => (None, true, false),
+                        _ => (None, false, true),
+                    }
+                };
+
+                if let Some(text) = text {
+                    first_line.push_str(&text);
+                } else if is_break {
+                    if is_github_alert_marker(&first_line) {
+                        child.data.borrow_mut().value = NodeValue::LineBreak;
+                    }
+                    break;
+                } else if is_other {
+                    break;
+                }
+            }
+        }
+    }
+
+    for child in node.children() {
+        preserve_github_alert_marker_breaks(child);
+    }
+}
+
+fn is_github_alert_marker(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "[!NOTE]" | "[!TIP]" | "[!IMPORTANT]" | "[!WARNING]" | "[!CAUTION]"
+    )
+}
 
 /// Active marks being applied to inline content.
 #[derive(Clone)]
-pub(super) struct Mark {
+struct Mark {
     mark_type: &'static str,
     attrs: Option<Value>,
 }
@@ -188,8 +242,12 @@ pub(super) fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> 
 
         NodeValue::Link(link) => {
             // Link - collect children with link mark added
+            // #5745: neutralize executable/unknown URL schemes at this
+            // single entry point — every Markdown link (typed, imported,
+            // or collaborative, which reaches this converter via
+            // collab.rs) carries the sanitized href from here on.
             let mut marks = active_marks.to_vec();
-            let mut attrs = json!({"href": link.url});
+            let mut attrs = json!({"href": sanitize_link_url(&link.url)});
             if !link.title.is_empty() {
                 attrs["title"] = json!(link.title);
             }
@@ -212,7 +270,7 @@ pub(super) fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> 
 
         NodeValue::Image(image) => {
             let mut attrs = json!({
-                "src": image.url
+                "src": sanitize_image_url(&image.url)
             });
 
             // #1417: store the alt in markdown form, not flattened plain
@@ -496,7 +554,7 @@ fn text_node_with_marks(text: &str, marks: &[Mark]) -> Value {
 }
 
 /// Collect block-level children of a node.
-pub(super) fn collect_block_children<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
+fn collect_block_children<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
     let children: Vec<&AstNode<'a>> = node.children().collect();
     let mut out = Vec::new();
     for (idx, child) in children.iter().enumerate() {
@@ -619,6 +677,7 @@ fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
 }
 
 /// Collect list item children of a list node.
+#[allow(dead_code)]
 fn collect_list_items<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
     node.children()
         .map(|child| convert_node(child, &[]))
@@ -1089,7 +1148,10 @@ pub(super) fn parse_img_tag(html: &str) -> Option<Value> {
     if !bytes
         .get(..4)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<img"))
-        || !matches!(bytes.get(4).copied(), Some(b' ' | b'>'))
+        || !matches!(
+            bytes.get(4).copied(),
+            Some(after_name) if after_name.is_ascii_whitespace() || after_name == b'>'
+        )
     {
         return None;
     }
@@ -1097,7 +1159,7 @@ pub(super) fn parse_img_tag(html: &str) -> Option<Value> {
     let parsed = parse_tag_attrs(trimmed, 4);
     let attr = |name: &str| parsed.get(name).map(String::as_str);
 
-    let src = attr("src")?; // src is required
+    let src = sanitize_image_url(attr("src")?); // src is required
     let mut attrs = json!({"src": src});
 
     if let Some(alt) = attr("alt") {
@@ -1145,7 +1207,11 @@ fn parse_anchor_tag(html: &str) -> Option<(String, Option<String>)> {
         return None;
     }
     let title = parsed.get("title").filter(|t| !t.is_empty()).cloned();
-    Some((href.clone(), title))
+    // #5745: a raw-HTML anchor wrapping an image gets the same
+    // allowed-scheme treatment as a Markdown link; an unsafe href is
+    // neutralized (not dropped, which would strand the raw anchor tag
+    // as a verbatim html_inline atom carrying the executable URL).
+    Some((sanitize_link_url(href), title))
 }
 
 /// Attach a wrapping anchor's link to an image node (#880/#893), in the
@@ -1315,4 +1381,13 @@ pub(super) fn validate_placement(doc: &Value) -> Result<(), ConversionError> {
         Ok(())
     }
     walk(doc, None, None)
+}
+
+/// Whether a node value is a mark wrapper (the wrapper kinds
+/// `create_marked_text` chains and `same_mark_wrapper` compares).
+pub(super) fn is_mark_wrapper(value: &NodeValue) -> bool {
+    matches!(
+        value,
+        NodeValue::Link(..) | NodeValue::Strong | NodeValue::Emph | NodeValue::Strikethrough
+    )
 }

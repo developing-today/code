@@ -26,7 +26,7 @@ platform ""
     targets: {
         inputs_dir: "targets/",
         x64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
-        wasm32: { inputs: ["host.wasm", app], output: Shared, exports: ["plaza_alloc", "plaza_free", "plaza_init", "plaza_update", "plaza_view", "plaza_layout", "plaza_records", "plaza_wants", "plaza_snapshot", "plaza_restore", "plaza_out_len", "plaza_error_ptr", "plaza_error_len"] },
+        wasm32: { inputs: ["host.wasm", app], output: Shared, exports: ["plaza_abi_version", "plaza_alloc", "plaza_free", "plaza_init", "plaza_update", "plaza_view", "plaza_layout", "plaza_records", "plaza_wants", "plaza_snapshot", "plaza_restore", "plaza_out_len", "plaza_error_ptr", "plaza_error_len"] },
     }
 
 import Screen

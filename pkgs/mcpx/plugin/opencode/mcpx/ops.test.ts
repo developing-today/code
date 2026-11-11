@@ -18,7 +18,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { DaemonClient, renderExec } from "./daemon.ts"
-import { buildRequest, OpError, OPS } from "./ops.gen.ts"
+import { buildRequest, OPERATION_FINGERPRINT, OpError, OPS } from "./ops.gen.ts"
 
 type Seen = { method: string; path: string; type: string | null; body: Uint8Array }
 
@@ -36,6 +36,12 @@ const fake = (reply: (s: Seen) => Response = () => Response.json({ ok: true })) 
     unix: socket,
     async fetch(req) {
       const url = new URL(req.url)
+      // Every generated operation first verifies the daemon's operation-table
+      // fingerprint. Answer that handshake without recording it, so `seen`
+      // stays the list of operations the test is asserting about.
+      if (url.pathname === "/v1/health") {
+        return Response.json({ status: "ok", operationFingerprint: OPERATION_FINGERPRINT })
+      }
       const s: Seen = {
         method: req.method,
         path: url.pathname + url.search,
@@ -200,6 +206,43 @@ describe("DaemonClient.exec", () => {
     expect(err).toBeInstanceOf(OpError)
     expect((err as OpError).status).toBe(409)
     expect(String(err)).toContain("waiting on a secret")
+  })
+
+  test("an aborted caller signal cancels the in-flight exec (PLG-38, #1940)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcpxa-"))
+    const socket = join(dir, "d.sock")
+    let serverSawAbort = false
+    const server = Bun.serve({
+      unix: socket,
+      async fetch(req) {
+        const url = new URL(req.url)
+        if (url.pathname === "/v1/health") {
+          return Response.json({ status: "ok", operationFingerprint: OPERATION_FINGERPRINT })
+        }
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, 8000)
+          req.signal.addEventListener("abort", () => {
+            serverSawAbort = true
+            clearTimeout(t)
+            resolve()
+          })
+        })
+        return Response.json(result)
+      },
+    })
+    cleanup.push(() => {
+      server.stop(true)
+      rmSync(dir, { recursive: true, force: true })
+    })
+    const client = new DaemonClient({ kind: "socket", path: socket })
+    const controller = new AbortController()
+    const started = Date.now()
+    const pending = client.exec("console.log(1)", "s-1", controller.signal)
+    setTimeout(() => controller.abort(), 150)
+    const err = await pending.catch((e) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(Date.now() - started).toBeLessThan(5000)
+    expect(serverSawAbort).toBe(true)
   })
 })
 

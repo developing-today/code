@@ -53,9 +53,15 @@ type ConsumerPolicy struct {
 	ModelProvider       string
 	ModelBaseURL        string
 	ModelAPIKeyEnv      string
+	ModelProviders      string
+	ModelProfiles       string
 	ModelDefault        string
 	ModelBudget         int
 	ModelTimeout        time.Duration
+
+	// SamplingAnswerLocally is sampling.answerLocally: answer upstream
+	// sampling requests from the configured model layer (#1925 slice 3).
+	SamplingAnswerLocally bool
 }
 
 // consumerState is everything the consumer routes need that the daemon did
@@ -156,9 +162,12 @@ func consumerPolicyFrom(set *settings.Set) ConsumerPolicy {
 	p.ModelProvider = set.String("model.provider")
 	p.ModelBaseURL = set.String("model.baseURL")
 	p.ModelAPIKeyEnv = set.String("model.apiKeyEnv")
+	p.ModelProviders = set.String("model.providers")
+	p.ModelProfiles = set.String("model.profiles")
 	p.ModelDefault = set.String("model.default")
 	p.ModelBudget = set.Int("model.budget")
 	p.ModelTimeout = set.Duration("model.timeout")
+	p.SamplingAnswerLocally = set.Bool("sampling.answerLocally")
 	return p
 }
 
@@ -405,6 +414,13 @@ func describeInstance(in pool.InstanceStatus) string {
 // ---- confirm a destructive call ----
 
 // ErrNotConfirmed is returned when a destructive call was not approved.
+//
+// It is a typed refusal, not a tool failure (#6116): failureStatus
+// answers it 403 and callErrorBody carries code
+// "confirmation_required", so a caller -- above all a headless one,
+// which can never answer the question -- can tell "the gate refused
+// this call" apart from "the tool ran and failed" (a 502 with an
+// upstream error) instead of quoting the gate text as a result.
 type ErrNotConfirmed struct {
 	Tool   string
 	Reason string
@@ -425,7 +441,27 @@ func (e ErrNotConfirmed) Error() string {
 // An unanswered question refuses the call. That is the opposite of the
 // disambiguation default, and for the opposite reason: there, doing nothing
 // is safe; here, doing nothing is the destructive thing.
-func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool string, cc config.CallContext) error {
+// declaredReadOnly reports whether the operator declared this tool
+// read-only for this server in local configuration (#6116): the
+// per-server readOnlyTools list, read from the requested server's
+// view for the same reason the write policy override is -- pools are
+// shared between aliases, and the declaration belongs to the name
+// the caller asked for. The operator's own declaration is trusted
+// outright, as the locally declared stdio server's annotations are
+// (#2191); a server cannot declare its own tools read-only this way.
+func (r *Registry) declaredReadOnly(server, tool string) bool {
+	view, ok := r.View(server)
+	return ok && view.DeclaresReadOnly(tool)
+}
+
+func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext) error {
+	if r.declaredReadOnly(server, tool) {
+		// The operator declared this tool read-only (#6116): a
+		// pre-authorized call, not a destructive one, so there is
+		// nothing to confirm -- in any session mode, including a
+		// headless one with nobody to answer.
+		return nil
+	}
 	if !r.consumer.ConfirmDestructive || r.broker == nil {
 		return nil
 	}
@@ -436,7 +472,7 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 		// is what happened on every call that arrived while a new daemon
 		// was still reading schemas -- so read them now, and refuse if
 		// they cannot be read: failing open is the one wrong answer here.
-		fresh, _, err := p.RefreshSchemas(ctx)
+		fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 		if err != nil {
 			return ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
 				Reason: "its annotations could not be read: " + err.Error()}
@@ -548,7 +584,7 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 		}
 		tools, _, at := p.CachedSchemas()
 		if at.IsZero() || p.SchemaExpired() {
-			fresh, _, err := p.RefreshSchemas(ctx)
+			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 			if err != nil {
 				ledgerRefusal = ErrUnknownOutcome{Record: record,
 					Reason: "could not verify whether this tool is read-only: " + err.Error()}
@@ -557,7 +593,8 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 			tools = fresh
 		}
 		for _, candidate := range tools {
-			if candidate.Name == tool && policy.Classify(candidate.Annotations).ReadOnly {
+			if candidate.Name == tool && (policy.Classify(candidate.Annotations).ReadOnly ||
+				r.declaredReadOnly(server, tool)) {
 				return policy.Decision{}, false
 			}
 		}
@@ -626,7 +663,7 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 	// fail-open this gate exists to prevent.
 	all, _, at := p.CachedSchemas()
 	if at.IsZero() || p.SchemaExpired() {
-		fresh, _, err := p.RefreshSchemas(ctx)
+		fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 		if err != nil {
 			return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
 				Reason: "write policy: its annotations could not be read: " + err.Error()}
@@ -645,6 +682,16 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 			class = policy.Classify(all[i].Annotations)
 			break
 		}
+	}
+	if r.declaredReadOnly(server, tool) {
+		// The operator declared this tool read-only in local
+		// configuration (#6116). That declaration outranks the
+		// server's annotations -- including their absence, which
+		// the specification's defaults read as a possibly
+		// destructive write and which is what gated manifestly
+		// read-only search tools (fff.find_files) in headless
+		// sessions, where the gate's question has no answerer.
+		class = policy.Classification{ReadOnly: true}
 	}
 
 	decision := policy.Evaluator{}.Evaluate(policy.Input{
@@ -859,10 +906,19 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 		Prelude:       prelude(nss),
 		ClientSource:  codegen.Module(nss, s.endpoint, session),
 		GlobalsSource: codegen.GlobalDeclarations(nss),
-		Timeout:       timeout,
-		Stdout:        &out,
-		Stderr:        &errOut,
-		Env:           env,
+		// A Python one-shot lands here with a Python prelude when the
+		// source chose it (#1917 Phase 2); the same options the runner
+		// itself would derive reach one from daemon callers.
+		Clients: map[string]runner.Client{
+			codegen.Python.Name: {
+				Module:  codegen.PythonModule(nss, s.endpoint, session),
+				Globals: codegen.PythonGlobals(nss),
+			},
+		},
+		Timeout: timeout,
+		Stdout:  &out,
+		Stderr:  &errOut,
+		Env:     env,
 	})
 	result := &ExecResult{Stdout: out.String(), Stderr: errOut.String()}
 	if rerr != nil {
@@ -1056,17 +1112,35 @@ func (s *Server) modelLayerWanted(ctx context.Context, session string, wanted bo
 
 func (s *Server) modelLayer(ctx context.Context, session string) (model.Provider, error) {
 	pol := s.policyFor(ctx)
-	if pol.ModelProvider == "" || pol.ModelProvider == "none" {
+	if !modelLayerConfigured(pol) {
 		return nil, nil
 	}
 	return model.Resolve(model.Config{
-		Provider:     pol.ModelProvider,
-		BaseURL:      pol.ModelBaseURL,
-		APIKeyEnv:    pol.ModelAPIKeyEnv,
-		DefaultModel: pol.ModelDefault,
-		Timeout:      pol.ModelTimeout,
-		Sampler:      s.brokerSampler(session),
+		Provider:             pol.ModelProvider,
+		BaseURL:              pol.ModelBaseURL,
+		APIKeyEnv:            pol.ModelAPIKeyEnv,
+		ProviderSettingsJSON: pol.ModelProviders,
+		ProfilesJSON:         pol.ModelProfiles,
+		DefaultModel:         pol.ModelDefault,
+		Timeout:              pol.ModelTimeout,
+		Sampler:              s.brokerSampler(session),
 	})
+}
+
+func modelLayerConfigured(pol ConsumerPolicy) bool {
+	if pol.ModelProvider != "" && pol.ModelProvider != "none" {
+		return true
+	}
+	if strings.TrimSpace(pol.ModelDefault) != "" {
+		return true
+	}
+	for _, raw := range []string{pol.ModelProviders, pol.ModelProfiles} {
+		raw = strings.TrimSpace(raw)
+		if raw != "" && raw != "{}" && raw != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // generateViaModel is generate's model-layer path: the same system prompt
@@ -1087,7 +1161,11 @@ func (s *Server) generateViaModel(ctx context.Context, prov model.Provider, syst
 	if err != nil || strings.TrimSpace(resp.Text) == "" {
 		return "", "", errNoModel
 	}
-	used := "provider:" + prov.Name()
+	providerName := resp.Provider
+	if providerName == "" {
+		providerName = prov.Name()
+	}
+	used := "provider:" + providerName
 	answered := resp.Model
 	if answered == "" {
 		answered = model.ModelID(modelID)

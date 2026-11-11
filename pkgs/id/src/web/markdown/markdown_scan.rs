@@ -2,8 +2,9 @@
 
 use serde_json::Value;
 
-use super::markdown_to_prosemirror_inner;
 use super::parse_helpers::restore_attr_newlines;
+
+use super::markdown_to_prosemirror_inner;
 
 /// Fence tracking for the source scans below: a fence opens with a
 /// run of >= 3 backticks or tildes and closes only with a run of the
@@ -11,7 +12,7 @@ use super::parse_helpers::restore_attr_newlines;
 /// line inside a four-backtick block is content, not a close (Codex
 /// P2 on the first #1565 cut, which toggled on any fence-shaped line).
 #[derive(Default)]
-struct FenceTracker {
+pub(super) struct FenceTracker {
     open: Option<(char, usize)>,
 }
 
@@ -27,7 +28,7 @@ struct FenceTracker {
 /// after this (or tab-led, which is four columns at column 0)
 /// reaches the tracker space-led and opens no fence, exactly like
 /// indented code.
-fn fence_feed_line(line: &str) -> &str {
+pub(super) fn fence_feed_line(line: &str) -> &str {
     let spaces = line.chars().take_while(|&c| c == ' ').count().min(3);
     &line[spaces..]
 }
@@ -88,7 +89,7 @@ impl FenceTracker {
 /// tracking the pre-scan synthesized a live footnote out of a
 /// comment's interior and a save then moved it outside the comment.
 #[derive(Default)]
-struct HtmlBlockTracker {
+pub(super) struct HtmlBlockTracker {
     /// What ends the open block: a literal closing marker, or a
     /// blank line for block-tag (type 6/7) blocks.
     end: Option<HtmlBlockEnd>,
@@ -788,7 +789,7 @@ fn indentation_columns(line: &str) -> usize {
 /// line is paragraph text, and resetting block state on it
 /// promoted the following definition-shaped line out of its
 /// paragraph (Codex P2 on #1565's twenty-ninth cut).
-fn is_blank_line(line: &str) -> bool {
+pub(super) fn is_blank_line(line: &str) -> bool {
     line.chars().all(|c| c == ' ' || c == '\t')
 }
 
@@ -834,7 +835,7 @@ fn starts_with_list_marker(stripped: &str) -> bool {
         )
 }
 
-fn starts_new_block(stripped: &str) -> bool {
+pub(super) fn starts_new_block(stripped: &str) -> bool {
     // A link reference definition is deliberately NOT here: it
     // cannot interrupt a paragraph, so a reference-shaped line
     // after a footnote definition's first line is a lazy
@@ -1853,11 +1854,12 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                     found
                 }
             };
-        let single_start = is_link_reference_definition_start(def_stripped).then(|| {
-            let close =
-                link_reference_definition_label_close(def_stripped).expect("start shape checked");
-            (vec![line], def_stripped[close + 2..].to_string(), i + 1)
-        });
+        let single_start = if is_link_reference_definition_start(def_stripped) {
+            link_reference_definition_label_close(def_stripped)
+                .map(|close| (vec![line], def_stripped[close + 2..].to_string(), i + 1))
+        } else {
+            None
+        };
         // A line carrying a list marker starts a NEW list item
         // and so a fresh block: `- [url]: ...` after `- Body` is a
         // definition in its own item, not a continuation of the
@@ -1871,8 +1873,9 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             && (!in_footnote_block || new_list_item)
             && (single_start.is_some() || multiline_start.is_some())
         {
-            let (mut block, mut after, mut j) =
-                single_start.or(multiline_start).expect("start checked");
+            let Some((mut block, mut after, mut j)) = single_start.or(multiline_start) else {
+                continue;
+            };
             // Rollback point for a title attempted on a FOLLOWING
             // line (twenty-first cut): (block length, `after`, j)
             // before the first such line is appended. A title that

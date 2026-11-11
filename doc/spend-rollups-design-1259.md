@@ -5,7 +5,7 @@
 - Tracking design: [#1259](https://github.com/developing-today/code/issues/1259)
 - Related: forecasting [#1256](https://github.com/developing-today/code/issues/1256) (forecast-to-complete is consumed from that design, not rebuilt here), observability/attribution infrastructure [#2072](https://github.com/developing-today/code/issues/2072), activity river [#1261](https://github.com/developing-today/code/issues/1261), durability [#1258](https://github.com/developing-today/code/issues/1258)
 
-Implementation follow-ups: [#4820](https://github.com/developing-today/code/issues/4820) attribution projection; [#4821](https://github.com/developing-today/code/issues/4821) rollup store; [#4822](https://github.com/developing-today/code/issues/4822) Projects/Roadmap rendering; [#4825](https://github.com/developing-today/code/issues/4825) cost anomalies; [#4826](https://github.com/developing-today/code/issues/4826) PAYG dollar attribution. They are filed as sub-issues of #1259 — itself a sub-issue of epic #1184 — because #1184 is already at GitHub's 100 sub-issue cap (verified 2026-11-03: direct linking returns HTTP 422 "Parent cannot have more than 100 sub-issues"). This follows the forecasting precedent (#1256's implementation issues are its own children, under the same epic) and keeps the slices inside the epic's tree; if Drew wants them as direct children of #1184, some existing #1184 sub-issues must be re-homed first — that is a Drew call, not made here.
+Implementation follow-ups: [#4822](https://github.com/developing-today/code/issues/4822) attribution projection; [#4823](https://github.com/developing-today/code/issues/4823) rollup store; [#4824](https://github.com/developing-today/code/issues/4824) Projects/Roadmap rendering; [#4825](https://github.com/developing-today/code/issues/4825) cost anomalies; [#4826](https://github.com/developing-today/code/issues/4826) PAYG dollar attribution. They are filed as sub-issues of #1259 — itself a sub-issue of epic #1184 — because #1184 is already at GitHub's 100 sub-issue cap (verified 2026-11-03: direct linking returns HTTP 422 "Parent cannot have more than 100 sub-issues"). This follows the forecasting precedent (#1256's implementation issues are its own children, under the same epic) and keeps the slices inside the epic's tree; if Drew wants them as direct children of #1184, some existing #1184 sub-issues must be re-homed first — that is a Drew call, not made here.
 
 No implementation is included in this note. It answers the five design questions in #1259 against the current code, and names every open question that needs Drew explicitly in the final section.
 
@@ -41,11 +41,11 @@ Sub-sessions roll up to their root session before attribution, so a root session
 
 Three unit families exist in the current system, and the rollup schema stores and renders them as three distinct measures forever:
 
-| Measure | Source | What it means | Never |
-|---|---|---|---|
-| **Tokens per pool** | usage export `tokens`, gathered per provider/pool | Actual consumption, per pool (pools meter differently; a token total across pools is shown only as per-pool columns, not a blended rate) | converted to dollars |
-| **PAYG dollars** | charges pipeline (#1057) matched charges only | Money Drew actually paid, per service/pool and period | merged with estimates; force-attributed when unmatched |
-| **Plan-pool share-of-window** | quota windows' `percent` / `usedPct` against `resetsAt` | How much of a fixed plan window a scope consumed — the only honest measure for plan pools, whose price is flat | priced out at API list rates |
+| Measure                       | Source                                                  | What it means                                                                                                                            | Never                                                  |
+| ----------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| **Tokens per pool**           | usage export `tokens`, gathered per provider/pool       | Actual consumption, per pool (pools meter differently; a token total across pools is shown only as per-pool columns, not a blended rate) | converted to dollars                                   |
+| **PAYG dollars**              | charges pipeline (#1057) matched charges only           | Money Drew actually paid, per service/pool and period                                                                                    | merged with estimates; force-attributed when unmatched |
+| **Plan-pool share-of-window** | quota windows' `percent` / `usedPct` against `resetsAt` | How much of a fixed plan window a scope consumed — the only honest measure for plan pools, whose price is flat                           | priced out at API list rates                           |
 
 Two traps are named and banned in the schema, not just in prose:
 
@@ -90,9 +90,9 @@ These are named explicitly, per #1259's acceptance. Defaults in the implementati
 
 ## Implementation follow-ups
 
-- Slice 1 — [#4820](https://github.com/developing-today/code/issues/4820): attribution projection (session → issue/epic, unattributed with reason codes, reconciliation invariant).
-- Slice 2 — [#4821](https://github.com/developing-today/code/issues/4821): weekly/monthly rollup store, unit-separated, versioned restatement, coverage start.
-- Slice 3 — [#4822](https://github.com/developing-today/code/issues/4822): Projects/Roadmap cards — % complete beside three-column spend-to-date, forecast consumed from #1256, unattributed row, labelled list-price estimates in drill-down only.
+- Slice 1 — [#4822](https://github.com/developing-today/code/issues/4822): attribution projection (session → issue/epic, unattributed with reason codes, reconciliation invariant).
+- Slice 2 — [#4823](https://github.com/developing-today/code/issues/4823): weekly/monthly rollup store, unit-separated, versioned restatement, coverage start.
+- Slice 3 — [#4824](https://github.com/developing-today/code/issues/4824): Projects/Roadmap cards — % complete beside three-column spend-to-date, forecast consumed from #1256, unattributed row, labelled list-price estimates in drill-down only.
 - Slice 4 — [#4825](https://github.com/developing-today/code/issues/4825): cost-anomaly detection through the alert throat into Needs-you/Today, warning class, complete windows only.
 - Slice 5 — [#4826](https://github.com/developing-today/code/issues/4826): PAYG dollar attribution via the charges pipeline; matched charges only; estimates excluded from dollars.
 

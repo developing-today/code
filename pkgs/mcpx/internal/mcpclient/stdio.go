@@ -43,9 +43,10 @@ type StdioTransport struct {
 	// write.
 	writeMu sync.Mutex
 	closed  atomic.Bool
-	// detached is set while another process owns the child's pipes; see Detach.
-	// Guarded by writeMu.
-	detached bool
+	// detached is set while another process owns the child's pipes; see
+	// Detach. An atomic, like closed: Recv reads it under readMu while
+	// Detach sets it without holding readMu.
+	detached atomic.Bool
 	// readMu is held by Recv, so Detach can wait out a read in progress.
 	readMu sync.Mutex
 	// pending is the start of a frame whose end had not arrived when a read
@@ -133,28 +134,28 @@ func NewStdio(opts StdioOptions) (*StdioTransport, error) {
 	}
 	outR, outW, err := os.Pipe()
 	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
 		return nil, err
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
-		outR.Close()
-		outW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = outW.Close()
 		return nil, err
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdinR, outW, errW
 	startErr := cmd.Start()
 	// The child holds its own copies; ours must go, or EOF never arrives.
-	stdinR.Close()
-	outW.Close()
-	errW.Close()
+	_ = stdinR.Close()
+	_ = outW.Close()
+	_ = errW.Close()
 	if startErr != nil {
-		stdinW.Close()
-		outR.Close()
-		errR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = errR.Close()
 		return nil, fmt.Errorf("start %s: %w", opts.Command, startErr)
 	}
 
@@ -200,7 +201,7 @@ func (t *StdioTransport) startStderr() {
 func (t *StdioTransport) Send(ctx context.Context, msg []byte) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
-	if t.closed.Load() || t.detached {
+	if t.closed.Load() || t.detached.Load() {
 		return errors.New("stdio transport closed")
 	}
 	frame := append(msg, '\n')
@@ -241,6 +242,11 @@ func (t *StdioTransport) lastWords(n int) string {
 func (t *StdioTransport) Recv() ([]byte, error) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
+	if t.detached.Load() {
+		// A read loop that was waiting on readMu while Detach took the
+		// pipes must not consume frames the successor owns (#2842).
+		return nil, errors.New("stdio transport is detached")
+	}
 	for {
 		line, err := t.readLine()
 		if err != nil {
@@ -340,8 +346,8 @@ func (t *StdioTransport) Close() error {
 			<-waitOrTimeout(t.exited, defaults.StdioKillWait)
 		}
 	}
-	t.outR.Close()
-	t.errR.Close()
+	_ = t.outR.Close()
+	_ = t.errR.Close()
 	return nil
 }
 

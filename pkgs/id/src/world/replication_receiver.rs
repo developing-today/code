@@ -55,7 +55,7 @@ use super::replication::{
     ReplicationCursor, ReplicationError, ReplicationKind, ReplicationTracker, SESSION_NONCE_BYTES,
     SignedReplicationEnvelope, advance_cursor, chain_base_cursor,
 };
-use super::{JournalEntry, MAX_JOURNAL_VERSION};
+use super::{JOURNAL_VERSION, JournalEntry, MAX_JOURNAL_VERSION};
 
 /// File name of the committed replica journal inside the receiver's
 /// directory: the exact JSONL bytes the writer's journal stores.
@@ -275,12 +275,17 @@ impl DurableReceiver {
     /// snapshot either matches the committed journal (and recommits
     /// identical bytes) or replaces it wholesale.
     pub fn begin_session(&mut self, session_nonce: [u8; SESSION_NONCE_BYTES]) {
-        self.session = Some(ReplicationTracker::new(
+        // A stored header version outside the supported range cannot be
+        // repaired by a fresh session: leave the session closed so every
+        // frame is refused with `NoSession` instead of pinning a tracker
+        // whose chain base no frame can continue.
+        self.session = ReplicationTracker::new(
             &self.world_id,
             self.pinned_source,
-            self.header_version.unwrap_or(1),
+            self.header_version.unwrap_or(JOURNAL_VERSION),
             session_nonce,
-        ));
+        )
+        .ok();
         self.session_started = false;
         self.staged = None;
     }
@@ -619,10 +624,11 @@ mod tests {
     }
 
     /// Sign an envelope the production signer refuses to sign (an
-    /// over-bound payload), replicating the signing-bytes contract so
-    /// the frame still passes signature verification and reaches the
-    /// check under test. If the contract changes, this helper's frames
-    /// fail verification and the tests say so loudly.
+    /// over-bound payload, or any other envelope-local rule #6469
+    /// moved into the signer), replicating the signing-bytes contract
+    /// so the frame still passes signature verification and reaches
+    /// the check under test. If the contract changes, this helper's
+    /// frames fail verification and the tests say so loudly.
     fn sign_unbounded(envelope: ReplicationEnvelope, key: &SigningKey) -> Vec<u8> {
         use crate::world::replication::REPLICATION_DOMAIN;
         let signing_bytes = postcard::to_allocvec(&(
@@ -784,7 +790,9 @@ mod tests {
             ReplicationEnvelope::snapshot(WORLD, source, 1, NONCE2, [0; 32], payload.clone())
                 .unwrap();
         envelope.payload[10] ^= 0x01;
-        let error = receiver.accept_frame(&sign(envelope, &key)).unwrap_err();
+        let error = receiver
+            .accept_frame(&sign_unbounded(envelope, &key))
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
             ReplicationError::PayloadDigestMismatch.to_string()
@@ -887,7 +895,9 @@ mod tests {
             journal_payload(future),
         )
         .unwrap();
-        let error = receiver.accept_frame(&sign(envelope, &key)).unwrap_err();
+        let error = receiver
+            .accept_frame(&sign_unbounded(envelope, &key))
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
             ReplicationError::UnsupportedJournalVersion(future).to_string()
@@ -911,7 +921,9 @@ mod tests {
         let envelope =
             ReplicationEnvelope::snapshot(WORLD, source, 0, NONCE, [0; 32], journal_payload(0))
                 .unwrap();
-        let error = receiver.accept_frame(&sign(envelope, &key)).unwrap_err();
+        let error = receiver
+            .accept_frame(&sign_unbounded(envelope, &key))
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
             ReplicationError::UnsupportedJournalVersion(0).to_string()

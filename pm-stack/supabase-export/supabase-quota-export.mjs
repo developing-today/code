@@ -13,7 +13,7 @@
  * Success document (file-export format the #1151 gatherer ingests):
  *   { service: "supabase", source: "file-export/supabase",
  *     status: "ok" | "partial",
- *     measuredAt: <ISO>, project: "muse-dev", ref: <project ref>,
+ *     measuredAt: <ISO>, project: "muse-dev2", ref: <project ref>,
  *     metrics: [ { id: "db-size", used: 1.15, limit: 0.5, unit: "gb",
  *                  source: "management-api:/database/query pg_database_size",
  *                  flag?: "approaching-paid-trigger", detail? } ],
@@ -47,14 +47,15 @@
  *   egres bytes        no endpoint exists (request counts only) — documented gap
  */
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const SOURCE = "file-export/supabase";
-export const DEFAULT_PROJECT_REF = "nltgxorqwxhgfzseiirt"; // muse-dev (#1050)
-export const DEFAULT_SECRET_NAME = "supabase.access-token-muse-cli";
+export const DEFAULT_PROJECT_REF = "keihfchslgjetkmnmzra"; // muse-dev2
+export const DEFAULT_SECRET_NAME = "supabase.muse-dev2.access-token-muse-cli";
 export const API_BASE = "https://api.supabase.com/v1";
 
 /** Supabase Free-plan allowances (supabase.com/pricing, recorded 2026-10-29:
@@ -79,11 +80,21 @@ export class ExportError extends Error {
   }
 }
 
+/** Parse a measurement as a non-negative integer without Number's string coercions. */
+function parseNonNegativeInteger(value) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
 /** Non-secret shape check for the SQL row the db-size query returns. */
 export function parseDbSize(rows) {
   const bytes = rows?.[0]?.bytes;
-  const n = typeof bytes === "string" ? Number(bytes) : bytes;
-  if (typeof n !== "number" || !Number.isFinite(n) || n < 0) {
+  const n = parseNonNegativeInteger(bytes);
+  if (n === null) {
     throw new ExportError("unparseable", 6, "database/query: pg_database_size row missing/invalid");
   }
   return n;
@@ -92,8 +103,7 @@ export function parseDbSize(rows) {
 /** Total requests from usage.api-requests-count ({ result: [{ count }] }). */
 export function parseRequestCount(payload) {
   const count = payload?.result?.[0]?.count;
-  const n = typeof count === "string" ? Number(count) : count;
-  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+  return parseNonNegativeInteger(count);
 }
 
 /** Measured $0 (or more) from billing/addons: selected addons priced fixed
@@ -396,6 +406,14 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (isMain) {
   await main();
 }

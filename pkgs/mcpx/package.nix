@@ -22,6 +22,11 @@
   stdenv,
   makeBinaryWrapper,
   installShellFiles,
+  doCheck ? true,
+  # The OCI image runs exactly this binary plus its explicitly selected
+  # JavaScript runtime; it must not inherit the workstation wrapper's full
+  # runtime PATH (Deno, Node and git).
+  wrapWithRuntimes ? true,
 }:
 let
   # The mcpx version's single source is the VERSION file beside this
@@ -115,7 +120,7 @@ buildGo127Module {
   # mcpx-darwin-skip flake check there); constructing the command here
   # dissolves that coupling — dezren39/nix now consumes the fork's mcpx
   # build unmodified.
-  doCheck = true;
+  inherit doCheck;
   # The runner and e2e suites spawn real scripts, so they get the same runtimes
   # the wrapper pins.
   nativeCheckInputs = [
@@ -141,6 +146,11 @@ buildGo127Module {
   checkPhase =
     let
       checkExclude = [
+        # internal/refdoc and internal/api are NOT excluded: their
+        # tests are the generated-reference guards (#4909) — pure
+        # rendering and byte comparisons over the committed docs;
+        # they spawn no runtimes, daemons or sockets, so they run in
+        # this checkPhase like every package not listed below.
         # internal/e2e spawns real script subprocess trees and the build
         # sandbox has no init reaping them: they pile up as zombies and the
         # package burns its whole 30m timeout (#2686). It runs in CI on
@@ -241,11 +251,21 @@ buildGo127Module {
     mkdir -p $out/share/man/man1
     $out/bin/mcpx man > $out/share/man/man1/mcpx.1
 
+    # The Markdown reference tree (#4909): one page per command, the
+    # global flags, the /v1 operations, the MCP tools and the protocol
+    # tables, generated from the same declarations as the man page.
+    # The two OpenAPI specifications are part of the tree
+    # (api/openapi.json, the static /v1 document, and
+    # api/openapi-serve.json, the serve-surface document).
+    mkdir -p $out/share/doc/mcpx/reference
+    $out/bin/mcpx man --format markdown -o $out/share/doc/mcpx/reference
+
     installShellCompletion --cmd mcpx \
       --bash <($out/bin/mcpx completion bash) \
       --zsh <($out/bin/mcpx completion zsh) \
       --fish <($out/bin/mcpx completion fish)
 
+  '' + lib.optionalString wrapWithRuntimes ''
     wrapProgram $out/bin/mcpx \
       --suffix PATH : ${
         lib.makeBinPath [

@@ -373,3 +373,155 @@ pub(super) fn restore_attr_newlines(value: &mut Value, token: &str) {
         _ => {}
     }
 }
+
+/// #5745: the allowed-scheme oracle for link URLs.
+///
+/// A link URL is safe iff, after removing the characters browsers strip
+/// while parsing a URL (TAB/LF/CR anywhere, leading C0 controls and
+/// spaces), it either has no scheme at all — a relative or internal
+/// reference, a fragment, a query, or a protocol-relative `//host/path`
+/// reference, none of which can name an executable scheme — or its
+/// scheme is exactly `http`, `https`, or `mailto` (case-insensitive).
+/// Everything else (`javascript:`, `data:`, `vbscript:`, any unknown
+/// scheme, and any obfuscation of those the stripping above exposes)
+/// is unsafe. This explicit allowed set is the oracle every link test
+/// for #5745 checks against; do not rely on browser sanitization.
+fn link_url_is_safe(url: &str) -> bool {
+    let probe: String = url
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let probe = probe.trim_start_matches(|c: char| c.is_ascii_control() || c == ' ');
+    // A scheme exists only when a `:` precedes any `/`, `?`, or `#`.
+    let mut scheme_end = None;
+    for (i, c) in probe.char_indices() {
+        match c {
+            ':' => {
+                scheme_end = Some(i);
+                break;
+            }
+            '/' | '?' | '#' => break,
+            _ => {}
+        }
+    }
+    let Some(colon) = scheme_end else {
+        return true; // no scheme: relative / fragment / query / protocol-relative
+    };
+    let scheme = &probe[..colon];
+    let mut chars = scheme.chars();
+    let valid_scheme = !scheme.is_empty()
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !valid_scheme {
+        // A `:` in the first segment whose prefix is not a scheme
+        // (e.g. a relative path containing a colon) is not a scheme.
+        return true;
+    }
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "mailto"
+    )
+}
+
+/// #5745: return `url` unchanged when [`link_url_is_safe`], else the
+/// inert fragment `"#"`. The link text and mark survive; only the
+/// executable target is removed, and `"#"` re-parses as a safe
+/// fragment, so sanitized documents are a stable round-trip fixpoint.
+pub(super) fn sanitize_link_url(url: &str) -> String {
+    if link_url_is_safe(url) {
+        url.to_owned()
+    } else {
+        "#".to_owned()
+    }
+}
+
+/// #6364: the image-specific allowed-scheme oracle.
+///
+/// Image URLs allow relative/internal references and `http`/`https`, plus
+/// data URLs whose media type is one of the supported raster formats. SVG is
+/// deliberately excluded because it can contain active content. As with
+/// links, inspect the scheme after stripping TAB/LF/CR and leading C0
+/// controls/spaces so browser URL parsing cannot expose an obfuscated scheme.
+pub(super) fn image_url_is_safe(url: &str) -> bool {
+    let probe: String = url
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let probe = probe.trim_start_matches(|c: char| c.is_ascii_control() || c == ' ');
+
+    // A scheme exists only when a `:` precedes any `/`, `?`, or `#`.
+    let mut scheme_end = None;
+    for (i, c) in probe.char_indices() {
+        match c {
+            ':' => {
+                scheme_end = Some(i);
+                break;
+            }
+            '/' | '?' | '#' => break,
+            _ => {}
+        }
+    }
+    let Some(colon) = scheme_end else {
+        return true;
+    };
+
+    let scheme = &probe[..colon];
+    let mut chars = scheme.chars();
+    let valid_scheme = !scheme.is_empty()
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !valid_scheme {
+        // Match the link oracle: a colon in a segment that is not a valid
+        // scheme (for example a relative path) does not introduce a scheme.
+        return true;
+    }
+
+    let Some((raw_scheme, _)) = url.split_once(':') else {
+        return true;
+    };
+    if raw_scheme.chars().any(|c| matches!(c, '\t' | '\n' | '\r')) {
+        return false;
+    }
+
+    let scheme = scheme.to_ascii_lowercase();
+    match scheme.as_str() {
+        "http" | "https" => true,
+        "data" => {
+            // Reject control-character spellings in the scheme or data URL
+            // header, even if removing them would produce an allowed MIME
+            // type. Controls in the encoded payload do not affect the scheme
+            // or media type and are left untouched.
+            let Some((header, _)) = url.split_once(',') else {
+                return false;
+            };
+            if header.chars().any(|c| matches!(c, '\t' | '\n' | '\r')) {
+                return false;
+            }
+            let Some((metadata, _)) = probe[colon + 1..].split_once(',') else {
+                return false;
+            };
+            let media_type = metadata.split(';').next().unwrap_or_default();
+            matches!(
+                media_type.to_ascii_lowercase().as_str(),
+                "image/png"
+                    | "image/gif"
+                    | "image/jpeg"
+                    | "image/webp"
+                    | "image/avif"
+                    | "image/bmp"
+            )
+        }
+        _ => false,
+    }
+}
+
+/// #6364: return `url` unchanged for an allowed image URL, otherwise the
+/// inert fragment `#`. Keeping only the target neutralized preserves the
+/// image node and makes the sanitized document a stable round-trip fixpoint.
+pub(super) fn sanitize_image_url(url: &str) -> String {
+    if image_url_is_safe(url) {
+        url.to_owned()
+    } else {
+        "#".to_owned()
+    }
+}

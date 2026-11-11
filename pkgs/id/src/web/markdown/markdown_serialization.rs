@@ -4,13 +4,59 @@ use comrak::nodes::{AstNode, ListType, NodeValue};
 use comrak::{Arena, format_commonmark};
 use serde_json::{Value, json};
 
-use super::prosemirror_json::{
-    alt_markdown_to_nodes, delimiter_from_attrs, escape_attr_value, mark_nesting_rank,
-    validate_placement,
+use super::markdown_scan::{
+    FenceTracker, HtmlBlockTracker, fence_feed_line, is_blank_line, starts_new_block,
 };
+use super::parse_helpers::{sanitize_image_url, sanitize_link_url};
+use super::prosemirror_json::{
+    alt_markdown_to_nodes, delimiter_from_attrs, escape_attr_value, is_mark_wrapper,
+    mark_nesting_rank, validate_placement,
+};
+
 use super::{ConversionError, commonmark_options};
 
+/// Split a line's leading blockquote markers from its content: returns the
+/// marker depth and the remainder. Each level is one `>` plus at most one
+/// following space or tab, matching how comrak renders nested quotes.
+fn split_quote_prefix(line: &str) -> (usize, &str) {
+    let mut rest = line;
+    let mut depth = 0;
+    while let Some(after) = rest.strip_prefix('>') {
+        depth += 1;
+        rest = after
+            .strip_prefix(' ')
+            .or_else(|| after.strip_prefix('\t'))
+            .unwrap_or(after);
+    }
+    (depth, rest)
+}
+
+/// The content of `line` as seen by the container that opened at
+/// `depth` quote levels: exactly that many markers are stripped and any
+/// deeper ones stay in place. Returns None when the line is outside that
+/// container, which ends a fence or HTML block opened inside it.
+fn strip_quote_depth(line: &str, depth: usize) -> Option<&str> {
+    let mut rest = line;
+    for _ in 0..depth {
+        let after = rest.strip_prefix('>')?;
+        rest = after
+            .strip_prefix(' ')
+            .or_else(|| after.strip_prefix('\t'))
+            .unwrap_or(after);
+    }
+    Some(rest)
+}
+
 /// Convert `ProseMirror` JSON document to markdown text.
+///
+/// Unknown marks are skipped by design (#1045): marks outside the
+/// codec's vocabulary (`em`, `strong`, `strikethrough`, `link`, plus
+/// the `code` mark handled specially by `create_marked_text`) are
+/// dropped while the marked text itself is kept verbatim. This
+/// differs from unknown *nodes*, which return
+/// `ConversionError::UnknownType`, because an unknown inline style
+/// can be shed without corrupting the document text. Known marks
+/// render byte-identically whether or not unknown marks are present.
 ///
 /// # Arguments
 ///
@@ -54,7 +100,563 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     for token in fence_tokens {
         output = strip_fence_placeholder(&output, &token);
     }
-    Ok(output)
+    let output = restore_github_alert_markers(&output);
+    Ok(strip_end_list_separators(doc, &output))
+}
+
+/// Undo the CommonMark renderer's escaping of a GitHub alert marker when
+/// the marker is the first content of its blockquote. Markers elsewhere
+/// (for example, followed by words on the same line) remain ordinary
+/// escaped text. GitHub requires the marker to be the first thing in the
+/// blockquote.
+///
+/// The scan skips fenced code blocks and raw HTML blocks: those are
+/// literal content, so a line like `> \[\!NOTE\]` inside one is authored
+/// text, not a renderer-escaped marker, and rewriting it would silently
+/// change the code (Codex P2 on the first cut).
+fn restore_github_alert_markers(markdown: &str) -> String {
+    let mut output = String::with_capacity(markdown.len());
+    let mut quote_has_content = [false; 64];
+    let mut fence = FenceTracker::default();
+    let mut fence_depth: Option<usize> = None;
+    let mut html = HtmlBlockTracker::default();
+    let mut html_depth: Option<usize> = None;
+    let mut at_block_start = true;
+
+    for line in markdown.split_inclusive('\n') {
+        let content_start = line.trim_start_matches(' ');
+        let leading_spaces = line.len() - content_start.len();
+        let (depth, rest) = split_quote_prefix(content_start);
+
+        // Four columns of indentation is code, and the markers below only
+        // apply inside a blockquote. A quote nested deeper than the table
+        // is left untouched rather than risking an out-of-range walk.
+        if leading_spaces > 3 || depth >= quote_has_content.len() {
+            quote_has_content.fill(false);
+            fence.reset();
+            fence_depth = None;
+            html.reset();
+            html_depth = None;
+            output.push_str(line);
+            at_block_start = leading_spaces > 3 || rest.trim().is_empty();
+            continue;
+        }
+
+        // An open fence or HTML block owns every following line of its
+        // container, including lines that look like quote markers: that
+        // is exactly the literal-code case above.
+        if let Some(opened_at) = fence_depth {
+            match strip_quote_depth(content_start, opened_at) {
+                Some(body) => {
+                    fence.feed(fence_feed_line(body));
+                    if !fence.in_fence() {
+                        fence_depth = None;
+                    }
+                    output.push_str(line);
+                    at_block_start = false;
+                    continue;
+                }
+                None => {
+                    fence.reset();
+                    fence_depth = None;
+                }
+            }
+        }
+        if let Some(opened_at) = html_depth {
+            match strip_quote_depth(content_start, opened_at) {
+                Some(body) => {
+                    html.feed(body, at_block_start);
+                    if !html.in_html() {
+                        html_depth = None;
+                    }
+                    output.push_str(line);
+                    at_block_start = false;
+                    continue;
+                }
+                None => {
+                    html.reset();
+                    html_depth = None;
+                }
+            }
+        }
+
+        // A fence or HTML block opening on this line makes its interior
+        // literal from here on.
+        if fence.feed(fence_feed_line(rest)) {
+            fence_depth = Some(depth);
+            output.push_str(line);
+            at_block_start = false;
+            continue;
+        }
+        if html.feed(rest, at_block_start) {
+            html_depth = Some(depth);
+            output.push_str(line);
+            at_block_start = false;
+            continue;
+        }
+
+        // Nothing outside a blockquote can open an alert, and a line
+        // outside one ends every quote that was open.
+        if depth == 0 {
+            quote_has_content.fill(false);
+            output.push_str(line);
+            at_block_start = rest.trim().is_empty() || starts_new_block(rest);
+            continue;
+        }
+
+        for seen in quote_has_content.iter_mut().skip(depth + 1) {
+            *seen = false;
+        }
+
+        let trimmed = rest.trim();
+        // Comrak emits a hard break with a trailing backslash. Ignore that
+        // renderer syntax while recognizing the marker; the suffix is kept
+        // intact when replacing the escaped marker below.
+        let hardbreak = trimmed.ends_with('\\');
+        let marker_token = trimmed.strip_suffix('\\').unwrap_or(trimmed);
+        let marker = match marker_token {
+            r"\[\!NOTE\]" => Some("[!NOTE]"),
+            r"\[\!TIP\]" => Some("[!TIP]"),
+            r"\[\!IMPORTANT\]" => Some("[!IMPORTANT]"),
+            r"\[\!WARNING\]" => Some("[!WARNING]"),
+            r"\[\!CAUTION\]" => Some("[!CAUTION]"),
+            _ => None,
+        };
+        // A marker only opens an alert when nothing above it in the
+        // quote -- at any depth -- has content yet. Marking ancestors
+        // when a deeper line carries content keeps the marker of a
+        // later paragraph in an outer quote escaped (Codex P2).
+        let quote_is_empty = depth > 0 && !quote_has_content[..=depth].iter().any(|seen| *seen);
+        if quote_is_empty
+            && !rest.starts_with(' ')
+            && !rest.starts_with('\t')
+            && let Some(marker) = marker
+        {
+            let marker_start = line.find(marker_token).unwrap_or(0);
+            let marker_end = marker_start + marker_token.len();
+            output.push_str(&line[..marker_start]);
+            output.push_str(marker);
+            let suffix = &line[marker_end..];
+            output.push_str(if hardbreak {
+                suffix.strip_prefix('\\').unwrap_or(suffix)
+            } else {
+                suffix
+            });
+            for seen in quote_has_content.iter_mut().take(depth + 1).skip(1) {
+                *seen = true;
+            }
+        } else {
+            output.push_str(line);
+            if !trimmed.is_empty() {
+                for seen in quote_has_content.iter_mut().take(depth + 1).skip(1) {
+                    *seen = true;
+                }
+            }
+        }
+        at_block_start = trimmed.is_empty() || starts_new_block(rest);
+    }
+
+    output
+}
+
+/// The start number a PM list renders with in Markdown, when it
+/// renders as an ordered list: ordered_list always (attrs.order,
+/// default 1); a task_list only when it carries attrs.order (#1370
+/// ordered task runs render as `1. [ ]`). Bullet-rendering lists and
+/// non-lists return None.
+fn ordered_start(node: &Value) -> Option<u64> {
+    let order = node["attrs"]["order"].as_u64();
+    match node["type"].as_str() {
+        Some("ordered_list") => Some(order.unwrap_or(1)),
+        Some("task_list") => order,
+        _ => None,
+    }
+}
+
+fn list_kind(node: &Value) -> Option<&str> {
+    match node["type"].as_str() {
+        Some(k @ ("bullet_list" | "ordered_list" | "task_list")) => Some(k),
+        _ => None,
+    }
+}
+
+/// The tightness a PM list effectively renders with: the stored
+/// `attrs.tight` when present; for a legacy task_list without the
+/// attribute, the same inference json_to_ast applies (loose if any
+/// item has more than one block child, else tight); bullet/ordered
+/// lists without the attribute render loose (json_to_ast defaults
+/// them to false). Boundary decisions in collect_boundary_kinds must
+/// use this, not the raw attribute: comparing raw attrs mistook a
+/// legacy tight task list for loose (CodeRabbit review, PR #3258).
+fn effective_tight(node: &Value) -> bool {
+    if let Some(tight) = node["attrs"]["tight"].as_bool() {
+        return tight;
+    }
+    if node["type"].as_str() == Some("task_list") {
+        return !node["content"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["content"]
+                    .as_array()
+                    .is_some_and(|blocks| blocks.len() > 1)
+            })
+        });
+    }
+    false
+}
+
+/// #1397: comrak's renderer separates adjacent list siblings with an
+/// `<!-- end list -->` comment - renderer-internal markup that lands in
+/// the user's file. Where the two lists are of DIFFERENT PM kinds the
+/// comment is the only thing keeping them apart, and it is not needed:
+/// a change of list type ends a list on reparse all by itself (and the
+/// #1370 parse-side split rebuilds task/plain runs), so the separator
+/// line is dropped and the lists sit directly adjacent in the text -
+/// tight lists stay tight, loose lists keep their blank lines. Where
+/// the kinds are the SAME (two ordered lists, two task lists) dropping
+/// it would merge the lists and lose restart/order information, so the
+/// separator stays for those pairs. It also stays for a DIFFERENT-kind
+/// pair that renders as the same ordered Markdown list (an ordered_list
+/// next to a task_list carrying `attrs.order`, or vice versa) when the
+/// second list does not start exactly where the first list's numbering
+/// ends: merging those on reparse renumbers the second run and loses
+/// its restart (Codex review, PR #3258). If the lines found in the output
+/// do not line up one-to-one with the boundaries computed from the doc,
+/// the output is returned untouched.
+/// The fence run a rendered line opens or closes, if any: returns the
+/// fence character and the remainder of the line starting at the run.
+/// List-marker prefixes are stripped first (blockquote `>` markers and
+/// indentation, then bullet / ordered / task-checkbox markers, repeated
+/// for nested items), because a code block that is a list item's first
+/// block renders its opening fence immediately after the marker
+/// (`- ``` `). Plain lines return their own trimmed remainder.
+fn list_fence_rest(line: &str) -> Option<(char, &str)> {
+    let mut rest = line.trim_start_matches(['>', ' ']).trim_start();
+    loop {
+        let mut stripped = false;
+        for marker in ["- ", "+ ", "* ", "[ ] ", "[x] ", "[X] "] {
+            if let Some(r) = rest.strip_prefix(marker) {
+                rest = r.trim_start();
+                stripped = true;
+                break;
+            }
+        }
+        if stripped {
+            continue;
+        }
+        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digits > 0 {
+            let after = &rest[digits..];
+            for marker in [". ", ") "] {
+                if let Some(r) = after.strip_prefix(marker) {
+                    rest = r.trim_start();
+                    stripped = true;
+                    break;
+                }
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    if rest.starts_with("```") {
+        Some(('`', rest))
+    } else if rest.starts_with("~~~") {
+        Some(('~', rest))
+    } else {
+        None
+    }
+}
+
+/// Whether a list's first item renders empty (no text, no block content
+/// beyond empty paragraphs): an empty list item cannot interrupt a
+/// paragraph under CommonMark, whatever its marker (Codex review,
+/// PR #3258: `- a\n\n1.\n2. b` saved without the blank reparsed the
+/// empty `1.` as lazy continuation text and lost the ordered list).
+fn list_starts_with_empty_item(list: &Value) -> bool {
+    let Some(first) = list["content"].as_array().and_then(|items| items.first()) else {
+        return false;
+    };
+    fn node_is_empty(node: &Value) -> bool {
+        if node["text"].as_str().is_some_and(|t| !t.trim().is_empty()) {
+            return false;
+        }
+        match node["type"].as_str() {
+            Some("paragraph" | "list_item" | "task_list_item" | "text") | None => {}
+            Some(_) => return false,
+        }
+        node["content"]
+            .as_array()
+            .is_none_or(|parts| parts.iter().all(node_is_empty))
+    }
+    node_is_empty(first)
+}
+
+pub(super) fn strip_end_list_separators(doc: &Value, output: &str) -> String {
+    // Recompute with kinds: the drop decision needs them, so collect
+    // (prev_kind, kind, tight_pair, merge_safe, needs_blank) tuples
+    // alongside.
+    let mut kinds: Vec<(String, String, bool, bool, bool)> = Vec::new();
+    collect_boundary_kinds(doc, &mut kinds);
+    if kinds.is_empty() {
+        return output.to_string();
+    }
+    let is_separator_line =
+        |line: &str| line.trim_start_matches(['>', ' ']).trim() == "<!-- end list -->";
+    let is_blank_line = |line: &str| line.trim_start_matches(['>', ' ']).trim().is_empty();
+    let lines: Vec<&str> = output.lines().collect();
+    // Codex review, PR #3258: a separator-looking line inside a fenced
+    // code block is authored content, not renderer markup - it must
+    // neither count toward the boundary correspondence nor be dropped.
+    // Track fence state (``` / ~~~, optionally blockquote-prefixed) and
+    // only treat lines outside fences as separators.
+    let mut in_fence = false;
+    let mut fence_char = '`';
+    let mut fence_len = 0usize;
+    // Codex review, PR #3258: raw HTML blocks are literal content too.
+    // A backtick-only line inside one (e.g. a <div> wrapping a ``` line)
+    // is not a fence opener, and a separator-looking line inside the
+    // block is authored HTML, not renderer markup. Track HTML block
+    // state (CommonMark: the block runs until a blank line; an HTML
+    // comment block runs until its --> closer) and exclude its lines
+    // from both fence tracking and separator counting.
+    let mut in_html = false;
+    let mut html_is_comment = false;
+    let mut is_separator: Vec<bool> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        let html_probe = line.trim_start_matches(['>', ' ']).trim();
+        if in_html {
+            is_separator.push(false);
+            if html_is_comment {
+                if html_probe.contains("-->") {
+                    in_html = false;
+                    html_is_comment = false;
+                }
+            } else if html_probe.is_empty() {
+                in_html = false;
+            }
+            continue;
+        }
+        if !in_fence && !is_separator_line(line) {
+            let second = html_probe.chars().nth(1);
+            let opens_html = html_probe.starts_with('<')
+                && second.is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'));
+            if opens_html {
+                is_separator.push(false);
+                if html_probe.starts_with("<!--") {
+                    if !html_probe[4..].contains("-->") {
+                        in_html = true;
+                        html_is_comment = true;
+                    }
+                } else {
+                    in_html = true;
+                }
+                continue;
+            }
+        }
+        // Codex review, PR #3258: a fence can open immediately after a
+        // list marker (a list item whose first block is a code block
+        // renders as `- ``` `): strip any list-marker prefixes (bullet,
+        // ordered, task checkbox, nested) before looking for the fence
+        // run, or the opener is missed, the fence's literal content is
+        // counted as a separator, and the closing fence is mistaken
+        // for an opener that hides the real separator.
+        let fence_rest = list_fence_rest(line);
+        let fence_marker = fence_rest.map(|(c, _)| c);
+        match fence_marker {
+            Some(c) if !in_fence => {
+                in_fence = true;
+                fence_char = c;
+                fence_len = fence_rest
+                    .map(|(_, rest)| rest.chars().take_while(|&ch| ch == c).count())
+                    .unwrap_or(0);
+                is_separator.push(false);
+            }
+            // CodeRabbit review, PR #3258: a fence closes only on a
+            // BARE run of the fence character at least as long as the
+            // opener. A content line such as ```rust starts with the
+            // marker but is not a closer; ending the fence there let a
+            // separator-looking line later in the code block be counted
+            // (and dropped) as renderer markup, losing authored lines.
+            Some(c)
+                if c == fence_char
+                    && fence_rest.is_some_and(|(_, rest)| {
+                        rest.trim_end().chars().all(|ch| ch == c)
+                            && rest.trim_end().len() >= fence_len
+                    }) =>
+            {
+                in_fence = false;
+                is_separator.push(false);
+            }
+            _ => is_separator.push(!in_fence && is_separator_line(line)),
+        }
+    }
+    let found = is_separator.iter().filter(|b| **b).count();
+    if found != kinds.len() {
+        return output.to_string();
+    }
+    let mut boundary = kinds.iter();
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut idx = 0;
+    while idx < lines.len() {
+        let line = lines[idx];
+        if is_separator[idx] {
+            match boundary.next() {
+                Some((a, b, tight_pair, merge_safe, needs_blank)) if a != b && *merge_safe => {
+                    // Drop the separator. The renderer also puts a blank
+                    // line on each side of it; with the comment gone,
+                    // blanks between the lists would fuse them into ONE
+                    // loose list on reparse. A tight pair keeps no blank
+                    // line at all; a loose pair keeps exactly one. A
+                    // needs_blank pair also keeps exactly one: an ordered
+                    // list starting above 1 cannot interrupt the previous
+                    // item's paragraph, so with no blank line at all its
+                    // first line reparses as a lazy continuation and the
+                    // list is lost (Codex review, PR #3258).
+                    let prev_blank = kept.last().is_some_and(|l| is_blank_line(l));
+                    let next_blank = lines.get(idx + 1).is_some_and(|l| is_blank_line(l));
+                    if prev_blank && next_blank {
+                        if *tight_pair && !*needs_blank {
+                            kept.pop();
+                        }
+                        idx += 1; // skip the following blank line too
+                    }
+                }
+                _ => kept.push(line),
+            }
+        } else {
+            kept.push(line);
+        }
+        idx += 1;
+    }
+    let mut out = kept.join("\n");
+    if output.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// (prev PM kind, PM kind, both tight, merge-safe, needs-blank) for every list
+/// adjacency in the doc, in render order, interleaved with authored
+/// htmlBlocks (recorded as ("", "", false, false, false) so they consume a
+/// separator-line slot but are never dropped - see
+/// strip_end_list_separators' caller contract). Merge-safe is false
+/// only when dropping the separator would merge two ordered-rendering
+/// lists whose numbering does not continue across the boundary.
+pub(super) fn collect_boundary_kinds(
+    node: &Value,
+    out: &mut Vec<(String, String, bool, bool, bool)>,
+) {
+    let Some(content) = node["content"].as_array() else {
+        return;
+    };
+    let mut prev_list: Option<&Value> = None;
+    // Effective tight of the current consecutive bullet_list run's
+    // FIRST list (the tight json_to_ast's coalesce renders with).
+    let mut bullet_run_tight: Option<bool> = None;
+    for child in content {
+        let kind = list_kind(child);
+        if let (Some(prev), Some(kind)) = (prev_list, kind)
+            && !(list_kind(prev) == Some("bullet_list") && kind == "bullet_list")
+        {
+            // Codex review, PR #3258: when prev is a bullet_list that
+            // json_to_ast coalesced with earlier bullet siblings, the
+            // rendered list carries the FIRST sibling's tight, so the
+            // boundary must compare that effective tightness - the last
+            // original sibling's attr can differ and silently loosens
+            // the following run on reparse.
+            let prev_tight = if list_kind(prev) == Some("bullet_list") {
+                bullet_run_tight.unwrap_or_else(|| effective_tight(prev))
+            } else {
+                effective_tight(prev)
+            };
+            let child_tight = effective_tight(child);
+            let tight_pair = prev_tight && child_tight;
+            // Two lists that both render as ordered Markdown merge into
+            // one list on reparse if the separator goes; the merge is
+            // lossless only when the second list starts exactly where
+            // the first list's numbering ends (start + item count), so
+            // convert_list_runs recomputes the same run orders.
+            let ordered_merge_safe = match (ordered_start(prev), ordered_start(child)) {
+                (Some(prev_start), Some(next_start)) => {
+                    let prev_count = prev["content"].as_array().map_or(0, |c| c.len()) as u64;
+                    // attrs.order comes from the request's PM JSON; a
+                    // crafted start near u64::MAX must not overflow the
+                    // sum (debug builds panic, release builds wrap and
+                    // could drop a separator that should stay).
+                    prev_start.checked_add(prev_count) == Some(next_start)
+                }
+                _ => true,
+            };
+            // Codex review, PR #3258: two lists that render as the same
+            // Markdown list family (bullet-rendering: bullet_list and
+            // order-less task_list; ordered-rendering: ordered_list and
+            // ordered task_list) merge into ONE list on reparse when the
+            // separator drops, and convert_list_runs then copies one
+            // run's tight onto both. When their tight attributes differ
+            // that silently loosens/tightens a run and breaks the save
+            // fixpoint, so the separator stays. Different families split
+            // on reparse by marker type and keep their own tightness.
+            let renders_ordered = |n: &Value| ordered_start(n).is_some();
+            let tight_differs = prev_tight != child_tight;
+            let tight_merge_safe =
+                !(renders_ordered(prev) == renders_ordered(child) && tight_differs);
+            let merge_safe = ordered_merge_safe && tight_merge_safe;
+            // Codex review, PR #3258: an ordered-rendering list that
+            // starts above 1 cannot interrupt a paragraph, so when the
+            // previous list does not itself render ordered, the boundary
+            // must keep a blank line or the second list's first line
+            // reparses as a lazy continuation of the previous item.
+            // The empty-item guard (below) applies only across
+            // different rendered list families: within one family the
+            // two runs reparse as a single list, where an empty sibling
+            // item needs no blank - keeping one would loosen the merged
+            // list and break the save fixpoint (Codex review, PR #3258).
+            let needs_blank = (matches!(ordered_start(child), Some(start) if start != 1)
+                && ordered_start(prev).is_none())
+                || (list_starts_with_empty_item(child)
+                    && renders_ordered(prev) != renders_ordered(child));
+            out.push((
+                list_kind(prev).unwrap_or_default().to_string(),
+                kind.to_string(),
+                tight_pair,
+                merge_safe,
+                needs_blank,
+            ));
+        }
+        if child["type"].as_str() == Some("code_block")
+            && child["attrs"]["htmlBlock"].as_bool() == Some(true)
+            && child["content"].as_array().is_some_and(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|n| n["text"].as_str())
+                    .collect::<String>()
+                    .trim()
+                    == "<!-- end list -->"
+            })
+        {
+            out.push((String::new(), String::new(), false, false, false));
+        }
+        // Codex review, PR #3258: lists inside a table cell are
+        // flattened to text by append_table_cell_child and emit no
+        // separator, so boundaries collected there have no line in
+        // the output to correspond to - skip the cell's subtree.
+        if !matches!(child["type"].as_str(), Some("table_header" | "table_cell")) {
+            collect_boundary_kinds(child, out);
+        }
+        if kind.is_some() {
+            if kind == Some("bullet_list") {
+                if prev_list.is_none_or(|p| list_kind(p) != Some("bullet_list")) {
+                    bullet_run_tight = Some(effective_tight(child));
+                }
+            } else {
+                bullet_run_tight = None;
+            }
+            prev_list = Some(child);
+        } else {
+            prev_list = None;
+            bullet_run_tight = None;
+        }
+    }
 }
 
 /// Whether a node value is a delimiter-mark wrapper (#1418): the
@@ -421,6 +1023,46 @@ fn is_whitespace_only_text_json(node: &Value) -> bool {
             .all(|c| c == ' ' || c == '\t')
 }
 
+/// Whether a hard break has no rendered content after it before the
+/// block ends. Whitespace-only text and further breaks do not make a
+/// trailing break interior content. This is the placement boundary for
+/// #1388: CommonMark cannot spell a break after the last content of a
+/// block, so normalize it away before building the comrak AST.
+fn hard_break_is_trailing(content: &[Value], idx: usize) -> bool {
+    content[idx + 1..]
+        .iter()
+        .all(|sibling| is_hard_break_json(sibling) || is_whitespace_only_text_json(sibling))
+}
+
+/// Apply the save-side hard-break placement policy for a block's inline
+/// children (#1388, transferring the #1492 placements): a hard break at
+/// block end is dropped explicitly (the renderer silently drops it); a
+/// heading is single-line CommonMark content, so an interior break
+/// degrades to a space instead of becoming an unspellable backslash-newline.
+/// Other interior paragraph breaks retain their existing LineBreak form.
+fn normalize_hard_break_placement(node_type: &str, content: &[Value]) -> Vec<Value> {
+    if !matches!(node_type, "heading" | "paragraph") {
+        return content.to_vec();
+    }
+
+    let mut normalized = Vec::with_capacity(content.len());
+    for (idx, child) in content.iter().enumerate() {
+        if !is_hard_break_json(child) {
+            normalized.push(child.clone());
+            continue;
+        }
+        if hard_break_is_trailing(content, idx) {
+            continue;
+        }
+        if node_type == "heading" {
+            normalized.push(json!({"type": "text", "text": " "}));
+        } else {
+            normalized.push(child.clone());
+        }
+    }
+    normalized
+}
+
 /// Whether scanning `siblings` (in render order) reaches a line edge —
 /// the start/end of the block or a `hard_break` — before any content
 /// that renders something (#1420).
@@ -476,10 +1118,7 @@ fn normalize_inline_child_json(content: &[Value], idx: usize) -> std::borrow::Co
     std::borrow::Cow::Owned(owned)
 }
 
-pub(super) fn json_to_ast<'a>(
-    arena: &'a Arena<'a>,
-    json: &Value,
-) -> Result<&'a AstNode<'a>, ConversionError> {
+fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>, ConversionError> {
     let node_type = json["type"].as_str().ok_or(ConversionError::MissingType)?;
 
     let node_value = match node_type {
@@ -674,7 +1313,7 @@ pub(super) fn json_to_ast<'a>(
         "table_header" | "table_cell" => NodeValue::TableCell,
 
         "image" => {
-            let src = json["attrs"]["src"].as_str().unwrap_or("");
+            let src = sanitize_image_url(json["attrs"]["src"].as_str().unwrap_or(""));
             let title = json["attrs"]["title"].as_str().unwrap_or("");
             let alt = json["attrs"]["alt"].as_str().unwrap_or("");
             let width = json["attrs"]["width"].as_u64();
@@ -684,7 +1323,7 @@ pub(super) fn json_to_ast<'a>(
             if width.is_some() || height.is_some() {
                 // #873: escape values — a raw `"` truncated the attribute on
                 // reparse and could inject new attributes.
-                let mut tag = format!("<img src=\"{}\"", escape_attr_value(src));
+                let mut tag = format!("<img src=\"{}\"", escape_attr_value(&src));
                 if !alt.is_empty() {
                     tag.push_str(&format!(" alt=\"{}\"", escape_attr_value(alt)));
                 }
@@ -705,7 +1344,11 @@ pub(super) fn json_to_ast<'a>(
                 if let Some(link_href) = json["attrs"]["linkHref"].as_str()
                     && !link_href.is_empty()
                 {
-                    let mut anchor = format!("<a href=\"{}\"", escape_attr_value(link_href));
+                    // #5745: a PM doc that arrived as raw ProseMirror JSON
+                    // (collab Rich mode) never passed the parse-direction
+                    // sanitizer, so neutralize unsafe hrefs on the way out.
+                    let safe_href = sanitize_link_url(link_href);
+                    let mut anchor = format!("<a href=\"{}\"", escape_attr_value(&safe_href));
                     if let Some(link_title) = json["attrs"]["linkTitle"].as_str()
                         && !link_title.is_empty()
                     {
@@ -717,7 +1360,7 @@ pub(super) fn json_to_ast<'a>(
             } else {
                 // Standard markdown image syntax
                 NodeValue::Image(Box::new(comrak::nodes::NodeLink {
-                    url: src.to_owned(),
+                    url: src,
                     title: title.to_owned(),
                 }))
             }
@@ -850,9 +1493,10 @@ pub(super) fn json_to_ast<'a>(
         // ordered_list is NOT merged (it carries restart numbering) and
         // task_list is a distinct PM node type, so neither is affected.
         let mut prev_bullet_list: Option<&AstNode<'a>> = None;
-        for (idx, child_json) in content.iter().enumerate() {
+        let normalized_content = normalize_hard_break_placement(node_type, content);
+        for (idx, child_json) in normalized_content.iter().enumerate() {
             let is_bullet_list = child_json["type"].as_str() == Some("bullet_list");
-            let normalized = normalize_inline_child_json(content, idx);
+            let normalized = normalize_inline_child_json(&normalized_content, idx);
             let child = json_to_ast(arena, &normalized)?;
             if is_bullet_list && let Some(list_node) = prev_bullet_list {
                 let items: Vec<&AstNode<'a>> = child.children().collect();
@@ -927,7 +1571,8 @@ pub(super) fn json_to_ast<'a>(
             wrappers.push((
                 mark_nesting_rank("link"),
                 NodeValue::Link(Box::new(comrak::nodes::NodeLink {
-                    url: link_href.to_owned(),
+                    // #5745: same save-direction neutralization as above.
+                    url: sanitize_link_url(link_href),
                     title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
                 })),
             ));
@@ -1058,15 +1703,6 @@ fn same_mark_wrapper(a: &NodeValue, b: &NodeValue) -> bool {
         | (NodeValue::Strikethrough, NodeValue::Strikethrough) => true,
         _ => false,
     }
-}
-
-/// Whether a node value is a mark wrapper (the wrapper kinds
-/// `create_marked_text` chains and `same_mark_wrapper` compares).
-fn is_mark_wrapper(value: &NodeValue) -> bool {
-    matches!(
-        value,
-        NodeValue::Link(..) | NodeValue::Strong | NodeValue::Emph | NodeValue::Strikethrough
-    )
 }
 
 /// Peel a pure mark chain — wrapper → wrapper → … → a single
@@ -1271,11 +1907,16 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
                 let href = mark["attrs"]["href"].as_str().unwrap_or("");
                 let title = mark["attrs"]["title"].as_str().unwrap_or("");
                 NodeValue::Link(Box::new(comrak::nodes::NodeLink {
-                    url: href.to_owned(),
+                    // #5745: same save-direction neutralization as above.
+                    url: sanitize_link_url(href),
                     title: title.to_owned(),
                 }))
             }
-            _ => continue, // Skip code (handled below) and unknown marks
+            // #1045: `code` is skipped here because it is handled
+            // below as the innermost node; any other unrecognized mark
+            // is skipped by design — the text survives, the unknown
+            // styling is shed (see `prosemirror_to_markdown`).
+            _ => continue,
         };
         wrappers.push(wrapper_value);
     }

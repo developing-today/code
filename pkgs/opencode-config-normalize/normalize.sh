@@ -39,12 +39,20 @@
 set -euo pipefail
 
 CONFIG="${OPENCODE_CONFIG:-$HOME/.config/opencode/opencode.jsonc}"
+if [ -L "$CONFIG" ]; then
+  printf 'opencode-config-normalize: refusing symlinked config %s\n' "$CONFIG" >&2
+  exit 1
+fi
 [ -r "$CONFIG" ] || exit 0
 
 python3 - "$CONFIG" <<'PY'
-import json, re, sys, pathlib
+import json, os, pathlib, re, stat, sys, tempfile
 
 path = pathlib.Path(sys.argv[1])
+if path.is_symlink():
+    print(f'opencode-config-normalize: refusing symlinked config {path}', file=sys.stderr)
+    sys.exit(1)
+original_mode = stat.S_IMODE(path.stat().st_mode)
 raw = path.read_text()
 
 
@@ -674,8 +682,22 @@ if 'agent' in expected:
 if parsed != expected:
     sys.exit(1)
 
-tmp = path.with_suffix(path.suffix + '.normalize-tmp')
-tmp.write_text(out)
-tmp.replace(path)
+fd, tmp_name = tempfile.mkstemp(prefix=f'.{path.name}.normalize-', dir=path.parent)
+tmp = pathlib.Path(tmp_name)
+try:
+    with os.fdopen(fd, 'w') as f:
+        fd = -1  # ownership transferred to the file object
+        f.write(out)
+        f.flush()
+        os.fchmod(f.fileno(), original_mode)
+        os.fsync(f.fileno())
+    tmp.replace(path)
+finally:
+    if fd >= 0:
+        os.close(fd)
+    try:
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
 print(f"opencode-config-normalize: repaired {path}", file=sys.stderr)
 PY

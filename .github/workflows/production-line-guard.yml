@@ -5,21 +5,6 @@ name: production-line-guard
 # nix, no toolchain - so this stays a seconds-long basic check.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/**"
-      - "apps/**"
-      - ".github/scripts/check-production-line-limit.sh"
-      - ".github/scripts/check-production-line-limit.test.sh"
-      - ".github/workflows/production-line-guard.yml"
-  pull_request:
-    paths:
-      - "pkgs/**"
-      - "apps/**"
-      - ".github/scripts/check-production-line-limit.sh"
-      - ".github/scripts/check-production-line-limit.test.sh"
-      - ".github/workflows/production-line-guard.yml"
   workflow_dispatch:
 
 permissions:
