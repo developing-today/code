@@ -60,6 +60,17 @@ const MSG = {
   AUTH_OK: 9,
 } as const;
 
+/** The ContentMode values an INIT frame may name (#7859). The mode
+ * field is shape-trusted wire data until validated here: adopting a
+ * non-string or unknown mode verbatim corrupts the session, and a
+ * falsy mode coerced to "raw" opens a rich doc in the raw schema as
+ * an empty editor. */
+export const CONTENT_MODES: readonly ContentMode[] = ["rich", "markdown", "plain", "raw", "media", "binary"];
+
+export function isContentMode(value: unknown): value is ContentMode {
+  return typeof value === "string" && (CONTENT_MODES as readonly string[]).includes(value);
+}
+
 // MessagePack encoder/decoder configured for array format
 const packr = new Packr({ useRecords: false, structuredClone: true });
 const unpackr = new Unpackr({ useRecords: false, structuredClone: true });
@@ -268,6 +279,10 @@ export function initCollab(
           MAX_STEPS_MESSAGE_BYTES,
           "byte message budget and cannot be synced; edit kept locally only.",
         );
+        // The console line alone leaves the wedge invisible in the UI: sync
+        // has silently stopped for this document while the local document
+        // keeps the edit. Surface it through the status callback too.
+        updateStatus("error");
         return;
       }
       console.log("[collab] Sending", batch.length, "of", sendable.steps.length, "steps, version:", sendable.version);
@@ -314,7 +329,16 @@ export function initCollab(
           console.error("[collab] Dropping malformed Init message: invalid document");
           return;
         }
-        const mode = ((msg[3] as string) || "raw") as ContentMode;
+        // #7859: the mode field is validated like version/doc above -
+        // an absent mode keeps the "raw" default, but a present mode
+        // that is not a known ContentMode drops the frame instead of
+        // being adopted verbatim or coerced.
+        const rawMode = msg[3];
+        if (rawMode !== undefined && !isContentMode(rawMode)) {
+          console.error("[collab] Dropping malformed Init message: invalid mode");
+          return;
+        }
+        const mode: ContentMode = rawMode ?? "raw";
         // Validate the doc content entries against the mode schema (#7884):
         // the top-level checks above cannot see a bad entry (unknown node or
         // mark type, non-string text, non-object entry), and initEditor would

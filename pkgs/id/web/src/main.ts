@@ -11,11 +11,22 @@ import { AutoSaveManager, type SaveResult } from "./auto-save";
 import { buildCollabWsUrl, type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { updateHeaderSubtitle } from "./header-subtitle";
-import { identityNeedsRefresh } from "./identity-refresh";
+import {
+  identityNeedsRefresh,
+  parseIdentityMeResponse,
+  parseIdentityNameResponse,
+  parseIdentityRegisterResponse,
+} from "./identity-refresh";
 import { clientIdForDisplay } from "./settings-identity";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
+import {
+  isCopyFileResponse,
+  isNewFileResponse,
+  isRenameFileResponse,
+  isSaveFileResponse,
+} from "./file-op-responses";
 import { isSaveShortcut } from "./save-shortcut";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
@@ -145,16 +156,16 @@ async function ensureIdentity(): Promise<IdentityState | null> {
     try {
       const resp = await fetch(`/api/identity/me?token=${encodeURIComponent(stored.token)}`);
       if (resp.ok) {
-        const data = await resp.json();
+        const data = parseIdentityMeResponse(await resp.json());
         // Server returns a refreshed token on each validation, resetting the
         // 30-day expiry clock. Save it so the client stays authenticated as
         // long as they visit within every 30 days.
         if (data.token) {
           stored.token = data.token;
-          saveIdentity(stored.token, stored.clientId, data.name || null);
+          saveIdentity(stored.token, stored.clientId, data.name);
         }
         // Update name from server (may have changed via another tab/session)
-        const serverName = data.name || null;
+        const serverName = data.name;
         if (serverName !== stored.name) {
           updateStoredName(serverName);
           stored.name = serverName;
@@ -182,11 +193,11 @@ async function ensureIdentity(): Promise<IdentityState | null> {
       console.error("[id] Identity registration failed:", resp.status);
       return null;
     }
-    const data = await resp.json();
+    const data = parseIdentityRegisterResponse(await resp.json());
     const identity: IdentityState = {
       token: data.token,
-      clientId: data.client_id,
-      name: data.name || null,
+      clientId: data.clientId,
+      name: data.name,
     };
     saveIdentity(identity.token, identity.clientId, identity.name);
     console.log("[id] New identity registered:", identity.clientId);
@@ -212,8 +223,8 @@ async function updateDisplayName(token: string, name: string | null): Promise<st
       console.error("[id] Name update failed:", resp.status);
       return null;
     }
-    const data = await resp.json();
-    const updatedName = data.name || null;
+    const data = parseIdentityNameResponse(await resp.json());
+    const updatedName = data.name;
     updateStoredName(updatedName);
     console.log("[id] Display name updated:", updatedName);
     return updatedName;
@@ -1129,7 +1140,11 @@ async function init(): Promise<void> {
           return { ok: false };
         }
 
-        const result = (await response.json()) as { hash: string; name: string; archive_name: string | null };
+        const result: unknown = await response.json();
+        if (!isSaveFileResponse(result)) {
+          console.error("[id] Save failed: unexpected /api/save response shape", result);
+          return { ok: false };
+        }
         console.log("[id] File saved:", result);
 
         // Update the hash in the container (doc_id stays as filename)
@@ -1166,7 +1181,11 @@ async function init(): Promise<void> {
           return;
         }
 
-        const result = (await response.json()) as { hash: string; name: string };
+        const result: unknown = await response.json();
+        if (!isNewFileResponse(result)) {
+          console.error("[id] Create file failed: unexpected /api/new response shape", result);
+          return;
+        }
         console.log("[id] File created:", result);
 
         // Clear input
@@ -1279,12 +1298,15 @@ async function init(): Promise<void> {
           return;
         }
 
-        const result = (await response.json()) as {
-          name: string;
-          hash: string;
-          archived_original: string | null;
-          archived_replaced: string | null;
-        };
+        const result: unknown = await response.json();
+        if (!isRenameFileResponse(result)) {
+          console.error("[id] Rename failed: unexpected /api/rename response shape", result);
+          if (renameBtn) renameBtn.textContent = "error!";
+          setTimeout(() => {
+            if (renameBtn) renameBtn.textContent = "rename";
+          }, 2000);
+          return;
+        }
         console.log("[id] File renamed:", result);
 
         if (renameBtn) {
@@ -1347,10 +1369,15 @@ async function init(): Promise<void> {
           return;
         }
 
-        const result = (await response.json()) as {
-          name: string;
-          hash: string;
-        };
+        const result: unknown = await response.json();
+        if (!isCopyFileResponse(result)) {
+          console.error("[id] Copy failed: unexpected /api/copy response shape", result);
+          if (copyBtn) copyBtn.textContent = "error!";
+          setTimeout(() => {
+            if (copyBtn) copyBtn.textContent = "copy";
+          }, 2000);
+          return;
+        }
         console.log("[id] File copied:", result);
 
         if (copyBtn) {

@@ -23,7 +23,11 @@ fn probe_open_replays_names_set_would_refuse() {
         .map(|(a, n)| (a.to_string(), n.to_string()))
         .collect();
     println!("LOADED: {loaded:?}");
-    assert_eq!(loaded.len(), 4, "all four refused-at-write records loaded verbatim");
+    assert_eq!(
+        loaded.len(),
+        4,
+        "all four refused-at-write records loaded verbatim"
+    );
     assert!(store.get("me", "acct-b") == Some("paypal"));
     assert!(store.get("me", "acct-c").unwrap().contains('\u{200b}'));
 }

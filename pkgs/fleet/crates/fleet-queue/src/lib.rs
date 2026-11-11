@@ -21,6 +21,7 @@
 //! migration's standing rollback inventory (design note §7).
 
 pub mod backoff;
+pub mod merge_intent;
 pub mod bin_args;
 pub mod creation_outbox;
 mod home;
@@ -31,6 +32,8 @@ pub mod token_file;
 pub mod client;
 #[cfg(feature = "client")]
 pub mod fallback;
+#[cfg(feature = "client")]
+pub mod needs_drew;
 #[cfg(feature = "client")]
 pub mod placement;
 #[cfg(feature = "queue-broker")]

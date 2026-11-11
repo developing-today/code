@@ -25,15 +25,18 @@ func TestAuthSplit(t *testing.T) {
 	// not-implemented-by-choice note (the #1950 decision: client OAuth
 	// deferred, /mcp resource server planned at #1975), which marked most
 	// authorization sides n/a -- including every validation side. The split
-	// therefore covers just the 8 bound sides, all permissive, and #1972's
-	// validation target lives with the #1975 work, not here (#2695).
-	if c.Rows != 7 || c.Sides != 8 {
-		t.Errorf("split covers %d rows / %d row-sides, want 7 rows / 8 row-sides", c.Rows, c.Sides)
+	// therefore covered just the 8 bound sides, all permissive, and #1972's
+	// validation target lived with the #1975 work, not here (#2695).
+	// The #1975 bearer gate has since merged (PR #2711), and #1950's
+	// remainder (task 14860) bound its first validation side:
+	// authz-accept-only-own-tokens (server) performs the "invalid" check.
+	if c.Rows != 8 || c.Sides != 9 {
+		t.Errorf("split covers %d rows / %d row-sides, want 8 rows / 9 row-sides", c.Rows, c.Sides)
 	}
-	if c.Permissive != 8 || c.Validation != 0 {
-		t.Errorf("split is %d permissive / %d validation, want 8 / 0", c.Permissive, c.Validation)
+	if c.Permissive != 8 || c.Validation != 1 {
+		t.Errorf("split is %d permissive / %d validation, want 8 / 1", c.Permissive, c.Validation)
 	}
-	for check, want := range map[string]int{"invalid": 0, "expired": 0, "wrong-resource": 0, "scope": 0} {
+	for check, want := range map[string]int{"invalid": 1, "expired": 0, "wrong-resource": 0, "scope": 0} {
 		if c.PerCheck[check] != want {
 			t.Errorf("%d validation row-sides need %q, want %d", c.PerCheck[check], check, want)
 		}

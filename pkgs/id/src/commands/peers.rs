@@ -60,9 +60,7 @@ use iroh_mdns_address_lookup::MdnsAddressLookup;
 
 use crate::discovery::{PeerAnnouncement, PeerDiscovery, resolve_config};
 use crate::peer_announcement::SignedPeerAnnouncement;
-use crate::protocol::{
-    AbuseCountersRow, AbusePolicyView, MetaRequest, MetaResponse,
-};
+use crate::protocol::{AbuseCountersRow, AbusePolicyView, MetaRequest, MetaResponse};
 use crate::store::load_or_create_keypair;
 use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
 
@@ -135,10 +133,14 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
 
     if options.abuse {
         if options.gossip {
-            bail!("--abuse cannot be combined with --gossip: abuse counters come from the local serve instance only");
+            bail!(
+                "--abuse cannot be combined with --gossip: abuse counters come from the local serve instance only"
+            );
         }
         if node.is_some() {
-            bail!("--abuse cannot be combined with a remote node ID: abuse counters come from the local serve instance only");
+            bail!(
+                "--abuse cannot be combined with a remote node ID: abuse counters come from the local serve instance only"
+            );
         }
         let (rows, policy) = query_local_abuse_counters().await?;
         print!("{}", format_abuse_report(&rows, policy.as_ref()));

@@ -102,6 +102,7 @@ use super::{
     PROOF_HEADERS, PROOF_IDS, StoreError, corrupt, decode_stored, lowest_proof, position_key,
     store_chain, store_event, store_fork,
 };
+use super::{Ingest, Refusal};
 use crate::chain::{self, Event};
 use crate::documents::{is_document_kind, is_removal_kind};
 use crate::membership::AuthId;
@@ -109,92 +110,6 @@ use crate::membership::body::decode_body;
 use crate::rejection::Reason;
 use crate::tag_claims::is_tag_kind;
 use crate::waiting::{AuthorKey, WaitingPool};
-
-/// Why an event was refused. A refused event changes nothing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Refusal {
-    /// The bytes are not a valid event. The message names the rule that failed: a
-    /// non-canonical encoding, a bad signature, or an extension that breaks its rules.
-    Malformed(String),
-    /// The event is above its author's fork point, so it never applies.
-    Frozen,
-    /// The author already holds as many waiting events as the caps allow.
-    WaitingFull,
-}
-
-impl Refusal {
-    /// The reason this refusal gives. A malformed event has none: its bytes do not verify, so it is
-    /// not an event the store judged.
-    pub const fn reason(&self) -> Option<Reason> {
-        match self {
-            Self::Malformed(_) => None,
-            Self::Frozen => Some(Reason::Frozen),
-            Self::WaitingFull => Some(Reason::Waiting),
-        }
-    }
-}
-
-/// What [`EventStore::ingest`] did with one event.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Ingest {
-    /// The event is stored and applied. `released` lists the waiting events that
-    /// became applied because of it, in the order they applied.
-    Accepted {
-        /// The event's ID.
-        id: Hash,
-        /// The IDs of the waiting events it released, in application order.
-        released: Vec<Hash>,
-    },
-    /// The event is already stored, or it is one of the author's fork proof headers.
-    /// Nothing changed.
-    Duplicate {
-        /// The event's ID.
-        id: Hash,
-    },
-    /// The author signed two different events at one sequence number. The chain is
-    /// frozen there, and both headers are stored as the proof. A further event at the
-    /// fork point that changes the proof is reported the same way. The headers are present
-    /// now, so events of other authors that waited for them may apply. Those are not listed
-    /// here. Read them from the store.
-    Fork {
-        /// The author.
-        author: AuthorKey,
-        /// The fork point: the lowest sequence number where the author conflicts.
-        seq: SeqNum,
-    },
-    /// The event is held, and not stored. It waits for a dependency, or it is parked because its
-    /// backlink can never be the applied head. The hold is on disk, so a restart keeps it. Sync
-    /// sends it again if the caps or the age limit drop it.
-    Waiting {
-        /// The event's ID.
-        id: Hash,
-    },
-    /// The event was refused. Nothing changed.
-    Refused(Refusal),
-    /// The event is stored but does not apply. It is a group operation the membership layer
-    /// voids, or content whose author lost authority at a voided event it names. It still counts
-    /// as present, so events that name it and events after it in its author's chain are not held.
-    /// `released` lists the waiting events that became applied because of it.
-    Voided {
-        /// The event's ID.
-        id: Hash,
-        /// The IDs of the waiting events it released that applied, in application order.
-        released: Vec<Hash>,
-    },
-}
-
-impl Ingest {
-    /// The reason this result gives, when it is a refusal or a hold. A stored, applied, or duplicate
-    /// event, and a fork that proves a conflict, give none.
-    pub const fn reason(&self) -> Option<Reason> {
-        match self {
-            Self::Refused(refusal) => refusal.reason(),
-            Self::Waiting { .. } => Some(Reason::Waiting),
-            Self::Voided { .. } => Some(Reason::Voided),
-            Self::Accepted { .. } | Self::Duplicate { .. } | Self::Fork { .. } => None,
-        }
-    }
-}
 
 /// What the store decides for one event, before the waiting pool sees it.
 #[derive(Debug, PartialEq, Eq)]

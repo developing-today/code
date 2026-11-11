@@ -3323,6 +3323,13 @@ func guardedMain(m *testing.M) int {
 		return 1
 	}
 	fmt.Printf("feature coverage ledger: %s (%d rows)\n", path, len(rows))
+	if violations := featureCoverageGuardViolations(code, rows); len(violations) > 0 {
+		for _, violation := range violations {
+			fmt.Fprintln(os.Stderr, "feature coverage guard:", violation)
+		}
+		fmt.Fprintf(os.Stderr, "feature coverage guard: %d violation(s); see docs/testing/feature-inventory.md (#1978)\n", len(violations))
+		return 1
+	}
 	return code
 }
 

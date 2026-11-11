@@ -13,7 +13,7 @@
 | ToS grant scope | §2.1: store, reproduce, distribute, publicly display/perform, compile/execute (code), cache and format-shift, for operating and promoting the service. **Federation sublicense:** granted, to federation peer servers only, on the same terms, revocable by de-federation (§2.2) |
 | Revocability | The grant is irrevocable for copies already distributed to third parties in reliance on it; the uploader's prospective remedy is deletion (§2.3). Deletion stops new distribution and removes the object from the deleting server on the deletion SLA; it does not claw back lawful prior distributions or peers' cached copies past their cache TTL (§2.4) |
 | Account defaults | §3: one agreement at account creation. Code defaults to **MIT or Apache-2.0** (uploader picks one as their account default); non-code defaults to **CC0-1.0** (stored normalized per #5977 §4) or a no-attribution CC variant. Per-upload override always wins. Pre-agreement uploads are quarantined from public distribution until the account completes the agreement (§3.3) |
-| Admin policy language | §4: allowlist / denylist / ladder-ceiling primitives over taxonomy entry ids, families, and traits, scoped per content kind and per principal group, expressed in KDL in the #5753 server config. All four of the issue's example policies are expressed in §4.3 |
+| Admin policy language | §4: allowlist / denylist / ladder-ceiling primitives over taxonomy entry ids, families, and traits, scoped per content kind, per principal group, and per authorship, expressed in KDL in the #5753 server config. All four of the issue's example policies are expressed in §4.3 |
 | Defaults we ship | §5: ladder ceiling at **MPL** (levels 0–2 of #5977 supported), **NC refused on our servers**, unlicensed accepted **only** under the §2 grant + ownership attestation |
 | CC-NC sharp case | §6: on a commercial server the server **refuses NC uploads for public distribution** (identification is the classifier's job — NC artifacts are classified, flagged, and may exist privately / on servers whose policy allows them). Where an NC artifact slips in under a false attestation, the **uploader bears the risk** (attestation + indemnity in the ToS); the server's duty is notice-and-takedown on a rights-holder complaint (§6.2) |
 | Uploads-regime GPL | **OPEN — Drew decides (§7).** Recommendation: provisional warn-and-allow under admin control, exactly the C1 ruling's provisional framing, until Drew rules |
@@ -122,7 +122,7 @@ A server policy is a set of rules over the #5977 license facts. Three primitives
 - **Denylist** — refuse these entries/families/traits;
 - **Ladder ceiling** — admit nothing whose #5977 ladder level exceeds N.
 
-Each rule is scoped by **content kind** (`code` / `non-code` / `all`) and by **principal group** (`all` / named groups / `admins`). Matching values are taxonomy ids, families, or obligation traits from #5977 §2 — never free text, never license names typed by an admin (the "GPL in the name" example of §4.3 is a *family/trait* match, not a substring match — §4.3, policy 3, says why).
+Each rule is scoped by **content kind** (`code` / `non-code` / `all`), by **principal group** (`all` / named groups / `admins`), and optionally by **authorship** (`authors=`: named groups / `admins` — §4.3 step 2 defines the author of record; a rule declaring no `authors=` scope does not test authorship). Matching values are taxonomy ids, families, or obligation traits from #5977 §2 — never free text, never license names typed by an admin (the "GPL in the name" example of §4.3 is a *family/trait* match, not a substring match — §4.3, policy 3, says why).
 
 ### 4.2 KDL shape (in the #5753 server config)
 
@@ -143,7 +143,8 @@ licensing {
 
 0. **Hard denies first.** A top-level `deny` (outside any `policy` block) is a server-wide constraint: it refuses before any scoped policy is consulted, and no `allow` in any policy overrides it. The shipped NC deny (§5) lives at this tier. Scoped denies, by contrast, are rules of their policy only (step 2).
 1. **The unknown gate.** An artifact classified `LicenseRef-Unknown` (#5977 §2.6) is refused for public distribution **before** any ceiling test — explicitly, not by ladder arithmetic: the taxonomy assigns `LicenseRef-Unknown` level 2 (`warning`), so the shipped ceiling of 2 would otherwise *admit* unidentified licenses, which is never intended. The only way past the gate is an explicit `allow "LicenseRef-Unknown"` in a matching policy (an auditable admin decision, e.g. for a named principal migrating legacy content), and passing the gate subjects the artifact to the rest of the test normally.
-2. **Scope precedence: the narrowest matching policy decides.** Among policies whose kind scope matches the artifact's kind and whose principal scope contains the uploader, the most specific one decides alone: a principal-named scope beats `principals="all"`, and a kind-named scope beats `kind="all"` (a policy narrow on both axes beats one narrow on either). Broader matching policies do not also apply — this is what lets a group policy *relax* a global allowlist for its members (§4.4, policy 4) instead of merely adding to it. Within the deciding policy: a matching **deny** refuses; else a matching **allow** admits (allows are exceptions *within* a ceiling — an allow names entries the ceiling would otherwise refuse); else the **ceiling** decides (level ≤ ceiling admits); a deciding policy with an allowlist admits only its entries (the allowlist replaces the ceiling test for that policy).
+2. **Scope precedence: the narrowest matching policy decides.** Among policies whose kind scope matches the artifact's kind, whose principal scope contains the uploader, and whose authorship scope — when the policy declares one — contains the artifact's **author of record**, the most specific one decides alone: a principal-named scope beats `principals="all"`, a kind-named scope beats `kind="all"`, and a declared authorship scope beats an undeclared one (a policy narrow on more axes beats one narrow on fewer). Broader matching policies do not also apply — this is what lets a scoped policy *relax* a global allowlist for the artifacts it matches (§4.4, policy 4) instead of merely adding to it. Within the deciding policy: a matching **deny** refuses; else a matching **allow** admits (allows are exceptions *within* a ceiling — an allow names entries the ceiling would otherwise refuse); else the **ceiling** decides (level ≤ ceiling admits); a deciding policy with an allowlist admits only its entries (the allowlist replaces the ceiling test for that policy).
+**Authorship and the author of record.** The `authors=` axis exists because uploader identity is not authorship: §1.1's licensed route permits uploading third-party code, so a group member's upload says nothing about who wrote the code. An artifact's author of record is established from its provenance, in this order: (i) a signed authorship attestation carried with the artifact, naming the author's principal; (ii) for imported or mirrored code, the origin source's authorship — the author of the imported snapshot in its home repository or project; (iii) otherwise the artifact is *unattributed*. The uploader is never consulted as authorship evidence, and an unattributed artifact matches no `authors=` scope: authorship exceptions fail closed. A policy that needs an authorship restriction declares it on this axis; the uploader's group membership alone never expresses one.
 3. **Principal-group exceptions are first-class**, per the issue's requirement — they are the same primitives with a narrower `principals=` scope, not an afterthought bolted onto a global policy.
 4. **Refusals are explained**: the upload response names the rule that refused (policy scope, primitive, and the artifact's classified level/family) — an unexplained license refusal is a support ticket, an explained one is the policy working.
 
@@ -197,16 +198,16 @@ licensing {
     policy kind="all" principals="all" {
         allow "MIT" "CC0-1.0"
     }
-    policy kind="code" principals="worldsmiths" {
+    policy kind="code" principals="all" authors="worldsmiths" {
         ceiling 2
     }
-    policy kind="code" principals="admins" {
+    policy kind="code" principals="all" authors="admins" {
         ceiling 2
     }
 }
 ```
 
-The default scope is the two-entry allowlist; the exception is two group-scoped policies (one per group, or one policy naming both — the scopes are lists) that admit code from those principals up to the MPL ceiling. By §4.3's scope precedence, a worldsmith uploading Apache-2.0 code is decided by the group policy alone — the global allowlist does not also apply — so the exception genuinely relaxes the default for code. Non-code from the same groups stays under the default allowlist (their group policies are scoped `kind="code"`), because the issue's exception is about *code written by* those principals.
+The default scope is the two-entry allowlist; the exception is two authorship-scoped policies (one per group, or one policy naming both — the scopes are lists) that admit code *written by* those principals, whoever uploads it, up to the MPL ceiling. The authorship scope is the whole mechanism: by §4.3's scope precedence, an authorship-narrow policy beats the undeclared default when the artifact's author of record is in the named group, so code a worldsmith wrote is decided by the exception policy alone — the global allowlist does not also apply — and the exception genuinely relaxes the default for that code. A worldsmith uploading third-party Apache-2.0 code gets no exception: the author of record is the third party, the authorship policies do not match, and the default allowlist refuses it. (This policy was previously expressed with `principals=` scopes and a worked example of a worldsmith *uploading* Apache-2.0 code — that matched the uploader, not the author, and granted the exception to third-party code the member did not write; issue #8554 records the defect and the `authors=` axis is the fix.) Non-code from the same groups stays under the default allowlist (the exception policies are scoped `kind="code"`), because the issue's exception is about *code written by* those principals.
 
 ## 5. Defaults we ship
 
@@ -223,7 +224,19 @@ Out of the box, a server running our software ships:
 
 ### 6.1 Identify and allow to exist
 
-NC work is not contraband. The classifier identifies it (#5977 §2.5: `noncommercial` trait, flagged *differently* from copyleft because the restriction is on field of use, not derivatives), and NC artifacts may exist in private storage and on any server whose policy admits them — self-hosting stance: an admin running a genuinely non-commercial community server may allow NC with a one-line removal of the shipped deny. What *our* servers do is a default, not a capability removal.
+NC work is not contraband. The classifier identifies it (#5977 §2.5: `noncommercial` trait, flagged *differently* from copyleft because the restriction is on field of use, not derivatives), and NC artifacts may exist in private storage and on any server whose policy admits them — self-hosting stance: an admin running a genuinely non-commercial community server may allow NC, but **not** with a one-line removal of the shipped deny alone. Removing the deny is necessary, not sufficient, for two reasons that stack: (1) the shipped deny is a top-level hard deny (§4.3 step 0, §5), so while it stands no policy can admit NC at all — but the default deciding policy (§4.2) *also* carries a scoped `deny trait="noncommercial"` of its own; and (2) even with both denies gone, the deciding policy's ladder ceiling is 2, while the taxonomy places NC entries at level 3 (#5977 ladder: level 3 is "all NC and ND content"; NC-adjacent source-available entries sit at level 4), so every NC upload still fails the §4.3 ceiling test. The full change, in the §4.2 shape:
+
+```kdl
+licensing {
+    // 1. remove the shipped top-level deny trait="noncommercial" (the §5 hard deny)
+    policy kind="all" principals="all" {
+        // 2. remove this policy's scoped deny trait="noncommercial"
+        ceiling 3              // 3. raise the ceiling from 2 to cover NC at level 3
+    }
+}
+```
+
+Raising the ceiling to 3 admits the rest of level 3 as well (LGPL/EPL, GPL, ND, proprietary terms) — that breadth is the price of the ceiling route. An admin who wants NC only, at the shipped ceiling, instead leaves `ceiling 2` in place and adds an explicit `allow` naming the NC entries to admit (e.g. `allow "CC-BY-NC-4.0" "CC-BY-NC-SA-4.0"`) to the deciding policy: under §4.3 step 2 an allow admits the entries it names as an exception within the ceiling, without opening level 3 generally. Either route works; deny-removal alone does not — an admin who removes only the deny has changed nothing observable, because NC uploads still refuse, now at the scoped deny or the ceiling instead of the hard deny (and the §4.3 step-4 refusal explanation names the rule that refused). What *our* servers do is a default, not a capability removal.
 
 ### 6.2 The sharp case, settled as far as design can settle it
 

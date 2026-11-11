@@ -35,6 +35,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::chain::{self, ChainExt, Event};
 
+pub use id_store::issuer_rotation::{IssuerId, author_id, issuer_id};
+
 /// Graph-native currency definitions and value-event contracts.
 pub mod graph;
 
@@ -43,22 +45,6 @@ pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 
 /// The event kind carrying a rate authorisation revocation body.
 pub const RATE_AUTHORISATION_REVOKE_KIND: &str = "currency.rate_authorisation_revoke";
-
-/// An issuer identity: the 32 bytes of its signing key's verifying
-/// key, the same bytes the event store uses as an author key.
-pub type IssuerId = [u8; 32];
-
-/// The issuer id of a signing key.
-#[must_use]
-pub fn issuer_id(key: &SigningKey) -> IssuerId {
-    *key.verifying_key().as_bytes()
-}
-
-/// The author of a decoded (signature-verified) event, as an issuer id.
-#[must_use]
-pub fn author_id(event: &Event) -> IssuerId {
-    *event.header.verifying_key.as_bytes()
-}
 
 /// Who may convert under an authorisation (#2063 §2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

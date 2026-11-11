@@ -31,8 +31,18 @@ ends. A line ending in ``');`` inside the embedded SQL — a trigger
 body's ``SELECT RAISE(ABORT, 'bad');`` — therefore does not split the
 statement. An unterminated statement at EOF is flushed unchanged —
 the caller's truncation guard judges the filtered stream.
+
+One bound keeps the constant-memory promise honest (#6525): a
+candidate that grows past MAX_CANDIDATE_BYTES without terminating
+is flushed unchanged and the rest of its statement streams through
+line by line (the end is still recognised, so the following
+statement is processed normally). Such a statement is not repaired
+— repair requires holding it — but an unterminated or pathological
+candidate can no longer grow the filter's memory to the size of
+the remaining dump while emitting nothing.
 """
 
+import os
 import re
 import sys
 
@@ -42,6 +52,25 @@ QUOTE = 0x27  # '
 COMMA = 0x2C  # ,
 SPACE = b" \t\r\n"
 # A line that begins a new top-level dump statement (column 0).
+# The largest candidate statement held for repair, in bytes. Real
+# sqlite_schema statements (a table, view, trigger or index
+# definition) are orders of magnitude smaller; the cap exists for
+# the pathological candidate, not for them. Overridable for tests
+# and for an operator repairing a genuinely huge schema.
+def _max_candidate_bytes():
+    raw = os.environ.get("REPAIR_DUMP_MAX_CANDIDATE_BYTES")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return 8 * 1024 * 1024
+
+
+MAX_CANDIDATE_BYTES = _max_candidate_bytes()
+
 TOP_LEVEL_START = re.compile(
     rb"(?:INSERT|PRAGMA|COMMIT|BEGIN|CREATE|DELETE|UPDATE|DROP|ALTER|"
     rb"REPLACE|ANALYZE|VACUUM|--)",
@@ -152,6 +181,22 @@ def repair_chunk(chunk):
     return repair_statement(core) + newline
 
 
+def _next_line_starts_new(next_line):
+    """Whether next_line begins a new top-level statement (or is EOF).
+
+    The lookahead half of ends_statement(), shared with pass-through
+    mode: there the current line must never be parsed standalone --
+    an interior line of an over-cap statement can itself parse as a
+    complete schema INSERT while the outer literal is still open.
+    """
+    if next_line is None:
+        return True
+    return bool(
+        next_line.lstrip().startswith(SCHEMA_INSERT)
+        or TOP_LEVEL_START.match(next_line)
+    )
+
+
 def ends_statement(chunk, next_line):
     """Whether the buffered chunk (last line ends in ``');``) is complete.
 
@@ -167,12 +212,7 @@ def ends_statement(chunk, next_line):
             end = parse_literal(text, pos)
             if end is not None and text[end:] == b");":
                 return True
-    if next_line is None:
-        return True
-    return bool(
-        next_line.lstrip().startswith(SCHEMA_INSERT)
-        or TOP_LEVEL_START.match(next_line)
-    )
+    return _next_line_starts_new(next_line)
 
 
 def _final_literal_start(text):
@@ -193,27 +233,113 @@ def _final_literal_start(text):
     return pos
 
 
+class _LiteralTracker:
+    """Streaming SQL string-literal state for a pass-through candidate.
+
+    Oracle: a correctly escaped statement -- the kind whose end the
+    buffered test in ends_statement() recognises from the statement
+    head, which pass-through no longer holds. Feeding the statement's
+    bytes in order tracks whether the scan is inside a string
+    literal: a '' pair inside a literal is an escaped quote, a lone
+    ' closes it. The state is O(1) -- the over-cap statement itself
+    is never retained (#6525) -- and it recognises the statement's
+    end from the statement's own bytes, independently of the next
+    line (which may be blank, defeating the top-level fallback in
+    ends_statement()).
+    """
+
+    def __init__(self):
+        self.in_literal = False
+        self._pending_quote = False
+
+    def feed(self, data):
+        for byte in data:
+            if self._pending_quote:
+                self._pending_quote = False
+                if byte == QUOTE:
+                    continue  # '' inside a literal: an escaped quote
+                self.in_literal = False
+            if self.in_literal:
+                if byte == QUOTE:
+                    self._pending_quote = True
+            elif byte == QUOTE:
+                self.in_literal = True
+
+    @property
+    def outside_literal(self):
+        return not self.in_literal and not self._pending_quote
+
+
 def main():
     out = sys.stdout.buffer
     buffered = None
+    buffered_bytes = 0
+    passthrough = False
+    tracker = None
     lines = iter(sys.stdin.buffer)
     line = next(lines, None)
     while line is not None:
         next_line = next(lines, None)
-        if buffered is not None:
+        if passthrough:
+            # The rest of an over-cap candidate streams through
+            # unchanged; only its end is still recognised, so the
+            # statement after it is processed normally. The end is
+            # recognised from the statement's own bytes (the literal
+            # tracker) or from the next line starting a new statement
+            # -- never by parsing the current line standalone: an
+            # interior line can itself parse as a complete schema
+            # INSERT while the outer literal is still open.
+            out.write(line)
+            out.flush()
+            tracker.feed(line)
+            if line.rstrip(b"\r\n").endswith(STATEMENT_END) and (
+                tracker.outside_literal or _next_line_starts_new(next_line)
+            ):
+                passthrough = False
+                tracker = None
+        elif buffered is not None:
             buffered.append(line)
-            if line.rstrip(b"\r\n").endswith(STATEMENT_END):
+            buffered_bytes += len(line)
+            if buffered_bytes > MAX_CANDIDATE_BYTES:
+                # Over the cap: flush what was buffered unchanged
+                # and stream the rest of the statement (#6525) --
+                # unless the cap-crossing line itself terminates
+                # the candidate: then the statement is complete
+                # (flushed whole, unrepaired like any over-cap
+                # statement) and the next statement must still be
+                # processed normally, not streamed through.
+                chunk = b"".join(buffered)
+                for part in buffered:
+                    out.write(part)
+                out.flush()
+                buffered = None
+                buffered_bytes = 0
+                if not (
+                    line.rstrip(b"\r\n").endswith(STATEMENT_END)
+                    and ends_statement(chunk, next_line)
+                ):
+                    passthrough = True
+                    tracker = _LiteralTracker()
+                    tracker.feed(chunk)
+            elif line.rstrip(b"\r\n").endswith(STATEMENT_END):
                 chunk = b"".join(buffered)
                 if ends_statement(chunk, next_line):
                     out.write(repair_chunk(chunk))
                     buffered = None
+                    buffered_bytes = 0
         elif line.lstrip().startswith(SCHEMA_INSERT):
             if line.rstrip(b"\r\n").endswith(STATEMENT_END) and ends_statement(
                 line, next_line
             ):
                 out.write(repair_chunk(line))
+            elif len(line) > MAX_CANDIDATE_BYTES:
+                out.write(line)
+                passthrough = True
+                tracker = _LiteralTracker()
+                tracker.feed(line)
             else:
                 buffered = [line]
+                buffered_bytes = len(line)
         else:
             out.write(line)
         line = next_line

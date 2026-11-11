@@ -18,7 +18,7 @@ use iroh_blobs::{
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::time::unix_ms;
-use crate::world::{SessionId, WorldHandle, WorldMetrics, WorldScopes};
+use crate::world::{JoinCapability, SessionId, WorldHandle, WorldMetrics, WorldScopes};
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
 use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec};
@@ -293,13 +293,29 @@ impl WorldService {
             .await
             .map_err(|error| format!("compile failed: {error:#}"))?
             .effective;
-        let (wasm, diagnostics, provenance) =
-            crate::world_compile::compile(spec, compiler, &granted, COMPILE_TIMEOUT)
-                .await
-                .map_err(|error| {
-                    tracing::warn!("world compile failed: {error:#}");
-                    format!("compile failed: {error:#}")
-                })?;
+        // Through the shared compiled-world cache when the operator
+        // configured one (design #5965 section 2, P1 in #6235): every
+        // compile is an admin compile today, so entries are attributed
+        // to the house author at author scope — unpublished source's
+        // default (section 2.3) — and identical recompiles skip the
+        // compiler entirely.
+        let compiled = if compiler.cache().is_some() {
+            crate::world_compile::compile_with_cache(
+                spec,
+                compiler,
+                &granted,
+                COMPILE_TIMEOUT,
+                crate::world_compile::ADMIN_CACHE_AUTHOR,
+                crate::world_cache::CacheScope::Author,
+            )
+            .await
+        } else {
+            crate::world_compile::compile(spec, compiler, &granted, COMPILE_TIMEOUT).await
+        };
+        let (wasm, diagnostics, provenance) = compiled.map_err(|error| {
+            tracing::warn!("world compile failed: {error:#}");
+            format!("compile failed: {error:#}")
+        })?;
         let hash = module_hash(&wasm);
         let permit = self
             .try_reserve_module_upload()
@@ -689,6 +705,144 @@ impl WorldService {
         *self.module_hash.write().await = Some(module_hash.clone());
         Ok((module_hash, installed.sequence))
     }
+
+    /// Install an uploaded Wasm module on the authority of a joined
+    /// builder's live capability (design #835 phase 3). The upload
+    /// safeguards are the admin path's — size and hash bounds, the
+    /// module trust gate, source-only refusal — with two differences:
+    /// no admin token is involved (the world actor authorizes the
+    /// capability at the effect boundary and derives the
+    /// `BuilderInstalled { by }` audit actor from it), and builder
+    /// installs are **Wasm-only**: a native artifact is refused even
+    /// when this host enables native execution, so builder authority
+    /// can never reach the native installer.
+    #[cfg(feature = "sandbox")]
+    pub async fn install_wasm_authorized(
+        &self,
+        token: JoinCapability,
+        wasm: Vec<u8>,
+        seed: u64,
+        claimed_hash: &str,
+        _permit: OwnedSemaphorePermit,
+        signature: Option<&ModuleSignature>,
+    ) -> Result<(String, u64), InstallError> {
+        let _profile_operation = self.profile_operation.lock().await;
+        if self.source_only {
+            return Err(InstallError::RawModuleDisabled);
+        }
+        if wasm.is_empty() || wasm.len() > MAX_WORLD_MODULE_BYTES {
+            return Err(InstallError::InvalidUpload);
+        }
+        let hash = Hash::new(&wasm);
+        let module_hash = hash.to_string();
+        if claimed_hash != module_hash {
+            return Err(InstallError::InvalidUpload);
+        }
+        // The same publisher trust gate as an admin upload, and the
+        // same trust decision recorded for it: a builder install the
+        // gate admitted on a verified signature must journal that
+        // decision (basis + publisher) in its install event, exactly
+        // as the admin path's does (#1069).
+        verify_module_signature(&self.trusted_module_keys, &wasm, signature)?;
+        let trust_decision = if self.trusted_module_keys.is_empty() {
+            crate::world::TrustDecision {
+                basis: crate::world::TrustBasis::NoTrustList,
+                publisher: None,
+            }
+        } else {
+            crate::world::TrustDecision {
+                basis: crate::world::TrustBasis::SignatureVerified,
+                publisher: signature.map(|sig| sig.public_key.clone()),
+            }
+        };
+        if crate::world_native::is_native_module(&wasm) {
+            return Err(InstallError::InvalidModule);
+        }
+        let runtime = self
+            .world
+            .execution_profile()
+            .await
+            .map_err(|_| InstallError::Unavailable)?
+            .resolve(self.runtime)
+            .map_err(|_| InstallError::InvalidModule)?;
+        let limits = runtime.sandbox;
+        let compile_bytes = wasm.clone();
+        let program = tokio::task::spawn_blocking(move || {
+            crate::sandbox::Sandbox::compile(&compile_bytes, limits)?.instantiate(seed)
+        })
+        .await
+        .map_err(|_| InstallError::InvalidModule)?
+        .map_err(|_| InstallError::InvalidModule)?;
+        let guest: Box<dyn crate::world::WorldProgram> = Box::new(program);
+
+        // A durable world must be able to reload this module before
+        // the journal may reference it.
+        if let Some(modules) = self.module_dir.clone() {
+            let bytes = wasm.clone();
+            let saved = tokio::task::spawn_blocking(move || modules.save(&bytes))
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .map_err(|_| InstallError::Unavailable)?;
+            if saved != module_hash {
+                return Err(InstallError::Unavailable);
+            }
+        }
+
+        let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?.clone();
+        let pin = blobs
+            .add_bytes_with_opts(AddBytesOptions {
+                data: wasm.into(),
+                format: BlobFormat::Raw,
+            })
+            .temp_tag()
+            .await
+            .map_err(|_| InstallError::Unavailable)?;
+        if pin.hash() != hash {
+            return Err(InstallError::Unavailable);
+        }
+
+        // The effect boundary: the authorized command re-checks the
+        // capability inside the actor, and its own answer classifies
+        // the outcome — a denial the command itself returns (the
+        // capability expired, or a revocation landed, after the early
+        // check below) carries the stable `actor_denied` code, told
+        // apart from an activation failure by the typed denial in the
+        // command's error. The early check only avoids receiving an
+        // upload the command would certainly refuse; it never widens
+        // what the command allows (fail-closed).
+        self.world
+            .authorize(token.clone(), WorldScopes::BUILDER)
+            .await
+            .map_err(|_| InstallError::ActorDenied)?;
+        let installed = self
+            .world
+            .install_program_authorized(
+                token,
+                module_hash.clone(),
+                seed,
+                Some(crate::world::ModuleProvenance::Artifact),
+                Some(trust_decision),
+                guest,
+            )
+            .await
+            .map_err(|error| {
+                if crate::world::is_capability_denied(&error) {
+                    InstallError::ActorDenied
+                } else {
+                    InstallError::Unavailable
+                }
+            })?;
+        if !matches!(
+            installed.kind,
+            crate::world::WorldEventKind::ProgramInstalled { .. }
+        ) {
+            return Err(InstallError::Unavailable);
+        }
+        *self.module_pin.lock().await = Some(pin);
+        *self.module_hash.write().await = Some(module_hash.clone());
+        Ok((module_hash, installed.sequence))
+    }
+
 
     /// Read the currently pinned module artifact for peer download.
     /// The caller must already have authenticated as a world participant.

@@ -278,10 +278,16 @@ mod tests {
         let chain = MoveChain::new();
         // The control verifies; the same bytes against a blank world
         // or with an empty input do not (#6447 triage decision).
-        assert!(chain.verify(&event.bytes, "ttt", b"cell-0", &author).is_ok());
+        assert!(
+            chain
+                .verify(&event.bytes, "ttt", b"cell-0", &author)
+                .is_ok()
+        );
         for world_id in ["", " ", "\t"] {
             assert!(
-                chain.verify(&event.bytes, world_id, b"cell-0", &author).is_err(),
+                chain
+                    .verify(&event.bytes, world_id, b"cell-0", &author)
+                    .is_err(),
                 "{world_id:?}"
             );
         }
