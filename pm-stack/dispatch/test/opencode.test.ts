@@ -113,6 +113,8 @@ describe("OpenCodeClient.getSession (#5555)", () => {
         const path = new URL(req.url).pathname;
         if (path === "/api/session/ses_ok") return Response.json({ data: { id: "ses_ok", title: "t" } });
         if (path === "/api/session/ses_boom") return new Response("boom", { status: 500 });
+        if (path === "/api/session/ses_fake404")
+          return new Response("(HTTP 404) mentioned by a failing upstream", { status: 500 });
         return new Response("nope", { status: 404 });
       },
     });
@@ -136,5 +138,16 @@ describe("OpenCodeClient.getSession (#5555)", () => {
   test("a 500 stays an OpenCodeError — gone is not conflated with unknown", async () => {
     const client = new OpenCodeClient(stubUrl, authFile("gs.json", JSON.stringify({ password: "pw" })));
     await expect(client.getSession("ses_boom")).rejects.toBeInstanceOf(OpenCodeError);
+  });
+
+  test("a 500 whose body mentions (HTTP 404) is not read as a missing session", async () => {
+    const client = new OpenCodeClient(stubUrl, authFile("gs.json", JSON.stringify({ password: "pw" })));
+    await expect(client.getSession("ses_fake404")).rejects.toBeInstanceOf(OpenCodeError);
+  });
+
+  test("a connection failure is an OpenCodeError, not a raw fetch rejection", async () => {
+    // Port 1 on loopback is closed; fetch rejects before any response.
+    const client = new OpenCodeClient("http://127.0.0.1:1", authFile("gs.json", JSON.stringify({ password: "pw" })));
+    await expect(client.getSession("ses_any")).rejects.toBeInstanceOf(OpenCodeError);
   });
 });

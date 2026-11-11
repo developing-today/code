@@ -115,7 +115,30 @@ export class QueueClient {
     const res = await fetch(`${this.baseUrl}/rest/v1/tasks?id=eq.${id}&select=*`, {
       headers: this.headers(false),
     });
-    if (!res.ok) return null;
+    // A failed lookup is not a missing task: returning null here made
+    // the read route report an existing task as 404 whenever PostgREST
+    // answered 401/5xx. Null is reserved for a successful empty result.
+    if (!res.ok) {
+      throw new QueueError(`task GET ${id} failed (HTTP ${res.status})`, res.status);
+    }
+    const rows = (await res.json()) as TaskRow[];
+    return rows[0] ?? null;
+  }
+
+  /** Session -> task lookup (issue #5555): the dispatch-launched task
+   * whose progress carries `session_id`, or null. Unlike the dedupe
+   * pre-check below, a lookup failure throws QueueError — this lookup
+   * backs the repo gate on GET /v1/sessions/:id, and a transient
+   * PostgREST failure must fail closed (the route answers 502), never
+   * read as "no task, so no gate". */
+  async findTaskBySessionId(sessionId: string): Promise<TaskRow | null> {
+    const res = await fetch(
+      `${this.baseUrl}/rest/v1/tasks?progress->>session_id=eq.${encodeURIComponent(sessionId)}&select=*&limit=1`,
+      { headers: this.headers(false) },
+    );
+    if (!res.ok) {
+      throw new QueueError(`task lookup by session failed (HTTP ${res.status})`, res.status);
+    }
     const rows = (await res.json()) as TaskRow[];
     return rows[0] ?? null;
   }

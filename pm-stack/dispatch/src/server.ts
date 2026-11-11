@@ -696,13 +696,29 @@ async function handleGetTask(caller: CallerIdentity, idSegment: string): Promise
   if (!row) return json(404, { error: `task ${id} not found` });
   const view = taskStatusView(row);
   // Same repo gate as the write routes: a task whose packet names a
-  // repo is only readable by callers allowed for that repo.
-  if (typeof view.repo === "string") assertCallerRepo(caller, view.repo, cfg.repoAllowlist);
+  // repo is only readable by callers allowed for that repo. A denied
+  // task answers exactly like a missing one — surfacing the auth
+  // error would confirm the id exists and leak the repo it names to
+  // an ID probe.
+  if (typeof view.repo === "string") {
+    try {
+      assertCallerRepo(caller, view.repo, cfg.repoAllowlist);
+    } catch (e) {
+      if (e instanceof AuthError) return json(404, { error: `task ${id} not found` });
+      throw e;
+    }
+  }
   return json(200, view);
 }
 
-async function handleGetSession(idSegment: string): Promise<Response> {
-  const sessionId = decodeURIComponent(idSegment);
+async function handleGetSession(caller: CallerIdentity, idSegment: string): Promise<Response> {
+  let sessionId: string;
+  try {
+    sessionId = decodeURIComponent(idSegment);
+  } catch {
+    // A malformed percent-encoding is a bad request, not a 500.
+    throw new ValidationError("session id: malformed percent-encoding");
+  }
   if (!sessionId.trim()) throw new ValidationError("session id: required");
   let raw: unknown;
   try {
@@ -712,6 +728,29 @@ async function handleGetSession(idSegment: string): Promise<Response> {
     throw e;
   }
   if (raw === null || raw === undefined) return json(404, { error: `session ${sessionId} not found` });
+  // Repo gate, the task read's rule applied to sessions: a
+  // dispatch-launched session is bound to the queue task that
+  // launched it (progress.session_id), and that task's repo must be
+  // in the current allowlist for the session's status to be
+  // readable — removing a repo from the allowlist closes its
+  // sessions too. A denied session answers like a missing one: no
+  // title, no directory, no repo name. Sessions with no dispatch
+  // task carry no repo association in any record; a queue-less
+  // deployment (queue === null) can have no dispatch sessions at
+  // all, so the gate applies exactly when the record is reachable,
+  // and a failed lookup fails closed via QueueError (502).
+  if (queue) {
+    const task = await queue.findTaskBySessionId(sessionId);
+    const repo = task ? taskStatusView(task).repo : null;
+    if (typeof repo === "string") {
+      try {
+        assertCallerRepo(caller, repo, cfg.repoAllowlist);
+      } catch (e) {
+        if (e instanceof AuthError) return json(404, { error: `session ${sessionId} not found` });
+        throw e;
+      }
+    }
+  }
   return json(200, sessionStatusView(raw));
 }
 
@@ -744,7 +783,7 @@ export async function handler(req: Request): Promise<Response> {
         oidcAudience: cfg.oidcAudience,
         allowlist: cfg.repoAllowlist,
       });
-      return taskMatch ? await handleGetTask(caller, taskMatch[1]) : await handleGetSession(sessionMatch![1]);
+      return taskMatch ? await handleGetTask(caller, taskMatch[1]) : await handleGetSession(caller, sessionMatch![1]);
     }
     return json(404, { error: "not found" });
   } catch (e) {

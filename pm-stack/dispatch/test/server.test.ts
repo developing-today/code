@@ -211,6 +211,12 @@ describe("GET /v1/tasks/:id and /v1/sessions/:id read routes (#5555)", () => {
     expect(res.status).toBe(400);
   });
 
+  test("GET /v1/sessions/:id with malformed percent-encoding is 400, before any upstream call", async () => {
+    const token = signOidc("developing-today/code");
+    const res = await handler(new Request("http://x/v1/sessions/%ZZ", { headers: { authorization: `Bearer ${token}` } }));
+    expect(res.status).toBe(400);
+  });
+
   test("GET /v1/tasks/:id authenticated reaches the queue (502 while unconfigured here)", async () => {
     const token = signOidc("developing-today/code");
     const res = await handler(new Request("http://x/v1/tasks/42", { headers: { authorization: `Bearer ${token}` } }));

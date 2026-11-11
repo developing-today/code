@@ -8,6 +8,43 @@ import { QueueClient, QueueError } from "../src/queue.ts";
 
 const realFetch = globalThis.fetch;
 
+// Read-route lookups (issue #5555): a failed PostgREST lookup is an
+// error, never a "not found" — getTask backs the task read route and
+// findTaskBySessionId backs the session route's repo gate, so both
+// fail closed with QueueError on a non-OK response and reserve null
+// for a successful empty result.
+describe("getTask / findTaskBySessionId failure mapping (#5555)", () => {
+  test("getTask throws QueueError on a non-OK response", async () => {
+    stubFetch(async () => new Response("unavailable", { status: 503 }));
+    const client = new QueueClient("http://queue.test", "test-key");
+    await expect(client.getTask(42)).rejects.toBeInstanceOf(QueueError);
+  });
+
+  test("getTask returns null only for a successful empty result", async () => {
+    stubFetch(async () => Response.json([]));
+    const client = new QueueClient("http://queue.test", "test-key");
+    expect(await client.getTask(42)).toBeNull();
+  });
+
+  test("getTask returns the row on success", async () => {
+    stubFetch(async () => Response.json([{ id: 42, queue: "q", status: "queued", dedupe_key: "k" }]));
+    const client = new QueueClient("http://queue.test", "test-key");
+    expect((await client.getTask(42))?.id).toBe(42);
+  });
+
+  test("findTaskBySessionId throws QueueError on a non-OK response (gate fails closed)", async () => {
+    stubFetch(async () => new Response("boom", { status: 500 }));
+    const client = new QueueClient("http://queue.test", "test-key");
+    await expect(client.findTaskBySessionId("ses_1")).rejects.toBeInstanceOf(QueueError);
+  });
+
+  test("findTaskBySessionId returns the launching task on success", async () => {
+    stubFetch(async () => Response.json([{ id: 7, queue: "q", status: "claimed", dedupe_key: "k" }]));
+    const client = new QueueClient("http://queue.test", "test-key");
+    expect((await client.findTaskBySessionId("ses_1"))?.id).toBe(7);
+  });
+});
+
 afterEach(() => {
   globalThis.fetch = realFetch;
 });

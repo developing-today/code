@@ -182,7 +182,14 @@ Every endpoint except `GET /health` requires `Authorization: Bearer …`:
   value by name is Bitwarden **`pm-dispatch.api-token`** (filed
   under issue #5555, verified byte-identical to the service's by
   hash): a rotation updates the vault entry and
-  `~/secrets/dispatch.env` together.
+  `~/secrets/dispatch.env` together, and then restarts
+  `pm-dispatch.service` — the unit reads the env file only at
+  start, so without a restart the new token is rejected and the
+  old one stays valid. If `~/secrets/dispatch.env` is lost,
+  restore the token from this vault item before running
+  install.sh: a missing file makes the installer generate a fresh
+  token, desyncing the vault copy and every client (401s) until
+  they are updated to match.
 
 The caller identity (`{type:"bearer"}` or `{type:"oidc", repository,
 actor, workflow_ref}`) is recorded in the task payload.
