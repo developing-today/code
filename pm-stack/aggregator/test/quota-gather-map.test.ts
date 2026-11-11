@@ -986,6 +986,49 @@ describe("pool splits (#1331)", () => {
     expect(sameReason.state).toBe("error");
   });
 
+  test("Meta session lapse (#8294): session-class failures map to lapsed with the re-auth remedy named", () => {
+    const base = {
+      providerId: "meta",
+      providerName: "Meta",
+      configured: true,
+      fetchedAt: Date.parse(TICK),
+    } as const;
+    // failureClass-carried unauthorized (the gatherer's session signal).
+    const byClass = entryFromResult(
+      { ...base, ok: false, failureClass: "unauthorized", error: "unauthorized", usage: null },
+      TICK,
+    );
+    expect(byClass.state).toBe("lapsed");
+    expect(byClass.serviceId).toBe("meta");
+    expect(byClass.windows).toEqual([]);
+    expect(byClass.error).toContain("session lapsed");
+    expect(byClass.error).toContain("re-auth");
+    // The exporter's own shape: a session-expired error string.
+    const byError = entryFromResult(
+      { ...base, ok: false, error: "session-expired: dev.meta.ai session is logged out", usage: null },
+      TICK,
+    );
+    expect(byError.state).toBe("lapsed");
+    expect(byError.error).toContain("re-auth");
+    // Control: a configured Meta failure without the session signal
+    // stays a provider error.
+    const failed = entryFromResult({ ...base, ok: false, error: "timeout", usage: null }, TICK);
+    expect(failed.state).toBe("error");
+    // Control: the session words on a different provider stay an error.
+    const other = entryFromResult(
+      { providerId: "claude", ok: false, configured: true, error: "unauthorized", usage: null },
+      TICK,
+    );
+    expect(other.state).toBe("error");
+    // Recovery shape: the next good read is a plain ok entry again.
+    const recovered = entryFromResult(
+      { ...base, ok: true, usage: { windows: { weekly: { usedPercent: 42 } } } },
+      TICK,
+    );
+    expect(recovered.state).toBe("ok");
+    expect(recovered.error).toBeUndefined();
+  });
+
   test("Go workspaces without a hub pool stay combined-only; labels match case-insensitively", () => {
     expect(goPoolServiceId(entryFromResult(goResult("Home", "cred_home"), TICK))).toBeNull();
     expect(goPoolServiceId(entryFromResult(goResult(undefined, "cred_x"), TICK))).toBeNull();
