@@ -42,6 +42,23 @@ pub struct WorldWebState {
     pub hub: Option<WorldHub>,
     /// Mark the directory explorer's session cookies `Secure`.
     pub cookie_secure: bool,
+    /// The one world this bridge serves, when it is bound to a
+    /// single world (the program router, #5728). A request naming
+    /// any other world -- or naming none, when the hub's default
+    /// is not the bound world -- is refused before it can lease or
+    /// create anything. `None` is the ordinary multi-world bridge.
+    pub pinned_world: Option<String>,
+}
+
+impl WorldWebState {
+    /// Whether this bridge may serve a request naming `world`
+    /// (`None` names the hub's default world, `default`).
+    fn serves(&self, world: Option<&str>, default: &str) -> bool {
+        match &self.pinned_world {
+            None => true,
+            Some(pin) => world.unwrap_or(default) == pin,
+        }
+    }
 }
 
 /// Routes for the world session bridge; merge into any `Router<S>` with
@@ -131,6 +148,9 @@ async fn host_view_handler(
     };
     if !hub.admin_ok(token) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !state.serves(query.world.as_deref(), hub.default_world()) {
+        return StatusCode::NOT_FOUND.into_response();
     }
     // Resolve without the admin creation path: viewing a typo must not create
     // a new world as a side effect.
@@ -232,7 +252,7 @@ async fn metrics_handler(
     }
 
     let lease = hub
-        .lease(None, Some(token))
+        .lease(state.pinned_world.as_deref(), Some(token))
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let handle = lease.service();
@@ -422,6 +442,9 @@ async fn directory_respond(
     let Some(hub) = state.hub else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if !state.serves(world.as_deref(), hub.default_world()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let token = asked
         .headers
         .get("x-world-admin-token")
@@ -543,6 +566,9 @@ async fn invite_handler(
     let supplied = headers
         .get("x-world-admin-token")
         .and_then(|value| value.to_str().ok());
+    if !state.serves(request.world.as_deref(), hub.default_world()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     // A valid admin token may create the world it names.
     let lease = match hub.lease(request.world.as_deref(), supplied).await {
         Ok(lease) => lease,
@@ -581,11 +607,16 @@ async fn handler(State(state): State<WorldWebState>, ws: WebSocketUpgrade) -> Re
     let Some(hub) = state.hub else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    let mut config = crate::world_session::SessionConfig::default();
+    config.pinned_world = state
+        .pinned_world
+        .as_ref()
+        .map(|pin| std::sync::Arc::from(pin.as_str()));
     ws.max_message_size(MAX_FRAME_BYTES)
         .on_upgrade(move |socket| async move {
             let (sender, receiver) = socket.split();
             let mut io = WsIo { sender, receiver };
-            run_session(&hub, &mut io).await;
+            crate::world_session::run_session_with(&hub, &mut io, config).await;
         })
 }
 
@@ -642,6 +673,7 @@ mod tests {
 
     fn app(world: Option<WorldHandle>, admin_token: Option<&str>) -> axum::Router {
         world_routes().with_state(WorldWebState {
+            pinned_world: None,
             hub: world.map(|world| {
                 WorldHub::single(WorldService::new(world, admin_token.map(str::to_owned)))
             }),
@@ -1113,6 +1145,7 @@ mod tests {
             crate::directory_mail::OutboxSink::new(dir.clone()),
         ));
         let router = world_routes().with_state(WorldWebState {
+            pinned_world: None,
             hub: Some(WorldHub::single(service)),
             cookie_secure: false,
         });
@@ -1339,6 +1372,7 @@ mod tests {
             crate::world_hub::HubLimits::default(),
         );
         let router = world_routes().with_state(WorldWebState {
+            pinned_world: None,
             hub: Some(hub),
             cookie_secure: false,
         });
@@ -1466,6 +1500,7 @@ mod tests {
         let service = WorldService::new(world.clone(), Some("admin".to_owned()))
             .with_blob_store(blobs.clone());
         let addr = serve(world_routes().with_state(WorldWebState {
+            pinned_world: None,
             hub: Some(WorldHub::single(service)),
             cookie_secure: false,
         }))
@@ -1581,6 +1616,7 @@ mod tests {
             .with_compiler(compiler)
             .with_source_only(true);
         let addr = serve(world_routes().with_state(WorldWebState {
+            pinned_world: None,
             hub: Some(WorldHub::single(service)),
             cookie_secure: false,
         }))
@@ -1634,6 +1670,7 @@ mod tests {
         let service = WorldService::new(world.clone(), Some("admin".to_owned()))
             .with_blob_store(blobs.clone());
         let addr = serve(world_routes().with_state(WorldWebState {
+            pinned_world: None,
             hub: Some(WorldHub::single(service)),
             cookie_secure: false,
         }))
@@ -1750,6 +1787,7 @@ mod tests {
             .with_compiler(compiler)
             .with_source_only(true);
         let addr = serve(world_routes().with_state(WorldWebState {
+            pinned_world: None,
             hub: Some(WorldHub::single(service)),
             cookie_secure: false,
         }))
@@ -1849,11 +1887,13 @@ mod tests {
         // App A keeps the historical binding; app B binds its own
         // socket from its [interfaces.web] section (#2325).
         let addr_a = serve(world_routes().with_state(WorldWebState {
+            pinned_world: None,
             hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
             cookie_secure: false,
         }))
         .await;
         let addr_b = serve(world_routes_at("/ws/arena").with_state(WorldWebState {
+            pinned_world: None,
             hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
             cookie_secure: false,
         }))
@@ -1889,6 +1929,7 @@ mod tests {
         // (route present, no token) rather than 404 (route absent),
         // and the script-free explore page renders.
         let router = world_http_routes().with_state(WorldWebState {
+            pinned_world: None,
             hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
             cookie_secure: false,
         });
@@ -1913,5 +1954,178 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(explore.status(), StatusCode::OK);
+    }
+
+    // #5728: a bridge bound to one world (the program router's)
+    // refuses every other world on every surface -- invite,
+    // host-view, directory read/write, metrics and the websocket
+    // join -- before anything is leased or created, while the
+    // bound world keeps working. The oracle is the two-world hub:
+    // both worlds exist and are reachable through the unpinned
+    // bridge, so a 404 from the pinned one can only be the pin.
+    #[tokio::test]
+    async fn pinned_bridge_refuses_other_worlds() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let opener = crate::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: std::sync::Arc<dyn crate::world_hub::WorldOpener> = opener.clone();
+        let hub = WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "lobby",
+            crate::world_hub::HubLimits::default(),
+        );
+        let open = world_routes().with_state(WorldWebState {
+            hub: Some(hub.clone()),
+            cookie_secure: false,
+            pinned_world: None,
+        });
+        let invite = |router: axum::Router, world: &str| async move {
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/world/invite")
+                        .header("content-type", "application/json")
+                        .header("x-world-admin-token", "admin")
+                        .body(Body::from(format!(
+                            r#"{{"display_name":"ann","world":"{world}"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            (status, body)
+        };
+        // Both worlds exist, with a join capability each.
+        let (status, body) = invite(open.clone(), "arena").await;
+        assert_eq!(status, StatusCode::OK);
+        let capability_a =
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["capability"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        let (status, body) = invite(open.clone(), "other").await;
+        assert_eq!(status, StatusCode::OK);
+        let capability_o =
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["capability"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+
+        let pinned = world_routes().with_state(WorldWebState {
+            hub: Some(hub),
+            cookie_secure: false,
+            pinned_world: Some("arena".to_owned()),
+        });
+
+        // Invite: the other world is refused; the bound world works.
+        let (status, _) = invite(pinned.clone(), "other").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "invite for other world");
+        let (status, _) = invite(pinned.clone(), "arena").await;
+        assert_eq!(status, StatusCode::OK, "invite for bound world");
+
+        // Host view: same split.
+        let host_view = |world: &str| {
+            Request::builder()
+                .uri(format!("/api/world/host-view?world={world}"))
+                .header("x-world-admin-token", "admin")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let response = pinned.clone().oneshot(host_view("other")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "host-view other");
+        let response = pinned.clone().oneshot(host_view("arena")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "host-view arena");
+
+        // Directory read and write: refused for the other world,
+        // answered (not 404) for the bound one.
+        let response = pinned
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/directory?world=other")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "directory read other"
+        );
+        let response = pinned
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/directory?world=arena")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "directory read arena"
+        );
+        let write = |world: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/world/directory")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"world":"{world}","action":"sign_up","name":"Ada"}}"#
+                )))
+                .unwrap()
+        };
+        let response = pinned.clone().oneshot(write("other")).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "directory write other"
+        );
+        let response = pinned.clone().oneshot(write("arena")).await.unwrap();
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "directory write arena"
+        );
+
+        // Websocket join: naming the other world, or naming none
+        // (the hub default is a third world, "lobby"), is refused
+        // with an error frame; naming the bound world joins it.
+        let addr = serve(pinned).await;
+        let mut stray = connect(
+            addr,
+            serde_json::json!({"type":"join","capability": capability_o,"world":"other"}),
+        )
+        .await;
+        let frame = next_frame(&mut stray).await.unwrap();
+        assert_eq!(frame["type"], "error", "ws join other: {frame}");
+        let mut unnamed = connect(
+            addr,
+            serde_json::json!({"type":"join","capability": capability_a}),
+        )
+        .await;
+        let frame = next_frame(&mut unnamed).await.unwrap();
+        assert_eq!(frame["type"], "error", "ws join unnamed: {frame}");
+        let mut joined = connect(
+            addr,
+            serde_json::json!({"type":"join","capability": capability_a,"world":"arena"}),
+        )
+        .await;
+        let frame = next_frame(&mut joined).await.unwrap();
+        assert_eq!(
+            frame["snapshot"]["world_id"], "arena",
+            "ws join arena: {frame}"
+        );
     }
 }

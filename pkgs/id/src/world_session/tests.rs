@@ -1171,6 +1171,7 @@ mod tests {
             service(None),
             SessionConfig {
                 join_timeout: Duration::from_millis(50),
+                pinned_world: None,
             },
         );
         let frame = peer.next().await.unwrap();
@@ -2565,9 +2566,7 @@ mod tests {
     /// A journal the test can inspect, so session tests can assert the
     /// audit records a frame wrote — and, for denials, did not write.
     #[derive(Clone, Default)]
-    struct CapturingJournal(
-        std::sync::Arc<std::sync::Mutex<Vec<crate::world::JournalEntry>>>,
-    );
+    struct CapturingJournal(std::sync::Arc<std::sync::Mutex<Vec<crate::world::JournalEntry>>>);
 
     impl CapturingJournal {
         fn entries(&self) -> Vec<crate::world::JournalEntry> {
@@ -2602,8 +2601,8 @@ mod tests {
             Some(Box::new(journal.clone())),
         );
         let blobs: Store = MemStore::new().into();
-        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
-            .with_blob_store(blobs);
+        let service =
+            WorldService::new(world.clone(), Some("admin".to_owned())).with_blob_store(blobs);
         (world, service, journal)
     }
 
@@ -2695,7 +2694,10 @@ mod tests {
         );
 
         // The installed program is live for ordinary participants.
-        let (_, guest) = world.issue("ada".to_owned(), WorldScopes::GUEST).await.unwrap();
+        let (_, guest) = world
+            .issue("ada".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
         assert!(
             world
                 .view(guest)
@@ -2805,10 +2807,10 @@ mod tests {
         assert_eq!(next_of_type(&mut peer, "metrics").await["type"], "metrics");
 
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a denied install must not journal a BuilderInstalled entry"
         );
     }
@@ -2845,10 +2847,10 @@ mod tests {
             "mixed credentials is not a role denial: {refused}"
         );
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a mixed-credentials frame must not install anything"
         );
     }
@@ -2884,10 +2886,10 @@ mod tests {
         let denied = next_of_type(&mut peer, "error").await;
         assert_eq!(denied["code"], "actor_denied", "{denied}");
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a revoked builder's upload must not activate or journal"
         );
     }
@@ -2924,10 +2926,10 @@ mod tests {
             "Wasm module failed validation or initialization"
         );
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a native upload must not install or journal"
         );
     }
@@ -3001,10 +3003,7 @@ mod tests {
             journal
                 .entries()
                 .iter()
-                .filter(|entry| matches!(
-                    entry,
-                    crate::world::JournalEntry::Revoked { .. }
-                ))
+                .filter(|entry| matches!(entry, crate::world::JournalEntry::Revoked { .. }))
                 .count(),
             1,
             "a no-op revoke must not journal"
@@ -3041,12 +3040,15 @@ mod tests {
                 "capability": moderator_token.expose(),
             }))
             .await;
-        assert_eq!(next_of_type(&mut mod_peer, "metrics").await["type"], "metrics");
+        assert_eq!(
+            next_of_type(&mut mod_peer, "metrics").await["type"],
+            "metrics"
+        );
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::Revoked { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::Revoked { .. })),
             "a denied revoke must not journal"
         );
     }

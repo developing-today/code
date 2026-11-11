@@ -551,6 +551,9 @@ pub fn create_program_router(
     let world_state = super::world_ws::WorldWebState {
         hub: state.world.clone(),
         cookie_secure: state.cookie_secure,
+        // The program listener is bound to one world: its session
+        // bridge serves that world only (#5728).
+        pinned_world: Some(world_name.to_owned()),
     };
     let router = Router::new()
         .route("/", get(program_page_handler))
@@ -583,7 +586,10 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/api/files", get(files_list_handler))
         .route("/api/home/feed", get(super::home::feed_handler))
         .route("/api/peers", get(peers_partial_handler))
-        .route("/api/blocks", get(blocks_partial_handler).post(block_create_handler))
+        .route(
+            "/api/blocks",
+            get(blocks_partial_handler).post(block_create_handler),
+        )
         .route("/api/blocks/remove", post(block_remove_handler))
         // File management API routes
         .route("/api/save", post(save_handler))
@@ -615,8 +621,14 @@ fn create_router_inner(state: AppState) -> Router {
         // Identity API routes
         .route("/api/identity/register", post(identity_register_handler))
         // Seitan admission API (#8487)
-        .route("/api/seitan/invite", post(super::seitan::seitan_invite_handler))
-        .route("/api/seitan/admit", post(super::seitan::seitan_admit_handler))
+        .route(
+            "/api/seitan/invite",
+            post(super::seitan::seitan_invite_handler),
+        )
+        .route(
+            "/api/seitan/admit",
+            post(super::seitan::seitan_admit_handler),
+        )
         .route("/api/identity/me", get(identity_me_handler))
         .route("/api/identity/name", post(identity_update_name_handler))
         // WebSocket for collaboration
@@ -631,6 +643,7 @@ fn create_router_inner(state: AppState) -> Router {
     // merged either way: an app that declares no live channel still
     // serves those routes (Codex P2 on #3894).
     let world_state = super::world_ws::WorldWebState {
+        pinned_world: None,
         hub: state.world.clone(),
         cookie_secure: state.cookie_secure,
     };
@@ -2348,7 +2361,9 @@ mod upload_router_tests {
     ) -> (Router, AppState, tempfile::TempDir, Endpoint, Docs) {
         let (_, mut state, dir, endpoint, docs) = router_with_state().await;
         if with_account {
-            seitan.sign_up_keyed(&seitan_account_key(), "joiner").unwrap();
+            seitan
+                .sign_up_keyed(&seitan_account_key(), "joiner")
+                .unwrap();
         }
         state.seitan = seitan;
         state.world = Some(hub_with_world("arena", Some("s3cret")));
@@ -2410,13 +2425,9 @@ mod upload_router_tests {
         let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
         assert_eq!(registered.status(), StatusCode::OK);
         let uid = seitan_account_key();
-        let proof = crate::seitan::accept::sign(
-            &token,
-            &uid,
-            1,
-            seitan_now_ms().saturating_sub(480_000),
-        )
-        .unwrap();
+        let proof =
+            crate::seitan::accept::sign(&token, &uid, 1, seitan_now_ms().saturating_sub(480_000))
+                .unwrap();
         let admitted = seitan_admit(&app, &proof).await;
         assert_eq!(admitted.status(), StatusCode::OK);
         let body = seitan_response_json(admitted).await;
@@ -2461,8 +2472,8 @@ mod upload_router_tests {
         let token = crate::seitan::Token::generate();
         let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
         assert_eq!(registered.status(), StatusCode::OK);
-        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
-            .unwrap();
+        let proof =
+            crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms()).unwrap();
         let admitted = seitan_admit(&app, &proof).await;
         assert_eq!(admitted.status(), StatusCode::OK);
     }
@@ -2474,11 +2485,14 @@ mod upload_router_tests {
         let (app, _state, _dir, _endpoint, _docs) =
             seitan_app(crate::web::SeitanState::default(), true).await;
         let token = crate::seitan::Token::generate();
-        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
-            .unwrap();
+        let proof =
+            crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms()).unwrap();
         let refused = seitan_admit(&app, &proof).await;
         assert_eq!(refused.status(), StatusCode::NOT_FOUND);
-        assert_eq!(seitan_response_json(refused).await["reason"], "unknown_invite");
+        assert_eq!(
+            seitan_response_json(refused).await["reason"],
+            "unknown_invite"
+        );
     }
 
     #[tokio::test]
@@ -2495,7 +2509,10 @@ mod upload_router_tests {
         let proof = crate::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
         let refused = seitan_admit(&app, &proof).await;
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
-        assert_eq!(seitan_response_json(refused).await["reason"], "unknown_account");
+        assert_eq!(
+            seitan_response_json(refused).await["reason"],
+            "unknown_account"
+        );
 
         state.seitan.sign_up_keyed(&uid, "joiner").unwrap();
         let admitted = seitan_admit(&app, &proof).await;
@@ -4523,5 +4540,82 @@ mod collab_route_tests {
     #[tokio::test]
     async fn a_real_second_segment_does_not_match() {
         assert_eq!(get_doc("/ws/collab/a/b.md").await.0, StatusCode::NOT_FOUND);
+    }
+
+    // #5728: the program router's merged session bridge serves
+    // only the bound world. The hub hosts two worlds (default
+    // "lobby" plus "arena", both created through the open bridge
+    // the hub also serves elsewhere); through the program router,
+    // the other world might as well not exist.
+    #[tokio::test]
+    async fn program_router_bridge_serves_only_the_bound_world() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        let opener = crate::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: std::sync::Arc<dyn crate::world_hub::WorldOpener> = opener.clone();
+        let hub = crate::world_hub::WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "lobby",
+            crate::world_hub::HubLimits::default(),
+        );
+        // Create "arena" and "other" through an unpinned bridge on
+        // the same hub, as the main router would serve them.
+        let open = super::world_ws::world_routes().with_state(super::world_ws::WorldWebState {
+            hub: Some(hub.clone()),
+            cookie_secure: false,
+            pinned_world: None,
+        });
+        for world in ["arena", "other"] {
+            let res = open
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/world/invite")
+                        .header("content-type", "application/json")
+                        .header("x-world-admin-token", "admin")
+                        .body(Body::from(format!(
+                            r#"{{"display_name":"ann","world":"{world}"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "setup invite {world}");
+        }
+        state.world = Some(hub);
+        let app = create_program_router(state, "arena", WebSecurity::default());
+
+        let invite = |world: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/world/invite")
+                .header("content-type", "application/json")
+                .header("x-world-admin-token", "admin")
+                .body(Body::from(format!(
+                    r#"{{"display_name":"ann","world":"{world}"}}"#
+                )))
+                .unwrap()
+        };
+        let res = app.clone().oneshot(invite("other")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "program invite other");
+        let res = app.clone().oneshot(invite("arena")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "program invite arena");
+
+        let host_view = |world: &str| {
+            Request::builder()
+                .uri(format!("/api/world/host-view?world={world}"))
+                .header("x-world-admin-token", "admin")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let res = app.clone().oneshot(host_view("other")).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "program host-view other"
+        );
+        let res = app.clone().oneshot(host_view("arena")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "program host-view arena");
     }
 }

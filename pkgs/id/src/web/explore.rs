@@ -56,7 +56,14 @@ async fn page_handler(State(state): State<WorldWebState>, headers: HeaderMap) ->
         session: session_of(&headers),
         ..Caller::default()
     };
-    match run(&hub, caller, DirectoryAction::View).await {
+    match run(
+        &hub,
+        state.pinned_world.as_deref(),
+        caller,
+        DirectoryAction::View,
+    )
+    .await
+    {
         Ok(outcome) => page(StatusCode::OK, &outcome.view, &[], None),
         Err(error) => failure(&error, secure),
     }
@@ -83,7 +90,14 @@ async fn login_handler(
         }
         None => Caller::from_secret(fields.get("credential").map_or("", String::as_str)),
     };
-    match run(&hub, caller, DirectoryAction::OpenSession).await {
+    match run(
+        &hub,
+        state.pinned_world.as_deref(),
+        caller,
+        DirectoryAction::OpenSession,
+    )
+    .await
+    {
         Ok(outcome) => match outcome.session {
             Some(token) => with_cookie(
                 (StatusCode::SEE_OTHER, [(header::LOCATION, COOKIE_PATH)]).into_response(),
@@ -160,10 +174,11 @@ async fn act_handler(
 
 async fn run(
     hub: &WorldHub,
+    world: Option<&str>,
     caller: Caller,
     action: DirectoryAction,
 ) -> anyhow::Result<DirectoryOutcome> {
-    let lease = hub.lease(None, None).await.map_err(|error| match error {
+    let lease = hub.lease(world, None).await.map_err(|error| match error {
         ResolveError::Busy | ResolveError::TooManyWorlds => anyhow::Error::from(
             Refusal::RateLimited("the server is busy; try again".to_owned()),
         ),
@@ -664,6 +679,7 @@ mod tests {
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let hub = WorldHub::single(WorldService::new(world, admin.map(str::to_owned)));
         explore_routes().with_state(WorldWebState {
+            pinned_world: None,
             hub: Some(hub),
             cookie_secure,
         })
@@ -685,6 +701,7 @@ mod tests {
             .viewer;
         let hub = WorldHub::single(service);
         let app = explore_routes().with_state(WorldWebState {
+            pinned_world: None,
             hub: Some(hub),
             cookie_secure: false,
         });

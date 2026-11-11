@@ -64,16 +64,24 @@ pub trait SessionIo: Send {
 }
 
 /// Tunables for [`run_session_with`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SessionConfig {
     /// How long a peer may take to send its first frame.
     pub join_timeout: Duration,
+    /// The one world this session may name, when the transport is
+    /// bound to a single world (the program router's bridge,
+    /// #5728). A first frame naming any other world -- or naming
+    /// none, when the hub's default is not the bound world -- is
+    /// refused before any lease or creation; hub-level listings
+    /// are filtered to the bound world.
+    pub pinned_world: Option<std::sync::Arc<str>>,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             join_timeout: Duration::from_secs(10),
+            pinned_world: None,
         }
     }
 }

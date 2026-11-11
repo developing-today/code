@@ -181,22 +181,24 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         .await;
         return;
     };
+    // A pinned session (#5728) serves its bound world only: hub
+    // listings are filtered to it, creating any other world is
+    // refused, and the per-world path below refuses any first
+    // frame naming another world before it can lease or create.
+    let pinned = config.pinned_world.as_deref();
     // Hub-level frames are about the server, not one world.
     match &frame {
         ClientFrame::Directory {} => {
             // The public directory (#812): names, loaded state, default,
             // and presence counts only — no admin token, no identities,
             // and listing never opens a world.
-            let worlds = hub.list();
-            let _ = send_json(
-                &unattributed,
-                io,
-                &ServerFrame::Worlds {
-                    default: hub.default_world(),
-                    worlds,
-                },
-            )
-            .await;
+            let mut worlds = hub.list();
+            let mut default = hub.default_world();
+            if let Some(pin) = pinned {
+                worlds.retain(|info| info.name == pin);
+                default = pin;
+            }
+            let _ = send_json(&unattributed, io, &ServerFrame::Worlds { default, worlds }).await;
             return;
         }
         ClientFrame::ListWorlds { admin_token } => {
@@ -205,16 +207,13 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
                 return;
             }
             io.mark_authorized();
-            let worlds = hub.list();
-            let _ = send_json(
-                &unattributed,
-                io,
-                &ServerFrame::Worlds {
-                    default: hub.default_world(),
-                    worlds,
-                },
-            )
-            .await;
+            let mut worlds = hub.list();
+            let mut default = hub.default_world();
+            if let Some(pin) = pinned {
+                worlds.retain(|info| info.name == pin);
+                default = pin;
+            }
+            let _ = send_json(&unattributed, io, &ServerFrame::Worlds { default, worlds }).await;
             return;
         }
         ClientFrame::CreateWorld { admin_token } => {
@@ -224,6 +223,10 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
             }
             io.mark_authorized();
             let name = world.as_deref().unwrap_or_else(|| hub.default_world());
+            if pinned.is_some_and(|pin| name != pin) {
+                let _ = send_error(&unattributed, io, "world not served by this bridge").await;
+                return;
+            }
             match hub.create(name).await {
                 Ok(created) => {
                     let _ = send_json(
@@ -256,6 +259,10 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
     } else {
         admin
     };
+    if pinned.is_some_and(|pin| world.as_deref().unwrap_or_else(|| hub.default_world()) != pin) {
+        let _ = send_error(&unattributed, io, "world not served by this bridge").await;
+        return;
+    }
     let lease = match hub.lease(world.as_deref(), create_token).await {
         Ok(lease) => lease,
         Err(error) => {
@@ -1490,22 +1497,26 @@ async fn install_module_session_joined<I: SessionIo>(
             )
             .await;
         match installed {
-            Ok((module_hash, sequence)) => send_json(
-                service.frame_meter(),
-                io,
-                &ServerFrame::ModuleInstalled {
-                    module_hash: &module_hash,
-                    sequence,
-                },
-            )
-            .await,
-            Err(InstallError::ActorDenied) => send_error_with_code(
-                service.frame_meter(),
-                io,
-                Some(ACTOR_DENIED),
-                "module install denied",
-            )
-            .await,
+            Ok((module_hash, sequence)) => {
+                send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::ModuleInstalled {
+                        module_hash: &module_hash,
+                        sequence,
+                    },
+                )
+                .await
+            }
+            Err(InstallError::ActorDenied) => {
+                send_error_with_code(
+                    service.frame_meter(),
+                    io,
+                    Some(ACTOR_DENIED),
+                    "module install denied",
+                )
+                .await
+            }
             Err(error) => {
                 let message = match error {
                     InstallError::Disabled => "module installation is not enabled on this host",
