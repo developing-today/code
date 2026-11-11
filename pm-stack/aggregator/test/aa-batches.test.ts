@@ -358,4 +358,148 @@ describe("live AA batch selection", () => {
     expect(html).toContain("The latest collection failed");
     expect(html).toContain("rebuilding");
   });
+
+  test("a cached batch built under an old price overlay is served with the current overlay (#8211)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aa-batch-overlay-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const priceRow = (input: number, output: number) => ({
+      modelName: "openai/gpt-6-luna",
+      inputPer1M: input,
+      outputPer1M: output,
+      cacheReadPer1M: null,
+      cacheWritePer1M: null,
+      contextMinTokens: null,
+      contextMaxTokens: null,
+      windowKind: "flat",
+    });
+    const oldPrices = [priceRow(1, 4)];
+    const newPrices = [priceRow(9.9, 39.6)];
+    const summary = (importBatch: string, latest: boolean, cached: boolean) => ({
+      importBatch,
+      name: "workbook.xlsx",
+      importedAt: latest ? "2026-10-31T15:00:00Z" : "2026-10-21T10:00:00Z",
+      driveModifiedAt: null,
+      ranAt: null,
+      insertedCounts: null,
+      label: latest ? "2026-10-31 · workbook.xlsx" : "2026-10-21 · workbook.xlsx",
+      fingerprint: latest ? "latest" : "historical",
+      cached,
+      latest,
+    });
+    const historical = {
+      ...FIXTURE_AA,
+      batch: B3,
+      prices: oldPrices,
+      catalog: FIXTURE_AA.catalog?.map((e) =>
+        e.id === "openai/gpt-6-luna"
+          ? {
+              ...e,
+              rate: {
+                bands: [
+                  {
+                    minTokens: null,
+                    maxTokens: null,
+                    input: 1,
+                    output: 4,
+                    cacheRead: null,
+                    cacheWrite: null,
+                    window: "flat",
+                  },
+                ],
+                windowed: false,
+              },
+            }
+          : e,
+      ),
+    };
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        aa: {
+          ...FIXTURE_AA,
+          batch: B1,
+          prices: newPrices,
+          batches: [summary(B1, true, true), summary(B3, false, true)],
+        },
+      }),
+    );
+    const cacheDir = join(dir, "aa-batches");
+    await mkdir(cacheDir);
+    await writeFile(
+      join(cacheDir, aaCacheFileName(B3)),
+      JSON.stringify({
+        batch: B3,
+        configFingerprint: "config",
+        fingerprint: "historical",
+        pricesFingerprint: aaPricesFingerprint(oldPrices),
+        builtAt: historical.generatedAt,
+        section: historical,
+      }),
+    );
+
+    const source = liveSource(loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile }));
+    const selected = await source.aa(B3);
+    if (selected?.status !== "ok") throw new Error("expected an ok section");
+    expect(selected.stale).toBeUndefined();
+    // The batch-bound payload is the cached one; the prices and the
+    // price-derived catalog rates are the current overlay's.
+    expect(selected.batch).toBe(B3);
+    expect(selected.prices).toEqual(newPrices);
+    const luna = selected.catalog?.find((e) => e.id === "openai/gpt-6-luna");
+    expect(luna?.rate?.bands[0].input).toBe(9.9);
+    expect(luna?.rate?.bands[0].output).toBe(39.6);
+  });
+
+  test("a cached batch with prices is served stale when the feed has no current overlay (#8211)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aa-batch-nooverlay-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const historical = {
+      ...FIXTURE_AA,
+      batch: B3,
+      prices: [
+        {
+          modelName: "openai/gpt-6-luna",
+          inputPer1M: 1,
+          outputPer1M: 4,
+          cacheReadPer1M: null,
+          cacheWritePer1M: null,
+          contextMinTokens: null,
+          contextMaxTokens: null,
+          windowKind: "flat",
+        },
+      ],
+    };
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+      }),
+    );
+    const cacheDir = join(dir, "aa-batches");
+    await mkdir(cacheDir);
+    await writeFile(
+      join(cacheDir, aaCacheFileName(B3)),
+      JSON.stringify({
+        batch: B3,
+        configFingerprint: "config",
+        fingerprint: "historical",
+        pricesFingerprint: "some-old-overlay",
+        builtAt: historical.generatedAt,
+        section: historical,
+      }),
+    );
+
+    const source = liveSource(loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile }));
+    const selected = await source.aa(B3);
+    if (selected?.status !== "ok") throw new Error("expected an ok section");
+    expect(selected.stale).toBe(true);
+    expect(selected.staleReason).toContain("price overlay");
+  });
 });

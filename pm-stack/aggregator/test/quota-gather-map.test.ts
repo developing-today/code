@@ -4,11 +4,15 @@ import {
   ANTIGRAVITY_GEMINI_SERVICE_ID,
   GO_POPESDREW_SERVICE_ID,
   GO_DREWRYPOPE_SERVICE_ID,
+  OPENAI_ALTERNATE_SERVICE_ID,
+  OPENAI_MAIN_SERVICE_ID,
+  OPENAI_SELF_SERVICE_ID,
   canonicalProviderId,
   entriesWithPoolSplits,
   entryFromFileExport,
   entryFromTurso,
   entryFromResult,
+  codexPoolServiceId,
   goPoolServiceId,
   lastKnownEntries,
   mapWithConcurrency,
@@ -982,6 +986,49 @@ describe("pool splits (#1331)", () => {
     expect(sameReason.state).toBe("error");
   });
 
+  test("Meta session lapse (#8294): session-class failures map to lapsed with the re-auth remedy named", () => {
+    const base = {
+      providerId: "meta",
+      providerName: "Meta",
+      configured: true,
+      fetchedAt: Date.parse(TICK),
+    } as const;
+    // failureClass-carried unauthorized (the gatherer's session signal).
+    const byClass = entryFromResult(
+      { ...base, ok: false, failureClass: "unauthorized", error: "unauthorized", usage: null },
+      TICK,
+    );
+    expect(byClass.state).toBe("lapsed");
+    expect(byClass.serviceId).toBe("meta");
+    expect(byClass.windows).toEqual([]);
+    expect(byClass.error).toContain("session lapsed");
+    expect(byClass.error).toContain("re-auth");
+    // The exporter's own shape: a session-expired error string.
+    const byError = entryFromResult(
+      { ...base, ok: false, error: "session-expired: dev.meta.ai session is logged out", usage: null },
+      TICK,
+    );
+    expect(byError.state).toBe("lapsed");
+    expect(byError.error).toContain("re-auth");
+    // Control: a configured Meta failure without the session signal
+    // stays a provider error.
+    const failed = entryFromResult({ ...base, ok: false, error: "timeout", usage: null }, TICK);
+    expect(failed.state).toBe("error");
+    // Control: the session words on a different provider stay an error.
+    const other = entryFromResult(
+      { providerId: "claude", ok: false, configured: true, error: "unauthorized", usage: null },
+      TICK,
+    );
+    expect(other.state).toBe("error");
+    // Recovery shape: the next good read is a plain ok entry again.
+    const recovered = entryFromResult(
+      { ...base, ok: true, usage: { windows: { weekly: { usedPercent: 42 } } } },
+      TICK,
+    );
+    expect(recovered.state).toBe("ok");
+    expect(recovered.error).toBeUndefined();
+  });
+
   test("Go workspaces without a hub pool stay combined-only; labels match case-insensitively", () => {
     expect(goPoolServiceId(entryFromResult(goResult("Home", "cred_home"), TICK))).toBeNull();
     expect(goPoolServiceId(entryFromResult(goResult(undefined, "cred_x"), TICK))).toBeNull();
@@ -1226,5 +1273,88 @@ describe("canonicalProviderId (config-id alignment, #1823)", () => {
     const retained = markRetained([prevEntry], "2026-10-27T06:00:00.000Z");
     expect(retained[0].providerId).toBe("_claude");
     expect(retained[0].retainedFromFailedTick).toBe("2026-10-27T06:00:00.000Z");
+  });
+});
+
+describe("codexPoolServiceId — folded codex rows file under their own OpenAI pool", () => {
+  const TICK = "2026-11-10T21:30:00.000Z";
+  const win = (usedPercent: number, windowSeconds: number) => ({
+    usedPercent,
+    remainingPercent: 100 - usedPercent,
+    windowSeconds,
+    resetAt: 1794364348000,
+  });
+  const codexResult = (
+    credentialLabel: string | undefined,
+    providerName: string,
+    windows: Record<string, ReturnType<typeof win>>,
+  ): QuotaProviderResult => ({
+    providerId: "codex",
+    providerName,
+    ok: true,
+    configured: true,
+    fetchedAt: Date.parse(TICK),
+    credentialId: "cred_x",
+    credentialLabel,
+    usage: { windows },
+  });
+
+  test("each instance credential lands on its own serviceId", () => {
+    const alt = entryFromResult(
+      codexResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", {
+        "5h": win(42, 18_000),
+        weekly: win(65, 604_800),
+      }),
+      TICK,
+    );
+    expect(alt.serviceId).toBe(OPENAI_ALTERNATE_SERVICE_ID);
+    const main = entryFromResult(
+      codexResult("OpenAI Main (drewrypope)", "OpenAI Main (drewrypope)", { weekly: win(100, 604_800) }),
+      TICK,
+    );
+    expect(main.serviceId).toBe(OPENAI_MAIN_SERVICE_ID);
+    const self = entryFromResult(
+      codexResult("OpenAI (_openai, drewrypope) — self-contained", "OpenAI Self-Contained (drewrypope, no Codex)", {
+        weekly: win(100, 604_800),
+      }),
+      TICK,
+    );
+    expect(self.serviceId).toBe(OPENAI_SELF_SERVICE_ID);
+  });
+
+  test("unmatched folded rows keep the historical openai.main fallback; codexPoolServiceId is null", () => {
+    expect(codexPoolServiceId({ credentialLabel: undefined, providerName: "Codex" })).toBeNull();
+    expect(codexPoolServiceId({ credentialLabel: "some future account", providerName: "Codex" })).toBeNull();
+    const bare = entryFromResult(codexResult(undefined, "Codex", { weekly: win(10, 604_800) }), TICK);
+    expect(bare.serviceId).toBe("openai.main");
+  });
+
+  test("recordsFromEntries: the alternate account's 5h never enters openai.main's series", () => {
+    const alt = entryFromResult(
+      codexResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", {
+        "5h": win(42, 18_000),
+        weekly: win(65, 604_800),
+      }),
+      TICK,
+    );
+    const mainDedicated = entryFromResult(
+      {
+        providerId: "openai.main",
+        providerName: "OpenAI Main (drewrypope)",
+        ok: true,
+        configured: true,
+        fetchedAt: Date.parse(TICK),
+        credentialId: "cred_main",
+        credentialLabel: "OpenAI Main (drewrypope)",
+        usage: { windows: { weekly: win(100, 604_800) } },
+      },
+      TICK,
+    );
+    const { records } = recordsFromEntries([alt, mainDedicated], new Map(), "quota-gatherer");
+    const byKey = new Map(records.map((r) => [`${r.serviceId}|${r.metricId}`, r.value]));
+    expect(byKey.get("openai.alternate|5h")).toBe(42);
+    expect(byKey.has("openai.main|5h")).toBe(false);
+    expect(byKey.get("openai.main|weekly")).toBe(100);
+    expect(byKey.get("openai.alternate|weekly")).toBe(65);
   });
 });

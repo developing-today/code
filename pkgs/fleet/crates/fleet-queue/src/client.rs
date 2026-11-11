@@ -2283,10 +2283,460 @@ fn atomic_write_json(path: &str, obj: &Value) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Creation outbox (#3706) — client verbs + the serial drainer.
+//
+// `fleet queue outbox enqueue|list|metrics|claim|resolve` are the
+// producer API and the drainer's building blocks; `outbox drain`
+// is the pilot drainer itself: claim the oldest due entry from the
+// broker, run its create through `gh`, verify by read-back, and
+// resolve. Exactly one producer is wired as the pilot
+// (new-issue-creator-code-a — doc/fleet/creation-outbox.md); there
+// is no dual-write and no automatic fallback to direct creation:
+// a broker failure stops the drain visibly.
+// ---------------------------------------------------------------------------
+
+fn outbox_payload(args: &Args) -> Value {
+    if let Some(path) = args.get("payload-file") {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| die(2, &format!("cannot read payload file {path}: {e}")));
+        serde_json::from_str(&text)
+            .unwrap_or_else(|e| die(2, &format!("payload file {path} is not JSON: {e}")))
+    } else if let Some(raw) = args.get("payload") {
+        serde_json::from_str(&raw)
+            .unwrap_or_else(|e| die(2, &format!("--payload is not JSON: {e}")))
+    } else {
+        die(2, "outbox enqueue needs --payload-file or --payload")
+    }
+}
+
+fn cmd_outbox_enqueue(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &[
+            "repo",
+            "kind",
+            "dedup-key",
+            "producer",
+            "payload-file",
+            "payload",
+        ],
+        &[],
+    );
+    reject_extra_pos("outbox enqueue", &args, 0);
+    let resp = unwrap_ok(call(
+        "/outbox-enqueue",
+        &json!({
+            "repo": args.get("repo"),
+            "kind": args.get("kind"),
+            "dedup_key": args.get("dedup-key"),
+            "producer": args.get("producer"),
+            "payload": outbox_payload(&args),
+        }),
+    ));
+    print_json(&resp);
+    0
+}
+
+fn cmd_outbox_list(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["repo", "state"], &[]);
+    reject_extra_pos("outbox list", &args, 0);
+    let resp = unwrap_ok(call(
+        "/outbox-list",
+        &json!({"repo": args.get("repo"), "state": args.get("state")}),
+    ));
+    print_json(&resp);
+    0
+}
+
+fn cmd_outbox_metrics(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &[], &[]);
+    reject_extra_pos("outbox metrics", &args, 0);
+    let resp = unwrap_ok(call("/outbox-metrics", &json!({})));
+    print_json(&resp);
+    0
+}
+
+fn outbox_claim(owner: &str) -> Value {
+    unwrap_ok(call("/outbox-claim", &json!({"owner": owner})))
+}
+
+fn outbox_resolve(id: &str, outcome: &str, extra: Value) -> Value {
+    let mut body = json!({"id": id, "outcome": outcome});
+    if let (Some(dst), Some(src)) = (body.as_object_mut(), extra.as_object()) {
+        for (k, v) in src {
+            dst.insert(k.clone(), v.clone());
+        }
+    }
+    unwrap_ok(call("/outbox-resolve", &body))
+}
+
+fn cmd_outbox_claim(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["owner"], &[]);
+    reject_extra_pos("outbox claim", &args, 0);
+    let owner = args
+        .get("owner")
+        .unwrap_or_else(|| "outbox-drainer".to_string());
+    print_json(&outbox_claim(&owner));
+    0
+}
+
+fn cmd_outbox_resolve(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &[
+            "outcome",
+            "github-number",
+            "github-url",
+            "retry-after",
+            "error",
+        ],
+        &[],
+    );
+    if args.pos.is_empty() {
+        die(
+            2,
+            "usage: repo-queue outbox resolve <id> --outcome done|rate_limited|uncertain|failed",
+        );
+    }
+    let outcome = args.get("outcome").unwrap_or_default();
+    let resp = outbox_resolve(
+        &args.pos[0],
+        &outcome,
+        json!({
+            "github_number": args.get_i64("github-number"),
+            "github_url": args.get("github-url"),
+            "retry_after": args.get_i64("retry-after"),
+            "error": args.get("error"),
+        }),
+    );
+    print_json(&resp);
+    0
+}
+
+/// Run one `gh` command and capture (success, stdout, stderr)
+/// without a shell — arguments never pass through shell expansion.
+fn gh_run(argv: &[String]) -> (bool, String, String) {
+    match std::process::Command::new("gh").args(argv).output() {
+        Ok(out) => (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ),
+        Err(e) => (false, String::new(), format!("cannot run gh: {e}")),
+    }
+}
+
+fn gh_json(argv: &[String]) -> Option<Value> {
+    let (ok, stdout, _) = gh_run(argv);
+    if !ok {
+        return None;
+    }
+    serde_json::from_str(&stdout).ok()
+}
+
+fn s(v: &Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// The drainer's GitHub leg (production `Creator` for the
+/// creation_outbox state machine): submits with the entry's marker
+/// in the body, classifies the result, and verifies by read-back.
+struct GhCreator;
+
+impl GhCreator {
+    fn create(&mut self, entry: &Value) -> crate::creation_outbox::CreateOutcome {
+        use crate::creation_outbox::CreateOutcome;
+        let repo = s(entry, "repo");
+        let kind = s(entry, "kind");
+        let id = s(entry, "id");
+        let payload = entry.get("payload").cloned().unwrap_or(json!({}));
+        let body = format!(
+            "{}\n\n{}",
+            s(&payload, "body"),
+            crate::creation_outbox::marker(&id)
+        );
+        let title = s(&payload, "title");
+        let argv: Vec<String> = match kind.as_str() {
+            "issue" => {
+                let mut a = vec![
+                    "issue".into(),
+                    "create".into(),
+                    "--repo".into(),
+                    repo.clone(),
+                    "--title".into(),
+                    title,
+                    "--body".into(),
+                    body,
+                ];
+                if let Some(labels) = payload.get("labels").and_then(|l| l.as_array()) {
+                    for label in labels.iter().filter_map(|l| l.as_str()) {
+                        a.push("--label".into());
+                        a.push(label.to_string());
+                    }
+                }
+                a
+            }
+            "issue_comment" | "pr_comment" => {
+                let target = payload
+                    .get("target_number")
+                    .and_then(|n| n.as_i64())
+                    .unwrap_or(0);
+                if target <= 0 {
+                    return CreateOutcome::Failed(format!("{kind} payload needs target_number"));
+                }
+                vec![
+                    "issue".into(),
+                    "comment".into(),
+                    target.to_string(),
+                    "--repo".into(),
+                    repo.clone(),
+                    "--body".into(),
+                    body,
+                ]
+            }
+            "pull_request" => vec![
+                "pr".into(),
+                "create".into(),
+                "--repo".into(),
+                repo.clone(),
+                "--title".into(),
+                title,
+                "--body".into(),
+                body,
+                "--head".into(),
+                s(&payload, "head"),
+                "--base".into(),
+                {
+                    let base = s(&payload, "base");
+                    if base.is_empty() {
+                        "main".to_string()
+                    } else {
+                        base
+                    }
+                },
+            ],
+            other => return CreateOutcome::Failed(format!("unknown outbox kind {other:?}")),
+        };
+        let (ok, stdout, stderr) = gh_run(&argv);
+        if !ok {
+            let lower = stderr.to_lowercase();
+            if lower.contains("403")
+                || lower.contains("429")
+                || lower.contains("rate limit")
+                || lower.contains("submitted too quickly")
+            {
+                return CreateOutcome::RateLimited { retry_after: None };
+            }
+            return CreateOutcome::Failed(stderr);
+        }
+        // The created object's URL is the last stdout line; its
+        // trailing path segment (or #issuecomment-<id>) is the
+        // number the read-back verifies. Empty or unparseable
+        // output on a zero exit is the silent-loss shape.
+        let url = stdout.lines().last().unwrap_or("").trim().to_string();
+        let number = url
+            .rsplit('#')
+            .next()
+            .and_then(|frag| frag.strip_prefix("issuecomment-"))
+            .and_then(|n| n.parse::<i64>().ok())
+            .or_else(|| url.rsplit('/').next().and_then(|n| n.parse::<i64>().ok()));
+        match number {
+            Some(number) => CreateOutcome::Created { number, url },
+            None => {
+                CreateOutcome::Ambiguous(format!("gh succeeded with unusable output: {stdout:?}"))
+            }
+        }
+    }
+
+    fn read_back(&mut self, entry: &Value, number: i64) -> bool {
+        let repo = s(entry, "repo");
+        let kind = s(entry, "kind");
+        let id = s(entry, "id");
+        let obj = match kind.as_str() {
+            "issue" => gh_json(&[
+                "issue".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                repo,
+                "--json".into(),
+                "number,url,body".into(),
+            ]),
+            "pull_request" => gh_json(&[
+                "pr".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                repo,
+                "--json".into(),
+                "number,url,body".into(),
+            ]),
+            _ => gh_json(&[
+                "api".into(),
+                format!("repos/{repo}/issues/comments/{number}"),
+            ]),
+        };
+        match obj {
+            Some(v) => crate::creation_outbox::marker_id(&s(&v, "body")) == Some(id),
+            None => false,
+        }
+    }
+
+    fn find_by_marker(&mut self, entry: &Value) -> Option<(i64, String)> {
+        let repo = s(entry, "repo");
+        let id = s(entry, "id");
+        let q = format!("repo:{repo} fleet-outbox:{id}");
+        let results = gh_json(&[
+            "api".into(),
+            "search/issues".into(),
+            "-f".into(),
+            format!("q={q}"),
+        ])?;
+        let items = results.get("items").and_then(|i| i.as_array())?;
+        for item in items {
+            let number = item.get("number").and_then(|n| n.as_i64())?;
+            let url = s(item, "html_url");
+            if self.read_back(entry, number) {
+                return Some((number, url));
+            }
+        }
+        None
+    }
+}
+
+fn cmd_outbox_drain(rest: &[String]) -> i32 {
+    use crate::creation_outbox::CreateOutcome;
+    let args = parse_args(rest, &["owner", "max"], &[]);
+    reject_extra_pos("outbox drain", &args, 0);
+    let owner = args
+        .get("owner")
+        .unwrap_or_else(|| "outbox-drainer".to_string());
+    let max = args.get_i64("max").unwrap_or(20).max(1);
+    let mut creator = GhCreator;
+    let mut processed = 0i64;
+    let mut last_create: Option<std::time::Instant> = None;
+    for _ in 0..max {
+        let resp = outbox_claim(&owner);
+        let row = resp.get("row").cloned().unwrap_or(Value::Null);
+        if row.is_null() {
+            println!(
+                "{}",
+                json!({"drained": processed, "idle": true, "claim": resp})
+            );
+            return 0;
+        }
+        let id = s(&row, "id");
+        let state = s(&row, "state");
+        processed += 1;
+
+        // Uncertain first: reconcile by marker, never blind-retry.
+        if state == "uncertain" {
+            match creator.find_by_marker(&row) {
+                Some((number, url)) => {
+                    let resp = outbox_resolve(
+                        &id,
+                        "done",
+                        json!({"github_number": number, "github_url": url, "reconciled": true}),
+                    );
+                    println!(
+                        "{}",
+                        json!({"id": id, "outcome": "reconciled", "number": number, "row": resp.get("row")})
+                    );
+                    continue;
+                }
+                None => {
+                    // Marker search proves absence: fall through and
+                    // re-create under the same entry.
+                }
+            }
+        }
+
+        // Pacing: the minimum gap between creates (the broker also
+        // enforces the circuit and the hourly budget at claim).
+        if let Some(last) = last_create {
+            let elapsed = last.elapsed().as_secs() as i64;
+            let wait = crate::creation_outbox::MIN_GAP_SECONDS - elapsed;
+            if wait > 0 {
+                std::thread::sleep(Duration::from_secs(wait as u64));
+            }
+        }
+        last_create = Some(std::time::Instant::now());
+        match creator.create(&row) {
+            CreateOutcome::Created { number, url } => {
+                if creator.read_back(&row, number) {
+                    outbox_resolve(
+                        &id,
+                        "done",
+                        json!({"github_number": number, "github_url": url}),
+                    );
+                    println!(
+                        "{}",
+                        json!({"id": id, "outcome": "done", "number": number, "url": url})
+                    );
+                } else {
+                    outbox_resolve(
+                        &id,
+                        "uncertain",
+                        json!({"error": "read-back failed after create"}),
+                    );
+                    println!(
+                        "{}",
+                        json!({"id": id, "outcome": "uncertain", "reason": "readback_failed"})
+                    );
+                }
+            }
+            CreateOutcome::RateLimited { retry_after } => {
+                outbox_resolve(&id, "rate_limited", json!({"retry_after": retry_after}));
+                println!(
+                    "{}",
+                    json!({"id": id, "outcome": "rate_limited", "retry_after": retry_after})
+                );
+            }
+            CreateOutcome::Ambiguous(why) => {
+                outbox_resolve(&id, "uncertain", json!({"error": why}));
+                println!(
+                    "{}",
+                    json!({"id": id, "outcome": "uncertain", "reason": why})
+                );
+            }
+            CreateOutcome::Failed(why) => {
+                outbox_resolve(&id, "failed", json!({"error": why}));
+                println!("{}", json!({"id": id, "outcome": "failed", "reason": why}));
+            }
+        }
+    }
+    println!("{}", json!({"drained": processed, "idle": false}));
+    0
+}
+
+fn cmd_outbox(rest: &[String]) -> i32 {
+    if rest.is_empty() {
+        eprint("usage: repo-queue outbox <enqueue|list|metrics|claim|resolve|drain> ...");
+        return 2;
+    }
+    let sub = rest[0].as_str();
+    let tail = &rest[1..];
+    match sub {
+        "enqueue" => cmd_outbox_enqueue(tail),
+        "list" => cmd_outbox_list(tail),
+        "metrics" => cmd_outbox_metrics(tail),
+        "claim" => cmd_outbox_claim(tail),
+        "resolve" => cmd_outbox_resolve(tail),
+        "drain" => cmd_outbox_drain(tail),
+        _ => {
+            eprint(&format!("repo-queue: unknown outbox command {sub:?}"));
+            2
+        }
+    }
+}
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|cancel|fail|complete|revive|health|signal|fallback> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|revive|health|signal|fallback|outbox> ...",
         );
         return 2;
     }
@@ -2317,6 +2767,7 @@ pub fn run(args: &[String]) -> i32 {
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
         "fallback" => crate::fallback::run(rest),
+        "outbox" => cmd_outbox(rest),
         _ => {
             eprint(&format!("repo-queue: unknown command {sub:?}"));
             2

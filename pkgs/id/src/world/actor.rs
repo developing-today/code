@@ -383,6 +383,17 @@ pub(crate) struct WorldActor {
     /// device re-enumeration. `None` when the host cannot describe
     /// its device — `device.info` then refuses with `unknown_cap`.
     pub(crate) device_manifest: Option<crate::world_caps::DeviceManifest>,
+    /// Request ids the restored program already listed in `wants` when the
+    /// world opened. Restart semantics: a reopen is not a fresh world. The
+    /// requests may have executed before the restart, and
+    /// [`handled_requests`](Self::handled_requests) is memory-only, so the
+    /// actor cannot tell done from never-run. The first `after_change`
+    /// passes therefore refuse these ids with `actor_denied` / `restarted`
+    /// instead of executing them, then drop them from this set; ids the
+    /// program issues after the open execute normally. Only
+    /// [`spawn_restored`](WorldHandle::spawn_restored)
+    /// seeds this set; every other constructor leaves it empty.
+    pub(crate) stale_wants_at_open: BTreeSet<String>,
     /// The participant whose input is being processed. Requests the program
     /// makes in response are checked against that participant's scopes.
     pub(crate) acting: Option<u64>,
@@ -691,7 +702,9 @@ impl WorldActor {
     /// repeat while the program reacts to delivered results, so a chain of
     /// asks settles inside one change. A read-only replica never runs this:
     /// program requests are side effects (chat.say, schedule.at) that must
-    /// not originate from a replica.
+    /// not originate from a replica. Requests the program already listed
+    /// at a restored open are refused, not executed (see
+    /// [`stale_wants_at_open`](Self::stale_wants_at_open)).
     pub(crate) async fn after_change(&mut self) {
         if self.read_only {
             return;
@@ -740,6 +753,22 @@ impl WorldActor {
                 self.handled_requests.retain(|id| current.contains(id));
             }
             for request in fresh {
+                // Pre-restart intent is never re-executed with world
+                // authority: the side effect may already have happened, and
+                // there is no acting participant to attribute a repeat to.
+                // Refusing (rather than executing) keeps non-idempotent
+                // providers (chat.say today; kv / http.fetch / notify as
+                // they land) to at-most-once per id across a reopen; the
+                // program re-issues the id afterwards if it still wants the
+                // effect, and that new intent executes normally.
+                if self.stale_wants_at_open.remove(&request.id) {
+                    let refusal = crate::world_caps::result_event(
+                        &request.id,
+                        Err(CapError::actor_denied_with("restarted")),
+                    );
+                    self.deliver(refusal).await;
+                    continue;
+                }
                 let outcome = self.execute(&request);
                 self.deliver(crate::world_caps::result_event(&request.id, outcome))
                     .await;
@@ -767,7 +796,7 @@ impl WorldActor {
                         "time.tick interval {ms}ms is below the world minimum {}ms",
                         self.core.limits.min_tick_ms
                     ));
-                    self.deliver(crate::world_caps::subscription_refused_event(&spec, error))
+                    self.deliver(crate::world_caps::subscription_refused_event(&spec, &error))
                         .await;
                 }
                 continue;
@@ -784,7 +813,7 @@ impl WorldActor {
                 Decision::Deny(error) => {
                     let spec = sub.spec();
                     if self.denied_subs.insert(spec.clone()) {
-                        self.deliver(crate::world_caps::subscription_refused_event(&spec, error))
+                        self.deliver(crate::world_caps::subscription_refused_event(&spec, &error))
                             .await;
                     }
                 }
@@ -2587,6 +2616,7 @@ impl WorldActor {
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
             overdue_at_open,
+            stale_wants_at_open: BTreeSet::new(),
             acting: None,
             acting_session: None,
             device_manifest: None,

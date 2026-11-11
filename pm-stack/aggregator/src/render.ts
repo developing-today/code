@@ -6,6 +6,7 @@ import {
   type RoadmapGrain,
   type TodayView,
   allRefs,
+  buildQuotaActions,
   commentStream,
   executionStrip,
   freshness,
@@ -43,7 +44,7 @@ import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCo
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { activityCoverageHtml, gapsHtml, type ActivityCoverage, type GapRecord } from "./activity.ts";
 import type { AuditEvent } from "./events.ts";
-import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
+import { AA_PLAN_FACTS, aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import {
   applyInequalityFilters,
   bandIndex,
@@ -3438,6 +3439,7 @@ export function renderTodayBody(
   queueStale = false,
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
+  const quotaActions = buildQuotaActions(quota, AA_PLAN_FACTS);
   // "-direct" display rule (#6125), judged over this view's pool set.
   const poolDisplayNames = providerDisplayNames(quota.pools.map((p) => p.provider));
   const displayPoolProvider = (name: string) => poolDisplayNames.get(name) ?? name;
@@ -3448,9 +3450,17 @@ export function renderTodayBody(
       `<div class="banner drew"><strong>${drewTotal} item${drewTotal === 1 ? "" : "s"} in the user queue</strong> — <a href="/attention#drew">review them</a></div>`,
     );
   }
-  if (walled.length) {
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /attention's orchestrator tier, derived once above — never a
+  // second list. Walled pools without a typed action still banner.
+  for (const a of quotaActions) {
     alerts.push(
-      `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${displayPoolProvider(p.provider)} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
+      `<div class="banner"><strong>Quota action:</strong> ${esc(a.title)} — ${esc(a.detail)} <a href="${esc(a.href)}">quota</a></div>`,
+    );
+  }
+  for (const p of walled.filter((p) => !quotaActions.some((a) => a.poolId === p.id))) {
+    alerts.push(
+      `<div class="banner"><strong>Walled pools:</strong> ${esc(`${displayPoolProvider(p.provider)} (${p.plan})`)} — <a href="/quota">quota</a></div>`,
     );
   }
   const wipViolations = (today.wipLanes ?? []).flatMap((lane) => [
@@ -3481,13 +3491,19 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
+  const quotaObjectives = quotaActions.map((a) => ({
+    title: a.title,
+    detail: a.detail,
+    chip: "quota · action",
+  }));
+  const allObjectives = [...today.objectives, ...quotaObjectives];
   // #6174: an objective ref comes from publisher lined-up data and is
   // only sometimes a GitHub ref — tracked-goal items carry their goal id,
   // and refUrl throws on those, which 500ed the whole /today render (the
   // Today-page sibling of the #6149 Needs-you fix). Mirror tierItemCard:
   // GitHub refs link, everything else renders as plain code.
-  const objectives = today.objectives.length
-    ? today.objectives
+  const objectives = allObjectives.length
+    ? allObjectives
         .map(
           (o, i) =>
             `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
@@ -6773,6 +6789,24 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
 
+  const rankedBlockersHtml = g.rankedBlockers.length
+    ? `<ol class="epic-graph-list">${g.rankedBlockers
+        .map((blocker) => {
+          const stateText = blocker.state === null ? "outside this pool; status unknown — unresolved" : "open unresolved blocker";
+          const downstream = blocker.downstreamItems
+            .map((item) => {
+              const weightText = item.effortWeight === null ? "unsized" : `effort weight ${item.effortWeight}`;
+              const additionalBlockers = item.additionalBlockers.length
+                ? `additional unresolved blockers: ${item.additionalBlockers.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}`
+                : "no additional unresolved blockers";
+              return `<li><a href="${esc(item.issueUrl)}">${esc(item.ref)}</a> (${weightText}) — ${additionalBlockers}</li>`;
+            })
+            .join("");
+          return `<li><a href="${esc(blocker.issueUrl)}">${esc(blocker.ref)}</a> (${stateText}) — ${blocker.downstreamCount} distinct open downstream item${blocker.downstreamCount === 1 ? "" : "s"}; known effort weight ${blocker.knownEffortWeight}; ${blocker.unsizedCount} unsized contributor${blocker.unsizedCount === 1 ? "" : "s"}: <ul>${downstream}</ul></li>`;
+        })
+        .join("")}</ol>`
+    : `<p class="muted">No unresolved blocker has open downstream work in this epic.</p>`;
+
   // SVG: hierarchy edges solid grey, dependency edges dashed amber —
   // distinct by dash and color, and named in the legend text.
   const pos = new Map(g.nodes.map((n) => [n.ref, n]));
@@ -6835,7 +6869,7 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     })
     .join("")}</ul>`;
 
-  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Blocked in this epic</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
 }
 
 export function renderProgramProject(

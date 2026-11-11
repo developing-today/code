@@ -11,7 +11,7 @@
  *   bun test plugin/opencode/v2/picker.test.ts
  */
 import { describe, expect, test } from "bun:test";
-import { targetKey, type Candidate, type Target } from "../mcpx/daemon.ts";
+import { targetKey, type Candidate, type Target } from "../../core/daemon.ts";
 import { buildPickerOptions, renderPickerMenu, runPickerSelection, type PickerScope } from "./picker.ts";
 
 const a: Target = { kind: "socket", path: "/tmp/a.sock" };

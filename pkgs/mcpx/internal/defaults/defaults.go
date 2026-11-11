@@ -421,6 +421,38 @@ var (
 	UpstreamEraFileVersion = builtin.Upstream.EraFileVersion
 	// HTTPErrorBodyLimit bounds how much of a non-2xx body is read: enough
 	// for a JSON-RPC error, not enough for an HTML error page to matter.
+	//
+	// The response-read contract (design #4375, closing audit #4376)
+	// governs every outbound call mcpx makes; the next outbound call
+	// site is expected to follow it:
+	//
+	//  1. Error bodies are excerpts: a non-2xx body is read through
+	//     io.LimitReader at HTTPErrorBodyLimit, never whole.
+	//  2. A buffered success body is refused past its named cap,
+	//     never silently truncated: read cap+1 and fail the call when
+	//     the extra byte exists (see ProviderResponseBodyLimit).
+	//  3. A retained copy is truncated while the delivered stream is
+	//     not: when a response is both relayed and kept (feedback
+	//     capture, diagnostics), the kept copy goes through a capped
+	//     buffer and the stream itself flows whole.
+	//  4. Every outbound call carries a deadline as well as a byte
+	//     bound: an http.Client timeout or a context deadline, set at
+	//     the call site or by the shared client it uses.
+	//
+	// Audit summary (#4376, 2026-11-10; full inventory recorded on
+	// #4375): the provider paths (internal/model, internal/scripting),
+	// the mcpclient transports, and the daemon proxy's retained copy
+	// conform. The one unbounded peer error read the audit found —
+	// internal/catalog/embeddings.go — was fixed to decision 1 in the
+	// audit itself. Reads in internal/cli target mcpx's own daemon
+	// endpoint and are deliberately local, except where an endpoint
+	// is operator-configured, which joins this contract.
+	// Decoder-streamed success paths conform as streaming; the bound
+	// on the decoded value itself is an open question recorded on
+	// #4375, not settled here. Stdin and file reads are not peer
+	// bytes and are out of scope. Inbound request bodies are a
+	// separate surface, capped at their handlers (MaxBytesReader /
+	// LimitReader), and are not governed by this contract.
 	HTTPErrorBodyLimit = mustBytes(builtin.Upstream.ErrorBodyLimit, "upstream.errorBodyLimit")
 	// ProviderResponseBodyLimit bounds how much of a model provider's
 	// response body is read on the success path: a chat-completion

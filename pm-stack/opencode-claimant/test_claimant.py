@@ -494,6 +494,54 @@ class TestMainFireLog(unittest.TestCase):
                          [{"task_id": 777, "reason": "task_state_changed"}])
 
 
+class TestCapUnknownFireLog(unittest.TestCase):
+    def test_cap_unknown_logs_cap_room_null_not_sentinel(self):
+        # #7770 Phase 4 audit: cap_step's -1 is an internal unknown
+        # sentinel, not a measurement; the fire log must record
+        # cap_room null (unknown), never -1 (#7732's rule).
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with patch.object(claimant, "read_mode", return_value="live"), \
+                 patch.object(claimant, "run_poll",
+                              return_value={"candidates": [dict(CANDIDATE)]}), \
+                 stub_claimed_rows([]), \
+                 patch.object(claimant, "get_active_root_session_count",
+                              return_value=-1), \
+                 patch.object(claimant, "STATE_DIR", state_dir), \
+                 patch.object(claimant, "FIRES_FILE", fires):
+                self.assertEqual(claimant.main(), 1)
+            entries = [json.loads(line)
+                       for line in fires.read_text().splitlines() if line]
+        self.assertEqual(len(entries), 1)
+        self.assertIsNone(entries[0]["cap_room"])
+        self.assertEqual(entries[0]["skips"], [{"reason": "cap_unknown"}])
+
+
+class TestGateUnknownFireLog(unittest.TestCase):
+    def test_gate_failure_logs_candidates_unknown_not_empty(self):
+        # #7770 Phase 4 audit: when poll.py itself fails, the gate
+        # exit must record candidates_seen null (discovery UNKNOWN)
+        # — [] would state a verified empty queue that was never
+        # read (#7770's unknown rule, #7732's candidates_seen point).
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with patch.object(claimant, "read_mode", return_value="live"), \
+                 patch.object(claimant, "run_poll",
+                              side_effect=RuntimeError("poll blew up")), \
+                 stub_claimed_rows([]), \
+                 patch.object(claimant, "STATE_DIR", state_dir), \
+                 patch.object(claimant, "FIRES_FILE", fires):
+                self.assertEqual(claimant.main(), 1)
+            entries = [json.loads(line)
+                       for line in fires.read_text().splitlines() if line]
+        self.assertEqual(len(entries), 1)
+        self.assertIsNone(entries[0]["candidates_seen"])
+        self.assertIsNone(entries[0]["cap_room"])
+        self.assertEqual(entries[0]["skips"], [{"reason": "gate_unknown"}])
+
+
 class TestGateExitFireLog(unittest.TestCase):
     def test_gate_exit_logs_cap_room_null_not_zero(self):
         # #7732: a fire that exits at the gate never ran cap_step, so

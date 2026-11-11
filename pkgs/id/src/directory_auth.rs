@@ -27,6 +27,13 @@ const CODE_ATTEMPTS: u32 = 5;
 /// How far a signed request's timestamp may be from the server's clock.
 pub const SIGNED_WINDOW_MS: u64 = 5 * 60 * 1000;
 const SIGNED_NONCE_LIMIT: usize = 4096;
+/// How many of the shared replay budget's entries one key may hold at
+/// once: a sixteenth of [`SIGNED_NONCE_LIMIT`], so a single key can
+/// never starve the others out of the guard — at least sixteen keys can
+/// always hold their full allowance at the same time. Entries expire
+/// with the signed-request window, so the allowance refills as the
+/// window slides.
+const SIGNED_NONCE_PER_KEY_LIMIT: usize = SIGNED_NONCE_LIMIT / 16;
 const SIGNED_DOMAIN: &str = "id-request-v1";
 const CODE_DOMAIN: &str = "id-code-v1";
 
@@ -249,7 +256,12 @@ impl ReplayGuard {
     /// # Errors
     ///
     /// Fails during the boot window, if the same key and nonce were already
-    /// used in the window, or if too many requests are being remembered.
+    /// used in the window, if this key already holds
+    /// [`SIGNED_NONCE_PER_KEY_LIMIT`] remembered nonces, or if too many
+    /// requests are being remembered in total. Retained state is hard
+    /// bounded by [`SIGNED_NONCE_LIMIT`] entries; a live entry is never
+    /// evicted to make room, so a replay can never be admitted merely
+    /// because the guard is full.
     pub fn accept(&mut self, key: &str, nonce: &str, at: u64, now: u64) -> Result<()> {
         if now < self.quiet_until {
             let seconds = (self.quiet_until - now).div_ceil(1000);
@@ -264,6 +276,22 @@ impl ReplayGuard {
         let id = format!("{key}:{nonce}");
         if self.seen.contains_key(&id) {
             return Err(Refusal::Unauthenticated("request was already used".to_owned()).into());
+        }
+        // The per-key bound is counted from the same map the duplicate
+        // check reads, after pruning, so it can never drift from the
+        // state it bounds. Keys are normalised hex and nonces exclude
+        // ':', so the "{key}:" prefix matches exactly this key's entries.
+        let key_prefix = format!("{key}:");
+        let held_by_key = self
+            .seen
+            .keys()
+            .filter(|seen_id| seen_id.starts_with(&key_prefix))
+            .count();
+        if held_by_key >= SIGNED_NONCE_PER_KEY_LIMIT {
+            return Err(Refusal::RateLimited(
+                "too many signed requests from one key; try again shortly".to_owned(),
+            )
+            .into());
         }
         if self.seen.len() >= SIGNED_NONCE_LIMIT {
             return Err(Refusal::RateLimited(
@@ -594,6 +622,92 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn one_key_filling_its_allowance_cannot_starve_a_second_key() {
+        // End to end through verify_signed: one key spends its whole
+        // per-key allowance on distinct valid requests, its next fresh
+        // request is refused, and a second key is still admitted.
+        let first = SigningKey::from_bytes(&[7; 32]);
+        let second = SigningKey::from_bytes(&[8; 32]);
+        let target = "/api/world/directory?world=x";
+        let at = now();
+        let mut replays = ReplayGuard::default();
+        for i in 0..SIGNED_NONCE_PER_KEY_LIMIT {
+            let signed =
+                sign_request(&first, "GET", target, b"", at, &format!("fill-{i}")).unwrap();
+            verify_signed(&mut replays, &signed, "GET", target, b"", at).unwrap();
+        }
+        let one_more = sign_request(&first, "GET", target, b"", at, "fill-one-more").unwrap();
+        let err = verify_signed(&mut replays, &one_more, "GET", target, b"", at).unwrap_err();
+        assert!(format!("{err:#}").contains("one key"), "{err:#}");
+        let other = sign_request(&second, "GET", target, b"", at, "fresh").unwrap();
+        assert!(verify_signed(&mut replays, &other, "GET", target, b"", at).is_ok());
+    }
+
+    #[test]
+    fn a_replay_is_still_refused_when_its_key_is_at_its_allowance() {
+        let at = now();
+        let mut replays = ReplayGuard::default();
+        for i in 0..SIGNED_NONCE_PER_KEY_LIMIT {
+            replays.accept("aa", &format!("n{i}"), at, at).unwrap();
+        }
+        // A fresh nonce from the same key is refused by the bound...
+        let err = replays.accept("aa", "fresh", at, at).unwrap_err();
+        assert!(format!("{err:#}").contains("one key"), "{err:#}");
+        // ...but a replay of an admitted nonce is refused as a replay,
+        // never admitted merely because the guard is full.
+        let err = replays.accept("aa", "n0", at, at).unwrap_err();
+        assert!(format!("{err:#}").contains("already used"), "{err:#}");
+    }
+
+    #[test]
+    fn retained_replay_state_stays_within_the_documented_hard_bound() {
+        let at = now();
+        let mut replays = ReplayGuard::default();
+        // Sixteen keys can hold a full allowance each: exactly the
+        // global limit. A seventeenth key is refused by the global
+        // bound, and no key's entries are evicted to make room.
+        for k in 0..16 {
+            let key = format!("key{k}");
+            for i in 0..SIGNED_NONCE_PER_KEY_LIMIT {
+                replays.accept(&key, &format!("n{i}"), at, at).unwrap();
+            }
+        }
+        assert_eq!(replays.seen.len(), SIGNED_NONCE_LIMIT);
+        assert!(replays.accept("key16", "n0", at, at).is_err());
+        assert_eq!(replays.seen.len(), SIGNED_NONCE_LIMIT);
+    }
+
+    #[test]
+    fn concurrent_duplicates_cannot_race_past_admission() {
+        // The hub shares one guard behind a mutex; the same signed
+        // request presented from many threads at once is admitted
+        // exactly once.
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let target = "/api/world/directory?world=x";
+        let at = now();
+        let signed = sign_request(&key, "GET", target, b"", at, "race").unwrap();
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(ReplayGuard::default()));
+        let admitted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let shared = shared.clone();
+                let admitted = admitted.clone();
+                let signed = signed.clone();
+                std::thread::spawn(move || {
+                    let mut replays = shared.lock().unwrap();
+                    if verify_signed(&mut replays, &signed, "GET", target, b"", at).is_ok() {
+                        admitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(admitted.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -387,7 +387,17 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
     state: anyOk ? "ok" : onlyLapsed ? "lapsed" : "error",
     ms: Date.now() - t0,
     entries,
-    ...(!anyOk && !onlyLapsed && firstFailure?.error ? { error: firstFailure.error } : {}),
+    // A partially-failed run still surfaces its first failure: a
+    // folded provider (codex answers one row per OpenAI credential)
+    // must not let one credential's ok row hide a sibling credential's
+    // error from the heartbeat — 2026-11-10 the codex run read "ok"
+    // with no error while the openai.main and _openai credentials were
+    // both failing token_expired at the provider.
+    ...(firstFailure?.error
+      ? { error: firstFailure.error }
+      : onlyLapsed
+        ? { error: entries.find((e) => e.state === "lapsed")?.error }
+        : {}),
   };
 }
 
@@ -698,21 +708,32 @@ async function main(): Promise<number> {
   const prevEntries = await readPreviousEntries();
   if (prevEntries.length) {
     for (const run of runs) {
-      if (run.state !== "error" || run.entries.some((e) => e.state === "ok")) continue;
+      // #8294: a Meta session lapse is temporary (remedy: re-auth on
+      // the hub), unlike the terminal Go lapse — the pool keeps its
+      // last good windows visible as stale rows while lapsed, so a
+      // lapsed Meta run engages retention exactly like an error run,
+      // and its own credential's readings are retained too.
+      const metaLapsed = run.state === "lapsed" && run.id === "meta";
+      if ((run.state !== "error" && !metaLapsed) || run.entries.some((e) => e.state === "ok")) continue;
       const retained = lastKnownEntries(prevEntries, run.id);
       if (retained.length) {
         const lapsed = run.entries.filter((e) => e.state === "lapsed");
         // Do not retain the previous ok reading for the same credential
         // that has just reported a lapse. Other credentials in the same
         // provider run may still retain their last-known readings.
-        const retainedSiblings = retained.filter(
-          (previous) =>
-            !lapsed.some((current) =>
-              (current.credentialId && previous.credentialId === current.credentialId) ||
-              (current.credentialLabel &&
-                previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
-            ),
-        );
+        // (Meta is the exception, per the #8294 note above: its lapse
+        // is the pool's own session, and retaining its last good
+        // windows beside the lapsed row is the point.)
+        const retainedSiblings = metaLapsed
+          ? retained
+          : retained.filter(
+              (previous) =>
+                !lapsed.some((current) =>
+                  (current.credentialId && previous.credentialId === current.credentialId) ||
+                  (current.credentialLabel &&
+                    previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
+                ),
+            );
         run.entries = [...markRetained(retainedSiblings, tickAt), ...lapsed];
         run.retained = retainedSiblings.length > 0;
       }

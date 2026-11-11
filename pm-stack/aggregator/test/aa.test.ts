@@ -15,6 +15,7 @@ import {
   aaPoints,
   caiFamily,
   num,
+  aaApplyPriceOverlay,
   aaSectionFromSupabase,
   computeAaCoverage,
   effortRank,
@@ -598,6 +599,62 @@ describe("Coding Agent Index points (Coding agents perspective)", () => {
     expect(luna.rate?.windowed).toBe(true);
     expect(luna.rate?.bands.map((b) => b.window).sort()).toEqual(["offpeak", "peak"]);
     expect(luna.rate?.bands.find((b) => b.window === "offpeak")?.input).toBe(0.7);
+  });
+});
+
+describe("price overlay re-derivation (#8211)", () => {
+  const price = (input: number, output: number): AaPrice[] => [
+    {
+      modelName: "openai/gpt-6-luna",
+      inputPer1M: input,
+      outputPer1M: output,
+      cacheReadPer1M: null,
+      cacheWritePer1M: null,
+      contextMinTokens: null,
+      contextMaxTokens: null,
+      windowKind: "flat",
+    },
+  ];
+  const sectionWith = (batch: string, prices: AaPrice[]) => {
+    const raw = rawPayload();
+    raw.batch = batch;
+    raw.prices = prices;
+    return aaSectionFromSupabase(raw, CONFIG_SNIPPET, "2026-10-26T18:05:00Z")!;
+  };
+
+  test("two cached batches with differing prices both report the refreshed overlay's rates", () => {
+    const oldPrices = price(1.0, 4.0);
+    const midPrices = price(2.0, 8.0);
+    const newPrices = price(3.5, 14.0);
+    const latest = sectionWith("8152e746-4805-4a11-9664-317b44ca9f1b", midPrices);
+    const historical = sectionWith("8152e746-4805-4a11-9664-317b44ca9f1c", oldPrices);
+    // Sanity: before the refresh, each section serves its own frozen rates.
+    expect(historical.prices).toEqual(oldPrices);
+    expect(historical.catalog?.find((e) => e.id === "openai/gpt-6-luna")?.rate?.bands[0].input).toBe(1.0);
+
+    const refreshedLatest = aaApplyPriceOverlay(latest, newPrices);
+    const refreshedHistorical = aaApplyPriceOverlay(historical, newPrices);
+    for (const served of [refreshedLatest, refreshedHistorical]) {
+      expect(served.prices).toEqual(newPrices);
+      const luna = served.catalog?.find((e) => e.id === "openai/gpt-6-luna");
+      expect(luna?.rate?.bands).toHaveLength(1);
+      expect(luna?.rate?.bands[0].input).toBe(3.5);
+      expect(luna?.rate?.bands[0].output).toBe(14.0);
+    }
+    // Batch-bound data is untouched and the inputs are not mutated.
+    expect(refreshedHistorical.batch).toBe(historical.batch);
+    expect(refreshedHistorical.rankings).toEqual(historical.rankings);
+    expect(refreshedHistorical.configs).toEqual(historical.configs);
+    expect(historical.prices).toEqual(oldPrices);
+    expect(historical.catalog?.find((e) => e.id === "openai/gpt-6-luna")?.rate?.bands[0].input).toBe(1.0);
+    expect(isAaSection(refreshedHistorical)).toBe(true);
+  });
+
+  test("an empty overlay clears prices and nulls catalog rates, like a fresh build", () => {
+    const section = sectionWith("8152e746-4805-4a11-9664-317b44ca9f1b", price(1.0, 4.0));
+    const cleared = aaApplyPriceOverlay(section, []);
+    expect(cleared.prices).toBeUndefined();
+    expect(cleared.catalog?.find((e) => e.id === "openai/gpt-6-luna")?.rate).toBeNull();
   });
 });
 

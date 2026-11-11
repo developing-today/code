@@ -8,7 +8,7 @@
 //! against a single-store oracle.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::{ShardInfo, ShardSet, Tier, TierCeiling};
 use crate::backend::SearchBackend;
@@ -120,6 +120,20 @@ pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> 
         ));
     }
     let shards = set.select(q.ceiling, q.topics)?;
+    // M1 (#7646): never merge across embedding models. Discovery
+    // already refused shards that disagree with the consumer, but
+    // the scanned set itself is checked here so a set assembled
+    // from more than one discovery still cannot mix identities.
+    if let Some(first) = shards.first() {
+        for s in &shards[1..] {
+            if s.embedding_model != first.embedding_model {
+                return Err(Error::fatal(format!(
+                    "shard fan-out: scanned set mixes embedding models — shard {} records `{}` but shard {} records `{}`; vectors from different embedding models are not comparable, refusing to merge",
+                    first.name, first.embedding_model, s.name, s.embedding_model
+                )));
+            }
+        }
+    }
     let stmt = turso_vector_scan_stmt(
         set.vec_table(),
         q.filters,
@@ -158,10 +172,20 @@ pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> 
 ///
 /// Keyword search deliberately stays on the monolith: TursoDB MVCC
 /// shards have no `chunks_fts` (#5669 deviation, #5755 FTS gap).
+/// Queries carrying session-level filters
+/// (--kind/--topic/--project/--client/--since/--until) likewise stay
+/// on the monolith — both branches, with a diagnostic note — since
+/// scan shards carry no sessions or labels (#6665); `fanout_scan`
+/// itself still refuses such filters loudly for direct callers.
 pub struct ShardedBackend<B> {
     inner: B,
     set: Arc<ShardSet>,
     topics: Option<Vec<String>>,
+    /// Per-query diagnostics recorded during `branch_pools` (the
+    /// monolith-fallback notices, #6665). `notes()` surfaces them;
+    /// `run_search` folds late notes in after the branches run, so
+    /// a fallback taken mid-search is reported in the envelope.
+    fallback_notes: Mutex<Vec<String>>,
 }
 
 impl<B: SearchBackend> ShardedBackend<B> {
@@ -170,6 +194,7 @@ impl<B: SearchBackend> ShardedBackend<B> {
             inner,
             set,
             topics: None,
+            fallback_notes: Mutex::new(Vec::new()),
         }
     }
 
@@ -186,6 +211,15 @@ impl<B: SearchBackend> ShardedBackend<B> {
     pub fn shard_set(&self) -> &Arc<ShardSet> {
         &self.set
     }
+}
+
+/// Whether the filters carry any session-level classification or
+/// date clause — the clauses scan shards cannot evaluate, because
+/// shards hold no sessions or labels (the `fanout_scan` refusal).
+/// The sensitivity ceiling is NOT a session clause: it is enforced
+/// on the shards themselves via the tier ceiling.
+fn has_session_filters(filters: &Filters) -> bool {
+    !filters.session_clauses("s2", "l2").0.is_empty()
 }
 
 fn vector_pool(
@@ -240,6 +274,9 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
             self.set.shards().len(),
             &self.set.snapshot_id()[..12]
         ));
+        if let Ok(fallback) = self.fallback_notes.lock() {
+            notes.extend(fallback.iter().cloned());
+        }
         notes
     }
 
@@ -248,6 +285,29 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
     }
 
     fn branch_pools(&self, q: &BranchQuery, filters: &Filters) -> Result<BranchPools> {
+        // Session-level filters (#6665): scan shards carry no
+        // sessions or labels, so a filtered query routed to the
+        // fan-out can only fail. Route BOTH branches to the wrapped
+        // monolith instead — it evaluates the filters and the
+        // sensitivity ceiling in its own branch construction — and
+        // record the diagnostic the envelope surfaces. Unfiltered
+        // vector queries keep the shard fan-out below; FTS already
+        // stays on the monolith (shards have no chunks_fts).
+        if q.query_vector.is_some() && has_session_filters(filters) {
+            let pools = self.inner.branch_pools(q, filters)?;
+            if let Ok(mut fallback) = self.fallback_notes.lock() {
+                let note = format!(
+                    "session-level filters present ({}): vector and FTS branches \
+                     served by the wrapped monolith; shard fan-out skipped — \
+                     scan shards carry no sessions or labels (#6665)",
+                    filters.describe()
+                );
+                if !fallback.contains(&note) {
+                    fallback.push(note);
+                }
+            }
+            return Ok(pools);
+        }
         // FTS (if asked) on the wrapped backend, vector on the
         // shards, concurrently; fusion happens upstream over both.
         let fts_query = BranchQuery {
@@ -315,6 +375,7 @@ mod tests {
             topic: "main".into(),
             part: 1,
             expected_chunks: None,
+            embedding_model: crate::shards::EMBEDDING_MODEL_ID.to_string(),
             chunks: 0,
             endpoint: ShardEndpoint {
                 name: "atlas-core-secret-main-01".into(),
