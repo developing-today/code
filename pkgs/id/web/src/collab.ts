@@ -37,9 +37,10 @@
 
 import { Packr, Unpackr } from "msgpackr";
 import { getVersion, receiveTransaction } from "prosemirror-collab";
+import { Node } from "prosemirror-model";
 import { Step } from "prosemirror-transform";
 import { markCursorFresh, onInitReceived, removeCursor, setConnectionState, updateCursor } from "./cursors";
-import { type ContentMode, type EditorInstance, getSendableSteps, initEditor } from "./editor";
+import { type ContentMode, type EditorInstance, getSchema, getSendableSteps, initEditor } from "./editor";
 import { closeImageBrowser } from "./image-browser";
 import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, stepWireSize } from "./collab-step-budget";
 
@@ -328,7 +329,7 @@ export function initCollab(
           console.error("[collab] Dropping malformed Init message: invalid document");
           return;
         }
-        // #7859: the mode field is validated like version/doc above —
+        // #7859: the mode field is validated like version/doc above -
         // an absent mode keeps the "raw" default, but a present mode
         // that is not a known ContentMode drops the frame instead of
         // being adopted verbatim or coerced.
@@ -338,6 +339,18 @@ export function initCollab(
           return;
         }
         const mode: ContentMode = rawMode ?? "raw";
+        // Validate the doc content entries against the mode schema (#7884):
+        // the top-level checks above cannot see a bad entry (unknown node or
+        // mark type, non-string text, non-object entry), and initEditor would
+        // silently replace the whole document with an empty one when
+        // Node.fromJSON throws on it. A doc the schema cannot parse is
+        // rejected here, at the frame boundary, instead.
+        try {
+          Node.fromJSON(getSchema(mode), docRecord);
+        } catch (err) {
+          console.error("[collab] Dropping malformed Init message: document does not parse against the mode schema:", err);
+          return;
+        }
         documentMode = mode;
         console.log("[collab] Received Init, version:", version, "mode:", mode);
 
