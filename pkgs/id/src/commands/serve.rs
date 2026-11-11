@@ -2774,6 +2774,8 @@ fn select_stale_probe_batch(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config as ProptestConfig, TestCaseError};
     use super::*;
 
     fn stale_test_peer(seed: u8) -> crate::discovery::PeerInfo {
@@ -3652,6 +3654,59 @@ mod tests {
                 .describe(),
             "program:my-world_2"
         );
+    }
+
+    #[test]
+    fn prop_program_target_acceptance_matches_world_name_oracle() {
+        // Oracle (AGENTS.md testing doctrine; Codex finding on PR #8682):
+        // crate::world_hub::validate_world_name applied to the trimmed
+        // input decides acceptance. program() and parse("program:<input>")
+        // must agree with the oracle, and on acceptance the stored name
+        // is exactly the trimmed input.
+        fn check(input: &str) -> Result<(), TestCaseError> {
+            let trimmed = input.trim();
+            let oracle_ok = crate::world_hub::validate_world_name(trimmed).is_ok();
+            let program = WebContentTarget::program(input.to_owned());
+            prop_assert!(
+                program.is_ok() == oracle_ok,
+                "program({:?}) disagrees with validate_world_name({:?})",
+                input,
+                trimmed
+            );
+            if oracle_ok {
+                prop_assert_eq!(
+                    program.expect("oracle-accepted program target"),
+                    WebContentTarget::Program(trimmed.to_owned())
+                );
+            }
+            let spec = format!("program:{input}");
+            let parsed = WebContentTarget::parse(&spec);
+            prop_assert!(
+                parsed.is_ok() == oracle_ok,
+                "parse({:?}) disagrees with validate_world_name({:?})",
+                spec,
+                trimmed
+            );
+            if oracle_ok {
+                prop_assert_eq!(
+                    parsed.expect("oracle-accepted parse").describe(),
+                    format!("program:{trimmed}")
+                );
+            }
+            Ok(())
+        }
+        let config = ProptestConfig {
+            cases: 256,
+            ..ProptestConfig::default()
+        };
+        proptest!(config, |(input in proptest::string::string_regex(".{0,70}").expect("input strategy"))| {
+            check(&input)?;
+        });
+        // Targeted alphabet: characters at the rule boundary (case, dot,
+        // slash, separators, whitespace) at boundary lengths.
+        proptest!(config, |(input in proptest::string::string_regex("[a-zA-Z0-9._/ -]{0,70}").expect("boundary strategy"))| {
+            check(&input)?;
+        });
     }
 
     #[test]
