@@ -4866,6 +4866,171 @@ mod tests {
         }
     }
 
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        /// Invariant (oracle: the generated universe's signed object
+        /// set, built independently of either peer): for generated
+        /// counts of re-signed challenge acceptances, main-lineage
+        /// lengths, and an optional competing fork turn, two peers
+        /// that start from different subsets of the universe —
+        /// different acceptance arrival orders and opposite sides of
+        /// the fork — converge after cross-replication on exactly
+        /// the universe's object set, with the same game heads and
+        /// the same acceptance and turn counts; a fresh third peer
+        /// replicating from a converged peer lands on the same set
+        /// and heads. (Codex P1 on PR #8327: replication convergence
+        /// for game graphs needs generated coverage, not only the
+        /// fixed two-acceptance case above.)
+        #[test]
+        fn game_graph_replication_converges_for_generated_forks_and_acceptances(
+            extra_acceptances in 0u64..=2,
+            main_len in 1usize..=5,
+            fork in proptest::option::of(0usize..5),
+            reverse_acceptance_order in proptest::bool::ANY,
+        ) {
+            let creator = key(81);
+            let opponent = key(82);
+            // Build the universe as signed objects first, so both
+            // peers can start from different subsets of the same set.
+            let root_obj = board(&creator);
+            let root_hash = root_obj.hash().unwrap();
+            let post_obj = game_post_object(&creator, &opponent, root_hash.clone());
+            let game_hash = post_obj.hash().unwrap();
+            let acceptance_count = 1 + extra_acceptances;
+            let mut acceptances: Vec<SignedBoardObject> = (0..acceptance_count)
+                .map(|i| {
+                    game_acceptance_object(
+                        &opponent,
+                        i + 1,
+                        root_hash.clone(),
+                        game_hash.clone(),
+                    )
+                })
+                .collect();
+            if reverse_acceptance_order {
+                acceptances.reverse();
+            }
+            // Main lineage: alternating signed turns over distinct
+            // actions. The fork (when generated) is a competing turn
+            // at `fork % main_len` with a different action.
+            let cells = ["0", "4", "1", "3", "2"];
+            let mut main_turns: Vec<SignedBoardObject> = Vec::new();
+            let mut prev: Option<ArtifactHash> = None;
+            for index in 0..main_len {
+                let (player, role) = if index % 2 == 0 {
+                    (&creator, "x")
+                } else {
+                    (&opponent, "o")
+                };
+                let turn = game_turn_object(
+                    player,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    role,
+                    u64::try_from(index).unwrap(),
+                    prev.clone(),
+                    cells[index],
+                );
+                prev = Some(turn.hash().unwrap());
+                main_turns.push(turn);
+            }
+            let fork_index = fork.map(|f| f % main_len);
+            let fork_turn = fork_index.map(|index| {
+                let (player, role) = if index % 2 == 0 {
+                    (&creator, "x")
+                } else {
+                    (&opponent, "o")
+                };
+                let prev = if index == 0 {
+                    None
+                } else {
+                    Some(main_turns[index - 1].hash().unwrap())
+                };
+                game_turn_object(
+                    player,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    role,
+                    u64::try_from(index).unwrap(),
+                    prev,
+                    "8",
+                )
+            });
+
+            // The universe (the oracle): every generated object.
+            let mut universe = BoardGraph::default();
+            universe.insert(root_obj.clone()).unwrap();
+            universe.insert(post_obj.clone()).unwrap();
+            for acceptance in &acceptances {
+                universe.insert(acceptance.clone()).unwrap();
+            }
+            for turn in &main_turns {
+                universe.insert(turn.clone()).unwrap();
+            }
+            if let Some(fork_turn) = &fork_turn {
+                universe.insert(fork_turn.clone()).unwrap();
+            }
+            let universe_set = universe.board_object_set(&root_hash);
+            let expected_heads = if fork_turn.is_some() { 2 } else { 1 };
+
+            // Peer A: the first-arriving acceptance only, plus the
+            // whole main lineage.
+            let mut peer_a = BoardGraph::default();
+            peer_a.insert(root_obj.clone()).unwrap();
+            peer_a.insert(post_obj.clone()).unwrap();
+            peer_a.insert(acceptances[0].clone()).unwrap();
+            for turn in &main_turns {
+                peer_a.insert(turn.clone()).unwrap();
+            }
+            // Peer B: every acceptance (in its own arrival order),
+            // the shared prefix the fork builds on, and the fork.
+            let mut peer_b = BoardGraph::default();
+            peer_b.insert(root_obj.clone()).unwrap();
+            peer_b.insert(post_obj.clone()).unwrap();
+            for acceptance in &acceptances {
+                peer_b.insert(acceptance.clone()).unwrap();
+            }
+            if let (Some(index), Some(fork_turn)) = (fork_index, &fork_turn) {
+                for turn in &main_turns[..index] {
+                    peer_b.insert(turn.clone()).unwrap();
+                }
+                peer_b.insert(fork_turn.clone()).unwrap();
+            }
+
+            // Cross-replicate both ways: both peers must land on the
+            // universe set, with identical heads, acceptances, turns.
+            peer_a.replicate_board_from(&peer_b, &root_hash).unwrap();
+            peer_b.replicate_board_from(&peer_a, &root_hash).unwrap();
+            for peer in [&peer_a, &peer_b] {
+                prop_assert_eq!(peer.board_object_set(&root_hash), universe_set.clone());
+                prop_assert_eq!(peer.game_heads(&game_hash).len(), expected_heads);
+                prop_assert_eq!(
+                    peer.game_acceptances(&game_hash).len(),
+                    usize::try_from(acceptance_count).unwrap()
+                );
+                prop_assert_eq!(
+                    peer.game_turns(&game_hash).len(),
+                    main_len + usize::from(fork_turn.is_some())
+                );
+            }
+            prop_assert_eq!(
+                peer_a.game_heads(&game_hash),
+                peer_b.game_heads(&game_hash)
+            );
+
+            // A fresh peer replicating from a converged peer lands
+            // on the same set and heads.
+            let mut peer_c = BoardGraph::default();
+            peer_c.replicate_board_from(&peer_a, &root_hash).unwrap();
+            prop_assert_eq!(peer_c.board_object_set(&root_hash), universe_set);
+            prop_assert_eq!(
+                peer_c.game_heads(&game_hash),
+                peer_a.game_heads(&game_hash)
+            );
+        }
+    }
+
     #[test]
     fn game_post_accepts_exact_limits_and_rejects_empty_version() {
         let author = key(60);
