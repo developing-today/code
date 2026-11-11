@@ -11,9 +11,18 @@
 //! ends, so a fresh launch always starts from the compiled program's
 //! initial state.
 //!
-//! Later phases (watch/debounce + F12.9 hot-swap, fixture promotion
-//! gates, deterministic fuzz) build on [`DevScratchWorld`] and
-//! [`discover_sources`]; they are deliberately not stubbed here.
+//! Phase 3 (this module): fixture replay as a promotion gate. Fixtures
+//! given to a dev session are replayed against the compiled candidate
+//! before it is launched; a candidate whose replayed records mismatch
+//! the fixture's recorded expectation is not promoted (not launched).
+//! The gate is the design's dev-only cross-module-hash regression mode:
+//! unlike ordinary `replay`/`verify`, it does not refuse a fixture
+//! recorded under a different module — it replays it anyway and
+//! reports the cross-module fact on the gate result (invariant 5).
+//!
+//! Later phases (watch/debounce + F12.9 hot-swap, deterministic fuzz)
+//! build on [`DevScratchWorld`] and [`discover_sources`]; they are
+//! deliberately not stubbed here.
 
 use std::path::{Path, PathBuf};
 
@@ -23,6 +32,7 @@ use serde::Serialize;
 use crate::sandbox::{Sandbox, SandboxLimits};
 use crate::world::{JoinCapability, WorldCore, WorldHandle, WorldLimits, WorldScopes};
 use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec, Compiler, validate_spec};
+use crate::world_fixture::{Fixture, Verdict};
 
 /// World id of the disposable scratch world. It exists only in this
 /// process's memory and is never served, journaled, or replicated.
@@ -274,6 +284,90 @@ impl DevScratchWorld {
     pub fn records_sequence(&self) -> u64 {
         self.handle.records().0
     }
+
+    /// The scratch world's current records, as its guest wrote them.
+    #[must_use]
+    pub fn records(&self) -> crate::world::Records {
+        (*self.handle.records().1).clone()
+    }
+}
+
+/// The outcome of replaying one fixture against one compiled dev
+/// candidate (Phase 3 promotion gate). See [`fixture_gate`].
+#[derive(Clone, Debug, Serialize)]
+pub struct FixtureGate {
+    /// The fixture's label (the path it was read from, as given).
+    pub fixture: String,
+    /// The world the fixture's history belongs to.
+    pub world_id: String,
+    /// Module hash the fixture was recorded under, if it records one.
+    pub recorded_module_hash: Option<String>,
+    /// Module hash of the candidate the fixture was replayed against.
+    pub candidate_module_hash: String,
+    /// True when the fixture was recorded under a different module
+    /// than the candidate. Dev replays it anyway (the cross-module
+    /// regression mode); ordinary `replay`/`verify` refuse this.
+    pub cross_module: bool,
+    /// True when the fixture's history starts at sequence one.
+    pub complete: bool,
+    /// `match`, `mismatch`, or `not_compared` (see `verdict_reason`).
+    pub verdict: String,
+    /// Why nothing was compared, when `verdict` is `not_compared`:
+    /// a partial history whose final epoch is not covered, or a
+    /// fixture that records no expectation. A not-compared fixture
+    /// never silently passes as a match.
+    pub verdict_reason: Option<String>,
+    /// True when this gate refuses the candidate's promotion: the
+    /// replayed records mismatch the recorded expectation.
+    pub blocks_promotion: bool,
+}
+
+/// Replay `fixture` against the compiled candidate `module` and
+/// decide whether the candidate may be promoted (Phase 3 gate).
+///
+/// This is the dev-only cross-module regression mode of invariant 5:
+/// [`crate::world_fixture::check_module`] is deliberately not called,
+/// so a fixture recorded under an earlier module hash still replays;
+/// the gate result reports that fact as `cross_module`. A partial
+/// fixture replays its retained window; its records are compared only
+/// when the window still covers the final program epoch, and the
+/// verdict says `not_compared` (with the reason) when they are not.
+///
+/// # Errors
+///
+/// The fixture records no active module, holds an event kind that
+/// cannot be replayed, or the candidate fails in the sandbox. The
+/// error names the fixture, so an unsupported fixture is a clear
+/// diagnostic, never a silent pass.
+pub fn fixture_gate(
+    module: &[u8],
+    seed: u64,
+    label: &str,
+    fixture: &Fixture,
+) -> Result<FixtureGate> {
+    let candidate_module_hash = crate::world_session::module_hash(module);
+    let recorded_module_hash = fixture.header.module_hash.clone();
+    let cross_module = recorded_module_hash.as_deref() != Some(candidate_module_hash.as_str());
+    let runner = Sandbox::compile(module, SandboxLimits::default())
+        .with_context(|| format!("fixture {label}: compile the candidate"))?;
+    let replayed = crate::world_fixture::replay(&runner, seed, fixture, true)
+        .with_context(|| format!("fixture {label}"))?;
+    let (verdict, verdict_reason) = match &replayed.verdict {
+        Verdict::Match => ("match", None),
+        Verdict::Mismatch => ("mismatch", None),
+        Verdict::NotCompared(reason) => ("not_compared", Some((*reason).to_owned())),
+    };
+    Ok(FixtureGate {
+        fixture: label.to_owned(),
+        world_id: fixture.header.world_id.clone(),
+        recorded_module_hash,
+        candidate_module_hash,
+        cross_module,
+        complete: fixture.header.complete,
+        verdict: verdict.to_owned(),
+        verdict_reason,
+        blocks_promotion: matches!(replayed.verdict, Verdict::Mismatch),
+    })
 }
 
 /// One input applied during a one-shot dev session, with the view the
@@ -303,30 +397,44 @@ pub struct DevReport {
     pub compiler_diagnostics: String,
     /// How the module entered the world (source-build provenance).
     pub provenance: serde_json::Value,
-    /// The view before any input was sent.
+    /// The view before any input was sent (`null` when a fixture
+    /// gate refused promotion and nothing was launched).
     pub initial_view: Option<String>,
     /// Inputs applied, in order, each with its resulting view.
     pub steps: Vec<DevStep>,
     /// Records sequence reached by the end of the session.
     pub records_sequence: u64,
+    /// Fixture promotion gates run against the candidate before
+    /// launch (Phase 3), in the order the fixtures were given.
+    pub fixture_gates: Vec<FixtureGate>,
+    /// True when the candidate was launched. False only when a
+    /// fixture gate blocked promotion: nothing was launched, no
+    /// input was applied, and the gate results say why.
+    pub promoted: bool,
 }
 
-/// Run one Phase 1 dev session: discover, compile, launch, apply
-/// `inputs`, and report. The scratch world is dropped (discarded)
-/// before this returns.
+/// Run one dev session: discover, compile, run the fixture
+/// promotion gates (Phase 3), launch, apply `inputs`, and report.
+/// The scratch world is dropped (discarded) before this returns.
+///
+/// When a fixture gate blocks promotion the candidate is not
+/// launched: the report's `promoted` is false, its gate results name
+/// the mismatching fixture, and no input is applied. In a one-shot
+/// session there is no last-good version to retain — nothing is
+/// running, and no hosted world is ever touched.
 ///
 /// # Errors
 ///
-/// Discovery, platform/compiler setup, compilation, or a guest call
-/// fails; the error names the failing stage. A failed compile leaves
-/// nothing running — there is no last-good version in a one-shot
-/// session, and no hosted world is ever touched.
+/// Discovery, platform/compiler setup, compilation, a fixture gate
+/// error (an unsupported or module-less fixture), or a guest call
+/// fails; the error names the failing stage.
 pub async fn run_dev_once(
     dir: &Path,
     platform: Option<&Path>,
     roc: Option<&str>,
     seed: u64,
     inputs: &[String],
+    fixtures: &[(String, Fixture)],
 ) -> Result<DevReport> {
     let sources = discover_sources(dir)?;
     let platform_dir = resolve_platform_dir(dir, platform, sources.main_source())?;
@@ -339,6 +447,26 @@ pub async fn run_dev_once(
     let (module, diagnostics, provenance) =
         crate::world_compile::compile(&sources.spec(seed), &compiler, &granted, COMPILE_TIMEOUT)
             .await?;
+    let mut fixture_gates = Vec::with_capacity(fixtures.len());
+    for (label, fixture) in fixtures {
+        fixture_gates.push(fixture_gate(&module, seed, label, fixture)?);
+    }
+    if fixture_gates.iter().any(|gate| gate.blocks_promotion) {
+        return Ok(DevReport {
+            world_id: DEV_WORLD_ID,
+            dir: dir.to_path_buf(),
+            source_files: sources.files.iter().map(|(name, _)| name.clone()).collect(),
+            seed,
+            module_bytes: module.len(),
+            compiler_diagnostics: diagnostics,
+            provenance: serde_json::to_value(&provenance)?,
+            initial_view: None,
+            steps: Vec::new(),
+            records_sequence: 0,
+            fixture_gates,
+            promoted: false,
+        });
+    }
     let world = DevScratchWorld::launch(&module, seed).await?;
     let initial_view = world.view().await?;
     let mut steps = Vec::with_capacity(inputs.len());
@@ -360,6 +488,8 @@ pub async fn run_dev_once(
         initial_view,
         steps,
         records_sequence: world.records_sequence(),
+        fixture_gates,
+        promoted: true,
     };
     // The scratch world ends with the session: dropping `world` here
     // discards its state, which is the Phase 1 lifecycle guarantee.
@@ -452,5 +582,111 @@ mod tests {
                 .unwrap()
                 .is_some_and(|v| v.contains("count=0"))
         );
+    }
+
+    /// A complete fixture over the counter example: two `inc` inputs,
+    /// with the records a live scratch world reaches after them.
+    /// Oracle: the live world's own records, captured before the
+    /// fixture exists — the gate must reproduce exactly those.
+    async fn counter_fixture(
+        wasm: &[u8],
+        module_hash: Option<String>,
+    ) -> (Fixture, crate::world::Records) {
+        let world = DevScratchWorld::launch(wasm, 7).await.unwrap();
+        world.input(b"inc").await.unwrap();
+        world.input(b"inc").await.unwrap();
+        let records = world.records();
+        drop(world);
+        let fixture = Fixture {
+            header: crate::world_fixture::FixtureHeader {
+                world_id: DEV_WORLD_ID.to_owned(),
+                module_hash,
+                current_sequence: 2,
+                complete: true,
+                records: Some(records.clone()),
+            },
+            events: vec![
+                crate::world_fixture::FixtureEvent::Input {
+                    sequence: 1,
+                    participant_id: 1,
+                    bytes: b"inc".to_vec(),
+                },
+                crate::world_fixture::FixtureEvent::Input {
+                    sequence: 2,
+                    participant_id: 1,
+                    bytes: b"inc".to_vec(),
+                },
+            ],
+        };
+        (fixture, records)
+    }
+
+    #[tokio::test]
+    async fn fixture_gate_promotes_a_candidate_that_reproduces_the_fixture() {
+        // Oracle: the fixture's recorded expectation is the live
+        // counter world's records after the same inputs; a candidate
+        // that replays to those records matches and does not block.
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let (fixture, _) =
+            counter_fixture(wasm, Some(crate::world_session::module_hash(wasm))).await;
+        let gate = fixture_gate(wasm, 7, "counter.jsonl", &fixture).unwrap();
+        assert!(!gate.cross_module);
+        assert!(gate.complete);
+        assert_eq!(gate.verdict, "match");
+        assert_eq!(gate.verdict_reason, None);
+        assert!(!gate.blocks_promotion);
+    }
+
+    #[tokio::test]
+    async fn fixture_gate_blocks_a_candidate_whose_records_diverge() {
+        // Oracle: the same fixture with a tampered expectation — the
+        // replayed records cannot equal it, so the gate mismatches
+        // and blocks promotion (the design's promotion-gate case).
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let (mut fixture, _) =
+            counter_fixture(wasm, Some(crate::world_session::module_hash(wasm))).await;
+        fixture
+            .header
+            .records
+            .as_mut()
+            .unwrap()
+            .insert("gate-oracle".to_owned(), serde_json::json!("tampered"));
+        let gate = fixture_gate(wasm, 7, "counter.jsonl", &fixture).unwrap();
+        assert_eq!(gate.verdict, "mismatch");
+        assert!(gate.blocks_promotion);
+    }
+
+    #[tokio::test]
+    async fn fixture_gate_replays_a_fixture_recorded_under_another_module() {
+        // Oracle: invariant 5's dev regression mode — a fixture
+        // recorded under a different module hash still replays in
+        // dev (ordinary replay/verify refuse via check_module), the
+        // gate reports the cross-module fact, and the comparison
+        // itself still decides promotion.
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let other = crate::world_session::module_hash(b"a different module entirely");
+        let (fixture, _) = counter_fixture(wasm, Some(other)).await;
+        let gate = fixture_gate(wasm, 7, "counter.jsonl", &fixture).unwrap();
+        assert!(gate.cross_module);
+        assert_eq!(gate.verdict, "match");
+        assert!(!gate.blocks_promotion);
+    }
+
+    #[tokio::test]
+    async fn fixture_gate_reports_a_fixture_with_no_expectation() {
+        // Oracle: a fixture that records no expected records has
+        // nothing to compare — the gate must say not_compared with
+        // the reason instead of passing silently, and must not block.
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let (mut fixture, _) =
+            counter_fixture(wasm, Some(crate::world_session::module_hash(wasm))).await;
+        fixture.header.records = None;
+        let gate = fixture_gate(wasm, 7, "counter.jsonl", &fixture).unwrap();
+        assert_eq!(gate.verdict, "not_compared");
+        assert_eq!(
+            gate.verdict_reason.as_deref(),
+            Some("the fixture has no records")
+        );
+        assert!(!gate.blocks_promotion);
     }
 }
