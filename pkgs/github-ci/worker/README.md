@@ -74,3 +74,19 @@ npm run deploy  # wrangler deploy (fleet Cloudflare account)
 Cutover state lives on #5693: deploy dark → replay smoke → one
 repo-level dual-run webhook → (later, separately) org/App flip.
 The Edge Function stays deployed as rollback until then.
+
+## GitHub mirror (#8580)
+
+Fleet-repo `issues` / `pull_request` / `issue_comment` deliveries also
+upsert the GitHub mirror in **fleet-queue** (`src/mirror.ts`; DDL in
+`mirror.sql`): `github_mirror_issues` (title, body hash, state, labels,
+assignees, comments count, latest agent-note pointer),
+`github_mirror_pull_requests` (+ merged, draft, head/base), and
+`github_mirror_meta` (per-repo staleness: `last_webhook_at` /
+`last_webhook_event` stamped here; `last_backfill_at` stamped by the
+backfill/repair sweep).
+
+The mirror is a **read model**: rebuildable from GitHub at any time,
+never a second truth. Staleness is reported, never gated on (#8575).
+Mirror write failures are fatal (500 -> GitHub retries), matching the
+ci_events policy.

@@ -1252,18 +1252,11 @@ async fn current_world_state(
             .await?,
     )
     .context("host returned a malformed execution profile")?;
-    // The report carries the world's own ceiling as a list; a ceiling equal
-    // to the default ceiling folds back to "no ceiling" (an apply then
-    // restores the default ceiling, #838).
-    let ceiling = if caps.ceiling
-        == crate::world_caps::default_ceiling_names()
-            .into_iter()
-            .collect::<Vec<_>>()
-    {
-        None
-    } else {
-        Some(caps.ceiling.clone())
-    };
+    // The report carries the world's own ceiling as a list; the shared
+    // fold turns a report equal to the default ceiling into None, which
+    // means the default ceiling — the one meaning of None for a live
+    // ceiling (#6817, #838).
+    let ceiling = crate::world_manifest::fold_reported_ceiling(caps.ceiling.clone());
     let (seed, schedules) = client
         .fresh_session()
         .await?
@@ -1376,9 +1369,10 @@ async fn apply_steps(
                 }
             }
             ApplyStep::SetCeiling { ceiling } => {
-                // `None` means "no ceiling": restore the default ceiling —
-                // providers with an `Excluded` manifest default stay out
-                // until a ceiling names them (#838).
+                // `None` means the default ceiling — the one meaning of
+                // None for a live ceiling (#6817): restore the default
+                // names on the wire; providers with an `Excluded` manifest
+                // default stay out until a ceiling names them (#838).
                 let names = ceiling.clone().unwrap_or_else(|| {
                     crate::world_caps::default_ceiling_names()
                         .into_iter()
