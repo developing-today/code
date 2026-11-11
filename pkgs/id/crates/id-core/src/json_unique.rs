@@ -15,8 +15,14 @@
 //!   is the document as written, or the parse refuses it.
 //! - **The one mechanism.** [`parse_json_without_duplicate_keys`] is
 //!   the only duplicate-refusing JSON parse in `pkgs/id`. A gate
-//!   parses raw text or bytes through it first, then decodes the
-//!   resulting `serde_json::Value` into its types. New checked gates
+//!   validates its raw text or bytes through it before decoding.
+//!   Where the target type is representable as a `serde_json::Value`,
+//!   the gate decodes the helper's returned value; where it is not —
+//!   full-width integers (`u128` / `i128`) that serde_json's default
+//!   features cannot represent losslessly in a `Value` — the gate
+//!   discards the helper's value after validation and runs its typed
+//!   decode over the original bytes, so refusal is added and nothing
+//!   the typed decode used to accept is lost. New checked gates
 //!   route through it; a raw `serde_json` parse at a gate is a
 //!   contract violation, not an alternative spelling.
 //! - **What a gate is.** A parse is a gate when its result feeds a

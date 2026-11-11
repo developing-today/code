@@ -12,7 +12,7 @@ with file:line evidence. Line numbers are as of the main above; the
 extraction is re-runnable by the same grep + cfg(test)-tracking walk.
 
 Production sites: 94 — routed through the helper: 10;
-gate, not yet routed (follow-up filed): 27; not-a-gate: 54;
+gate, not yet routed (follow-up filed): 29; not-a-gate: 52;
 the mechanism itself / its wiring: 3.
 
 ## Dispositions
@@ -34,7 +34,7 @@ the mechanism itself / its wiring: 3.
 | `src/directory_log.rs:211` (`load`) | from_str | not-a-gate | (b) Self-produced file: the directory append log this crate writes; lines were gated when appended. Hand-edit defence only. |
 | `src/foreign_libsql.rs:1121` (`parse_pipeline_rows`) | from_str | **gate — follow-up** | parse_pipeline_rows: parses a libsql server's response body into rows returned to callers — remote-supplied input feeding a store/forward path. |
 | `src/publications.rs:388` (`load`) | from_str | not-a-gate | (b) Self-produced file: the publications registry file this crate writes and reads back (validate_persisted runs after the parse); hand-edit defence only. |
-| `src/web/collab.rs:144` (`content_to_document`) | from_str | not-a-gate | Not a gate: document content (ProseMirror JSON) converted for editing; no check, store-of-record, or comparison is made on the parsed value, and a parse failure falls back to an empty document rather than accepting collapsed data. |
+| `src/web/collab.rs:144` (`content_to_document`) | from_str | **gate — follow-up** | Document content (ProseMirror JSON) parsed by content_to_document is retained by Document::with_content and forwarded to connected clients as CollabMessage::Init (src/web/collab.rs:911-928) — the contract's forward criterion applies; the empty-document fallback covers only unparseable input, not a duplicate-key collapse. (Reclassified on a verified Codex finding, PR #8796.) |
 | `src/web/groups.rs:70` (`read_projection`) | from_str | not-a-gate | (b) Self-produced file: read_projection replays the same GroupLog file as id-groups log.rs:79 for the web projection. Hand-edit defence only. |
 | `src/web/identity.rs:527` (`decode_token`) | from_slice | **gate — follow-up** | (a) decode_token: token payload bytes are signature-verified (verify_strict) before this struct decode; the payload is a signed object — the (a) decision applies (refusal at receipt), noting the signature-first order as the existing mitigation. |
 | `src/web/identity.rs:766` (`unseal`) | from_slice | not-a-gate | Not a gate: unseal decodes plaintext produced by AES-256-GCM decryption of this crate's own sealed records — the AEAD check already refuses any altered bytes before this parse; only the key holder can produce the input. |
@@ -72,7 +72,7 @@ the mechanism itself / its wiring: 3.
 | `crates/id-worlds/src/shell_contract.rs:668` (`check_transcript`) | from_str | **gate — follow-up** | check_transcript: transcript lines decoded as part of checking a recorded transcript against the contract — a check. |
 | `crates/id-worlds/src/world/core.rs:366` (`validate_import_envelope`) | from_str | **gate — follow-up** | validate_import_envelope: a CHECK — parses a journal import event's envelope and compares protocol/direction/payload_digest; a collapsed duplicate could hide behind the compared fields. |
 | `crates/id-worlds/src/world/mod.rs:1972` (`first_oversized_entry`) | from_slice | not-a-gate | (b) Self-produced file: first_oversized_entry measures lines of the world's own journal file. Hand-edit defence only. |
-| `crates/id-worlds/src/world/mod.rs:2064` (`presence_change`) | from_str | not-a-gate | Not a gate: presence_change parses the presence string this same module constructs in-process (the json! producer directly above it) — a self-produced round-trip feeding a display state, not received bytes. |
+| `crates/id-worlds/src/world/mod.rs:2064` (`presence_change`) | from_str | **gate — follow-up** | Embedded presence document: WorldCore::restore_inner (world/core.rs:1064-1095) passes a RECEIVED replica journal's System event text to presence_change and uses the decoded participant for a capability check (ensure the participant is known) and for presence counts — a check over received data, even though the same producer also builds presence strings in-process. The presence JSON is embedded as a string inside the journal entry, so routing the outer journal parsers through the helper does not cover it; the conversion must refuse duplicates in the embedded document itself. (Reclassified on a verified Codex finding, PR #8796.) |
 | `crates/id-worlds/src/world/mod.rs:2145` (`parse_records`) | helper | **gate — routed** | parse_records: world records parse — routed. |
 | `crates/id-worlds/src/world/replica.rs:118` (`parse_replica_journal`) | from_slice | not-a-gate | (b) Self-produced file: parse of the replica's own journal file; received journals are checked at receipt by validate_committed_journal (replication_receiver.rs:537, a gate). Hand-edit defence only. |
 | `crates/id-worlds/src/world/replication.rs:426` (`chain_payload`) | from_slice | **gate — follow-up** | chain_payload: parses journal lines of a signed replication payload to advance the verified cursor — a check over peer-supplied payload bytes. |
@@ -152,11 +152,18 @@ every present and future consumer of a signed body, and the receipt
 is the one point where untrusted bytes enter — refusing there
 protects all of them at once. This is consistent with the receipt
 contract direction of issue #3231 rather than an exception to it.
-Conversion pattern for the follow-up: parse the raw bytes through
-`parse_json_without_duplicate_keys` first, then `from_value` into the
-struct; signature verification is over the raw bytes and is
-unchanged. All (a) sites are marked **gate — follow-up** in the table
-and are listed in the conversion follow-up issue #8794.
+Conversion pattern for the follow-up (lossless form): validate
+uniqueness by running `parse_json_without_duplicate_keys` over the
+raw bytes and discarding its `Value`, then run the existing typed
+decode (`from_slice` / `from_str`) over the original bytes.
+Decoding the helper's `Value` with `from_value` is NOT the general
+pattern: with serde_json's default features a `Value` cannot
+represent integers above `u64::MAX` losslessly, and signed bodies
+in this tree carry `u128` fields (e.g. `RateAuthorisation`), which
+the current typed decoders support. Signature verification is over
+the raw bytes and is unchanged either way. All (a) sites are marked
+**gate — follow-up** in the table and are listed in the conversion
+follow-up issue filed from #6521.
 
 ### (b) Self-produced files — per site, not by assumption
 
@@ -206,7 +213,7 @@ work; this inventory cites the test as the (d) evidence.
 
 ## Follow-up
 
-Every **gate — follow-up** site in the table (27 sites) is listed in
+Every **gate — follow-up** site in the table (29 sites) is listed in
 issue #8794 (filed from issue #6521). No gate site is
 left as a silent exception: a site is either routed, listed there,
 or dispositioned not-a-gate above with its reason.
