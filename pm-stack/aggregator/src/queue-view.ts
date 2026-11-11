@@ -77,8 +77,6 @@ const HORIZON_ORDER: Record<string, number> = {
   quarter: 4,
   incoming: 5,
 };
-const PRIORITY_ORDER: Record<string, number> = { urgent: 0, critical: 0, high: 1, normal: 2, medium: 2, low: 3 };
-
 function norm(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase().replace(/[ _]+/g, "-");
 }
@@ -324,14 +322,13 @@ export function buildQueueView(input: QueueViewInput): QueueView {
       ),
   ]);
 
-  const nextCandidates: { row: QueueRow; horizonRank: number; priorityRank: number; sequence: number }[] = [];
+  const nextCandidates: { row: QueueRow; horizonRank: number; sequence: number }[] = [];
   let sequence = 0;
-  const addNext = (args: Parameters<typeof row>[0], horizon?: string, priority?: string) => {
+  const addNext = (args: Parameters<typeof row>[0], horizon?: string) => {
     const normalizedHorizon = norm(horizon);
     nextCandidates.push({
       row: row({ ...args, horizon: horizon ?? args.horizon }),
       horizonRank: HORIZON_ORDER[normalizedHorizon] ?? 5,
-      priorityRank: PRIORITY_ORDER[norm(priority)] ?? 2,
       sequence: sequence++,
     });
   };
@@ -392,7 +389,7 @@ export function buildQueueView(input: QueueViewInput): QueueView {
   }
   const nextUp = unique(
     nextCandidates
-      .sort((a, b) => a.horizonRank - b.horizonRank || a.priorityRank - b.priorityRank || a.sequence - b.sequence)
+      .sort((a, b) => a.horizonRank - b.horizonRank || a.sequence - b.sequence)
       .map((candidate) => candidate.row),
   );
 
