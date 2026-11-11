@@ -138,21 +138,37 @@ fn derived_version(root: &std::path::Path) -> String {
 /// cargo keeps the stale baked version. Tag refs live in the
 /// common git dir (shared across worktrees); HEAD is per-git-dir.
 fn rerun_on_git_refs(root: &std::path::Path) {
-    for (args, leaf) in [
-        (vec!["rev-parse", "--git-common-dir"], "refs/tags"),
-        (vec!["rev-parse", "--git-common-dir"], "packed-refs"),
-        (vec!["rev-parse", "--git-dir"], "HEAD"),
-    ] {
-        if let Some(dir) = git(root, &args) {
-            let base = if std::path::Path::new(&dir).is_absolute() {
-                std::path::PathBuf::from(dir)
-            } else {
-                root.join(dir)
-            };
-            let watched = base.join(leaf);
-            if watched.exists() {
-                println!("cargo:rerun-if-changed={}", watched.display());
-            }
+    let resolve = |args: &[&str]| -> Option<std::path::PathBuf> {
+        let dir = git(root, args)?;
+        let base = if std::path::Path::new(&dir).is_absolute() {
+            std::path::PathBuf::from(dir)
+        } else {
+            root.join(dir)
+        };
+        Some(base)
+    };
+    let mut watched: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(common) = resolve(&["rev-parse", "--git-common-dir"]) {
+        watched.push(common.join("refs/tags"));
+        watched.push(common.join("refs/heads"));
+        watched.push(common.join("packed-refs"));
+        // The current branch's own ref (PR #8630 Codex round 2):
+        // on an attached HEAD, an ordinary commit updates the
+        // loose branch ref under the COMMON dir — HEAD itself is
+        // just the symref naming it and never changes content —
+        // so watch the resolved ref as well as its directory
+        // (the directory watch covers its first loose creation
+        // when it previously lived only in packed-refs).
+        if let Some(branch_ref) = git(root, &["symbolic-ref", "-q", "HEAD"]) {
+            watched.push(common.join(branch_ref));
+        }
+    }
+    if let Some(gitdir) = resolve(&["rev-parse", "--git-dir"]) {
+        watched.push(gitdir.join("HEAD"));
+    }
+    for path in watched {
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
         }
     }
 }
