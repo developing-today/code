@@ -594,6 +594,21 @@ fn delay_seconds(req: &Value) -> Result<Option<i64>, String> {
     )
 }
 
+/// The duration guard for one request path (#6420), run at the top
+/// of `dispatch` BEFORE backend selection: the Turso backend
+/// dispatches verbatim, so validating only inside the PostgREST
+/// handlers would leave the trust boundary open on that backend
+/// (Codex finding on PR #8425). The PostgREST handlers keep their
+/// own checks as defense in depth.
+fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
+    match path {
+        "/claim" => lease_seconds(req).map(|_| ()),
+        "/heartbeat" => extend_seconds(req).map(|_| ()),
+        "/park" => delay_seconds(req).map(|_| ()),
+        _ => Ok(()),
+    }
+}
+
 fn ok(fields: Value) -> Value {
     let mut m = json!({"ok": true});
     if let (Some(dst), Some(src)) = (m.as_object_mut(), fields.as_object()) {
@@ -793,6 +808,9 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
 }
 
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
+    if let Err(e) = validate_durations(path, req) {
+        return fail(2, e);
+    }
     if let Some(t) = &st.turso {
         if path != "/validate" && path != "/healthz" {
             return crate::turso_queue::dispatch(t, path, req);
@@ -1613,5 +1631,20 @@ mod tests {
                 "error names the flag: {err}"
             );
         }
+        // The dispatch-level guard covers both backends: it fires
+        // per path before backend selection (Codex finding on
+        // PR #8425), and leaves unrelated paths alone.
+        assert!(validate_durations("/claim", &json!({"lease_seconds": 0})).is_err());
+        assert!(validate_durations("/heartbeat", &json!({"extend_seconds": -1})).is_err());
+        assert!(validate_durations("/park", &json!({"delay_seconds": 604_801})).is_err());
+        assert_eq!(
+            validate_durations("/claim", &json!({"lease_seconds": 2700})),
+            Ok(())
+        );
+        assert_eq!(validate_durations("/heartbeat", &json!({})), Ok(()));
+        assert_eq!(
+            validate_durations("/list", &json!({"lease_seconds": 0})),
+            Ok(())
+        );
     }
 }
