@@ -1219,7 +1219,7 @@ impl TagStore {
         if registry.legacy_meta_imported {
             return Ok(0);
         }
-        let doc = load_meta(store).await.unwrap_or_default();
+        let doc = load_meta(store).await?;
         let ns = &self.global;
         let mut imported = 0usize;
         for t in &doc.tags {
@@ -2940,6 +2940,37 @@ mod tests {
     async fn test_migrate_legacy_meta_with_no_legacy_blob_is_a_noop() {
         let (ts, blobs, _dir, endpoint, _docs) = memory_tag_store().await;
         assert_eq!(ts.migrate_legacy_meta(&blobs).await.unwrap(), 0);
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_migrate_legacy_meta_retries_after_decode_error() {
+        let (ts, blobs, _dir, endpoint, _docs) = memory_tag_store().await;
+
+        let malformed = blobs.blobs().add_bytes(b"not json".to_vec()).await.unwrap();
+        blobs.tags().set(META_TAG, malformed.hash).await.unwrap();
+
+        assert!(ts.migrate_legacy_meta(&blobs).await.is_err());
+        assert!(!load_registry(&ts.registry_path)
+            .await
+            .unwrap()
+            .legacy_meta_imported);
+
+        let mut doc = MetaDoc::default();
+        add_tag(&mut doc, "notes.md", "priority", Some("high"), None);
+        save_meta(&blobs, &doc).await.unwrap();
+
+        assert_eq!(ts.migrate_legacy_meta(&blobs).await.unwrap(), 1);
+        assert!(load_registry(&ts.registry_path)
+            .await
+            .unwrap()
+            .legacy_meta_imported);
+        let tags = ts.get_tags(&ts.global, b"notes.md").await.unwrap();
+        assert!(tags.iter().any(|tag| {
+            tag.key == "priority"
+                && tag.value.as_ref().map(TagValue::as_bytes) == Some(b"high".as_slice())
+        }));
+
         endpoint.close().await;
     }
 }
