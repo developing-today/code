@@ -26,6 +26,57 @@
 //! history. [`BoardGraph::resolve_rules`] selects the greater content hash
 //! within a revision; current rules are the highest revision, using that same
 //! tie-break, so every peer projects the same signed set identically.
+//! ## Kind-by-gate inventory (#4114, Phase 4 audit of design #4113)
+//!
+//! The checklist the next object kind is reviewed against. Every
+//! [`BoardObject`] variant is dispositioned against the design's five
+//! gates: (1) shape — `BoardObject::validate_shape` constrains every
+//! field that carries a rule; (2) references at insert —
+//! `BoardGraph::validate_links` validates every graph-reference field
+//! (existence + board scope via `require_scoped` / `require_board`,
+//! kind checked where a kind rule exists); (3) chain / resolution
+//! posture; (4) projection effect in [`BoardGraph::compose_view`] (and
+//! [`BoardGraph::latest_listings`] where relevant) under the
+//! active-records rule — a record contributes effects only while
+//! itself active (not superseded through an active supersede record);
+//! (5) replication membership + closure in
+//! [`BoardGraph::board_object_set`]. "Deliberate" cells are documented
+//! divergences, not findings. Audited at the #4114 baseline; the
+//! [`BoardObject::GamePost`] variant postdates the #4114 variant list
+//! and is inventoried here as a fifteenth row.
+//!
+//! | Variant | 1 Shape | 2 References at insert | 3 Chain / resolution | 4 Projection | 5 Replication |
+//! |---|---|---|---|---|
+//! | `Board` | `board_id` 1–128 lower-case ASCII id chars | `forked_from` → `require_board`; `theme_ref` → exists + `Theme` kind | Identity root, not versioned: `Supersede`/`Tombstone` reject the `board` kind | Root always in its own view; resolved `theme` returned subject to host/personal suppression | Seed of its own set; closure pulls `forked_from` ancestor + `theme_ref`, recursively |
+//! | `Rules` | `revision > 0`; text 1–16 KiB, no NUL | `board` → `require_moderator` (root exists + author is owner or moderator) | Duplicate `(board, revision)` objects are legal signed history (deliberate, #3964); [`BoardGraph::resolve_rules`] picks the highest revision, greater content hash within a revision, among **active** objects only (the active-only half was the audit finding below, fixed here) | Content object: shown while active; superseded rules are excluded from the view like any content | Seeded by scope; closure pulls `board` + the author's moderator grants |
+//! | `Forum` | Name 1–16 KiB, no NUL | `board` → `require_moderator` | Not versioned; edits are new objects + `Supersede` | Content object: shown while active | Seeded by scope; closure pulls `board` + moderator grants |
+//! | `Thread` | Title 1–16 KiB, no NUL | `board` → `require_board`; `forum_ref` → scoped `forum`; `rules_ref` → scoped `rules` (pinned exact hash) | Not versioned; edits via `Supersede` | Content object: shown while active | Seeded by scope; closure pulls `board`, `forum_ref`, `rules_ref` |
+//! | `Post` | Body 0–16 KiB, no NUL; `attachments` ≤ 128 and unique | `board` → `require_board`; `thread` → scoped `thread`; `parent_post` → scoped `post` + same thread; each `attachments` → scoped `attachment`; `embed_ref.object` → scoped `game_post` (#3963) | Not versioned; edits via `Supersede` | Content object: shown while active | Seeded by scope; closure pulls `board`, `thread`, `parent_post`, `attachments`, `embed_ref` target |
+//! | `Attachment` | Media type 1–16 KiB, no NUL, ≤ 128 bytes; `size_bytes` carries no bound (deliberate: declared metadata only — the payload is never fetched by this module, so no gate depends on it) | `board` → `require_board`; `blob` is an external content hash, not a graph reference (deliberate: metadata-only, payload never embedded) | Not versioned | Content object: shown while active | Seeded by scope; closure pulls `board` (`blob` is external) |
+//! | `Membership` | `member` canonical Ed25519 hex; optional display name 1–16 KiB, no NUL | `board` → `require_board`; signer must be `member` (self-authored) | Not versioned; duplicate statements by one member are separate signed history — no uniqueness rule (deliberate: no design rule orders them) | Content object: shown while active | Seeded by scope; closure pulls `board` |
+//! | `RoleAttestation` | `member` canonical Ed25519 hex; `role` is the closed [`BoardRole`] set | `board` → `require_board` + signer is the board creator; `supersedes` → scoped `role_attestation` + same member and role | Versioned by its own `supersedes` chain; the current frontier resolves at projection (fixed point, #4003) | Not view content per se: drives the moderator frontier — an attestation has effect only while active; `has_role` at insert is existence-based by deliberate design (see its doc: arrival-order independence) | Seeded by scope; closure pulls `board` + `supersedes`; also pulled as a moderator grant by `Rules`/`Forum`/`ModerationAction` closures |
+//! | `ModerationAction` | Optional reason 0–16 KiB, no NUL; `action` is the closed kind set | `board` → `require_moderator`; `target` → scoped, any kind (deliberate: moderation may target any object kind; the board root cannot be a target because its `board_ref` is `None`) | Append-only log, not versioned; hide/restore effect is a signed count balance, order-independent | Never view content: listed in the public `moderation_log` always; hides only while the record is active **and** its author holds authority on the current attestation frontier | Seeded by scope; closure pulls `board`, `target`, + moderator grants |
+//! | `BoardFork` | `source_frontier` ≤ 128 and unique | `source_board`/`fork_board` → `require_board`; fork root must cite `source_board` in `forked_from`; signer is the fork creator; each frontier entry exists and is scoped to the source board (the source root itself excepted) | Provenance record, not versioned | Not view content (`board_ref` is `None`): its effect is provenance/replication, not projection | Seeded for the **fork** board (`fork_board` match — #4081); closure pulls `source_board`, `fork_board`, `source_frontier`, and frontier objects' own dependencies recursively |
+//! | `Supersede` | `previous != replacement` | `previous`/`replacement` → scoped, any kind, then: same kind, same author as signer, neither is a board root, and the edge must not close a cycle (all successors traversed) | The versioning mechanism itself | Never view content: only **active** supersede records (frontier fixed point) mark their `previous` superseded | Seeded by scope; closure pulls `board`, `previous`, `replacement` |
+//! | `Tombstone` | Optional reason 0–16 KiB, no NUL | `target` → scoped, any kind, not a board root; signer must be the target's author | Not versioned; a tombstone's own effect ends if it is superseded | Never view content: an active tombstone hides its target at the board layer, with its reason reported | Seeded by scope; closure pulls `board`, `target` |
+//! | `Theme` | Name 1–16 KiB, no NUL; ≤ 64 tokens, token names 1–64 id chars, values 1–512 bytes no NUL; `assets` ≤ 128 and unique | `forked_from` → exists + `Theme` kind + not self; `assets` are external content hashes, not graph references (deliberate, as `Attachment::blob`) | Not versioned; fork lineage only — boards pin the exact theme hash | Not view content: resolved into [`BoardView::theme`] for boards that apply it; a suppressed theme is reported in `hidden` | Names no board (`board_ref` is `None`): pulled into a set only via a board's `theme_ref` closure or a theme fork chain; closure pulls its own `forked_from` |
+//! | `GamePost` | Package version 1–16 KiB, no NUL, ≤ 128 bytes; 1–32 participants, each a canonical key + 1–64 id-char role, `(author, role)` unique; `configuration`/`genesis` ≤ 16 KiB serialized | `board` → `require_board`; `package.hash` is an external package pin, not a graph reference (deliberate: data, never executed or fetched) | Not versioned; edits via `Supersede` | Content object: shown while active | Seeded by scope; closure pulls `board` |
+//! | `BoardListing` | `host` canonical Ed25519 hex; `version > 0`; optional contact 1–16 KiB, no NUL | `board` → `require_board` + signer is the board creator; `supersedes` → scoped `board_listing` + same host + same author + `version` advances by exactly one | **Chain head unique at insert**: a first listing is version 1 and duplicates for `(board, host)` are refused (#4109); successors must supersede the current listing | Content object: shown while active; [`BoardGraph::latest_listings`] picks the greatest `(version, hash)` per host and `active_listings` keeps `listed` ones — a withdrawal is a newer unlisted version | Seeded by scope; closure pulls `board` + `supersedes` |
+//!
+//! Finding from this audit (fixed here, regression test
+//! `superseded_rules_are_not_resolved`): [`BoardGraph::resolve_rules`]
+//! previously considered every signed `Rules` object for a board,
+//! including one an active `Supersede` record had superseded — so
+//! when the superseded object had the greater content hash within
+//! its revision, resolution returned the superseded text while
+//! `compose_view` hid that same object. Resolution now excludes
+//! objects superseded through an active supersede record — the same
+//! frontier [`BoardGraph::compose_view`] uses, shared via
+//! `BoardGraph::superseded_objects`. (Verified by source inspection
+//! at the audit baseline: `resolve_rules` had no supersede filter at
+//! all; a local probe run was started but the laptop build did not
+//! finish inside the audit shift, so the regression test's verdict
+//! is carried by CI.)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
@@ -759,13 +810,17 @@ impl BoardGraph {
     /// revision)` objects are legal signed history: within a revision, the
     /// greater content hash wins. The same tie-break selects current rules
     /// when multiple objects share its highest revision, independent of
-    /// insertion order. A thread's `rules_ref` remains pinned to its exact
+    /// insertion order. Objects superseded through an active supersede
+    /// record are not eligible — the active-records rule (#4114) — so
+    /// resolution follows the same frontier as [`Self::compose_view`].
+    /// A thread's `rules_ref` remains pinned to its exact
     /// referenced hash; this projection does not rewrite or reinterpret it.
     pub fn resolve_rules(
         &self,
         board: &ArtifactHash,
         revision: Option<u64>,
     ) -> Option<(&ArtifactHash, &Rules)> {
+        let superseded = self.superseded_objects(board);
         self.objects
             .iter()
             .filter_map(|(hash, signed)| {
@@ -773,6 +828,7 @@ impl BoardGraph {
                     return None;
                 };
                 (rules.board == *board
+                    && !superseded.contains(hash)
                     && revision.is_none_or(|revision| rules.revision == revision))
                 .then_some((hash, rules))
             })
@@ -781,6 +837,50 @@ impl BoardGraph {
                     .cmp(&right.revision)
                     .then_with(|| left_hash.cmp(right_hash))
             })
+    }
+
+    /// Every object for `board` that an active supersede record has
+    /// superseded. A supersede record can itself be superseded, so the
+    /// active records are a frontier, resolved to a fixed point: a
+    /// record stays active while no active record names it as its
+    /// previous version. (Supersede cycles cannot exist — insertion
+    /// rejects an edge that would close one — so this terminates
+    /// with the true frontier.) Only active records contribute their
+    /// edges to the superseded set. Shared by [`Self::compose_view`]
+    /// and [`Self::resolve_rules`] so every projection follows the
+    /// same active-records rule (#4114).
+    fn superseded_objects(&self, board: &ArtifactHash) -> BTreeSet<ArtifactHash> {
+        let supersede_records: Vec<(ArtifactHash, ArtifactHash)> = self
+            .objects
+            .iter()
+            .filter_map(|(hash, signed)| match &signed.object {
+                BoardObject::Supersede(value) if &value.board == board => {
+                    Some((hash.clone(), value.previous.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut active_records: BTreeSet<ArtifactHash> = supersede_records
+            .iter()
+            .map(|(hash, _)| hash.clone())
+            .collect();
+        loop {
+            let named: BTreeSet<ArtifactHash> = supersede_records
+                .iter()
+                .filter(|(hash, _)| active_records.contains(hash))
+                .map(|(_, previous)| previous.clone())
+                .collect();
+            let next: BTreeSet<ArtifactHash> = active_records.difference(&named).cloned().collect();
+            if next == active_records {
+                break;
+            }
+            active_records = next;
+        }
+        supersede_records
+            .iter()
+            .filter(|(hash, _)| active_records.contains(hash))
+            .map(|(_, previous)| previous.clone())
+            .collect()
     }
 
     fn validate_links(&self, signed: &SignedBoardObject) -> Result<()> {
@@ -1729,44 +1829,9 @@ impl BoardGraph {
 
         // Supersede relations first: a superseded record (a moderation
         // action, a tombstone, any content object) has no effect in the
-        // projection, whatever it once said. A supersede record can
-        // itself be superseded, so the active records are a frontier,
-        // resolved to a fixed point: a record stays active while no
-        // active record names it as its previous version. (Supersede
-        // cycles cannot exist — insertion rejects an edge that would
-        // close one — so this terminates with the true frontier.) Only
-        // active records contribute their edges to the superseded set.
-        let supersede_records: Vec<(ArtifactHash, ArtifactHash)> = self
-            .objects
-            .iter()
-            .filter_map(|(hash, signed)| match &signed.object {
-                BoardObject::Supersede(value) if &value.board == board => {
-                    Some((hash.clone(), value.previous.clone()))
-                }
-                _ => None,
-            })
-            .collect();
-        let mut active_records: BTreeSet<ArtifactHash> = supersede_records
-            .iter()
-            .map(|(hash, _)| hash.clone())
-            .collect();
-        loop {
-            let named: BTreeSet<ArtifactHash> = supersede_records
-                .iter()
-                .filter(|(hash, _)| active_records.contains(hash))
-                .map(|(_, previous)| previous.clone())
-                .collect();
-            let next: BTreeSet<ArtifactHash> = active_records.difference(&named).cloned().collect();
-            if next == active_records {
-                break;
-            }
-            active_records = next;
-        }
-        let superseded: BTreeSet<ArtifactHash> = supersede_records
-            .iter()
-            .filter(|(hash, _)| active_records.contains(hash))
-            .map(|(_, previous)| previous.clone())
-            .collect();
+        // projection, whatever it once said. The active frontier is
+        // resolved by `superseded_objects`, shared with `resolve_rules`.
+        let superseded: BTreeSet<ArtifactHash> = self.superseded_objects(board);
 
         // Current moderator frontier: a role attestation that another
         // attestation supersedes is history, not authority. Following
@@ -5032,6 +5097,63 @@ mod tests {
                 peer_a.game_heads(&game_hash)
             );
         }
+    }
+
+    #[test]
+    fn superseded_rules_are_not_resolved() {
+        let owner = key(77);
+        let mut graph = BoardGraph::default();
+        let board_hash = graph.insert(board(&owner)).unwrap();
+        let rules_a = SignedBoardObject::sign(
+            &owner,
+            2,
+            "",
+            BoardObject::Rules(Rules {
+                board: board_hash.clone(),
+                revision: 1,
+                text: "alpha rules".to_owned(),
+            }),
+        )
+        .unwrap();
+        let rules_b = SignedBoardObject::sign(
+            &owner,
+            3,
+            "",
+            BoardObject::Rules(Rules {
+                board: board_hash.clone(),
+                revision: 1,
+                text: "beta rules".to_owned(),
+            }),
+        )
+        .unwrap();
+        let hash_a = graph.insert(rules_a).unwrap();
+        let hash_b = graph.insert(rules_b).unwrap();
+        // Supersede the greater-hash rules object with the lesser-hash one.
+        let (previous, replacement) = if hash_a > hash_b {
+            (hash_a.clone(), hash_b.clone())
+        } else {
+            (hash_b.clone(), hash_a.clone())
+        };
+        let supersede = SignedBoardObject::sign(
+            &owner,
+            4,
+            "",
+            BoardObject::Supersede(Supersede {
+                board: board_hash.clone(),
+                previous: previous.clone(),
+                replacement: replacement.clone(),
+            }),
+        )
+        .unwrap();
+        graph.insert(supersede).unwrap();
+        let (resolved, _) = graph.resolve_rules(&board_hash, Some(1)).unwrap();
+        // #4114 audit finding: resolution must follow the active-records
+        // rule — the superseded (greater-hash) object must not win
+        // over its replacement.
+        assert_eq!(
+            *resolved, replacement,
+            "resolve_rules picked the superseded rules object"
+        );
     }
 
     #[test]
