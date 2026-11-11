@@ -577,7 +577,16 @@ fn parse_rfc3339_epoch(s: &str) -> Option<i64> {
         let sign: i64 = if rest.as_bytes()[idx] == b'+' { 1 } else { -1 };
         let mut op = off[1..].split(':');
         let oh: i64 = digits(op.next()?, 2)?;
-        let om: i64 = op.next().and_then(|v| digits(v, 2)).unwrap_or(0);
+        // A present-but-invalid component is an error, never a
+        // silent zero (Codex P2 on PR #8489, for seconds/fraction
+        // below as well as here).
+        let om: i64 = match op.next() {
+            Some(v) => digits(v, 2)?,
+            None => 0,
+        };
+        if op.next().is_some() {
+            return None;
+        }
         // RFC 3339 time-numoffset is a time-hour (00-23) and
         // time-minute (00-59): an unbounded offset would let the
         // epoch arithmetic wrap a far-future date back into the
@@ -589,11 +598,28 @@ fn parse_rfc3339_epoch(s: &str) -> Option<i64> {
     } else {
         (rest, 0)
     };
-    let time = time.split('.').next()?; // drop fractional seconds
+    // Fractional seconds: when the '.' is present, the fraction
+    // must be non-empty digits — discarding it unvalidated would
+    // accept `00:00:00.garbage` (Codex P2 on PR #8489).
+    let (time, fraction) = match time.split_once('.') {
+        Some((t, f)) => (t, Some(f)),
+        None => (time, None),
+    };
+    if let Some(f) = fraction {
+        if f.is_empty() || !f.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
     let mut tp = time.split(':');
     let hh: i64 = digits(tp.next()?, 2)?;
     let mm: i64 = digits(tp.next()?, 2)?;
-    let ss: i64 = tp.next().and_then(|v| digits(v, 2)).unwrap_or(0);
+    let ss: i64 = match tp.next() {
+        Some(v) => digits(v, 2)?,
+        None => 0,
+    };
+    if tp.next().is_some() {
+        return None;
+    }
     if !(0..24).contains(&hh) || !(0..60).contains(&mm) || !(0..61).contains(&ss) {
         return None;
     }
@@ -1158,6 +1184,12 @@ mod tests {
             "300000000000-01-01T00:00:00Z",
             "10000-01-01T00:00:00Z",
             "2026-1-06T00:00:00Z",
+            // Present-but-invalid components must not silently
+            // default to zero.
+            "2026-11-06T00:00:bananaZ",
+            "2026-11-06T00:00:00.garbageZ",
+            "2026-11-06T00:00:00+05:xx",
+            "2026-11-06T00:00:00:00Z",
         ] {
             let err = validate_not_before_at(&json!(bad), "packet.not_before", now)
                 .err()
