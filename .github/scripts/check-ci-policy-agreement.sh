@@ -57,11 +57,6 @@ WAIVERS=(
   # Phase 2 (#6953): venue disabled_manually; pull_request leg
   # restored by the 2026-11-08 sweep fix, main-tier push leg missing.
   "opencode-config-guard.yml|main|6953"
-  # Phase 2 (#6929): dispatch-only; neither tier leg declared, and
-  # the enforcement step is pull_request-gated so even a dispatch
-  # never runs the #1969 guard.
-  "mcpx-fix-test-guard.yml|pr|6929"
-  "mcpx-fix-test-guard.yml|main|6929"
   # Phase 3 (#6959): dispatch-only; the guard's ci-policy row is new
   # in Phase 1 and its PR leg awaits the Phase 3 disposition.
   "production-line-guard.yml|pr|6959"
