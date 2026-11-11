@@ -423,6 +423,11 @@ def validate_state(state, source="state.json"):
     same rule. A non-object top level invalidates the whole file as
     a single named problem.
 
+    A per-repo "last_fetch" must be a numeric timestamp (never a
+    bool): fetch_mirrors does arithmetic on it, so a wrong-shape
+    value is dropped under a named problem (#6821) instead of
+    passing through to crash the fetch loop.
+
     Bookkeeping keys written by the webhook drainer are state too,
     under their own shapes: "drain_last::<repo>" is a numeric
     timestamp and "drain_fail::<repo>" is an object. They are
@@ -459,6 +464,20 @@ def validate_state(state, source="state.json"):
                 f"expected a list — reset to []"
             )
             entry["fail_days"] = []
+        last_fetch = entry.get("last_fetch")
+        if (
+            not repo.startswith("drain_")
+            and last_fetch is not None
+            and (
+                not isinstance(last_fetch, (int, float))
+                or isinstance(last_fetch, bool)
+            )
+        ):
+            problems.append(
+                f"{source}: 'last_fetch' for {repo!r} is "
+                f"{_shape(last_fetch)}, expected a number — dropped"
+            )
+            del entry["last_fetch"]
         clean[repo] = entry
     return clean, problems
 
