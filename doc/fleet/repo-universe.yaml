@@ -1931,8 +1931,8 @@ repos:
     class: fork
     watch: inventory-only
     sources: [github]
-  - name: dezren39/nix
-    url: https://github.com/dezren39/nix
+  - name: dezren39/darwin-nix
+    url: https://github.com/dezren39/darwin-nix
     class: owned
     watch: issues
     sources: [github, census]

@@ -22,6 +22,11 @@
   stdenv,
   makeBinaryWrapper,
   installShellFiles,
+  doCheck ? true,
+  # The OCI image runs exactly this binary plus its explicitly selected
+  # JavaScript runtime; it must not inherit the workstation wrapper's full
+  # runtime PATH (Deno, Node and git).
+  wrapWithRuntimes ? true,
 }:
 let
   # The mcpx version's single source is the VERSION file beside this
@@ -115,7 +120,7 @@ buildGo127Module {
   # mcpx-darwin-skip flake check there); constructing the command here
   # dissolves that coupling — dezren39/nix now consumes the fork's mcpx
   # build unmodified.
-  doCheck = true;
+  inherit doCheck;
   # The runner and e2e suites spawn real scripts, so they get the same runtimes
   # the wrapper pins.
   nativeCheckInputs = [
@@ -174,13 +179,6 @@ buildGo127Module {
         # reasoning as internal/conformance above: interim exclusion,
         # tracked in CI on main.
         "internal/defaults"
-        # examples fails on main itself right now: TestExamples
-        # destructive calls end "not confirmed: the answer was cancel"
-        # under the #1678 confirmation flow, reproduced with a plain
-        # go test outside the sandbox as well (#2896). Interim
-        # exclusion so the package builds again; remove it when the
-        # #2896 fix lands.
-        "examples"
       ];
       # The Linux-only takeover/handoff tests (#418): they exercise
       # /proc and systemd-mainpid mechanics that do not exist on
@@ -260,6 +258,7 @@ buildGo127Module {
       --zsh <($out/bin/mcpx completion zsh) \
       --fish <($out/bin/mcpx completion fish)
 
+  '' + lib.optionalString wrapWithRuntimes ''
     wrapProgram $out/bin/mcpx \
       --suffix PATH : ${
         lib.makeBinPath [

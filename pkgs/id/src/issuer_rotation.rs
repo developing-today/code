@@ -63,7 +63,7 @@ use p2panda_core::{Hash, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 
 use crate::chain::{self, ChainExt, Event};
-use crate::currency::IssuerId;
+use crate::currency::{IssuerId, issuer_id};
 
 /// The event kind carrying an issuer rotation body.
 pub const ISSUER_ROTATION_KIND: &str = "issuer.rotation";
@@ -74,6 +74,45 @@ pub const ISSUER_ROTATION_KIND: &str = "issuer.rotation";
 #[must_use]
 pub fn is_rotation_kind(kind: &str) -> bool {
     kind == ISSUER_ROTATION_KIND
+}
+
+/// Checks a rotation body against the kind of the event that carries
+/// it, running only the body-only stateless subset of
+/// [`IssuerRotation::validate`].
+///
+/// [`ChainExt::validate`](crate::chain::ChainExt) — which knows the
+/// event's kind but neither its author nor any currency definition —
+/// calls this at the header boundary, so a malformed rotation body is
+/// refused at sign/decode instead of signing, storing, and syncing as
+/// a fully valid event (#5706). The context-dependent rules stay out
+/// of this check by design: that a routine author is the *current*
+/// generation key, and that a recovery author is the key the
+/// definition committed (and not the key it replaces), need the
+/// event's verified author and the definition's recovery commitment,
+/// which only [`IssuerRotation::validate`] and [`fold_rotation_chain`]
+/// have.
+///
+/// # Errors
+///
+/// Returns [`RotationError::KindMismatch`] when the carrying event's
+/// kind is not [`ISSUER_ROTATION_KIND`]. Returns the body-rule error
+/// naming the first failed check otherwise: non-consecutive
+/// generations, the predecessor rule, an asserted compromise start on
+/// a routine rotation, or a successor proof that does not verify.
+pub fn check_rotation(kind: &str, rotation: &IssuerRotation) -> Result<(), RotationError> {
+    if !is_rotation_kind(kind) {
+        return Err(RotationError::KindMismatch {
+            kind: kind.to_owned(),
+        });
+    }
+    rotation.check_shape()?;
+    if rotation.mode == RotationMode::Routine && rotation.asserted_compromise_from.is_some() {
+        return Err(RotationError::AssertedCompromiseOnRoutine);
+    }
+    if !rotation.verify_successor_proof() {
+        return Err(RotationError::SuccessorProofInvalid);
+    }
+    Ok(())
 }
 
 /// Domain separator for the successor proof: the proof signs the
@@ -277,13 +316,36 @@ impl IssuerRotation {
             .is_ok()
     }
 
+    /// The shape rules every validation path shares, needing nothing
+    /// beyond the body itself: generations are consecutive, and the
+    /// predecessor rule holds (only the initial transition out of
+    /// generation 0 names no previous rotation).
+    fn check_shape(&self) -> Result<(), RotationError> {
+        if self.to_generation != self.from_generation.wrapping_add(1)
+            || self.to_generation <= self.from_generation
+        {
+            return Err(RotationError::NonConsecutiveGeneration);
+        }
+        match (self.from_generation, self.previous_rotation) {
+            (0, Some(_)) => return Err(RotationError::UnexpectedPredecessor),
+            (_, None) if self.from_generation != 0 => {
+                return Err(RotationError::MissingPredecessor);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Checks this body against its event's verified author and the
     /// currency definition's recovery-key commitment.
     ///
     /// This is the stateless half of validation: consecutive
     /// generations, the predecessor rule, the asserted-compromise
     /// rule, the successor proof, and — for recovery mode — that the
-    /// author is the committed recovery key. The chain-dependent
+    /// author is the committed recovery key. For routine mode it
+    /// also refuses a self-rotation — successor equal to the
+    /// author — which the fold could never count (#6451).
+    /// The chain-dependent
     /// half (a routine author must be the *current* generation key;
     /// a recovery author must not be the key it replaces) is
     /// enforced by [`fold_rotation_chain`], the only place the
@@ -297,22 +359,14 @@ impl IssuerRotation {
         author: &IssuerId,
         committed_recovery: Option<&Hash>,
     ) -> Result<(), RotationError> {
-        if self.to_generation != self.from_generation.wrapping_add(1)
-            || self.to_generation <= self.from_generation
-        {
-            return Err(RotationError::NonConsecutiveGeneration);
-        }
-        match (self.from_generation, self.previous_rotation) {
-            (0, Some(_)) => return Err(RotationError::UnexpectedPredecessor),
-            (_, None) if self.from_generation != 0 => {
-                return Err(RotationError::MissingPredecessor);
-            }
-            _ => {}
-        }
+        self.check_shape()?;
         match self.mode {
             RotationMode::Routine => {
                 if self.asserted_compromise_from.is_some() {
                     return Err(RotationError::AssertedCompromiseOnRoutine);
+                }
+                if self.successor_key == *author {
+                    return Err(RotationError::RoutineSuccessorIsAuthor);
                 }
             }
             RotationMode::CompromiseRecovery => {
@@ -332,8 +386,13 @@ impl IssuerRotation {
 }
 
 /// Why a rotation body is invalid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RotationError {
+    /// The carrying event's kind is not the issuer rotation kind.
+    KindMismatch {
+        /// The kind of the event.
+        kind: String,
+    },
     /// `to_generation` is not exactly `from_generation + 1`.
     NonConsecutiveGeneration,
     /// A transition out of generation 0 names a previous rotation.
@@ -343,6 +402,10 @@ pub enum RotationError {
     /// A routine rotation carries an asserted compromise start;
     /// only recovery rotations may (§3.3).
     AssertedCompromiseOnRoutine,
+    /// A routine rotation names its own author as the successor
+    /// key: the transition installs the very key it replaces, so
+    /// the fold can never count it (#6451).
+    RoutineSuccessorIsAuthor,
     /// A recovery rotation was presented for a currency whose
     /// definition committed no recovery key: no issuer-signed
     /// declaration can be authoritative for it (§3.4).
@@ -359,6 +422,9 @@ pub enum RotationError {
 impl std::fmt::Display for RotationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::KindMismatch { kind } => {
+                write!(f, "a {kind:?} event carries an issuer rotation")
+            }
             Self::NonConsecutiveGeneration => {
                 write!(f, "rotation generation is not consecutive")
             }
@@ -370,6 +436,9 @@ impl std::fmt::Display for RotationError {
             }
             Self::AssertedCompromiseOnRoutine => {
                 write!(f, "routine rotation asserts a compromise start")
+            }
+            Self::RoutineSuccessorIsAuthor => {
+                write!(f, "routine rotation names its author as its successor")
             }
             Self::RecoveryCommitmentMissing => {
                 write!(f, "currency definition commits no recovery key")
@@ -557,8 +626,33 @@ pub fn fold_rotation_chain(
             // compromised key active under a new generation number.
             .filter(|(_, _, rotation)| rotation.successor_key != current_key)
             .collect();
-        candidates.sort_by_key(|(_, event_id, _)| *event_id);
-        candidates.dedup_by_key(|(_, event_id, _)| *event_id);
+        // Order and deduplicate on the candidate's full content —
+        // event id, author, and the rotation body — never on the
+        // event id alone. Distinct bodies can share one event id,
+        // and an id-only dedup keeps whichever arrived first, so the
+        // fold would depend on input order and break the determinism
+        // contract above. With the full tuple as the key, identical
+        // duplicates still collapse to one, while distinct same-id
+        // candidates both survive to the fork handling below (a
+        // single recovery resolves them, otherwise the chain
+        // conflicts) — a function of the input multiset, never of
+        // its listing order. The oracle is permutation invariance:
+        // every listing of the same multiset folds identically.
+        candidates.sort_by_key(|(author, event_id, rotation)| {
+            (
+                *event_id,
+                *author,
+                match rotation.mode {
+                    RotationMode::Routine => 0u8,
+                    RotationMode::CompromiseRecovery => 1u8,
+                },
+                rotation.successor_key,
+                rotation.successor_proof,
+                rotation.asserted_compromise_from,
+                rotation.to_generation,
+            )
+        });
+        candidates.dedup_by(|a, b| *a == *b);
         match candidates.as_slice() {
             [] => break,
             [(_, event_id, rotation)] => {
@@ -600,9 +694,16 @@ pub fn fold_rotation_chain(
                     chain.keys.push(rotation.successor_key);
                     chain.transitions.push(event_id);
                 } else {
+                    // The status names the competing transitions by
+                    // event id; distinct candidates can share one id
+                    // (above), so list each id once. `many` is sorted
+                    // by event id first, so a plain dedup suffices.
+                    let mut candidate_ids: Vec<Hash> =
+                        many.iter().map(|(_, event_id, _)| *event_id).collect();
+                    candidate_ids.dedup();
                     chain.status = ChainStatus::Conflicted {
                         generation: generation + 1,
-                        candidates: many.iter().map(|(_, event_id, _)| *event_id).collect(),
+                        candidates: candidate_ids,
                     };
                     break;
                 }
@@ -619,7 +720,13 @@ pub fn fold_rotation_chain(
 ///
 /// # Errors
 ///
-/// Returns a chain error if the extension or backlink is invalid.
+/// Returns [`SignError::Rotation`] with
+/// [`RotationError::RoutineSuccessorIsAuthor`] for a routine
+/// rotation whose successor is the signing key itself: the fold
+/// can never count such a transition, so signing it would hand
+/// the caller a valid-looking event that never advances the
+/// chain (#6451). Returns a chain error if the extension or
+/// backlink is invalid otherwise.
 pub fn sign_rotation(
     key: &SigningKey,
     seq_num: SeqNum,
@@ -627,6 +734,9 @@ pub fn sign_rotation(
     rotation: &IssuerRotation,
     after: Vec<Hash>,
 ) -> Result<Event, SignError> {
+    if rotation.mode == RotationMode::Routine && rotation.successor_key == issuer_id(key) {
+        return Err(RotationError::RoutineSuccessorIsAuthor.into());
+    }
     Ok(chain::sign(
         key,
         seq_num,
@@ -643,6 +753,8 @@ pub fn sign_rotation(
             link: None,
             checkpoint: None,
             rotation: Some(rotation.clone()),
+
+            chat: None,
         },
     )?)
 }
@@ -652,6 +764,9 @@ pub fn sign_rotation(
 pub enum SignError {
     /// The chain refused the event (extension or backlink rules).
     Chain(chain::ChainError),
+    /// The rotation breaks a rule the signer can check locally
+    /// before producing an event (#6451).
+    Rotation(RotationError),
 }
 
 impl From<chain::ChainError> for SignError {
@@ -660,10 +775,17 @@ impl From<chain::ChainError> for SignError {
     }
 }
 
+impl From<RotationError> for SignError {
+    fn from(err: RotationError) -> Self {
+        Self::Rotation(err)
+    }
+}
+
 impl std::fmt::Display for SignError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Chain(err) => write!(f, "chain refused the rotation event: {err:?}"),
+            Self::Rotation(err) => write!(f, "rotation refused at sign time: {err}"),
         }
     }
 }
@@ -735,6 +857,35 @@ mod tests {
 
     fn commitment() -> Hash {
         recovery_commitment(&issuer_id(&recovery_key()))
+    }
+
+    #[test]
+    fn check_rotation_accepts_well_formed_bodies_without_context() {
+        // A routine body passes on its own fields alone.
+        let routine = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        assert_eq!(check_rotation(ISSUER_ROTATION_KIND, &routine), Ok(()));
+        // A recovery body carrying an asserted compromise start also
+        // passes: the author and commitment rules are context, and
+        // check_rotation has neither — they stay in `validate`.
+        let recovery = rotation(
+            RotationMode::CompromiseRecovery,
+            0,
+            None,
+            &gen1_key(),
+            Some(event(3)),
+        );
+        assert_eq!(check_rotation(ISSUER_ROTATION_KIND, &recovery), Ok(()));
+    }
+
+    #[test]
+    fn check_rotation_refuses_the_wrong_kind() {
+        let routine = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        assert_eq!(
+            check_rotation("note.create", &routine),
+            Err(RotationError::KindMismatch {
+                kind: "note.create".to_owned(),
+            })
+        );
     }
 
     #[test]
@@ -855,6 +1006,162 @@ mod tests {
                 assert!(candidates.contains(&event(2)));
             }
             other => panic!("expected a conflicted chain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_event_id_with_distinct_routine_bodies_conflicts_in_either_order() {
+        // Two distinct, individually valid routine bodies sharing
+        // one event id: neither may be picked by arrival order. The
+        // design (§3.2 rule 5) prescribes a conflict for two valid
+        // transitions claiming the same predecessor.
+        let first = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let rival = rotation(RotationMode::Routine, 0, None, &gen2_key(), None);
+        let forward = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[
+                (issuer_id(&gen0_key()), event(1), first.clone()),
+                (issuer_id(&gen0_key()), event(1), rival.clone()),
+            ],
+        );
+        let reversed = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[
+                (issuer_id(&gen0_key()), event(1), rival),
+                (issuer_id(&gen0_key()), event(1), first),
+            ],
+        );
+        assert_eq!(forward, reversed);
+        assert_eq!(forward.active_generation(), 0);
+        assert_eq!(
+            forward.status,
+            ChainStatus::Conflicted {
+                generation: 1,
+                candidates: vec![event(1)],
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_event_id_recovery_resolves_regardless_of_order() {
+        // A routine body and a recovery body sharing one event id:
+        // the single committed-key recovery resolves the fork in
+        // either listing order (§3.4), instead of the survivor being
+        // whichever body happened to be listed first.
+        let routine = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let recovery = rotation(
+            RotationMode::CompromiseRecovery,
+            0,
+            None,
+            &gen2_key(),
+            Some(event(50)),
+        );
+        let forward = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[
+                (issuer_id(&gen0_key()), event(1), routine.clone()),
+                (issuer_id(&recovery_key()), event(1), recovery.clone()),
+            ],
+        );
+        let reversed = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[
+                (issuer_id(&recovery_key()), event(1), recovery),
+                (issuer_id(&gen0_key()), event(1), routine),
+            ],
+        );
+        assert_eq!(forward, reversed);
+        assert_eq!(forward.status, ChainStatus::Settled);
+        assert_eq!(forward.active_generation(), 1);
+        assert_eq!(forward.active_key(), &issuer_id(&gen2_key()));
+        assert_eq!(forward.recoveries.len(), 1);
+        assert_eq!(forward.recoveries[0].event_id, event(1));
+    }
+
+    #[test]
+    fn identical_duplicate_candidate_still_counts_once() {
+        let first = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let entry = (issuer_id(&gen0_key()), event(1), first);
+        let chain = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[entry.clone(), entry],
+        );
+        assert_eq!(chain.status, ChainStatus::Settled);
+        assert_eq!(chain.active_generation(), 1);
+        assert_eq!(chain.transitions, vec![event(1)]);
+    }
+
+    #[test]
+    fn fold_is_permutation_invariant_with_duplicate_event_ids() {
+        // Property test; the oracle is permutation invariance of
+        // the fold. The multiset mixes three distinct bodies under
+        // one event id (two routine rivals and one recovery) plus
+        // an identical duplicate of the recovery: every listing
+        // must fold to the same chain, settled through the
+        // recovery exactly once.
+        let routine_a = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let routine_b = rotation(RotationMode::Routine, 0, None, &gen2_key(), None);
+        let recovery = rotation(
+            RotationMode::CompromiseRecovery,
+            0,
+            None,
+            &gen3_key(),
+            Some(event(50)),
+        );
+        let inputs = vec![
+            (issuer_id(&gen0_key()), event(1), routine_a),
+            (issuer_id(&gen0_key()), event(1), routine_b),
+            (issuer_id(&recovery_key()), event(1), recovery),
+        ];
+        let inputs = {
+            let mut with_dup = inputs.clone();
+            with_dup.push(inputs[2].clone());
+            with_dup
+        };
+        let expected = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &inputs,
+        );
+        assert_eq!(expected.status, ChainStatus::Settled);
+        assert_eq!(expected.active_key(), &issuer_id(&gen3_key()));
+        assert_eq!(expected.transitions, vec![event(1)]);
+        assert_eq!(expected.recoveries.len(), 1);
+        fn permutations<T: Clone>(items: &[T]) -> Vec<Vec<T>> {
+            if items.len() <= 1 {
+                return vec![items.to_vec()];
+            }
+            let mut out = Vec::new();
+            for i in 0..items.len() {
+                let mut rest = items.to_vec();
+                let head = rest.remove(i);
+                for mut tail in permutations(&rest) {
+                    let mut perm = vec![head.clone()];
+                    perm.append(&mut tail);
+                    out.push(perm);
+                }
+            }
+            out
+        }
+        for perm in permutations(&inputs) {
+            let chain = fold_rotation_chain(
+                &issuer_id(&gen0_key()),
+                &currency(),
+                Some(&commitment()),
+                &perm,
+            );
+            assert_eq!(chain, expected);
         }
     }
 
@@ -1085,5 +1392,79 @@ mod tests {
         );
         assert_eq!(chain.active_generation(), 1);
         assert_eq!(chain.active_key(), &issuer_id(&gen1_key()));
+    }
+
+    #[test]
+    fn routine_self_rotation_is_refused_at_sign_time() {
+        // #6451 oracle: fold_rotation_chain can never count a
+        // routine transition whose successor is the current key
+        // (see a_routine_rotation_to_the_same_key_does_not_advance),
+        // so sign_rotation must refuse it up front, naming the rule,
+        // instead of producing a valid-looking event.
+        let issuer = gen0_key();
+        let self_rotation = rotation(RotationMode::Routine, 0, None, &gen0_key(), None);
+        match sign_rotation(&issuer, 0, None, &self_rotation, vec![]) {
+            Ok(_) => panic!("routine self-rotation signed Ok"),
+            Err(err) => assert!(
+                matches!(
+                    err,
+                    SignError::Rotation(RotationError::RoutineSuccessorIsAuthor)
+                ),
+                "unexpected sign error: {err}"
+            ),
+        }
+    }
+
+    #[test]
+    fn validate_refuses_a_routine_self_rotation() {
+        // The same author-local invariant in validate: a routine
+        // rotation whose successor equals its verified author.
+        let self_rotation = rotation(RotationMode::Routine, 0, None, &gen0_key(), None);
+        assert_eq!(
+            self_rotation.validate(&issuer_id(&gen0_key()), Some(&commitment())),
+            Err(RotationError::RoutineSuccessorIsAuthor)
+        );
+    }
+
+    #[test]
+    fn routine_rotation_to_a_new_key_still_signs_and_folds() {
+        // Control: the ordinary gen0 -> gen1 routine rotation is
+        // unaffected by the self-rotation refusal.
+        let issuer = gen0_key();
+        let first = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let signed = sign_rotation(&issuer, 0, None, &first, vec![]).expect("sign rotation");
+        let chain = fold_rotation_chain(
+            &issuer_id(&issuer),
+            &currency(),
+            Some(&commitment()),
+            &[(issuer_id(&issuer), signed.id, first)],
+        );
+        assert_eq!(chain.active_generation(), 1);
+        assert_eq!(chain.active_key(), &issuer_id(&gen1_key()));
+    }
+
+    #[test]
+    fn recovery_rotation_to_the_recovery_key_itself_still_signs_and_validates() {
+        // Out of scope for the refusal (#6451): sign_rotation's
+        // inputs do not name the key a recovery replaces, so a
+        // CompromiseRecovery rotation whose successor is the
+        // recovery signing key itself stays accepted at sign time
+        // and in validate; only the fold decides advancement.
+        let recovery = recovery_key();
+        let rotation = rotation(
+            RotationMode::CompromiseRecovery,
+            0,
+            None,
+            &recovery_key(),
+            None,
+        );
+        assert_eq!(
+            rotation.validate(&issuer_id(&recovery_key()), Some(&commitment())),
+            Ok(())
+        );
+        match sign_rotation(&recovery, 0, None, &rotation, vec![]) {
+            Ok(_) => {}
+            Err(err) => panic!("recovery self-install refused at sign time: {err}"),
+        }
     }
 }

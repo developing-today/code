@@ -5,7 +5,7 @@ here shipped in PR #5191 ("id: show file origin node + upload time in
 listings", implementing issue #4973, part 1 of issue #1793), merged
 2026-11-03 at commit `e81e2028b50a553120d6ac34ac3d5f2d539c2067`. The
 documentation protocol in `docs/DOCUMENTATION_PROTOCOL.md` and
-`pkgs/id/AGENTS.md` requires this record to be written *before* an
+`pkgs/id/AGENTS.md` requires this record to be written _before_ an
 interface or API change is implemented; for this change it was not, a
 gap raised as a P1 finding by Codex review on PR #5191 and tracked in
 issue #5384. This record therefore documents the shipped behavior and
@@ -15,7 +15,7 @@ not propose any new behavior, and no code changes accompany it.
 ## Intent
 
 A file listing showed only a file's hash and name. A user looking at a
-listing could not tell *which node* a file came from or *when* it was
+listing could not tell _which node_ a file came from or _when_ it was
 uploaded, even though the store already recorded `created`/`modified`
 metadata tags on writes. Issue #4973 asked for the origin node and the
 upload time to be carried end to end: stamped at write time, returned
@@ -77,7 +77,7 @@ Postcard encodes enum variants and payloads by position, and the
 protocol's compatibility rule (documented on `MetaRequest` in
 `pkgs/id/src/protocol.rs` and pinned by the `wire_format_is_pinned`
 test) is that within one protocol version new variants may only be
-*appended* — reordering, inserting, or changing a payload requires a
+_appended_ — reordering, inserting, or changing a payload requires a
 new ALPN. Changing the List payload in place under the old ALPN would
 have let mixed-version peers silently mis-decode each other, so
 `META_ALPN` bumped from `b"/iroh-meta/2"` to `b"/iroh-meta/3"` in the

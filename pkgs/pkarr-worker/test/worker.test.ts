@@ -282,6 +282,42 @@ describe("pkarr HTTP relay", () => {
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(newer);
   });
 
+  it("rejects a signed packet whose timestamp loses precision above 2^53", async () => {
+    const kp = keypair(51);
+    const key = z32(kp.publicKey);
+    // 2^53 + 1 is the first positive integer a double cannot represent:
+    // Number(9007199254740993n) rounds down to 2^53, so storing it would
+    // silently rewrite the signed timestamp.
+    const payload = buildRelayPayload(kp, 9_007_199_254_740_993n, dnsPacketWithTxt(`_iroh.${key}`, "rounded"));
+    expect((await put(key, payload)).status).toBe(400);
+    expect((await get(key)).status).toBe(404);
+  });
+
+  it("never lets an older above-2^53 packet overwrite a newer one", async () => {
+    const kp = keypair(52);
+    const key = z32(kp.publicKey);
+    // 2^53 + 2 is exactly representable, so the newer packet stores
+    // exactly; the older 2^53 + 1 packet is rejected instead of rounding
+    // down to 2^53 in storage and passing the strictly-newer check
+    // against a collapsed value.
+    const newer = buildRelayPayload(kp, 9_007_199_254_740_994n, dnsPacketWithTxt(`_iroh.${key}`, "new"));
+    const older = buildRelayPayload(kp, 9_007_199_254_740_993n, dnsPacketWithTxt(`_iroh.${key}`, "old"));
+    expect((await put(key, newer)).status).toBe(204);
+    expect((await put(key, older)).status).toBe(400);
+    const res = await get(key);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(newer);
+  });
+
+  it("rejects nanosecond-scale timestamps that do not round-trip exactly", async () => {
+    const kp = keypair(53);
+    const key = z32(kp.publicKey);
+    // ~1.76e18 (nanosecond scale): doubles space out by 256 up there, so
+    // this value rounds to a different integer in storage.
+    const payload = buildRelayPayload(kp, 1_762_000_000_000_000_001n, dnsPacketWithTxt(`_iroh.${key}`, "ns"));
+    expect((await put(key, payload)).status).toBe(400);
+    expect((await get(key)).status).toBe(404);
+  });
+
   it("lets a newer packet replace an older one", async () => {
     const kp = keypair(19);
     const key = z32(kp.publicKey);
@@ -390,10 +426,7 @@ describe("DNS-over-HTTPS", () => {
       },
     } as Env["DOH_LIMITER"];
 
-    const response = await worker.fetch(
-      requestWithStream(`${BASE}/dns-query`, "POST", body.stream),
-      env,
-    );
+    const response = await worker.fetch(requestWithStream(`${BASE}/dns-query`, "POST", body.stream), env);
 
     expect(response.status).toBe(429);
     expect(order).toEqual(["limit"]);

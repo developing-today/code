@@ -16,10 +16,72 @@
 //   hold, is "unavailable" — never an empty success.
 
 import type { ProjectPoolItem, RefKey } from "./model.ts";
+import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
-import { modeOf } from "./weights.ts";
+import { effortWeight, modeOf } from "./weights.ts";
 
 export const EPIC_GRAPH_DEFAULT_CAP = 120;
+
+/** Compute the set of distinct open epic items in the transitive blockedBy ancestry of a ref. */
+function transitiveOpenEpicDescendants(
+  ref: RefKey,
+  byRef: Map<RefKey, ProjectPoolItem>,
+  visited: Set<RefKey> = new Set(),
+): Set<RefKey> {
+  if (visited.has(ref)) return new Set();
+  visited.add(ref);
+  
+  const item = byRef.get(ref);
+  if (!item || item.state !== "open") return new Set();
+  
+  const result = new Set<RefKey>();
+  
+  // If this is an epic, add it to the result
+  if (item.kind === "Epic") {
+    result.add(ref);
+  }
+  
+  // Recursively visit all blockers
+  for (const blockerRef of item.blockedBy ?? []) {
+    const blockers = transitiveOpenEpicDescendants(blockerRef, byRef, new Set(visited));
+    for (const b of blockers) {
+      result.add(b);
+    }
+  }
+  
+  return result;
+}
+
+/** Compute the set of contributing downstream items for a blocker.
+ * These are the open epic items that are descendants of the blocker in the blockedBy graph. */
+function contributingDownstreamItems(
+  blockerRef: RefKey,
+  byRef: Map<RefKey, ProjectPoolItem>,
+  visited: Set<RefKey> = new Set(),
+): Set<RefKey> {
+  if (visited.has(blockerRef)) return new Set();
+  visited.add(blockerRef);
+  
+  const blockerItem = byRef.get(blockerRef);
+  if (!blockerItem || blockerItem.state !== "open") return new Set();
+  
+  const result = new Set<RefKey>();
+  
+  // If this blocker is an epic, it contributes itself
+  if (blockerItem.kind === "Epic") {
+    result.add(blockerRef);
+  }
+  
+  // Recursively visit all blockers of this blocker
+  for (const upstreamBlockerRef of blockerItem.blockedBy ?? []) {
+    const contributors = contributingDownstreamItems(upstreamBlockerRef, byRef, new Set(visited));
+    for (const c of contributors) {
+      result.add(c);
+    }
+  }
+  
+  return result;
+}
 
 export interface EpicSelectorEntry {
   ref: RefKey;
@@ -58,10 +120,7 @@ export function epicSelector(pool: readonly ProjectPoolItem[]): EpicSelectorEntr
       doneCount: rollup.done,
     });
   }
-  entries.sort(
-    (a, b) =>
-      b.blockedCount - a.blockedCount || b.itemCount - a.itemCount || a.ref.localeCompare(b.ref),
-  );
+  entries.sort((a, b) => b.blockedCount - a.blockedCount || b.itemCount - a.itemCount || a.ref.localeCompare(b.ref));
   return entries;
 }
 
@@ -103,6 +162,28 @@ export interface EpicGraphEdge {
   type: EpicGraphEdgeType;
 }
 
+export interface RankedBlockerItem {
+  ref: RefKey;
+  issueUrl: string;
+  /** Null when this open item has no recognized effort label. */
+  effortWeight: number | null;
+  /** Current unresolved direct blockers other than this ranked blocker. */
+  additionalBlockers: RefKey[];
+}
+
+export interface RankedBlocker {
+  ref: RefKey;
+  issueUrl: string;
+  /** Null for an out-of-pool blocker whose state is unknown. */
+  state: string | null;
+  /** Distinct open epic members in this blocker's transitive blockedBy ancestry. */
+  downstreamCount: number;
+  /** Sum over recognized effort labels; unsized items are reported separately. */
+  knownEffortWeight: number;
+  unsizedCount: number;
+  downstreamItems: RankedBlockerItem[];
+}
+
 export interface EpicGraph {
   status: "ok" | "unavailable";
   /** Why the graph is unavailable; null when status is "ok". */
@@ -126,7 +207,21 @@ export interface EpicGraph {
    * the full member set BEFORE the node cap, worst-blocked first. The
    * ranked summary renders from this, never from the capped nodes:
    * a member the cap hid is still blocked. */
-  rankedBlocked: { ref: RefKey; issueUrl: string; blockers: RefKey[] }[];
+  rankedBlocked: {
+    ref: RefKey;
+    issueUrl: string;
+    /** Transitive downstream open work count (distinct open epic items in transitive blockedBy ancestry). */
+    downstreamCount: number;
+    /** Known effort weight of the blocker, or null if unsized. */
+    effortWeight: number | null;
+    /** Blockers of this blocker (transitive one level). */
+    blockers: RefKey[];
+    /** Contributing downstream items that contribute to the downstreamCount. */
+    contributingItems: RefKey[];
+  }[];
+  /** Unresolved blockers ranked by distinct open downstream epic work.
+   * Also computed over the full member set before the node cap. */
+  rankedBlockers: RankedBlocker[];
   maxDepth: number;
 }
 
@@ -143,6 +238,7 @@ function unavailable(reason: string): EpicGraph {
     memberCount: 0,
     blockedCount: 0,
     rankedBlocked: [],
+    rankedBlockers: [],
     maxDepth: 0,
   };
 }
@@ -188,9 +284,9 @@ export function epicGraph(
   const externalRefs = new Set<RefKey>();
   const collectRefs = (item: ProjectPoolItem) => {
     const targets = [
-      ...(item.parentRef !== undefined ? [item.parentRef] : []),
-      ...(item.blockedBy ?? []),
-      ...(item.blocks ?? []),
+      ...(isValidRef(item.parentRef) ? [item.parentRef] : []),
+      ...(item.blockedBy ?? []).filter(isValidRef),
+      ...(item.blocks ?? []).filter(isValidRef),
     ];
     for (const target of targets) {
       if (memberSet.has(target)) continue;
@@ -206,9 +302,7 @@ export function epicGraph(
   const ordered: { item: ProjectPoolItem | null; ref: RefKey }[] = [
     { item: epicItem, ref: epicRef },
     ...[...members].sort((a, b) => byRefOrder(a.ref, b.ref)).map((m) => ({ item: m, ref: m.ref })),
-    ...[...oneHopPool.values()]
-      .sort((a, b) => byRefOrder(a.ref, b.ref))
-      .map((m) => ({ item: m, ref: m.ref })),
+    ...[...oneHopPool.values()].sort((a, b) => byRefOrder(a.ref, b.ref)).map((m) => ({ item: m, ref: m.ref })),
     ...[...externalRefs].sort(byRefOrder).map((ref) => ({ item: null, ref })),
   ];
   const totalNodes = ordered.length;
@@ -231,9 +325,13 @@ export function epicGraph(
   };
   for (const { item } of shown) {
     if (!item) continue;
-    if (item.parentRef !== undefined) addEdge(item.parentRef, item.ref, "hierarchy");
-    for (const blocker of item.blockedBy ?? []) addEdge(item.ref, blocker, "dependency");
-    for (const blocked of item.blocks ?? []) addEdge(blocked, item.ref, "dependency");
+    if (isValidRef(item.parentRef)) addEdge(item.parentRef, item.ref, "hierarchy");
+    for (const blocker of item.blockedBy ?? []) {
+      if (isValidRef(blocker)) addEdge(item.ref, blocker, "dependency");
+    }
+    for (const blocked of item.blocks ?? []) {
+      if (isValidRef(blocked)) addEdge(blocked, item.ref, "dependency");
+    }
   }
 
   // Hierarchy layout, same discipline as depthLayout: DFS from roots
@@ -265,18 +363,125 @@ export function epicGraph(
   // Summaries cover the FULL member set, before the node cap: a member
   // hidden by the cap is still blocked, still counted, still ranked.
   const unresolvedBlockersOf = (item: ProjectPoolItem): RefKey[] =>
-    (item.blockedBy ?? []).filter((b) => {
+    (item.blockedBy ?? []).filter(isValidRef).filter((b) => {
       const blocker = byRef.get(b);
       return blocker === undefined || blocker.state === "open";
     });
-  const blockedCount = members.filter(
-    (m) => m.state === "open" && unresolvedBlockersOf(m).length > 0,
-  ).length;
+  const blockedCount = members.filter((m) => m.state === "open" && unresolvedBlockersOf(m).length > 0).length;
+  
+  // Compute rankedBlocked with transitive downstream open work ranking
   const rankedBlocked = members
     .filter((m) => m.ref !== epicRef && m.state === "open")
-    .map((m) => ({ ref: m.ref, issueUrl: m.issueUrl, blockers: unresolvedBlockersOf(m) }))
+    .map((m) => {
+      const blockers = unresolvedBlockersOf(m);
+      
+      // For each blocker, compute its downstream open epic descendant count
+      const blockerScores = blockers.map((blockerRef) => {
+        // Count distinct open epic items in transitive blockedBy ancestry of this blocker
+        const downstream = transitiveOpenEpicDescendants(blockerRef, byRef);
+        
+        // Compute contributing downstream items (open epics that are descendants of this blocker)
+        const contributing = contributingDownstreamItems(blockerRef, byRef);
+        
+        // Get effort weight of the blocker
+        const blockerItem = byRef.get(blockerRef);
+        const weight = blockerItem ? effortWeight(blockerItem.labels) : null;
+        
+        return {
+          ref: blockerRef,
+          downstreamCount: downstream.size,
+          effortWeight: weight,
+          contributingItems: Array.from(contributing),
+        };
+      });
+      
+      return {
+        ref: m.ref,
+        issueUrl: m.issueUrl,
+        blockers: blockers,
+        // Sort blockers by downstreamCount (desc), then effortWeight (desc), then ref
+        sortedBlockers: [...blockerScores].sort((a, b) => 
+          b.downstreamCount - a.downstreamCount || 
+          (b.effortWeight === null ? -1 : b.effortWeight) - (a.effortWeight === null ? -1 : a.effortWeight) ||
+          byRefOrder(a.ref, b.ref)
+        ),
+      };
+    })
     .filter((r) => r.blockers.length > 0)
-    .sort((a, b) => b.blockers.length - a.blockers.length || byRefOrder(a.ref, b.ref));
+    // Sort members by their worst blocker's downstreamCount, then effortWeight, then ref
+    .sort((a, b) => {
+      const aWorst = a.sortedBlockers[0];
+      const bWorst = b.sortedBlockers[0];
+      return (
+        (bWorst?.downstreamCount ?? 0) - (aWorst?.downstreamCount ?? 0) ||
+        (bWorst?.effortWeight === null ? -1 : bWorst.effortWeight) - (aWorst?.effortWeight === null ? -1 : aWorst.effortWeight) ||
+        byRefOrder(a.ref, b.ref)
+      );
+    })
+    .map((r) => ({
+      ref: r.ref,
+      issueUrl: r.issueUrl,
+      downstreamCount: r.sortedBlockers[0]?.downstreamCount ?? 0,
+      effortWeight: r.sortedBlockers[0]?.effortWeight ?? null,
+      blockers: r.sortedBlockers.map(b => b.ref),
+      contributingItems: r.sortedBlockers.flatMap(b => b.contributingItems),
+    }));
+
+  // For each open member, walk its complete unresolved blockedBy ancestry.
+  // The per-member visited set means shared paths and cycles contribute
+  // that member only once to each blocker. Unknown refs remain unresolved
+  // candidates but cannot be traversed beyond the ref itself.
+  const contributorsByBlocker = new Map<RefKey, Map<RefKey, ProjectPoolItem>>();
+  for (const member of members) {
+    if (member.ref === epicRef || member.state !== "open") continue;
+    const visited = new Set<RefKey>();
+    const visitBlocker = (ref: RefKey): void => {
+      if (visited.has(ref)) return;
+      visited.add(ref);
+      const blocker = byRef.get(ref);
+      if (blocker && blocker.state !== "open") return;
+
+      // A member is downstream work only for other blockers, never itself
+      // when a malformed self-edge or dependency cycle loops back to it.
+      if (ref !== member.ref) {
+        const contributors = contributorsByBlocker.get(ref) ?? new Map<RefKey, ProjectPoolItem>();
+        contributors.set(member.ref, member);
+        contributorsByBlocker.set(ref, contributors);
+      }
+
+      if (!blocker) return;
+      for (const ancestor of unresolvedBlockersOf(blocker).sort(byRefOrder)) visitBlocker(ancestor);
+    };
+    for (const blocker of unresolvedBlockersOf(member).sort(byRefOrder)) visitBlocker(blocker);
+  }
+  const rankedBlockers: RankedBlocker[] = [...contributorsByBlocker.entries()]
+    .map(([ref, contributors]) => {
+      const downstreamItems: RankedBlockerItem[] = [...contributors.values()]
+        .sort((a, b) => byRefOrder(a.ref, b.ref))
+        .map((item) => ({
+          ref: item.ref,
+          issueUrl: item.issueUrl,
+          effortWeight: effortWeight(item.labels),
+          additionalBlockers: [...new Set(unresolvedBlockersOf(item).filter((b) => b !== ref))].sort(byRefOrder),
+        }));
+      const knownEffortWeight = downstreamItems.reduce((sum, item) => sum + (item.effortWeight ?? 0), 0);
+      const candidate = byRef.get(ref);
+      return {
+        ref,
+        issueUrl: candidate?.issueUrl ?? refIssueUrl(ref),
+        state: candidate?.state ?? null,
+        downstreamCount: downstreamItems.length,
+        knownEffortWeight,
+        unsizedCount: downstreamItems.filter((item) => item.effortWeight === null).length,
+        downstreamItems,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.downstreamCount - a.downstreamCount ||
+        b.knownEffortWeight - a.knownEffortWeight ||
+        byRefOrder(a.ref, b.ref),
+    );
 
   const nodes: EpicGraphNode[] = shown.map(({ item, ref }) => {
     const pos = layout.get(ref) ?? { depth: 0, row: 0 };
@@ -309,8 +514,8 @@ export function epicGraph(
       unresolved: false,
       epic: item.kind === "Epic",
       mode: modeOf(item.labels),
-      blockers: [...(item.blockedBy ?? [])],
-      dependents: [...(item.blocks ?? [])],
+      blockers: (item.blockedBy ?? []).filter(isValidRef),
+      dependents: (item.blocks ?? []).filter(isValidRef),
       depth: pos.depth,
       row: pos.row,
     };
@@ -355,6 +560,7 @@ export function epicGraph(
     memberCount: members.length,
     blockedCount,
     rankedBlocked,
+    rankedBlockers,
     maxDepth: nodes.reduce((m, n) => Math.max(m, n.depth), 0),
   };
 }

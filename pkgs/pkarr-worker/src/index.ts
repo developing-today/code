@@ -43,6 +43,20 @@ const PACKET_CONTENT_TYPE = "application/x-pkarr-signed-packet";
 const DOH_CONTENT_TYPE = "application/dns-message";
 const MAX_DOH_BODY = 4096;
 
+
+/**
+ * The record table stores the packet timestamp through a JS Number
+ * (SQLite INTEGER binding), which is exact only for integers a double
+ * can represent. A signed packet may carry any unsigned 64-bit
+ * timestamp; above 2^53 most values round to a different integer, so
+ * the stored timestamp collapses and the strictly-newer comparison in
+ * putPacket can judge an older packet newer (issue #6892). Reject any
+ * timestamp that does not survive the storage round-trip exactly.
+ */
+function timestampSurvivesStorage(timestampMicros: bigint): boolean {
+  return BigInt(Number(timestampMicros)) === timestampMicros;
+}
+
 export class PkarrStore extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -55,10 +69,16 @@ export class PkarrStore extends DurableObject<Env> {
 
   /** Store the payload only if strictly newer than the current record. */
   async putPacket(payload: Uint8Array, timestampMicros: bigint): Promise<"stored" | "stale"> {
+    if (!timestampSurvivesStorage(timestampMicros)) {
+      throw new RangeError("packet timestamp does not survive the storage round-trip exactly");
+    }
     const rows = [...this.ctx.storage.sql.exec("SELECT ts FROM record WHERE id = 1")];
     const current = rows.length > 0 ? BigInt(rows[0].ts as number) : null;
     // ts is stored as a SQLite INTEGER (signed 64-bit); microsecond
-    // timestamps (~1.7e15) fit comfortably.
+    // timestamps (~1.7e15) fit comfortably. The guard above keeps any
+    // larger timestamp that a Number cannot represent exactly out of
+    // storage, so the read-back below stays exact for every record
+    // that can exist.
     if (current !== null && timestampMicros <= current) return "stale";
     this.ctx.storage.sql.exec(
       "INSERT INTO record (id, payload, ts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, ts = excluded.ts",
@@ -111,10 +131,7 @@ async function rateLimited(limiter: RateLimit, key: string): Promise<boolean> {
 
 const NO_STORE = { "cache-control": "no-store" } as const;
 
-type BoundedBodyResult =
-  | { kind: "ok"; bytes: Uint8Array }
-  | { kind: "too-large" }
-  | { kind: "read-error" };
+type BoundedBodyResult = { kind: "ok"; bytes: Uint8Array } | { kind: "too-large" } | { kind: "read-error" };
 
 /** Read at most `maximum` bytes, cancelling the request as soon as it exceeds the cap. */
 async function readBoundedBody(request: Request, maximum: number): Promise<BoundedBodyResult> {
@@ -185,6 +202,11 @@ async function handlePut(request: Request, env: Env, keyText: string): Promise<R
   }
   if (!(await verifyPacket(publicKey, parsed))) {
     return new Response("invalid signature", { status: 400 });
+  }
+  // Reject before the DO call: a timestamp that rounds through the
+  // Number storage binding would break newest-wins ordering (#6892).
+  if (!timestampSurvivesStorage(parsed.timestampMicros)) {
+    return new Response("timestamp precision loss: timestamp is outside the exact integer range", { status: 400 });
   }
   try {
     await storeFor(env, publicKey).putPacket(body, parsed.timestampMicros);

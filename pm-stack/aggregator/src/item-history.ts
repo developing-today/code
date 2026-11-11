@@ -40,7 +40,7 @@
 
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { GhState, ProjectPoolItem, RefKey } from "./model.ts";
+import type { GhKind, GhState, ProjectPoolItem, RefKey } from "./model.ts";
 import { isIsoDate } from "./validate.ts";
 
 export const ITEM_HISTORY_SCHEMA_VERSION = 1;
