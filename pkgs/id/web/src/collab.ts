@@ -570,8 +570,17 @@ export function initCollab(
 
       case MSG.NEW_VERSION: {
         // [7, hash, name] — document was saved, new content hash available
-        const hash = msg[1] as string;
-        const name = msg[2] as string;
+        const hash = msg[1];
+        const name = msg[2];
+        // #7854: validate at the boundary, like INIT (#2824) and
+        // Cursor (#7873). A non-string hash flowed unchecked into
+        // onNewVersion, whose callback writes it into dataset.hash —
+        // an object became the literal "[object Object]" the next
+        // save posts as the document hash.
+        if (typeof hash !== "string" || typeof name !== "string") {
+          console.error("[collab] Dropping malformed NewVersion message: hash and name must be strings");
+          break;
+        }
         console.log("[collab] NewVersion: hash=%s, name=%s", hash, name);
         if (onNewVersion) {
           onNewVersion(hash, name);
@@ -585,6 +594,18 @@ export function initCollab(
         const authName = msg[2] as string | null;
         const refreshedToken = msg[3] as string | null | undefined;
         console.log("[collab] Auth OK: client_id=%s, name=%s", authClientId, authName);
+        // #7854: validate at the boundary, like INIT (#2824). A
+        // refreshed token is adopted only when it is a non-empty
+        // string: any other truthy value (a number, an object) was
+        // adopted verbatim, persisted by the caller's saveIdentity
+        // via String(value) — "[object Object]" over the valid
+        // stored token — and re-sent on every reconnect. A malformed
+        // refresh is logged and dropped, leaving the current token
+        // and the stored identity untouched.
+        if (refreshedToken !== undefined && refreshedToken !== null && (typeof refreshedToken !== "string" || refreshedToken === "")) {
+          console.error("[collab] Dropping malformed AuthOk message: refreshed token must be a non-empty string");
+          break;
+        }
         // Save the refreshed token so long-lived WS sessions stay fresh.
         // Write it back to currentToken first: reconnects authenticate with
         // currentToken, so the refreshed value must live here, not only in
