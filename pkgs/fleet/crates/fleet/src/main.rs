@@ -45,8 +45,17 @@ use fleet_registry::{
 #[cfg(feature = "secrets")]
 mod secrets;
 
+#[allow(dead_code)]
+// the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
+mod derived_version;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SOURCE_REV: &str = env!("FLEET_SOURCE_REV");
+/// The derived per-app version (#8566; derivation in
+/// `derived_version.rs`, baked by build.rs from the app's tags,
+/// with `$FLEET_DERIVED_VERSION` as the packaged-build channel —
+/// the same channel shape as `FLEET_SOURCE_REV`).
+const DERIVED_VERSION: &str = env!("FLEET_DERIVED_VERSION");
 
 const EXIT_OK: i32 = 0;
 const EXIT_USAGE: i32 = 2;
@@ -250,6 +259,7 @@ fn print_version(surface: &Surface, invoked_as: &str) {
         ),
         None => println!("Build: {build}"),
     }
+    println!("Derived version: {DERIVED_VERSION}");
     println!("Source rev: {SOURCE_REV}");
     println!("Enabled capabilities: {}", format_caps(&surface.usable()));
 }
@@ -280,6 +290,7 @@ fn print_capabilities(surface: &Surface, invoked_as: &str) {
         "build": {
             "name": build,
             "version": VERSION,
+            "derived_version": DERIVED_VERSION,
             "source_rev": SOURCE_REV,
             "invoked_as": invoked_as,
             "profile": surface.profile.map(|v| v.name()),
@@ -531,6 +542,7 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
                             "fleet"
                         }
                     );
+                    println!("Derived version: {DERIVED_VERSION}");
                     return EXIT_OK;
                 }
                 return fleet_queue::client::run(args);
@@ -1016,6 +1028,7 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
                 return code;
             }
             println!("fleet {VERSION}");
+            println!("Derived version: {DERIVED_VERSION}");
             EXIT_OK
         }
         Some("version") => {
