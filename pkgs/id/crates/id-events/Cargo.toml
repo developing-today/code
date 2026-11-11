@@ -30,16 +30,22 @@ id-core = { path = "../id-core", default-features = false }
 id-store = { path = "../id-store", default-features = false }
 iroh-base = "1"
 iroh-blobs = "0.103"
+iroh = "1"
 p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = ["serde"] }
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+redb = "=4.3.0"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
 thiserror = "2"
 unicode-normalization = "0.1"
 
 [dev-dependencies]
 proptest = "1.12"
 tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tokio = { version = "1", features = ["test-util"] }
 
 [lints.rust]
 # Rust compiler lints

@@ -1,7 +1,8 @@
 // The AA cost explorer as data. The source of record is the Supabase
 // `ainventory` schema (the AA import: v_rankings,
-// v_threshold_metrics, benchmark_results, and the Test_Runs data in
-// sheet_rows, all read through v_latest_import_batch). The collector
+// v_threshold_metrics, measurement_events (the canonical benchmark
+// store, code#4401), and the Test_Runs data in sheet_rows, read
+// through v_latest_import_batch where the store carries batch identity). The collector
 // queries it, assembles the section with the helpers here, and embeds
 // it in the fleet feed; the aggregator renders the section as-is.
 // Everything in this module is pure and unit-tested (test/aa.test.ts),

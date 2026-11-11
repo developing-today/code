@@ -549,6 +549,17 @@ select coalesce((
  * The full AA section payload for one batch (null = latest). This mirrors the
  * collector's previous AA_SQL exactly except that every batch predicate and
  * both latest-pinned views now take the same batch expression.
+ *
+ * Tranche 2 of code#4401 (2026-11-11): the 'configs' and 'cai' sections no
+ * longer read the frozen ainventory.benchmark_results table; they read the
+ * canonical ainventory.measurement_events store. Canonical events carry no
+ * sheet import_batch identity, so those two sections ignore the batch
+ * expression and scope to the latest workbook-import ingest batch — the
+ * events' own equivalent of the latest import batch — with the filters that
+ * reproduce the retired table's latest-batch rows exactly (verified by
+ * full-row EXCEPT comparison before the table was dropped: configs 35/35,
+ * cai 27/27, zero differences either way). benchmark_results is dropped;
+ * measurement_events is the one canonical read path for benchmark facts.
  */
 export function aaPayloadSql(batch: string | null): string {
   const b = batchExpression(batch);
@@ -591,12 +602,14 @@ select jsonb_build_object(
   'configs', coalesce((
     select jsonb_agg(jsonb_build_object(
       'modelName', model_name, 'benchmark', benchmark, 'effort', effort,
-      'intelligence', value_num, 'costPerTaskUsd', cost_per_task_usd, 'speedTps', speed_tps
+      'intelligence', value_num, 'costPerTaskUsd', cost_per_task_usd, 'speedTps', output_tps
     ) order by model_name, effort)
-    from ainventory.benchmark_results br
-    where br.import_batch = ${b}
+    from ainventory.measurement_events br
+    where br.ingest_batch_id = (select ingest_batch_id from ainventory.measurement_events
+      where source_kind = 'workbook-import' order by ingested_at desc limit 1)
       and br.benchmark like 'AA Intelligence Index%'
       and br.metric = 'intelligence_index'
+      and br.benchmark_version is null
   ), '[]'::jsonb),
   'testRunRows', coalesce((
     select jsonb_agg(jsonb_build_object('rowIndex', row_index, 'cells', data->'cells') order by row_index)
@@ -617,10 +630,12 @@ select jsonb_build_object(
       'sweAtlas', nullif(raw->>'swe_atlas_qna_pct', '')::numeric,
       'snapshotDate', nullif(raw->>'snapshot_date', ''), 'sourceUrl', nullif(raw->>'source_url', '')
     ) order by value_num desc nulls last, model_name)
-    from ainventory.benchmark_results br
-    where br.import_batch = ${b}
+    from ainventory.measurement_events br
+    where br.ingest_batch_id = (select ingest_batch_id from ainventory.measurement_events
+      where source_kind = 'workbook-import' order by ingested_at desc limit 1)
       and br.benchmark like 'Artificial Analysis Coding Agent Index%'
       and br.metric = 'cai_index_score'
+      and br.raw->>'benchmark_version' is not null
   ), '[]'::jsonb),
   'prices', coalesce((
     select jsonb_agg(jsonb_build_object(

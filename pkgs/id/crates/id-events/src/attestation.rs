@@ -4,7 +4,7 @@
 //! API is built on it without the review round the epic (#2056) requires.
 //!
 //! The PoC composes the existing primitives — signed chained events
-//! ([`crate::chain`]) and the event store — with two new object shapes,
+//! ([`id_store::chain`]) and the event store — with two new object shapes,
 //! carried as ordinary signed events whose bodies are the JSON objects:
 //!
 //! - **Genesis agreement** (kind `attestation.genesis`): one event per
@@ -40,7 +40,7 @@
 use p2panda_core::{Hash, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 
-use crate::chain::{self, ChainExt, Event};
+use id_store::chain::{self, ChainExt, Event};
 
 /// The event kind carrying a genesis agreement body.
 pub const GENESIS_KIND: &str = "attestation.genesis";

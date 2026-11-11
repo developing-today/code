@@ -171,6 +171,16 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
 
         let mut transfer_ids = HashSet::with_capacity(request.transfer_ids.len());
         for id in &request.transfer_ids {
+            // TigerBeetle reserves 0 and u128::MAX as transfer IDs
+            // and refuses them outright at submission (#6194, the
+            // #6135 finding): reject them here, in preflight, before
+            // any intent is persisted — otherwise the write-ahead
+            // intent strands as a poison Submitted record.
+            if *id == 0 || *id == u128::MAX {
+                bail!(
+                    "preflight: transfer ID {id} is reserved (zero and u128::MAX are refused by TigerBeetle)"
+                );
+            }
             if !transfer_ids.insert(*id) {
                 bail!("preflight: duplicate transfer ID {id}");
             }

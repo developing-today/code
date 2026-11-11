@@ -348,7 +348,10 @@ export function initCollab(
         try {
           Node.fromJSON(getSchema(mode), docRecord);
         } catch (err) {
-          console.error("[collab] Dropping malformed Init message: document does not parse against the mode schema:", err);
+          console.error(
+            "[collab] Dropping malformed Init message: document does not parse against the mode schema:",
+            err,
+          );
           return;
         }
         documentMode = mode;
@@ -495,8 +498,7 @@ export function initCollab(
           break;
         }
         const name = rawName as string | null | undefined;
-        const idleSecs =
-          typeof rawIdleSecs === "number" && Number.isFinite(rawIdleSecs) ? rawIdleSecs : undefined;
+        const idleSecs = typeof rawIdleSecs === "number" && Number.isFinite(rawIdleSecs) ? rawIdleSecs : undefined;
 
         // Mark cursor as fresh for reconnect cleanup (including own cursor)
         markCursorFresh(editorInstance.view, clientID);

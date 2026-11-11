@@ -1,7 +1,7 @@
 //! Range sync over the event store, on `/id-range-sync/1`.
 //!
 //! The ALPN is this protocol's alone (#179). Range sessions used to share `/id-sync/1`
-//! with the `LogSync` handshake sessions in [`crate::log_sync`], whose first frame is a
+//! with the `LogSync` handshake sessions in `id::log_sync`, whose first frame is a
 //! `Request` - two different session shapes on one ALPN, so a peer opening with one
 //! shape was misread by an acceptor expecting the other. The split is deliberate and
 //! documented here rather than silent: `/id-sync/1` is the handshake session's, and a
@@ -53,9 +53,14 @@ use super::{
     EVENTS, EventStore, HASHES, Ingest, PROOF_HEADERS, StoreError, corrupt, decode_stored,
     position_key,
 };
-use crate::chain::{self, Event};
+use id_store::chain::{self, Event};
 use crate::pull_policy::{PullGate, PullRefused};
-use crate::store_traits::SharedEventStore;
+use id_store::store_traits::SharedEventStore;
+
+/// The shared handle over this crate's [`EventStore`](super::EventStore):
+/// the pin the facade's `store_traits` alias names, owned here since
+/// step 2b so the range sessions below can implement over it.
+type Shared = SharedEventStore<super::EventStore>;
 
 /// The protocol ID. The wire version only; K and T are not in it. Distinct from
 /// `log_sync`'s `/id-sync/1` since #179 (see the module docs): the two session shapes
@@ -252,11 +257,15 @@ pub async fn sync_over(
 /// A session touches its store in short steps — the sync set once at the start, one
 /// event's bytes per offer, one ingest batch per flush — and never needs the store
 /// across an await: [`run_session`] guards the store with a `Mutex` it locks per step.
-/// That is the seam that lets a session run over [`SharedEventStore`] (#179): its
+/// That is the seam that lets a session run over [`Shared`] (#179): its
 /// implementation takes the shared `RwLock` per step, read for the queries and write
 /// for one batch, instead of holding a write guard for the session's whole life, which
 /// would block every other user of the store behind a network wait.
-pub(crate) trait RangeStore {
+/// The store seam one range session runs over. `pub` since step 2b:
+/// the facade's `log_sync` drives sessions through
+/// [`sync_on_streams`] over this trait, as it did when both lived in
+/// one crate.
+pub trait RangeStore {
     /// The sync set, as [`EventStore::sync_entries`].
     fn sync_entries(&self) -> Result<Vec<(Key, Id)>>;
 
@@ -281,7 +290,7 @@ impl RangeStore for EventStore {
     }
 }
 
-impl RangeStore for SharedEventStore {
+impl RangeStore for Shared {
     fn sync_entries(&self) -> Result<Vec<(Key, Id)>> {
         Ok(self.range_entries()?)
     }
@@ -301,7 +310,7 @@ impl RangeStore for SharedEventStore {
 /// `log_sync::answer`, exactly as for a `Log` session, and the caller's deadline bounds
 /// this call. The sync set is the store's whole set, as in [`sync_over`]: range sync
 /// has no topic subset.
-pub(crate) async fn sync_on_streams<S: RangeStore>(
+pub async fn sync_on_streams<S: RangeStore>(
     store: &mut S,
     send: &mut SendStream,
     recv: &mut RecvStream,
@@ -783,9 +792,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::chain::ChainExt;
+    use id_store::chain::ChainExt;
     use crate::pull_policy::{PullPolicy, PullRefused, testing};
-    use crate::waiting::WaitingLimits;
+    use id_core::waiting::WaitingLimits;
     use p2panda_core::{Hash, SigningKey};
     use std::sync::Arc;
 
@@ -1254,8 +1263,8 @@ mod tests {
     /// turned away, while this one is kept.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_a_range_session_counts_a_stored_but_unapplied_arrival_as_voided() {
-        use crate::membership::AuthId;
-        use crate::membership::body::encode_body;
+        use id_core::membership::AuthId;
+        use id_core::membership::body::encode_body;
         use p2panda_auth::Access;
         use p2panda_auth::group::{GroupAction, GroupMember};
 

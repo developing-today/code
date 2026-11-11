@@ -931,13 +931,129 @@ fn is_quote_content_line(line: &str) -> bool {
 /// inside a quote are the required separators and are kept: anything
 /// after the run's first content line passes through untouched, as does
 /// an all-blank run (a lone `>` with no quoted content).
+/// The body to test for a fence opening: a fenced block that is a
+/// list item's first block is rendered with the item marker in front
+/// of the opener (`- ``` `), while its closing delimiter carries no
+/// marker — so a scan that only looks at the line start misses the
+/// opener and later mistakes the closer for a new fence, whose
+/// phantom state then suppresses quote cleanup for the rest of the
+/// document (Codex P2 on PR #8678). Strip one list marker (bullet or
+/// ordered) when present; the caller applies fence_feed_line to the
+/// result, so spacing after the marker is handled there.
+fn fence_open_body(rest: &str) -> &str {
+    let body = fence_feed_line(rest);
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(after) = body.strip_prefix(marker) {
+            return after;
+        }
+    }
+    let digits = body.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if digits > 0 && digits <= 9 {
+        if let Some(after) = body[digits..]
+            .strip_prefix(". ")
+            .or_else(|| body[digits..].strip_prefix(") "))
+        {
+            return after;
+        }
+    }
+    body
+}
+
 fn strip_leading_blank_quote_lines(output: &str) -> String {
     let lines: Vec<&str> = output.split('\n').collect();
     let mut result: Vec<&str> = Vec::with_capacity(lines.len());
     let mut at_quote_start = true;
+    // #8665: fenced code and raw HTML are literal content. Without
+    // tracking them the scan mistook a top-level fence whose first
+    // content lines are `> ` and `> text` for the start of a quote run
+    // — the fence opener is neither a blank quote line nor quote
+    // content, so it set at_quote_start and the stripper deleted the
+    // code block's first line on save; and a fence-shaped line inside
+    // an HTML comment opened a phantom fence that suppressed quote
+    // cleanup for the rest of the document. Track both exactly as
+    // restore_github_alert_markers does: each is owned by the quote
+    // depth that opened it, and leaving that container ends it with
+    // no closing delimiter. Lines inside either are never stripped.
+    // The indentation restriction applies to OPENING detection only:
+    // an already-active block's lines are fed however deeply they are
+    // indented, because the htmlBlock path preserves indentation and
+    // an indented terminator still ends the block (Codex P2s on
+    // PR #8678).
+    let mut fence = FenceTracker::default();
+    let mut fence_depth: Option<usize> = None;
+    let mut html = HtmlBlockTracker::default();
+    let mut html_depth: Option<usize> = None;
+    let mut at_block_start = true;
     let mut i = 0;
     while i < lines.len() {
-        if at_quote_start && is_blank_quote_line(lines[i]) {
+        let line = lines[i];
+        let indent = line.bytes().take_while(|&b| b == b' ').count();
+        let mut block_boundary = line.trim().is_empty();
+        if html_depth.is_some() || fence_depth.is_some() {
+            let trimmed = line.trim_start_matches(' ');
+            let (depth, _) = split_quote_prefix(trimmed);
+            if let Some(opened_at) = html_depth {
+                if depth < opened_at {
+                    html.reset();
+                    html_depth = None;
+                } else if let Some(body) = strip_quote_depth(trimmed, opened_at) {
+                    html.feed(fence_feed_line(body), at_block_start);
+                    if !html.in_html() {
+                        html_depth = None;
+                        block_boundary = true;
+                    }
+                    result.push(line);
+                    at_quote_start = !is_blank_quote_line(line) && !is_quote_content_line(line);
+                    i += 1;
+                    at_block_start = block_boundary;
+                    continue;
+                }
+            }
+            if let Some(opened_at) = fence_depth {
+                if depth < opened_at {
+                    fence.reset();
+                    fence_depth = None;
+                } else if let Some(body) = strip_quote_depth(trimmed, opened_at) {
+                    fence.feed(fence_feed_line(body));
+                    if !fence.in_fence() {
+                        fence_depth = None;
+                        block_boundary = true;
+                    }
+                    result.push(line);
+                    at_quote_start = !is_blank_quote_line(line) && !is_quote_content_line(line);
+                    i += 1;
+                    at_block_start = block_boundary;
+                    continue;
+                }
+            }
+        }
+        if indent <= 3 {
+            let (depth, rest) = split_quote_prefix(&line[indent..]);
+            if html_depth.is_none()
+                && fence_depth.is_none()
+                && html.feed(fence_feed_line(fence_open_body(rest)), at_block_start)
+            {
+                html_depth = Some(depth);
+                result.push(line);
+                at_quote_start = !is_blank_quote_line(line) && !is_quote_content_line(line);
+                i += 1;
+                at_block_start = false;
+                continue;
+            }
+            if fence_depth.is_none() && fence.feed(fence_feed_line(fence_open_body(rest))) {
+                fence_depth = Some(depth);
+                result.push(line);
+                at_quote_start = !is_blank_quote_line(line) && !is_quote_content_line(line);
+                i += 1;
+                at_block_start = false;
+                continue;
+            }
+        }
+        if at_quote_start
+            && fence_depth.is_none()
+            && html_depth.is_none()
+            && is_blank_quote_line(line)
+        {
             let mut j = i + 1;
             while j < lines.len() && is_blank_quote_line(lines[j]) {
                 j += 1;
@@ -947,9 +1063,10 @@ fn strip_leading_blank_quote_lines(output: &str) -> String {
                 continue;
             }
         }
-        result.push(lines[i]);
-        at_quote_start = !is_blank_quote_line(lines[i]) && !is_quote_content_line(lines[i]);
+        result.push(line);
+        at_quote_start = !is_blank_quote_line(line) && !is_quote_content_line(line);
         i += 1;
+        at_block_start = block_boundary;
     }
     result.join("\n")
 }
