@@ -366,14 +366,28 @@ def main():
     if not os.path.isdir(mcpx):
         sys.exit("pkgs/mcpx not found — run from inside the code repo")
 
-    untracked = set(
-        run(["git", "ls-files", "--others", "--exclude-standard"], root).split()
-    )
-    changed = set(run(["git", "diff", "--name-only", args.base], root).split())
+    # NUL-delimited Git output (#5649): a path is a structured value,
+    # never text to split on whitespace or interpolate into a shell.
+    untracked = {
+        p
+        for p in run(
+            ["git", "ls-files", "-z", "--others", "--exclude-standard"], root
+        ).split("\0")
+        if p
+    }
+    changed = {
+        p
+        for p in run(["git", "diff", "--name-only", "-z", args.base], root).split(
+            "\0"
+        )
+        if p
+    }
     changed |= untracked
     rel = sorted(p[len("pkgs/mcpx/") :] for p in changed if p.startswith("pkgs/mcpx/"))
 
-    commands = []  # (tier, command string runnable from repo root)
+    commands = []  # (tier, display string, argv, cwd): the display
+    # string is what dry-run prints; execution uses argv with no
+    # shell, so Git-reported paths are data, never shell syntax (#5649)
     notes = []
 
     # A deleted file appears in the diff but cannot be formatted or read;
@@ -402,9 +416,12 @@ def main():
     # T0 — format + vet on touched packages.
     if go_files:
         files = " ".join(f"pkgs/mcpx/{p}" for p in go_files)
-        commands.append(("T0", f"gofmt -l {files}"))
+        argv = ["gofmt", "-l", *[f"pkgs/mcpx/{p}" for p in go_files]]
+        commands.append(("T0", f"gofmt -l {files}", argv, root))
     for p in unit_pkgs:
-        commands.append(("T0", f"(cd pkgs/mcpx && go vet {pkg_arg(p)})"))
+        commands.append(
+            ("T0", f"(cd pkgs/mcpx && go vet {pkg_arg(p)})", ["go", "vet", pkg_arg(p)], mcpx)
+        )
 
     if embed_owners:
         notes.append(
@@ -414,7 +431,14 @@ def main():
 
     # T1 — unit tests of edited packages.
     for p in unit_pkgs:
-        commands.append(("T1", f"(cd pkgs/mcpx && go test -count=1 {pkg_arg(p)})"))
+        commands.append(
+            (
+                "T1",
+                f"(cd pkgs/mcpx && go test -count=1 {pkg_arg(p)})",
+                ["go", "test", "-count=1", pkg_arg(p)],
+                mcpx,
+            )
+        )
 
     # Diff text for T1b / registry analysis (registry + non-test sources).
     src = [p for p in all_go_files if not p.endswith("_test.go")]
@@ -473,7 +497,14 @@ def main():
             short = imp.replace("github.com/developing-today/code/pkgs/mcpx/", "")
             if short == "internal/e2e" or short in unit_pkgs:
                 continue
-            commands.append(("T1b", f"(cd pkgs/mcpx && go test -count=1 ./{short}/)"))
+            commands.append(
+                (
+                    "T1b",
+                    f"(cd pkgs/mcpx && go test -count=1 ./{short}/)",
+                    ["go", "test", "-count=1", f"./{short}/"],
+                    mcpx,
+                )
+            )
         if importers:
             notes.append(
                 f"T1b: exported declarations changed ({', '.join(sorted(exported))}); "
@@ -555,7 +586,12 @@ def main():
         regex = "^(" + "|".join(e2e_selected) + ")$"
         est = E2E_SECONDS_PER_TEST * len(e2e_selected)
         commands.append(
-            ("T2", f"(cd pkgs/mcpx && go test -count=1 ./internal/e2e -run '{regex}')")
+            (
+                "T2",
+                f"(cd pkgs/mcpx && go test -count=1 ./internal/e2e -run '{regex}')",
+                ["go", "test", "-count=1", "./internal/e2e", "-run", regex],
+                mcpx,
+            )
         )
         notes.append(
             f"T2: {len(e2e_selected)} e2e test(s) selected, estimated ~{est:g}s "
@@ -578,12 +614,17 @@ def main():
                 continue
             seen_guard.add(key)
             commands.append(
-                ("T3", f"(cd pkgs/mcpx && go test -count=1 ./{pkg}/ -run '{regex}')")
+                (
+                    "T3",
+                    f"(cd pkgs/mcpx && go test -count=1 ./{pkg}/ -run '{regex}')",
+                    ["go", "test", "-count=1", f"./{pkg}/", "-run", regex],
+                    mcpx,
+                )
             )
 
     # T4 — build only when packaging/module files changed.
     if any(os.path.basename(p) in ("go.mod", "go.sum", "package.nix") for p in rel):
-        commands.append(("T4", "nix build .#mcpx"))
+        commands.append(("T4", "nix build .#mcpx", ["nix", "build", ".#mcpx"], root))
 
     print(
         f"# affected tests for pkgs/mcpx vs {args.base} "
@@ -592,7 +633,7 @@ def main():
     if not commands:
         print("# no tier commands selected (no code or registry changes)")
     last = None
-    for tier, cmd in commands:
+    for tier, cmd, _argv, _cwd in commands:
         if tier != last:
             print(f"\n## {tier}")
             last = tier
@@ -606,9 +647,9 @@ def main():
     )
 
     if args.run:
-        for _, cmd in commands:
+        for _, cmd, argv, cmd_cwd in commands:
             print(f"\n$ {cmd}", flush=True)
-            p = subprocess.run(cmd, cwd=root, shell=True)
+            p = subprocess.run(argv, cwd=cmd_cwd)
             if p.returncode != 0:
                 sys.exit(p.returncode)
 
