@@ -439,6 +439,19 @@ mod cli_tests {
             "PinnedRuntime"
         );
 
+        let original_bytes = std::fs::read(&log_path).unwrap();
+        let mut suffixed_bytes = original_bytes.clone();
+        suffixed_bytes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        std::fs::write(&log_path, suffixed_bytes).unwrap();
+        let suffixed = run_cmd(&["match-audit", "verify", log_path_arg], tmp.path());
+        assert!(!suffixed.status.success());
+        let suffixed_report: serde_json::Value = serde_json::from_slice(&suffixed.stdout).unwrap();
+        assert_eq!(
+            suffixed_report["technical"]["InvalidRecord"]["reason"],
+            "MalformedEncoding"
+        );
+        std::fs::write(&log_path, original_bytes).unwrap();
+
         let mut tampered_input =
             id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
         let id::match_audit::EntryBodyV0::InputBlock(block) = &mut tampered_input.entries[0].body
