@@ -100,6 +100,42 @@ class ProgramTendingScaffoldTest(unittest.TestCase):
         self.assertEqual(len(log["sections"]), 5)
 
 
+class FleetReposTest(unittest.TestCase):
+    def test_default_fleet_repos_are_the_canonical_four(self):
+        self.assertEqual(
+            pt.FLEET_REPOS,
+            (
+                "developing-today/code",
+                "developing-today-forks/opencode",
+                "developing-today-forks/openchamber",
+                "dezren39/darwin-nix",
+            ),
+        )
+
+    def test_stub_stalled_prs_queries_every_default_repo(self):
+        queried = []
+
+        def fake_api(path):
+            queried.append(path)
+            return []
+
+        with mock.patch.object(pt, "_gh_api", side_effect=fake_api):
+            section = pt.stub_stalled_prs(list(pt.FLEET_REPOS))
+        for repo in pt.FLEET_REPOS:
+            self.assertIn(f"/repos/{repo}/pulls?state=open&per_page=100", queried)
+        self.assertEqual(
+            [entry["repo"] for entry in section["checked"]], list(pt.FLEET_REPOS)
+        )
+
+    def test_default_run_log_names_darwin_nix_not_the_nonexistent_repo(self):
+        buf = io.StringIO()
+        with mock.patch.object(pt, "_gh_api", return_value=[]), redirect_stdout(buf):
+            self.assertEqual(pt.main(["--run"]), 0)
+        out = buf.getvalue()
+        self.assertIn("dezren39/darwin-nix", out)
+        self.assertNotIn("developing-today/nix", out)
+
+
 class GhApiAuthHeaderTest(unittest.TestCase):
     """#6860: _gh_api sends the workflow token when one is in the
     environment, and sends no Authorization header when none is."""
