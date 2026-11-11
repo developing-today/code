@@ -178,8 +178,9 @@ describe("github-ci worker", () => {
   it("issues on a fleet repo upserts the #8580 mirror row", async () => {
     const seen: string[] = [];
     const queueMock = fetchMock.get(QUEUE);
-    // sink event insert (1) + watermark (1) + mirror batch (1)
-    for (let i = 0; i < 3; i++) {
+    // sink event insert (1) + watermark (1) + mirror DDL batch (1)
+    // + mirror column probe (1) + mirror writes batch (1)
+    for (let i = 0; i < 5; i++) {
       queueMock
         .intercept({ path: "/v2/pipeline", method: "POST" })
         .reply(200, (opts) => {
@@ -215,7 +216,9 @@ describe("github-ci worker", () => {
   it("issue_comment refreshes the mirror comments count and agent-note pointer", async () => {
     const seen: string[] = [];
     const queueMock = fetchMock.get(QUEUE);
-    for (let i = 0; i < 3; i++) {
+    // sink event insert (1) + watermark (1) + mirror DDL batch (1)
+    // + mirror column probe (1) + mirror writes batch (1)
+    for (let i = 0; i < 5; i++) {
       queueMock
         .intercept({ path: "/v2/pipeline", method: "POST" })
         .reply(200, (opts) => {

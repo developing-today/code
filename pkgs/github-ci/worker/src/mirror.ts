@@ -29,13 +29,19 @@
  * issue must leave the read model, not be re-upserted by its own
  * deletion event (projector precedent, #4210).
  *
- * Comment counts carry their own version, independent of the pointer
- * guard: an issue_comment delivery sets the count only when the
- * carrying object's updated_at is at least the stored gh_updated_at,
- * and advances gh_updated_at to it — a delayed delivery reporting a
- * smaller count cannot regress a newer one. (Same-second deliveries
- * share a timestamp and stay arrival-ordered; the backfill sweep is
- * the repair path for that residual, as for every mirror field.)
+ * Comment counts carry their own version, stored separately from the
+ * snapshot version (comments_gh_updated_at, NOT gh_updated_at): an
+ * issue_comment delivery sets the count only when the carrying
+ * object's updated_at is at least the stored count version, and
+ * advances only that column. A comment event therefore never moves
+ * the snapshot version, so a delayed older full snapshot (e.g. a
+ * close) is never refused because a newer comment landed first, and
+ * a comment-seeded row still accepts its first full snapshot. The
+ * snapshot upserts move the count (and its version) under the same
+ * count-version guard, so neither writer can regress the other's
+ * count. (Same-second deliveries share a timestamp and stay
+ * arrival-ordered; the backfill sweep is the repair path for that
+ * residual, as for every mirror field.)
  */
 import { Turso, iArg, tArg, type TursoArg } from "./turso";
 import { queueNow, type SinkEnv } from "./sink";
@@ -47,6 +53,7 @@ export const MIRROR_DDL: string[] = [
      labels TEXT NOT NULL DEFAULT '[]',
      assignees TEXT NOT NULL DEFAULT '[]',
      comments INTEGER NOT NULL DEFAULT 0,
+     comments_gh_updated_at TEXT,
      latest_agent_note_id INTEGER, latest_agent_note_url TEXT,
      author TEXT, html_url TEXT,
      gh_created_at TEXT, gh_updated_at TEXT,
@@ -61,6 +68,7 @@ export const MIRROR_DDL: string[] = [
      labels TEXT NOT NULL DEFAULT '[]',
      assignees TEXT NOT NULL DEFAULT '[]',
      comments INTEGER NOT NULL DEFAULT 0,
+     comments_gh_updated_at TEXT,
      latest_agent_note_id INTEGER, latest_agent_note_url TEXT,
      author TEXT, html_url TEXT,
      gh_created_at TEXT, gh_updated_at TEXT,
@@ -238,6 +246,38 @@ function metaStamp(repo: string, event: string, at: string): Stmt {
   };
 }
 
+const MIRROR_TABLES = ["github_mirror_issues", "github_mirror_pull_requests"];
+
+/**
+ * Idempotent column migration for databases created before
+ * comments_gh_updated_at existed: CREATE TABLE IF NOT EXISTS cannot
+ * add a column to an existing table, so probe pragma_table_info and
+ * ALTER only when a column is absent. A null probe (no COUNT row)
+ * means the table state is unreadable — skip and let the writes
+ * surface any real error rather than guessing.
+ */
+async function ensureMirrorColumns(q: Turso): Promise<void> {
+  const present = await q.queryText(
+    `SELECT (SELECT COUNT(*) FROM pragma_table_info('github_mirror_issues') WHERE name = 'comments_gh_updated_at')
+          + (SELECT COUNT(*) FROM pragma_table_info('github_mirror_pull_requests') WHERE name = 'comments_gh_updated_at')`,
+  );
+  // "2" = both columns present (the steady state); null = the probe
+  // returned no row, so the table state is unreadable — skip and let
+  // the writes surface any real error rather than guessing.
+  if (present === null || present === "2") return;
+  for (const table of MIRROR_TABLES) {
+    try {
+      await q.execute(
+        `ALTER TABLE ${table} ADD COLUMN comments_gh_updated_at TEXT`,
+      );
+    } catch (e) {
+      // One table may already carry the column (mixed state); only a
+      // duplicate-column error is ignorable here.
+      if (!String(e).includes("duplicate column")) throw e;
+    }
+  }
+}
+
 async function mirrorBatch(
   env: SinkEnv,
   event: string,
@@ -246,11 +286,9 @@ async function mirrorBatch(
 ): Promise<void> {
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
   const at = queueNow();
-  await q.batch([
-    ...MIRROR_DDL.map((sql) => ({ sql })),
-    ...stmts,
-    metaStamp(repo, event, at),
-  ]);
+  await q.batch(MIRROR_DDL.map((sql) => ({ sql })));
+  await ensureMirrorColumns(q);
+  await q.batch([...stmts, metaStamp(repo, event, at)]);
 }
 
 /** Upsert the issue mirror row from an `issues` webhook payload. */
@@ -277,13 +315,24 @@ export async function mirrorIssueEvent(
   await mirrorBatch(env, "issues", repo, [
     {
       sql: `INSERT INTO github_mirror_issues (repo, number, title, body_hash, state,
-              labels, assignees, comments, author, html_url,
-              gh_created_at, gh_updated_at, mirrored_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              labels, assignees, comments, comments_gh_updated_at, author,
+              html_url, gh_created_at, gh_updated_at, mirrored_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(repo, number) DO UPDATE SET
               title = excluded.title, body_hash = excluded.body_hash,
               state = excluded.state, labels = excluded.labels,
-              assignees = excluded.assignees, comments = excluded.comments,
+              assignees = excluded.assignees,
+              comments = CASE
+                WHEN excluded.gh_updated_at IS NULL
+                     OR github_mirror_issues.comments_gh_updated_at IS NULL
+                     OR excluded.gh_updated_at >= github_mirror_issues.comments_gh_updated_at
+                THEN excluded.comments ELSE github_mirror_issues.comments END,
+              comments_gh_updated_at = CASE
+                WHEN excluded.gh_updated_at IS NULL
+                     OR github_mirror_issues.comments_gh_updated_at IS NULL
+                     OR excluded.gh_updated_at >= github_mirror_issues.comments_gh_updated_at
+                THEN COALESCE(excluded.gh_updated_at, github_mirror_issues.comments_gh_updated_at)
+                ELSE github_mirror_issues.comments_gh_updated_at END,
               author = excluded.author, html_url = excluded.html_url,
               gh_created_at = excluded.gh_created_at,
               gh_updated_at = excluded.gh_updated_at,
@@ -300,6 +349,7 @@ export async function mirrorIssueEvent(
         tArg(row.labels),
         tArg(row.assignees),
         iArg(row.comments),
+        tArg(row.gh_updated_at),
         tArg(row.author),
         tArg(row.html_url),
         tArg(row.gh_created_at),
@@ -325,16 +375,27 @@ export async function mirrorPrEvent(
     {
       sql: `INSERT INTO github_mirror_pull_requests (repo, number, title, body_hash,
               state, merged, draft, head_sha, head_ref, base_ref, labels,
-              assignees, comments, author, html_url, gh_created_at,
-              gh_updated_at, mirrored_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              assignees, comments, comments_gh_updated_at, author, html_url,
+              gh_created_at, gh_updated_at, mirrored_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(repo, number) DO UPDATE SET
               title = excluded.title, body_hash = excluded.body_hash,
               state = excluded.state, merged = excluded.merged,
               draft = excluded.draft, head_sha = excluded.head_sha,
               head_ref = excluded.head_ref, base_ref = excluded.base_ref,
               labels = excluded.labels, assignees = excluded.assignees,
-              comments = excluded.comments, author = excluded.author,
+              comments = CASE
+                WHEN excluded.gh_updated_at IS NULL
+                     OR github_mirror_pull_requests.comments_gh_updated_at IS NULL
+                     OR excluded.gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at
+                THEN excluded.comments ELSE github_mirror_pull_requests.comments END,
+              comments_gh_updated_at = CASE
+                WHEN excluded.gh_updated_at IS NULL
+                     OR github_mirror_pull_requests.comments_gh_updated_at IS NULL
+                     OR excluded.gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at
+                THEN COALESCE(excluded.gh_updated_at, github_mirror_pull_requests.comments_gh_updated_at)
+                ELSE github_mirror_pull_requests.comments_gh_updated_at END,
+              author = excluded.author,
               html_url = excluded.html_url,
               gh_created_at = excluded.gh_created_at,
               gh_updated_at = excluded.gh_updated_at,
@@ -356,6 +417,7 @@ export async function mirrorPrEvent(
         tArg(row.labels),
         tArg(row.assignees),
         iArg(row.comments),
+        tArg(row.gh_updated_at),
         tArg(row.author),
         tArg(row.html_url),
         tArg(row.gh_created_at),
@@ -373,8 +435,10 @@ export async function mirrorPrEvent(
  * (comment ids are creation order), so a delayed or redelivered older
  * note never overwrites the pointer to a newer note. The comments
  * count is versioned separately (the carrying object's updated_at
- * against the stored gh_updated_at), so a delayed delivery cannot
- * regress a newer count either. Only the
+ * against the stored comments_gh_updated_at — the snapshot version
+ * gh_updated_at is never read or moved here), so a delayed delivery
+ * cannot regress a newer count and a comment landing before a delayed
+ * older snapshot cannot make that snapshot look stale. Only the
  * comment fields move — title/state stay with the issues/PR events and
  * the backfill sweep. A row the mirror has never seen is seeded minimal
  * (the sweep fills the rest).
@@ -397,13 +461,14 @@ export async function mirrorCommentEvent(
     {
       sql: `UPDATE ${table} SET
               comments = CASE
-                WHEN ? IS NULL OR gh_updated_at IS NULL
-                     OR ? >= gh_updated_at
+                WHEN ? IS NULL OR comments_gh_updated_at IS NULL
+                     OR ? >= comments_gh_updated_at
                 THEN ? ELSE comments END,
-              gh_updated_at = CASE
-                WHEN ? IS NULL OR gh_updated_at IS NULL
-                     OR ? >= gh_updated_at
-                THEN COALESCE(?, gh_updated_at) ELSE gh_updated_at END,
+              comments_gh_updated_at = CASE
+                WHEN ? IS NULL OR comments_gh_updated_at IS NULL
+                     OR ? >= comments_gh_updated_at
+                THEN COALESCE(?, comments_gh_updated_at)
+                ELSE comments_gh_updated_at END,
               mirrored_at = ?,
               latest_agent_note_id = CASE
                 WHEN ? IS NOT NULL

@@ -273,11 +273,7 @@ describe("mirror writers (#8580)", () => {
 
   it("mirrorIssueEvent deletes the row on an issues deleted delivery", async () => {
     const stmts = capturePipeline();
-    await mirrorIssueEvent(
-      env,
-      { ...issuePayload, action: "deleted" },
-      REPO,
-    );
+    await mirrorIssueEvent(env, { ...issuePayload, action: "deleted" }, REPO);
     const sql = stmts.map((s) => s.sql).join("\n");
     // A deleted issue leaves the read model (projector precedent, #4210):
     // no upsert of its final snapshot, and the meta stamp still lands.
@@ -345,13 +341,14 @@ describe("mirror writers (#8580)", () => {
       s.sql.startsWith("UPDATE github_mirror_issues SET"),
     );
     // The count moves only when the carrying object's updated_at is
-    // at least the stored gh_updated_at, and the version advances
-    // with it — independently of the agent-note pointer guard.
+    // at least the stored COUNT version (comments_gh_updated_at),
+    // which advances with it — separately from the snapshot version:
+    // a comment event never reads or moves gh_updated_at, so a newer
+    // comment cannot make a delayed older snapshot look stale.
     expect(update?.sql).toContain("comments = CASE");
-    expect(update?.sql).toContain("OR ? >= gh_updated_at");
-    expect(update?.sql).toContain(
-      "THEN COALESCE(?, gh_updated_at) ELSE gh_updated_at END",
-    );
+    expect(update?.sql).toContain("OR ? >= comments_gh_updated_at");
+    expect(update?.sql).toContain("THEN COALESCE(?, comments_gh_updated_at)");
+    expect(update?.sql).not.toMatch(/\n\s+gh_updated_at = CASE/);
     const values = (update?.args ?? []).map((a) => a.value);
     expect(values.filter((v) => v === "2026-11-11T04:00:00Z")).toHaveLength(5);
     expect(values).toContain("5");
@@ -359,12 +356,38 @@ describe("mirror writers (#8580)", () => {
     const touch = buildCommentTouch(
       {
         action: "created",
-        issue: { number: 8580, comments: 5, updated_at: "2026-11-11T04:00:00Z" },
+        issue: {
+          number: 8580,
+          comments: 5,
+          updated_at: "2026-11-11T04:00:00Z",
+        },
         comment: { id: 888, html_url: "u", body: "hi" },
       },
       REPO,
     );
     expect(touch.ghUpdatedAt).toBe("2026-11-11T04:00:00Z");
+  });
+
+  it("snapshot upserts move the count only under the count-version guard", async () => {
+    const stmts = capturePipeline();
+    await mirrorIssueEvent(env, issuePayload, REPO);
+    const upsert = stmts.find((s) =>
+      s.sql.includes("INSERT INTO github_mirror_issues"),
+    );
+    // The snapshot's count is guarded by the separate count version,
+    // not the snapshot version: a snapshot older than the newest
+    // comment still applies its state but cannot regress the count.
+    expect(upsert?.sql).toContain("comments_gh_updated_at");
+    expect(upsert?.sql).toContain("comments = CASE");
+    expect(upsert?.sql).toContain(
+      "OR excluded.gh_updated_at >= github_mirror_issues.comments_gh_updated_at",
+    );
+    const values = (upsert?.args ?? []).map((a) => a.value);
+    // The count version inserted with a fresh row is the object's
+    // own updated_at (the count's version at snapshot time).
+    expect(
+      values.filter((v) => v === "2026-11-11T02:00:00Z").length,
+    ).toBeGreaterThan(1);
   });
 
   it("mirrorCommentEvent clears a pointer naming the deleted note", async () => {
