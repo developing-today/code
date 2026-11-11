@@ -172,7 +172,7 @@ pub use id_core::connectivity;
 pub mod conversion;
 pub mod currency;
 pub mod currency_poc;
-pub mod dht;
+pub use id_sync::dht;
 #[cfg(feature = "world")]
 pub mod directory;
 #[cfg(feature = "world")]
@@ -211,7 +211,7 @@ pub(crate) mod key_envelope;
 pub mod local;
 pub use id_events::local_claims;
 pub use id_events::local_events;
-pub mod log_sync;
+pub use id_sync::log_sync;
 mod peer_announcement;
 pub mod serve_proxy;
 pub use id_core::membership;
@@ -317,6 +317,7 @@ pub use helpers::{
     print_matches_cli,
 };
 pub use protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
+pub use protocol::match_kind;
 pub use repl::run_repl;
 pub use store::{StoreType, load_or_create_keypair, open_store};
 
@@ -347,25 +348,7 @@ pub use id_store::STORE_PATH;
 /// for local clients to connect. Automatically removed on clean shutdown.
 pub const SERVE_LOCK: &str = ".iroh-serve.lock";
 
-/// Application-Level Protocol Negotiation (ALPN) identifier for the meta protocol.
-///
-/// Used during QUIC handshake to identify connections for metadata operations
-/// (list, find, delete, rename, etc.) as opposed to blob data transfer.
-///
-/// **Version 2** carries tag keys/values as raw bytes (binary-safe), defines
-/// `DelTag` with no value as "delete every value of the key", and adds `Whoami`
-/// and `Error`. It is not wire-compatible with `/iroh-meta/1`; the ALPN bump
-/// makes old and new nodes fail the handshake cleanly instead of mis-decoding.
-///
-/// **Version 3** changes the `List` response item from `(hash, name)` pairs
-/// to `ListEntry` records carrying the file's origin node and upload time
-/// (#4973). That payload change is not wire-compatible with `/iroh-meta/2`
-/// under postcard, so it takes this ALPN bump per the rule below.
-///
-/// Compatibility rule: within a version, only **append** enum variants. Any
-/// other change to [`protocol::MetaRequest`] / [`protocol::MetaResponse`]
-/// requires a new ALPN. `protocol::tests` pins every discriminant.
-pub const META_ALPN: &[u8] = b"/iroh-meta/3";
+pub use id_sync::protocol::META_ALPN;
 
 // ============================================================================
 // Utility Functions
@@ -405,46 +388,7 @@ pub fn to_absolute(path: &PathBuf) -> Result<PathBuf> {
     }
 }
 
-/// Determines how a search query matches a string.
-///
-/// This function implements a priority-based matching system:
-/// 1. **Exact**: The strings are identical
-/// 2. **Prefix**: The haystack starts with the needle
-/// 3. **Contains**: The haystack contains the needle somewhere
-///
-/// # Arguments
-///
-/// * `haystack` - The string to search within (e.g., filename or hash)
-/// * `needle` - The search query
-///
-/// # Returns
-///
-/// * `Some(MatchKind::Exact)` if `haystack == needle`
-/// * `Some(MatchKind::Prefix)` if `haystack.starts_with(needle)`
-/// * `Some(MatchKind::Contains)` if `haystack.contains(needle)`
-/// * `None` if no match
-///
-/// # Example
-///
-/// ```rust
-/// use id::{match_kind, MatchKind};
-///
-/// assert_eq!(match_kind("hello.txt", "hello.txt"), Some(MatchKind::Exact));
-/// assert_eq!(match_kind("hello.txt", "hello"), Some(MatchKind::Prefix));
-/// assert_eq!(match_kind("say-hello.txt", "hello"), Some(MatchKind::Contains));
-/// assert_eq!(match_kind("world.txt", "hello"), None);
-/// ```
-pub fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
-    if haystack == needle {
-        Some(MatchKind::Exact)
-    } else if haystack.starts_with(needle) {
-        Some(MatchKind::Prefix)
-    } else if haystack.contains(needle) {
-        Some(MatchKind::Contains)
-    } else {
-        None
-    }
-}
+
 
 /// Checks if a string is a valid node ID format.
 ///
