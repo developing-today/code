@@ -195,9 +195,17 @@ as a single literal from `wants`). Such a literal equals no catalog
 name, so exact matching alone misses every name inside it. Rule:
 when a string literal in a §3.2 position parses as a JSON wants
 document (an object carrying `subscribe` and/or `requests`
-arrays), the string entries of those arrays are capability
-positions and are recognised as references, subject to the
-subscription normalisation below for `subscribe` entries. A
+arrays), the entries of those arrays are capability positions,
+recognised per the runtime's own schema (`parse_wants` in
+`world_caps.rs`): `subscribe` entries are strings — subscription
+specifications, subject to the normalisation below — while
+`requests` entries are *objects*, and each object's `cap` string
+field is the capability position (a §3.2 position-1 reference,
+matched exactly against the catalog). A parsed document whose
+entries deviate from that schema (a non-object request entry, a
+non-string `cap`) is a document the runtime itself rejects; the
+scan does not guess at it — that shape triggers the §6 uncertainty
+marking. A
 wants-shaped string that does *not* statically parse — built by
 interpolation or concatenation, so its entries may be produced at
 runtime — is not partially guessed at: it triggers the §6
