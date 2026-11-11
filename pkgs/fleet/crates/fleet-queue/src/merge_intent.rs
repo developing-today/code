@@ -179,14 +179,21 @@ pub fn next_base_branch(existing: &[MergeIntent], stack_id: &str) -> String {
 }
 
 /// The replay walk for one stack: the `intended` intents in recorded
-/// order, bottom first. The walk stops being meaningful at the first
-/// non-intended entry — a `conflicted` or `replaying` intent blocks
-/// everything stacked above it — so only the intended prefix is
-/// returned.
+/// order, bottom first. Finished entries — `landed` (already merged
+/// by an earlier replay pass) and `abandoned` (withdrawn) — are
+/// excluded outright: they are done, and a landed bottom entry must
+/// not stop a resumed walk (Codex P1, PR #8629). The walk then stops
+/// at the first live non-intended entry — a `conflicted` or
+/// `replaying` intent blocks everything stacked above it — so only
+/// the intended prefix is returned.
 pub fn replay_prefix<'a>(intents: &'a [MergeIntent], stack_id: &str) -> Vec<&'a MergeIntent> {
     let mut ordered: Vec<&MergeIntent> = intents
         .iter()
-        .filter(|i| i.stack_id == stack_id && i.state != IntentState::Abandoned)
+        .filter(|i| {
+            i.stack_id == stack_id
+                && i.state != IntentState::Abandoned
+                && i.state != IntentState::Landed
+        })
         .collect();
     ordered.sort_by_key(|i| i.position);
     ordered
@@ -267,6 +274,91 @@ mod tests {
     }
 
     #[test]
+    fn replay_resumes_past_landed_entries() {
+        // The PR #8629 Codex P1 scenario: a first replay pass landed
+        // the bottom entry; the resumed walk must serve what is
+        // still intended above it, not stop at the landed row.
+        let stack = vec![
+            intent("s1", 0, "queue/a", IntentState::Landed),
+            intent("s1", 1, "queue/b", IntentState::Intended),
+            intent("s1", 2, "queue/c", IntentState::Intended),
+        ];
+        let walk: Vec<&str> = replay_prefix(&stack, "s1")
+            .iter()
+            .map(|i| i.branch.as_str())
+            .collect();
+        assert_eq!(walk, vec!["queue/b", "queue/c"]);
+        // Several landed, one intended left.
+        let stack = vec![
+            intent("s1", 0, "queue/a", IntentState::Landed),
+            intent("s1", 1, "queue/b", IntentState::Landed),
+            intent("s1", 2, "queue/c", IntentState::Intended),
+        ];
+        let walk: Vec<&str> = replay_prefix(&stack, "s1")
+            .iter()
+            .map(|i| i.branch.as_str())
+            .collect();
+        assert_eq!(walk, vec!["queue/c"]);
+    }
+
+    #[test]
+    fn a_conflicted_entry_above_landed_still_blocks() {
+        // Landed entries are skipped, but a live conflicted entry
+        // above them still blocks everything stacked over it.
+        let stack = vec![
+            intent("s1", 0, "queue/a", IntentState::Landed),
+            intent("s1", 1, "queue/b", IntentState::Conflicted),
+            intent("s1", 2, "queue/c", IntentState::Intended),
+        ];
+        assert!(replay_prefix(&stack, "s1").is_empty());
+    }
+
+    #[test]
+    fn partial_replay_lifecycle_walks_forward() {
+        // A full partial-replay lifecycle, driven through the legal
+        // transition table: land the bottom, conflict on the next,
+        // resolve it, land the rest. After every step the walk must
+        // match the #8582 replay semantics (the test's oracle):
+        // finished entries never block; the first live non-intended
+        // entry blocks everything above it.
+        use IntentState::*;
+        let mut stack = vec![
+            intent("s1", 0, "queue/a", Intended),
+            intent("s1", 1, "queue/b", Intended),
+            intent("s1", 2, "queue/c", Intended),
+        ];
+        fn walk(s: &[MergeIntent]) -> Vec<&str> {
+            replay_prefix(s, "s1")
+                .iter()
+                .map(|i| i.branch.as_str())
+                .collect()
+        }
+        let mut advance = |s: &mut [MergeIntent], pos: usize, to: IntentState| {
+            assert!(
+                s[pos].state.can_transition(to),
+                "{:?} -> {to:?}",
+                s[pos].state
+            );
+            s[pos].state = to;
+        };
+        assert_eq!(walk(&stack), vec!["queue/a", "queue/b", "queue/c"]);
+        advance(&mut stack, 0, Replaying);
+        assert_eq!(walk(&stack), Vec::<&str>::new());
+        advance(&mut stack, 0, Landed);
+        assert_eq!(walk(&stack), vec!["queue/b", "queue/c"]);
+        advance(&mut stack, 1, Replaying);
+        advance(&mut stack, 1, Conflicted);
+        assert_eq!(walk(&stack), Vec::<&str>::new());
+        // The owner resolves; replay picks the entry up again.
+        advance(&mut stack, 1, Replaying);
+        advance(&mut stack, 1, Landed);
+        assert_eq!(walk(&stack), vec!["queue/c"]);
+        advance(&mut stack, 2, Replaying);
+        advance(&mut stack, 2, Landed);
+        assert_eq!(walk(&stack), Vec::<&str>::new());
+    }
+
+    #[test]
     fn conflict_routes_to_the_authoring_lane() {
         let i = intent("s1", 0, "queue/a", IntentState::Conflicted);
         let route = i.conflict_route();
@@ -289,6 +381,53 @@ mod tests {
         assert!(!Abandoned.can_transition(Replaying));
         assert_eq!(IntentState::parse("conflicted"), Some(Conflicted));
         assert_eq!(IntentState::parse("bogus"), None);
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// Model-based property (oracle: the #8582 replay semantics,
+        /// stated independently of the implementation): for ANY
+        /// combination of lifecycle states in a stack, the replay
+        /// walk is exactly the branches obtained by scanning in
+        /// recorded order, skipping finished (landed/abandoned)
+        /// entries, collecting intended entries, and stopping at
+        /// the first live non-intended entry.
+        #[test]
+        fn replay_prefix_matches_the_model_for_any_state_mix(
+            states in prop::collection::vec(0u8..5, 0..8),
+        ) {
+            let to_state = |c: u8| match c {
+                0 => IntentState::Intended,
+                1 => IntentState::Replaying,
+                2 => IntentState::Landed,
+                3 => IntentState::Conflicted,
+                _ => IntentState::Abandoned,
+            };
+            let stack: Vec<MergeIntent> = states
+                .iter()
+                .enumerate()
+                .map(|(idx, c)| {
+                    intent("s1", idx as i64, &format!("queue/{idx}"), to_state(*c))
+                })
+                .collect();
+            // The model, written from the semantics, not the code.
+            let mut expected: Vec<String> = Vec::new();
+            for i in &stack {
+                match i.state {
+                    IntentState::Landed | IntentState::Abandoned => continue,
+                    IntentState::Intended => expected.push(i.branch.clone()),
+                    IntentState::Replaying | IntentState::Conflicted => break,
+                }
+            }
+            let walk: Vec<String> = replay_prefix(&stack, "s1")
+                .iter()
+                .map(|i| i.branch.clone())
+                .collect();
+            prop_assert_eq!(walk, expected);
+        }
     }
 
     #[test]
