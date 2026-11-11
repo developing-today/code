@@ -845,6 +845,69 @@ pub(crate) fn list_limit_or_default(raw: Option<i64>) -> Result<i64, String> {
     validate_list_limit(raw.unwrap_or(LIST_LIMIT_DEFAULT))
 }
 
+/// The accepted ranges for the queue duration flags (#6420; design
+/// #6448 Phase 3 pin, same as `list --limit`: out-of-range is
+/// REJECTED, never clamped, at both the client and the broker).
+/// A 0/negative lease is born expired, a 0/negative heartbeat extend
+/// lapses the holder's own claim, and a negative park delay puts
+/// `not_before` in the past and silently defeats the park; an
+/// unbounded value overflows the SQL `integer` RPC parameters.
+/// Maxima: a lease or extend beyond a day defeats the expiry the
+/// lease exists to provide; a park delay beyond the dep-block TTL
+/// ceiling (7 days, #8276) outlives every broker wait.
+pub(crate) const LEASE_SECONDS_MAX: i64 = 86_400;
+pub(crate) const LEASE_SECONDS_DEFAULT: i64 = 2_700;
+pub(crate) const EXTEND_SECONDS_MAX: i64 = 86_400;
+pub(crate) const EXTEND_SECONDS_DEFAULT: i64 = 900;
+pub(crate) const DELAY_SECONDS_MAX: i64 = 604_800;
+
+/// Validate one duration flag's value against `1..=max`; the error
+/// names the flag so a usage failure points at it. Zero is rejected
+/// for every flag: for `--delay-seconds` that is the explicit #6420
+/// decision — a park that waits zero seconds is a requeue, and a
+/// requeue already has its own verb (`release`).
+pub(crate) fn validate_duration(flag: &str, value: i64, max: i64) -> Result<i64, String> {
+    if (1..=max).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "argument --{flag}: value {value} out of range 1..={max}"
+        ))
+    }
+}
+
+/// Validate a `claim --lease-seconds` value against
+/// `1..=LEASE_SECONDS_MAX`; the error names `--lease-seconds`.
+pub(crate) fn validate_lease_seconds(value: i64) -> Result<i64, String> {
+    validate_duration("lease-seconds", value, LEASE_SECONDS_MAX)
+}
+
+/// The `claim --lease-seconds` value for a call: the flag's value
+/// validated, or the unchanged default when the flag is absent.
+pub(crate) fn lease_seconds_or_default(raw: Option<i64>) -> Result<i64, String> {
+    validate_lease_seconds(raw.unwrap_or(LEASE_SECONDS_DEFAULT))
+}
+
+/// Validate a `heartbeat --extend-seconds` value against
+/// `1..=EXTEND_SECONDS_MAX`; the error names `--extend-seconds`.
+pub(crate) fn validate_extend_seconds(value: i64) -> Result<i64, String> {
+    validate_duration("extend-seconds", value, EXTEND_SECONDS_MAX)
+}
+
+/// The `heartbeat --extend-seconds` value for a call: the flag's
+/// value validated, or the unchanged default when the flag is absent.
+pub(crate) fn extend_seconds_or_default(raw: Option<i64>) -> Result<i64, String> {
+    validate_extend_seconds(raw.unwrap_or(EXTEND_SECONDS_DEFAULT))
+}
+
+/// Validate a `park --delay-seconds` value against
+/// `1..=DELAY_SECONDS_MAX`; the error names `--delay-seconds`.
+/// (No default: the flag is optional, and an absent flag leaves
+/// `delay_seconds` out of the park request entirely.)
+pub(crate) fn validate_delay_seconds(value: i64) -> Result<i64, String> {
+    validate_duration("delay-seconds", value, DELAY_SECONDS_MAX)
+}
+
 fn env_or_default(value: Option<&str>, default: &str) -> String {
     value
         .map(str::trim)
@@ -1327,10 +1390,14 @@ fn cmd_claim(rest: &[String]) -> i32 {
     );
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
+    let lease_seconds = match lease_seconds_or_default(args.get_i64("lease-seconds")) {
+        Ok(v) => v,
+        Err(e) => die(2, &e),
+    };
     let mut body = json!({
         "queue": opt_queue(&args),
         "worker": worker,
-        "lease_seconds": args.get_i64("lease-seconds").unwrap_or(2700),
+        "lease_seconds": lease_seconds,
     });
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
@@ -1759,13 +1826,17 @@ fn cmd_heartbeat(rest: &[String]) -> i32 {
         &[],
     );
     reject_extra_pos("heartbeat", &args, 1);
+    let extend_seconds = match extend_seconds_or_default(args.get_i64("extend-seconds")) {
+        Ok(v) => v,
+        Err(e) => die(2, &e),
+    };
     let resp = unwrap_ok_fb(
         call_fb(
             "/heartbeat",
             &json!({
                 "task_id": args.pos_i64(0, "task_id"),
                 "worker": opt_worker(&args),
-                "extend_seconds": args.get_i64("extend-seconds").unwrap_or(900),
+                "extend_seconds": extend_seconds,
                 "progress": progress_arg(&args),
             }),
         ),
@@ -1831,6 +1902,10 @@ fn cmd_park(rest: &[String]) -> i32 {
     if let Some(nb) = args.get("not-before") {
         body["not_before"] = json!(nb);
     } else if let Some(d) = args.get_i64("delay-seconds") {
+        let d = match validate_delay_seconds(d) {
+            Ok(v) => v,
+            Err(e) => die(2, &e),
+        };
         body["delay_seconds"] = json!(d);
     }
     if let Some(rc_raw) = args.get("ready-condition") {
@@ -3099,6 +3174,69 @@ mod tests {
         // Absent --limit keeps the existing default of 20.
         assert_eq!(list_limit_or_default(None), Ok(20));
         assert_eq!(list_limit_or_default(Some(0)), validate_list_limit(0));
+    }
+
+    #[test]
+    fn duration_flags_range_is_validated() {
+        // #6420: 0/negative durations corrupt claim state (a lease
+        // born expired, a heartbeat that lapses its own claim, a park
+        // whose not_before lands in the past) and unbounded values
+        // overflow the SQL integer RPC parameters. Out-of-range is a
+        // usage error naming the flag (design #6448 Phase 3: reject,
+        // not clamp). Park delay 0 is rejected by explicit decision:
+        // a zero-wait park is a requeue, which has its own verb.
+        for bad in [0, -1, LEASE_SECONDS_MAX + 1, i64::MAX] {
+            let err = validate_lease_seconds(bad)
+                .err()
+                .expect("out-of-range --lease-seconds must be rejected");
+            assert!(
+                err.contains("--lease-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        for bad in [0, -1, EXTEND_SECONDS_MAX + 1, i64::MAX] {
+            let err = validate_extend_seconds(bad)
+                .err()
+                .expect("out-of-range --extend-seconds must be rejected");
+            assert!(
+                err.contains("--extend-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        for bad in [0, -1, DELAY_SECONDS_MAX + 1, i64::MAX] {
+            let err = validate_delay_seconds(bad)
+                .err()
+                .expect("out-of-range --delay-seconds must be rejected");
+            assert!(
+                err.contains("--delay-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        // Boundaries and ordinary values pass through unchanged.
+        assert_eq!(validate_lease_seconds(1), Ok(1));
+        assert_eq!(
+            validate_lease_seconds(LEASE_SECONDS_MAX),
+            Ok(LEASE_SECONDS_MAX)
+        );
+        assert_eq!(validate_extend_seconds(1), Ok(1));
+        assert_eq!(
+            validate_extend_seconds(EXTEND_SECONDS_MAX),
+            Ok(EXTEND_SECONDS_MAX)
+        );
+        assert_eq!(validate_delay_seconds(1), Ok(1));
+        assert_eq!(
+            validate_delay_seconds(DELAY_SECONDS_MAX),
+            Ok(DELAY_SECONDS_MAX)
+        );
+        // Absent flags keep the existing defaults (claim 2700,
+        // heartbeat 900).
+        assert_eq!(lease_seconds_or_default(None), Ok(2700));
+        assert_eq!(extend_seconds_or_default(None), Ok(900));
+        assert_eq!(lease_seconds_or_default(Some(0)), validate_lease_seconds(0));
+        assert_eq!(
+            extend_seconds_or_default(Some(-1)),
+            validate_extend_seconds(-1)
+        );
     }
 
     #[test]
