@@ -2461,6 +2461,17 @@ func (r *Registry) mountCall(server, tool string, cc config.CallContext, args an
 	if !ok || tv.MountServer == "" {
 		return "", "", nil, false, nil
 	}
+	// The addressed namespace's own blocked state gates the call
+	// before it leaves, exactly as resolveAndGuard gates an
+	// ordinary one: its own missing secrets, the servers it
+	// requires, and -- through blockedBy -- its mount sources.
+	// Without this a namespace whose declared dependency waits on
+	// a secret would still execute any mount whose home server is
+	// ready, and the dependency's secret request would never be
+	// raised on the call path (Codex P2 on PR #8632).
+	if err := r.refuseBlocked(server); err != nil {
+		return "", "", nil, false, err
+	}
 	if !view.VisibleTool(tool) {
 		// The same answer resolveAndGuard gives for a tool the
 		// addressed namespace does not expose.

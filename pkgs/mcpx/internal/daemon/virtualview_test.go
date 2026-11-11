@@ -499,3 +499,44 @@ func TestVirtualPreflightSeesMountedSourcesSecrets(t *testing.T) {
 		t.Error("preflight must raise the source's secret request")
 	}
 }
+
+// The addressed namespace's own blocked state gates a mounted
+// call: a virtual namespace that requires a server waiting on a
+// secret refuses its mounts even when the mount's home server is
+// ready, and raises the dependency's secret request
+// (Codex P2 on PR #8632).
+func TestVirtualCallRefusedWhenNamespaceDependencyBlocked(t *testing.T) {
+	tools := []mcpclient.Tool{echoTool(), searchTool()}
+	alpha := newEchoUpstream(t, "alpha", tools)
+	beta := newEchoUpstream(t, "beta", tools)
+	dir := t.TempDir()
+	cfg := &config.Config{MCPServers: map[string]*config.Server{
+		"alpha": {Name: "alpha", URL: alpha.URL},
+		"beta":  {Name: "beta", URL: beta.URL},
+		"auth":  {Name: "auth", URL: beta.URL, Mcpx: &config.Extras{RequiresSecrets: []string{"AUTH_TOKEN"}}},
+		"combo": {Name: "combo", Mcpx: &config.Extras{
+			RequiresServers: []string{"auth"},
+			ToolViews: map[string]config.ToolView{
+				"betaEcho": {From: "beta.echo"},
+			}}},
+	}}
+	r, err := NewRegistry(cfg, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cc := config.CallContext{}
+	_, err = r.Call(ctx, "combo", "betaEcho", cc, map[string]any{"q": "x"})
+	if err == nil {
+		t.Fatal("a mount must be refused while the namespace's required server waits on a secret")
+	}
+	if !strings.Contains(err.Error(), "AUTH_TOKEN") && !strings.Contains(err.Error(), "auth") {
+		t.Errorf("the refusal must name the blocked dependency or its secret: %v", err)
+	}
+	// Control: the same tool called on its home server directly
+	// is unaffected by the namespace's dependency.
+	if _, err := r.Call(ctx, "beta", "echo", cc, map[string]any{"q": "x"}); err != nil {
+		t.Fatalf("the home server itself must stay callable: %v", err)
+	}
+}
