@@ -1067,30 +1067,36 @@ export function buildQuotaActions(
         href: "/quota",
       });
     }
+    // Eligibility before selection (Codex P2, PR #4695): a hotter window
+    // whose reset is near — or unrecorded — must not mask a qualifying
+    // cooler window, so pick the highest-usage window among those whose
+    // reset is distant enough to act on.
     let worst: QuotaWindow | null = null;
     let worstPct = 0;
+    let worstReset = "";
     for (const w of pool.windows) {
       const pct = windowPercent(w);
+      if (pct <= QUOTA_HIGH_USAGE_PCT || !w.resetsAt) continue;
+      const reset = Date.parse(w.resetsAt);
+      if (!Number.isFinite(reset) || reset - now <= QUOTA_HIGH_USAGE_RESET_MS) continue;
       if (pct > worstPct) {
         worstPct = pct;
         worst = w;
+        worstReset = w.resetsAt;
       }
     }
-    if (worst && worstPct > QUOTA_HIGH_USAGE_PCT && worst.resetsAt) {
-      const reset = Date.parse(worst.resetsAt);
-      if (Number.isFinite(reset) && reset - now > QUOTA_HIGH_USAGE_RESET_MS) {
-        actions.push({
-          id: `${pool.id}:high-usage`,
-          poolId: pool.id,
-          provider: pool.provider,
-          plan: pool.plan,
-          kind: "high-usage",
-          title: `${pool.provider} — ${pool.plan} at ${Math.round(worstPct)}%`,
-          detail: `${worst.name} window ${Math.round(worstPct)}% used · resets ${worst.resetsAt.slice(0, 10)} — burn it down or hold new sessions`,
-          deadline: worst.resetsAt,
-          href: "/quota",
-        });
-      }
+    if (worst) {
+      actions.push({
+        id: `${pool.id}:high-usage`,
+        poolId: pool.id,
+        provider: pool.provider,
+        plan: pool.plan,
+        kind: "high-usage",
+        title: `${pool.provider} — ${pool.plan} at ${Math.round(worstPct)}%`,
+        detail: `${worst.name} window ${Math.round(worstPct)}% used · resets ${worstReset.slice(0, 10)} — burn it down or hold new sessions`,
+        deadline: worstReset,
+        href: "/quota",
+      });
     }
   }
   const rank: Record<QuotaActionKind, number> = { expiry: 0, walled: 1, "high-usage": 2 };

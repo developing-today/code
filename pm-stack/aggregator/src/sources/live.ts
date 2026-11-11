@@ -1165,6 +1165,22 @@ export function liveSource(
     return merged;
   }
 
+  // The quota view with the gatherer's quota-current overlay applied —
+  // the same view quota() serves. Usage-derived quota flags/actions must
+  // come from THIS view, not the unoverlaid feed quota (Codex P2,
+  // PR #4695): a pool the gatherer now reports healthy must clear its
+  // walled/high-usage actions on the usage strip too.
+  async function overlayCurrent(base: QuotaView): Promise<QuotaView> {
+    try {
+      const raw = await readFile(cfg.quotaCurrentFile, "utf8");
+      const file = parseQuotaCurrent(JSON.parse(raw));
+      if (file) return overlayQuotaCurrent(base, file);
+    } catch {
+      /* no gatherer file (or unreadable): base view stands */
+    }
+    return base;
+  }
+
   return {
     async board() {
       try {
@@ -1557,14 +1573,15 @@ export function liveSource(
           subscriptions: feed.subscriptions ?? [],
         };
         partial.services = await tursoOverlay(cfg, partial.services);
+        const quotaForFlags = await overlayCurrent(feed.quota);
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
           attention: [
-            ...buildAttentionFlags(feed.quota, partial),
-            ...quotaActionFlags(buildQuotaActions(feed.quota, AA_PLAN_FACTS)),
+            ...buildAttentionFlags(quotaForFlags, partial),
+            ...quotaActionFlags(buildQuotaActions(quotaForFlags, AA_PLAN_FACTS)),
             ...feedChargeFlags,
           ],
           domains,
@@ -1597,7 +1614,7 @@ export function liveSource(
         provenance.usage =
           "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
           feedSanitizationNotes;
-        const quotaForFlags = feed?.quota ?? (await fix.quota());
+        const quotaForFlags = await overlayCurrent(feed?.quota ?? (await fix.quota()));
         return {
           ...partial,
           chargesNote: partial.charges.length

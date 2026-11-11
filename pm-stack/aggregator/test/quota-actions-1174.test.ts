@@ -133,6 +133,51 @@ describe("buildQuotaActions (#1174)", () => {
     expect(actions).toHaveLength(0);
   });
 
+  test("a hotter window with a near reset does not mask a qualifying cooler window (Codex P2, PR #4695)", () => {
+    const now = Date.parse("2026-10-26T12:00:00Z");
+    const actions = buildQuotaActions(
+      quota([
+        pool({
+          id: "openai:codex",
+          provider: "OpenAI",
+          plan: "Codex",
+          windows: [
+            { name: "5-hour", unit: "other", limit: 100, used: 99, resetsAt: "2026-10-26T14:00:00Z", percent: 99 },
+            { name: "weekly", unit: "other", limit: 100, used: 92, resetsAt: "2026-10-30T12:00:00Z", percent: 92 },
+          ],
+        }),
+      ]),
+      {},
+      now,
+    );
+    expect(actions).toHaveLength(1);
+    expect(actions[0].kind).toBe("high-usage");
+    expect(actions[0].detail).toContain("weekly");
+    expect(actions[0].detail).toContain("92%");
+  });
+
+  test("a hotter window with no reset recorded does not mask a qualifying cooler window (Codex P2, PR #4695)", () => {
+    const now = Date.parse("2026-10-26T12:00:00Z");
+    const actions = buildQuotaActions(
+      quota([
+        pool({
+          id: "openai:codex",
+          provider: "OpenAI",
+          plan: "Codex",
+          windows: [
+            { name: "5-hour", unit: "other", limit: 100, used: 99, percent: 99 },
+            { name: "weekly", unit: "other", limit: 100, used: 92, resetsAt: "2026-10-30T12:00:00Z", percent: 92 },
+          ],
+        }),
+      ]),
+      {},
+      now,
+    );
+    expect(actions).toHaveLength(1);
+    expect(actions[0].kind).toBe("high-usage");
+    expect(actions[0].detail).toContain("weekly");
+  });
+
   test("85% exactly is not high usage; entries order expiry, walled, high-usage", () => {
     const now = Date.parse("2026-10-26T12:00:00Z");
     const actions = buildQuotaActions(
