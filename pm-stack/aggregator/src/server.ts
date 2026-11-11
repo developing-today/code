@@ -37,6 +37,7 @@ import {
   ACTIVITY_SOURCE_COVERAGE,
 } from "./activity.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
+import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -1278,6 +1279,11 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewRoadmapAnnotation(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const annotationAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!annotationAccess.ok) return json({ error: annotationAccess.error }, annotationAccess.status);
+      parsed.value.author = annotationAccess.author;
       const rows = await source.roadmap().catch(() => []);
       if (!rows.some((row) => row.subject === parsed.value.objectRef)) {
         return json({ error: "objectRef is not a current roadmap row" }, 404);
@@ -1316,6 +1322,11 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const commentAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!commentAccess.ok) return json({ error: commentAccess.error }, commentAccess.status);
+      parsed.value.author = commentAccess.author;
       // #1509: a persistence failure is a server error, not bad input -
       // only the validation/body-parse path above earns a 400.
       let comment;
@@ -1360,6 +1371,11 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewAction(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: gate every action write, including non-triage and
+      // preference actions, on the configured Access identity.
+      const actionAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!actionAccess.ok) return json({ error: actionAccess.error }, actionAccess.status);
+      parsed.value.author = actionAccess.author;
       // #1291/#1293: checks that need the currently published item —
       // option/survey membership, required-question coverage, proposal
       // identity, the access/policy auto ban. Enforced only when the
@@ -1472,6 +1488,9 @@ async function handler(req: Request): Promise<Response> {
         deduped?: boolean;
         error?: string;
       }[] = [];
+      // One enforcer for the whole batch: the request's JWT is
+      // verified once, not once per action (see access-identity.ts).
+      const enforceBatchAuthor = createAccessAuthorEnforcer(req);
       for (const [index, raw] of entries.entries()) {
         const objectRef =
           typeof raw === "object" && raw !== null && typeof (raw as { objectRef?: unknown }).objectRef === "string"
@@ -1482,6 +1501,12 @@ async function handler(req: Request): Promise<Response> {
           results.push({ index, objectRef, ok: false, error: parsed.error });
           continue;
         }
+        const batchAccess = await enforceBatchAuthor(parsed.value.author);
+        if (!batchAccess.ok) {
+          results.push({ index, objectRef, ok: false, error: batchAccess.error });
+          continue;
+        }
+        parsed.value.author = batchAccess.author;
         if (parsed.value.kind === "triage" && section) {
           const problem = checkActionAgainstItem(
             parsed.value,
