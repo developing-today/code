@@ -174,6 +174,29 @@ class GoTestReportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(record["skipped_count"], 0)
 
+    def test_quarantine_skip_with_go_source_prefix_remains_exempt(self):
+        # The actual `go test -json` output format: Go prefixes the
+        # skip message with the t.Skipf call site ("file.go:line: ").
+        result, summary, record = self.run_report(
+            [
+                {
+                    "Action": "skip",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestQuarantined",
+                },
+                {
+                    "Action": "output",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestQuarantined",
+                    "Output": "widgets_test.go:42: quarantined until 2027-01-01 (https://github.com/developing-today/code/issues/1973)\n",
+                },
+            ],
+            stored="",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(record["skipped_count"], 0)
+        self.assertIn("1 quarantined under #1973", summary)
+
     def test_quarantine_expiring_today_remains_exempt(self):
         result, summary, record = self.run_report(
             [
@@ -203,6 +226,8 @@ class GoTestReportTests(unittest.TestCase):
             "this mentions quarantined until 2027-01-01 (https://github.com/developing-today/code/issues/1973)",
             "quarantined until 2027-01-01 (https://github.com.github.invalid/developing-today/code/issues/1973)",
             "quarantined until 2027-01-01 (https://github.com/developing-today/code/pull/1973)",
+            "widgets_test.go:42: quarantined until 2000-01-01 (https://github.com/developing-today/code/issues/1973)",
+            "widgets_test.go:42: this mentions quarantined until 2027-01-01 (https://github.com/developing-today/code/issues/1973)",
         ]
         empty_record = json.dumps({"skipped_count": 0, "skipped": [], "run": "previous"})
 

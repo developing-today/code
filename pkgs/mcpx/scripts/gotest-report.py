@@ -36,10 +36,16 @@ QUARANTINE_NOTICE = re.compile(
     r"\((?P<issue>[^()\s]+)\)"
 )
 GITHUB_ISSUE_PATH = re.compile(r"/[^/\s?#]+/[^/\s?#]+/issues/[1-9]\d*")
+# In the real `go test -json` stream, a test's skip message carries the
+# Go-generated source location of the t.Skipf call site:
+# "widgets_test.go:42: quarantined until ...". That prefix is part of
+# the output format, not of the notice, so strip exactly that shape
+# before validating the complete notice.
+GO_SOURCE_PREFIX = re.compile(r"[^\s/:]+\.go:\d+: ")
 
 
 def is_valid_quarantine_notice(reason, today):
-    match = QUARANTINE_NOTICE.fullmatch(reason)
+    match = QUARANTINE_NOTICE.fullmatch(GO_SOURCE_PREFIX.sub("", reason, count=1))
     if not match:
         return False
 
