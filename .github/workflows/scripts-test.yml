@@ -38,6 +38,10 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_classify_failure.py' -v
       - name: Run bitwarden-load-secrets multiline contract tests (#5650)
         run: python3 -m unittest discover -s scripts/tests -p 'test_bitwarden_load_secrets.py' -v
+      - name: Run hardware-doc-init branch-routing regression tests (#7597)
+        run: |
+          test -f scripts/tests/test_hardware_doc_init.py
+          python3 -m unittest discover -s scripts/tests -p 'test_hardware_doc_init.py' -v
       - name: Run provider retirement gate contract tests (#5610)
         run: python3 -m unittest discover -s scripts/tests -p 'test_check_provider_retirement_gate.py' -v
       - name: Run auto-format workflow contract tests (#7664)
