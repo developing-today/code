@@ -466,13 +466,25 @@ impl Block {
         if value.len() < 8 + 1 + 8 + 4 {
             return Err(corrupt("a block row is too short"));
         }
-        let added_at_ms = u64::from_be_bytes(value[0..8].try_into().unwrap());
+        let added_at_ms = u64::from_be_bytes(
+            value[0..8]
+                .try_into()
+                .map_err(|_| corrupt("a block row has a truncated timestamp"))?,
+        );
         let expires_at_ms = match value[8] {
             0 => None,
-            1 => Some(u64::from_be_bytes(value[9..17].try_into().unwrap())),
+            1 => {
+                Some(u64::from_be_bytes(value[9..17].try_into().map_err(
+                    |_| corrupt("a block row has a truncated expiry"),
+                )?))
+            }
             _ => return Err(corrupt("a block row has a bad expiry flag")),
         };
-        let reason_len = u32::from_be_bytes(value[17..21].try_into().unwrap()) as usize;
+        let reason_len = u32::from_be_bytes(
+            value[17..21]
+                .try_into()
+                .map_err(|_| corrupt("a block row has a truncated reason length"))?,
+        ) as usize;
         if value.len() != 21 + reason_len {
             return Err(corrupt("a block row has the wrong reason length"));
         }

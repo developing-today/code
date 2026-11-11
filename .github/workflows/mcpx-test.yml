@@ -134,6 +134,9 @@ jobs:
           echo "unit packages:"; echo "$pkgs"
           # shellcheck disable=SC2086
           go test $pkgs -count=1
+      - name: Bounded fuzz smoke (FuzzStripJSONC)
+        working-directory: pkgs/mcpx
+        run: go test ./internal/config -run '^$' -fuzz '^FuzzStripJSONC$' -fuzztime=5s -parallel=1
 
   lint:
     name: "basic: mcpx-test lint"

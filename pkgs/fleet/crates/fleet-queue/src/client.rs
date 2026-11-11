@@ -2179,8 +2179,15 @@ fn cmd_complete(rest: &[String]) -> i32 {
     0
 }
 
+/// Value flags the `health` verb accepts (#7349). `--worker` is
+/// accepted for attribution only: the opencode-claimant packet
+/// mandates `--worker` on every verb, and a packet-literal fire used
+/// to abort on its first health call. It changes neither the request
+/// body nor the printed table.
+const HEALTH_FLAGS: &[&str] = &["queue", "worker"];
+
 fn cmd_health(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue"], &[]);
+    let args = parse_args(rest, HEALTH_FLAGS, &[]);
     reject_extra_pos("health", &args, 0);
     let mut body = json!({});
     if let Some(q) = args.get("queue") {
@@ -3103,6 +3110,43 @@ mod tests {
             .expect("well-formed invocation parses");
         assert_eq!(args.get("queue"), Some("alpha".to_string()));
         assert_eq!(args.get_i64("limit").unwrap_or(20), 20);
+    }
+
+    #[test]
+    fn health_accepts_worker_flag() {
+        // #7349 regression, oracle: the health verb's CLI flag set
+        // accepts the same `--worker` the mutating verbs accept. The
+        // value is attribution only — it never reaches the request
+        // body — but a packet-literal claimant fire
+        // (`health ... --worker opencode-claimant`) must not abort on
+        // its first call with "unrecognized argument".
+        let args = parse_args_inner(
+            &pos(&[
+                "--queue",
+                "repo-health-code-pilot",
+                "--worker",
+                "opencode-claimant",
+            ]),
+            HEALTH_FLAGS,
+            &[],
+        )
+        .ok()
+        .expect("health must accept --worker");
+        assert_eq!(
+            args.get("queue"),
+            Some("repo-health-code-pilot".to_string())
+        );
+        assert_eq!(args.get("worker"), Some("opencode-claimant".to_string()));
+
+        // Acceptance: health without --worker is unchanged.
+        let args = parse_args_inner(&pos(&["--queue", "q"]), HEALTH_FLAGS, &[])
+            .ok()
+            .expect("health without --worker parses");
+        assert_eq!(args.get("queue"), Some("q".to_string()));
+        assert_eq!(args.get("worker"), None);
+
+        // The acceptance is narrow: unrelated flags stay rejected.
+        assert!(parse_args_inner(&pos(&["--bogus", "x"]), HEALTH_FLAGS, &[]).is_err());
     }
 
     /// One spelling of a value flag: `--flag value` or `--flag=value`.
