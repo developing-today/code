@@ -8,7 +8,7 @@
 // the twin agreement is by construction, and the tests in
 // test/board-view-8521.test.ts pin the semantics.
 
-import type { BoardItem, GhItem, ProjectPoolItem, RefKey } from "./model.ts";
+import type { BoardItem, GhItem, ProjectPoolItem, RefKey, RoadmapRow } from "./model.ts";
 import { itemMatchesView, type ViewFilters, type ViewItemLike } from "./views.ts";
 
 /** The ViewItemLike projection of a canonical GitHub item: the
@@ -64,6 +64,41 @@ export function filterBoardForView(
     ),
   );
   return { board: keptBoard, items: keptItems };
+}
+
+/** The /roadmap view rule (#4013), shared verbatim with its JSON
+ *  twin /api/roadmap.json (#8723): keep a row when the linkedLike rule
+ *  matches it; the items map keeps every item a kept row links to
+ *  (its metadata renders in roadmapCard's links/badges even when the
+ *  item fails the filter itself -- Codex P2, PR #4013) plus every
+ *  item that matches the view directly. The HTML handler has applied
+ *  this rule since #4013; the JSON handler filtered items by the
+ *  view alone, so a kept row could reference items absent from its
+ *  own payload. Both handlers now compose through this function --
+ *  the twin agreement is by construction. */
+export function filterRoadmapForView(
+  rows: readonly RoadmapRow[],
+  items: Map<RefKey, GhItem>,
+  poolByRef: Map<RefKey, ProjectPoolItem>,
+  filters: ViewFilters,
+): { rows: RoadmapRow[]; items: Map<RefKey, GhItem> } {
+  const keptRows = rows.filter((r) =>
+    linkedLike(
+      { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
+      r.links,
+      items,
+      poolByRef,
+      filters,
+    ),
+  );
+  const keptRefs = new Set<string>();
+  for (const r of keptRows) for (const l of r.links) keptRefs.add(l.ref);
+  const keptItems = new Map(
+    [...items].filter(
+      ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), filters),
+    ),
+  );
+  return { rows: keptRows, items: keptItems };
 }
 
 /** The view-naming query params of a request (view id, viewer, vf.*

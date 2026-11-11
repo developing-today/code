@@ -27,7 +27,7 @@ import {
 } from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
-import { filterBoardForView, fragBoardUrl, ghItemLike, linkedLike } from "./board-view.ts";
+import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
 import { EventsStore, emitEvent, pageEvents } from "./events.ts";
 import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
@@ -1869,25 +1869,11 @@ async function handler(req: Request): Promise<Response> {
       );
     }
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike(
-        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
-        r.links,
-        items,
-        poolByRef,
-        resolved.filters,
-      ),
-    );
     // Codex P2, PR #4013: items linked from a KEPT row keep their
     // metadata (links/badges in roadmapCard) even when they fail the
     // item filter themselves — same rule the board handler applies.
-    const keptRefs = new Set<string>();
-    for (const r of keptRows) for (const l of r.links) keptRefs.add(l.ref);
-    const keptItems = new Map(
-      [...items].filter(
-        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
-      ),
-    );
+    // Shared with /api/roadmap.json via filterRoadmapForView (#8723).
+    const { rows: keptRows, items: keptItems } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
     return html(
       renderRoadmap(
         keptRows,
@@ -2283,18 +2269,10 @@ async function handler(req: Request): Promise<Response> {
     }
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike(
-        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
-        r.links,
-        items,
-        poolByRef,
-        resolved.filters,
-      ),
-    );
-    const keptItems = [...items.values()].filter((it) =>
-      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
-    );
+    // #8723: the same rule as the HTML twin -- items linked from a
+    // kept row ship even when they fail the view themselves.
+    const { rows: keptRows, items: keptItemMap } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
+    const keptItems = [...keptItemMap.values()];
     const annotatedKeptRows = await Promise.all(
       keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
     );
