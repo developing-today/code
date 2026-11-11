@@ -553,8 +553,15 @@ pub struct WorldDevArgs {
     /// guest (repeatable, in order). The view is reported after each.
     #[arg(long = "input", value_name = "TEXT")]
     pub inputs: Vec<String>,
+    /// Fixture to replay against the compiled candidate before
+    /// launch (repeatable, in order). A fixture whose replayed
+    /// records mismatch its recorded expectation blocks promotion:
+    /// the candidate is not launched and the command fails. Fixtures
+    /// recorded under an earlier module hash still replay (the dev
+    /// cross-module regression mode) and the report says so.
+    #[arg(long = "fixture", value_name = "FILE")]
+    pub fixtures: Vec<PathBuf>,
 }
-
 
 /// The arguments of `id world logs`, extracted into
 /// their own `Args` struct for the same reason as `ServeArgs`

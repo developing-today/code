@@ -744,16 +744,41 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 roc,
                 seed,
                 inputs,
+                fixtures,
             } = args;
+            let mut fixture_inputs = Vec::with_capacity(fixtures.len());
+            for fixture_path in &fixtures {
+                let text = String::from_utf8(read_bounded(
+                    fixture_path,
+                    crate::world_fixture::MAX_FIXTURE_BYTES,
+                    "fixture",
+                )?)
+                .context("the fixture is not UTF-8")?;
+                let fixture = crate::world_fixture::decode(&text)?;
+                fixture_inputs.push((fixture_path.display().to_string(), fixture));
+            }
             let report = crate::world_dev::run_dev_once(
                 &dir,
                 platform.as_deref(),
                 roc.as_deref(),
                 seed,
                 &inputs,
+                &fixture_inputs,
             )
             .await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
+            if !report.promoted {
+                let blocking: Vec<&str> = report
+                    .fixture_gates
+                    .iter()
+                    .filter(|gate| gate.blocks_promotion)
+                    .map(|gate| gate.fixture.as_str())
+                    .collect();
+                anyhow::bail!(
+                    "fixture gate: candidate not promoted; fixture(s) mismatched: {}",
+                    blocking.join(", ")
+                );
+            }
             Ok(())
         }
         WorldCommand::List(args) => {
