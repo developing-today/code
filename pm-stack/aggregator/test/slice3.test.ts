@@ -1006,6 +1006,11 @@ describe("slice-3 routes", () => {
       env: {
         ...Bun.env,
         PM_AGG_PORT: String(tokenPort),
+        // The parent server (spawned in beforeAll) already holds the
+        // freshness IPC port inherited through Bun.env: this second
+        // server needs its own, or it dies at boot and the readiness
+        // loop below times out.
+        PM_AGG_FRESHNESS_PORT: String(tokenPort + 2000),
         PM_AGG_SOURCE: "fixtures",
         PM_AGG_COMMENTS_FILE: tokenComments,
         PM_AGG_ROADMAP_ANNOTATIONS_FILE: join(tmp, "roadmap-token.json"),
