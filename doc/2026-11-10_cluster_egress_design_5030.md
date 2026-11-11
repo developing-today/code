@@ -60,6 +60,39 @@ Alternate-WAN routing, health detection, traffic shaping, and recovery are not i
 
 ## Delivery and outstanding decisions
 
-- #5203 covers per-direction counters, provider usage, monthly report, 70/85% alerts and hold response; its current scope does not by itself establish the rolling-rate control, 95% handling, or end-to-end admission/shaping enforcement described above. Those are implementation work, not existing capability.
+- #5203 covers per-direction counters, provider usage, monthly report, 70/85% alerts and hold response; its current scope does not by itself establish the rolling-rate control, 95% handling, or end-to-end admission/shaping enforcement described above. Follow-up [#8408](https://github.com/developing-today/code/issues/8408) owns those controls and degraded-link drills; they are not existing capability.
 - #1084 owns fabric and paths, #1085 backup/restore, #1090 observability, and #1092 workload integration. Concrete service-specific CDN, tunnel, origin authentication and cache rules require a workload and should be tracked with that integration rather than presumed deployed.
 - Verify live Cloudflare/Turso/Tailscale accounts, actual unused allowances, shared consumption and provider terms; confirm TriCounty availability. Collect the baseline and benchmark compression before numerical forecasts or production admission. Review thresholds and any spend or provider-plan change with the owner.
+
+## Statement inventory and acceptance status
+
+| Source statement | Design response | Status |
+|---|---|---|
+| 2 Gbit/s symmetric; bandwidth scarce | Separate ingress and egress, reserve 25% headroom | Proposed, actual throughput unmeasured |
+| Free-first; $5 plans in play; $25–30 possible; $75 excluded | No plan upgrade or paid commitment here | Guardrail retained; live accounts unverified |
+| Classify edge, object and home traffic | Placement and topology above | Proposed; workload-specific selection pending |
+| Tunnel topology and path costs | Path table above and cost equations below | Architecture proposed; provider/account rates must be rechecked |
+| Per-class compression and Threadripper CPU cost | Class plan above | CPU cost and latency benchmark outstanding |
+| Fiber/cable/emergency failure matrix | Failure matrix above | Proposed; alternatives unprovisioned and drills outstanding |
+| Expected class GB/month and ledger | Ledger model verified present, dated 2026-11-04 | Forecasts unknown until representative measurements; live usage not verified |
+| Exceedance and follow-up issues | Separate rate and quota controls above; #5203 and #8408 | Controls not implemented; no deployment claimed |
+| Bootstrap from configuration; no HashiCorp | Applies to implementation and recovery | Implementation acceptance requirement |
+| TriCounty and unused existing SaaS allowances | Carry as unknown | Address/account verification outstanding |
+
+## Alternatives and tradeoffs
+
+| Decision | Options and tradeoffs | Proposed selection and revisit trigger |
+|---|---|---|
+| Public objects | Serve from home: simplest but every read consumes upstream and dies with home link. CDN with home origin: reduces repeat bytes but misses and invalidations still load home. R2 + CDN: shifts repeated delivery away from home but incurs object storage/operations and requires publication workflow. | R2 + CDN for selected immutable public artifacts; retain home-only for private or non-exportable data. Reconsider if operations cost or consistency exceeds budget. |
+| Dynamic compute | Worker at edge: avoids home round-trip where workload fits limits; introduces platform coupling, request/CPU billing and data access constraints. Tunnel to home: preserves existing compute and private ingress but WAN and home availability remain critical. | Edge only where application fits and semantics permit; otherwise narrow authenticated tunnel. Measure usage and latency before selection. |
+| Private paths | Direct Tailscale minimizes relay dependency; DERP provides connectivity fallback but fair use and latency preclude guaranteed throughput. Dedicated peer relay adds operations and a failure domain. | Prefer direct; fallback to DERP for management and consider relay only after path measurements. |
+| Relational reads | Turso replicas may improve geographically distributed reads but introduce sync cost and consistency constraints; home-only is simpler but consumes WAN and fails with home; no replica avoids unused spend. | No replica by default until consistency, availability and measured sync justify one. |
+| WAN resilience | Second fiber could provide independent capacity only if physically diverse and available; cable is much slower; mobile/satellite could be management-only with unknown limits. | Do not assume any until availability, diversity, cost and tested failover are established. |
+
+### Cost and traffic equations
+
+For a monthly class with `R` public requests, `B` average response GB, and observed cache hit fraction `h`, estimate home-origin response GB as `R × B × (1 − h)` only when home is the origin; add publication, invalidation/refill and retries separately. For R2-origin objects the same misses instead consume R2 reads and provider-origin traffic, while uploads still cross the home link. These are estimates: measure actual wire bytes and cache bypasses.
+
+R2 monthly cost is `billable GB-month × storage rate + billable class A operations × A rate + billable class B operations × B rate + applicable retrieval/other charges`, after verified account allowances. Workers cost is the applicable plan minimum plus `billable requests × request rate + billable CPU time × CPU rate` and other applicable charges after verified allowances. Turso cost and admission depend on verified monthly sync, included limits, and overage rules, not generic egress. No formula establishes current price, entitlement or a forecast; each input needs a date and source before budgeting.
+
+Publishing must authenticate writers, reject private data from public buckets/cache, use immutable versioned keys and explicit cache-control, and provide tested invalidation/rollback for exceptional mutable content. Default to bypass for authenticated or personalized responses; never cache secrets by accident. #1092 owns selecting and integrating a real workload before service-specific provisioning is specified.
