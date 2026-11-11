@@ -122,7 +122,7 @@ let
     # hostname resolves. On timeout start anyway (cloudflared keeps
     # retrying internally; the watchdog below covers the rest).
     for i in $(seq 1 90); do
-      if ${pkgs.glibc}/bin/getent hosts region1.v2.argotunnel.com >/dev/null 2>&1; then
+      if ${pkgs.glibc.getent}/bin/getent hosts region1.v2.argotunnel.com >/dev/null 2>&1; then
         exit 0
       fi
       sleep 2

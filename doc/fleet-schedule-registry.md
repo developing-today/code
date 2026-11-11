@@ -235,7 +235,7 @@ Execution route/pool is recorded separately from work scope: the repo-health que
 | `aea12c82-c5af-4e5a-9b66-f8e360f87177` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9` | Opencode lane claimant/executor - #3026 | `*/10 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | opencode-route / workhorse | not recorded | not recorded  | not recorded | 2026-11-03  |
 
-### 2b. Laptop systemd user timers (39 loaded: 38 enabled, 1 installed-but-disabled; 1 Nix-configured pending deployment)
+### 2b. Laptop systemd user timers (40 listed: 38 enabled, 1 installed-but-disabled; 2 Nix-configured pending deployment)
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
@@ -274,6 +274,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `pm-git-sync.timer`                      | `OnUnitActiveUSec=30s,OnBootUSec=30s`                 | `pm-git-sync.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `pm-kaneo.timer`                         | `OnUnitActiveUSec=30min,OnBootUSec=1min`              | `pm-kaneo.service`                         | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `pm-projector-reconcile.timer`           | `OnCalendar=*-*-* *:00/15:00`                         | `pm-projector-reconcile.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-tunnel-watchdog.timer` (Nix-configured; not yet loaded) | `OnUnitActiveSec=2min,OnBootSec=2min` (not live-verified) | `pm-tunnel-watchdog.service` | laptop (user systemd) | not recorded | not recorded | 2026-11-11 | 2026-11-11 |
 | `quota-gatherer.timer`                   | `OnCalendar=*-*-* *:00/15:00`                         | `quota-gatherer.service`                   | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `repo-archive-backup.timer`              | `OnCalendar=*-*-* 05:15:00`                           | `repo-archive-backup.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `repo-universe-issue-check.timer`        | `OnCalendar=*-*-* 00:00:00`                           | `repo-universe-issue-check.service`        | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
@@ -301,7 +302,7 @@ issue #1319.
 the surface is retained in this registry so a future Jules schedule,
 if one is ever created, lands here in the same pass.
 
-## Surface 4 — GitHub Actions schedules (1 entry)
+## Surface 4 — GitHub Actions schedules (2 entries)
 
 Scheduled workflows in this repo (`.github/workflows/*` with a
 `schedule:` trigger). This surface was added 2026-11-05 with its first
@@ -313,3 +314,4 @@ review, not silently normalised.
 | name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
 | ------- | ---------- | ------- | ----- | ------------- | -------------------- | ------ | ------------- | ------- | ----------- |
 | `bws-freshness` (`.github/workflows/bws-freshness.yml`) | developing-today/code | `23 6 * * *` (daily 06:23 UTC) + `workflow_dispatch` | enabled (fixture tests); live check gated off pending a secure credentialed runner (`BWS_FRESHNESS_ENABLED`) | issue #5451 | `.github/workflows/bws-freshness.yml`; check implementation `lib/bws-to-sops.sh --check` | not recorded | Disable the schedule if the fixture tests fail on main repeatedly or the drift-issue automation misfires | 2026-11-05 | 2026-11-05 |
+| `dispatch-health-probe` (`.github/workflows/dispatch-health-probe.yml`) | developing-today/code | `*/30 * * * *` (every 30 min UTC) + `workflow_dispatch` | enabled; outside probe of dispatch.security.cab — opens/updates one `meta/dispatch-probe` alert issue on failure, comments + closes it on recovery | issue #6992 | `.github/workflows/dispatch-health-probe.yml` | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or dispatch.security.cab is retired | 2026-11-11 | 2026-11-11 |

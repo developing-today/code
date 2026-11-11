@@ -67,7 +67,7 @@ jobs:
             --json number --jq '.[0].number // empty')
           run_url="https://github.com/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}"
           if [ "$PROBE_OK" != "0" ]; then
-            body="The outside probe for https://dispatch.security.cab failed 3 attempts over ~2 minutes: ${PROBE_DETAIL}. Expected GET /health=200 and POST /v1/sessions=401 (the app's own auth refusal). An edge 502 or 000 means the public path is down while the laptop may look healthy — see issue #6992. Probe run: ${run_url}"
+            body="The outside probe for https://dispatch.security.cab failed 3 attempts over ~2 minutes: ${PROBE_DETAIL}. Expected GET /health=200 and POST /v1/sessions=401 (the app's own auth refusal). An edge 502 or 000 means the public path is down while the laptop may look healthy — see issue #6992. Probe run: ${run_url} Queue note (AGENTS.md filing rule): this alert is filed by a GitHub Actions workflow, which has no path to the fleet queue backend, so it is deliberately not enqueued at filing time; the standing coverage reconciliation (scripts/fleet/queue-reconcile/) enqueues every open issue into the repo-health-code-pilot queue, and this issue is the tracked item until it closes."
             if [ -n "$open_alert" ]; then
               gh issue comment "$open_alert" --body "Still down: $body"
             else
