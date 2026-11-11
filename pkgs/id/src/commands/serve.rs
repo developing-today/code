@@ -3587,7 +3587,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_web_content_target_program_rejects_empty_world() {
         // #2146 phase 1: a program target is a world name; an empty
         // one can never resolve, so it fails at construction/parse.
