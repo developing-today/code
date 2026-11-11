@@ -561,9 +561,7 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     .as_ref()
                     .and_then(|value| value.get("kind"))
                     .and_then(Value::as_str);
-                if matches!(kind, Some("screen" | "text"))
-                    || err.to_string().contains("\"kind\"")
-                {
+                if matches!(kind, Some("screen" | "text")) || top_level_kind_is_duplicated(data) {
                     return Err(err).context("duplicate JSON object key in world presentation");
                 }
             }
@@ -1431,6 +1429,11 @@ mod tests {
             // must consume the whole map or its verdict is lost to a
             // trailing-content error (Codex P2 on PR #8424).
             r#"{"kind":"screen","kind":"other","version":1}"#,
+            // Duplicate kind preceded by an unrelated duplicate key: the
+            // unique-key parser stops at the first duplicate, so the
+            // verdict must come from the top-level scan, not from which
+            // duplicate the parser hit first (Codex P2 on PR #8424).
+            r#"{"x":1,"x":2,"kind":"screen","kind":"other"}"#,
             // Duplicate key at a nested level the parser inspects (a
             // style span object).
             r#"{"kind":"screen","version":1,"width":2,"height":1,"rows":["hi"],"styles":[[{"x":0,"x":0,"length":1,"fg":0,"bg":0,"bold":false}]]}"#,
