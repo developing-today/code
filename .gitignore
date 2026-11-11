@@ -183,3 +183,5 @@ pm-stack/aggregator/events.json
 # dirty-tree refusal fire permanently (#5562). Root-anchored so only the
 # repo-root cache is ignored.
 /.cache/
+# mcpx schema cache (issue #5562)
+.cache/
