@@ -12,7 +12,7 @@
 //! next session carries to a peer (#792).
 //!
 //! The reads walk every applied event, which is fine for the CLI and is not an index. The document
-//! and tag rules are the ones in [`crate::documents`] and [`crate::tag_claims`].
+//! and tag rules are the ones in [`id_store::documents`] and [`id_store::tag_claims`].
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -21,20 +21,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use p2panda_core::{Hash, SigningKey};
 
-use crate::chain::{ChainExt, Event, MAX_AFTER, sign};
-use crate::chat::{CHAT_MESSAGE_KIND, ChatMessage, ChatRecord, SendRate};
-use crate::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
+use id_store::chain::{ChainExt, Event, MAX_AFTER, sign};
+use id_store::chat::{CHAT_MESSAGE_KIND, ChatMessage, ChatRecord, SendRate};
+use id_store::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
 use crate::event_store::{Block, BlockKind, EventStore, Ingest};
 use crate::local_claims::LocalClaims;
-use crate::notes::{
+use id_store::notes::{
     AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteFoldError, NoteOp, NoteRecord,
     REVISE_KIND as NOTE_REVISE_KIND, check_note_op, fold_notes,
 };
-use crate::search::{Hit, ValueMatch, search_store};
-use crate::tag_claims::{
+use id_store::search::{Hit, ValueMatch, search_store};
+use id_store::tag_claims::{
     CLEAR_KIND, Claim, LocalClaim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, TagScope, check_op,
 };
-use crate::waiting::{AuthorKey, WaitingLimits};
+use id_core::waiting::{AuthorKey, WaitingLimits};
 
 /// The directory the event store lives in, under the data directory, unless `--event-store` names
 /// another.
@@ -278,7 +278,7 @@ impl LocalEvents {
 
     /// Adds `block` to the operator block list (#2245), replacing any row
     /// that names the same kind and value. The enforcement seams
-    /// ([`crate::abuse`], [`crate::blob_gate`], [`crate::pull_policy`])
+    /// (`id::abuse`, `id::blob_gate`, [`crate::pull_policy`])
     /// read the list live, so a block lands on the next check.
     ///
     /// # Errors
@@ -315,7 +315,7 @@ impl LocalEvents {
     /// Whether (`kind`, `value`) is blocked right now, judged against the
     /// wall clock exactly as the enforcement seams judge it (#2245).
     /// Reads go through [`crate::event_store::BlockList`], the same trait
-    /// [`crate::abuse`], [`crate::blob_gate`] and [`crate::pull_policy`]
+    /// `id::abuse`, `id::blob_gate` and [`crate::pull_policy`]
     /// consult, so a web-written row and an enforced row are one row.
     #[must_use]
     pub fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
@@ -387,8 +387,8 @@ impl LocalEvents {
         if !self.chat_rate.admit(now_ms()) {
             bail!(
                 "the chat send rate is exhausted: at most {} messages in {} ms",
-                crate::chat::SEND_RATE_MAX,
-                crate::chat::SEND_RATE_WINDOW_MS
+                id_store::chat::SEND_RATE_MAX,
+                id_store::chat::SEND_RATE_WINDOW_MS
             );
         }
         self.record(
@@ -431,7 +431,7 @@ impl LocalEvents {
     /// A [`TagScope::Shared`] claim is a signed `tag.set` event, exactly as [`LocalEvents::set_tag`]
     /// records it, and its ID is the event's. A [`TagScope::Local`] claim is never signed and never
     /// enters the event store, so it never reaches another node; its ID is derived from its content
-    /// ([`crate::tag_claims::LocalClaim::id_for`]). Both kinds are returned by
+    /// ([`id_store::tag_claims::LocalClaim::id_for`]). Both kinds are returned by
     /// [`LocalEvents::tags_on`], [`LocalEvents::search`] and [`LocalEvents::review_tags`], each
     /// carrying its scope.
     ///
@@ -686,7 +686,7 @@ impl LocalEvents {
         Ok(claims)
     }
 
-    /// The live claims that match `name`, and `value` if given, as [`crate::search`] returns them.
+    /// The live claims that match `name`, and `value` if given, as [`id_store::search`] returns them.
     ///
     /// # Errors
     ///
@@ -1215,7 +1215,7 @@ mod tests {
         // subject -- more distinct authors than MAX_AFTER, so the clear must
         // split by author. The markers name exactly those claims, and each
         // named claim sits in its marker's causal past, which is what removes
-        // a claim in the fold (crate::tag_claims). A claim with a different
+        // a claim in the fold (id_store::tag_claims). A claim with a different
         // name on the same subject, and a same-name claim on a different
         // subject, are named by no marker.
         //
@@ -1272,7 +1272,7 @@ mod tests {
             // Each named claim sits in this marker's causal past.
             let seen = parents
                 .get(id)
-                .map(|named_parents| crate::tag_claims::causal_past(named_parents, &parents))
+                .map(|named_parents| id_store::tag_claims::causal_past(named_parents, &parents))
                 .unwrap_or_default();
             for claim in claims {
                 assert!(named.insert(*claim), "a claim is named by two markers");
@@ -1722,8 +1722,8 @@ mod tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod chat_tests {
     use super::*;
-    use crate::membership::AuthId;
-    use crate::membership::body::encode_body;
+    use id_core::membership::AuthId;
+    use id_core::membership::body::encode_body;
     use p2panda_auth::group::{GroupAction, GroupMember};
 
     fn key(n: u8) -> SigningKey {
@@ -1843,7 +1843,7 @@ mod chat_tests {
         // The configuration seam (#3950): a small burst in a wide window, so the test
         // does not depend on how fast the sends happen. The default configuration is
         // the world-chat 50 per 10 seconds, unit-tested in the chat module.
-        node.chat_rate = SendRate::new(crate::chat::ChatRateConfig {
+        node.chat_rate = SendRate::new(id_store::chat::ChatRateConfig {
             max: 3,
             window_ms: 60_000,
         });
