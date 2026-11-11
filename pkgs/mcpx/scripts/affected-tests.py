@@ -92,7 +92,9 @@ E2E_GUARDS = {
 
 
 def run(cmd, cwd, check=True):
-    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    p = subprocess.run(
+        cmd, cwd=cwd, capture_output=True, text=True, errors="surrogateescape"
+    )
     if check and p.returncode != 0:
         sys.exit(f"command failed: {' '.join(cmd)}\n{p.stderr}")
     return p.stdout

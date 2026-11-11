@@ -102,6 +102,11 @@ class TestRunDoesNotExecuteFilenames(RunInjectionFixture):
         self.write_untracked("with space.go")
         proc = self.run_selector()
         self.assertEqual(proc.returncode, 0, msg=proc.stdout + proc.stderr)
+        # The whole path must appear in the executed commands: under
+        # whitespace splitting it fragmented, nothing was selected,
+        # and the old selector also exited zero.
+        self.assertIn("gofmt -l pkgs/mcpx/with space.go", proc.stdout)
+        self.assertIn("(cd pkgs/mcpx && go test -count=1 .)", proc.stdout)
 
 
 if __name__ == "__main__":
