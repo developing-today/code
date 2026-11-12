@@ -3198,6 +3198,51 @@ mod tests {
     }
 
     #[test]
+    fn test_spaced_destination_placeholder_collision_preserves_literal_text() {
+        // #1348: a document that literally contains the placeholder
+        // token must round-trip with its own words intact. The
+        // substitution mints a non-colliding token and restoration only
+        // touches destination positions, so the literal paragraph, code
+        // span, and fenced block survive while the real spaced
+        // destination still saves in angle form.
+        let original = "idweb-spaced-destination-0-placeholder\n\n[notes](<my notes.md>)\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, original, "literal token rewritten: {first:?}");
+        assert_eq!(first, second, "fixpoint");
+        assert!(!first.contains("%20"), "no percent-encoding: {first:?}");
+
+        let original = "`idweb-spaced-destination-0-placeholder`\n\n[notes](<my notes.md>)\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(
+            first, original,
+            "literal token in code rewritten: {first:?}"
+        );
+        assert_eq!(first, second, "fixpoint");
+
+        let original =
+            "```text\nidweb-spaced-destination-0-placeholder\n```\n\n[notes](<my notes.md>)\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(
+            first, original,
+            "literal token in fence rewritten: {first:?}"
+        );
+        assert_eq!(first, second, "fixpoint");
+
+        // Several colliding literals plus a repeated spaced destination
+        // (which reuses one placeholder via the dedupe path).
+        let original = "idweb-spaced-destination-0-placeholder and idweb-spaced-destination-1-placeholder\n\n[a](<x y.md>) and [b](<x y.md>)\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, original, "literals or dedupe broken: {first:?}");
+        assert_eq!(first, second, "fixpoint");
+
+        // A colliding literal alongside a titled spaced destination.
+        let original = "idweb-spaced-destination-0-placeholder\n\n[t](<a b.md> \"T\")\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, original, "titled save with collision: {first:?}");
+        assert_eq!(first, second, "fixpoint");
+    }
+
+    #[test]
     fn test_tab_and_newline_destinations_roundtrip_in_angle_form() {
         // #1423: the #1019 protection only triggered on a literal space,
         // so a tab destination was percent-encoded to %09 on save and a

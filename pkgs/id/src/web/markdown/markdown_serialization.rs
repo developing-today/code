@@ -51,8 +51,8 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     let substitutions = substitute_spaced_destinations(root);
     let mut output = String::new();
     format_commonmark(root, &commonmark_options(), &mut output)?;
-    for (placeholder, raw) in substitutions {
-        output = output.replace(&placeholder, &format!("<{raw}>"));
+    for (placeholder, raw) in &substitutions {
+        output = restore_spaced_destination(&output, placeholder, raw);
     }
     for token in fence_tokens {
         output = strip_fence_placeholder(&output, &token);
@@ -1085,6 +1085,88 @@ fn strip_leading_blank_quote_lines(output: &str) -> String {
     result.join("\n")
 }
 
+/// Whether any string content already in the converted AST contains
+/// `needle` (#1348): text/code/html literals, code-block info strings,
+/// link/image urls and titles, footnote names — plus a `Debug` fallback
+/// covering any other string-carrying node kind. A generated
+/// spaced-destination placeholder must avoid all of these, otherwise the
+/// post-render restoration would rewrite the document's own words.
+fn ast_contains_literal<'a>(root: &'a AstNode<'a>, needle: &str) -> bool {
+    root.descendants().any(|node| {
+        let value = node.data.borrow();
+        match &value.value {
+            NodeValue::Text(literal) => literal.contains(needle),
+            NodeValue::Code(code) => code.literal.contains(needle),
+            NodeValue::CodeBlock(block) => {
+                block.literal.contains(needle) || block.info.contains(needle)
+            }
+            NodeValue::HtmlBlock(html) => html.literal.contains(needle),
+            NodeValue::HtmlInline(html) => html.contains(needle),
+            NodeValue::Link(link) | NodeValue::Image(link) => {
+                link.url.contains(needle) || link.title.contains(needle)
+            }
+            // Fallback for every other node kind (front matter,
+            // footnote names, math, …): its `Debug` rendering embeds the
+            // carried strings, and the placeholder token is plain
+            // alphanumerics-plus-dashes so debug escaping cannot hide it.
+            other => format!("{other:?}").contains(needle),
+        }
+    })
+}
+
+/// Mint a spaced-destination placeholder that occurs nowhere in the
+/// document already (#1348). `counter` advances past every candidate so
+/// skipped indices are never reused; the `-{n}-placeholder` shape keeps
+/// tokens mutually prefix-free (as with the #1496 fence tokens).
+fn fresh_spaced_destination_placeholder<'a>(
+    root: &'a AstNode<'a>,
+    taken: &[(String, String)],
+    mut counter: usize,
+) -> (String, usize) {
+    loop {
+        let candidate = format!("idweb-spaced-destination-{counter}-placeholder");
+        counter += 1;
+        if taken
+            .iter()
+            .any(|(placeholder, _)| placeholder == &candidate)
+            || ast_contains_literal(root, &candidate)
+        {
+            continue;
+        }
+        return (candidate, counter);
+    }
+}
+
+/// Restore one spaced destination (#1348): ONLY where the placeholder
+/// sits in a rendered link/image destination — immediately after `](`
+/// and followed by `)`, whitespace (a title follows), or a title
+/// opener (`"`, `'`, `(`). A plain `str::replace` would also rewrite
+/// the token in user prose or code that happens to contain it.
+fn restore_spaced_destination(output: &str, placeholder: &str, raw: &str) -> String {
+    let replacement = format!("<{raw}>");
+    let mut result = String::with_capacity(output.len());
+    let mut rest = output;
+    while let Some(pos) = rest.find(placeholder) {
+        let before = &rest[..pos];
+        let after = &rest[pos + placeholder.len()..];
+        let in_destination = before.ends_with("](")
+            && after
+                .chars()
+                .next()
+                .is_some_and(|c| c == ')' || c.is_whitespace() || matches!(c, '"' | '\'' | '('));
+        if in_destination {
+            result.push_str(before);
+            result.push_str(&replacement);
+            rest = after;
+        } else {
+            result.push_str(&rest[..pos + placeholder.len()]);
+            rest = after;
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
 /// Replace every link/image destination containing whitespace (space,
 /// tab, newline, …) with a unique placeholder token, returning
 /// (placeholder, raw destination) pairs for restoration after rendering
@@ -1094,32 +1176,52 @@ fn strip_leading_blank_quote_lines(output: &str) -> String {
 /// through here too: comrak resolves a reference definition into the
 /// referencing link's `url`, and the PM model stores that href directly,
 /// so no separate definition path exists in this codec.
+///
+/// Placeholders are minted collision-proof (#1348): each candidate is
+/// checked against the document's existing text, so a document that
+/// literally contains `idweb-spaced-destination-0-placeholder` bumps
+/// the real substitution to a higher index instead of letting the
+/// restoration rewrite the document's own words.
 pub(crate) fn substitute_spaced_destinations<'a>(root: &'a AstNode<'a>) -> Vec<(String, String)> {
     let mut substitutions: Vec<(String, String)> = Vec::new();
+    let mut counter: usize = 0;
     let mut stack: Vec<&AstNode<'a>> = vec![root];
     while let Some(node) = stack.pop() {
         stack.extend(node.children());
-        let mut data = node.data.borrow_mut();
-        let url = match &mut data.value {
-            NodeValue::Link(link) | NodeValue::Image(link) => &mut link.url,
+        // Read the destination first: minting a placeholder scans the
+        // whole AST, which must not run while this node's data is
+        // mutably borrowed (RefCell would panic on the re-entrant
+        // immutable borrow of the same node).
+        let url = match &node.data.borrow().value {
+            NodeValue::Link(link) | NodeValue::Image(link) => link.url.clone(),
             _ => continue,
         };
         if !url.contains(char::is_whitespace) {
             continue;
         }
-        if let Some(index) = substitutions
+        if let Some(existing) = substitutions
             .iter()
-            .position(|(_, raw)| raw.as_str() == url.as_str())
+            .find(|(_, raw)| raw.as_str() == url.as_str())
         {
-            *url = substitutions[index].0.clone();
+            let placeholder = existing.0.clone();
+            let mut data = node.data.borrow_mut();
+            match &mut data.value {
+                NodeValue::Link(link) | NodeValue::Image(link) => {
+                    link.url = placeholder;
+                }
+                _ => continue,
+            }
         } else {
-            let placeholder = format!(
-                "idweb-spaced-destination-{}-placeholder",
-                substitutions.len()
-            );
-            let raw = std::mem::take(url);
-            *url = placeholder.clone();
-            substitutions.push((placeholder, raw));
+            let (placeholder, next) =
+                fresh_spaced_destination_placeholder(root, &substitutions, counter);
+            counter = next;
+            let mut data = node.data.borrow_mut();
+            let slot = match &mut data.value {
+                NodeValue::Link(link) | NodeValue::Image(link) => &mut link.url,
+                _ => continue,
+            };
+            *slot = placeholder.clone();
+            substitutions.push((placeholder, url));
         }
     }
     substitutions
