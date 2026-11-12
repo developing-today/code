@@ -266,6 +266,8 @@ pub(crate) enum WorldCommand {
     SubmitFormResult {
         /// When present, the joined session that submitted the answer.
         token: Option<JoinCapability>,
+        /// Connection context for attribution of resulting program requests.
+        session_id: Option<SessionId>,
         result: id_core::world_presentation::FormResult,
         reply: oneshot::Sender<Result<FormSubmissionStatus>>,
     },
@@ -1140,6 +1142,16 @@ impl WorldActor {
     /// A read-only replica never delivers: host events are authoritative
     /// program effects and must not originate from a replica.
     async fn deliver(&mut self, text: String) -> bool {
+        self.deliver_system(text, None).await
+    }
+
+    /// Deliver a form response and durably spend the authenticated submitter's
+    /// use budget only after the system event was accepted and journaled.
+    async fn deliver_form_result(&mut self, text: String, participant_id: Option<u64>) -> bool {
+        self.deliver_system(text, participant_id).await
+    }
+
+    async fn deliver_system(&mut self, text: String, participant_id: Option<u64>) -> bool {
         if self.read_only {
             return false;
         }
@@ -1177,6 +1189,9 @@ impl WorldActor {
             })
             .is_ok();
         if journaled {
+            if let Some(participant_id) = participant_id {
+                self.core.spend(participant_id);
+            }
             self.core.record_admin_history(event);
             self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
         }
@@ -1188,9 +1203,7 @@ impl WorldActor {
     /// that had form authority to clear stale views and re-present them with
     /// fresh tokens; otherwise it could leave an unanswerable form on screen.
     async fn invalidate_restored_form_presentations(&mut self) {
-        if !self.core.ledger.is_granted("form.present")
-            || !self.core.ledger.is_granted("form.result")
-        {
+        if !self.core.ledger.is_granted("form.result") {
             return;
         }
         let event = serde_json::json!({
@@ -1749,31 +1762,57 @@ impl WorldActor {
     async fn submit_form_result(
         &mut self,
         token: Option<JoinCapability>,
+        session_id: Option<SessionId>,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
-        if let Some(token) = token {
-            let participant = self
+        let participant_id = if let Some(token) = token {
+            let Ok(participant) = self.core.authorize(&token, crate::world::WorldScopes::JOIN)
+            else {
+                return Ok(FormSubmissionStatus::Unavailable {
+                    error: "join_denied",
+                    reason: "invalid_capability",
+                });
+            };
+            if !self
                 .core
-                .authorize(&token, crate::world::WorldScopes::JOIN)?;
-            ensure!(
-                self.core
-                    .effective_scopes(participant)
-                    .is_some_and(|scopes| scopes.allows_effect("form.result")),
-                "session is not authorized to submit form results"
-            );
+                .effective_scopes(participant)
+                .is_some_and(|scopes| scopes.allows_effect("form.result"))
+            {
+                return Ok(FormSubmissionStatus::Unavailable {
+                    error: "actor_denied",
+                    reason: "effect_scope_denied",
+                });
+            }
+            Some(participant)
+        } else {
+            None
+        };
+        if !self.core.ledger.is_granted("form.result") {
+            return Ok(FormSubmissionStatus::Unavailable {
+                error: "cap_denied",
+                reason: "capability_revoked",
+            });
         }
-        ensure!(
-            self.core.ledger.is_granted("form.result"),
-            "form.result capability is not granted or is outside the current ceiling"
-        );
-        let pending = self
-            .pending_forms
-            .get(&result.form_id)
-            .ok_or_else(|| anyhow::anyhow!("unknown or cancelled form id"))?;
-        ensure!(
-            result.presentation_token == pending.presentation_token,
-            "stale form presentation token"
-        );
+        let Some(pending) = self.pending_forms.get(&result.form_id) else {
+            return Ok(FormSubmissionStatus::Unavailable {
+                error: "bad_args",
+                reason: "form_cancelled",
+            });
+        };
+        if result.presentation_token != pending.presentation_token {
+            return Ok(FormSubmissionStatus::Unavailable {
+                error: "bad_args",
+                reason: "stale_presentation",
+            });
+        }
+        if let Some(participant_id) = participant_id
+            && self.core.ensure_uses_left(participant_id).is_err()
+        {
+            return Ok(FormSubmissionStatus::Unavailable {
+                error: "actor_denied",
+                reason: "use_limit_exhausted",
+            });
+        }
         let valid = pending.surface.validate_result(&result).is_ok();
         let (event, retry_token) = if valid {
             (
@@ -1799,13 +1838,19 @@ impl WorldActor {
                 Some(token),
             )
         };
+        let mut event = event;
+        if let Some(participant_id) = participant_id {
+            event["participant_id"] = serde_json::json!(participant_id);
+        }
         let event = event.to_string();
         ensure!(
             event.len() <= crate::world_caps::MAX_EVENT_BYTES,
             "form.result event exceeds MAX_EVENT_BYTES"
         );
+        self.acting = participant_id;
+        self.acting_session = participant_id.and(session_id);
         ensure!(
-            self.deliver(event).await,
+            self.deliver_form_result(event, participant_id).await,
             "form.result event was not delivered"
         );
         if valid {
@@ -2510,10 +2555,11 @@ impl WorldActor {
             }
             WorldCommand::SubmitFormResult {
                 token,
+                session_id,
                 result,
                 reply,
             } => {
-                let outcome = self.submit_form_result(token, result).await;
+                let outcome = self.submit_form_result(token, session_id, result).await;
                 let _ = reply.send(outcome);
             }
             WorldCommand::Chat { token, text, reply } => {
@@ -4459,6 +4505,23 @@ mod form_tests {
             }
             Ok(())
         }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let accepted_result = self.0.lock().unwrap().iter().any(|event| {
+                serde_json::from_str::<serde_json::Value>(event)
+                    .is_ok_and(|event| event["cap"] == "form.result" && event["ok"] != false)
+            });
+            Ok(accepted_result.then(|| {
+                serde_json::json!({
+                    "requests": [{
+                        "id": "chat-after-form",
+                        "cap": "chat.say",
+                        "args": {"text": "must not be sent by a JOIN-only participant"}
+                    }]
+                })
+                .to_string()
+            }))
+        }
     }
 
     fn form(fields: Vec<FormField>) -> FormSurface {
@@ -4489,6 +4552,7 @@ mod form_tests {
             "form.present".to_owned(),
             "form.result".to_owned(),
             "form.cancel".to_owned(),
+            "chat.say".to_owned(),
         ]));
         let events = Arc::new(Mutex::new(Vec::new()));
         let mut actor =
@@ -4501,6 +4565,23 @@ mod form_tests {
             network: serde_json::json!({}),
         });
         (actor, events)
+    }
+
+    #[tokio::test]
+    async fn test_restored_form_invalidates_when_only_result_capability_remains() {
+        let (mut actor, events) = form_actor();
+        actor
+            .core
+            .ledger
+            .set_granted(BTreeSet::from(["form.result".to_owned()]));
+
+        actor.invalidate_restored_form_presentations().await;
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        let event: serde_json::Value = serde_json::from_str(&events[0]).unwrap();
+        assert_eq!(event["event"], "invalidated");
+        assert_eq!(event["reason"], "restarted");
     }
 
     fn present(actor: &mut WorldActor, form: &FormSurface) -> Result<serde_json::Value, CapError> {
@@ -4591,7 +4672,7 @@ mod form_tests {
         };
         let FormSubmissionStatus::Rejected {
             presentation_token: retry_token,
-        } = actor.submit_form_result(None, invalid).await.unwrap()
+        } = actor.submit_form_result(None, None, invalid).await.unwrap()
         else {
             panic!("invalid result must request a re-presentation")
         };
@@ -4622,7 +4703,7 @@ mod form_tests {
                 .clone(),
         };
         assert_eq!(
-            actor.submit_form_result(None, valid).await.unwrap(),
+            actor.submit_form_result(None, None, valid).await.unwrap(),
             FormSubmissionStatus::Accepted
         );
         assert!(!actor.pending_forms.contains_key("form-1"));
@@ -4638,6 +4719,159 @@ mod form_tests {
                 .iter()
                 .all(|event| event.len() <= crate::world_caps::MAX_EVENT_BYTES)
         );
+    }
+
+    #[tokio::test]
+    async fn test_form_result_keeps_submitter_effect_scope_through_after_change() {
+        let (mut actor, events) = form_actor();
+        let (_participant, capability) = actor
+            .core
+            .issue_capability(
+                "Ada",
+                crate::world::WorldScopes::JOIN,
+                crate::world::CapabilityBounds::default(),
+            )
+            .unwrap();
+        let form = form(vec![FormField::Choice {
+            id: "mode".to_owned(),
+            label: "Mode".to_owned(),
+            required: true,
+            options: vec!["quiet".to_owned()],
+        }]);
+        let presented = present(&mut actor, &form).unwrap();
+        let result = FormResult {
+            form_id: "form-1".to_owned(),
+            presentation_token: presented["presentation_token"].as_str().unwrap().to_owned(),
+            action: "submit".to_owned(),
+            values: serde_json::json!({"mode": "quiet"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert_eq!(
+            actor
+                .submit_form_result(Some(capability), Some(crate::world::SessionId(42)), result)
+                .await
+                .unwrap(),
+            FormSubmissionStatus::Accepted
+        );
+        assert!(matches!(
+            actor.acting_session,
+            Some(crate::world::SessionId(42))
+        ));
+
+        // The program reacts to the human result by trying chat.say. The
+        // actor must retain the submitting participant through wants execution.
+        actor.after_change().await;
+        let events = events.lock().unwrap();
+        let denied: serde_json::Value = events
+            .iter()
+            .filter_map(|event| serde_json::from_str::<serde_json::Value>(event).ok())
+            .find(|event| event["cap"] == "result" && event["id"] == "chat-after-form")
+            .expect("the program's follow-up request should receive a result");
+        assert_eq!(denied["error"], "actor_denied");
+    }
+
+    #[tokio::test]
+    async fn test_form_result_spends_submitter_budget_and_attributes_the_event() {
+        let (mut actor, events) = form_actor();
+        let (participant, capability) = actor
+            .core
+            .issue_capability(
+                "Ada",
+                crate::world::WorldScopes::GUEST,
+                crate::world::CapabilityBounds {
+                    uses: Some(1),
+                    ..crate::world::CapabilityBounds::default()
+                },
+            )
+            .unwrap();
+        let form = form(vec![FormField::Choice {
+            id: "mode".to_owned(),
+            label: "Mode".to_owned(),
+            required: true,
+            options: vec!["quiet".to_owned()],
+        }]);
+        let presented = present(&mut actor, &form).unwrap();
+        let result = FormResult {
+            form_id: "form-1".to_owned(),
+            presentation_token: presented["presentation_token"].as_str().unwrap().to_owned(),
+            action: "submit".to_owned(),
+            values: serde_json::json!({"mode": "quiet"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert_eq!(
+            actor
+                .submit_form_result(Some(capability.clone()), None, result)
+                .await
+                .unwrap(),
+            FormSubmissionStatus::Accepted
+        );
+        assert_eq!(actor.core.uses_left(participant.id), Some(0));
+        let submitted: serde_json::Value =
+            serde_json::from_str(&events.lock().unwrap()[0]).unwrap();
+        assert_eq!(submitted["participant_id"], participant.id);
+    }
+
+    #[tokio::test]
+    async fn test_exhausted_form_result_capability_cannot_trigger_another_event() {
+        let (mut actor, events) = form_actor();
+        let (_participant, capability) = actor
+            .core
+            .issue_capability(
+                "Ada",
+                crate::world::WorldScopes::GUEST,
+                crate::world::CapabilityBounds {
+                    uses: Some(1),
+                    ..crate::world::CapabilityBounds::default()
+                },
+            )
+            .unwrap();
+        let form = form(vec![FormField::Choice {
+            id: "mode".to_owned(),
+            label: "Mode".to_owned(),
+            required: true,
+            options: vec!["quiet".to_owned()],
+        }]);
+        let presented = present(&mut actor, &form).unwrap();
+        let invalid = FormResult {
+            form_id: "form-1".to_owned(),
+            presentation_token: presented["presentation_token"].as_str().unwrap().to_owned(),
+            action: "submit".to_owned(),
+            values: serde_json::json!({"mode": "invalid"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        let FormSubmissionStatus::Rejected { presentation_token } = actor
+            .submit_form_result(Some(capability.clone()), None, invalid)
+            .await
+            .unwrap()
+        else {
+            panic!("invalid result should produce one field_invalid event")
+        };
+        let retry = FormResult {
+            form_id: "form-1".to_owned(),
+            presentation_token,
+            action: "submit".to_owned(),
+            values: serde_json::json!({"mode": "quiet"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert!(matches!(
+            actor
+                .submit_form_result(Some(capability), None, retry)
+                .await
+                .unwrap(),
+            FormSubmissionStatus::Unavailable {
+                error: "actor_denied",
+                reason: "use_limit_exhausted"
+            }
+        ));
+        assert_eq!(events.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -4665,7 +4899,7 @@ mod form_tests {
                 .clone(),
         };
         assert_eq!(
-            actor.submit_form_result(None, valid).await.unwrap(),
+            actor.submit_form_result(None, None, valid).await.unwrap(),
             FormSubmissionStatus::Accepted
         );
         assert_eq!(events.lock().unwrap().len(), 1);
@@ -4736,7 +4970,7 @@ mod form_tests {
             .unwrap()
             .clone(),
         };
-        assert!(actor.submit_form_result(None, result).await.is_err());
+        assert!(actor.submit_form_result(None, None, result).await.is_err());
         assert!(events.lock().unwrap().is_empty());
         assert!(actor.pending_forms.contains_key("form-1"));
     }
@@ -4776,7 +5010,16 @@ mod form_tests {
                 .unwrap()
                 .clone(),
         };
-        assert!(actor.submit_form_result(None, late_result).await.is_err());
+        assert_eq!(
+            actor
+                .submit_form_result(None, None, late_result)
+                .await
+                .unwrap(),
+            FormSubmissionStatus::Unavailable {
+                error: "bad_args",
+                reason: "stale_presentation",
+            }
+        );
         assert!(actor.pending_forms.contains_key("form-1"));
         assert!(events.lock().unwrap().is_empty());
     }
@@ -4817,7 +5060,13 @@ mod form_tests {
                     .unwrap()
                     .clone(),
             };
-            assert!(actor.submit_form_result(None, result).await.is_err());
+            assert_eq!(
+                actor.submit_form_result(None, None, result).await.unwrap(),
+                FormSubmissionStatus::Unavailable {
+                    error: "cap_denied",
+                    reason: "capability_revoked",
+                }
+            );
             assert!(events.lock().unwrap().is_empty());
         }
     }

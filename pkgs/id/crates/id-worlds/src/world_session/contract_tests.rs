@@ -237,6 +237,17 @@ async fn the_journaled_vs_ephemeral_boundary_is_what_the_contract_says() {
         peer.drain().await;
         let after = sequence(&world, &guest).await;
         match spec.class {
+            // form_result is an event only when a pending form accepts the
+            // submission; the generic sample names no pending form, so it is
+            // refused with a form_result_status frame and commits nothing.
+            // Accepted submissions commit exactly one event — covered by
+            // joined_form_result_frame_uses_session_auth_and_reaches_program.
+            FrameClass::Event if kind == "form_result" => {
+                assert_eq!(
+                    after, before,
+                    "{kind} sample without a pending form must not commit"
+                )
+            }
             FrameClass::Event => assert_eq!(after, before + 1, "{kind} must commit one event"),
             FrameClass::Ephemeral | FrameClass::Query | FrameClass::Control => {
                 assert_eq!(after, before, "{kind} must not touch the journal");

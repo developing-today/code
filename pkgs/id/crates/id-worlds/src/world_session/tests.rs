@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn joined_form_result_frame_uses_session_auth_and_reaches_program() {
+    async fn test_joined_form_result_frame_uses_session_auth_and_reaches_program() {
         let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
         core.ledger.set_granted(BTreeSet::from([
             "form.present".to_owned(),
@@ -271,7 +271,10 @@ mod tests {
         }))
         .await;
         let stale = peer.next().await.unwrap();
-        assert_eq!(stale["type"], "error");
+        assert_eq!(stale["type"], "form_result_status");
+        assert_eq!(stale["ok"], false);
+        assert_eq!(stale["error"], "bad_args");
+        assert_eq!(stale["reason"], "stale_presentation");
         assert!(results.lock().unwrap().is_empty());
 
         peer.say(serde_json::json!({

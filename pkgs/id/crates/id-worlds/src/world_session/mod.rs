@@ -2093,7 +2093,7 @@ async fn handle_client_frame<I: SessionIo>(
                 values,
             };
             match world
-                .submit_form_result_for_session(token.clone(), result)
+                .submit_form_result_for_session(token.clone(), session_id, result)
                 .await
             {
                 Ok(crate::world::FormSubmissionStatus::Accepted) => {
@@ -2120,6 +2120,20 @@ async fn handle_client_frame<I: SessionIo>(
                             presentation_token: Some(&presentation_token),
                             error: Some("bad_args"),
                             reason: Some("field_invalid"),
+                        },
+                    )
+                    .await;
+                }
+                Ok(crate::world::FormSubmissionStatus::Unavailable { error, reason }) => {
+                    return send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::FormResultStatus {
+                            form_id: &form_id,
+                            ok: false,
+                            presentation_token: None,
+                            error: Some(error),
+                            reason: Some(reason),
                         },
                     )
                     .await;

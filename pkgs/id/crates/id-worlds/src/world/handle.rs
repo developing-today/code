@@ -472,7 +472,8 @@ impl WorldHandle {
         &self,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
-        self.submit_form_result_with_session(None, result).await
+        self.submit_form_result_with_session(None, None, result)
+            .await
     }
 
     /// Submit a form result from a joined session. The actor revalidates the
@@ -480,21 +481,24 @@ impl WorldHandle {
     pub async fn submit_form_result_for_session(
         &self,
         token: JoinCapability,
+        session_id: crate::world::SessionId,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
-        self.submit_form_result_with_session(Some(token), result)
+        self.submit_form_result_with_session(Some(token), Some(session_id), result)
             .await
     }
 
     async fn submit_form_result_with_session(
         &self,
         token: Option<JoinCapability>,
+        session_id: Option<crate::world::SessionId>,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::SubmitFormResult {
                 token,
+                session_id,
                 result,
                 reply,
             })

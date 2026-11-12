@@ -410,6 +410,14 @@ pub enum FormSubmissionStatus {
         /// Token the presenter must echo in its next submission.
         presentation_token: String,
     },
+    /// The pending form or its authority is no longer valid; the presenter
+    /// should exit form mode rather than retrying the same response.
+    Unavailable {
+        /// Stable wire error code.
+        error: &'static str,
+        /// Stable reason explaining why the form cannot accept input.
+        reason: &'static str,
+    },
 }
 
 /// Participant-originated event data.

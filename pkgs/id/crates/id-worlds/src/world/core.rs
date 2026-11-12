@@ -1070,25 +1070,43 @@ impl WorldCore {
                         matches!(&event.kind, WorldEventKind::System { .. }),
                         "journal system entry has a non-system payload"
                     );
-                    if let WorldEventKind::System { event: text } = &event.kind
-                        && let Some((participant, joined)) = presence_change(text)
-                    {
-                        ensure!(
-                            core.capabilities.contains_key(&participant),
-                            "journal presence event names an unknown participant"
-                        );
-                        // Replica restore also needs per-participant
-                        // session counts (F12.13): `open_presence` records
-                        // only that a participant is present, not how many
-                        // sessions hold them there.
-                        let count = present.entry(participant).or_insert(0);
-                        if joined {
-                            *count += 1;
-                        } else {
-                            *count = count.saturating_sub(1);
+                    if let WorldEventKind::System { event: text } = &event.kind {
+                        // Deferred form answers are system events so their
+                        // values stay out of the public participant event
+                        // stream. The authenticated submitter id in the
+                        // event payload lets replay spend the same bounded
+                        // capability use that the live actor spent.
+                        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(text)
+                            && payload["cap"] == "form.result"
+                            && let Some(submitter) = payload
+                                .get("participant_id")
+                                .and_then(serde_json::Value::as_u64)
+                            && submitter != 0
+                        {
+                            let mut attributed = event.clone();
+                            attributed.participant_id = submitter;
+                            core.validate_restored_event_author(&attributed, false)?;
+                            core.ensure_uses_left(submitter)?;
+                            core.spend(submitter);
                         }
-                        if *count == 0 {
-                            present.remove(&participant);
+                        if let Some((participant, joined)) = presence_change(text) {
+                            ensure!(
+                                core.capabilities.contains_key(&participant),
+                                "journal presence event names an unknown participant"
+                            );
+                            // Replica restore also needs per-participant
+                            // session counts (F12.13): `open_presence` records
+                            // only that a participant is present, not how many
+                            // sessions hold them there.
+                            let count = present.entry(participant).or_insert(0);
+                            if joined {
+                                *count += 1;
+                            } else {
+                                *count = count.saturating_sub(1);
+                            }
+                            if *count == 0 {
+                                present.remove(&participant);
+                            }
                         }
                     }
                     replay.push(event.clone());

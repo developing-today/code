@@ -42,6 +42,50 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn test_form_result_system_journal_replay_spends_submitter_budget() {
+        let mut core = world(8);
+        core.active_module_hash = Some("module".to_owned());
+        let (participant, _) = core
+            .issue_capability(
+                "Ada",
+                WorldScopes::GUEST,
+                CapabilityBounds {
+                    uses: Some(1),
+                    ..CapabilityBounds::default()
+                },
+            )
+            .unwrap();
+        let mut entries = core.checkpoint_entries("{}".to_owned()).unwrap();
+        entries.push(JournalEntry::System {
+            event: WorldEvent {
+                sequence: 0,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: serde_json::json!({
+                        "cap": "form.result",
+                        "form_id": "form-1",
+                        "participant_id": participant.id,
+                        "action": "submit",
+                        "values": {"name": "Ada"},
+                    })
+                    .to_string(),
+                },
+            },
+        });
+
+        let restored = WorldCore::restore(
+            "test-world",
+            WorldLimits {
+                retained_events: 8,
+                ..WorldLimits::default()
+            },
+            entries,
+        )
+        .unwrap();
+        assert_eq!(restored.core.uses_left(participant.id), Some(0));
+    }
+
     #[derive(Clone, Default)]
     struct TransferJournal(Arc<std::sync::Mutex<Vec<JournalEntry>>>);
 
@@ -4604,9 +4648,7 @@ mod tests {
         }
 
         fn records(&mut self) -> Result<Option<String>> {
-            Ok(Some(
-                serde_json::json!({"events": self.events}).to_string(),
-            ))
+            Ok(Some(serde_json::json!({"events": self.events}).to_string()))
         }
     }
 
