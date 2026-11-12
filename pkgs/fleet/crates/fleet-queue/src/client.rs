@@ -5693,6 +5693,16 @@ mod tests {
     // shape; the stub's exit/stderr shapes drive the three-way
     // lookup (found / checked-absent / could-not-check).
 
+    // The stub-gh tests below spawn real child processes in
+    // parallel by default; on loaded machines one spawn in the
+    // batch intermittently fails (CouldNotCheck("spawn_failed"))
+    // even though the stub is intact and executable — observed
+    // 2026-11-12 on the fleet laptop (threads=1: 6/6 pass;
+    // threads=7: ~50% of runs lose exactly one spawn; strace,
+    // which serializes, passes 12/12). Serialize just these
+    // process-spawning tests; every assertion is unchanged.
+    static GH_STUB_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn stub_gh_8361(tag: &str, script: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "fleet-queue-ghcreator-{}-{}",
@@ -5724,6 +5734,7 @@ mod tests {
 
     #[test]
     fn marker_search_is_a_get_and_finds_the_landed_marker() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
         let (bin, log) = stub_gh_8361(
             "found",
             r#"case "$*" in
@@ -5756,6 +5767,7 @@ esac
 
     #[test]
     fn marker_search_404_is_could_not_check_not_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
         let (bin, _log) = stub_gh_8361("e404", "echo 'gh: Not Found (HTTP 404)' >&2\nexit 1\n");
         let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
         assert_eq!(
@@ -5767,6 +5779,7 @@ esac
 
     #[test]
     fn marker_search_403_is_could_not_check_not_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
         let (bin, _log) = stub_gh_8361("e403", "echo 'gh: Forbidden (HTTP 403)' >&2\nexit 1\n");
         let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
         assert_eq!(
@@ -5778,6 +5791,7 @@ esac
 
     #[test]
     fn marker_search_empty_result_is_checked_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
         let (bin, _log) =
             stub_gh_8361("absent", "printf '%s' '{\"total_count\":0,\"items\":[]}'\n");
         let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
@@ -5790,6 +5804,7 @@ esac
 
     #[test]
     fn marker_search_unparseable_is_could_not_check() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
         let (bin, _log) = stub_gh_8361("garbage", "printf '%s' 'not json'\n");
         let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
         assert_eq!(
@@ -5801,6 +5816,7 @@ esac
 
     #[test]
     fn marker_search_failed_candidate_readback_is_could_not_check() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
         let (bin, _log) = stub_gh_8361(
             "readback404",
             r#"case "$*" in

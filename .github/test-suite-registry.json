@@ -71,7 +71,7 @@
     5935, 5942, 5946, 5952, 5992, 5993, 6065, 6082, 6084, 6085, 6091, 6092, 6093, 6099, 5582, 5937, 5945, 5951, 6034,
     6081, 6090, 6094, 6095, 6178, 6179
   ],
-  "uncovered_count": 46,
+  "uncovered_count": 45,
   "uncovered_count_definition": "Number of suite rows whose status is uncovered or uncovered-in-fact; mapped rows do not assert the five-rule contract is fully proven.",
   "suites": [
     {
@@ -1023,12 +1023,16 @@
     },
     {
       "id": "fleet.rust",
-      "paths": ["pkgs/fleet/crates/**/src/**"],
-      "invocation": "cd pkgs/fleet && cargo test --workspace",
-      "venue": null,
-      "status": "uncovered",
-      "phase2_issue": 6185,
-      "reason": "Inline tests exist; no active workflow invocation was confirmed. Package Nix definition has cargoTestFlags."
+      "paths": ["pkgs/fleet/crates/**/src/**", "pkgs/fleet/crates/*/tests/*.rs"],
+      "invocation": "cargo +1.99.0 test --manifest-path pkgs/fleet/Cargo.toml --workspace --all-targets --locked",
+      "venue": {
+        "workflow": ".github/workflows/fleet-rust-tests.yml",
+        "job_step": "fleet-rust-tests / Test the fleet Rust workspace",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [8941]
     },
     {
       "id": "web-gen-api.e2e",
