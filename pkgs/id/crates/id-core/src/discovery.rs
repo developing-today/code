@@ -474,7 +474,11 @@ impl PeerDiscovery {
     ///
     /// Two checks guard the table against stale gossip, so every caller
     /// gets them (the `serve.rs` receive loop needs no trust logic of
-    /// its own):
+    /// its own). This is the peer-announcement half of the single-door
+    /// gossip admission contract; presence ingress and its audit are
+    /// documented in `pkgs/id/src/chat_presence.rs` and issue #4503:
+    /// every gossip claim is decoded, authenticated/scoped as applicable,
+    /// and then stored only through its table's guards.
     ///
     /// - **Freshness bound.** An announcement stamped older than
     ///   [`STALE_THRESHOLD`] relative to the local wall clock is
