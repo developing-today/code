@@ -3900,8 +3900,36 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
     // the Push step pins its force-with-lease to this tip and refuses
     // to rewrite a branch whose remote moved past it (Codex P1,
     // PR #8849, comment 4547537332).
+    // Persisted across attempts (Codex P2, PR #8849, comment
+    // 4548246124): a pass that rebases a published branch and then
+    // stops transiently at Push must not lose the verified tip --
+    // on the next invocation the intent can look like the walk's
+    // bottom and never rebase again, so the tip is stored in the
+    // checkout's git dir, keyed by stack, and cleared as intents
+    // land. A stale entry is only ever used as a force-with-lease
+    // pin after a live ls-remote confirms the remote is still
+    // exactly at that tip.
+    let tips_path = replay_run(&dir, "git", &replay_args(&["rev-parse", "--git-path", "fleet-replay-pre-rebase-tips.json"])).ok().map(|rel| {
+        let path = std::path::Path::new(&rel);
+        if path.is_absolute() { path.to_path_buf() } else { std::path::Path::new(&dir).join(path) }
+    });
     let mut pre_rebase_tips: std::collections::HashMap<i64, String> =
         std::collections::HashMap::new();
+    if let Some(path) = &tips_path {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(saved) = serde_json::from_str::<serde_json::Map<String, Value>>(&text) {
+                if let Some(entry) = saved.get(&stack_id) {
+                    if let Some(obj) = entry.as_object() {
+                        for (pos, sha) in obj {
+                            if let (Ok(pos), Some(sha)) = (pos.parse::<i64>(), sha.as_str()) {
+                                pre_rebase_tips.insert(pos, sha.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if let Err(e) = replay_run(&dir, "git", &replay_args(&["fetch", "origin", "main"])) {
         print_json(&json!({
             "stack_id": stack_id,
@@ -4005,6 +4033,22 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                 }
                 if let Ok(tip) = replay_run(&dir, "git", &replay_args(&["rev-parse", &branch])) {
                     pre_rebase_tips.insert(step.position, tip);
+                    if let Some(path) = &tips_path {
+                        let mut saved: serde_json::Map<String, Value> =
+                            std::fs::read_to_string(path)
+                                .ok()
+                                .and_then(|t| serde_json::from_str(&t).ok())
+                                .unwrap_or_default();
+                        let entry = saved
+                            .entry(stack_id.clone())
+                            .or_insert_with(|| json!({}));
+                        if let Some(obj) = entry.as_object_mut() {
+                            for (pos, sha) in &pre_rebase_tips {
+                                obj.insert(pos.to_string(), json!(sha));
+                            }
+                        }
+                        let _ = std::fs::write(path, serde_json::to_string(&saved).unwrap_or_default());
+                    }
                 }
                 if let Err(e) = replay_run(
                     &dir,
@@ -4313,6 +4357,17 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                     return transient_exit(step, e, &landed);
                 }
                 landed.push(step.position);
+                pre_rebase_tips.remove(&step.position);
+                if let Some(path) = &tips_path {
+                    if let Ok(text) = std::fs::read_to_string(path) {
+                        if let Ok(mut saved) = serde_json::from_str::<serde_json::Map<String, Value>>(&text) {
+                            if let Some(obj) = saved.get_mut(&stack_id).and_then(|e| e.as_object_mut()) {
+                                obj.remove(&step.position.to_string());
+                            }
+                            let _ = std::fs::write(path, serde_json::to_string(&saved).unwrap_or_default());
+                        }
+                    }
+                }
                 // The outcome note replays in the same pass: the
                 // intent's issue hears that its branch landed, in
                 // the recorded order, as soon as it lands.
@@ -4536,6 +4591,7 @@ mod tests {
         assert!(stack_transition_body("s1", 0, "replaying", None, None).is_ok());
     }
 
+    #[test]
     fn stack_restack_body_carries_the_refresh_shape_8582() {
         // Oracle: the restack acknowledgement carries exactly the
         // fields the broker's plan_restack consumes (#8582) — stack,

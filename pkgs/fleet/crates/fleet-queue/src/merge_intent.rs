@@ -363,6 +363,12 @@ pub fn plan_restack(
                 req.new_base_branch, req.stack_id
             ));
         };
+        if base.position > intent.position {
+            return Err(format!(
+                "merge-intent restack: new base {:?} is recorded ABOVE the intent at                  stack {} position {} (base at position {}); restacking onto a                  descendant would cycle the stack -- restack onto main or a                  branch recorded below it",
+                req.new_base_branch, req.stack_id, req.position, base.position
+            ));
+        }
         let tainted = abandoned_tainted_branches(intents, &req.stack_id);
         if base.state == IntentState::Abandoned || tainted.contains(base.branch.as_str()) {
             return Err(format!(
@@ -1094,6 +1100,32 @@ mod tests {
                 .collect();
             prop_assert_eq!(plan, expected);
         }
+    }
+
+    #[test]
+    fn restack_onto_a_branch_recorded_above_is_refused() {
+        // Oracle: a restack base recorded ABOVE the intent is its
+        // descendant; basing an intent on its own descendant cycles
+        // the recorded stack (CodeRabbit, PR #8849, comment
+        // 4548301698). plan_restack refuses it; main and bases
+        // recorded below remain legal.
+        let stack = vec![
+            stacked("s1", 0, "queue/a", "main", IntentState::Intended),
+            stacked("s1", 1, "queue/b", "queue/a", IntentState::Intended),
+            stacked("s1", 2, "queue/c", "queue/b", IntentState::Intended),
+        ];
+        let onto_c = RestackRequest {
+            stack_id: "s1".to_string(),
+            position: 1,
+            new_base_branch: "queue/c".to_string(),
+            new_head_sha: None,
+        };
+        assert!(plan_restack(&stack, &onto_c).is_err());
+        let onto_a = RestackRequest {
+            new_base_branch: "queue/a".to_string(),
+            ..onto_c.clone()
+        };
+        assert!(plan_restack(&stack, &onto_a).is_ok());
     }
 
     #[test]
