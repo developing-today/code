@@ -68,9 +68,27 @@ use iroh_blobs::{Hash, api::Store};
 use serde::{Deserialize, Serialize};
 use tokio::{sync::Semaphore, task::JoinSet};
 
+use crate::fileops::{FileOpError, FileOps};
 use id_core::access::AccessPolicy;
 use id_core::discovery::{PeerAnnouncement, PeerDiscovery};
-use crate::fileops::{FileOpError, FileOps};
+
+/// Archive references are reserved for FileOps-generated metadata. Protocol
+/// peers may neither create nor change them through the general tag API.
+fn is_reserved_archive_reference_key(key: &[u8]) -> bool {
+    matches!(key, b"archive.rename" | b"archive.replace")
+}
+
+#[cfg(test)]
+mod reserved_archive_reference_tests {
+    use super::is_reserved_archive_reference_key;
+
+    #[test]
+    fn archive_reference_keys_are_reserved_for_fileops() {
+        assert!(is_reserved_archive_reference_key(b"archive.rename"));
+        assert!(is_reserved_archive_reference_key(b"archive.replace"));
+        assert!(!is_reserved_archive_reference_key(b"user.label"));
+    }
+}
 use id_store::tags::TagStore;
 
 /// Decode exactly one meta-protocol value, rejecting any trailing bytes.
@@ -789,6 +807,14 @@ impl MetaProtocol {
             MetaRequest::Find { query, prefer_name } => MetaResponse::Find {
                 matches: self.find(&query, prefer_name).await,
             },
+            MetaRequest::SetTag { key, .. } if is_reserved_archive_reference_key(&key) => {
+                // These keys are FileOps-owned references, not user metadata.
+                // Allowing protocol peers to write them lets a later delete
+                // remove an archive (and metadata) belonging to another file.
+                MetaResponse::Error {
+                    message: "archive reference tags are reserved".to_owned(),
+                }
+            }
             MetaRequest::SetTag {
                 subject,
                 key,
@@ -1079,7 +1105,6 @@ mod tests {
     };
     use iroh_base::{SecretKey, TransportAddr};
     use std::net::{Ipv4Addr, SocketAddr};
-
 
     #[test]
     fn test_find_match_struct() {
