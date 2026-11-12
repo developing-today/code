@@ -29,7 +29,7 @@ the common sources, and one *general form* covers everything else; all four are
 productions of one grammar and one parser.
 
 ```
-repo@<revision>:<path>[#<hash>]                      ; git / VCS source
+repo@<revision>:<path>@<captured-at>[#<hash>]        ; git / VCS source
 system@<host>@<captured-at>[:<locator>][#<hash>]     ; session store, DB, device
 chat@<session>@<captured-at>[:<locator>][#<hash>]    ; chat transcript
 <system>@<host>@<captured-at>:<locator>#<hash>       ; general fallback (all parts)
@@ -41,7 +41,7 @@ part present** — it is not a separate grammar.
 
 ```
 Examples
-repo@71dc2fdc01a1b2c3d4e5f60718293a4b5c6d7e89:pkgs/id/src/store.rs#sha256:9f2c…ab
+repo@71dc2fdc01a1b2c3d4e5f60718293a4b5c6d7e89:pkgs/id/src/store.rs@2026-11-08T09:41:00Z#sha256:9f2c…ab
 system@atlas-laptop@2026-11-04T12:00:00Z:~/atlas/canonical/atlas.db#sha256:1a2b…cd
 chat@ses_2b2eab662ffeRZGv4MoA62kl6A@2026-04-02T18:31:00Z:line:1204#sha256:44ef…01
 ```
@@ -51,7 +51,7 @@ chat@ses_2b2eab662ffeRZGv4MoA62kl6A@2026-04-02T18:31:00Z:line:1204#sha256:44ef�
 ```
 mark            = repo-mark | host-mark ;
 
-repo-mark       = "repo@" revision ":" path hash? ;
+repo-mark       = "repo@" revision ":" path "@" captured-at hash? ;
 host-mark       = system "@" host "@" captured-at ( ":" locator )? hash? ;
 
 revision        = 40 hex | 64 hex ;           (* full git/object id; no abbreviations *)
@@ -93,8 +93,10 @@ parse  : &str -> Result<OccurrenceRef, MarkError>   // canonical only
 3. **Enumerated errors.** `MarkError` has one variant per validation rule (§5),
    so an audit can report *why* a mark failed, not just that it did.
 4. **No ambiguity.** The grammar admits exactly one parse per string (no
-   optional-field ambiguity: a locator is present iff a `:` follows the third
-   field; the hash is present iff a `#` follows). A string that could parse two
+   optional-field ambiguity: in a host-mark a locator is present iff a `:`
+   follows the third field; in a repo-mark the path contains no `@` (V2), so
+   the `@` introducing `captured-at` terminates it unambiguously; the hash is
+   present iff a `#` follows). A string that could parse two
    ways is a grammar defect, not an input to disambiguate.
 
 `OccurrenceRef` is the registry-shaped record (§6), not a bespoke type: the
@@ -108,7 +110,7 @@ directly storable.
 | V1 | The string parses as `repo-mark` or `host-mark` of §3, canonical. | `Unparseable` |
 | V2 | `repo` only: `revision` is a full 40- or 64-hex object id; `path` is a relative POSIX path (no leading `/`, no `.`/`..` segment, no `#`, no `@`, NFC). | `BadRevision`, `BadPath` |
 | V3 | `host-mark` only: `system`, `host`, and any `opaque` locator contain no `@`, `:`, `#`, whitespace, or `Cc`/`Cf` character (#3455); `system` is not the reserved head `repo`. | `BadSystem`, `BadHost`, `BadLocator` |
-| V4 | `captured-at` is RFC 3339 UTC (`…Z`) or `YYYY-MM-DD` (input); the formatter always emits the UTC `T`…`Z` form (a date normalises to `T00:00:00Z`). The value is not in the future. | `BadTimestamp`, `FutureTimestamp` |
+| V4 | `captured-at` (carried by both marks) is RFC 3339 UTC (`…Z`) or `YYYY-MM-DD` (input); the formatter always emits the UTC `T`…`Z` form (a date normalises to `T00:00:00Z`). The value is not in the future. | `BadTimestamp`, `FutureTimestamp` |
 | V5 | `hash`, where present, is `sha256:` followed by 64 lowercase hex characters. `sha256` is the v1 closed set; adding an algorithm is a spec change, not a local choice. | `BadHash` |
 | V6 | A `span:` locator has `start <= end`, both positive; a `line:` locator is positive. | `BadSpan` |
 | V7 | The content hash **verifies against the stored content** the mark describes (registry digest comparison, constant-time). | `HashMismatch` |
@@ -124,6 +126,7 @@ The audit's result per string is therefore a decision from a closed set:
 | --- | --- | --- |
 | head `repo` / `system` / `chat` / other | `system` | `repo` folds to `system = "git"`, with `host = null` |
 | `revision` (repo) | `locator` = `commit:path`, plus `commit` | keeps `repo@commit:path` resolvable if the repo is later lost |
+| `captured-at` (repo) | `captured_at` | the `@` after the path carries it, exactly as in host marks; a repo occurrence captured twice at different times yields two distinct marks |
 | `host`, `at`, `locator`, `hash` | `host`, `captured_at`, `locator`, `content_hash` | the general tuple, always |
 | — | `observed_at` | registry write time, distinct from `captured-at` |
 
