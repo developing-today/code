@@ -16,6 +16,7 @@ mod tests {
     use crate::world_compile::Compiler;
     use crate::world_hub::WorldHub;
     use crate::world_session::*;
+    use std::collections::BTreeSet;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -162,6 +163,130 @@ mod tests {
             WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap()),
             admin.map(str::to_owned),
         )
+    }
+
+    struct FormSessionProgram {
+        token: Arc<std::sync::Mutex<Option<String>>>,
+        results: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl crate::world::WorldProgram for FormSessionProgram {
+        fn wants(&mut self) -> anyhow::Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({
+                    "requests": [{
+                        "id": "present-1",
+                        "cap": "form.present",
+                        "args": {
+                            "form_id": "session-form",
+                            "form": {
+                                "version": 1,
+                                "form_id": "session-form",
+                                "title": "Profile",
+                                "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
+                                "actions": [{"id":"submit","label":"Save"}]
+                            }
+                        }
+                    }]
+                })
+                .to_string(),
+            ))
+        }
+
+        fn update(&mut self, event: &WorldEvent) -> anyhow::Result<()> {
+            let crate::world::WorldEventKind::System { event } = &event.kind else {
+                return Ok(());
+            };
+            let value: serde_json::Value = serde_json::from_str(event)?;
+            if value["cap"] == "result"
+                && value["id"] == "present-1"
+                && value["ok"] == true
+                && let Some(token) = value["value"]["presentation_token"].as_str()
+            {
+                *self.token.lock().unwrap() = Some(token.to_owned());
+            } else if value["cap"] == "form.result" {
+                self.results.lock().unwrap().push(value);
+            }
+            Ok(())
+        }
+
+        fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+            let Some(token) = self.token.lock().unwrap().clone() else {
+                return Ok(None);
+            };
+            Ok(Some(
+                serde_json::json!({
+                    "kind": "form",
+                    "version": 1,
+                    "form_id": "session-form",
+                    "presentation_token": token,
+                    "title": "Profile",
+                    "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
+                    "actions": [{"id":"submit","label":"Save"}]
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn joined_form_result_frame_uses_session_auth_and_reaches_program() {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger.set_granted(BTreeSet::from([
+            "form.present".to_owned(),
+            "form.result".to_owned(),
+        ]));
+        let form_token = Arc::new(std::sync::Mutex::new(None));
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let world = WorldHandle::spawn_with_device_manifest(
+            core,
+            Box::new(FormSessionProgram {
+                token: Arc::clone(&form_token),
+                results: Arc::clone(&results),
+            }),
+            Some(WorldHandle::host_device_manifest()),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(WorldService::new(world, None), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        let view = peer.next().await.unwrap();
+        assert_eq!(view["type"], "view");
+        assert_eq!(view["surface"]["kind"], "form");
+        let presentation_token = view["surface"]["presentation_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        peer.say(serde_json::json!({
+            "type": "form_result",
+            "form_id": "session-form",
+            "presentation_token": "00000000000000000000000000000000",
+            "action": "submit",
+            "values": {"name": "Ada"},
+        }))
+        .await;
+        let stale = peer.next().await.unwrap();
+        assert_eq!(stale["type"], "error");
+        assert!(results.lock().unwrap().is_empty());
+
+        peer.say(serde_json::json!({
+            "type": "form_result",
+            "form_id": "session-form",
+            "presentation_token": presentation_token,
+            "action": "submit",
+            "values": {"name": "Ada"},
+        }))
+        .await;
+        let ack = peer.next().await.unwrap();
+        assert_eq!(ack["type"], "form_result_status");
+        assert_eq!(ack["ok"], true);
+        assert_eq!(results.lock().unwrap()[0]["values"]["name"], "Ada");
+        peer.close().await;
     }
 
     #[tokio::test(start_paused = true)]
@@ -2565,9 +2690,7 @@ mod tests {
     /// A journal the test can inspect, so session tests can assert the
     /// audit records a frame wrote — and, for denials, did not write.
     #[derive(Clone, Default)]
-    struct CapturingJournal(
-        std::sync::Arc<std::sync::Mutex<Vec<crate::world::JournalEntry>>>,
-    );
+    struct CapturingJournal(std::sync::Arc<std::sync::Mutex<Vec<crate::world::JournalEntry>>>);
 
     impl CapturingJournal {
         fn entries(&self) -> Vec<crate::world::JournalEntry> {
@@ -2602,8 +2725,8 @@ mod tests {
             Some(Box::new(journal.clone())),
         );
         let blobs: Store = MemStore::new().into();
-        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
-            .with_blob_store(blobs);
+        let service =
+            WorldService::new(world.clone(), Some("admin".to_owned())).with_blob_store(blobs);
         (world, service, journal)
     }
 
@@ -2695,7 +2818,10 @@ mod tests {
         );
 
         // The installed program is live for ordinary participants.
-        let (_, guest) = world.issue("ada".to_owned(), WorldScopes::GUEST).await.unwrap();
+        let (_, guest) = world
+            .issue("ada".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
         assert!(
             world
                 .view(guest)
@@ -2805,10 +2931,10 @@ mod tests {
         assert_eq!(next_of_type(&mut peer, "metrics").await["type"], "metrics");
 
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a denied install must not journal a BuilderInstalled entry"
         );
     }
@@ -2845,10 +2971,10 @@ mod tests {
             "mixed credentials is not a role denial: {refused}"
         );
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a mixed-credentials frame must not install anything"
         );
     }
@@ -2884,10 +3010,10 @@ mod tests {
         let denied = next_of_type(&mut peer, "error").await;
         assert_eq!(denied["code"], "actor_denied", "{denied}");
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a revoked builder's upload must not activate or journal"
         );
     }
@@ -2924,10 +3050,10 @@ mod tests {
             "Wasm module failed validation or initialization"
         );
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a native upload must not install or journal"
         );
     }
@@ -3001,10 +3127,7 @@ mod tests {
             journal
                 .entries()
                 .iter()
-                .filter(|entry| matches!(
-                    entry,
-                    crate::world::JournalEntry::Revoked { .. }
-                ))
+                .filter(|entry| matches!(entry, crate::world::JournalEntry::Revoked { .. }))
                 .count(),
             1,
             "a no-op revoke must not journal"
@@ -3041,12 +3164,15 @@ mod tests {
                 "capability": moderator_token.expose(),
             }))
             .await;
-        assert_eq!(next_of_type(&mut mod_peer, "metrics").await["type"], "metrics");
+        assert_eq!(
+            next_of_type(&mut mod_peer, "metrics").await["type"],
+            "metrics"
+        );
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::Revoked { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::Revoked { .. })),
             "a denied revoke must not journal"
         );
     }

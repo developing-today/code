@@ -264,6 +264,8 @@ pub(crate) enum WorldCommand {
     },
     /// A trusted host submits a deferred answer from its local form presenter.
     SubmitFormResult {
+        /// When present, the joined session that submitted the answer.
+        token: Option<JoinCapability>,
         result: id_core::world_presentation::FormResult,
         reply: oneshot::Sender<Result<FormSubmissionStatus>>,
     },
@@ -559,7 +561,10 @@ impl WorldActor {
         );
     }
 
-    pub(crate) async fn run(mut self, mut receiver: mpsc::Receiver<WorldCommand>) {
+    pub(crate) async fn run(mut self, mut receiver: mpsc::Receiver<WorldCommand>, restored: bool) {
+        if restored {
+            self.invalidate_restored_form_presentations().await;
+        }
         self.after_change().await;
         loop {
             // Ticks and schedules sleep until their earliest deadline; with
@@ -1179,6 +1184,24 @@ impl WorldActor {
         journaled
     }
 
+    /// Pending forms intentionally are not durable. On reopen, tell a program
+    /// that had form authority to clear stale views and re-present them with
+    /// fresh tokens; otherwise it could leave an unanswerable form on screen.
+    async fn invalidate_restored_form_presentations(&mut self) {
+        if !self.core.ledger.is_granted("form.present")
+            || !self.core.ledger.is_granted("form.result")
+        {
+            return;
+        }
+        let event = serde_json::json!({
+            "cap": "form.result",
+            "event": "invalidated",
+            "reason": "restarted",
+        })
+        .to_string();
+        let _ = self.deliver(event).await;
+    }
+
     /// Recompute the program's `wants` and serve the delta: new subscriptions
     /// (armed or refused), new requests (executed, result delivered). Passes
     /// repeat while the program reacts to delivered results, so a chain of
@@ -1472,6 +1495,9 @@ impl WorldActor {
     /// Execute one capability request. Anything the world has not granted is
     /// an error the program sees.
     fn execute(&mut self, request: &Request) -> Result<serde_json::Value, CapError> {
+        if request.cap == "form.result" {
+            return Err(CapError::bad_args_with("event_only"));
+        }
         let actor_permits = match self.acting {
             None => true,
             Some(participant) => self
@@ -1483,7 +1509,7 @@ impl WorldActor {
         let actor = self
             .acting
             .map_or_else(|| "program".to_owned(), |id| format!("participant:{id}"));
-        self.audit_provider_decision(&request.cap, &decision, actor);
+        self.audit_provider_decision(&request.cap, &decision, actor.clone());
         match decision {
             Decision::Allow => {}
             Decision::AllowAndGrant => {
@@ -1524,6 +1550,73 @@ impl WorldActor {
         }
     }
 
+    /// Opening a form opens the deferred result channel. Apply normal grant,
+    /// ceiling and actor-scope policy here, after the presentation is valid;
+    /// the submission boundary rechecks the grant in case it is later revoked.
+    fn authorize_form_result(&mut self) -> Result<(), CapError> {
+        let actor_permits = match self.acting {
+            None => true,
+            Some(participant) => self
+                .core
+                .effective_scopes(participant)
+                .is_some_and(|scopes| scopes.allows_effect("form.result")),
+        };
+        let decision = self.core.ledger.decide_for("form.result", actor_permits);
+        let actor = self
+            .acting
+            .map_or_else(|| "program".to_owned(), |id| format!("participant:{id}"));
+        self.audit_provider_decision("form.result", &decision, actor);
+        match decision {
+            Decision::Allow => Ok(()),
+            Decision::AllowAndGrant => {
+                let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
+                self.persist(JournalEntry::CapsGranted { granted })
+                    .map_err(|_| CapError::failed_with("capability_grant_persist_failed"))
+            }
+            Decision::Deny(error) => Err(error),
+        }
+    }
+
+    fn fresh_form_presentation_token(&self) -> String {
+        loop {
+            let candidate = format!("{:032x}", rand::rng().random::<u128>());
+            if !self
+                .pending_forms
+                .values()
+                .any(|pending| pending.presentation_token == candidate)
+            {
+                return candidate;
+            }
+        }
+    }
+
+    fn validate_form_presentation_size(
+        &self,
+        form: &id_core::world_presentation::FormSurface,
+        presentation_token: &str,
+    ) -> Result<(), CapError> {
+        use id_core::world_presentation::MAX_FORM_BYTES;
+
+        let mut presented = form.clone();
+        presented.presentation_token = Some(presentation_token.to_owned());
+        presented
+            .validate()
+            .map_err(|_| CapError::bad_args_with("field_invalid"))?;
+        let mut envelope = serde_json::to_value(presented)
+            .map_err(|_| CapError::bad_args_with("field_invalid"))?;
+        envelope["kind"] = serde_json::json!("form");
+        let view_bytes = serde_json::to_vec(&envelope)
+            .map_err(|_| CapError::bad_args_with("field_invalid"))?
+            .len();
+        if view_bytes > MAX_FORM_BYTES {
+            return Err(CapError::bad_args_with("form_view_too_large"));
+        }
+        if view_bytes > self.core.limits.presentation_bytes {
+            return Err(CapError::bad_args_with("presentation_too_large"));
+        }
+        Ok(())
+    }
+
     /// `device.info` (#2338): the hosting device's capability
     /// manifest, in the v1 shape the taxonomy specifies. The manifest
     /// comes from the adapter boundary's cached copy — this provider
@@ -1546,7 +1639,7 @@ impl WorldActor {
         &mut self,
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, CapError> {
-        use id_core::world_presentation::{FormField, FormSurface, MAX_FORM_BYTES};
+        use id_core::world_presentation::FormSurface;
 
         let Some(args) = args.as_object() else {
             return Err(CapError::bad_args());
@@ -1573,69 +1666,51 @@ impl WorldActor {
             .map_err(|_| CapError::bad_args_with("field_invalid"))?;
         form.validate()
             .map_err(|_| CapError::bad_args_with("field_invalid"))?;
-        if form.form_id != form_id
-            || serde_json::to_vec(&form).map_or(true, |encoded| encoded.len() > MAX_FORM_BYTES)
-        {
+        if form.form_id != form_id {
             return Err(CapError::bad_args_with("field_invalid"));
         }
-        let Some(manifest) = &self.device_manifest else {
-            return Err(CapError::bad_args_with("device_manifest_unavailable"));
-        };
-        let input = &manifest.input;
-        let can_enter_text = input
-            .get("text_entry")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|mode| mode != "none");
-        let has_discrete_control = input
-            .get("keys")
-            .and_then(serde_json::Value::as_u64)
-            .is_some_and(|count| count > 0)
-            || input
-                .get("encoder")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-            || input
-                .get("pointer")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-        for field in &form.fields {
-            let supported = match field {
-                FormField::Text { .. } | FormField::Date { .. } => can_enter_text,
-                FormField::Choice { .. } | FormField::Confirm { .. } => has_discrete_control,
-                FormField::Number { .. } => can_enter_text || has_discrete_control,
+        let args_size = serde_json::to_vec(args).map_or(usize::MAX, |encoded| encoded.len());
+        if args_size > crate::world_caps::MAX_ARGS_BYTES {
+            return Err(CapError::bad_args_with("args_too_large"));
+        }
+        if let Some(manifest) = &self.device_manifest
+            && manifest
+                .display
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                != Some("headless")
+            && let Err(error) = form.validate_device_input(&manifest.input)
+        {
+            let reason = if format!("{error:#}").contains("text entry unavailable") {
+                "text_entry_unavailable"
+            } else {
+                "input_unavailable"
             };
-            if !supported {
-                let reason = if matches!(field, FormField::Text { .. } | FormField::Date { .. }) {
-                    "text_entry_unavailable"
-                } else {
-                    "input_unavailable"
-                };
-                return Err(CapError::bad_args_with(reason));
-            }
+            return Err(CapError::bad_args_with(reason));
         }
         if let Some(existing) = self.pending_forms.get(form_id) {
             if existing.surface != form {
                 return Err(CapError::bad_args_with("field_invalid"));
             }
+            let presentation_token = self.fresh_form_presentation_token();
+            self.validate_form_presentation_size(&form, &presentation_token)?;
+            self.authorize_form_result()?;
+            let Some(existing) = self.pending_forms.get_mut(form_id) else {
+                return Err(CapError::failed_with("pending_form_disappeared"));
+            };
+            existing.presentation_token = presentation_token.clone();
             return Ok(serde_json::json!({
                 "form_id": form_id,
-                "presentation_token": existing.presentation_token,
+                "presentation_token": presentation_token,
                 "presented": true
             }));
         }
         if self.pending_forms.len() >= crate::world_caps::MAX_PENDING_FORMS {
             return Err(CapError::failed_with("too_many_pending_forms"));
         }
-        let presentation_token = loop {
-            let candidate = format!("{:032x}", rand::rng().random::<u128>());
-            if !self
-                .pending_forms
-                .values()
-                .any(|pending| pending.presentation_token == candidate)
-            {
-                break candidate;
-            }
-        };
+        let presentation_token = self.fresh_form_presentation_token();
+        self.validate_form_presentation_size(&form, &presentation_token)?;
+        self.authorize_form_result()?;
         self.pending_forms.insert(
             form_id.to_owned(),
             PendingForm {
@@ -1673,8 +1748,20 @@ impl WorldActor {
     /// this path never retries or loops on the server.
     async fn submit_form_result(
         &mut self,
+        token: Option<JoinCapability>,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
+        if let Some(token) = token {
+            let participant = self
+                .core
+                .authorize(&token, crate::world::WorldScopes::JOIN)?;
+            ensure!(
+                self.core
+                    .effective_scopes(participant)
+                    .is_some_and(|scopes| scopes.allows_effect("form.result")),
+                "session is not authorized to submit form results"
+            );
+        }
         ensure!(
             self.core.ledger.is_granted("form.result"),
             "form.result capability is not granted or is outside the current ceiling"
@@ -1688,21 +1775,29 @@ impl WorldActor {
             "stale form presentation token"
         );
         let valid = pending.surface.validate_result(&result).is_ok();
-        let event = if valid {
-            serde_json::json!({
-                "cap": "form.result",
-                "form_id": result.form_id,
-                "action": result.action,
-                "values": result.values,
-            })
+        let (event, retry_token) = if valid {
+            (
+                serde_json::json!({
+                    "cap": "form.result",
+                    "form_id": result.form_id,
+                    "action": result.action,
+                    "values": result.values,
+                }),
+                None,
+            )
         } else {
-            serde_json::json!({
-                "cap": "form.result",
-                "form_id": result.form_id,
-                "ok": false,
-                "error": "bad_args",
-                "reason": "field_invalid",
-            })
+            let token = self.fresh_form_presentation_token();
+            (
+                serde_json::json!({
+                    "cap": "form.result",
+                    "form_id": result.form_id,
+                    "ok": false,
+                    "error": "bad_args",
+                    "reason": "field_invalid",
+                    "presentation_token": token,
+                }),
+                Some(token),
+            )
         };
         let event = event.to_string();
         ensure!(
@@ -1717,10 +1812,14 @@ impl WorldActor {
             self.pending_forms.remove(&result.form_id);
             Ok(FormSubmissionStatus::Accepted)
         } else {
-            Ok(FormSubmissionStatus::Rejected)
+            let presentation_token = retry_token
+                .ok_or_else(|| anyhow::anyhow!("invalid result omitted its retry token"))?;
+            if let Some(pending) = self.pending_forms.get_mut(&result.form_id) {
+                pending.presentation_token = presentation_token.clone();
+            }
+            Ok(FormSubmissionStatus::Rejected { presentation_token })
         }
     }
-
     /// Record the host location source's latest fix (#2341 slice 2),
     /// stamped with the world clock so serving can report the fix's
     /// true age at delivery time.
@@ -2409,8 +2508,12 @@ impl WorldActor {
             } => {
                 self.handle_presence(participant, joined).await;
             }
-            WorldCommand::SubmitFormResult { result, reply } => {
-                let outcome = self.submit_form_result(result).await;
+            WorldCommand::SubmitFormResult {
+                token,
+                result,
+                reply,
+            } => {
+                let outcome = self.submit_form_result(token, result).await;
                 let _ = reply.send(outcome);
             }
             WorldCommand::Chat { token, text, reply } => {
@@ -4444,6 +4547,27 @@ mod form_tests {
         assert!(present(&mut actor, &encoder_form).is_ok());
     }
 
+    #[test]
+    fn hosted_headless_manifest_does_not_mask_remote_presenter_input() {
+        let (mut actor, _) = form_actor();
+        let headless = crate::world::WorldHandle::host_device_manifest();
+        actor.device_manifest = Some(headless.clone());
+        let form = form(vec![FormField::Text {
+            id: "name".to_owned(),
+            label: "Name".to_owned(),
+            required: true,
+            max_length: 32,
+        }]);
+        assert!(present(&mut actor, &form).is_ok());
+        assert!(form.validate_device_input(&headless.input).is_err());
+        assert!(
+            form.validate_device_input(&serde_json::json!({
+                "keys": 128, "text_entry": "keyboard", "encoder": false, "pointer": false
+            }))
+            .is_ok()
+        );
+    }
+
     #[tokio::test]
     async fn form_result_correlates_validates_and_keeps_invalid_form_for_re_presentation() {
         let (mut actor, events) = form_actor();
@@ -4465,9 +4589,15 @@ mod form_tests {
                 .unwrap()
                 .clone(),
         };
-        assert_eq!(
-            actor.submit_form_result(invalid).await.unwrap(),
-            FormSubmissionStatus::Rejected
+        let FormSubmissionStatus::Rejected {
+            presentation_token: retry_token,
+        } = actor.submit_form_result(None, invalid).await.unwrap()
+        else {
+            panic!("invalid result must request a re-presentation")
+        };
+        assert_ne!(
+            retry_token, presentation_token,
+            "re-presentation rotates token"
         );
         assert!(actor.pending_forms.contains_key("form-1"));
         let events_after_rejection = events.lock().unwrap().clone();
@@ -4484,7 +4614,7 @@ mod form_tests {
 
         let valid = FormResult {
             form_id: "form-1".to_owned(),
-            presentation_token,
+            presentation_token: retry_token,
             action: "submit".to_owned(),
             values: serde_json::json!({"mode": "quiet"})
                 .as_object()
@@ -4492,7 +4622,7 @@ mod form_tests {
                 .clone(),
         };
         assert_eq!(
-            actor.submit_form_result(valid).await.unwrap(),
+            actor.submit_form_result(None, valid).await.unwrap(),
             FormSubmissionStatus::Accepted
         );
         assert!(!actor.pending_forms.contains_key("form-1"));
@@ -4508,6 +4638,64 @@ mod form_tests {
                 .iter()
                 .all(|event| event.len() <= crate::world_caps::MAX_EVENT_BYTES)
         );
+    }
+
+    #[tokio::test]
+    async fn form_present_grant_on_use_opens_the_result_channel() {
+        let (mut actor, events) = form_actor();
+        actor.core.ledger = crate::world_caps::CapLedger::new(BTreeSet::new(), true);
+        let form = form(vec![FormField::Choice {
+            id: "mode".to_owned(),
+            label: "Mode".to_owned(),
+            required: true,
+            options: vec!["quiet".to_owned(), "loud".to_owned()],
+        }]);
+        let presented = present(&mut actor, &form).unwrap();
+        assert!(
+            actor.core.ledger.is_granted("form.result"),
+            "presenting must open the result channel under grant-on-use"
+        );
+        let valid = FormResult {
+            form_id: "form-1".to_owned(),
+            presentation_token: presented["presentation_token"].as_str().unwrap().to_owned(),
+            action: "submit".to_owned(),
+            values: serde_json::json!({"mode": "quiet"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert_eq!(
+            actor.submit_form_result(None, valid).await.unwrap(),
+            FormSubmissionStatus::Accepted
+        );
+        assert_eq!(events.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn form_present_rejects_a_form_whose_token_bearing_view_exceeds_limits() {
+        let (mut actor, _) = form_actor();
+        let bare = form(vec![FormField::Text {
+            id: "name".to_owned(),
+            label: String::new(),
+            required: true,
+            max_length: 32,
+        }]);
+        let base_len = serde_json::to_vec(&bare).unwrap().len();
+        // The bare form fits with 10 bytes to spare; the token-bearing form
+        // the program must display does not.
+        let pad = id_core::world_presentation::MAX_FORM_BYTES - base_len - 10;
+        let oversized = form(vec![FormField::Text {
+            id: "name".to_owned(),
+            label: "x".repeat(pad),
+            required: true,
+            max_length: 32,
+        }]);
+        assert!(
+            serde_json::to_vec(&oversized).unwrap().len()
+                <= id_core::world_presentation::MAX_FORM_BYTES
+        );
+        assert!(present(&mut actor, &oversized).is_err());
+        assert!(actor.pending_forms.is_empty());
     }
 
     #[tokio::test]
@@ -4548,7 +4736,7 @@ mod form_tests {
             .unwrap()
             .clone(),
         };
-        assert!(actor.submit_form_result(result).await.is_err());
+        assert!(actor.submit_form_result(None, result).await.is_err());
         assert!(events.lock().unwrap().is_empty());
         assert!(actor.pending_forms.contains_key("form-1"));
     }
@@ -4588,7 +4776,7 @@ mod form_tests {
                 .unwrap()
                 .clone(),
         };
-        assert!(actor.submit_form_result(late_result).await.is_err());
+        assert!(actor.submit_form_result(None, late_result).await.is_err());
         assert!(actor.pending_forms.contains_key("form-1"));
         assert!(events.lock().unwrap().is_empty());
     }
@@ -4629,9 +4817,21 @@ mod form_tests {
                     .unwrap()
                     .clone(),
             };
-            assert!(actor.submit_form_result(result).await.is_err());
+            assert!(actor.submit_form_result(None, result).await.is_err());
             assert!(events.lock().unwrap().is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn restored_form_authority_notifies_program_to_re_present() {
+        let (mut actor, events) = form_actor();
+        actor.invalidate_restored_form_presentations().await;
+        let delivered = events.lock().unwrap();
+        assert_eq!(delivered.len(), 1);
+        let event: serde_json::Value = serde_json::from_str(&delivered[0]).unwrap();
+        assert_eq!(event["cap"], "form.result");
+        assert_eq!(event["event"], "invalidated");
+        assert_eq!(event["reason"], "restarted");
     }
 }
 

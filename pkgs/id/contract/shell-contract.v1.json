@@ -1,8 +1,8 @@
 {
   "contract": "id-shell",
   "version": 1,
-  "revision": 6,
-  "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. A new frame kind waits for the journal format work (F11.12, #227).",
+  "revision": 7,
+  "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. Event-producing frames must name their stable world-event contract here.",
   "max_frame_bytes": 1048576,
   "routing_fields": ["world"],
   "transports": {
@@ -251,6 +251,16 @@
       "phases": ["joined"],
       "fields": { "text": "string" }
     },
+    "form_result": {
+      "class": "event",
+      "phases": ["joined"],
+      "fields": {
+        "form_id": { "type": "string", "max_bytes": 64 },
+        "presentation_token": { "type": "hex", "max_bytes": 32 },
+        "action": { "type": "string", "max_bytes": 64 },
+        "values": "object"
+      }
+    },
     "input": {
       "class": "event",
       "phases": ["joined"],
@@ -295,6 +305,16 @@
     "event": {
       "class": "durable",
       "fields": { "event": "object" }
+    },
+    "form_result_status": {
+      "class": "reply",
+      "fields": {
+        "form_id": "string",
+        "ok": "bool",
+        "presentation_token": "string?",
+        "error": "string?",
+        "reason": "string?"
+      }
     },
     "view": {
       "class": "ephemeral",

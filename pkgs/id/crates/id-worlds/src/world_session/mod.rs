@@ -52,8 +52,8 @@ mod service;
 
 pub use types::MAX_ADMIN_TOKEN_BYTES;
 pub(crate) use types::{
-    CAPS_CEILING_NOTICE, ClientFrame, MAX_CAPABILITY_BYTES,
-    MAX_CONCURRENT_MODULE_UPLOADS, ServerFrame, invite_bounds,
+    CAPS_CEILING_NOTICE, ClientFrame, MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS,
+    ServerFrame, invite_bounds,
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
@@ -480,6 +480,14 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 JoinCapability::from_wire(capability),
                 after,
                 screen_patches,
+            )
+            .await;
+        }
+        ClientFrame::FormResult { .. } => {
+            let _ = send_error(
+                service.frame_meter(),
+                io,
+                "form_result is only valid after joining a world",
             )
             .await;
         }
@@ -1491,22 +1499,26 @@ async fn install_module_session_joined<I: SessionIo>(
             )
             .await;
         match installed {
-            Ok((module_hash, sequence)) => send_json(
-                service.frame_meter(),
-                io,
-                &ServerFrame::ModuleInstalled {
-                    module_hash: &module_hash,
-                    sequence,
-                },
-            )
-            .await,
-            Err(InstallError::ActorDenied) => send_error_with_code(
-                service.frame_meter(),
-                io,
-                Some(ACTOR_DENIED),
-                "module install denied",
-            )
-            .await,
+            Ok((module_hash, sequence)) => {
+                send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::ModuleInstalled {
+                        module_hash: &module_hash,
+                        sequence,
+                    },
+                )
+                .await
+            }
+            Err(InstallError::ActorDenied) => {
+                send_error_with_code(
+                    service.frame_meter(),
+                    io,
+                    Some(ACTOR_DENIED),
+                    "module install denied",
+                )
+                .await
+            }
             Err(error) => {
                 let message = match error {
                     InstallError::Disabled => "module installation is not enabled on this host",
@@ -2067,6 +2079,56 @@ async fn handle_client_frame<I: SessionIo>(
                 .delegate_to_friend(token.clone(), friend, scopes, bounds, name)
                 .await;
             return send_delegation(service.frame_meter(), io, result).await;
+        }
+        ClientFrame::FormResult {
+            form_id,
+            presentation_token,
+            action,
+            values,
+        } => {
+            let result = id_core::world_presentation::FormResult {
+                form_id: form_id.clone(),
+                presentation_token,
+                action,
+                values,
+            };
+            match world
+                .submit_form_result_for_session(token.clone(), result)
+                .await
+            {
+                Ok(crate::world::FormSubmissionStatus::Accepted) => {
+                    return send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::FormResultStatus {
+                            form_id: &form_id,
+                            ok: true,
+                            presentation_token: None,
+                            error: None,
+                            reason: None,
+                        },
+                    )
+                    .await;
+                }
+                Ok(crate::world::FormSubmissionStatus::Rejected { presentation_token }) => {
+                    return send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::FormResultStatus {
+                            form_id: &form_id,
+                            ok: false,
+                            presentation_token: Some(&presentation_token),
+                            error: Some("bad_args"),
+                            reason: Some("field_invalid"),
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    return send_error(service.frame_meter(), io, &message).await;
+                }
+            }
         }
         ClientFrame::Chat { text } => world.chat(token.clone(), text).await,
         ClientFrame::Resize { width, height } => {

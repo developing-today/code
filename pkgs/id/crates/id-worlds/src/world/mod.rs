@@ -399,13 +399,17 @@ pub struct WorldEvent {
 }
 
 /// Outcome of submitting a deferred result to a pending form.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FormSubmissionStatus {
     /// The result matched the pending form and was delivered to the program.
     Accepted,
-    /// The result was rejected with `bad_args` / `field_invalid`; the host
-    /// should re-present the still-pending form rather than retrying on server.
-    Rejected,
+    /// The result was rejected with `bad_args` / `field_invalid`. The form
+    /// stays pending under a fresh host token; the presenter re-presents it
+    /// with that token and the server never retries on its own.
+    Rejected {
+        /// Token the presenter must echo in its next submission.
+        presentation_token: String,
+    },
 }
 
 /// Participant-originated event data.

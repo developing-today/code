@@ -259,7 +259,7 @@ impl WorldHandle {
             loc_watches: BTreeMap::new(),
             auth: crate::directory_auth::DirectoryAuth::default(),
         };
-        tokio::spawn(actor.run(receiver));
+        tokio::spawn(actor.run(receiver, restored));
         Self {
             commands,
             events,
@@ -472,9 +472,32 @@ impl WorldHandle {
         &self,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
+        self.submit_form_result_with_session(None, result).await
+    }
+
+    /// Submit a form result from a joined session. The actor revalidates the
+    /// session capability and the global `form.result` grant/ceiling.
+    pub async fn submit_form_result_for_session(
+        &self,
+        token: JoinCapability,
+        result: id_core::world_presentation::FormResult,
+    ) -> Result<FormSubmissionStatus> {
+        self.submit_form_result_with_session(Some(token), result)
+            .await
+    }
+
+    async fn submit_form_result_with_session(
+        &self,
+        token: Option<JoinCapability>,
+        result: id_core::world_presentation::FormResult,
+    ) -> Result<FormSubmissionStatus> {
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(WorldCommand::SubmitFormResult { result, reply })
+            .send(WorldCommand::SubmitFormResult {
+                token,
+                result,
+                reply,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
         response

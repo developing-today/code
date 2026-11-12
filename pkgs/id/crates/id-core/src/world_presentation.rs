@@ -284,6 +284,55 @@ impl FormSurface {
         Ok(())
     }
 
+    /// Check that one trusted presenter can collect all fields in this form.
+    /// The caller passes that presenter's `DeviceManifest.input` object, not
+    /// the hosting server's manifest: a headless server may serve browser or
+    /// terminal presenters that have different input affordances.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the input object cannot satisfy any field's
+    /// minimum requirements.
+    pub fn validate_device_input(&self, input: &Value) -> Result<()> {
+        self.validate()?;
+        let can_enter_text = input
+            .get("text_entry")
+            .and_then(Value::as_str)
+            .is_some_and(|mode| mode != "none");
+        let has_discrete_control = input
+            .get("keys")
+            .and_then(Value::as_u64)
+            .is_some_and(|count| count > 0)
+            || input
+                .get("encoder")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            || input
+                .get("pointer")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        for field in &self.fields {
+            match field {
+                FormField::Text { .. } | FormField::Date { .. } => ensure!(
+                    can_enter_text,
+                    "text entry unavailable for form field {:?}",
+                    field.id()
+                ),
+                FormField::Choice { .. } | FormField::Confirm { .. } => ensure!(
+                    has_discrete_control,
+                    "selectable input unavailable for form field {:?}",
+                    field.id()
+                ),
+                FormField::Number { .. } => ensure!(
+                    can_enter_text || has_discrete_control,
+                    "numeric input unavailable for form field {:?}",
+                    field.id()
+                ),
+            }
+        }
+        Ok(())
+    }
+
     /// Deterministic escape-free projection: the title, numbered fields,
     /// then numbered actions.
     #[must_use]
@@ -1956,6 +2005,51 @@ mod tests {
                 .clone(),
         };
         assert!(malformed_date.validate_result(&invalid_date).is_err());
+    }
+
+    #[test]
+    fn form_device_gating_uses_the_presenting_device_input_manifest() {
+        let encoder_form = FormSurface {
+            version: 1,
+            form_id: "encoder-form".into(),
+            presentation_token: None,
+            title: "Choose".into(),
+            fields: vec![FormField::Choice {
+                id: "mode".into(),
+                label: "Mode".into(),
+                required: true,
+                options: vec!["quiet".into(), "loud".into()],
+            }],
+            actions: vec![FormAction {
+                id: "submit".into(),
+                label: "Submit".into(),
+                kind: FormActionKind::Submit,
+            }],
+        };
+        let headless_input = serde_json::json!({
+            "keys": 0, "encoder": false, "pointer": false, "text_entry": "none"
+        });
+        assert!(encoder_form.validate_device_input(&headless_input).is_err());
+        let rotary_input = serde_json::json!({
+            "keys": 0, "encoder": true, "pointer": false, "text_entry": "none"
+        });
+        assert!(encoder_form.validate_device_input(&rotary_input).is_ok());
+
+        let text_form = FormSurface {
+            fields: vec![FormField::Text {
+                id: "name".into(),
+                label: "Name".into(),
+                required: true,
+                max_length: 24,
+            }],
+            ..encoder_form
+        };
+        assert!(text_form.validate_device_input(&rotary_input).is_err());
+        assert!(
+            text_form
+                .validate_device_input(&serde_json::json!({"text_entry": "keyboard"}))
+                .is_ok()
+        );
     }
 
     #[test]
