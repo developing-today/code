@@ -11,11 +11,14 @@
 //!    attacks from web pages in the user's browser.
 //! 3. **Origin check**: a request carrying an `Origin` header (every browser
 //!    cross-origin fetch and every WebSocket handshake) must come from the same
-//!    origin (host *and* port) it is addressed to, which defeats cross-site
-//!    request forgery and cross-site WebSocket hijacking. An origin with no
-//!    explicit port only matches a `Host` with no explicit port — there is no
-//!    scheme-default-port expansion, so `http://localhost` does not match a
-//!    request addressed to `localhost:3000`.
+//!    origin (scheme, host *and* port) it is addressed to, which defeats
+//!    cross-site request forgery and cross-site WebSocket hijacking. An origin
+//!    with no explicit port only matches a `Host` with no explicit port — there
+//!    is no scheme-default-port expansion, so `http://localhost` does not match
+//!    a request addressed to `localhost:3000`. The request scheme is defined by
+//!    [`request_scheme`]: the built-in listener speaks plain HTTP only, and
+//!    HTTPS exists solely when a proxy terminates it in front — the deployment
+//!    the operator declares with `--web-cookie-secure` (#8892).
 //!
 //! In addition, an optional **token** ([`WebSecurity::token`]) gates the whole
 //! interface. It is accepted as the `id_token` cookie, an
@@ -47,6 +50,10 @@ pub struct WebSecurity {
     /// Empty disables the host check.
     pub allowed_hosts: Vec<String>,
     /// Mark the `id_token` cookie `Secure` (HTTPS in front).
+    ///
+    /// This is also the operator's declaration that HTTPS is terminated in
+    /// front of the plain-HTTP listener, so the Origin guard treats the
+    /// request scheme as `https` (see [`request_scheme`], #8892).
     pub cookie_secure: bool,
 }
 
@@ -142,6 +149,32 @@ fn origin_authority(origin: &str) -> Option<&str> {
         .map(|(_, rest)| rest.split('/').next().unwrap_or(rest))
 }
 
+/// Scheme of an `Origin` header value such as `http://a:1`, verbatim (callers
+/// compare ASCII case-insensitively). `None` when the value carries no
+/// `scheme://` prefix — such an Origin is refused by the guard.
+fn origin_scheme(origin: &str) -> Option<&str> {
+    origin.split_once("://").map(|(scheme, _)| scheme)
+}
+
+/// The scheme a request is effectively addressed under (#8892).
+///
+/// The built-in listener is plain HTTP only (`axum::serve` on a TCP
+/// listener; `id serve` has no TLS listener), so a direct request's scheme
+/// is `http`. HTTPS exists in exactly one supported deployment mode: a
+/// TLS-terminating proxy in front of the listener, which the operator
+/// declares with `--web-cookie-secure` ("set this only when HTTPS is
+/// terminated in front of the server") — carried here as
+/// [`WebSecurity::cookie_secure`] — and in that mode the effective scheme
+/// is `https`.
+///
+/// `X-Forwarded-Proto` is deliberately not consulted: no supported
+/// deployment sets or strips it, and on the directly exposed listener it
+/// is client-spoofable. The request line's own scheme is not trusted
+/// either: hyper accepts absolute-form request targets from any client.
+fn request_scheme(sec: &WebSecurity) -> &'static str {
+    if sec.cookie_secure { "https" } else { "http" }
+}
+
 /// Constant-time byte comparison (length leaks, content does not).
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && bool::from(a.ct_eq(b))
@@ -210,13 +243,16 @@ pub async fn guard(
         }
     }
 
-    // 3. Origin must match the authority (host and port) the request is
-    // addressed to (#814: a different port is a different origin).
+    // 3. Origin must match the scheme and the authority (host and port)
+    // the request is addressed to (#814: a different port is a different
+    // origin; #8892: so is a different scheme).
     if let Some(origin) = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok())
         && origin != "null"
     {
-        let same = origin_authority(origin)
-            .is_some_and(|a| authority_normalized(a) == authority_normalized(&host_header));
+        let same = origin_scheme(origin)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case(request_scheme(&sec)))
+            && origin_authority(origin)
+                .is_some_and(|a| authority_normalized(a) == authority_normalized(&host_header));
         if !same {
             return forbidden("cross-origin request refused", StatusCode::FORBIDDEN);
         }
@@ -487,6 +523,82 @@ mod tests {
         )
         .await;
         assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn scheme_mismatched_origin_is_refused() {
+        // #8892 oracle: an Origin whose scheme differs from the request's
+        // scheme is a different origin even when host and port match. The
+        // built-in listener is plain HTTP, so an https Origin addressed to
+        // an http Host of the same authority must be refused.
+        let r = call(
+            app(loopback()),
+            get_req("localhost:3000")
+                .header(header::ORIGIN, "https://localhost:3000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+
+        // Case is not significant in a scheme.
+        let upper = call(
+            app(loopback()),
+            get_req("localhost:3000")
+                .header(header::ORIGIN, "HTTPS://localhost:3000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(upper.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn https_in_front_matches_https_origin_only() {
+        // #8892: with HTTPS terminated in front (operator-declared via
+        // cookie_secure / --web-cookie-secure), the request scheme is
+        // https: an https Origin of the same authority passes, an http
+        // Origin of the same authority is refused.
+        let sec = WebSecurity {
+            cookie_secure: true,
+            ..loopback()
+        };
+        let ok = call(
+            app(sec.clone()),
+            get_req("localhost:3000")
+                .header(header::ORIGIN, "https://localhost:3000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        let bad = call(
+            app(sec),
+            get_req("localhost:3000")
+                .header(header::ORIGIN, "http://localhost:3000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn request_scheme_follows_the_serving_mode() {
+        // #8892 oracle: plain-HTTP listener -> http; operator-declared
+        // HTTPS termination in front (cookie_secure) -> https. Origin
+        // schemes parse verbatim from `scheme://authority` values only.
+        assert_eq!(request_scheme(&loopback()), "http");
+        let https = WebSecurity {
+            cookie_secure: true,
+            ..loopback()
+        };
+        assert_eq!(request_scheme(&https), "https");
+        assert_eq!(origin_scheme("https://localhost:3000"), Some("https"));
+        assert_eq!(origin_scheme("http://localhost"), Some("http"));
+        assert_eq!(origin_scheme("null"), None);
+        assert_eq!(origin_scheme("localhost:3000"), None);
     }
 
     #[tokio::test]
