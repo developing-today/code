@@ -40,6 +40,25 @@ Drive web UI for "the same" cold store) are **invisible to this app** and
 must never be wired in by ID. If `state.json` is lost, `ensure-folders`
 finds the existing tree again by name — it does not duplicate it.
 
+## Pagination contract (design #6622, closing inventory #6623)
+
+A paged read is complete, bounded, or says so (design #6622, closing
+inventory #6623):
+1. The cursor is validated where read — its type first (where the
+   protocol's terminator is null, a present-but-non-string cursor is
+   malformed, never end-of-pages) and its progress second (the
+   cursor must advance under the protocol's rule).
+2. The volume is bounded — every page loop carries a page, result,
+   or byte bound whose breach is an error naming the listing.
+3. Truncation is never silent — a read that stops short either
+   paginates to completion (or counts via the source's own total),
+   fails closed, or marks the truncation explicitly in its output.
+
+This system's listings carry it as: `list_backups` and
+`s3_list_objects` validate continuation-token progress (repeated
+tokens are refused) under the shared `LIST_MAX_PAGES` /
+`LIST_MAX_RESULTS` bounds (cold_store.py, #6602).
+
 ## Credentials
 
 No real credential values live in this repo, ever. The operator keeps the

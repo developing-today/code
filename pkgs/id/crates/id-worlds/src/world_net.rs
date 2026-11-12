@@ -35,6 +35,25 @@
 //! `WorldClient` method against these rules is recorded on issue
 //! #6670. A lax extraction found later is filed as a follow-up
 //! issue, not patched silently and not defaulted around.
+//!
+//! ## The pagination contract (#6622)
+//!
+//! A paged read is complete, bounded, or says so (design #6622, closing
+//! inventory #6623):
+//! 1. The cursor is validated where read — its type first (where the
+//!    protocol's terminator is null, a present-but-non-string cursor is
+//!    malformed, never end-of-pages) and its progress second (the
+//!    cursor must advance under the protocol's rule).
+//! 2. The volume is bounded — every page loop carries a page, result,
+//!    or byte bound whose breach is an error naming the listing.
+//! 3. Truncation is never silent — a read that stops short either
+//!    paginates to completion (or counts via the source's own total),
+//!    fails closed, or marks the truncation explicitly in its output.
+//!
+//! This module's readers carry it as: `record_pages` (typed
+//! string-or-null cursor, last-key match, empty-page refusal,
+//! advance check, `RecordsBudget`) and `admin_event_history`
+//! (typed cursor parse, missing-key refusal, `AdminHistoryBudget`).
 
 use std::collections::HashMap;
 use std::sync::{

@@ -97,6 +97,25 @@ The seven rules, in operator language:
    previously planned entries, marks them retained in the report,
    and still exits non-zero.
 
+## Pagination contract (design #6622, closing inventory #6623)
+
+A paged read is complete, bounded, or says so (design #6622, closing
+inventory #6623):
+1. The cursor is validated where read — its type first (where the
+   protocol's terminator is null, a present-but-non-string cursor is
+   malformed, never end-of-pages) and its progress second (the
+   cursor must advance under the protocol's rule).
+2. The volume is bounded — every page loop carries a page, result,
+   or byte bound whose breach is an error naming the listing.
+3. Truncation is never silent — a read that stops short either
+   paginates to completion (or counts via the source's own total),
+   fails closed, or marks the truncation explicitly in its output.
+
+This system's readers carry it as: the `queue_events` drain's
+page/event bounds (bin/drain_queue.py, #6572) and
+`inventory_owner`'s advancing-cursor validation with its
+`MAX_INVENTORY_PAGES` hard bound (bin/ghb_common.py, #6532/#6840).
+
 ## Components
 
 | Path                   | What                                                                                      |
