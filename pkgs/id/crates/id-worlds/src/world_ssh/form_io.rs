@@ -3,9 +3,11 @@
 //! `world_ssh.rs` to keep that module under the production line
 //! limit (#1411).
 
+use std::collections::VecDeque;
+
 use tokio::sync::mpsc;
 
-use super::{Inbound, SshInputFrame, SshProbe};
+use super::{Inbound, MAX_FORM_RESPONSE_BYTES, SshInputFrame, SshProbe, terminal_text};
 
 /// The retry alias recorded for a rejected form answer:
 /// `(form_id, view_token, current_token)`.
@@ -79,6 +81,143 @@ pub(super) fn discard_form_lf_after_cr(
 /// next `recv` return it even if the previous receive future was cancelled.
 pub(super) fn take_pending_form_answer(pending: &mut Option<String>) -> Option<Inbound> {
     pending.take().map(Inbound::Text)
+}
+
+pub(super) enum FormInputProgress {
+    Pending {
+        echo: Vec<u8>,
+    },
+    Complete {
+        line: Vec<u8>,
+        echo: Vec<u8>,
+    },
+    Invalid {
+        message: &'static str,
+        echo: Vec<u8>,
+    },
+}
+
+/// Echo a printable ASCII byte immediately or complete only the pending UTF-8
+/// scalar. The accumulated answer is validated once, when its line is submitted.
+fn echo_form_byte(byte: u8, pending: &mut Vec<u8>, echo: &mut Vec<u8>) {
+    if pending.is_empty() {
+        if byte.is_ascii() {
+            if byte.is_ascii_graphic() || byte == b' ' {
+                echo.push(byte);
+            }
+            return;
+        }
+        if matches!(byte, 0xc2..=0xdf | 0xe0..=0xef | 0xf0..=0xf4) {
+            pending.push(byte);
+        }
+        return;
+    }
+
+    if byte & 0xc0 != 0x80 {
+        pending.clear();
+        echo_form_byte(byte, pending, echo);
+        return;
+    }
+    pending.push(byte);
+    let expected = match pending[0] {
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => {
+            pending.clear();
+            return;
+        }
+    };
+    if pending.len() < expected {
+        return;
+    }
+    if let Ok(text) = std::str::from_utf8(pending) {
+        echo.extend_from_slice(terminal_text(text).as_bytes());
+    }
+    pending.clear();
+}
+
+/// Discard an invalid/overlong input suffix through one line terminator,
+/// preserving later bytes and CRLF state for the next read.
+pub(super) fn discard_form_input_line(backlog: &mut VecDeque<u8>, after_cr: &mut bool) -> bool {
+    while let Some(byte) = backlog.pop_front() {
+        let swallowed_lf = std::mem::take(after_cr);
+        if byte == b'\n' && swallowed_lf {
+            continue;
+        }
+        match byte {
+            b'\r' => {
+                *after_cr = true;
+                return true;
+            }
+            b'\n' => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Consume queued form bytes through at most one line terminator. Remaining
+/// packet bytes stay in the queue for the next form answer or world input.
+pub(super) fn consume_form_input(
+    backlog: &mut VecDeque<u8>,
+    line: &mut Vec<u8>,
+    after_cr: &mut bool,
+    echo_pending: &mut Vec<u8>,
+) -> FormInputProgress {
+    let mut echo = Vec::new();
+    while let Some(byte) = backlog.pop_front() {
+        let swallowed_lf = std::mem::take(after_cr);
+        if byte == b'\n' && swallowed_lf {
+            continue;
+        }
+        match byte {
+            b'\r' | b'\n' => {
+                *after_cr = byte == b'\r';
+                echo_pending.clear();
+                echo.extend_from_slice(b"\r\n");
+                return FormInputProgress::Complete {
+                    line: std::mem::take(line),
+                    echo,
+                };
+            }
+            0x08 | 0x7f => {
+                echo_pending.clear();
+                if std::str::from_utf8(line).is_err() {
+                    while !line.is_empty() && std::str::from_utf8(line).is_err() {
+                        line.pop();
+                    }
+                } else if let Some(last) = std::str::from_utf8(line)
+                    .ok()
+                    .and_then(|line| line.char_indices().next_back().map(|(index, _)| index))
+                {
+                    line.truncate(last);
+                    echo.extend_from_slice(b"\x08 \x08");
+                }
+            }
+            byte if byte.is_ascii_control() => {
+                line.clear();
+                echo_pending.clear();
+                return FormInputProgress::Invalid {
+                    message: "form input cannot contain control characters",
+                    echo,
+                };
+            }
+            byte if line.len() < MAX_FORM_RESPONSE_BYTES => {
+                line.push(byte);
+                echo_form_byte(byte, echo_pending, &mut echo);
+            }
+            _ => {
+                line.clear();
+                echo_pending.clear();
+                return FormInputProgress::Invalid {
+                    message: "form response line is too large",
+                    echo,
+                };
+            }
+        }
+    }
+    FormInputProgress::Pending { echo }
 }
 
 /// One fetched input unit for the form collector.

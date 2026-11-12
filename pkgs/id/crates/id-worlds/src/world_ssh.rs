@@ -800,145 +800,6 @@ struct SshProbe {
     deadline: tokio::time::Instant,
 }
 
-enum FormInputProgress {
-    Pending {
-        echo: Vec<u8>,
-    },
-    Complete {
-        line: Vec<u8>,
-        echo: Vec<u8>,
-    },
-    Invalid {
-        message: &'static str,
-        echo: Vec<u8>,
-    },
-}
-
-/// Echo a printable ASCII byte immediately or complete only the pending UTF-8
-/// scalar. The accumulated answer is validated once, when its line is submitted.
-fn echo_form_byte(byte: u8, pending: &mut Vec<u8>) -> Vec<u8> {
-    if pending.is_empty() {
-        if byte.is_ascii() {
-            return if byte.is_ascii_graphic() || byte == b' ' {
-                vec![byte]
-            } else {
-                Vec::new()
-            };
-        }
-        if matches!(byte, 0xc2..=0xdf | 0xe0..=0xef | 0xf0..=0xf4) {
-            pending.push(byte);
-        }
-        return Vec::new();
-    }
-
-    if byte & 0xc0 != 0x80 {
-        pending.clear();
-        return echo_form_byte(byte, pending);
-    }
-    pending.push(byte);
-    let expected = match pending[0] {
-        0xc2..=0xdf => 2,
-        0xe0..=0xef => 3,
-        0xf0..=0xf4 => 4,
-        _ => {
-            pending.clear();
-            return Vec::new();
-        }
-    };
-    if pending.len() < expected {
-        return Vec::new();
-    }
-    let echo = std::str::from_utf8(pending)
-        .map(terminal_text)
-        .unwrap_or_default()
-        .into_bytes();
-    pending.clear();
-    echo
-}
-
-/// Discard an invalid/overlong input suffix through one line terminator,
-/// preserving later bytes and CRLF state for the next read.
-fn discard_form_input_line(backlog: &mut VecDeque<u8>, after_cr: &mut bool) -> bool {
-    while let Some(byte) = backlog.pop_front() {
-        let swallowed_lf = std::mem::take(after_cr);
-        if byte == b'\n' && swallowed_lf {
-            continue;
-        }
-        match byte {
-            b'\r' => {
-                *after_cr = true;
-                return true;
-            }
-            b'\n' => return true,
-            _ => {}
-        }
-    }
-    false
-}
-
-/// Consume queued form bytes through at most one line terminator. Remaining
-/// packet bytes stay in the queue for the next form answer or world input.
-fn consume_form_input(
-    backlog: &mut VecDeque<u8>,
-    line: &mut Vec<u8>,
-    after_cr: &mut bool,
-    echo_pending: &mut Vec<u8>,
-) -> FormInputProgress {
-    let mut echo = Vec::new();
-    while let Some(byte) = backlog.pop_front() {
-        let swallowed_lf = std::mem::take(after_cr);
-        if byte == b'\n' && swallowed_lf {
-            continue;
-        }
-        match byte {
-            b'\r' | b'\n' => {
-                *after_cr = byte == b'\r';
-                echo_pending.clear();
-                echo.extend_from_slice(b"\r\n");
-                return FormInputProgress::Complete {
-                    line: std::mem::take(line),
-                    echo,
-                };
-            }
-            0x08 | 0x7f => {
-                echo_pending.clear();
-                if std::str::from_utf8(line).is_err() {
-                    while !line.is_empty() && std::str::from_utf8(line).is_err() {
-                        line.pop();
-                    }
-                } else if let Some(last) = std::str::from_utf8(line)
-                    .ok()
-                    .and_then(|line| line.char_indices().next_back().map(|(index, _)| index))
-                {
-                    line.truncate(last);
-                    echo.extend_from_slice(b"\x08 \x08");
-                }
-            }
-            byte if byte.is_ascii_control() => {
-                line.clear();
-                echo_pending.clear();
-                return FormInputProgress::Invalid {
-                    message: "form input cannot contain control characters",
-                    echo,
-                };
-            }
-            byte if line.len() < MAX_FORM_RESPONSE_BYTES => {
-                line.push(byte);
-                echo.extend_from_slice(&echo_form_byte(byte, echo_pending));
-            }
-            _ => {
-                line.clear();
-                echo_pending.clear();
-                return FormInputProgress::Invalid {
-                    message: "form response line is too large",
-                    echo,
-                };
-            }
-        }
-    }
-    FormInputProgress::Pending { echo }
-}
-
 /// The notice shown to a viewer once [`INPUT_DROP_NOTICE_BYTES`] input bytes
 /// were refused. Empty below that threshold, so a drop here and there stays
 /// quiet and only a sustained loss is reported.
@@ -983,8 +844,9 @@ fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Opt
 
 mod form_io;
 use form_io::{
-    FormBytes, discard_form_lf_after_cr, form_closed_aliases, form_retry_alias,
-    recv_bytes_through_probe, take_pending_form_answer,
+    FormBytes, FormInputProgress, consume_form_input, discard_form_input_line,
+    discard_form_lf_after_cr, form_closed_aliases, form_retry_alias, recv_bytes_through_probe,
+    take_pending_form_answer,
 };
 
 impl SshIo {
