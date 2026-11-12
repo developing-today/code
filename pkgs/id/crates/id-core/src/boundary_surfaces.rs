@@ -97,6 +97,24 @@ impl Surface {
             Surface::BridgeFederationRelay => &[Plane::Transport],
         }
     }
+
+    /// The surface a specific enforcement point belongs to. `None` for
+    /// points outside this step's scope table (capability grants are a
+    /// separate, minimal surface in §8, not part of issue #7787's three).
+    pub const fn for_point(point: EnforcementPoint) -> Option<Surface> {
+        match point {
+            EnforcementPoint::AccountCreation | EnforcementPoint::Login => {
+                Some(Surface::SignupLogin)
+            }
+            EnforcementPoint::WorldMembership | EnforcementPoint::BlobStorage => {
+                Some(Surface::WorldMembershipBlobs)
+            }
+            EnforcementPoint::BridgeFederation | EnforcementPoint::RelayTransit => {
+                Some(Surface::BridgeFederationRelay)
+            }
+            EnforcementPoint::CapabilityGrant => None,
+        }
+    }
 }
 
 /// The one outcome every surface renders (§8). A surface never maps the
@@ -288,24 +306,30 @@ fn assurance_reason_class(reason: &AssuranceDenyReason) -> &'static str {
 }
 
 /// Check one surface action through the shared evaluator. This is the
-/// only path a surface uses: it supplies its hops (as `claims` about the
-/// subject), and the adapter does the rest —
+/// only path a surface uses: it names the specific enforcement `point`
+/// being exercised and supplies its hops (as `claims` about the subject),
+/// and the adapter does the rest —
 ///
 /// 1. No enabled boundary (`effective` carries no capability/failure), or
-///    an enabled boundary that names none of this surface's enforcement
-///    points, does not cover this action: allow, no log entry. A missing
-///    trust configuration never activates a boundary (§8).
+///    an enabled boundary that does not name this exact enforcement
+///    point, does not cover this action: allow, no log entry. Coverage is
+///    per point, not per surface group — a declaration naming only
+///    account creation does not activate login (§8; §5.2: an omitted
+///    surface is not covered). A missing trust configuration never
+///    activates a boundary.
 /// 2. Otherwise the declaration for the evaluator is assembled from the
 ///    effective boundary's minimum assurance and a scope whose required
-///    planes are the policy's own plus this surface's hop planes, and
-///    [`evaluate_declared`] decides — the adapter adds no evaluation of
-///    its own.
+///    planes are the policy's own plus this surface's hop planes, with
+///    the effective boundary's accepted-source restriction intersected
+///    into the policy's per-plane source allow-lists (an empty effective
+///    restriction restricts nothing), and [`evaluate_declared`] decides
+///    — the adapter adds no evaluation of its own.
 /// 3. The decision is mapped through the effective boundary's failure
 ///    behaviour to the one [`FrameworkOutcome`], and every non-allow
 ///    outcome yields its [`DecisionLogEntry`].
 #[allow(clippy::too_many_arguments)]
 pub fn check_surface(
-    surface: Surface,
+    point: EnforcementPoint,
     effective: &EffectiveBoundary,
     boundary_version: u64,
     scope_ref: &ScopeRef,
@@ -323,11 +347,10 @@ pub fn check_surface(
     let (Some(_capability), Some(failure)) = (effective.capability, effective.failure) else {
         return allow;
     };
-    if !surface
-        .enforcement_points()
-        .iter()
-        .any(|point| effective.enforcement.contains(point))
-    {
+    let Some(surface) = Surface::for_point(point) else {
+        return allow;
+    };
+    if !effective.enforcement.contains(&point) {
         return allow;
     }
 
@@ -337,6 +360,13 @@ pub fn check_surface(
             let mut policy = policy.clone();
             for plane in surface.hop_planes() {
                 policy.required.insert(*plane);
+            }
+            if !effective.accepted_sources.is_empty() {
+                for plane_policy in policy.planes.values_mut() {
+                    plane_policy
+                        .evidence_sources
+                        .retain(|source| effective.accepted_sources.contains(source));
+                }
             }
             Scope::Scoped(policy)
         }
@@ -523,12 +553,12 @@ mod tests {
     }
 
     fn check(
-        surface: Surface,
+        point: EnforcementPoint,
         effective: &EffectiveBoundary,
         claims: &[SubjectEvidence],
     ) -> SurfaceCheck {
         check_surface(
-            surface,
+            point,
             effective,
             7,
             &ScopeRef::Server("srv".into()),
@@ -541,19 +571,28 @@ mod tests {
         )
     }
 
+    /// One representative enforcement point per surface.
+    const SURFACE_POINTS: [(Surface, EnforcementPoint); 3] = [
+        (Surface::SignupLogin, EnforcementPoint::Login),
+        (
+            Surface::WorldMembershipBlobs,
+            EnforcementPoint::WorldMembership,
+        ),
+        (
+            Surface::BridgeFederationRelay,
+            EnforcementPoint::BridgeFederation,
+        ),
+    ];
+
     #[test]
     fn every_surface_allows_through_the_shared_path() {
         // Oracle (acceptance, issue #7787): all three surfaces evaluate
         // through the one evaluator — at-bar claims covering each
         // surface's hops allow on every surface, with no log entry.
-        for surface in [
-            Surface::SignupLogin,
-            Surface::WorldMembershipBlobs,
-            Surface::BridgeFederationRelay,
-        ] {
+        for (surface, point) in SURFACE_POINTS {
             let eff = effective_for(surface.enforcement_points(), FailureBehaviour::Deny);
             let result = check(
-                surface,
+                point,
                 &eff,
                 &claims("alice", ResidencyAssurance::OrgAttested),
             );
@@ -567,11 +606,7 @@ mod tests {
         // Oracle (acceptance, issue #7787): a surface whose hop has no
         // subject evidence denies through the same shared path, and the
         // denial is logged with scope and boundary version.
-        for surface in [
-            Surface::SignupLogin,
-            Surface::WorldMembershipBlobs,
-            Surface::BridgeFederationRelay,
-        ] {
+        for (surface, point) in SURFACE_POINTS {
             let eff = effective_for(surface.enforcement_points(), FailureBehaviour::Deny);
             // Drop one of the surface's own hop planes.
             let missing = surface.hop_planes()[0];
@@ -579,7 +614,7 @@ mod tests {
                 .into_iter()
                 .filter(|c| c.placement_evidence.plane != missing)
                 .collect();
-            let result = check(surface, &eff, &offered);
+            let result = check(point, &eff, &offered);
             assert!(
                 matches!(result.outcome, FrameworkOutcome::Deny { .. }),
                 "{surface:?} got {:?}",
@@ -604,7 +639,7 @@ mod tests {
         // deny / step-up / quarantine / warn, never a per-surface mapping.
         let eff = effective_for(&[EnforcementPoint::Login], FailureBehaviour::StepUp);
         let result = check(
-            Surface::SignupLogin,
+            EnforcementPoint::Login,
             &eff,
             &claims("alice", ResidencyAssurance::SelfDeclared),
         );
@@ -613,7 +648,7 @@ mod tests {
 
         let eff = effective_for(&[EnforcementPoint::Login], FailureBehaviour::Quarantine);
         let result = check(
-            Surface::SignupLogin,
+            EnforcementPoint::Login,
             &eff,
             &claims("alice", ResidencyAssurance::SelfDeclared),
         );
@@ -624,7 +659,7 @@ mod tests {
 
         let eff = effective_for(&[EnforcementPoint::Login], FailureBehaviour::Warn);
         let result = check(
-            Surface::SignupLogin,
+            EnforcementPoint::Login,
             &eff,
             &claims("alice", ResidencyAssurance::SelfDeclared),
         );
@@ -639,9 +674,95 @@ mod tests {
         // covered — a declaration naming only account creation does not
         // activate the bridge surface, even with no evidence at all.
         let eff = effective_for(&[EnforcementPoint::AccountCreation], FailureBehaviour::Deny);
-        let result = check(Surface::BridgeFederationRelay, &eff, &[]);
+        let result = check(EnforcementPoint::BridgeFederation, &eff, &[]);
         assert_eq!(result.outcome, FrameworkOutcome::Allow);
         assert!(result.log_entry.is_none());
+    }
+
+    #[test]
+    fn coverage_is_per_enforcement_point_not_per_surface_group() {
+        // Oracle (design §8 + boundary §5.2): coverage is the specific
+        // point. A declaration naming only account creation covers
+        // account creation on the signup/login surface but does NOT
+        // activate login on the same surface.
+        let eff = effective_for(&[EnforcementPoint::AccountCreation], FailureBehaviour::Deny);
+        let below_bar = claims("alice", ResidencyAssurance::SelfDeclared);
+        let login = check(EnforcementPoint::Login, &eff, &below_bar);
+        assert_eq!(login.outcome, FrameworkOutcome::Allow);
+        assert!(login.log_entry.is_none());
+        let creation = check(EnforcementPoint::AccountCreation, &eff, &below_bar);
+        assert!(
+            matches!(creation.outcome, FrameworkOutcome::Deny { .. }),
+            "account creation is covered and denies below the bar, got {:?}",
+            creation.outcome
+        );
+    }
+
+    #[test]
+    fn the_effective_source_restriction_is_enforced() {
+        // Oracle (boundary §7 composition): the effective boundary's
+        // accepted-source restriction narrows what the placement policy
+        // alone would accept. The policy trusts two sources; the
+        // declaration restricts accepted sources to one of them, so
+        // otherwise-valid claims from the other source deny, while the
+        // same claims allow when the declaration names no restriction.
+        let mut p = Policy::new(["root".to_string()]);
+        for pl in Plane::ALL {
+            p = p
+                .allow(pl, &["eu"], &["r"])
+                .trust_evidence_source(pl, "control-plane")
+                .trust_evidence_source(pl, "other-source");
+        }
+        let mut offered = claims("alice", ResidencyAssurance::OrgAttested);
+        for c in &mut offered {
+            c.placement_evidence.source = "other-source".into();
+        }
+        let run = |accepted: BTreeSet<String>| {
+            let body = BoundaryDeclarationBody {
+                capability: CapabilityKind::Residency,
+                scope: ScopeRef::Server("srv".into()),
+                subject_class: SubjectClass::User,
+                evidence_req: crate::boundary::EvidenceRequirement {
+                    minimum_assurance: BoundaryAssurance::OrgAttested,
+                    accepted_sources: accepted,
+                },
+                enforcement: [EnforcementPoint::Login].into_iter().collect(),
+                failure: FailureBehaviour::Deny,
+                data_ref: None,
+                enabled: true,
+                version: 7,
+                declared_by: ActorId("admin".into()),
+                declared_at: 1,
+            };
+            let d = BoundaryDeclaration::new(body).expect("valid declaration");
+            let eff = crate::boundary::effective(Some(&d), None, None).expect("composes");
+            check_surface(
+                EnforcementPoint::Login,
+                &eff,
+                7,
+                &ScopeRef::Server("srv".into()),
+                &ActorId("admin".into()),
+                "alice",
+                &Scope::Scoped(p.clone()),
+                &offered,
+                NOW,
+                &OKV,
+            )
+        };
+        let unrestricted = run(BTreeSet::new());
+        assert_eq!(unrestricted.outcome, FrameworkOutcome::Allow);
+        let restricted = run(["control-plane".to_string()].into_iter().collect());
+        assert!(
+            matches!(restricted.outcome, FrameworkOutcome::Deny { .. }),
+            "source outside the effective restriction must deny, got {:?}",
+            restricted.outcome
+        );
+        let entry = restricted.log_entry.expect("denial is logged");
+        assert!(
+            entry.reasons.iter().any(|r| r == "out_of_policy"),
+            "reasons {:?}",
+            entry.reasons
+        );
     }
 
     #[test]
@@ -649,7 +770,7 @@ mod tests {
         // Oracle (design §8): a missing trust configuration never
         // activates a boundary.
         let eff = crate::boundary::effective(None, None, None).expect("composes");
-        let result = check(Surface::SignupLogin, &eff, &[]);
+        let result = check(EnforcementPoint::Login, &eff, &[]);
         assert_eq!(result.outcome, FrameworkOutcome::Allow);
     }
 
@@ -709,7 +830,7 @@ mod tests {
             FailureBehaviour::Deny,
         );
         let denied = check_surface(
-            Surface::BridgeFederationRelay,
+            EnforcementPoint::BridgeFederation,
             &eff,
             7,
             &ScopeRef::Server("srv".into()),
@@ -726,7 +847,7 @@ mod tests {
             denied.outcome
         );
         let allowed = check_surface(
-            Surface::BridgeFederationRelay,
+            EnforcementPoint::BridgeFederation,
             &eff,
             7,
             &ScopeRef::Server("srv".into()),
@@ -755,7 +876,7 @@ mod tests {
             c.basis = "basis-raw-xyz".into();
         }
         let eff = effective_for(&[EnforcementPoint::Login], FailureBehaviour::Deny);
-        let result = check(Surface::SignupLogin, &eff, &offered);
+        let result = check(EnforcementPoint::Login, &eff, &offered);
         let entry = result.log_entry.expect("denial is logged");
         let json = serde_json::to_string(&entry).expect("serialize entry");
         for raw in [
@@ -790,7 +911,7 @@ mod tests {
         assert_eq!(d.body.version, 7);
         let eff = crate::boundary::effective(Some(&d), None, None).expect("composes");
         let result = check(
-            Surface::SignupLogin,
+            EnforcementPoint::Login,
             &eff,
             &claims("alice", ResidencyAssurance::SelfDeclared),
         );
