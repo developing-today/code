@@ -163,6 +163,10 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
+            # #774 recurrence (2026-11-12): when the Magic Nix Cache proxy
+            # throttles (HTTP 418), fall back to building from source
+            # instead of hard-failing the check on the narinfo fetch.
+            fallback = true
 
       # Cache the nix store on GitHub's cache so main runs do not rebuild
       # unchanged derivations from a cold store every run (#288).
@@ -242,6 +246,10 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
+            # #774 recurrence (2026-11-12): when the Magic Nix Cache proxy
+            # throttles (HTTP 418), fall back to building from source
+            # instead of hard-failing the check on the narinfo fetch.
+            fallback = true
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
         continue-on-error: true
         with:
@@ -292,6 +300,10 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
+            # #774 recurrence (2026-11-12): when the Magic Nix Cache proxy
+            # throttles (HTTP 418), fall back to building from source
+            # instead of hard-failing the check on the narinfo fetch.
+            fallback = true
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
         continue-on-error: true
         with:
