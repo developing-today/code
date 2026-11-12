@@ -231,6 +231,8 @@ pub use id_worlds::directory_auth;
 #[cfg(feature = "world")]
 pub mod directory_log;
 #[cfg(feature = "world")]
+pub mod keyset;
+#[cfg(feature = "world")]
 pub use id_worlds::directory_mail;
 #[cfg(feature = "world")]
 pub use id_worlds::directory_view;
