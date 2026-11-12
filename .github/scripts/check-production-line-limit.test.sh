@@ -27,15 +27,26 @@ gen() { # gen <path> <production-lines> [test-lines]
 mkdir -p "$TMP/ok/pkgs/id/src/web"
 gen "$TMP/ok/pkgs/id/src/small.rs" 100
 gen "$TMP/ok/pkgs/id/src/long_with_tests.rs" 100 5000
-# The grandfather list is empty (world_session/mod.rs entry removed by
-# its #4717 split on main; web/markdown.rs entry removed by the #4704
-# split), so the compliant tree carries no grandfathered file. If a
-# future PR adds an entry, restore the fixture here: gen a 3000-line
-# file at the grandfathered path and grep the guard output for
-# "GRANDFATHERED <path>".
+gen "$TMP/ok/pkgs/id/src/boards.rs" 3000
+# Grandfathered files pass with a warning naming their split issue:
+# the fixture below gens a 3000-line file at a grandfathered path
+# (pkgs/id/src/boards.rs, #8891) and greps for its GRANDFATHERED line.
 bash "$SCRIPT" "$TMP/ok" >"$TMP/ok.out"
 grep -q "production-line-guard: OK" "$TMP/ok.out"
 echo "pass: compliant tree passes"
+grep -q "GRANDFATHERED pkgs/id/src/boards.rs: 3000 production lines (limit 2500) - split tracked by #8891" "$TMP/ok.out"
+echo "pass: grandfathered file passes with a warning naming its split issue"
+
+# A grandfathered file that MOVED keeps its exemption only when the
+# key names its current path (#8894): the id-worlds files live under
+# pkgs/id/crates/id-worlds/src/; with the pre-move pkgs/id/src/ key
+# this fixture would report OVER LIMIT instead of GRANDFATHERED.
+mkdir -p "$TMP/moved/pkgs/id/crates/id-worlds/src"
+gen "$TMP/moved/pkgs/id/crates/id-worlds/src/directory.rs" 3000
+bash "$SCRIPT" "$TMP/moved" >"$TMP/moved.out"
+grep -q "production-line-guard: OK" "$TMP/moved.out"
+grep -q "GRANDFATHERED pkgs/id/crates/id-worlds/src/directory.rs: 3000 production lines (limit 2500) - split tracked by #8591" "$TMP/moved.out"
+echo "pass: grandfather entry matches the file at its moved (crates/id-worlds) path"
 
 # Violating tree: one synthetic over-limit production file.
 mkdir -p "$TMP/bad/pkgs/id/src"
@@ -186,5 +197,21 @@ if grep -q "generated.rs" "$TMP/targetmask.out"; then
   exit 1
 fi
 echo "pass: target/ exclusion does not mask over-limit sources"
+
+# Every grandfather key in the guard must name a file that exists
+# in this repo (#8894): when pkgs/id's world files moved under
+# crates/id-worlds, the stale pkgs/id/src/ keys silently stopped
+# matching and main went red. A key naming a missing file is a bug,
+# not an exemption.
+REPO_ROOT="$(cd "$(dirname "$SCRIPT")/../.." && pwd)"
+stale_keys=0
+while IFS= read -r key; do
+  if [ ! -f "$REPO_ROOT/$key" ]; then
+    echo "FAIL: grandfathered path does not exist in the repo: $key" >&2
+    stale_keys=1
+  fi
+done < <(grep -oE '^[[:space:]]*\["[^"]+"\]' "$SCRIPT" | sed -E 's/.*\["([^"]+)"\].*/\1/')
+[ "$stale_keys" -eq 0 ]
+echo "pass: every grandfather entry names an existing file"
 
 echo "check-production-line-limit.test.sh: all contract tests passed"

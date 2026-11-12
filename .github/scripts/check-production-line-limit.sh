@@ -39,10 +39,15 @@ declare -A GRANDFATHERED=(
   ["pkgs/fleet/crates/fleet-queue/src/client.rs"]="#8588"
   ["pkgs/fleet/crates/fleet-queue/src/turso_queue.rs"]="#8589"
   ["pkgs/id/src/commands/serve.rs"]="#8590"
-  ["pkgs/id/src/directory.rs"]="#8591"
-  ["pkgs/id/src/world/actor.rs"]="#8592"
-  ["pkgs/id/src/world/core.rs"]="#8593"
-  ["pkgs/id/src/world_session/mod.rs"]="#8594"
+  ["pkgs/id/src/boards.rs"]="#8891"
+  # The four id-worlds files below moved from pkgs/id/src/ to
+  # pkgs/id/crates/id-worlds/src/ in the id crate restructure; a key
+  # must name the file's CURRENT path or the entry silently stops
+  # matching (#8894). The contract tests assert every key exists.
+  ["pkgs/id/crates/id-worlds/src/directory.rs"]="#8591"
+  ["pkgs/id/crates/id-worlds/src/world/actor.rs"]="#8592"
+  ["pkgs/id/crates/id-worlds/src/world/core.rs"]="#8593"
+  ["pkgs/id/crates/id-worlds/src/world_session/mod.rs"]="#8594"
 )
 
 # Count production lines of one file: every line that is not part of
