@@ -35,6 +35,26 @@ pub(super) fn form_retry_alias(
     (form_id.to_owned(), view_token, new_token.to_owned())
 }
 
+/// Tokens that must remain suppressed after a form is accepted: its current
+/// host token and both sides of the active retry alias, when present.
+pub(super) fn form_closed_aliases(
+    form_id: &str,
+    current_token: &str,
+    retry_alias: Option<&(String, String, String)>,
+) -> Vec<String> {
+    let mut tokens = vec![current_token.to_owned()];
+    if let Some((retry_id, view_token, retry_token)) = retry_alias
+        && retry_id == form_id
+    {
+        for token in [view_token, retry_token] {
+            if !tokens.iter().any(|known| known == token) {
+                tokens.push(token.clone());
+            }
+        }
+    }
+    tokens
+}
+
 /// One fetched input unit for the form collector.
 pub(super) enum FormBytes {
     Bytes(Vec<u8>),

@@ -778,8 +778,8 @@ struct SshIo {
     form_backlog: VecDeque<u8>,
     /// Whether a CR terminator was consumed, so a following LF is swallowed.
     form_after_cr: bool,
-    /// Last closed form presentation; stale redraws must not reactivate it.
-    closed_form: Option<(String, String)>,
+    /// Last closed form presentation and all token aliases; stale redraws must not reactivate it.
+    closed_form: Option<(String, Vec<String>)>,
     /// A retry token issued by the host, paired with the token on the stale view.
     retry_form_token: Option<(String, String, String)>,
 }
@@ -912,7 +912,7 @@ fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Opt
 }
 
 mod form_io;
-use form_io::{FormBytes, form_retry_alias, recv_bytes_through_probe};
+use form_io::{FormBytes, form_closed_aliases, form_retry_alias, recv_bytes_through_probe};
 
 impl SshIo {
     /// Encode one complete form answer; malformed JSON stays local to the SSH prompt.
@@ -1243,7 +1243,12 @@ impl SessionIo for SshIo {
                     if let Some(form) = self.active_form.as_ref()
                         && let Some(token) = form.presentation_token.clone()
                     {
-                        self.closed_form = Some((form.form_id.clone(), token));
+                        let aliases = form_closed_aliases(
+                            &form.form_id,
+                            &token,
+                            self.retry_form_token.as_ref(),
+                        );
+                        self.closed_form = Some((form.form_id.clone(), aliases));
                     }
                     self.active_form = None;
                     self.form_line.clear();
@@ -1293,9 +1298,12 @@ impl SessionIo for SshIo {
                 serde_json::from_value(surface.clone())
         {
             self.previous_screen = None;
-            if let Some((closed_id, closed_token)) = &self.closed_form
+            if let Some((closed_id, closed_tokens)) = &self.closed_form
                 && closed_id == &form.form_id
-                && form.presentation_token.as_ref() == Some(closed_token)
+                && form
+                    .presentation_token
+                    .as_ref()
+                    .is_some_and(|token| closed_tokens.contains(token))
             {
                 return true;
             }
@@ -3878,7 +3886,7 @@ mod tests {
     }
 
     #[test]
-    fn form_retry_alias_preserves_the_original_view_token_across_retries() {
+    fn test_form_retry_alias_preserves_the_original_view_token_across_retries() {
         let first = form_retry_alias(None, "form-1", "T0", "T1");
         assert_eq!(
             first,
@@ -3903,6 +3911,17 @@ mod tests {
             stale,
             ("form-1".to_owned(), "T7".to_owned(), "T8".to_owned())
         );
+    }
+
+    #[test]
+    fn test_closed_retried_form_suppresses_original_view_token() {
+        let first = form_retry_alias(None, "form-1", "T0", "T1");
+        let retry = form_retry_alias(Some(&first), "form-1", "T1", "T2");
+        let closed = form_closed_aliases("form-1", "T2", Some(&retry));
+
+        assert!(closed.contains(&"T0".to_owned()));
+        assert!(closed.contains(&"T2".to_owned()));
+        assert!(!form_closed_aliases("form-2", "T2", Some(&retry)).contains(&"T0".to_owned()));
     }
 
     #[tokio::test]
