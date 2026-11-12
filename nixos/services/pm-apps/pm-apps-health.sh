@@ -41,7 +41,7 @@ for app in $apps; do
     echo "pm-apps-health: $name ready ($url)"
   else
     if [ ! -f "$stamp" ]; then
-      echo "$now" > "$stamp"
+      echo "$now" >"$stamp"
       echo "pm-apps-health: $name dark, grace started ($url)"
     else
       first="$(cat "$stamp")"

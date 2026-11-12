@@ -16,7 +16,7 @@ behind this standard.
 A chunk of corpus content can come from a git repo at a commit, from a session
 store, from a chat log, or from a loose file on a machine at a date. Today those
 are recorded as prose ("OpenCode DB @ AMD laptop on this day", `repo@hash:path`)
-and every consumer that wants to know *where something came from* writes its own
+and every consumer that wants to know _where something came from_ writes its own
 regex. #6029 is parked because there is no single form to parse and validate
 against. This record settles that form: **one grammar, one formatter, one
 parser, one mechanical validation rule list**.
@@ -24,8 +24,8 @@ parser, one mechanical validation rule list**.
 ## 2. Chosen shape
 
 A **mark** is a single-line ASCII string naming one occurrence of content, of
-the shape `system[@…]` with an optional content hash. Three *named shapes* cover
-the common sources, and one *general form* covers everything else; all four are
+the shape `system[@…]` with an optional content hash. Three _named shapes_ cover
+the common sources, and one _general form_ covers everything else; all four are
 productions of one grammar and one parser.
 
 ```
@@ -91,7 +91,7 @@ parse  : &str -> Result<OccurrenceRef, MarkError>   // canonical only
 2. **Total and deterministic.** `format` emits byte-identical output for equal
    `OccurrenceRef` values: lowercase hex, UTC `Z` timestamps, `#`-fragment last.
 3. **Enumerated errors.** `MarkError` has one variant per validation rule (§5),
-   so an audit can report *why* a mark failed, not just that it did.
+   so an audit can report _why_ a mark failed, not just that it did.
 4. **No ambiguity.** The grammar admits exactly one parse per string (no
    optional-field ambiguity: in a host-mark a locator is present iff a `:`
    follows the third field; in a repo-mark the path contains no `@` (V2), so
@@ -105,30 +105,30 @@ directly storable.
 
 ## 5. Validation rules the audit (#6029) executes mechanically
 
-| # | Rule | Failure |
-| --- | --- | --- |
-| V1 | The string parses as `repo-mark` or `host-mark` of §3, canonical. | `Unparseable` |
-| V2 | `repo` only: `revision` is a full 40- or 64-hex object id; `path` is a relative POSIX path (no leading `/`, no `.`/`..` segment, no `#`, no `@`, NFC). | `BadRevision`, `BadPath` |
-| V3 | `host-mark` only: `system`, `host`, and any `opaque` locator contain no `@`, `:`, `#`, whitespace, or `Cc`/`Cf` character (#3455); `system` is not the reserved head `repo`. | `BadSystem`, `BadHost`, `BadLocator` |
-| V4 | `captured-at` (carried by both marks) is RFC 3339 UTC (`…Z`) or `YYYY-MM-DD` (input); the formatter always emits the UTC `T`…`Z` form (a date normalises to `T00:00:00Z`). The value is not in the future. | `BadTimestamp`, `FutureTimestamp` |
-| V5 | `hash`, where present, is `sha256:` followed by 64 lowercase hex characters. `sha256` is the v1 closed set; adding an algorithm is a spec change, not a local choice. | `BadHash` |
-| V6 | A `span:` locator has `start <= end`, both positive; a `line:` locator is positive. | `BadSpan` |
-| V7 | The content hash **verifies against the stored content** the mark describes (registry digest comparison, constant-time). | `HashMismatch` |
-| V8 | The mark maps to exactly one registry row tuple (§6): `(system, host, locator, captured_at, content_hash)`. A mark whose tuple is incomplete for its registry class is refused, not partly stored. | `IncompleteOccurrence` |
-| V9 | Round-trip: `parse(format(x)) == Ok(x)` for every `OccurrenceRef` the registry holds (property test over generated refs). | `RoundTripFailed` |
+| #   | Rule                                                                                                                                                                                                       | Failure                              |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| V1  | The string parses as `repo-mark` or `host-mark` of §3, canonical.                                                                                                                                          | `Unparseable`                        |
+| V2  | `repo` only: `revision` is a full 40- or 64-hex object id; `path` is a relative POSIX path (no leading `/`, no `.`/`..` segment, no `#`, no `@`, NFC).                                                     | `BadRevision`, `BadPath`             |
+| V3  | `host-mark` only: `system`, `host`, and any `opaque` locator contain no `@`, `:`, `#`, whitespace, or `Cc`/`Cf` character (#3455); `system` is not the reserved head `repo`.                               | `BadSystem`, `BadHost`, `BadLocator` |
+| V4  | `captured-at` (carried by both marks) is RFC 3339 UTC (`…Z`) or `YYYY-MM-DD` (input); the formatter always emits the UTC `T`…`Z` form (a date normalises to `T00:00:00Z`). The value is not in the future. | `BadTimestamp`, `FutureTimestamp`    |
+| V5  | `hash`, where present, is `sha256:` followed by 64 lowercase hex characters. `sha256` is the v1 closed set; adding an algorithm is a spec change, not a local choice.                                      | `BadHash`                            |
+| V6  | A `span:` locator has `start <= end`, both positive; a `line:` locator is positive.                                                                                                                        | `BadSpan`                            |
+| V7  | The content hash **verifies against the stored content** the mark describes (registry digest comparison, constant-time).                                                                                   | `HashMismatch`                       |
+| V8  | The mark maps to exactly one registry row tuple (§6): `(system, host, locator, captured_at, content_hash)`. A mark whose tuple is incomplete for its registry class is refused, not partly stored.         | `IncompleteOccurrence`               |
+| V9  | Round-trip: `parse(format(x)) == Ok(x)` for every `OccurrenceRef` the registry holds (property test over generated refs).                                                                                  | `RoundTripFailed`                    |
 
 The audit's result per string is therefore a decision from a closed set:
 **valid** (all rules pass) or one named failure — never "looks wrong".
 
 ## 6. Registry mapping (#3125 shape)
 
-| Mark part | Registry field (#3125) | Notes |
-| --- | --- | --- |
-| head `repo` / `system` / `chat` / other | `system` | `repo` folds to `system = "git"`, with `host = null` |
-| `revision` (repo) | `locator` = `commit:path`, plus `commit` | keeps `repo@commit:path` resolvable if the repo is later lost |
-| `captured-at` (repo) | `captured_at` | the `@` after the path carries it, exactly as in host marks; a repo occurrence captured twice at different times yields two distinct marks |
-| `host`, `at`, `locator`, `hash` | `host`, `captured_at`, `locator`, `content_hash` | the general tuple, always |
-| — | `observed_at` | registry write time, distinct from `captured-at` |
+| Mark part                               | Registry field (#3125)                           | Notes                                                                                                                                      |
+| --------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| head `repo` / `system` / `chat` / other | `system`                                         | `repo` folds to `system = "git"`, with `host = null`                                                                                       |
+| `revision` (repo)                       | `locator` = `commit:path`, plus `commit`         | keeps `repo@commit:path` resolvable if the repo is later lost                                                                              |
+| `captured-at` (repo)                    | `captured_at`                                    | the `@` after the path carries it, exactly as in host marks; a repo occurrence captured twice at different times yields two distinct marks |
+| `host`, `at`, `locator`, `hash`         | `host`, `captured_at`, `locator`, `content_hash` | the general tuple, always                                                                                                                  |
+| —                                       | `observed_at`                                    | registry write time, distinct from `captured-at`                                                                                           |
 
 Rules that follow: **every occurrence carries its content hash** (the hash is
 what makes the occurrence verifiable without the original source); `observed_at`
@@ -138,15 +138,15 @@ becomes directly derivable from parsed text.
 
 ## 7. Alternatives rejected, and why
 
-| Alternative | Why rejected |
-| --- | --- |
-| **Regex-per-source, no grammar** | The status quo: variants accumulate, each consumer scrapes differently, and #6029 cannot be a parse-and-validate job. |
-| **Free prose ("OpenCode DB @ AMD laptop on this day")** | Human-readable, not machine-parseable; the tuple is exactly what this grammar makes explicit. |
-| **A URI scheme (`atlas://repo/…`)** | Needs percent-encoding for hosts, paths, and dates; the `@` form copies git/npm/OCI conventions that both authors and readers already know. |
-| **JSON embedded in the mark** | Correct but illegible in prose, and it invites schema drift inside a single field. |
-| **One mark per field** (a separate host mark, date mark, hash mark) | Multiplies forms and forces consumers to reassemble the tuple; the composite mark is the unit the registry stores. |
-| **Abbreviated commit SHAs** | Ambiguity without repository context; an occurrence must resolve from the mark alone. The formatter accepts full ids only. |
-| **Hash separate from the mark** | A mark without its hash cannot be validated where the repo/DB is gone, which is the case #6029 exists to audit. |
+| Alternative                                                         | Why rejected                                                                                                                                |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Regex-per-source, no grammar**                                    | The status quo: variants accumulate, each consumer scrapes differently, and #6029 cannot be a parse-and-validate job.                       |
+| **Free prose ("OpenCode DB @ AMD laptop on this day")**             | Human-readable, not machine-parseable; the tuple is exactly what this grammar makes explicit.                                               |
+| **A URI scheme (`atlas://repo/…`)**                                 | Needs percent-encoding for hosts, paths, and dates; the `@` form copies git/npm/OCI conventions that both authors and readers already know. |
+| **JSON embedded in the mark**                                       | Correct but illegible in prose, and it invites schema drift inside a single field.                                                          |
+| **One mark per field** (a separate host mark, date mark, hash mark) | Multiplies forms and forces consumers to reassemble the tuple; the composite mark is the unit the registry stores.                          |
+| **Abbreviated commit SHAs**                                         | Ambiguity without repository context; an occurrence must resolve from the mark alone. The formatter accepts full ids only.                  |
+| **Hash separate from the mark**                                     | A mark without its hash cannot be validated where the repo/DB is gone, which is the case #6029 exists to audit.                             |
 
 ## 8. Invariants implementation must hold
 
@@ -157,7 +157,7 @@ becomes directly derivable from parsed text.
 4. Lowercase hex, UTC `Z`, and `#`-last are canonical and enforced on output;
    input is normalised to them or refused (never silently stored un-normalised).
 5. A registry occurrence always carries a verifying content hash (V7, V8); an
-   unhashed prose mention may be recorded as *text*, never as an occurrence.
+   unhashed prose mention may be recorded as _text_, never as an occurrence.
 6. `captured-at` and `observed_at` are distinct fields; the mark never carries
    registry bookkeeping.
 7. Adding a hash algorithm or a new reserved head is a spec change recorded
@@ -172,10 +172,10 @@ formatter/parser follows as its own task.
 
 ## 10. Open questions (with defaults)
 
-| Question | Default |
-| --- | --- |
+| Question                                                                      | Default                                                                                                                                               |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Does the registry store `sha256` or another digest (e.g. blake3) as CAS hash? | v1 fixes `sha256`; if the CAS uses another algorithm, the hash-alg token is the single extension point and this record is amended rather than forked. |
-| Is `line:` 1-based? | Yes, 1-based, matching editor and git-blame convention. |
-| Do spans allow a byte range as well as a line range? | `span:` is a line range in v1; byte ranges are a future token, not an `opaque` dodge. |
-| How are multi-line occurrences recorded? | As one mark per chunk with a `span:` locator; a chunk with several disjoint ranges gets several occurrence rows for one mark tuple. |
-| Where does the module live? | The implementation task decides; the grammar is host-neutral. |
+| Is `line:` 1-based?                                                           | Yes, 1-based, matching editor and git-blame convention.                                                                                               |
+| Do spans allow a byte range as well as a line range?                          | `span:` is a line range in v1; byte ranges are a future token, not an `opaque` dodge.                                                                 |
+| How are multi-line occurrences recorded?                                      | As one mark per chunk with a `span:` locator; a chunk with several disjoint ranges gets several occurrence rows for one mark tuple.                   |
+| Where does the module live?                                                   | The implementation task decides; the grammar is host-neutral.                                                                                         |

@@ -40,4 +40,3 @@ queues. The matching model (Drew, 2026-11-10; #8097):
   item names a platform beyond the optional coarse family mark; Muse
   lanes work their own fixes and triage is a separate step; lanes do
   the work rather than handing off, and a handoff records its reason.
-

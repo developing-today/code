@@ -52,7 +52,7 @@ countFile="$HOME/.local/state/lab-tunnel-watchdog/consecutive-failures"
 failures=0
 
 check() { # check <description> <expected> <actual>
-  if [[ "$2" == "$3" ]]; then
+  if [[ $2 == "$3" ]]; then
     echo "PASS: $1"
   else
     echo "FAIL: $1 (expected [$2], got [$3])"
