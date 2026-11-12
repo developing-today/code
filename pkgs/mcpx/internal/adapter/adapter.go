@@ -129,6 +129,12 @@ type Param struct {
 	// Repeat sends an array as several occurrences of the flag rather than
 	// one comma-joined value, which is what most programs actually accept.
 	Repeat bool `json:"repeat,omitempty"`
+	// Global marks a program-wide option: it is emitted before the
+	// tool's subcommand arguments, where programs require their
+	// global options to stand (git -C <path> status, never
+	// git status -C <path>). Generated declarations set it for the
+	// options parsed from a program-level source (#1962).
+	Global bool `json:"global,omitempty"`
 	// Default is used when the caller omits it.
 	Default string `json:"default,omitempty"`
 	// Enum restricts the value.
@@ -402,10 +408,17 @@ func (s Spec) Call(ctx context.Context, tool string, args map[string]any) (*Resu
 
 // buildArgs turns named arguments into a command line.
 func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
-	out := append([]string{}, t.Args...)
+	// Global parameters are emitted before the tool's fixed Args:
+	// they are the program's own options, and programs that take
+	// them at all take them before the subcommand.
+	var pre, post []string
 	stdin := ""
 
 	for _, p := range t.Params {
+		emit := &post
+		if p.Global {
+			emit = &pre
+		}
 		raw, given := args[p.Name]
 		if !given || raw == nil {
 			if p.Required {
@@ -438,21 +451,21 @@ func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
 		// wrong for almost every program ever written.
 		if p.Type == "boolean" {
 			if len(values) == 1 && values[0] == "true" && p.Flag != "" {
-				out = append(out, p.Flag)
+				*emit = append(*emit, p.Flag)
 			}
 			continue
 		}
 		if p.Flag == "" {
-			out = append(out, values...)
+			*emit = append(*emit, values...)
 			continue
 		}
 		if p.Repeat {
 			for _, v := range values {
-				out = append(out, p.Flag, v)
+				*emit = append(*emit, p.Flag, v)
 			}
 			continue
 		}
-		out = append(out, p.Flag, strings.Join(values, ","))
+		*emit = append(*emit, p.Flag, strings.Join(values, ","))
 	}
 	// A key that names no declared parameter is a caller mistake — a typo is
 	// otherwise indistinguishable from success, and the executed command
@@ -474,6 +487,8 @@ func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
 		return nil, "", fmt.Errorf("unknown argument %q (declared parameters: %s)",
 			strings.Join(unknown, ", "), strings.Join(names, ", "))
 	}
+	out := append(pre, t.Args...)
+	out = append(out, post...)
 	return out, stdin, nil
 }
 
@@ -571,7 +586,12 @@ func (s Spec) VersionDrift(ctx context.Context) (declared, found string, drift b
 	for k, v := range s.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	out, runErr := cmd.Output()
+	// CombinedOutput, matching the import probe (runCapture): a
+	// binary whose --version writes to stderr recorded that version
+	// at import time, so the drift check reads the same streams --
+	// stdout alone would find no version in a freshly generated
+	// declaration whose binary has not changed at all.
+	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		return declared, "", false, fmt.Errorf("%s: running %s --version: %w", s.Name, s.Command, runErr)
 	}

@@ -432,3 +432,130 @@ func TestGenerateForGitFromHelp(t *testing.T) {
 		t.Errorf("recorded version %q should match live git %q", spec.Provenance.BinaryVersion, want)
 	}
 }
+
+// The tests below pin the Codex review findings on PR #9041: each
+// names the external behaviour it is an oracle for.
+
+func TestParseHelpCommandsWithPositionals(t *testing.T) {
+	// Oracle: networkctl's real --help shape -- a command entry
+	// carrying positional syntax still names that command, with
+	// the description from its column.
+	const fixture = `networkctl [OPTIONS...] COMMAND ...
+
+Commands:
+  list [PATTERN...]      List links
+  status [PATTERN...]    Show link status
+  up DEVICES...          Bring devices up
+  reload                 Reload configuration
+`
+	parsed := parseHelpText(fixture)
+	descs := map[string]string{}
+	for _, tool := range parsed.tools {
+		descs[tool.name] = tool.description
+	}
+	for name, want := range map[string]string{
+		"list": "List links", "status": "Show link status",
+		"up": "Bring devices up", "reload": "Reload configuration",
+	} {
+		if got, ok := descs[name]; !ok || got != want {
+			t.Errorf("command %q: got %q (present %v), want %q", name, got, ok, want)
+		}
+	}
+}
+
+func TestZshFlagSpecArgAfterDescription(t *testing.T) {
+	// Oracle: the zsh _arguments grammar -- ':format:' after the
+	// description bracket is the option's argument field, so the
+	// option takes a value; no field after the bracket is boolean.
+	f, ok := parseZshFlagSpec("--json[Shows output formatted as JSON]:format:_networkctl_get_json")
+	if !ok || f.arg == "" || f.description != "Shows output formatted as JSON" {
+		t.Errorf("an argument field after the description makes the flag value-taking: %+v ok=%v", f, ok)
+	}
+	f, ok = parseZshFlagSpec("--verbose[Say more]")
+	if !ok || f.arg != "" {
+		t.Errorf("no argument field means boolean: %+v ok=%v", f, ok)
+	}
+}
+
+func TestGenerateCompletionRejectsPositional(t *testing.T) {
+	// Oracle: every argument must be accounted for -- a positional
+	// beside --completion names a different program than the file
+	// describes and must be refused, never silently ignored.
+	dir := t.TempDir()
+	file := filepath.Join(dir, "faketool.fish")
+	if err := os.WriteFile(file, []byte(fishFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts, err := splitImportArgsFull([]string{"intended-binary", "--completion", file})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generateImport(opts, genNow); err == nil {
+		t.Fatal("a positional argument beside --completion must be refused")
+	}
+}
+
+func TestGenerateFromCompletionKeepsExecutableSpelling(t *testing.T) {
+	// Oracle: the file's name names the executable as installed --
+	// python3.12 is probed and run as python3.12, while the
+	// adapter namespace normalizes to python3-12 so a call can
+	// address it.
+	if got := completionName("/x/python3.12.fish"); got != "python3.12" {
+		t.Fatalf("completionName keeps the executable spelling: %q", got)
+	}
+	dir := t.TempDir()
+	file := filepath.Join(dir, "python3.12.fish")
+	if err := os.WriteFile(file, []byte(fishFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts, err := splitImportArgsFull([]string{"--completion", file})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := generateImport(opts, genNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Command != "python3.12" || spec.Name != "python3-12" {
+		t.Errorf("command keeps the executable spelling, namespace normalizes: name=%q command=%q", spec.Name, spec.Command)
+	}
+}
+
+func TestGeneratedGlobalParamsAreMarkedGlobal(t *testing.T) {
+	// Oracle: the generated declaration itself -- options parsed
+	// from a program-level source are marked Global on every tool,
+	// so buildArgs stands them before the subcommand.
+	spec, err := buildGeneratedSpec("faketool", "faketool", "help", helpFixture,
+		parseHelpText(helpFixture), "", "", genNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range spec.Tools {
+		for _, p := range tool.Params {
+			if p.Name == "verbose" && !p.Global {
+				t.Errorf("tool %s: the program-level --verbose is not marked global: %+v", tool.Name, p)
+			}
+		}
+	}
+}
+
+func TestVersionDriftReadsStderrVersion(t *testing.T) {
+	// Oracle: the binary's own --version, on whichever stream it
+	// writes -- the import probe reads combined output, so the
+	// drift check must too, or an unchanged binary whose version
+	// goes to stderr reads as versionless.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "faketool")
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'faketool version 1.2.3' >&2; exit 0; fi\nexit 1\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := adapter.Spec{
+		Name: "faketool", Command: path,
+		Provenance: &adapter.Provenance{Source: "help", BinaryVersion: "1.2.3"},
+	}
+	_, found, drift, err := spec.VersionDrift(t.Context())
+	if err != nil || drift || found != "1.2.3" {
+		t.Fatalf("a version printed to stderr compares like any other: found=%q drift=%v err=%v", found, drift, err)
+	}
+}

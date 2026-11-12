@@ -446,3 +446,27 @@ func TestARelativeExecutableResolvesAgainstDirWithoutARuntime(t *testing.T) {
 		t.Errorf("got %q", res.Stdout)
 	}
 }
+
+func TestCallEmitsGlobalParamsBeforeSubcommand(t *testing.T) {
+	// Oracle: the program's own argv grammar -- a global option
+	// stands before the subcommand (git -C <path> status); after
+	// it, the program rejects it as an unknown switch. The
+	// declaration order of the parameters must not matter.
+	spec := adapter.Spec{
+		Name: "demo", Command: "echo",
+		Tools: []adapter.ToolSpec{{
+			Name: "status", Args: []string{"status"},
+			Params: []adapter.Param{
+				{Name: "verbose", Type: "boolean", Flag: "--verbose"},
+				{Name: "c", Flag: "-C", Global: true},
+			},
+		}},
+	}
+	res, err := spec.Call(context.Background(), "status", map[string]any{"c": "/repo", "verbose": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, "-C /repo status --verbose") {
+		t.Errorf("globals precede the subcommand, tool params follow it: got %q", res.Stdout)
+	}
+}

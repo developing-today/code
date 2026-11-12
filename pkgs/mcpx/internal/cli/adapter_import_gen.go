@@ -196,28 +196,65 @@ func isPlaceholder(tok string) bool {
 }
 
 // commandEntry parses one commands-section line. An entry is a
-// name alone, or a name followed by a column gap (two or more
-// spaces, or a tab) and its description -- the layout every help
-// and man formatter uses for a list. A single-space line is prose
-// that happens to sit in the section (a paragraph's tail line
-// starts with a lowercase word too), and is not an entry.
+// name alone, a name followed by positional placeholders
+// (list [PATTERN...], up DEVICES...), or either followed by a
+// column gap (two or more spaces, or a tab) and its description --
+// the layout every help and man formatter uses for a list. A
+// single-space line carrying no placeholders is prose that happens
+// to sit in the section (a paragraph's tail line starts with a
+// lowercase word too), and is not an entry.
 func commandEntry(trimmed string) (name, desc string, ok bool) {
-	name, rest, found := strings.Cut(trimmed, " ")
-	if !found {
-		name = stripManRef(trimmed)
-		if genCommandNameRe.MatchString(name) && name != "help" {
-			return name, "", true
+	// Tokenise, remembering each token's offset: the tokens after
+	// the name are first the command's own positional syntax, then
+	// its description column.
+	type entryToken struct {
+		text  string
+		start int
+		gap   string
+	}
+	var toks []entryToken
+	for i := 0; i < len(trimmed); {
+		gapStart := i
+		for i < len(trimmed) && (trimmed[i] == ' ' || trimmed[i] == '\t') {
+			i++
 		}
+		gap := trimmed[gapStart:i]
+		if i >= len(trimmed) {
+			break
+		}
+		start := i
+		for i < len(trimmed) && trimmed[i] != ' ' && trimmed[i] != '\t' {
+			i++
+		}
+		toks = append(toks, entryToken{text: trimmed[start:i], start: start, gap: gap})
+	}
+	if len(toks) == 0 {
 		return "", "", false
 	}
-	if !strings.HasPrefix(rest, " ") && !strings.HasPrefix(rest, "\t") {
-		return "", "", false
-	}
-	name = stripManRef(name)
+	name = stripManRef(toks[0].text)
 	if !genCommandNameRe.MatchString(name) || name == "help" {
 		return "", "", false
 	}
-	return name, strings.TrimSpace(rest), true
+	rest := toks[1:]
+	// Consume the synopsis's positional placeholders: they are part
+	// of the command's own syntax, not its description.
+	consumed := 0
+	for consumed < len(rest) && isPlaceholder(rest[consumed].text) {
+		consumed++
+	}
+	rest = rest[consumed:]
+	if len(rest) == 0 {
+		// A name alone, or a name with only its positionals.
+		return name, "", true
+	}
+	// What remains is the description. With no positionals consumed
+	// it must start after a column gap: a single space means prose.
+	// After consumed positionals the synopsis itself is the signal,
+	// and the remainder is the description whatever its gap.
+	if consumed == 0 && !strings.HasPrefix(rest[0].gap, "  ") && !strings.Contains(rest[0].gap, "\t") {
+		return "", "", false
+	}
+	return name, trimmed[rest[0].start:], true
 }
 
 // stripManRef removes a trailing man-page section reference, the
@@ -622,6 +659,15 @@ func parseZshFlagSpec(seg string) (genFlag, bool) {
 	} else if strings.HasPrefix(rest, "[") {
 		if close := strings.Index(rest, "]"); close > 0 {
 			f.description = rest[1:close]
+			// '--json[format the output]:format:_fn' -- an
+			// argument field after the description says the
+			// option takes a value. Without it the flag is
+			// boolean; dropping the field would expose a
+			// value-taking option as a boolean.
+			if suffix := rest[close+1:]; strings.HasPrefix(suffix, ":") &&
+				strings.Trim(suffix, ":") != "" {
+				f.arg = "<value>"
+			}
 		}
 	} else if strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, ":") {
 		f.arg = "<value>"
@@ -646,6 +692,11 @@ func buildGeneratedSpec(name, command, source, sourceText string, parsed genPars
 	globalParams := make([]adapter.Param, 0, len(parsed.global))
 	for _, f := range parsed.global {
 		globalParams = append(globalParams, f.param())
+	}
+	// Program-wide options stand before the subcommand when the
+	// declaration is called, not after it (adapter.Param.Global).
+	for i := range globalParams {
+		globalParams[i].Global = true
 	}
 	if len(parsed.tools) == 0 {
 		// A single-surface program: one tool named run, like the
@@ -863,15 +914,21 @@ func inferShell(path, text string) string {
 	}
 }
 
-// completionName derives the adapter name from a completion file:
-// _git -> git, git.fish -> git, git.bash -> git.
+// completionName derives the executable a completion file
+// describes from the file's name: _git -> git, git.fish -> git,
+// python3.12.fish -> python3.12. The executable keeps its real
+// spelling -- it is what gets probed and run. The adapter
+// namespace derived from it is normalized separately, by
+// importNameAndCommand's rule (dots become dashes: a call names
+// <name>.<tool> and splits at the first dot, so a dotted namespace
+// would be unaddressable).
 func completionName(path string) string {
 	base := filepath.Base(path)
 	base = strings.TrimPrefix(base, "_")
 	if ext := filepath.Ext(base); ext != "" {
 		base = strings.TrimSuffix(base, ext)
 	}
-	return strings.ReplaceAll(base, ".", "-")
+	return base
 }
 
 // generateImport is adapterImport's non-bare path: walk the ladder
@@ -879,6 +936,15 @@ func completionName(path string) string {
 // help) and build the declaration from the first usable rung.
 func generateImport(opts *importOptions, now time.Time) (adapter.Spec, error) {
 	if opts.completion != "" {
+		// Every argument must be accounted for before any side
+		// effect: --completion names the program itself, so a
+		// positional binary alongside it would name a different
+		// program than the file describes. Refuse it as the usage
+		// error it is, before reading or probing anything.
+		if len(opts.rest) != 0 {
+			fmt.Fprintln(os.Stderr, importUsage)
+			return adapter.Spec{}, fmt.Errorf("mcpx adapter import --completion takes no binary argument (got %s): the completion file names the program it describes; use --name to name a different one", strings.Join(opts.rest, " "))
+		}
 		data, err := os.ReadFile(opts.completion)
 		if err != nil {
 			return adapter.Spec{}, fmt.Errorf("reading completion file: %w", err)
@@ -890,14 +956,14 @@ func generateImport(opts *importOptions, now time.Time) (adapter.Spec, error) {
 		// --name names the program the completion describes (its
 		// binary and command), not just the adapter: a completion
 		// file's own name is not always the program's (a fixture, a
-		// download), and the name is the only place to say so.
+		// download), and the name is the only place to say so. The
+		// executable keeps its real spelling (python3.12); the
+		// adapter namespace is that spelling with dots as dashes.
 		binName := completionName(opts.completion)
-		name := opts.name
-		if name == "" {
-			name = binName
-		} else {
-			binName = name
+		if opts.name != "" {
+			binName = opts.name
 		}
+		name := strings.ReplaceAll(binName, ".", "-")
 		resolved, version := probeBinaryVersion(binName)
 		return buildGeneratedSpec(name, binName, "completion", string(data),
 			parseCompletionText(shell, string(data)), resolved, version, now)

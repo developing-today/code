@@ -340,7 +340,7 @@ type importOptions struct {
 	source      string // auto (default), completion, man, help or bare
 	completion  string // --completion <file>: a completion script as input
 	shell       string // bash, zsh or fish; inferred when empty
-	name        string // --name: adapter name override for --completion
+	name        string // --name: the program a --completion file describes (executable spelling; the adapter namespace normalizes its dots to dashes)
 	rest        []string
 }
 
