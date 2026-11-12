@@ -1004,8 +1004,11 @@ ${decisionsDraftScript(set.setId)}
  * public surface, and the per-set token model is untouched. */
 const CHICAGO_STAMP = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/Chicago",
-  dateStyle: "medium",
-  timeStyle: "short",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
   timeZoneName: "short",
 });
 
