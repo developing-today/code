@@ -1340,6 +1340,119 @@ fn model_stamp_flags(
     }
 }
 
+/// #8176 (2026-11-12 fix): read the claim stamp off a session
+/// record (the OpenCode server's GET /api/session/<id> shape,
+/// enveloped in `data` or bare): the session's own model —
+/// providerID + id, variant only when the session carries a real
+/// effort variant (the server reports "default" when none was
+/// chosen; that is the absence of a variant, not a variant).
+/// Pure: the oracle for the derivation below.
+fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String>)> {
+    let inner = if session.get("model").is_some() {
+        session
+    } else {
+        session.get("data")?
+    };
+    let model = inner.get("model")?;
+    let provider = model
+        .get("providerID")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let id = model
+        .get("id")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let variant = model
+        .get("variant")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "default");
+    Some((
+        provider.to_string(),
+        id.to_string(),
+        variant.map(str::to_string),
+    ))
+}
+
+/// Minimal base64 (standard alphabet, padded) for the server's
+/// Basic auth header — the crate carries no base64 dependency and
+/// this is the only encoding the claim path needs.
+fn b64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let n = ((chunk[0] as u32) << 16)
+            | ((*chunk.get(1).unwrap_or(&0) as u32) << 8)
+            | (*chunk.get(2).unwrap_or(&0) as u32);
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// #8176 (2026-11-12 fix): derive the claim stamp for a claim that
+/// names its claiming session (--session-id) but carries no
+/// explicit --model-* flags. The dispatch surfaces claim on behalf
+/// of a live session and name it, but the #8176 wiring stopped at
+/// the transfer path — the batch claims that carry the fleet's
+/// volume never passed the flags, so in production the stamp
+/// landed only on hand-driven proof claims (4 stamped claims of
+/// 12,684 in the Nov 10-12 window, 3 of them worker `proof-8176`).
+/// The session's own record is the authority (the same record
+/// route_usage reads), fetched from the OpenCode server with its
+/// Basic auth (password in the server's state file — claimant.py's
+/// route; the value is used for the header only, never logged).
+/// FAIL-SOFT by design: any failure — no state file, server
+/// unreachable, session unknown, malformed record — returns None
+/// and the claim proceeds exactly as an unstamped claim always
+/// has; a claim must never fail because its stamp could not be
+/// derived.
+fn derive_claim_model_stamp(session_id: &str) -> Option<(String, String, Option<String>)> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return None;
+    }
+    let base = std::env::var("OPENCODE_SERVER_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:13420".to_string());
+    let home = crate::home::from_env().ok()?;
+    let state =
+        std::fs::read_to_string(format!("{home}/.local/state/opencode/service-prod.json")).ok()?;
+    let state: Value = serde_json::from_str(&state).ok()?;
+    let password = state.get("password")?.as_str()?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(true)
+        .timeout_global(Some(Duration::from_secs(3)))
+        .build()
+        .into();
+    let auth = format!(
+        "Basic {}",
+        b64_encode(format!("opencode:{password}").as_bytes())
+    );
+    let mut resp = agent
+        .get(format!("{base}/api/session/{session_id}"))
+        .header("Authorization", &auth)
+        .call()
+        .ok()?;
+    let text = resp.body_mut().read_to_string().ok()?;
+    let session: Value = serde_json::from_str(&text).ok()?;
+    session_model_stamp(&session)
+}
+
 fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_args(rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -1691,6 +1804,429 @@ pub(crate) fn claim_bind_path(
     }
 }
 
+/// #9046: append one timeline record (model_stamp / session_bound
+/// / session_unbound) through the broker's generic /events-append
+/// verb. Fail-soft by design: a timeline record must never fail
+/// the operation it annotates.
+fn append_timeline_event(worker: &str, task_id: i64, kind: &str, detail: Value) {
+    let resp = call(
+        "/events-append",
+        &json!({
+            "worker_id": worker,
+            "task_id": task_id,
+            "kind": kind,
+            "detail": detail,
+        }),
+    );
+    if resp.get("ok").and_then(|o| o.as_bool()) != Some(true) {
+        eprint(&format!(
+            "repo-queue: warning: {kind} timeline append for task {task_id} failed"
+        ));
+    }
+}
+
+/// #9046: the stamp a claim surface carries, as (provider, model,
+/// variant) — read back off the request body cmd_claim built, so
+/// explicit flags and session-derived stamps are indistinguishable
+/// here (both were resolved before the claim was sent).
+fn body_stamp(body: &Value) -> Option<(String, String, Option<String>)> {
+    let provider = body.get("model_provider")?.as_str()?.to_string();
+    let model = body.get("model_id")?.as_str()?.to_string();
+    let variant = body
+        .get("model_variant")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Some((provider, model, variant))
+}
+
+/// #9046: after a claim, mirror the binding + stamp into the
+/// task's timeline when the broker did not write them itself.
+/// Capability signal: a broker that stamps in-op (post-#9046)
+/// returns claim_session_id on the claimed row (TASK_COLS carries
+/// it); a pre-switch broker's row has no such key, and
+/// /events-append is the live path. Post-switch this is a no-op.
+fn claim_timeline_appends(
+    worker: &str,
+    row: &Value,
+    stamp: &Option<(String, String, Option<String>)>,
+    session_id: &Option<String>,
+    trigger: &str,
+) {
+    if row.get("claim_session_id").is_some() {
+        return;
+    }
+    let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    if task_id == 0 {
+        return;
+    }
+    if let Some(sid) = session_id {
+        append_timeline_event(
+            worker,
+            task_id,
+            "session_bound",
+            json!({"session_id": sid, "trigger": trigger, "via": "fleet-cli"}),
+        );
+    }
+    if let Some((provider, model, variant)) = stamp {
+        append_timeline_event(
+            worker,
+            task_id,
+            "model_stamp",
+            json!({
+                "session_id": session_id,
+                "provider": provider,
+                "model": model,
+                "variant": variant,
+                "trigger": trigger,
+                "via": "fleet-cli",
+            }),
+        );
+    }
+}
+
+/// #9046: mirror a binding close into the timeline when a
+/// transition verb's answer row shows the task had a session
+/// bound (progress.session_id, or the just-cleared
+/// progress.session_cleared.session_id). A post-switch broker
+/// writes session_unbound in-op; the timeline reader collapses
+/// the duplicate (same kind/session/trigger inside 120 s).
+fn unbound_append(worker: &str, row: &Value, trigger: &str) {
+    let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    if task_id == 0 {
+        return;
+    }
+    let progress = row.get("progress").cloned().unwrap_or(Value::Null);
+    let sid = progress
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            progress
+                .get("session_cleared")
+                .and_then(|c| c.get("session_id"))
+                .and_then(|v| v.as_str())
+        });
+    if let Some(sid) = sid {
+        append_timeline_event(
+            worker,
+            task_id,
+            "session_unbound",
+            json!({"session_id": sid, "trigger": trigger, "via": "fleet-cli"}),
+        );
+    }
+}
+
+/// #9046: fleet session ids are `ses_` + alphanumerics — the
+/// shape every session surface mints. Anything else is not a
+/// session id and must never reach a route_attempt SQL string.
+fn valid_session_id(s: &str) -> bool {
+    s.len() > 4 && s.starts_with("ses_") && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// #9046: the OpenCode server's raw route ledger — the data the
+/// session join reads (route proxy's OPENCODE_ROUTE_PROXY_DB).
+fn route_attempt_db() -> String {
+    std::env::var("OPENCODE_ROUTE_PROXY_DB")
+        .unwrap_or_else(|_| format!("{}/.local/share/opencode/opencode.db", home()))
+}
+
+/// #9046: the dominant serving leaf for one session over one
+/// window, by route_attempt call count (the close-out summary).
+/// Read-only sqlite3 shell-out; None on any failure — callers
+/// proceed without the summary rather than blocking.
+fn dominant_model_for_session(session_id: &str, start_ms: i64, end_ms: i64) -> Option<Value> {
+    if !valid_session_id(session_id) || end_ms <= start_ms {
+        return None;
+    }
+    let sql = format!(
+        "SELECT provider_id, model_id, variant, COUNT(*) AS c FROM route_attempt \
+         WHERE session_id = '{session_id}' AND time_started >= {start_ms} \
+         AND time_started < {end_ms} \
+         GROUP BY provider_id, model_id, variant ORDER BY c DESC LIMIT 1"
+    );
+    let out = std::process::Command::new("sqlite3")
+        .args(["-readonly", "-json", &route_attempt_db(), &sql])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let rows: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let r = rows.as_array()?.first()?;
+    Some(json!({
+        "provider": r.get("provider_id")?,
+        "model": r.get("model_id")?,
+        "variant": r.get("variant").cloned().unwrap_or(Value::Null),
+        "calls": r.get("c")?,
+        "session_id": session_id,
+        "window_start_ms": start_ms,
+        "window_end_ms": end_ms,
+        "source": "route_attempt",
+    }))
+}
+
+/// #9046: the exact model segments one session served inside one
+/// window, from route_attempt (provider/model/variant + call
+/// count, chronological). None when the raw data is unreachable.
+fn route_segments_for_session(session_id: &str, start_ms: i64, end_ms: i64) -> Option<Vec<String>> {
+    if !valid_session_id(session_id) || end_ms <= start_ms {
+        return None;
+    }
+    let sql = format!(
+        "SELECT provider_id, model_id, variant, COUNT(*) AS c FROM route_attempt \
+         WHERE session_id = '{session_id}' AND time_started >= {start_ms} \
+         AND time_started < {end_ms} \
+         GROUP BY provider_id, model_id, variant ORDER BY MIN(time_started)"
+    );
+    let out = std::process::Command::new("sqlite3")
+        .args(["-readonly", "-json", &route_attempt_db(), &sql])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let rows: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let mut segs = Vec::new();
+    for r in rows.as_array()? {
+        let variant = r
+            .get("variant")
+            .and_then(|v| v.as_str())
+            .map(|v| format!("#{v}"))
+            .unwrap_or_default();
+        segs.push(format!(
+            "session={} {}/{}{} x{}",
+            session_id,
+            r.get("provider_id")?.as_str()?,
+            r.get("model_id")?.as_str()?,
+            variant,
+            r.get("c")?.as_i64()?,
+        ));
+    }
+    Some(segs)
+}
+
+/// #9046: the close-out summary for a task being completed: its
+/// bound session (progress.session_id) over its claim window
+/// [claimed_at, now], resolved against route_attempt. Needs the
+/// task's queue to fetch its row; every miss returns None and
+/// the completion proceeds without the summary.
+fn dominant_model_for_task(args: &Args, task_id: i64) -> Option<Value> {
+    let queue = opt_queue_claim(args)?;
+    let resp = call(
+        "/list",
+        &json!({"queue": queue, "rich": true, "task": task_id, "limit": 1}),
+    );
+    let row = resp.get("rows")?.as_array()?.first()?;
+    let session = row.get("progress")?.get("session_id")?.as_str()?;
+    let start_ms = parse_ts(row.get("claimed_at")?)? / 1000;
+    let end_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    dominant_model_for_session(session, start_ms, end_ms)
+}
+
+/// #9046: one timeline record as the reader keeps it, normalized
+/// over an /events-list row (pre-#9046 kinds fold in:
+/// lane_session_bound is a bind, session_binding_cleared an
+/// unbind; a claimed event's detail carries its session).
+#[derive(Debug, Clone, PartialEq)]
+struct TimelineEvent {
+    id: i64,
+    kind: String,
+    session_id: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    variant: Option<String>,
+    trigger: Option<String>,
+    created_at: String,
+    created_us: i64,
+}
+
+fn timeline_event(row: &Value) -> Option<TimelineEvent> {
+    let detail = match row.get("detail") {
+        Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(Value::Null),
+        Some(v) => v.clone(),
+        None => Value::Null,
+    };
+    let str_at = |key: &str| detail.get(key).and_then(|x| x.as_str()).map(str::to_string);
+    let kind = row.get("kind")?.as_str()?;
+    let kind = match kind {
+        "lane_session_bound" => "session_bound",
+        "session_binding_cleared" => "session_unbound",
+        other => other,
+    }
+    .to_string();
+    Some(TimelineEvent {
+        id: row.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+        kind,
+        session_id: str_at("session_id"),
+        provider: str_at("provider").or_else(|| str_at("model_provider")),
+        model: str_at("model").or_else(|| str_at("model_id")),
+        variant: str_at("variant").or_else(|| str_at("model_variant")),
+        trigger: str_at("trigger").or_else(|| str_at("via")),
+        created_at: row.get("created_at")?.as_str()?.to_string(),
+        created_us: row.get("created_at").and_then(parse_ts).unwrap_or(0),
+    })
+}
+
+/// #9046 oracle: collapse duplicate timeline writes — the same
+/// (kind, session, provider, model, variant, trigger) recorded
+/// twice within 120 s is one record written by two surfaces (a
+/// pre-switch CLI append and the post-switch broker write of the
+/// same touch), never two transitions. Anything else — a changed
+/// field, or the same shape after the window — is a real second
+/// record and stays.
+fn collapse_timeline(events: Vec<TimelineEvent>) -> Vec<TimelineEvent> {
+    let mut out: Vec<TimelineEvent> = Vec::new();
+    for ev in events {
+        if let Some(prev) = out.last() {
+            let same = prev.kind == ev.kind
+                && prev.session_id == ev.session_id
+                && prev.provider == ev.provider
+                && prev.model == ev.model
+                && prev.variant == ev.variant
+                && prev.trigger == ev.trigger;
+            if same && ev.created_us - prev.created_us <= 120_000_000 {
+                continue;
+            }
+        }
+        out.push(ev);
+    }
+    out
+}
+
+/// #9046 oracle: pair session_bound -> session_unbound per
+/// session into windows (session, start, end-or-None), in the
+/// order the windows close (open bindings last) — the windows
+/// that slice the session's route_attempt rows per task.
+fn binding_windows(events: &[TimelineEvent]) -> Vec<(String, String, Option<String>)> {
+    let mut open: Vec<(String, String)> = Vec::new();
+    let mut out: Vec<(String, String, Option<String>)> = Vec::new();
+    for ev in events {
+        match ev.kind.as_str() {
+            "session_bound" => {
+                if let Some(sid) = &ev.session_id {
+                    open.push((sid.clone(), ev.created_at.clone()));
+                }
+            }
+            "session_unbound" => {
+                if let Some(sid) = &ev.session_id {
+                    if let Some(pos) = open.iter().position(|(s, _)| s == sid) {
+                        let (s, start) = open.remove(pos);
+                        out.push((s, start, Some(ev.created_at.clone())));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for (s, start) in open {
+        out.push((s, start, None));
+    }
+    out
+}
+
+/// #9046: render one task's model timeline — binding windows,
+/// stamps, and transitions in order, with the exact resolved
+/// models per window joined from route_attempt.
+fn cmd_timeline(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker"], &[]);
+    reject_extra_pos("timeline", &args, 1);
+    let task_id = args.pos_i64(0, "task_id");
+    let mut events: Vec<TimelineEvent> = Vec::new();
+    for kind in [
+        "claimed",
+        "session_bound",
+        "lane_session_bound",
+        "model_stamp",
+        "session_unbound",
+        "session_binding_cleared",
+        "completed",
+        "released",
+        "parked",
+        "failed",
+        "cancelled",
+    ] {
+        let resp = call(
+            "/events-list",
+            &json!({"task_id": task_id, "kind": kind, "limit": 1000}),
+        );
+        if resp.get("ok").and_then(|o| o.as_bool()) != Some(true) {
+            eprint(
+                "repo-queue timeline: this broker does not serve /events-list yet \
+                 — the full timeline activates with the #9046 broker at the \
+                 coordinated switch. Interim read (fleet-queue DB): SELECT id, \
+                 kind, detail, created_at FROM events WHERE task_id = <id> AND \
+                 kind IN ('model_stamp','session_bound','session_unbound',\
+                 'lane_session_bound','session_binding_cleared') ORDER BY id;",
+            );
+            return 3;
+        }
+        if let Some(rows) = resp
+            .get("row")
+            .and_then(|r| r.get("rows"))
+            .and_then(|r| r.as_array())
+        {
+            for row in rows {
+                if let Some(ev) = timeline_event(row) {
+                    events.push(ev);
+                }
+            }
+        }
+    }
+    events.sort_by_key(|e| e.id);
+    let events = collapse_timeline(events);
+    if events.is_empty() {
+        println!("task {task_id}: no timeline records");
+        return 0;
+    }
+    for ev in &events {
+        let mut line = format!("{}  {}", ev.created_at, ev.kind);
+        if let Some(sid) = &ev.session_id {
+            line += &format!("  session={sid}");
+        }
+        if let Some(p) = &ev.provider {
+            line += &format!("  {p}/{}", ev.model.as_deref().unwrap_or("?"));
+            if let Some(v) = &ev.variant {
+                line += &format!("#{v}");
+            }
+        }
+        if let Some(t) = &ev.trigger {
+            line += &format!("  ({t})");
+        }
+        println!("{line}");
+    }
+    // The join: exact resolved models per binding window, from
+    // the session's raw route_attempt rows (laptop-local,
+    // fail-soft — unreachable route data says so and moves on).
+    let windows = binding_windows(&events);
+    if !windows.is_empty() {
+        println!("served (route_attempt join):");
+        for (sid, start, end) in &windows {
+            let start_ms = parse_ts_str(start).map(|us| us / 1000).unwrap_or(0);
+            let end_ms = end
+                .as_ref()
+                .and_then(|e| parse_ts_str(e))
+                .map(|us| us / 1000)
+                .unwrap_or_else(|| {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0)
+                });
+            match route_segments_for_session(sid, start_ms, end_ms) {
+                Some(segs) if !segs.is_empty() => {
+                    for seg in segs {
+                        println!("  {seg}");
+                    }
+                }
+                _ => println!("  session={sid}: no route attempts in window"),
+            }
+        }
+    }
+    0
+}
+
 fn cmd_claim(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
@@ -1784,6 +2320,22 @@ fn cmd_claim(rest: &[String]) -> i32 {
         Ok(None) => {}
         Err(e) => die(2, &e),
     }
+    // #8176 (2026-11-12 fix): no explicit stamp — derive it from
+    // the claiming session's own record when the claim names the
+    // session (--session-id, the dispatch surfaces' form). Claims
+    // that name no session keep the unstamped shape exactly as
+    // before; derivation failure never fails the claim.
+    if body.get("model_provider").is_none() {
+        if let Some(sid) = args.get("session-id") {
+            if let Some((provider, model, variant)) = derive_claim_model_stamp(&sid) {
+                body["model_provider"] = json!(provider);
+                body["model_id"] = json!(model);
+                if let Some(v) = variant {
+                    body["model_variant"] = json!(v);
+                }
+            }
+        }
+    }
     // --handoff: the no-id collection of the next recorded
     // opencode handoff from the sink (status 'handed_off', #8234;
     // #8097 Rule 1) — the claimant's default handoff path. The
@@ -1844,6 +2396,16 @@ fn cmd_claim(rest: &[String]) -> i32 {
                 .unwrap_or_else(|| "opencode-claimant".to_string())
         );
     }
+    // #9046: the effective stamp + session for the timeline
+    // appends below (explicit flags or session-derived — by now
+    // both live on the request body).
+    let tl_stamp = body_stamp(&body);
+    let tl_session = args.get("session-id");
+    let tl_trigger = if args.get("from-session").is_some() {
+        "transfer"
+    } else {
+        "claim"
+    };
     let resp = if bind {
         unwrap_ok_fb(call_fb("/claim-flow", &body), "/claim-flow")
     } else {
@@ -1853,7 +2415,44 @@ fn cmd_claim(rest: &[String]) -> i32 {
         eprint(&note);
     }
     if count > 1 {
+        // #9046: one binding + stamp timeline record per row.
+        if let Some(rows) = resp.get("rows").and_then(|r| r.as_array()) {
+            for row in rows {
+                claim_timeline_appends(&worker, row, &tl_stamp, &tl_session, tl_trigger);
+            }
+        }
         return claim_batch_output(&resp, &worker, count);
+    }
+    // #9046: mirror the claim's binding + stamp into the
+    // timeline (a no-op when the broker stamped in-op).
+    if let Some(row) = resp.get("row") {
+        if !row.is_null() {
+            // A transfer closes the previous session's window
+            // first: the CLI knows the from-session even when a
+            // pre-switch broker recorded no binding to clear (its
+            // claims never set progress.session_id). Same
+            // capability signal as claim_timeline_appends — a
+            // post-switch broker writes this unbound in-op via
+            // on_binding_cleared, and its rows carry the key.
+            if tl_trigger == "transfer" && row.get("claim_session_id").is_none() {
+                if let (Some(fs), Some(tid)) = (
+                    args.get("from-session"),
+                    row.get("id").and_then(|v| v.as_i64()),
+                ) {
+                    append_timeline_event(
+                        &worker,
+                        tid,
+                        "session_unbound",
+                        json!({
+                            "session_id": fs,
+                            "trigger": "transfer",
+                            "via": "fleet-cli",
+                        }),
+                    );
+                }
+            }
+            claim_timeline_appends(&worker, row, &tl_stamp, &tl_session, tl_trigger);
+        }
     }
     let (mut out, code) = claim_output(&resp);
     if code != 0 {
@@ -2091,7 +2690,10 @@ fn cmd_release(rest: &[String]) -> i32 {
             "reason": reason,
         }),
     ));
-    print_json(&require_row(&resp, "release_repo_task"));
+    let row = require_row(&resp, "release_repo_task");
+    // #9046: a release closes the binding window on the timeline.
+    unbound_append(&opt_worker(&args), &row, "release");
+    print_json(&row);
     0
 }
 
@@ -2188,20 +2790,74 @@ fn cmd_lane(rest: &[String]) -> i32 {
 }
 
 fn cmd_bind(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["worker", "session-id", "launched-by"], &[]);
+    let args = parse_args(
+        rest,
+        &[
+            "worker",
+            "session-id",
+            "launched-by",
+            "model-provider",
+            "model-id",
+            "model-variant",
+        ],
+        &[],
+    );
     reject_extra_pos("bind", &args, 1);
     let session_id = args
         .get("session-id")
         .unwrap_or_else(|| die(2, "bind: --session-id is required"));
-    let resp = unwrap_ok(call(
-        "/bind",
-        &json!({
-            "task_id": args.pos_i64(0, "task_id"),
-            "worker": opt_worker(&args),
-            "session_id": session_id,
-            "launched_by": args.get("launched-by").unwrap_or_else(|| "opencode-claimant".to_string()),
-        }),
-    ));
+    // #9046: the bind stamps the bound session's own model —
+    // explicit --model-* flags win; otherwise the stamp derives
+    // from the session's own record, exactly as on claim (#8176).
+    // The stamp rides the /bind body (a post-#9046 broker stamps
+    // in-op) and the timeline appends below (the live path on a
+    // pre-switch broker; the reader collapses the duplicate).
+    let stamp = match model_stamp_flags(
+        args.get("model-provider").as_deref(),
+        args.get("model-id").as_deref(),
+        args.get("model-variant").as_deref(),
+    ) {
+        Ok(Some(s)) => Some(s),
+        Ok(None) => derive_claim_model_stamp(&session_id),
+        Err(e) => die(2, &e),
+    };
+    let mut body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "session_id": session_id,
+        "launched_by": args.get("launched-by").unwrap_or_else(|| "opencode-claimant".to_string()),
+    });
+    if let Some((provider, model, variant)) = &stamp {
+        body["model_provider"] = json!(provider);
+        body["model_id"] = json!(model);
+        if let Some(v) = variant {
+            body["model_variant"] = json!(v);
+        }
+    }
+    let resp = unwrap_ok(call("/bind", &body));
+    let task_id = args.pos_i64(0, "task_id");
+    let worker = opt_worker(&args);
+    append_timeline_event(
+        &worker,
+        task_id,
+        "session_bound",
+        json!({"session_id": session_id, "trigger": "bind", "via": "fleet-cli"}),
+    );
+    if let Some((provider, model, variant)) = &stamp {
+        append_timeline_event(
+            &worker,
+            task_id,
+            "model_stamp",
+            json!({
+                "session_id": session_id,
+                "provider": provider,
+                "model": model,
+                "variant": variant,
+                "trigger": "bind",
+                "via": "fleet-cli",
+            }),
+        );
+    }
     print_json(&require_row(&resp, "bind_repo_task_lane_session"));
     0
 }
@@ -2313,6 +2969,10 @@ fn cmd_park(rest: &[String]) -> i32 {
         body["execution"] = ex;
     }
     let resp = unwrap_ok(call("/park", &body));
+    // #9046: a park closes the binding window on the timeline.
+    if let Some(row) = resp.get("row") {
+        unbound_append(&opt_worker(&args), row, "park");
+    }
     row_or_ledger(&resp, "park_task");
     0
 }
@@ -2640,7 +3300,10 @@ fn cmd_cancel(rest: &[String]) -> i32 {
             "reason": reason,
         }),
     ));
-    print_json(&require_row(&resp, "cancel_repo_task"));
+    let row = require_row(&resp, "cancel_repo_task");
+    // #9046: a cancel closes the binding window on the timeline.
+    unbound_append(&worker, &row, "cancel");
+    print_json(&row);
     0
 }
 
@@ -2693,6 +3356,10 @@ fn cmd_fail(rest: &[String]) -> i32 {
         body["execution"] = ex;
     }
     let resp = unwrap_ok(call("/fail", &body));
+    // #9046: a fail closes the binding window on the timeline.
+    if let Some(row) = resp.get("row") {
+        unbound_append(&opt_worker(&args), row, "fail");
+    }
     row_or_ledger(&resp, "fail_repo_task");
     0
 }
@@ -2700,7 +3367,14 @@ fn cmd_fail(rest: &[String]) -> i32 {
 fn cmd_complete(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
-        &["worker", "result", "result-file", "telemetry", "execution"],
+        &[
+            "worker",
+            "result",
+            "result-file",
+            "telemetry",
+            "execution",
+            "queue",
+        ],
         &[],
     );
     reject_extra_pos("complete", &args, 1);
@@ -2789,6 +3463,17 @@ fn cmd_complete(rest: &[String]) -> i32 {
             result_obj["execution"] = Value::Object(block);
         }
     }
+    // #9046 close-out convenience: record the bound session's
+    // dominant model (route_attempt call count over this task's
+    // claim window) in the result, so lists and reports don't
+    // need the session join for the common case. Fail-soft at
+    // every step — any miss completes without the summary, and
+    // a caller-supplied dominant_model always wins.
+    if result_obj.get("dominant_model").is_none() {
+        if let Some(dom) = dominant_model_for_task(&args, args.pos_i64(0, "task_id")) {
+            result_obj["dominant_model"] = dom;
+        }
+    }
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
@@ -2798,6 +3483,10 @@ fn cmd_complete(rest: &[String]) -> i32 {
         body["execution"] = ex;
     }
     let resp = unwrap_ok_fb(call_fb("/complete", &body), "/complete");
+    // #9046: completion closes the binding window on the timeline.
+    if let Some(row) = resp.get("row") {
+        unbound_append(&opt_worker(&args), row, "complete");
+    }
     row_or_ledger(&resp, "complete_task");
     0
 }
@@ -4553,7 +5242,7 @@ fn cmd_outbox(rest: &[String]) -> i32 {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|revive|health|signal|fallback|outbox|dispatch|session|surfaces|stack> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|timeline|revive|health|signal|fallback|outbox|dispatch|session|surfaces|stack> ...",
         );
         return 2;
     }
@@ -4581,6 +5270,7 @@ pub fn run(args: &[String]) -> i32 {
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
+        "timeline" => cmd_timeline(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
         "fallback" => crate::fallback::run(rest),
@@ -4602,6 +5292,77 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    #[test]
+    fn collapse_timeline_9046_drops_only_duplicate_writes() {
+        // #9046 oracle: same (kind, session, leaf, trigger) inside
+        // 120 s = one record written by two surfaces; a changed
+        // field or a later repeat is a real second record.
+        let ev = |id: i64, us: i64, model: &str| TimelineEvent {
+            id,
+            kind: "model_stamp".to_string(),
+            session_id: Some("ses_a".to_string()),
+            provider: Some("opencode-route".to_string()),
+            model: Some(model.to_string()),
+            variant: None,
+            trigger: Some("claim".to_string()),
+            created_at: "2026-11-12T00:00:00Z".to_string(),
+            created_us: us,
+        };
+        let out = collapse_timeline(vec![
+            ev(1, 0, "workhorse"),
+            ev(2, 30_000_000, "workhorse"),
+            ev(3, 60_000_000, "workhorse-x"),
+            ev(4, 300_000_000, "workhorse-x"),
+        ]);
+        let ids: Vec<i64> = out.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn binding_windows_9046_pair_bounds_and_unbounds() {
+        // #9046 oracle: windows pair per session in bound order;
+        // an unclosed binding stays open (end None) — its slice
+        // of the session runs to now.
+        let ev = |id: i64, kind: &str, sid: &str, at: &str| TimelineEvent {
+            id,
+            kind: kind.to_string(),
+            session_id: Some(sid.to_string()),
+            provider: None,
+            model: None,
+            variant: None,
+            trigger: None,
+            created_at: at.to_string(),
+            created_us: 0,
+        };
+        let out = binding_windows(&[
+            ev(1, "session_bound", "ses_a", "t1"),
+            ev(2, "session_unbound", "ses_a", "t2"),
+            ev(3, "session_bound", "ses_b", "t3"),
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                (
+                    "ses_a".to_string(),
+                    "t1".to_string(),
+                    Some("t2".to_string())
+                ),
+                ("ses_b".to_string(), "t3".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn valid_session_id_9046_rejects_non_session_shapes() {
+        // #9046 oracle: only the fleet's own session-id shape may
+        // reach a route_attempt SQL string.
+        assert!(valid_session_id("ses_e5e37addeb0ffeumu1UPO2bI8G"));
+        assert!(!valid_session_id("ses_a'; DROP TABLE route_attempt; --"));
+        assert!(!valid_session_id("not-a-session"));
+        assert!(!valid_session_id("ses_"));
+        assert!(!valid_session_id(""));
+    }
+
     #[test]
     fn model_stamp_flags_require_provider_and_model_together() {
         // #8176 oracle: the claim stamp names the serving leaf —
@@ -4627,6 +5388,52 @@ mod tests {
         assert!(model_stamp_flags(Some("_claude"), None, None).is_err());
         assert!(model_stamp_flags(None, Some("claude-sonnet-5-5"), None).is_err());
         assert!(model_stamp_flags(None, None, Some("medium")).is_err());
+    }
+
+    #[test]
+    fn session_model_stamp_reads_the_session_record() {
+        // #8176 derivation oracle: the stamp is the session's own
+        // model — providerID + id from the server's session record
+        // (enveloped or bare); a "default" variant is no variant.
+        let enveloped = json!({
+            "data": {"id": "ses_x", "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"}}
+        });
+        assert_eq!(
+            session_model_stamp(&enveloped),
+            Some(("opencode-route".to_string(), "workhorse".to_string(), None))
+        );
+        let bare = json!({
+            "id": "ses_y", "model": {"id": "gpt-6-luna", "providerID": "openai-plan", "variant": "high"}
+        });
+        assert_eq!(
+            session_model_stamp(&bare),
+            Some((
+                "openai-plan".to_string(),
+                "gpt-6-luna".to_string(),
+                Some("high".to_string()),
+            ))
+        );
+        // Half a model, or no model, stamps nothing.
+        assert_eq!(session_model_stamp(&json!({"data": {"id": "ses_z"}})), None);
+        assert_eq!(
+            session_model_stamp(&json!({"model": {"id": "workhorse"}})),
+            None
+        );
+        assert_eq!(
+            session_model_stamp(&json!({"model": {"providerID": "opencode-route"}})),
+            None
+        );
+    }
+
+    #[test]
+    fn b64_encode_matches_the_standard_alphabet() {
+        // The server's Basic auth is the only consumer; vectors
+        // are the RFC 4648 canonical set.
+        assert_eq!(b64_encode(b""), "");
+        assert_eq!(b64_encode(b"f"), "Zg==");
+        assert_eq!(b64_encode(b"fo"), "Zm8=");
+        assert_eq!(b64_encode(b"foo"), "Zm9v");
+        assert_eq!(b64_encode(b"opencode:pw"), "b3BlbmNvZGU6cHc=");
     }
 
     #[test]

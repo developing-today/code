@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# NOTE (2026-11-12, Drew ruling): the source workbook is DEPRECATED; the
+# ainventory database is the primary source of record and recovery is a DB
+# backup restore. The as-run note text below ("a future workbook re-import
+# supersedes this batch") is SUPERSEDED by that ruling — workbook
+# re-imports must not be run. See README.md in this directory and
+# Maintenance_Log row 50 in the store.
 """Generate the ainventory load SQL for the AA web pull 2026-11-12.
 
 Reads aa-results.json (the compiled dataset) and emits one transaction that

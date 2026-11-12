@@ -7,6 +7,34 @@ incorporate them into the model review page (PM stack `/aa`, data
 30 model×effort rows retrieved from artificialanalysis.ai 2026-11-12
 ~20:09–20:11 UTC; Intelligence Index v5.0.1).
 
+## Source of record — workbook DEPRECATED (Drew ruling, 2026-11-12)
+
+Drew's ruling (2026-11-12, after this load): **the source workbook is
+deprecated.** The Supabase `ainventory` database is the primary source of
+record for AA benchmark data, and the recovery procedure is a database
+backup restore — never a workbook re-import.
+
+This supersedes the caveat recorded when this load landed ("Drive workbook
+unchanged; a future workbook re-import supersedes this batch" — in the
+as-run SQL below, in `gen_load.py`, in the `sources` note for this pull,
+and in Maintenance_Log row 49). A workbook re-import creates a new latest
+batch and would drop database-native loads that exist only in the DB
+(including this one); it is no longer a supported restore path and must
+not be run. The full-batch importer
+(`workspace/supabase/ainventory-import/import_ainventory.py` in
+hatch-personal) carries a DEPRECATED banner saying the same. The
+database-native append path (`ainventory_append.py`, into the current
+batch) remains the write route, alongside guarded SQL loads like this one.
+
+Recorded in the store itself: Maintenance_Log row 50 (2026-11-12) carries
+the ruling; the `sources` notes for the workbook source (row 41) and for
+this pull (row 47) were appended with the deprecation / supersession text
+(history preserved, caveat marked superseded). The workbook file in Drive
+is untouched — deprecation is a status, not a deletion. Store-level
+recovery is a DB backup restore (the laptop `supabase-backup`); the
+per-load rollback below remains only as the record of how this one load
+could have been unwound at the time.
+
 ## Mechanism (the store's own paths — no rendered output touched)
 
 The AA section is collected from the Supabase `ainventory` schema by

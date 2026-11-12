@@ -60,7 +60,7 @@ pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.fleet-queue-rw-token";
 
 const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, status, \
     not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
-    claim_provider, claim_model, claim_variant, \
+    claim_provider, claim_model, claim_variant, claim_session_id, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at, \
     blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds";
@@ -778,7 +778,13 @@ impl TursoBackend {
         // existing rows read NULL: the claim carried no model).
         // No backfill, nothing destructive.
         let cols = self.query_objs("SELECT name FROM pragma_table_info('tasks')", &[], &[])?;
-        for col in ["platform", "claim_provider", "claim_model", "claim_variant"] {
+        for col in [
+            "platform",
+            "claim_provider",
+            "claim_model",
+            "claim_variant",
+            "claim_session_id",
+        ] {
             let has = cols
                 .iter()
                 .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col));
@@ -883,7 +889,7 @@ const SCHEMA: [&str; 17] = [
         not_before TEXT, worker_id TEXT, claimed_at TEXT, lease_until TEXT, \
         lane_id TEXT, platform TEXT, attempts INTEGER NOT NULL DEFAULT 0, \
         max_attempts INTEGER NOT NULL DEFAULT 4, \
-        claim_provider TEXT, claim_model TEXT, claim_variant TEXT, \
+        claim_provider TEXT, claim_model TEXT, claim_variant TEXT, claim_session_id TEXT, \
         progress TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', \
         last_error TEXT, park_kind TEXT, wait_kind TEXT, ready_condition TEXT, \
         last_checked_at TEXT, check_outcome TEXT, \
@@ -1163,6 +1169,35 @@ fn verb_events_count(t: &TursoBackend, req: &Value) -> Value {
             .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
             .unwrap_or(0);
         Ok(json!({"count": n}))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// #9046: read one task's event timeline — the model_stamp /
+/// session_bound / session_unbound history and everything else
+/// recorded on the task, oldest first (the events_task index).
+/// `kind` narrows to one kind; `limit` defaults to 200 and is
+/// clamped to 1..=1000.
+fn verb_events_list(t: &TursoBackend, req: &Value) -> Value {
+    let Some(task_id) = req_i64(req, "task_id") else {
+        return fail(2, "task_id is required".to_string());
+    };
+    let limit = req_i64(req, "limit").unwrap_or(200).clamp(1, 1000);
+    let mut sql = "SELECT id, worker_id, kind, detail, created_at FROM events \
+                   WHERE task_id = ?"
+        .to_string();
+    let mut args: Vec<Arg> = vec![Arg::Int(task_id)];
+    if let Some(k) = req_str(req, "kind") {
+        sql += " AND kind = ?";
+        args.push(Arg::Text(k.to_string()));
+    }
+    sql += &format!(" ORDER BY id ASC LIMIT {limit}");
+    let work = (|| -> Result<Value, TErr> {
+        let rows = t.query_objs(&sql, &args, &["detail"])?;
+        Ok(json!({"rows": rows, "task_id": task_id}))
     })();
     match work {
         Ok(v) => ok(json!({"row": v})),
@@ -1686,6 +1721,15 @@ fn on_binding_cleared(
         Some(worker),
         Some(task_id),
         "session_binding_cleared",
+        &json!({"session_id": old_session, "via": via}),
+    )?;
+    // #9046: the canonical unbound half of the binding history,
+    // written beside the legacy kind its existing consumers read.
+    event(
+        t,
+        Some(worker),
+        Some(task_id),
+        "session_unbound",
         &json!({"session_id": old_session, "via": via}),
     )
 }
@@ -2374,29 +2418,99 @@ fn parse_claim_model(req: &Value) -> Result<Option<ClaimModel>, String> {
     }
 }
 
-/// #8176: stamp the claiming session's own model on a just-claimed
-/// row. Claim-time semantics: the stamp is the leaf serving the
-/// session WHEN it claimed; a later failover changes the serving
-/// leaf (still visible via route_usage) but never rewrites the
-/// stamp. A claim carrying no model leaves the columns untouched
-/// (NULL on a fresh row). The returned row is patched in place so
-/// the claim's answer carries the stamp without a re-read.
+/// One model stamp in a task's model timeline (#9046): the pure
+/// detail shape every model_stamp event carries — the session the
+/// stamp belongs to (null when the stamping surface knew no
+/// session; a session is never fabricated), the serving leaf, and
+/// the touch that produced it (claim | transfer | bind).
+fn model_stamp_detail(m: &ClaimModel, session_id: Option<&str>, trigger: &str) -> Value {
+    json!({
+        "session_id": session_id,
+        "provider": m.provider,
+        "model": m.model,
+        "variant": m.variant,
+        "trigger": trigger,
+    })
+}
+
+/// #9046: record that a session bound to a task — one half of the
+/// binding history whose windows slice the session's raw
+/// route_attempt data per task (one session may serve several
+/// tasks; each task's window is its own slice). The other half is
+/// session_unbound, written by on_binding_cleared and by the
+/// terminal verbs that keep the binding on the row
+/// (verb_complete / verb_cancel via record_session_unbound).
+fn record_session_bound(
+    t: &TursoBackend,
+    worker: Option<&str>,
+    task_id: i64,
+    row: &Value,
+    session_id: &str,
+    trigger: &str,
+) -> Result<(), TErr> {
+    event(
+        t,
+        worker,
+        Some(task_id),
+        "session_bound",
+        &with_marks(&json!({"session_id": session_id, "trigger": trigger}), row),
+    )
+}
+
+/// #9046: record that a task's session binding window closed, for
+/// the terminal verbs that keep the binding on the row as the
+/// execution record (complete / cancel) — the event ends the
+/// window the route_attempt join slices by; the row is untouched.
+fn record_session_unbound(
+    t: &TursoBackend,
+    worker: Option<&str>,
+    task_id: i64,
+    row: &Value,
+    session_id: &str,
+    trigger: &str,
+) -> Result<(), TErr> {
+    event(
+        t,
+        worker,
+        Some(task_id),
+        "session_unbound",
+        &with_marks(&json!({"session_id": session_id, "trigger": trigger}), row),
+    )
+}
+
+/// #8176 + #9046: stamp the claiming session's own model on a
+/// just-claimed row AND append the stamp to the task's model
+/// timeline (a model_stamp event). Claim-time semantics unchanged:
+/// the stamp is the leaf serving the session WHEN it claimed; a
+/// later failover changes the serving leaf (still visible via the
+/// route_attempt join on the stamp's session) but never rewrites
+/// history — a transition lands as a later stamp when the fleet
+/// next touches the task. The row's claim_* columns, now including
+/// claim_session_id (#9046), always hold the LATEST stamp; the
+/// events are the history. A claim carrying no model leaves the
+/// columns untouched (NULL on a fresh row) and writes no stamp
+/// event. The returned row is patched in place so the claim's
+/// answer carries the stamp without a re-read.
 fn stamp_claim_model(
     t: &TursoBackend,
     task_id: i64,
     row: &mut Value,
     model: &Option<ClaimModel>,
+    worker: Option<&str>,
+    session_id: Option<&str>,
+    trigger: &str,
 ) -> Result<(), TErr> {
     let Some(m) = model else {
         return Ok(());
     };
     t.exec(
         "UPDATE tasks SET claim_provider = ?, claim_model = ?, \
-           claim_variant = ? WHERE id = ?",
+           claim_variant = ?, claim_session_id = ? WHERE id = ?",
         &[
             Arg::Text(m.provider.clone()),
             arg_str(m.model.as_deref()),
             arg_str(m.variant.as_deref()),
+            arg_str(session_id),
             Arg::Int(task_id),
         ],
     )?;
@@ -2404,7 +2518,18 @@ fn stamp_claim_model(
         obj.insert("claim_provider".to_string(), json!(m.provider));
         obj.insert("claim_model".to_string(), json!(m.model));
         obj.insert("claim_variant".to_string(), json!(m.variant));
+        obj.insert(
+            "claim_session_id".to_string(),
+            session_id.map(|s| json!(s)).unwrap_or(Value::Null),
+        );
     }
+    event(
+        t,
+        worker,
+        Some(task_id),
+        "model_stamp",
+        &with_marks(&model_stamp_detail(m, session_id, trigger), row),
+    )?;
     Ok(())
 }
 
@@ -2745,7 +2870,18 @@ fn claim_transfer(
             obj.insert("progress".to_string(), progress);
         }
     }
-    stamp_claim_model(t, task_id, &mut row, model)?;
+    if let Some(sid) = new_session {
+        record_session_bound(t, Some(worker), task_id, &row, sid, "transfer")?;
+    }
+    stamp_claim_model(
+        t,
+        task_id,
+        &mut row,
+        model,
+        Some(worker),
+        new_session,
+        "transfer",
+    )?;
     touch_worker(t, worker, Some(task_id))?;
     event(
         t,
@@ -2789,6 +2925,7 @@ fn claim_by_id(
     lease_seconds: i64,
     family: Option<&str>,
     model: &Option<ClaimModel>,
+    claim_session: Option<&str>,
     pool: &Option<String>,
 ) -> Result<Option<Value>, TErr> {
     let Some(row) = get_task(t, task_id)? else {
@@ -2887,7 +3024,17 @@ fn claim_by_id(
     // Migration 0023 §4: a fresh claim never inherits a binding.
     let progress = row.get("progress").cloned().unwrap_or(json!({}));
     let (progress, cleared) = clear_binding(&progress, "claim_repo_task");
-    if cleared.is_some() {
+    // #9046: a by-id claim that names its session binds it, like
+    // the transfer path — the binding is what joins the task to
+    // the session's raw opencode data from here on.
+    let progress = match claim_session {
+        Some(sid) => merge_obj(
+            &progress,
+            &json!({"session_id": sid, "launched_by": worker}),
+        ),
+        None => progress,
+    };
+    if cleared.is_some() || claim_session.is_some() {
         t.exec(
             "UPDATE tasks SET progress = ? WHERE id = ?",
             &[Arg::Text(progress.to_string()), Arg::Int(task_id)],
@@ -2908,7 +3055,18 @@ fn claim_by_id(
             Arg::Text(now_iso()),
         ],
     )?;
-    stamp_claim_model(t, task_id, &mut row, model)?;
+    if let Some(sid) = claim_session {
+        record_session_bound(t, Some(worker), task_id, &row, sid, "claim")?;
+    }
+    stamp_claim_model(
+        t,
+        task_id,
+        &mut row,
+        model,
+        Some(worker),
+        claim_session,
+        "claim",
+    )?;
     touch_worker(t, worker, Some(task_id))?;
     if let Some(old) = &cleared {
         on_binding_cleared(t, worker, task_id, old, "claim_repo_task")?;
@@ -4181,7 +4339,17 @@ fn claim_pick_once(
     // Migration 0023 §4: a fresh claim never inherits a binding.
     let progress = row.get("progress").cloned().unwrap_or(json!({}));
     let (progress, cleared) = clear_binding(&progress, "claim_repo_task");
-    if cleared.is_some() {
+    // #9046: a pick that names its session binds it — previously
+    // the session lived only in the claimed event's detail, so no
+    // binding existed for later audit marks or the timeline.
+    let progress = match claim_session.as_deref() {
+        Some(sid) => merge_obj(
+            &progress,
+            &json!({"session_id": sid, "launched_by": worker}),
+        ),
+        None => progress,
+    };
+    if cleared.is_some() || claim_session.is_some() {
         t.exec(
             "UPDATE tasks SET progress = ? WHERE id = ?",
             &[Arg::Text(progress.to_string()), Arg::Int(id)],
@@ -4202,7 +4370,18 @@ fn claim_pick_once(
             Arg::Text(now_iso()),
         ],
     )?;
-    stamp_claim_model(t, id, &mut row, model)?;
+    if let Some(sid) = claim_session.as_deref() {
+        record_session_bound(t, Some(&worker), id, &row, sid, "claim")?;
+    }
+    stamp_claim_model(
+        t,
+        id,
+        &mut row,
+        model,
+        Some(&worker),
+        claim_session.as_deref(),
+        "claim",
+    )?;
     touch_worker(t, &worker, Some(id))?;
     if let Some(old) = &cleared {
         on_binding_cleared(t, &worker, id, old, "claim_repo_task")?;
@@ -4452,6 +4631,7 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                 lease_seconds,
                 family.as_deref(),
                 &model,
+                claim_session.as_deref(),
                 &pool,
             );
         }
@@ -4729,6 +4909,13 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
     let launched_by = req_str(req, "launched_by")
         .unwrap_or("opencode-claimant")
         .to_string();
+    // #9046: a bind may carry the bound session's own model (the
+    // claimant derives it from the session record, #8176); when
+    // it does, the bind stamps it via stamp_claim_model below.
+    let model = match parse_claim_model(req) {
+        Ok(m) => m,
+        Err(e) => return fail(2, format!("bind_repo_task_lane_session: {e}")),
+    };
     let work = (|| -> Result<Value, TErr> {
         let Some(task) = get_task(t, task_id)? else {
             return Err(format!(
@@ -4784,6 +4971,23 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
                 Arg::Int(task_id),
             ],
         )?;
+        // #9046: the canonical binding record, beside the legacy
+        // lane_session_bound event below; a model-carrying bind
+        // also stamps (the claimant's collect -> launch -> bind
+        // flow is where the working session becomes known).
+        record_session_bound(t, Some(&worker), task_id, &task, &session_id, "bind")?;
+        if model.is_some() {
+            let mut task_now = get_task(t, task_id)?.unwrap_or_else(|| task.clone());
+            stamp_claim_model(
+                t,
+                task_id,
+                &mut task_now,
+                &model,
+                Some(&worker),
+                Some(&session_id),
+                "bind",
+            )?;
+        }
         event(
             t,
             Some(&worker),
@@ -5784,6 +5988,16 @@ fn verb_cancel(t: &TursoBackend, req: &Value) -> Value {
             "cancelled",
             &json!({"reason": reason, "via": "cancel_repo_task_turso"}),
         )?;
+        // #9046: close the binding window on the timeline (the
+        // binding stays on the row up to this transition; the
+        // event ends the window the route_attempt join slices by).
+        if let Some(sid) = row
+            .get("progress")
+            .and_then(|p| p.get("session_id"))
+            .and_then(|v| v.as_str())
+        {
+            record_session_unbound(t, Some(&worker), task_id, &row, sid, "cancel")?;
+        }
         get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
     })();
     match work {
@@ -6058,6 +6272,17 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
             "completed",
             &with_marks(&json!({"via": "complete_task_turso"}), &row),
         )?;
+        // #9046: close the binding window on the timeline. The
+        // binding itself stays on the row as the execution record
+        // (migration 0023 header above); this event only ends the
+        // window the route_attempt join slices by.
+        if let Some(sid) = row
+            .get("progress")
+            .and_then(|p| p.get("session_id"))
+            .and_then(|v| v.as_str())
+        {
+            record_session_unbound(t, Some(&worker), task_id, &row, sid, "complete")?;
+        }
         // Triage doctrine (#7016): a triage completion is not the
         // issue being done — the issue goes back in the queue as a
         // fix follow-on unless triage exited it (invalid /
@@ -6193,7 +6418,7 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     let rich = req.get("rich").and_then(|r| r.as_bool()).unwrap_or(false);
     let select = if rich {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
-         worker_id, lease_until, lane_id, platform, attempts, max_attempts, \
+         worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
          claim_provider, claim_model, claim_variant, progress, payload, \
          blocked_deps, dep_next_recheck_at, dep_blocked_until"
     } else {
@@ -7462,6 +7687,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/events-append" => verb_events_append(t, req),
         "/events-seen" => verb_events_seen(t, req),
         "/events-count" => verb_events_count(t, req),
+        "/events-list" => verb_events_list(t, req),
         "/events-prune" => verb_events_prune(t, req),
         "/outbox-enqueue" => verb_outbox_enqueue(t, req),
         "/outbox-claim" => verb_outbox_claim(t, req),
@@ -7478,6 +7704,63 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn model_stamp_detail_9046_carries_session_and_trigger() {
+        // #9046 oracle: a stamp detail names the session it
+        // belongs to (or null — a session is never fabricated),
+        // the serving leaf, and the touch that produced it.
+        let m = ClaimModel {
+            provider: "opencode-route".to_string(),
+            model: Some("workhorse".to_string()),
+            variant: None,
+        };
+        let d = model_stamp_detail(&m, Some("ses_abc"), "transfer");
+        assert_eq!(d["session_id"], json!("ses_abc"));
+        assert_eq!(d["provider"], json!("opencode-route"));
+        assert_eq!(d["model"], json!("workhorse"));
+        assert_eq!(d["variant"], Value::Null);
+        assert_eq!(d["trigger"], json!("transfer"));
+        let d2 = model_stamp_detail(&m, None, "claim");
+        assert_eq!(d2["session_id"], Value::Null);
+        assert_eq!(d2["trigger"], json!("claim"));
+    }
+
+    #[test]
+    fn timeline_wiring_9046() {
+        // #9046 source oracle: the broker half of the timeline —
+        // the claim_session_id column, model_stamp events from
+        // the one stamp site, session_unbound from the one clear
+        // funnel, the /events-list read verb, and claimed_at on
+        // the rich list (cmd_complete's window source).
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("claim_session_id TEXT"),
+            "schema carries claim_session_id"
+        );
+        assert!(
+            src.contains("\"/events-list\" => verb_events_list(t, req)"),
+            "dispatch routes /events-list"
+        );
+        let stamp_seg = seg8217(src, "fn stamp_claim_model(", "\n/// The SQL predicate");
+        assert!(
+            stamp_seg.contains("\"model_stamp\""),
+            "the stamp site writes the timeline event"
+        );
+        assert!(
+            stamp_seg.contains("claim_session_id = ?"),
+            "the stamp site updates claim_session_id"
+        );
+        let clear_seg = seg8217(src, "fn on_binding_cleared(", "\n/// What lease expiry");
+        assert!(
+            clear_seg.contains("\"session_unbound\""),
+            "the clear funnel writes session_unbound"
+        );
+        assert!(
+            src.contains("worker_id, claimed_at, lease_until"),
+            "rich list carries claimed_at"
+        );
+    }
 
     #[test]
     fn stack_storage_wiring_8582() {
