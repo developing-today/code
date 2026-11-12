@@ -160,6 +160,9 @@ pub enum BackupError {
     /// The per-identity download budget is exhausted; retry after the
     /// given number of milliseconds.
     DownloadBudgetExceeded { retry_after_ms: u64 },
+    /// A new device cannot be bound while restore notifications for
+    /// this identity are still pending.
+    RestorePending,
 }
 
 impl fmt::Display for BackupError {
@@ -180,6 +183,12 @@ impl fmt::Display for BackupError {
                 f,
                 "download budget exceeded; retry after {retry_after_ms} ms"
             ),
+            Self::RestorePending => {
+                write!(
+                    f,
+                    "cannot bind a device while restore notifications are pending"
+                )
+            }
         }
     }
 }
@@ -737,13 +746,30 @@ impl BackupStore {
         }
     }
 
-    /// Register a bound device for restore notifications.
-    pub fn bind_device(&mut self, public_key: &[u8; 32], device_public_key: [u8; 32]) {
+    /// Register a bound device for restore notifications. New devices
+    /// cannot be added while a restore's notification set is pending;
+    /// repeated registration of an already-bound device remains a no-op.
+    pub fn bind_device(
+        &mut self,
+        public_key: &[u8; 32],
+        device_public_key: [u8; 32],
+    ) -> Result<(), BackupError> {
         let hash = key_hash(public_key);
-        let devices = self.bound_devices.entry(hash).or_default();
-        if !devices.contains(&device_public_key) {
-            devices.push(device_public_key);
+        if self
+            .bound_devices
+            .get(&hash)
+            .is_some_and(|devices| devices.contains(&device_public_key))
+        {
+            return Ok(());
         }
+        if self.restore_pending.contains_key(&hash) {
+            return Err(BackupError::RestorePending);
+        }
+        self.bound_devices
+            .entry(hash)
+            .or_default()
+            .push(device_public_key);
+        Ok(())
     }
 
     /// Confirm the restore notifications for the restore named by
@@ -1088,7 +1114,7 @@ mod tests {
     #[test]
     fn restore_increments_epoch_and_notifies_bound_devices() {
         let (mut store, _s, public, _e) = uploaded_store();
-        store.bind_device(&public, [42; 32]);
+        store.bind_device(&public, [42; 32]).unwrap();
         assert!(store.is_authoritative(&public));
         let receipt = store.download_for_restore(&public, 5_000).unwrap();
         assert_eq!(receipt.restore_epoch, 1);
@@ -1103,6 +1129,36 @@ mod tests {
         assert_eq!(store.record(&public).unwrap().restore_epoch(), 1);
     }
 
+    /// Oracle: while restore notifications are pending, a new device
+    /// cannot join the bound-device set after the receipt has snapshotted
+    /// its notification targets. The refusal leaves the pending restore
+    /// intact; after confirmation, binding is available again.
+    #[test]
+    fn binding_device_is_refused_until_restore_notifications_are_confirmed() {
+        let (mut store, _s, public, _e) = uploaded_store();
+        store.bind_device(&public, [42; 32]).unwrap();
+        let receipt = store.download_for_restore(&public, 5_000).unwrap();
+        assert_eq!(receipt.notifications.len(), 1);
+        assert_eq!(receipt.notifications[0].device_public_key, [42; 32]);
+        assert!(!store.is_authoritative(&public));
+        assert_eq!(store.bind_device(&public, [42; 32]), Ok(()));
+        assert!(!store.is_authoritative(&public));
+
+        assert_eq!(
+            store.bind_device(&public, [43; 32]),
+            Err(BackupError::RestorePending)
+        );
+        assert!(!store.is_authoritative(&public));
+        assert!(store.confirm_restore_notifications(&public, receipt.token));
+        assert!(store.is_authoritative(&public));
+
+        store.bind_device(&public, [43; 32]).unwrap();
+        let next = store.download_for_restore(&public, 6_000).unwrap();
+        assert_eq!(next.notifications.len(), 2);
+        assert_eq!(next.notifications[0].device_public_key, [42; 32]);
+        assert_eq!(next.notifications[1].device_public_key, [43; 32]);
+    }
+
     /// Oracle: Codex review on PR #7658 — a stale confirmation for
     /// restore epoch 1 must not clear restore epoch 2's pending
     /// notifications; only the current epoch's confirmation restores
@@ -1110,7 +1166,7 @@ mod tests {
     #[test]
     fn stale_restore_confirmation_does_not_clear_newer_restore() {
         let (mut store, _s, public, _e) = uploaded_store();
-        store.bind_device(&public, [42; 32]);
+        store.bind_device(&public, [42; 32]).unwrap();
         let first = store.download_for_restore(&public, 5_000).unwrap();
         assert_eq!(first.restore_epoch, 1);
         let second = store.download_for_restore(&public, 6_000).unwrap();
@@ -1131,7 +1187,7 @@ mod tests {
     #[test]
     fn stale_restore_token_does_not_confirm_recreated_backup() {
         let (mut store, signing, public, envelope) = uploaded_store();
-        store.bind_device(&public, [42; 32]);
+        store.bind_device(&public, [42; 32]).unwrap();
         let first = store.download_for_restore(&public, 5_000).unwrap();
         assert_eq!(
             first.token,
