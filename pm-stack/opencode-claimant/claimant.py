@@ -505,6 +505,15 @@ def _send_prompt(session_id: str, prompt: str) -> bool:
 
 CLAIMANT_WORKER = "opencode-claimant"
 
+# #8176: the model every session this claimant launches carries
+# (Step 4b's session_create_body reads these same constants). The
+# sink-collection claim stamps it: a task collected here is worked
+# by exactly such a session, and any later stamped claim (a
+# transfer, a re-dispatch) overwrites the stamp with that claim's
+# session model.
+LAUNCH_MODEL_PROVIDER = "opencode-route"
+LAUNCH_MODEL_ID = "workhorse"
+
 
 def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
     """Collect up to `want` recorded handoffs from `queue`'s
@@ -541,6 +550,10 @@ def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
                     "--platform",
                     "openchamber",
                     "--handoff",
+                    "--model-provider",
+                    LAUNCH_MODEL_PROVIDER,
+                    "--model-id",
+                    LAUNCH_MODEL_ID,
                 ],
                 capture_output=True,
                 text=True,
@@ -783,7 +796,7 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             session_create_body = {
                 "location": {"directory": str(PRIMARY_CLONE)},
                 "title": f"Queue task {task_id} - {issue}",
-                "model": {"id": "workhorse", "providerID": "opencode-route"},
+                "model": {"id": LAUNCH_MODEL_ID, "providerID": LAUNCH_MODEL_PROVIDER},
                 "agent": "build",
             }
 

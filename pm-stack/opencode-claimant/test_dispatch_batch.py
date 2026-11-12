@@ -319,6 +319,29 @@ class DispatchBatchTests(unittest.TestCase):
         self.assertIn("bind_command", item)
         self.assertEqual(fake_q.verbs("bind"), [])
 
+    def test_claude_claim_carries_the_muse_lane_stamp(self):
+        # #8176: a Muse-family batch claim stamps the muse-lane
+        # marker (the lane surfaces carry no session model of
+        # their own); an opencode claim must NOT carry it — its
+        # stamp is derived from the named session by the queue
+        # client instead.
+        rows = [row(101, 555)]
+        _rc, _records, fake_q = self.run_main(
+            self.base_argv("--to", "Muse", "--count", "1"), rows
+        )
+        claim = fake_q.verbs("claim")[0]
+        self.assertEqual(claim[claim.index("--model-provider") + 1], "muse-lane")
+        self.assertEqual(claim[claim.index("--model-id") + 1], "muse-lane")
+
+        rows = [row(101, 555), row(102, 556)]
+        _rc, _records, fake_q = self.run_main(
+            self.base_argv("--to", "opencode", "--session-id", "ses_lane", "--dry-run"),
+            rows,
+        )
+        claim = fake_q.verbs("claim")[0]
+        self.assertNotIn("--model-provider", claim)
+        self.assertIn("ses_lane", claim)
+
     def test_single_item_batch_accepts_bare_row_response(self):
         # Regression (live acceptance, #8217): --count 1 is the
         # single claim, whose response is the bare row; dispatch
