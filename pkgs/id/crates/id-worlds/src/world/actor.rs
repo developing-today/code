@@ -65,6 +65,7 @@ impl WorldCommand {
             Self::InstallProgram { .. } => "InstallProgram",
             Self::InstallProgramAuthorized { .. } => "InstallProgramAuthorized",
             Self::Presence { .. } => "Presence",
+            Self::SubmitFormResult { .. } => "SubmitFormResult",
             Self::UpdateCaps { .. } => "UpdateCaps",
             Self::SetCapsCeiling { .. } => "SetCapsCeiling",
             Self::SetExecutionProfile { .. } => "SetExecutionProfile",
@@ -261,6 +262,11 @@ pub(crate) enum WorldCommand {
         participant: u64,
         joined: bool,
     },
+    /// A trusted host submits a deferred answer from its local form presenter.
+    SubmitFormResult {
+        result: id_core::world_presentation::FormResult,
+        reply: oneshot::Sender<Result<FormSubmissionStatus>>,
+    },
     /// Admin: change the granted capability set.
     UpdateCaps {
         grant: Vec<String>,
@@ -441,6 +447,9 @@ pub(crate) struct WorldActor {
     pub(crate) active_subs: BTreeSet<Subscription>,
     /// Request ids already executed, so `wants` states intent, not polling.
     pub(crate) handled_requests: BTreeSet<String>,
+    /// Forms registered by `form.present`; actor-lifetime only, so a restart
+    /// invalidates outstanding UI submissions instead of replaying stale input.
+    pub(crate) pending_forms: BTreeMap<String, id_core::world_presentation::FormSurface>,
     /// Subscription specs already reported as refused.
     pub(crate) denied_subs: BTreeSet<String>,
     /// Armed tick intervals to their next fire time.
@@ -1485,6 +1494,9 @@ impl WorldActor {
                 "sequence": self.core.sequence,
             })),
             "device.info" => self.execute_device_info(&request.args),
+            "form.present" => self.execute_form_present(&request.args),
+            "form.result" => Err(CapError::bad_args_with("event_only")),
+            "form.cancel" => self.execute_form_cancel(&request.args),
             "loc.position" => self.execute_loc_position(&request.args),
             "chat.say" => self.execute_chat(&request.args),
             "chat.history" => Ok(serde_json::json!({
@@ -1518,6 +1530,151 @@ impl WorldActor {
             return Err(CapError::unknown());
         };
         Ok(manifest.to_json())
+    }
+
+    /// Register a bounded form for the adapter's trusted widget renderer.
+    /// The form itself is also the current `WorldSurface::Form` view; this
+    /// request only opens its deferred result correlation window.
+    fn execute_form_present(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        use id_core::world_presentation::{FormField, FormSurface, MAX_FORM_BYTES};
+
+        let Some(args) = args.as_object() else {
+            return Err(CapError::bad_args());
+        };
+        if args.len() != 2 || !args.contains_key("form_id") || !args.contains_key("form") {
+            return Err(CapError::bad_args());
+        }
+        let form_id = args
+            .get("form_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(CapError::bad_args)?;
+        let mut raw_form = args.get("form").cloned().ok_or_else(CapError::bad_args)?;
+        if let Some(object) = raw_form.as_object_mut()
+            && object.get("kind").and_then(serde_json::Value::as_str) == Some("form")
+        {
+            object.remove("kind");
+        }
+        let form: FormSurface = serde_json::from_value(raw_form)
+            .map_err(|_| CapError::bad_args_with("field_invalid"))?;
+        form.validate()
+            .map_err(|_| CapError::bad_args_with("field_invalid"))?;
+        if form.form_id != form_id
+            || serde_json::to_vec(&form).map_or(true, |encoded| encoded.len() > MAX_FORM_BYTES)
+        {
+            return Err(CapError::bad_args_with("field_invalid"));
+        }
+        let Some(manifest) = &self.device_manifest else {
+            return Err(CapError::bad_args_with("device_manifest_unavailable"));
+        };
+        let input = &manifest.input;
+        let can_enter_text = input
+            .get("text_entry")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|mode| mode != "none");
+        let has_discrete_control = input
+            .get("keys")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|count| count > 0)
+            || input
+                .get("encoder")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            || input
+                .get("pointer")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+        for field in &form.fields {
+            let supported = match field {
+                FormField::Text { .. } | FormField::Date { .. } => can_enter_text,
+                FormField::Choice { .. } | FormField::Confirm { .. } => has_discrete_control,
+                FormField::Number { .. } => can_enter_text || has_discrete_control,
+            };
+            if !supported {
+                let reason = if matches!(field, FormField::Text { .. } | FormField::Date { .. }) {
+                    "text_entry_unavailable"
+                } else {
+                    "input_unavailable"
+                };
+                return Err(CapError::bad_args_with(reason));
+            }
+        }
+        if let Some(existing) = self.pending_forms.get(form_id) {
+            if existing != &form {
+                return Err(CapError::bad_args_with("field_invalid"));
+            }
+            return Ok(serde_json::json!({"form_id": form_id, "presented": true}));
+        }
+        if self.pending_forms.len() >= crate::world_caps::MAX_PENDING_FORMS {
+            return Err(CapError::failed_with("too_many_pending_forms"));
+        }
+        self.pending_forms.insert(form_id.to_owned(), form);
+        Ok(serde_json::json!({"form_id": form_id, "presented": true}))
+    }
+
+    fn execute_form_cancel(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let Some(args) = args.as_object() else {
+            return Err(CapError::bad_args());
+        };
+        if args.len() != 1 || !args.contains_key("form_id") {
+            return Err(CapError::bad_args());
+        }
+        let form_id = args
+            .get("form_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(CapError::bad_args)?;
+        let cancelled = self.pending_forms.remove(form_id).is_some();
+        Ok(serde_json::json!({"form_id": form_id, "cancelled": cancelled}))
+    }
+
+    /// Consume one host response. Invalid field values are reported once to the
+    /// program and leave the form pending for explicit adapter re-presentation;
+    /// this path never retries or loops on the server.
+    async fn submit_form_result(
+        &mut self,
+        result: id_core::world_presentation::FormResult,
+    ) -> Result<FormSubmissionStatus> {
+        let form = self
+            .pending_forms
+            .get(&result.form_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown or cancelled form id"))?;
+        let valid = form.validate_result(&result).is_ok();
+        let event = if valid {
+            serde_json::json!({
+                "cap": "form.result",
+                "form_id": result.form_id,
+                "action": result.action,
+                "values": result.values,
+            })
+        } else {
+            serde_json::json!({
+                "cap": "form.result",
+                "form_id": result.form_id,
+                "ok": false,
+                "error": "bad_args",
+                "reason": "field_invalid",
+            })
+        };
+        let event = event.to_string();
+        ensure!(
+            event.len() <= crate::world_caps::MAX_EVENT_BYTES,
+            "form.result event exceeds MAX_EVENT_BYTES"
+        );
+        ensure!(
+            self.deliver(event).await,
+            "form.result event was not delivered"
+        );
+        if valid {
+            self.pending_forms.remove(&result.form_id);
+            Ok(FormSubmissionStatus::Accepted)
+        } else {
+            Ok(FormSubmissionStatus::Rejected)
+        }
     }
 
     /// Record the host location source's latest fix (#2341 slice 2),
@@ -1779,8 +1936,7 @@ impl WorldActor {
                 .iter()
                 .filter_map(|sub| match sub {
                     Subscription::LocWatch(ms)
-                        if self.location_consent
-                            == crate::world_caps::LocationConsent::Granted
+                        if self.location_consent == crate::world_caps::LocationConsent::Granted
                             && self.core.ledger.is_granted(sub.cap()) =>
                     {
                         Some(*ms)
@@ -2208,6 +2364,10 @@ impl WorldActor {
                 joined,
             } => {
                 self.handle_presence(participant, joined).await;
+            }
+            WorldCommand::SubmitFormResult { result, reply } => {
+                let outcome = self.submit_form_result(result).await;
+                let _ = reply.send(outcome);
             }
             WorldCommand::Chat { token, text, reply } => {
                 let result = if self.storage_failed {
@@ -4133,6 +4293,240 @@ mod device_info_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod form_tests {
+    use super::*;
+    use id_core::world_presentation::{FormAction, FormField, FormResult, FormSurface};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct FormEventRecorder(Arc<Mutex<Vec<String>>>);
+
+    impl WorldProgram for FormEventRecorder {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.0.lock().unwrap().push(event.clone());
+            }
+            Ok(())
+        }
+    }
+
+    fn form(fields: Vec<FormField>) -> FormSurface {
+        FormSurface {
+            version: 1,
+            form_id: "form-1".to_owned(),
+            title: "Profile".to_owned(),
+            fields,
+            actions: vec![
+                FormAction {
+                    id: "submit".to_owned(),
+                    label: "Save".to_owned(),
+                },
+                FormAction {
+                    id: "cancel".to_owned(),
+                    label: "Cancel".to_owned(),
+                },
+            ],
+        }
+    }
+
+    fn form_actor() -> (WorldActor, Arc<Mutex<Vec<String>>>) {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger.set_granted(BTreeSet::from([
+            "form.present".to_owned(),
+            "form.result".to_owned(),
+            "form.cancel".to_owned(),
+        ]));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut actor =
+            WorldActor::for_test(core, Box::new(FormEventRecorder(Arc::clone(&events))), None);
+        actor.device_manifest = Some(crate::world_caps::DeviceManifest {
+            display: serde_json::json!({"kind": "pixel"}),
+            input: serde_json::json!({"keys": 4, "text_entry": "keyboard"}),
+            sensors: serde_json::json!({}),
+            audio: serde_json::json!({}),
+            network: serde_json::json!({}),
+        });
+        (actor, events)
+    }
+
+    fn present(actor: &mut WorldActor, form: &FormSurface) -> Result<serde_json::Value, CapError> {
+        actor.execute(&Request {
+            id: "present-request".to_owned(),
+            cap: "form.present".to_owned(),
+            args: serde_json::json!({
+                "form_id": form.form_id,
+                "form": form,
+            }),
+        })
+    }
+
+    #[test]
+    fn text_entry_none_refuses_text_but_allows_encoder_compatible_fields() {
+        let (mut actor, _) = form_actor();
+        actor.device_manifest = Some(crate::world_caps::DeviceManifest {
+            display: serde_json::json!({"kind": "pixel"}),
+            input: serde_json::json!({"encoder": true, "text_entry": "none"}),
+            sensors: serde_json::json!({}),
+            audio: serde_json::json!({}),
+            network: serde_json::json!({}),
+        });
+        let text_form = form(vec![FormField::Text {
+            id: "name".to_owned(),
+            label: "Name".to_owned(),
+            required: true,
+            max_length: 32,
+        }]);
+        assert_eq!(
+            present(&mut actor, &text_form)
+                .unwrap_err()
+                .reason()
+                .map(String::as_str),
+            Some("text_entry_unavailable")
+        );
+
+        let encoder_form = form(vec![FormField::Choice {
+            id: "mode".to_owned(),
+            label: "Mode".to_owned(),
+            required: true,
+            options: vec!["quiet".to_owned(), "loud".to_owned()],
+        }]);
+        assert!(present(&mut actor, &encoder_form).is_ok());
+    }
+
+    #[tokio::test]
+    async fn form_result_correlates_validates_and_keeps_invalid_form_for_re_presentation() {
+        let (mut actor, events) = form_actor();
+        let form = form(vec![FormField::Choice {
+            id: "mode".to_owned(),
+            label: "Mode".to_owned(),
+            required: true,
+            options: vec!["quiet".to_owned(), "loud".to_owned()],
+        }]);
+        present(&mut actor, &form).unwrap();
+
+        let invalid = FormResult {
+            form_id: "form-1".to_owned(),
+            action: "submit".to_owned(),
+            values: serde_json::json!({"mode": "unsafe"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert_eq!(
+            actor.submit_form_result(invalid).await.unwrap(),
+            FormSubmissionStatus::Rejected
+        );
+        assert!(actor.pending_forms.contains_key("form-1"));
+        let events_after_rejection = events.lock().unwrap().clone();
+        assert_eq!(
+            events_after_rejection.len(),
+            1,
+            "one refusal, no retry loop"
+        );
+        let refusal: serde_json::Value = serde_json::from_str(&events_after_rejection[0]).unwrap();
+        assert_eq!(refusal["cap"], "form.result");
+        assert_eq!(refusal["form_id"], "form-1");
+        assert_eq!(refusal["error"], "bad_args");
+        assert_eq!(refusal["reason"], "field_invalid");
+
+        let valid = FormResult {
+            form_id: "form-1".to_owned(),
+            action: "submit".to_owned(),
+            values: serde_json::json!({"mode": "quiet"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert_eq!(
+            actor.submit_form_result(valid).await.unwrap(),
+            FormSubmissionStatus::Accepted
+        );
+        assert!(!actor.pending_forms.contains_key("form-1"));
+        let delivered = events.lock().unwrap();
+        assert_eq!(delivered.len(), 2);
+        let result: serde_json::Value = serde_json::from_str(&delivered[1]).unwrap();
+        assert_eq!(result["cap"], "form.result");
+        assert_eq!(result["form_id"], "form-1");
+        assert_eq!(result["action"], "submit");
+        assert_eq!(result["values"]["mode"], "quiet");
+        assert!(
+            delivered
+                .iter()
+                .all(|event| event.len() <= crate::world_caps::MAX_EVENT_BYTES)
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_form_result_event_is_rejected_before_delivery() {
+        let (mut actor, events) = form_actor();
+        actor.device_manifest = Some(crate::world_caps::DeviceManifest {
+            display: serde_json::json!({"kind": "pixel"}),
+            input: serde_json::json!({"text_entry": "keyboard"}),
+            sensors: serde_json::json!({}),
+            audio: serde_json::json!({}),
+            network: serde_json::json!({}),
+        });
+        let form = form(vec![
+            FormField::Text {
+                id: "first".to_owned(),
+                label: "First".to_owned(),
+                required: true,
+                max_length: u16::MAX,
+            },
+            FormField::Text {
+                id: "second".to_owned(),
+                label: "Second".to_owned(),
+                required: true,
+                max_length: u16::MAX,
+            },
+        ]);
+        present(&mut actor, &form).unwrap();
+        let result = FormResult {
+            form_id: "form-1".to_owned(),
+            action: "submit".to_owned(),
+            values: serde_json::json!({
+                "first": "a".repeat(33_000),
+                "second": "b".repeat(33_000),
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        };
+        assert!(actor.submit_form_result(result).await.is_err());
+        assert!(events.lock().unwrap().is_empty());
+        assert!(actor.pending_forms.contains_key("form-1"));
+    }
+
+    #[tokio::test]
+    async fn form_cancel_is_idempotent_and_prevents_late_results() {
+        let (mut actor, _) = form_actor();
+        let form = form(vec![FormField::Confirm {
+            id: "confirm".to_owned(),
+            label: "Continue?".to_owned(),
+            required: true,
+        }]);
+        present(&mut actor, &form).unwrap();
+        let cancel = Request {
+            id: "cancel-request".to_owned(),
+            cap: "form.cancel".to_owned(),
+            args: serde_json::json!({"form_id": "form-1"}),
+        };
+        assert_eq!(actor.execute(&cancel).unwrap()["cancelled"], true);
+        assert_eq!(actor.execute(&cancel).unwrap()["cancelled"], false);
+        let late_result = FormResult {
+            form_id: "form-1".to_owned(),
+            action: "submit".to_owned(),
+            values: serde_json::json!({"confirm": true})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert!(actor.submit_form_result(late_result).await.is_err());
+    }
+}
+
+#[cfg(test)]
 impl WorldActor {
     /// Assemble an actor without spawning its run loop, for tests that drive
     /// [`WorldActor::handle`], [`WorldActor::after_change`], [`WorldActor::fire_ticks`]
@@ -4181,6 +4575,7 @@ impl WorldActor {
             presence: HashMap::new(),
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
+            pending_forms: BTreeMap::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
             overdue_at_open,

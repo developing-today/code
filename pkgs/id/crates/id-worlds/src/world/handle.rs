@@ -245,6 +245,7 @@ impl WorldHandle {
             presence,
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
+            pending_forms: BTreeMap::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
             overdue_at_open,
@@ -454,6 +455,31 @@ impl WorldHandle {
                 joined,
             })
             .await;
+    }
+
+    /// Submit a deferred form answer from a trusted device presenter.
+    ///
+    /// The result is correlated against the pending `form_id`, validated, and
+    /// delivered as a `form.result` system event. A rejected answer is
+    /// delivered as `bad_args` / `field_invalid`; the form remains pending so
+    /// the host can re-present it without a server-side retry loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the actor is closed, the form id is unknown, or
+    /// the serialized event exceeds [`crate::world_caps::MAX_EVENT_BYTES`].
+    pub async fn submit_form_result(
+        &self,
+        result: id_core::world_presentation::FormResult,
+    ) -> Result<FormSubmissionStatus> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SubmitFormResult { result, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped form result response")?
     }
 
     /// Grant and revoke capabilities for this world, and return the report.
@@ -737,11 +763,7 @@ impl WorldHandle {
     /// capability" for every denial cause. Session paths use this as
     /// the early check before receiving upload bytes — the authorized
     /// operation commands still re-check at the effect boundary.
-    pub async fn authorize(
-        &self,
-        token: JoinCapability,
-        required: WorldScopes,
-    ) -> Result<u64> {
+    pub async fn authorize(&self, token: JoinCapability, required: WorldScopes) -> Result<u64> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::AuthorizeScope {

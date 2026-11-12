@@ -398,6 +398,16 @@ pub struct WorldEvent {
     pub kind: WorldEventKind,
 }
 
+/// Outcome of submitting a deferred result to a pending form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormSubmissionStatus {
+    /// The result matched the pending form and was delivered to the program.
+    Accepted,
+    /// The result was rejected with `bad_args` / `field_invalid`; the host
+    /// should re-present the still-pending form rather than retrying on server.
+    Rejected,
+}
+
 /// Participant-originated event data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
