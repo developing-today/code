@@ -766,6 +766,9 @@ pub enum PromotionOutcome {
     /// The candidate module failed to launch in the sandbox; the
     /// last-good program keeps running.
     LaunchFailed,
+    /// The candidate launched but its program became unhealthy while
+    /// initializing or replaying; the last-good program keeps running.
+    CandidateUnhealthy,
 }
 
 impl PromotionOutcome {
@@ -780,6 +783,7 @@ impl PromotionOutcome {
             Self::MigrationFailed => "migration_failed",
             Self::RecordsDiverged => "records_diverged",
             Self::LaunchFailed => "launch_failed",
+            Self::CandidateUnhealthy => "candidate_unhealthy",
         }
     }
 }
@@ -1076,6 +1080,32 @@ impl DevSession {
                 Some(detail),
                 self,
             );
+        }
+        match candidate.program_healthy().await {
+            Ok(true) => {}
+            Ok(false) => {
+                let detail =
+                    "candidate program is unhealthy after replay; candidate discarded".to_owned();
+                self.last_failure = Some(detail.clone());
+                drop(candidate);
+                return report(
+                    PromotionOutcome::CandidateUnhealthy,
+                    fixture_gates,
+                    Some(detail),
+                    self,
+                );
+            }
+            Err(err) => {
+                let detail = format!("candidate health check failed: {err:#}");
+                self.last_failure = Some(detail.clone());
+                drop(candidate);
+                return report(
+                    PromotionOutcome::CandidateUnhealthy,
+                    fixture_gates,
+                    Some(detail),
+                    self,
+                );
+            }
         }
         if candidate.records() != migrated_records {
             let detail =
@@ -3093,5 +3123,49 @@ mod watch_tests {
         assert_eq!(report.outcome, PromotionOutcome::LaunchFailed, "{report:?}");
         assert_eq!(session.snapshot_id(), "snap-a");
         assert_eq!(session.records().get("count"), Some(&serde_json::json!(1)));
+    }
+
+    #[tokio::test]
+    async fn promote_discards_unhealthy_candidate_with_empty_session_records() {
+        // Oracle: an unhealthy candidate must never replace the last-good
+        // world, even when its failed records export was substituted with
+        // `{}` and therefore equals the empty migrated session state.
+        let module_with_records = |records: &str| {
+            wat::parse_str(format!(
+                r#"
+                (module
+                  (memory (export "memory") 1 1)
+                  (data (i32.const 32) "{records}")
+                  (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+                  (func (export "plaza_free") (param i32 i32))
+                  (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+                  (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+                    (local.get 0))
+                  (func (export "plaza_view") (param i32) (result i32) (i32.const 32))
+                  (func (export "plaza_records") (param i32) (result i32) (i32.const 32))
+                  (func (export "plaza_wants") (param i32) (result i32) (i32.const 32))
+                  (func (export "plaza_out_len") (result i32) (i32.const 2)))
+                "#
+            ))
+            .unwrap()
+        };
+        let initial = module_with_records("{}");
+        let unhealthy_candidate = module_with_records("[]");
+        let mut session = DevSession::launch(&initial, 7, "snap-a".to_owned())
+            .await
+            .unwrap();
+
+        let report = session
+            .promote(&unhealthy_candidate, "snap-b", "snap-b", &[])
+            .await;
+
+        assert_eq!(
+            report.outcome,
+            PromotionOutcome::CandidateUnhealthy,
+            "{report:?}"
+        );
+        assert_eq!(session.snapshot_id(), "snap-a");
+        assert_eq!(session.version(), 1);
+        assert!(session.records().is_empty());
     }
 }
