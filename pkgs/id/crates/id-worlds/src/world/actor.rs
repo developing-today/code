@@ -454,6 +454,23 @@ pub(crate) struct WorldActor {
     /// device re-enumeration. `None` when the host cannot describe
     /// its device — `device.info` then refuses with `unknown_cap`.
     pub(crate) device_manifest: Option<crate::world_caps::DeviceManifest>,
+    /// The host's current location consent (#2341 slice 2): the seam a
+    /// host fills from its permission prompt / OS state. The default
+    /// host records no consent, so sensor caps refuse
+    /// `consent_required` until a host says otherwise.
+    pub(crate) location_consent: crate::world_caps::LocationConsent,
+    /// The host location source's latest fix (#2341 slice 2), as the
+    /// adapter boundary last reported it. `None` — the default, and
+    /// the state of any host with no location source — answers
+    /// `failed` / `no_fix`; a fix is never fabricated.
+    pub(crate) location_fix: Option<crate::world_caps::LocationReading>,
+    /// When `location_fix` was received, on the world clock. The
+    /// reading's `fix_age_ms` is its age at receipt; serving adds
+    /// the time elapsed since receipt, so a cached fix never claims
+    /// to be younger than it is (PR #8643 Codex round-2 P2).
+    pub(crate) location_fix_received_at: Option<std::time::Instant>,
+    /// Armed `loc.watch` intervals to their next fire time.
+    pub(crate) loc_watches: BTreeMap<u64, std::time::Instant>,
     /// Request ids the restored program already listed in `wants` when the
     /// world opened. Restart semantics: a reopen is not a fresh world. The
     /// requests may have executed before the restart, and
@@ -539,6 +556,7 @@ impl WorldActor {
                 },
                 () = Self::sleep_until(deadline) => {
                     self.fire_ticks().await;
+                    self.fire_loc_watches().await;
                     self.fire_schedules().await;
                     self.after_change().await;
                     continue;
@@ -595,6 +613,7 @@ impl WorldActor {
                 clock.now_instant(),
                 deliverable,
             ))
+            .chain(self.loc_watches.values().min().copied())
             .min()
     }
 
@@ -1248,6 +1267,20 @@ impl WorldActor {
                 }
                 continue;
             }
+            // A loc.watch spec that fails the core parse (a foreign
+            // shape, a non-numeric interval, or an interval below the
+            // floor) is refused like a sub-floor tick: once per spec,
+            // and never armed (#2341 slice 2).
+            if let Subscription::Unknown(spec) = sub
+                && spec.starts_with("loc.watch")
+                && let Err(error) = crate::world_caps::parse_loc_watch_interval_ms(spec)
+            {
+                if self.denied_subs.insert(spec.clone()) {
+                    self.deliver(crate::world_caps::subscription_refused_event(spec, &error))
+                        .await;
+                }
+                continue;
+            }
             let decision = self.core.ledger.decide(sub.cap());
             self.audit_provider_decision(sub.cap(), &decision, "program".to_owned());
             match decision {
@@ -1268,16 +1301,40 @@ impl WorldActor {
         }
         let current = wants.subscribe.clone();
         self.active_subs.retain(|sub| current.contains(sub));
+        // Timers for subscriptions that just left the wants are
+        // disarmed now, not at their distant deadlines (PR #8643
+        // Codex round-2 P2): otherwise every wants update can leave
+        // up to MAX_LOC_WATCHES stale timers behind, growing the map
+        // — and every next_deadline scan — without bound. This is
+        // the same prune reconcile_subscriptions applies on an
+        // authority change.
+        let active = &self.active_subs;
+        self.loc_watches
+            .retain(|ms, _| active.contains(&Subscription::LocWatch(*ms)));
         self.denied_subs
             .retain(|spec| current.iter().any(|sub| &sub.spec() == spec));
         if self.presence.values().all(|count| *count == 0) {
             self.ticks.clear();
+            self.loc_watches.clear();
         }
     }
 
     /// Arm a granted subscription's timer, if any and if anyone is present.
     /// A tick below the world's `min_tick_ms` floor is never armed.
     fn arm(&mut self, sub: &Subscription) {
+        // A loc.watch arms only while consent stands (#2341 slice 2):
+        // an unconsented watch is known but never delivers, and if
+        // consent later stands, the presence path arms it.
+        if let Subscription::LocWatch(ms) = sub
+            && self.location_consent == crate::world_caps::LocationConsent::Granted
+            && !self.presence.is_empty()
+            && !self.loc_watches.contains_key(ms)
+        {
+            self.loc_watches.insert(
+                *ms,
+                self.core.clock().now_instant() + std::time::Duration::from_millis(*ms),
+            );
+        }
         if let Subscription::Tick(ms) = sub
             && *ms >= self.core.limits.min_tick_ms
             && !self.presence.is_empty()
@@ -1313,6 +1370,50 @@ impl WorldActor {
                 "now": self.core.clock().now_ms(),
             });
             self.deliver(event.to_string()).await;
+        }
+    }
+
+    /// Deliver one reading per due `loc.watch` interval and re-arm
+    /// (#2341 slice 2), mirroring [`fire_ticks`](Self::fire_ticks).
+    /// A watch whose consent has been withdrawn since it armed is
+    /// closed with exactly the revocation event and removed from the
+    /// active subscriptions. With consent standing but no host fix,
+    /// nothing is delivered — a reading is never fabricated.
+    pub(crate) async fn fire_loc_watches(&mut self) {
+        if self.read_only {
+            return;
+        }
+        let now = self.core.clock().now_instant();
+        let due: Vec<u64> = self
+            .loc_watches
+            .iter()
+            .filter(|(_, next)| **next <= now)
+            .map(|(ms, _)| *ms)
+            .collect();
+        for ms in due {
+            // A watch that is no longer an active, granted
+            // subscription is stale (its authority was removed after
+            // it armed): disarm it without delivering a reading.
+            if !self.active_subs.contains(&Subscription::LocWatch(ms))
+                || !self.core.ledger.is_granted("loc.watch")
+            {
+                self.loc_watches.remove(&ms);
+                self.active_subs.remove(&Subscription::LocWatch(ms));
+                continue;
+            }
+            if self.location_consent != crate::world_caps::LocationConsent::Granted {
+                self.loc_watches.remove(&ms);
+                self.active_subs.remove(&Subscription::LocWatch(ms));
+                self.deliver(crate::world_caps::loc_watch_revocation_event())
+                    .await;
+                continue;
+            }
+            self.loc_watches
+                .insert(ms, now + std::time::Duration::from_millis(ms));
+            if let Some(reading) = self.current_location_reading() {
+                self.deliver(crate::world_caps::loc_watch_reading_event(&reading))
+                    .await;
+            }
         }
     }
 
@@ -1384,6 +1485,7 @@ impl WorldActor {
                 "sequence": self.core.sequence,
             })),
             "device.info" => self.execute_device_info(&request.args),
+            "loc.position" => self.execute_loc_position(&request.args),
             "chat.say" => self.execute_chat(&request.args),
             "chat.history" => Ok(serde_json::json!({
                 "lines": chat_history(
@@ -1416,6 +1518,61 @@ impl WorldActor {
             return Err(CapError::unknown());
         };
         Ok(manifest.to_json())
+    }
+
+    /// Record the host location source's latest fix (#2341 slice 2),
+    /// stamped with the world clock so serving can report the fix's
+    /// true age at delivery time.
+    pub(crate) fn set_location_fix(&mut self, reading: crate::world_caps::LocationReading) {
+        self.location_fix_received_at = Some(self.core.clock().now_instant());
+        self.location_fix = Some(reading);
+    }
+
+    /// The cached fix with its age updated to now: `fix_age_ms` is
+    /// defined as the age when delivered, so the elapsed time since
+    /// receipt is added at serve time (PR #8643 Codex round-2 P2).
+    /// A fix recorded without a receipt stamp (a direct field write)
+    /// is served as recorded.
+    fn current_location_reading(&self) -> Option<crate::world_caps::LocationReading> {
+        let mut reading = self.location_fix?;
+        if let Some(received_at) = self.location_fix_received_at {
+            let elapsed = self
+                .core
+                .clock()
+                .now_instant()
+                .saturating_duration_since(received_at);
+            reading.fix_age_ms = reading
+                .fix_age_ms
+                .saturating_add(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+        }
+        Some(reading)
+    }
+
+    /// `loc.position` (#2341 slice 2): one reading from the host
+    /// location source, gated in order by the cap ledger (in
+    /// [`execute`](Self::execute), before dispatch), the consent seam,
+    /// and the source itself. A consent refusal is the consent seam's
+    /// own error; no source or no fix is `no_fix`; a fix less precise
+    /// than the request's `max_accuracy_m` ceiling is refused with
+    /// `precision_ceiling`, never silently degraded.
+    fn execute_loc_position(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        if let Some(refusal) = self.location_consent.refusal() {
+            return Err(refusal);
+        }
+        let Some(reading) = self.current_location_reading() else {
+            return Err(CapError::no_fix());
+        };
+        // A supplied ceiling that is not an unsigned integer is
+        // malformed, not absent: refuse it instead of silently
+        // dropping the precision check (#2341, PR #8643 Codex P2).
+        if let Some(raw_ceiling) = args.get("max_accuracy_m") {
+            let ceiling = raw_ceiling.as_u64().ok_or_else(CapError::bad_args)?;
+            reading.refuse_beyond_ceiling(ceiling as f64)?;
+        }
+        Ok(reading.to_json())
     }
 
     fn players_list(&self) -> Vec<serde_json::Value> {
@@ -1616,8 +1773,30 @@ impl WorldActor {
                 });
             }
         }
+        if now_present && !was_present && self.loc_watches.is_empty() {
+            let intervals: Vec<u64> = self
+                .active_subs
+                .iter()
+                .filter_map(|sub| match sub {
+                    Subscription::LocWatch(ms)
+                        if self.location_consent
+                            == crate::world_caps::LocationConsent::Granted
+                            && self.core.ledger.is_granted(sub.cap()) =>
+                    {
+                        Some(*ms)
+                    }
+                    _ => None,
+                })
+                .collect();
+            for ms in intervals {
+                self.loc_watches.entry(ms).or_insert_with(|| {
+                    self.core.clock().now_instant() + std::time::Duration::from_millis(ms)
+                });
+            }
+        }
         if self.presence.is_empty() {
             self.ticks.clear();
+            self.loc_watches.clear();
         }
         if now_present != was_present
             && self.active_subs.contains(&Subscription::Players)
@@ -1753,6 +1932,12 @@ impl WorldActor {
         let active = &self.active_subs;
         self.ticks
             .retain(|ms, _| active.contains(&Subscription::Tick(*ms)));
+        // Location watches disarm alongside ticks (#2341, PR #8643
+        // Codex P1): a watch whose capability authority was removed
+        // must stop delivering readings, not merely lose its
+        // subscription record.
+        self.loc_watches
+            .retain(|ms, _| active.contains(&Subscription::LocWatch(*ms)));
     }
 
     /// The capability report an admin sees.
@@ -3854,6 +4039,97 @@ mod device_info_tests {
         let error = actor.execute(&request(serde_json::json!({}))).unwrap_err();
         assert_eq!(error.code(), CapError::unknown().code());
     }
+
+    fn loc_actor() -> WorldActor {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["loc.position".to_owned()]));
+        // Sensor caps sit outside the default ceiling (#2341): the
+        // world must name them in its ceiling as well as grant them.
+        let mut allowed = crate::world_caps::default_ceiling_names();
+        allowed.insert("loc.position".to_owned());
+        core.ledger.set_allowed(allowed);
+        WorldActor::for_test(core, Box::new(DeviceInfoProgram), None)
+    }
+
+    fn loc_request(args: serde_json::Value) -> Request {
+        Request {
+            id: "l1".to_owned(),
+            cap: "loc.position".to_owned(),
+            args,
+        }
+    }
+
+    fn sample_reading() -> crate::world_caps::LocationReading {
+        crate::world_caps::LocationReading {
+            lat: 52.5,
+            lon: 13.4,
+            accuracy_m: 12.0,
+            fix_age_ms: 250,
+            source: crate::world_caps::LocationSource::Gnss,
+        }
+    }
+
+    #[test]
+    fn loc_position_refuses_until_the_consent_seam_grants() {
+        // The default host records no consent (#2341): the refusal is
+        // the consent seam's own code, before any source question.
+        let mut actor = loc_actor();
+        let error = actor
+            .execute(&loc_request(serde_json::json!({})))
+            .unwrap_err();
+        assert_eq!(error.code(), CapError::consent_required().code());
+
+        actor.location_consent = crate::world_caps::LocationConsent::OsPermissionDenied;
+        let error = actor
+            .execute(&loc_request(serde_json::json!({})))
+            .unwrap_err();
+        assert_eq!(error.code(), CapError::os_permission_denied().code());
+    }
+
+    #[test]
+    fn loc_position_is_no_fix_when_the_host_source_has_none() {
+        let mut actor = loc_actor();
+        actor.location_consent = crate::world_caps::LocationConsent::Granted;
+        let error = actor
+            .execute(&loc_request(serde_json::json!({})))
+            .unwrap_err();
+        assert_eq!(error.code(), CapError::no_fix().code());
+    }
+
+    #[test]
+    fn loc_position_refuses_a_fix_beyond_the_precision_ceiling() {
+        let mut actor = loc_actor();
+        actor.location_consent = crate::world_caps::LocationConsent::Granted;
+        actor.set_location_fix(sample_reading());
+        let error = actor
+            .execute(&loc_request(serde_json::json!({"max_accuracy_m": 5})))
+            .unwrap_err();
+        assert_eq!(error.code(), CapError::precision_ceiling().code());
+
+        let value = actor
+            .execute(&loc_request(serde_json::json!({"max_accuracy_m": 20})))
+            .unwrap();
+        assert_eq!(value, sample_reading().to_json());
+    }
+
+    #[test]
+    fn loc_position_refuses_a_malformed_accuracy_ceiling() {
+        // Oracle: PR #8643 Codex P2 — a supplied `max_accuracy_m`
+        // that is not an unsigned integer (5.5, "5") is `bad_args`,
+        // never a silently disabled precision check: with consent
+        // granted and a 12-metre fix available, the malformed
+        // requests must not succeed with the imprecise reading.
+        let mut actor = loc_actor();
+        actor.location_consent = crate::world_caps::LocationConsent::Granted;
+        actor.set_location_fix(sample_reading());
+        for bad in [serde_json::json!(5.5), serde_json::json!("5")] {
+            let error = actor
+                .execute(&loc_request(serde_json::json!({"max_accuracy_m": bad})))
+                .unwrap_err();
+            assert_eq!(error.code(), CapError::bad_args().code());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3912,6 +4188,10 @@ impl WorldActor {
             acting: None,
             acting_session: None,
             device_manifest: None,
+            location_consent: crate::world_caps::LocationConsent::ConsentRequired,
+            location_fix: None,
+            location_fix_received_at: None,
+            loc_watches: BTreeMap::new(),
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
         }

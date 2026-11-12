@@ -4582,6 +4582,296 @@ mod tests {
         }
     }
 
+    /// A program that subscribes to `loc.watch:5000` and records every
+    /// system event it is delivered, verbatim (#2341 slice 2).
+    #[derive(Debug, Default)]
+    struct LocWatchRecorder {
+        events: Vec<String>,
+    }
+
+    impl WorldProgram for LocWatchRecorder {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.events.push(event.clone());
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"v": 1, "subscribe": ["loc.watch:5000"]}).to_string(),
+            ))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"events": self.events}).to_string(),
+            ))
+        }
+    }
+
+    /// The system events a [`LocWatchRecorder`] actor has delivered, via its records.
+    fn loc_events(actor: &WorldActor) -> Vec<String> {
+        actor
+            .records_sender
+            .borrow()
+            .1
+            .get("events")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn loc_watch_delivers_readings_and_revokes_on_consent_withdrawal() {
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
+        let mut core =
+            WorldCore::new_with_clock("loc-watch", WorldLimits::default(), clock.clone()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["loc.watch".to_owned()]));
+        let mut allowed = crate::world_caps::default_ceiling_names();
+        allowed.insert("loc.watch".to_owned());
+        core.ledger.set_allowed(allowed);
+        let (_, _token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(LocWatchRecorder::default()), None);
+        let reading = crate::world_caps::LocationReading {
+            lat: 52.5,
+            lon: 13.4,
+            accuracy_m: 12.0,
+            fix_age_ms: 250,
+            source: crate::world_caps::LocationSource::Gnss,
+        };
+        actor.location_consent = crate::world_caps::LocationConsent::Granted;
+        actor.set_location_fix(reading);
+
+        actor.after_change().await;
+        actor
+            .handle(WorldCommand::Presence {
+                participant: 1,
+                joined: true,
+            })
+            .await;
+        assert!(
+            actor.loc_watches.contains_key(&5000),
+            "a granted, consented watch arms on presence"
+        );
+
+        clock.advance(5000);
+        actor.fire_loc_watches().await;
+        // The fix was received at t=0 with fix_age_ms 250; at the
+        // t=5000 delivery its true age is 5250 (Codex round-2 P2:
+        // the age is updated at serve time, never served stale).
+        let mut aged = reading;
+        aged.fix_age_ms += 5000;
+        assert_eq!(
+            loc_events(&actor),
+            vec![crate::world_caps::loc_watch_reading_event(&aged)],
+            "the open watch delivers the host reading at its true age"
+        );
+
+        // Consent withdrawn: the next fire closes the watch with
+        // exactly the revocation event, and nothing is delivered after.
+        actor.location_consent = crate::world_caps::LocationConsent::ConsentRequired;
+        clock.advance(5000);
+        actor.fire_loc_watches().await;
+        assert_eq!(
+            loc_events(&actor),
+            vec![
+                crate::world_caps::loc_watch_reading_event(&aged),
+                crate::world_caps::loc_watch_revocation_event(),
+            ]
+        );
+        assert!(actor.loc_watches.is_empty(), "the revoked watch disarms");
+        assert!(
+            !actor
+                .active_subs
+                .contains(&crate::world_caps::Subscription::LocWatch(5000)),
+            "the revoked watch is closed, not merely muted"
+        );
+    }
+
+    #[tokio::test]
+    async fn loc_watch_disarms_when_capability_authority_is_removed() {
+        // Oracle: PR #8643 Codex P1 — revoking `loc.watch` authority
+        // (here via SetCapsCeiling) stops location delivery: the
+        // armed watch is disarmed by reconcile, and no reading is
+        // delivered afterwards even though consent still stands.
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
+        let mut core =
+            WorldCore::new_with_clock("loc-watch-revoke", WorldLimits::default(), clock.clone())
+                .unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["loc.watch".to_owned()]));
+        let mut allowed = crate::world_caps::default_ceiling_names();
+        allowed.insert("loc.watch".to_owned());
+        core.ledger.set_allowed(allowed);
+        let (_, _token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(LocWatchRecorder::default()), None);
+        let reading = crate::world_caps::LocationReading {
+            lat: 52.5,
+            lon: 13.4,
+            accuracy_m: 12.0,
+            fix_age_ms: 250,
+            source: crate::world_caps::LocationSource::Gnss,
+        };
+        actor.location_consent = crate::world_caps::LocationConsent::Granted;
+        actor.set_location_fix(reading);
+
+        actor.after_change().await;
+        actor
+            .handle(WorldCommand::Presence {
+                participant: 1,
+                joined: true,
+            })
+            .await;
+        assert!(
+            actor.loc_watches.contains_key(&5000),
+            "a granted, consented watch arms on presence"
+        );
+        clock.advance(5000);
+        actor.fire_loc_watches().await;
+        let mut aged = reading;
+        aged.fix_age_ms += 5000;
+        assert_eq!(
+            loc_events(&actor),
+            vec![crate::world_caps::loc_watch_reading_event(&aged)],
+            "the open watch delivers before authority is removed"
+        );
+
+        // Remove loc.watch from the ceiling: authority is gone.
+        let ceiling: Vec<String> = crate::world_caps::default_ceiling_names()
+            .into_iter()
+            .collect();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling { ceiling, reply })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        assert!(
+            actor.loc_watches.is_empty(),
+            "the watch disarms when its capability authority is removed"
+        );
+
+        clock.advance(5000);
+        actor.fire_loc_watches().await;
+        assert_eq!(
+            loc_events(&actor),
+            vec![crate::world_caps::loc_watch_reading_event(&aged)],
+            "no reading is delivered after authority removal"
+        );
+    }
+
+    #[test]
+    fn parse_wants_refuses_more_than_max_loc_watches() {
+        // Oracle: PR #8643 Codex P2 — the advertised MAX_LOC_WATCHES
+        // bound is enforced at wants parse time, like the tick bound.
+        let over: Vec<String> = (0..=crate::world_caps::MAX_LOC_WATCHES)
+            .map(|i| format!("loc.watch:{}", 5000 + i * 1000))
+            .collect();
+        let text = serde_json::json!({"v": 1, "subscribe": over}).to_string();
+        assert!(
+            crate::world_caps::parse_wants(&text).is_err(),
+            "more than MAX_LOC_WATCHES location watches must not parse"
+        );
+        let at: Vec<String> = (0..crate::world_caps::MAX_LOC_WATCHES)
+            .map(|i| format!("loc.watch:{}", 5000 + i * 1000))
+            .collect();
+        let text = serde_json::json!({"v": 1, "subscribe": at}).to_string();
+        assert!(
+            crate::world_caps::parse_wants(&text).is_ok(),
+            "exactly MAX_LOC_WATCHES location watches must parse"
+        );
+    }
+
+    /// A program whose loc.watch wants the test rewrites between
+    /// `after_change` passes, via the shared cell (#8643 round-2 P2).
+    #[derive(Debug)]
+    struct VarLocProgram {
+        wants: std::sync::Arc<std::sync::Mutex<String>>,
+        events: Vec<String>,
+    }
+
+    impl WorldProgram for VarLocProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.events.push(event.clone());
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            Ok(Some(self.wants.lock().unwrap().clone()))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(serde_json::json!({"events": self.events}).to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn loc_watch_timers_are_pruned_when_subscriptions_leave_wants() {
+        // Oracle: PR #8643 Codex round-2 P2 — when a program replaces
+        // its requested watch interval, the old timer is disarmed by
+        // the wants reconciliation itself, not left in loc_watches
+        // until its distant deadline: the timer map must never hold
+        // an interval that is no longer an active subscription.
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
+        let mut core =
+            WorldCore::new_with_clock("loc-watch-prune", WorldLimits::default(), clock.clone())
+                .unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["loc.watch".to_owned()]));
+        let mut allowed = crate::world_caps::default_ceiling_names();
+        allowed.insert("loc.watch".to_owned());
+        core.ledger.set_allowed(allowed);
+        let (_, _token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let wants = std::sync::Arc::new(std::sync::Mutex::new(
+            serde_json::json!({"v": 1, "subscribe": ["loc.watch:60000"]}).to_string(),
+        ));
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(VarLocProgram {
+                wants: wants.clone(),
+                events: Vec::new(),
+            }),
+            None,
+        );
+        actor.location_consent = crate::world_caps::LocationConsent::Granted;
+
+        actor.after_change().await;
+        actor
+            .handle(WorldCommand::Presence {
+                participant: 1,
+                joined: true,
+            })
+            .await;
+        assert!(
+            actor.loc_watches.contains_key(&60000),
+            "the requested watch arms"
+        );
+
+        // The program replaces its watch with a different interval:
+        // the 60s timer must be pruned by this reconciliation, and
+        // only the new interval stays armed.
+        *wants.lock().unwrap() =
+            serde_json::json!({"v": 1, "subscribe": ["loc.watch:5000"]}).to_string();
+        actor.after_change().await;
+        assert!(
+            !actor.loc_watches.contains_key(&60000),
+            "the replaced watch's timer is pruned when it leaves wants"
+        );
+        assert!(
+            actor.loc_watches.contains_key(&5000),
+            "the replacement watch arms"
+        );
+        assert_eq!(actor.loc_watches.len(), 1, "no stale timers accumulate");
+    }
+
     #[tokio::test]
     async fn subscribed_ticks_arrive_only_while_someone_is_present() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
