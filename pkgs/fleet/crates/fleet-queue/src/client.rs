@@ -1340,6 +1340,115 @@ fn model_stamp_flags(
     }
 }
 
+/// #8176 (2026-11-12 fix): read the claim stamp off a session
+/// record (the OpenCode server's GET /api/session/<id> shape,
+/// enveloped in `data` or bare): the session's own model —
+/// providerID + id, variant only when the session carries a real
+/// effort variant (the server reports "default" when none was
+/// chosen; that is the absence of a variant, not a variant).
+/// Pure: the oracle for the derivation below.
+fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String>)> {
+    let inner = if session.get("model").is_some() {
+        session
+    } else {
+        session.get("data")?
+    };
+    let model = inner.get("model")?;
+    let provider = model
+        .get("providerID")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let id = model
+        .get("id")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let variant = model
+        .get("variant")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "default");
+    Some((provider.to_string(), id.to_string(), variant.map(str::to_string)))
+}
+
+/// Minimal base64 (standard alphabet, padded) for the server's
+/// Basic auth header — the crate carries no base64 dependency and
+/// this is the only encoding the claim path needs.
+fn b64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let n = ((chunk[0] as u32) << 16)
+            | ((*chunk.get(1).unwrap_or(&0) as u32) << 8)
+            | (*chunk.get(2).unwrap_or(&0) as u32);
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// #8176 (2026-11-12 fix): derive the claim stamp for a claim that
+/// names its claiming session (--session-id) but carries no
+/// explicit --model-* flags. The dispatch surfaces claim on behalf
+/// of a live session and name it, but the #8176 wiring stopped at
+/// the transfer path — the batch claims that carry the fleet's
+/// volume never passed the flags, so in production the stamp
+/// landed only on hand-driven proof claims (4 stamped claims of
+/// 12,684 in the Nov 10-12 window, 3 of them worker `proof-8176`).
+/// The session's own record is the authority (the same record
+/// route_usage reads), fetched from the OpenCode server with its
+/// Basic auth (password in the server's state file — claimant.py's
+/// route; the value is used for the header only, never logged).
+/// FAIL-SOFT by design: any failure — no state file, server
+/// unreachable, session unknown, malformed record — returns None
+/// and the claim proceeds exactly as an unstamped claim always
+/// has; a claim must never fail because its stamp could not be
+/// derived.
+fn derive_claim_model_stamp(session_id: &str) -> Option<(String, String, Option<String>)> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return None;
+    }
+    let base = std::env::var("OPENCODE_SERVER_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:13420".to_string());
+    let home = crate::home::from_env().ok()?;
+    let state = std::fs::read_to_string(format!(
+        "{home}/.local/state/opencode/service-prod.json"
+    ))
+    .ok()?;
+    let state: Value = serde_json::from_str(&state).ok()?;
+    let password = state.get("password")?.as_str()?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(true)
+        .timeout_global(Some(Duration::from_secs(3)))
+        .build()
+        .into();
+    let auth = format!("Basic {}", b64_encode(format!("opencode:{password}").as_bytes()));
+    let mut resp = agent
+        .get(format!("{base}/api/session/{session_id}"))
+        .header("Authorization", &auth)
+        .call()
+        .ok()?;
+    let text = resp.body_mut().read_to_string().ok()?;
+    let session: Value = serde_json::from_str(&text).ok()?;
+    session_model_stamp(&session)
+}
+
 fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_args(rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -1783,6 +1892,22 @@ fn cmd_claim(rest: &[String]) -> i32 {
         }
         Ok(None) => {}
         Err(e) => die(2, &e),
+    }
+    // #8176 (2026-11-12 fix): no explicit stamp — derive it from
+    // the claiming session's own record when the claim names the
+    // session (--session-id, the dispatch surfaces' form). Claims
+    // that name no session keep the unstamped shape exactly as
+    // before; derivation failure never fails the claim.
+    if body.get("model_provider").is_none() {
+        if let Some(sid) = args.get("session-id") {
+            if let Some((provider, model, variant)) = derive_claim_model_stamp(&sid) {
+                body["model_provider"] = json!(provider);
+                body["model_id"] = json!(model);
+                if let Some(v) = variant {
+                    body["model_variant"] = json!(v);
+                }
+            }
+        }
     }
     // --handoff: the no-id collection of the next recorded
     // opencode handoff from the sink (status 'handed_off', #8234;
@@ -4627,6 +4752,49 @@ mod tests {
         assert!(model_stamp_flags(Some("_claude"), None, None).is_err());
         assert!(model_stamp_flags(None, Some("claude-sonnet-5-5"), None).is_err());
         assert!(model_stamp_flags(None, None, Some("medium")).is_err());
+    }
+
+    #[test]
+    fn session_model_stamp_reads_the_session_record() {
+        // #8176 derivation oracle: the stamp is the session's own
+        // model — providerID + id from the server's session record
+        // (enveloped or bare); a "default" variant is no variant.
+        let enveloped = json!({
+            "data": {"id": "ses_x", "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"}}
+        });
+        assert_eq!(
+            session_model_stamp(&enveloped),
+            Some(("opencode-route".to_string(), "workhorse".to_string(), None))
+        );
+        let bare = json!({
+            "id": "ses_y", "model": {"id": "gpt-6-luna", "providerID": "openai-plan", "variant": "high"}
+        });
+        assert_eq!(
+            session_model_stamp(&bare),
+            Some((
+                "openai-plan".to_string(),
+                "gpt-6-luna".to_string(),
+                Some("high".to_string()),
+            ))
+        );
+        // Half a model, or no model, stamps nothing.
+        assert_eq!(session_model_stamp(&json!({"data": {"id": "ses_z"}})), None);
+        assert_eq!(session_model_stamp(&json!({"model": {"id": "workhorse"}})), None);
+        assert_eq!(
+            session_model_stamp(&json!({"model": {"providerID": "opencode-route"}})),
+            None
+        );
+    }
+
+    #[test]
+    fn b64_encode_matches_the_standard_alphabet() {
+        // The server's Basic auth is the only consumer; vectors
+        // are the RFC 4648 canonical set.
+        assert_eq!(b64_encode(b""), "");
+        assert_eq!(b64_encode(b"f"), "Zg==");
+        assert_eq!(b64_encode(b"fo"), "Zm8=");
+        assert_eq!(b64_encode(b"foo"), "Zm9v");
+        assert_eq!(b64_encode(b"opencode:pw"), "b3BlbmNvZGU6cHc=");
     }
 
     #[test]
