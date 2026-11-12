@@ -31,7 +31,11 @@ CREATE TABLE public.orch_items (
   kind text NOT NULL CHECK (btrim(kind) <> ''),
   title text NOT NULL,
   source text NOT NULL,
-  state text NOT NULL CHECK (btrim(state) <> ''),
+  -- TierItem.state is optional in the writer contract (aggregator
+  -- model.ts): a non-session item may carry no state at all — the
+  -- contract corpus's decision item omits it. Absent state is NULL;
+  -- a state that IS present must still be non-empty (#8856).
+  state text CHECK (state IS NULL OR btrim(state) <> ''),
   reason text NOT NULL,
   ref text,
   since timestamptz NOT NULL,

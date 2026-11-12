@@ -144,6 +144,31 @@ expect_rejected "item last seen before it was first seen" "INSERT INTO public.or
     '2026-11-11T00:00:00Z', '2026-11-10T00:00:00Z', '{\"id\": \"item-time-travel\"}',
     'orch-2026-11-11T00:00:00Z', 'orch-2026-11-11T00:00:00Z')"
 
+# A valid item WITHOUT a state must import cleanly (#8856): TierItem.state
+# is optional in the writer contract, and the contract corpus's decision
+# item (aggregator/test/contract-corpus/v1/orchestration.json) omits it
+# entirely. This insert mirrors that item's shape, with the state column
+# left out (NULL), under the run row above.
+psql_test -c "INSERT INTO public.orch_items
+  (id, tier, kind, title, source, reason, ref, since, last_seen_at,
+   item, first_seen_run_id, last_seen_run_id)
+  VALUES ('example-owner/example-repo#812', 'needsDrew', 'decision',
+    'Review an example design decision', 'backlog',
+    'Scope requires an owner design decision.',
+    'example-owner/example-repo#812',
+    '2026-10-27T03:14:56Z', '2026-10-27T03:14:56Z',
+    '{\"id\": \"example-owner/example-repo#812\", \"kind\": \"decision\"}',
+    'orch-2026-11-11T00:00:00Z', 'orch-2026-11-11T00:00:00Z');"
+echo "ok - state-less contract-corpus item imports (state is NULL)"
+
+# Absent state is NULL; a present-but-blank state is still rejected.
+expect_rejected "item with a blank state" "INSERT INTO public.orch_items
+  (id, tier, kind, title, source, state, reason, since, last_seen_at,
+   item, first_seen_run_id, last_seen_run_id)
+  VALUES ('item-blank-state', 'needsDrew', 'decision', 't', 'test', '  ', 'r',
+    now(), now(), '{\"id\": \"item-blank-state\"}',
+    'orch-2026-11-11T00:00:00Z', 'orch-2026-11-11T00:00:00Z')"
+
 # The per-run snapshot replace the writer contract prescribes: delete the
 # old snapshot, insert the new run's rows, count parity with the run row.
 psql_test -c "DELETE FROM public.orch_items;"
