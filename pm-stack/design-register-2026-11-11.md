@@ -972,16 +972,18 @@ Every register item whose tracking is NEVER-ISSUED was classified:
 
 ### STILL-LIVE NEVER-ISSUED — filing manifest (these 8 get filed in the next step)
 
+**Filed 2026-11-11** — all 8 are now issues; the filed number rides beside each item below. Tracking epic: developing-today/code#8805. Register committed to the PM stack as `pm-stack/design-register-2026-11-11.md` (PR #8804).
+
 | # | Proposed issue title | Repo | Register ref | Why it is still live (one line) |
 |---|---|---|---|---|
-| 1 | init.sh fast-path: boot-marker check first + trigger-style Phase 1 (approved 2026-10-05, never landed) | developing-today/code | X18 | Drew approved it ("yes all of it"); 2026-11-04 measurements (code#5717) still show init costing 68–97s per run — the audit's clearest approved-but-dropped item. |
-| 2 | nix-cache: retention/LRU GC — churned objects accumulate ~30GB/mo, orphan-sweep only | developing-today/nix-cache | C1 follow-up | The cache is live and growing with no eviction; flagged in BENCHMARK.md, never built. |
-| 3 | OpenCode 2 migration follow-through: port the v1 plugins (mcpx bridge, mcpx-session, subtask2) and rebase the fork | developing-today-forks/opencode | F3.1 follow-up | Explicitly left unstarted in the migration record; no later slice records them done. |
-| 4 | Grounded search plane: AI Gateway billing decision — load ~$10 credits vs BYOK vs hold | developing-today/code | C5 | Drew's narrow-exception ruling stands; the build is hard-blocked on HTTP 402 (zero credit balance) until he picks. |
-| 5 | Registrar/DNS: per-domain classification for Drew's transfer/DNS picks (Porkbun stays the default layer) | developing-today/code | C6 | Drew's 2026-11-06 ruling requires a prepared classification for his per-domain picks; it is not recorded as delivered. |
-| 6 | mcpx parity: GitHub / Atlassian / Datadog MCP server logins (Drew-gated OAuth/PAT) | developing-today/code | F2.6 | The standing gate in every mcpx watch run through 2026-10-11; tracked nowhere but watch text. |
-| 7 | One-command local agent CLI via this VM's mcpx — needs Drew's OS / call-method / auth answers | developing-today/code | F3.6 | Drew accepted the idea; the premise check rerouted the design (Mac gateway unreachable, VM mcpx works) and the three setup answers were never recorded. |
-| 8 | Cold-store: file the libsql /dump malformed-schema-rows quirk upstream (owed since 2026-10-27) | developing-today/code | X6 follow-up | The record says the upstream-quirk issue "was to be filed"; it never was. Small — and exactly the class this audit exists to catch. |
+| 1 | init.sh fast-path: boot-marker check first + trigger-style Phase 1 (approved 2026-10-05, never landed) **[filed: developing-today/code#8806]** | developing-today/code | X18 | Drew approved it ("yes all of it"); 2026-11-04 measurements (code#5717) still show init costing 68–97s per run — the audit's clearest approved-but-dropped item. |
+| 2 | nix-cache: retention/LRU GC — churned objects accumulate ~30GB/mo, orphan-sweep only **[filed: developing-today/nix-cache#7]** | developing-today/nix-cache | C1 follow-up | The cache is live and growing with no eviction; flagged in BENCHMARK.md, never built. |
+| 3 | OpenCode 2 migration follow-through: port the v1 plugins (mcpx bridge, mcpx-session, subtask2) and rebase the fork **[filed: developing-today-forks/opencode#2290]** | developing-today-forks/opencode | F3.1 follow-up | Explicitly left unstarted in the migration record; no later slice records them done. |
+| 4 | Grounded search plane: AI Gateway billing decision — load ~$10 credits vs BYOK vs hold **[filed: developing-today/code#8807]** | developing-today/code | C5 | Drew's narrow-exception ruling stands; the build is hard-blocked on HTTP 402 (zero credit balance) until he picks. |
+| 5 | Registrar/DNS: per-domain classification for Drew's transfer/DNS picks (Porkbun stays the default layer) **[filed: developing-today/code#8808]** | developing-today/code | C6 | Drew's 2026-11-06 ruling requires a prepared classification for his per-domain picks; it is not recorded as delivered. |
+| 6 | mcpx parity: GitHub / Atlassian / Datadog MCP server logins (Drew-gated OAuth/PAT) **[filed: developing-today/code#8809]** | developing-today/code | F2.6 | The standing gate in every mcpx watch run through 2026-10-11; tracked nowhere but watch text. |
+| 7 | One-command local agent CLI via this VM's mcpx — needs Drew's OS / call-method / auth answers **[filed: developing-today/code#8810]** | developing-today/code | F3.6 | Drew accepted the idea; the premise check rerouted the design (Mac gateway unreachable, VM mcpx works) and the three setup answers were never recorded. |
+| 8 | Cold-store: file the libsql /dump malformed-schema-rows quirk upstream (owed since 2026-10-27) **[filed: developing-today/code#8811]** | developing-today/code | X6 follow-up | The record says the upstream-quirk issue "was to be filed"; it never was. Small — and exactly the class this audit exists to catch. |
 
 Also noted but NOT manifested (Drew-only physical acts, not filings): delete the paused cred-receiver Vercel project in the Vercel dashboard (C3); the Atlas spike/probe DB delete-or-keep ruling (A1.4 — it is ledger-tracked, so not never-issued).
 
