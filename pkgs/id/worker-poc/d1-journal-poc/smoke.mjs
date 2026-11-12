@@ -1,5 +1,8 @@
 // Local Wrangler D1 journal-fit smoke. Run from worker-poc:
 //   node d1-journal-poc/smoke.mjs
+// Interface: zero arguments. This harness takes no options and no
+// positional arguments; anything supplied is a usage error (see the
+// argument check below, which runs before any side effects).
 // Requires Node >=22 and `wrangler` on PATH. Uses only a unique temporary
 // persistence directory; it does not use or configure the main worker-poc D1.
 import assert from "node:assert/strict";
@@ -11,6 +14,18 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+
+// Zero-argument interface: reject any supplied argument before the
+// harness creates temporary state or starts Wrangler.
+const suppliedArgs = process.argv.slice(2);
+if (suppliedArgs.length > 0) {
+  console.error(
+    "usage: node d1-journal-poc/smoke.mjs (no arguments; unexpected argument: " +
+      suppliedArgs[0] +
+      ")",
+  );
+  process.exit(2);
+}
 
 const pocDir = path.dirname(fileURLToPath(import.meta.url));
 const workerPocDir = path.resolve(pocDir, "..");
