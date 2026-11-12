@@ -561,6 +561,8 @@ impl Handler for SshClient {
             form_line: Vec::new(),
             form_backlog: VecDeque::new(),
             form_after_cr: false,
+            form_echo_pending: Vec::new(),
+            discarding_form_line: false,
             closed_form: None,
             retry_form_token: None,
             pending_form_answer: None,
@@ -779,6 +781,10 @@ struct SshIo {
     form_backlog: VecDeque<u8>,
     /// Whether a CR terminator was consumed, so a following LF is swallowed.
     form_after_cr: bool,
+    /// At most the incomplete UTF-8 scalar currently waiting to be echoed.
+    form_echo_pending: Vec<u8>,
+    /// Ignore the remainder of an invalid or oversized answer through its terminator.
+    discarding_form_line: bool,
     /// Last closed form presentation and all token aliases; stale redraws must not reactivate it.
     closed_form: Option<(String, Vec<String>)>,
     /// A retry token issued by the host, paired with the token on the stale view.
@@ -808,12 +814,75 @@ enum FormInputProgress {
     },
 }
 
+/// Echo a printable ASCII byte immediately or complete only the pending UTF-8
+/// scalar. The accumulated answer is validated once, when its line is submitted.
+fn echo_form_byte(byte: u8, pending: &mut Vec<u8>) -> Vec<u8> {
+    if pending.is_empty() {
+        if byte.is_ascii() {
+            return if byte.is_ascii_graphic() || byte == b' ' {
+                vec![byte]
+            } else {
+                Vec::new()
+            };
+        }
+        if matches!(byte, 0xc2..=0xdf | 0xe0..=0xef | 0xf0..=0xf4) {
+            pending.push(byte);
+        }
+        return Vec::new();
+    }
+
+    if byte & 0xc0 != 0x80 {
+        pending.clear();
+        return echo_form_byte(byte, pending);
+    }
+    pending.push(byte);
+    let expected = match pending[0] {
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => {
+            pending.clear();
+            return Vec::new();
+        }
+    };
+    if pending.len() < expected {
+        return Vec::new();
+    }
+    let echo = std::str::from_utf8(pending)
+        .map(terminal_text)
+        .unwrap_or_default()
+        .into_bytes();
+    pending.clear();
+    echo
+}
+
+/// Discard an invalid/overlong input suffix through one line terminator,
+/// preserving later bytes and CRLF state for the next read.
+fn discard_form_input_line(backlog: &mut VecDeque<u8>, after_cr: &mut bool) -> bool {
+    while let Some(byte) = backlog.pop_front() {
+        let swallowed_lf = std::mem::take(after_cr);
+        if byte == b'\n' && swallowed_lf {
+            continue;
+        }
+        match byte {
+            b'\r' => {
+                *after_cr = true;
+                return true;
+            }
+            b'\n' => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Consume queued form bytes through at most one line terminator. Remaining
 /// packet bytes stay in the queue for the next form answer or world input.
 fn consume_form_input(
     backlog: &mut VecDeque<u8>,
     line: &mut Vec<u8>,
     after_cr: &mut bool,
+    echo_pending: &mut Vec<u8>,
 ) -> FormInputProgress {
     let mut echo = Vec::new();
     while let Some(byte) = backlog.pop_front() {
@@ -824,6 +893,7 @@ fn consume_form_input(
         match byte {
             b'\r' | b'\n' => {
                 *after_cr = byte == b'\r';
+                echo_pending.clear();
                 echo.extend_from_slice(b"\r\n");
                 return FormInputProgress::Complete {
                     line: std::mem::take(line),
@@ -831,10 +901,12 @@ fn consume_form_input(
                 };
             }
             0x08 | 0x7f => {
-                while !line.is_empty() && std::str::from_utf8(line).is_err() {
-                    line.pop();
-                }
-                if let Some(last) = std::str::from_utf8(line)
+                echo_pending.clear();
+                if std::str::from_utf8(line).is_err() {
+                    while !line.is_empty() && std::str::from_utf8(line).is_err() {
+                        line.pop();
+                    }
+                } else if let Some(last) = std::str::from_utf8(line)
                     .ok()
                     .and_then(|line| line.char_indices().next_back().map(|(index, _)| index))
                 {
@@ -844,24 +916,19 @@ fn consume_form_input(
             }
             byte if byte.is_ascii_control() => {
                 line.clear();
+                echo_pending.clear();
                 return FormInputProgress::Invalid {
                     message: "form input cannot contain control characters",
                     echo,
                 };
             }
             byte if line.len() < MAX_FORM_RESPONSE_BYTES => {
-                let previous_len = line.len();
                 line.push(byte);
-                if let Ok(text) = std::str::from_utf8(line) {
-                    if let Some((start, ch)) = text.char_indices().next_back()
-                        && start + ch.len_utf8() > previous_len
-                    {
-                        echo.extend_from_slice(terminal_text(&text[start..]).as_bytes());
-                    }
-                }
+                echo.extend_from_slice(&echo_form_byte(byte, echo_pending));
             }
             _ => {
                 line.clear();
+                echo_pending.clear();
                 return FormInputProgress::Invalid {
                     message: "form response line is too large",
                     echo,
@@ -921,6 +988,37 @@ use form_io::{
 };
 
 impl SshIo {
+    /// Remember every token that may still appear in a guest's stale view.
+    fn remember_closed_form(&mut self) {
+        let Some((form_id, current_token)) = self.active_form.as_ref().and_then(|form| {
+            form.presentation_token
+                .as_ref()
+                .map(|token| (form.form_id.clone(), token.clone()))
+        }) else {
+            return;
+        };
+        let aliases = form_closed_aliases(&form_id, &current_token, self.retry_form_token.as_ref());
+        self.closed_form = Some((form_id, aliases));
+    }
+
+    /// Discard an invalid form-line suffix without turning it into a new answer.
+    async fn discard_invalid_form_suffix(&mut self) -> Option<Inbound> {
+        loop {
+            if discard_form_input_line(&mut self.form_backlog, &mut self.form_after_cr) {
+                self.discarding_form_line = false;
+                return None;
+            }
+            match recv_bytes_through_probe(&mut self.frames, &mut self.probe).await {
+                FormBytes::Bytes(bytes) => self.form_backlog.extend(bytes),
+                FormBytes::Resize(resize) => {
+                    self.previous_screen = None;
+                    return Some(Inbound::Text(raw_frame(&resize)));
+                }
+                FormBytes::Closed => return Some(Inbound::Closed),
+            }
+        }
+    }
+
     /// Swallow a CR's optional LF before routing post-form bytes as world input.
     async fn clear_pending_form_lf(&mut self) -> Option<Inbound> {
         loop {
@@ -950,6 +1048,12 @@ impl SshIo {
     /// Collect one bounded UTF-8 answer, echo edits, and retain packet bytes after its newline.
     async fn recv_form_answer(&mut self) -> Inbound {
         loop {
+            if self.discarding_form_line {
+                if let Some(inbound) = self.discard_invalid_form_suffix().await {
+                    return inbound;
+                }
+                continue;
+            }
             if self.form_backlog.is_empty() {
                 match recv_bytes_through_probe(&mut self.frames, &mut self.probe).await {
                     FormBytes::Bytes(bytes) => self.form_backlog.extend(bytes),
@@ -964,12 +1068,16 @@ impl SshIo {
                 &mut self.form_backlog,
                 &mut self.form_line,
                 &mut self.form_after_cr,
+                &mut self.form_echo_pending,
             );
             let (answer, invalid, echo) = match progress {
                 FormInputProgress::Pending { echo } => (None, None, echo),
                 FormInputProgress::Complete { line, echo } => (Some(line), None, echo),
                 FormInputProgress::Invalid { message, echo } => (None, Some(message), echo),
             };
+            if invalid.is_some() {
+                self.discarding_form_line = true;
+            }
             let mut answer_error = None;
             if let Some(answer) = answer {
                 match String::from_utf8(answer)
@@ -1099,6 +1207,11 @@ impl SessionIo for SshIo {
             return Inbound::Text(raw_frame(&SshInputFrame::Resize(width, height)));
         }
         if let Some(inbound) = take_pending_form_answer(&mut self.pending_form_answer) {
+            return inbound;
+        }
+        if self.discarding_form_line
+            && let Some(inbound) = self.discard_invalid_form_suffix().await
+        {
             return inbound;
         }
         if self.active_form.is_none()
@@ -1276,16 +1389,7 @@ impl SessionIo for SshIo {
                 .is_some_and(|form| form.form_id == form_id)
             {
                 if value["ok"].as_bool() == Some(true) {
-                    if let Some(form) = self.active_form.as_ref()
-                        && let Some(token) = form.presentation_token.clone()
-                    {
-                        let aliases = form_closed_aliases(
-                            &form.form_id,
-                            &token,
-                            self.retry_form_token.as_ref(),
-                        );
-                        self.closed_form = Some((form.form_id.clone(), aliases));
-                    }
+                    self.remember_closed_form();
                     self.active_form = None;
                     self.form_line.clear();
                     self.retry_form_token = None;
@@ -1317,6 +1421,7 @@ impl SessionIo for SshIo {
                 }
                 let error = value["error"].as_str().unwrap_or("form_unavailable");
                 let reason = value["reason"].as_str().unwrap_or("unknown");
+                self.remember_closed_form();
                 self.active_form = None;
                 self.form_line.clear();
                 self.retry_form_token = None;
@@ -3991,6 +4096,28 @@ mod tests {
         assert_eq!(backlog, VecDeque::from([b'x']));
     }
 
+    #[test]
+    fn test_invalid_form_line_discards_suffix_before_next_answer() {
+        let mut backlog: VecDeque<u8> = b"\x1b/can".iter().copied().collect();
+        let mut line = Vec::new();
+        let mut after_cr = false;
+        let mut echo_pending = Vec::new();
+        assert!(matches!(
+            consume_form_input(&mut backlog, &mut line, &mut after_cr, &mut echo_pending),
+            FormInputProgress::Invalid { .. }
+        ));
+        assert!(!discard_form_input_line(&mut backlog, &mut after_cr));
+        backlog.extend(b"cel\n/help\n".iter().copied());
+        assert!(discard_form_input_line(&mut backlog, &mut after_cr));
+        assert_eq!(backlog, b"/help\n".iter().copied().collect::<VecDeque<_>>());
+        let FormInputProgress::Complete { line, .. } =
+            consume_form_input(&mut backlog, &mut line, &mut after_cr, &mut echo_pending)
+        else {
+            panic!("the next line should remain available")
+        };
+        assert_eq!(line, b"/help");
+    }
+
     #[tokio::test]
     async fn form_input_fetch_filters_startup_probe_replies() {
         let (tx, mut rx) = mpsc::channel(4);
@@ -4102,14 +4229,15 @@ mod tests {
         let mut backlog: VecDeque<u8> = b"/cancel\n/help\n".iter().copied().collect();
         let mut line = Vec::new();
         let mut after_cr = false;
+        let mut echo_pending = Vec::new();
         let FormInputProgress::Complete { line: first, .. } =
-            consume_form_input(&mut backlog, &mut line, &mut after_cr)
+            consume_form_input(&mut backlog, &mut line, &mut after_cr, &mut echo_pending)
         else {
             panic!("first complete line should be returned")
         };
         assert_eq!(first, b"/cancel");
         let FormInputProgress::Complete { line: second, .. } =
-            consume_form_input(&mut backlog, &mut line, &mut after_cr)
+            consume_form_input(&mut backlog, &mut line, &mut after_cr, &mut echo_pending)
         else {
             panic!("the packet remainder should stay available")
         };
@@ -4117,12 +4245,29 @@ mod tests {
 
         let mut backlog: VecDeque<u8> = "é\u{8}x\n".as_bytes().iter().copied().collect();
         let mut after_cr = false;
-        let FormInputProgress::Complete { line, .. } =
-            consume_form_input(&mut backlog, &mut Vec::new(), &mut after_cr)
-        else {
+        let FormInputProgress::Complete { line, echo } = consume_form_input(
+            &mut backlog,
+            &mut Vec::new(),
+            &mut after_cr,
+            &mut echo_pending,
+        ) else {
             panic!("edited UTF-8 line should be complete")
         };
         assert_eq!(line, b"x");
+        assert_eq!(echo, "é\x08 \x08x\r\n".as_bytes());
+
+        let mut backlog: VecDeque<u8> = b"a\xe2\x08\n".iter().copied().collect();
+        let mut after_cr = false;
+        let mut echo_pending = Vec::new();
+        let FormInputProgress::Complete { line, .. } = consume_form_input(
+            &mut backlog,
+            &mut Vec::new(),
+            &mut after_cr,
+            &mut echo_pending,
+        ) else {
+            panic!("backspace should remove only the incomplete UTF-8 scalar")
+        };
+        assert_eq!(line, b"a");
     }
 
     #[test]

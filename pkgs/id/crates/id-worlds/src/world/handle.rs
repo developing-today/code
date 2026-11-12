@@ -460,14 +460,18 @@ impl WorldHandle {
     /// Submit a deferred form answer from a trusted device presenter.
     ///
     /// The result is correlated against the pending `form_id`, validated, and
-    /// delivered as a `form.result` system event. A rejected answer is
-    /// delivered as `bad_args` / `field_invalid`; the form remains pending so
-    /// the host can re-present it without a server-side retry loop.
+    /// delivered as a `form.result` system event. Rejections and unavailable
+    /// forms are represented by [`FormSubmissionStatus`], not by the outer
+    /// `Result`; callers must match the status rather than treating `Ok` as
+    /// acceptance. A rejected answer remains pending with a fresh presentation
+    /// token for the host to re-present, without a server-side retry loop.
     ///
     /// # Errors
     ///
-    /// Returns an error when the actor is closed, the form id is unknown, or
-    /// the serialized event exceeds [`crate::world_caps::MAX_EVENT_BYTES`].
+    /// Returns an error when the actor is closed, delivery fails, or the
+    /// serialized event exceeds [`crate::world_caps::MAX_EVENT_BYTES`]. An
+    /// unknown or cancelled form returns `Ok(FormSubmissionStatus::Unavailable)`
+    /// with reason `form_cancelled`.
     pub async fn submit_form_result(
         &self,
         result: id_core::world_presentation::FormResult,
