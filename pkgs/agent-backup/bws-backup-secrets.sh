@@ -26,32 +26,36 @@ PROJECT=d370cd10-3d67-4b34-b61a-b4dc00753f97
 DATE=$(date -u +%F)
 
 declare -A SECRETS=(
-  [nix-cache.upload-secret]="$HOME/.config/nix-cache/upload-secret"
-  [nix-cache.signing-key]="$HOME/.config/nix-cache/signing.sec"
-  [cachix.cachix-dhall]="$HOME/.config/cachix/cachix.dhall"
-  [github-cli.hosts-yml]="$HOME/.config/gh/hosts.yml"
-  [ssh.id-ed25519]="$HOME/.ssh/id_ed25519"
+  ["nix-cache.upload-secret"]="$HOME/.config/nix-cache/upload-secret"
+  ["nix-cache.signing-key"]="$HOME/.config/nix-cache/signing.sec"
+  ["cachix.cachix-dhall"]="$HOME/.config/cachix/cachix.dhall"
+  ["github-cli.hosts-yml"]="$HOME/.config/gh/hosts.yml"
+  ["ssh.id-ed25519"]="$HOME/.ssh/id_ed25519"
 )
 declare -A NOTES=(
-  [nix-cache.upload-secret]="Source: ~/.config/nix-cache/upload-secret. Backed up $DATE. Same value is set as Cloudflare Worker secret UPLOAD_SECRET (nix-cache worker)."
-  [nix-cache.signing-key]="Source: ~/.config/nix-cache/signing.sec (nix store signing private key). Backed up $DATE."
-  [cachix.cachix-dhall]="Source: ~/.config/cachix/cachix.dhall (contains Cachix auth token). Backed up $DATE."
-  [github-cli.hosts-yml]="Source: ~/.config/gh/hosts.yml (gh CLI OAuth tokens). Backed up $DATE."
-  [ssh.id-ed25519]="Source: ~/.ssh/id_ed25519 (SSH private key). Backed up $DATE."
+  ["nix-cache.upload-secret"]="Source: ~/.config/nix-cache/upload-secret. Backed up $DATE. Same value is set as Cloudflare Worker secret UPLOAD_SECRET (nix-cache worker)."
+  ["nix-cache.signing-key"]="Source: ~/.config/nix-cache/signing.sec (nix store signing private key). Backed up $DATE."
+  ["cachix.cachix-dhall"]="Source: ~/.config/cachix/cachix.dhall (contains Cachix auth token). Backed up $DATE."
+  ["github-cli.hosts-yml"]="Source: ~/.config/gh/hosts.yml (gh CLI OAuth tokens). Backed up $DATE."
+  ["ssh.id-ed25519"]="Source: ~/.ssh/id_ed25519 (SSH private key). Backed up $DATE."
 )
 
 strip_nl() { perl -0777 -pe 's/\n\z//'; }
 bw_value() { # $1 = secret id -> prints value on stdout, no trailing newline
-  bws secret get "$1" -o json 2>/dev/null \
-    | jq -j 'if type=="array" then .[0].value else .value end'
+  bws secret get "$1" -o json 2>/dev/null |
+    jq -j 'if type=="array" then .[0].value else .value end'
 }
 
 fail=0
 for key in "${!SECRETS[@]}"; do
   file="${SECRETS[$key]}"
-  [ -f "$file" ] || { echo "SKIP $key: $file missing"; fail=1; continue; }
+  [ -f "$file" ] || {
+    echo "SKIP $key: $file missing"
+    fail=1
+    continue
+  }
   id=$(bws secret list 2>/dev/null | jq -r --arg k "$key" '.[] | select(.key==$k) | .id' | head -1)
-  want=$(strip_nl < "$file" | sha256sum | cut -d' ' -f1)
+  want=$(strip_nl <"$file" | sha256sum | cut -d' ' -f1)
   if [ -n "$id" ]; then
     got=$(bw_value "$id" | sha256sum | cut -d' ' -f1)
     if [ "$got" = "$want" ]; then
@@ -66,13 +70,17 @@ for key in "${!SECRETS[@]}"; do
   id=$(bws secret create --note "${NOTES[$key]}" -o json -- \
     "$key" "$(cat "$file")" "$PROJECT" 2>/dev/null | jq -r '.id')
   if [ -z "$id" ] || [ "$id" = "null" ]; then
-    echo "FAIL $key: create error"; fail=1; continue
+    echo "FAIL $key: create error"
+    fail=1
+    continue
   fi
   got=$(bw_value "$id" | sha256sum | cut -d' ' -f1)
   if [ "$got" = "$want" ]; then
     echo "OK $key (created, verified)"
   else
-    echo "FAIL $key (round-trip mismatch)"; fail=1
+    echo "FAIL $key (round-trip mismatch)"
+    fail=1
   fi
 done
-echo "---"; echo "fail=$fail"
+echo "---"
+echo "fail=$fail"
