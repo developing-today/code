@@ -37,10 +37,10 @@
 The fleet has two different machine programs, and this standard keeps
 them separate:
 
-| Program | What the machine is | Governed by |
-| --- | --- | --- |
-| **Execution node** (this standard) | A fleet job node: it runs OpenCode sessions, queue workers, and scheduled jobs the way amd-6 does today | This doc; registry in §3 |
-| **Lab cluster node** | A Talos/Cozystack (Kubernetes) node in the basement cluster program | The lab-cluster goal and its TALM bootstrap flow; the cluster's own inventory |
+| Program                            | What the machine is                                                                                     | Governed by                                                                   |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| **Execution node** (this standard) | A fleet job node: it runs OpenCode sessions, queue workers, and scheduled jobs the way amd-6 does today | This doc; registry in §3                                                      |
+| **Lab cluster node**               | A Talos/Cozystack (Kubernetes) node in the basement cluster program                                     | The lab-cluster goal and its TALM bootstrap flow; the cluster's own inventory |
 
 - A machine is an execution node, a lab-cluster node, or — only by an
   explicit, recorded decision on #2179 — both. Nothing is both by
@@ -151,7 +151,7 @@ configuration against this section and find no gaps.
   provider route credentials the OpenCode server is configured with.
   A machine that needs a name not on this list gets the list amended
   by review before it gets the secret.
-- The registry record (§3) names which secret *classes* a machine
+- The registry record (§3) names which secret _classes_ a machine
   holds. It never holds values, fingerprints, or expiry data.
 
 ## 2. Join procedure
@@ -182,37 +182,41 @@ it lives, and must not change the shape to fit the store.
 
 ```yaml
 # one record per execution node
-id: amd-6                # registry identity; distinct from any
-                         # Talos/Cozystack node name (§0)
-hostname: amd            # NixOS host key under ./nixos/hosts — the
-                         # flake target (nixosConfigurations.amd in
-                         # nixos/hosts/default.nix); distinct from the
-                         # registry id above, which is fleet identity
-state: active            # declared | joining | active | draining | retired
-roles: [execution]       # execution | lab-cluster | both (both only
-                         # by a recorded #2179 decision, §0)
+id:
+  amd-6 # registry identity; distinct from any
+  # Talos/Cozystack node name (§0)
+hostname:
+  amd # NixOS host key under ./nixos/hosts — the
+  # flake target (nixosConfigurations.amd in
+  # nixos/hosts/default.nix); distinct from the
+  # registry id above, which is fleet identity
+state: active # declared | joining | active | draining | retired
+roles:
+  [execution] # execution | lab-cluster | both (both only
+  # by a recorded #2179 decision, §0)
 links:
-  talos_inventory: null  # reference into the lab-cluster inventory
-                         # when the same hardware appears there
-  evidence_issues: []    # #1095/#1097/#1099/#1101 entries for this box
+  talos_inventory:
+    null # reference into the lab-cluster inventory
+    # when the same hardware appears there
+  evidence_issues: [] # #1095/#1097/#1099/#1101 entries for this box
 access:
-  ssh: user@host-or-tailnet-name   # pattern of §1.2; no credentials
+  ssh: user@host-or-tailnet-name # pattern of §1.2; no credentials
   opencode_server: http://host:port # attach endpoint of §1.3
 capabilities:
-  queue_worker: true     # may claim repo-health queue work (§1.4)
+  queue_worker: true # may claim repo-health queue work (§1.4)
   opencode_sessions: true
-  builds: true           # may run laptop-class builds/tests (§1.4)
+  builds: true # may run laptop-class builds/tests (§1.4)
   gpu: false
 capacity:
-  max_sessions: 12       # amd-6's current value; per-machine, §1.3
+  max_sessions: 12 # amd-6's current value; per-machine, §1.3
   cpu_cores: 0
   ram_gb: 0
   worktree_disk_gb: 0
-secrets: []              # secret CLASS names only (§1.6), never values
+secrets: [] # secret CLASS names only (§1.6), never values
 health:
-  source: watchdog       # who reports (§1.5)
-  last_seen: null        # ISO-8601; stale => treated as left (§1.5)
-  status: unknown        # healthy | degraded | unreachable | unknown
+  source: watchdog # who reports (§1.5)
+  last_seen: null # ISO-8601; stale => treated as left (§1.5)
+  status: unknown # healthy | degraded | unreachable | unknown
 ```
 
 Rules for the shape:

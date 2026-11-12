@@ -77,6 +77,7 @@ not: three agents on a single bug produced a deleted branch, stolen commits, and
 duplicate gating.
 
 **The shape that worked** (seven items, one session, no collisions):
+
 1. The coordinator writes **one shared brief file** and points every worker at it.
 2. Each worker owns a **disjoint item**, its **own worktree and branch**, and names any shared file it
    had to touch.
@@ -112,12 +113,12 @@ a way of signalling that X feels important.
 
 **One issue, one subject.** Auth reasoning was threaded through a transport issue and a sandboxing
 issue, so neither could be scheduled without dragging in a security design. Cross-reference instead,
-and when a reference is *not* a dependency, write that down in the issue.
+and when a reference is _not_ a dependency, write that down in the issue.
 
 **Split the interface from the behaviour.** When a spec requires something unbuilt, building the
 interface and having it answer permissively is usually shippable at once, carries no risk, and
 clears every conformance row that only asserts the interface exists and accepts a valid input. Only
-the rows requiring *refusal* change behaviour, and those are the ones that can lock a user out.
+the rows requiring _refusal_ change behaviour, and those are the ones that can lock a user out.
 Splitting there turned a blocked security design into two issues, one of them nearly trivial. The
 one obligation it creates: a permissive interface must say so loudly, or someone will ship it
 believing otherwise.
@@ -140,12 +141,12 @@ carries the measurements.
 
 **rerere does not rescue a rebase.** It keys on a hash of the conflict preimage and replays only a
 byte-identical match, so once the upstream side has moved, a full cache produces nothing: 154 entries,
-0 replays, measured. It pays off when you redo the *same* merge, not when the base has changed.
+0 replays, measured. It pays off when you redo the _same_ merge, not when the base has changed.
 
 **Stage by explicit path; never `git add .`** Two unrelated edits from other sessions were sitting in
 the shared checkout during this one.
 
-**Use git's own vocabulary.** "Back-merge" means merging the integration branch *into* a topic
+**Use git's own vocabulary.** "Back-merge" means merging the integration branch _into_ a topic
 branch; it was used here for the opposite direction and cost a round-trip to correct.
 
 **Prove the merge preserved both sides before committing it.** Resolving a whole directory to one
@@ -222,7 +223,7 @@ route ignored the new mode entirely. Its commit had a one-line message and no ev
 
 - The signature defect is **declared but not delivered** (#177): a flag parsed and dropped, a
   capability advertised and never sent, a setting read but inert. `consumed_test.go` proves a setting
-  is *read*, not that reading it changes anything.
+  is _read_, not that reading it changes anything.
 - The daemon is keyed by its **config file set**. Three separate bugs came from this; environment
   differences that should produce different daemons do not.
 - On macOS `/tmp` is a symlink to `/private/tmp` and the product canonicalises paths, so a test using

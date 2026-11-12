@@ -89,14 +89,14 @@ a bond.
 
 ### VLAN plan
 
-| VLAN | Name | MTU | Notes |
-|---|---|---|---|
-| 10 | LAN (home) | 1500 | Unchanged from `doc/network-topology.md` |
-| 20 | Transit | 1500 | Router-to-router mesh, always tagged |
-| 30 | Internal / cluster | 9216 | DRBD/LINSTOR jumbo, unchanged |
-| 100 | WAN-Fiber | 1500 (1508 if baby-jumbo, D5) | ISP handoff |
-| 101 | WAN-Starlink | 1500 | Reserved |
-| 102 | WAN-Hotspot | 1500 | Reserved |
+| VLAN | Name               | MTU                           | Notes                                    |
+| ---- | ------------------ | ----------------------------- | ---------------------------------------- |
+| 10   | LAN (home)         | 1500                          | Unchanged from `doc/network-topology.md` |
+| 20   | Transit            | 1500                          | Router-to-router mesh, always tagged     |
+| 30   | Internal / cluster | 9216                          | DRBD/LINSTOR jumbo, unchanged            |
+| 100  | WAN-Fiber          | 1500 (1508 if baby-jumbo, D5) | ISP handoff                              |
+| 101  | WAN-Starlink       | 1500                          | Reserved                                 |
+| 102  | WAN-Hotspot        | 1500                          | Reserved                                 |
 
 ### VRRP
 
@@ -113,7 +113,7 @@ paths, so that shape silently drops the WAN path out of hardware
 offload into software forwarding: the same offload loss this design
 removes by abandoning the bond (D1), reintroduced through the back
 door. So: **no `use_vmac`, no MACVLAN on any offload-carrying VLAN.**
-Instead, both routers carry the *same cloned MAC* on the plain WAN
+Instead, both routers carry the _same cloned MAC_ on the plain WAN
 VLAN interface; only the VRRP master brings the WAN address and the
 DHCP client up, and the backup keeps its WAN interface address-less
 with its DHCP client disabled. On promotion the backup enables the

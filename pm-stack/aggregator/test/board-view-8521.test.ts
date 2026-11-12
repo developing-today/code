@@ -57,14 +57,12 @@ describe("filterBoardForView (#8521, the /board rule shared with /frag/board)", 
       card("kept", "example/other", "in-progress", ["developing-today/code#1", "developing-today/code#2"]),
       card("dropped", "example/other", "in-progress", ["developing-today/code#3"]),
     ];
-    const items = new Map(
-      [
-        ["developing-today/code#1", item("developing-today/code#1", "alice")],
-        ["developing-today/code#2", item("developing-today/code#2", "bob")],
-        ["developing-today/code#3", item("developing-today/code#3", "bob")],
-        ["developing-today/code#4", item("developing-today/code#4", "alice")],
-      ] as [RefKey, GhItem][],
-    );
+    const items = new Map([
+      ["developing-today/code#1", item("developing-today/code#1", "alice")],
+      ["developing-today/code#2", item("developing-today/code#2", "bob")],
+      ["developing-today/code#3", item("developing-today/code#3", "bob")],
+      ["developing-today/code#4", item("developing-today/code#4", "alice")],
+    ] as [RefKey, GhItem][]);
     const out = filterBoardForView(board, items, noPool, { owner: "alice" });
     expect(out.board.map((b) => b.title)).toEqual(["kept"]);
     // #1 matches and is linked from the kept card; #2 stays because a
@@ -78,7 +76,10 @@ describe("filterBoardForView (#8521, the /board rule shared with /frag/board)", 
   });
 
   test("a state filter matches the card's own status", () => {
-    const board = [card("done-card", "example/other", "done", []), card("wip-card", "example/other", "in-progress", [])];
+    const board = [
+      card("done-card", "example/other", "done", []),
+      card("wip-card", "example/other", "in-progress", []),
+    ];
     const out = filterBoardForView(board, new Map(), noPool, { state: "done" });
     expect(out.board.map((b) => b.title)).toEqual(["done-card"]);
   });
@@ -112,8 +113,14 @@ describe("fragBoardUrl (#8521 view-param propagation)", () => {
 
 describe("/frag/board handler wiring (#8521 regression pin)", () => {
   const server = readFileSync(join(import.meta.dir, "../src/server.ts"), "utf8");
-  const fragBlock = server.slice(server.indexOf('if (path === "/frag/board")'), server.indexOf('if (path === "/today")'));
-  const boardBlock = server.slice(server.indexOf('if (path === "/board")'), server.indexOf('if (path === "/frag/board")'));
+  const fragBlock = server.slice(
+    server.indexOf('if (path === "/frag/board")'),
+    server.indexOf('if (path === "/today")'),
+  );
+  const boardBlock = server.slice(
+    server.indexOf('if (path === "/board")'),
+    server.indexOf('if (path === "/frag/board")'),
+  );
 
   test("the fragment handler resolves the view and filters through the shared composition", () => {
     expect(fragBlock).toContain("resolveView(url)");

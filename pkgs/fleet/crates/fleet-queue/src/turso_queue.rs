@@ -186,7 +186,6 @@ fn cell_to_json(cell: &Value) -> Value {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Dependency blocking (#8276): a block declared ONCE, structurally,
 // and watched by the broker — lanes never re-verify gates by hand.
@@ -290,12 +289,12 @@ pub fn task_dep_obs(status: Option<&str>, dep_id: i64) -> DepObs {
     match status {
         None => DepObs::Broken(format!("task {dep_id} not found")),
         Some("done") => DepObs::Cleared("dep task done".to_string()),
-        Some("cancelled") => DepObs::Cleared(
-            "dep task cancelled; dependent released for re-evaluation".to_string(),
-        ),
-        Some("failed") => DepObs::Cleared(
-            "dep task failed; dependent released for re-evaluation".to_string(),
-        ),
+        Some("cancelled") => {
+            DepObs::Cleared("dep task cancelled; dependent released for re-evaluation".to_string())
+        }
+        Some("failed") => {
+            DepObs::Cleared("dep task failed; dependent released for re-evaluation".to_string())
+        }
         Some(s) => DepObs::Open(format!("dep task status {s}")),
     }
 }
@@ -404,9 +403,7 @@ pub fn parse_block_deps(
             "pr" | "issue" | "ci" => {
                 let repo = d.get("repo").and_then(|v| v.as_str()).unwrap_or("");
                 if !valid_dep_repo(repo) {
-                    return Err(format!(
-                        "block: dep repo must be owner/name, got '{repo}'"
-                    ));
+                    return Err(format!("block: dep repo must be owner/name, got '{repo}'"));
                 }
                 obj.insert("repo".to_string(), json!(repo));
                 if kind == "ci" {
@@ -418,9 +415,7 @@ pub fn parse_block_deps(
                 } else {
                     let number = d.get("number").and_then(|v| v.as_i64()).unwrap_or(0);
                     if number <= 0 {
-                        return Err(format!(
-                            "block: {kind} dep needs a positive number"
-                        ));
+                        return Err(format!("block: {kind} dep needs a positive number"));
                     }
                     obj.insert("number".to_string(), json!(number));
                 }
@@ -435,7 +430,7 @@ pub fn parse_block_deps(
             _ => {
                 return Err(format!(
                     "block: unknown dep kind '{kind}' (pr|issue|task|ci)"
-                ))
+                ));
             }
         }
         out.push(dep);
@@ -580,9 +575,7 @@ fn any_lane_id(c: char) -> &'static str {
 fn lane_seed_sql() -> String {
     let values: Vec<String> = canonical_lanes()
         .iter()
-        .map(|(id, worker, enabled)| {
-            format!("('{id}', '{worker}', '*', {})", i32::from(*enabled))
-        })
+        .map(|(id, worker, enabled)| format!("('{id}', '{worker}', '*', {})", i32::from(*enabled)))
         .collect();
     format!(
         "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES {}",
@@ -808,10 +801,7 @@ impl TursoBackend {
                 .iter()
                 .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col));
             if !has {
-                self.exec(
-                    &format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"),
-                    &[],
-                )?;
+                self.exec(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), &[])?;
             }
         }
         // #8187: the ledger's opencode_reason column (the recorded
@@ -841,9 +831,7 @@ impl TursoBackend {
                 .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col))
             {
                 self.exec(
-                    &format!(
-                        "ALTER TABLE repo_task_lane_ledger ADD COLUMN {col} TEXT"
-                    ),
+                    &format!("ALTER TABLE repo_task_lane_ledger ADD COLUMN {col} TEXT"),
                     &[],
                 )?;
             }
@@ -1447,7 +1435,10 @@ fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
         // own dep_next_recheck_at schedule with no new service
         // and no lane awake. Opt out per call: dep_recheck=false.
         let dep_summary = if req_bool(req, "dep_recheck").unwrap_or(true) {
-            Some(run_dep_rechecks(t, req_i64(req, "dep_limit").unwrap_or(200))?)
+            Some(run_dep_rechecks(
+                t,
+                req_i64(req, "dep_limit").unwrap_or(200),
+            )?)
         } else {
             None
         };
@@ -1735,8 +1726,8 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
             .get("max_attempts")
             .and_then(|v| v.as_i64())
             .unwrap_or(4);
-        let at_cap = !to_sink
-            && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
+        let at_cap =
+            !to_sink && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
         let upd = if at_cap {
             t.exec(
                 "UPDATE tasks SET status = 'failed', worker_id = NULL, lease_until = NULL, \
@@ -2590,13 +2581,14 @@ fn claim_transfer(
         &[Arg::Int(task_id)],
         &[],
     )?;
-    let ev_detail = ev_rows.first().and_then(|e| e.get("detail")).and_then(|d| {
-        match d {
+    let ev_detail = ev_rows
+        .first()
+        .and_then(|e| e.get("detail"))
+        .and_then(|d| match d {
             Value::String(s) => serde_json::from_str(s).ok(),
             Value::Object(_) => Some(d.clone()),
             _ => None,
-        }
-    });
+        });
     let claimed_event_session = ev_detail
         .as_ref()
         .and_then(|d| d.get("session_id"))
@@ -2686,8 +2678,7 @@ fn claim_transfer(
     )?;
     if upd.affected == 0 {
         return Err(
-            "claim_repo_task: transfer refused: the claim changed under the transfer"
-                .to_string(),
+            "claim_repo_task: transfer refused: the claim changed under the transfer".to_string(),
         );
     }
     t.exec(
@@ -2794,29 +2785,25 @@ fn claim_by_id(
     if let Some(reason) = claim_guard_reason(&row) {
         quarantine_task(t, task_id, &reason)?;
         return Ok(None);
-    // #8217: the plain by-id path honors the same recorded
-    // platform limitation the transfer claim enforces (#8210):
-    // an invalid (reason-less) stored limitation is cleared,
-    // never enforced; a valid one refuses a claim from any
-    // other family (or none) — the row simply reads unclaimable
-    // by id, like any other by-id refusal.
-    if let Some(ledger) = get_ledger(t, task_id)? {
-        let limit = ledger
-            .get("platform_limit")
-            .and_then(|v| v.as_str());
-        let limit_reason = ledger
-            .get("platform_limit_reason")
-            .and_then(|v| v.as_str());
-        if platform_limit_invalid(limit, limit_reason) {
-            t.exec(
-                "UPDATE repo_task_lane_ledger SET platform_limit = NULL, \
+        // #8217: the plain by-id path honors the same recorded
+        // platform limitation the transfer claim enforces (#8210):
+        // an invalid (reason-less) stored limitation is cleared,
+        // never enforced; a valid one refuses a claim from any
+        // other family (or none) — the row simply reads unclaimable
+        // by id, like any other by-id refusal.
+        if let Some(ledger) = get_ledger(t, task_id)? {
+            let limit = ledger.get("platform_limit").and_then(|v| v.as_str());
+            let limit_reason = ledger.get("platform_limit_reason").and_then(|v| v.as_str());
+            if platform_limit_invalid(limit, limit_reason) {
+                t.exec(
+                    "UPDATE repo_task_lane_ledger SET platform_limit = NULL, \
                    platform_limit_reason = NULL, updated_at = ? WHERE task_id = ?",
-                &[Arg::Text(now_iso()), Arg::Int(task_id)],
-            )?;
-        } else if platform_limit_refusal(limit, limit_reason, family).is_some() {
-            return Ok(None);
+                    &[Arg::Text(now_iso()), Arg::Int(task_id)],
+                )?;
+            } else if platform_limit_refusal(limit, limit_reason, family).is_some() {
+                return Ok(None);
+            }
         }
-    }
     }
     let status = row
         .get("status")
@@ -3056,9 +3043,8 @@ enum FilterTok {
 
 fn filter_tokens(src: &str) -> Result<Vec<FilterTok>, String> {
     let chars: Vec<char> = src.chars().collect();
-    let word_char = |c: char| {
-        c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '#' | '@' | '*')
-    };
+    let word_char =
+        |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '#' | '@' | '*');
     let mut toks = Vec::new();
     let mut i = 0usize;
     while i < chars.len() {
@@ -3209,11 +3195,7 @@ impl<'a> FilterParser<'a> {
     fn parse_comparison(&mut self) -> Result<FilterExpr, String> {
         let field_name = match self.next() {
             Some(FilterTok::Word(w)) => w.clone(),
-            other => {
-                return Err(format!(
-                    "filter: expected a field name, found {other:?}"
-                ))
-            }
+            other => return Err(format!("filter: expected a field name, found {other:?}")),
         };
         let field = FilterField::parse(&field_name).ok_or_else(|| {
             format!(
@@ -3250,7 +3232,7 @@ impl<'a> FilterParser<'a> {
             other => {
                 return Err(format!(
                     "filter: expected an operator after {field_name}, found {other:?}"
-                ))
+                ));
             }
         };
         let value = self.parse_value()?;
@@ -3272,7 +3254,10 @@ pub fn parse_filter(src: &str) -> Result<FilterExpr, String> {
     if toks.is_empty() {
         return Err("filter: empty expression".to_string());
     }
-    let mut p = FilterParser { toks: &toks, pos: 0 };
+    let mut p = FilterParser {
+        toks: &toks,
+        pos: 0,
+    };
     let expr = p.parse_or()?;
     if p.pos != toks.len() {
         return Err("filter: unexpected trailing input".to_string());
@@ -3307,8 +3292,7 @@ fn validate_filter(expr: &FilterExpr) -> Result<(), String> {
                 _ => {
                     if matches!(op, CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge) {
                         return Err(
-                            "filter: ordering comparisons are only valid on priority"
-                                .to_string(),
+                            "filter: ordering comparisons are only valid on priority".to_string()
                         );
                     }
                     Ok(())
@@ -3464,8 +3448,7 @@ fn filter_sql(expr: &FilterExpr, args: &mut Vec<Arg>) -> String {
 /// attribute the claimer does not declare binds NULL and meets
 /// no requirement — the same shape as the platform limitation's
 /// family-less rule (#8217).
-const TASK_REQUIREMENTS_CLAUSE: &str =
-    "(json_extract(payload, '$.requires.platform') IS NULL \
+const TASK_REQUIREMENTS_CLAUSE: &str = "(json_extract(payload, '$.requires.platform') IS NULL \
         OR json_extract(payload, '$.requires.platform') = ?) \
      AND (json_extract(payload, '$.requires.lane') IS NULL \
         OR json_extract(payload, '$.requires.lane') = ?) \
@@ -3850,8 +3833,7 @@ fn lane_flip_to_opencode(
 /// whose reason is blank is invalid — never enforced; the
 /// transfer path clears it and records the clearing.
 fn platform_limit_invalid(limit: Option<&str>, reason: Option<&str>) -> bool {
-    !limit.map(str::trim).unwrap_or("").is_empty()
-        && reason.map(str::trim).unwrap_or("").is_empty()
+    !limit.map(str::trim).unwrap_or("").is_empty() && reason.map(str::trim).unwrap_or("").is_empty()
 }
 
 /// Why a requested limitation cannot be recorded, or None when
@@ -3859,18 +3841,12 @@ fn platform_limit_invalid(limit: Option<&str>, reason: Option<&str>) -> bool {
 /// vocabulary), and the reason must be present and non-blank —
 /// the lane verb refuses the set otherwise. A reason without a
 /// limitation is likewise refused (it would record nothing).
-fn platform_limit_error(
-    limit: Option<&str>,
-    reason: Option<&str>,
-) -> Option<String> {
+fn platform_limit_error(limit: Option<&str>, reason: Option<&str>) -> Option<String> {
     let l = limit.map(str::trim).unwrap_or("");
     let r = reason.map(str::trim).unwrap_or("");
     if l.is_empty() {
         if !r.is_empty() {
-            return Some(
-                "platform_limit_reason requires a platform_limit to limit"
-                    .to_string(),
-            );
+            return Some("platform_limit_reason requires a platform_limit to limit".to_string());
         }
         return None;
     }
@@ -3953,9 +3929,7 @@ fn transfer_refusal(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     if lease <= now {
-        return Some(
-            "the holder's lease is not live: no live claim to transfer".to_string(),
-        );
+        return Some("the holder's lease is not live: no live claim to transfer".to_string());
     }
     if from_session.trim().is_empty() {
         return Some("from_session is empty".to_string());
@@ -4146,8 +4120,8 @@ fn claim_pick_once(
             upd_args.push(Arg::Text(now.clone()));
             upd_args.push(Arg::Text(now.clone()));
         }
-            upd_args.push(arg_str(family.as_deref()));
-            upd_args.push(arg_str(family.as_deref()));
+        upd_args.push(arg_str(family.as_deref()));
+        upd_args.push(arg_str(family.as_deref()));
         for a in &scope.args {
             upd_args.push(a.clone());
         }
@@ -4499,10 +4473,9 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
         // #8210: a platform limitation is recorded only with its
         // reason — validate before anything mutates.
         if !clear_limit {
-            if let Some(e) = platform_limit_error(
-                limit_platform.as_deref(),
-                limit_reason.as_deref(),
-            ) {
+            if let Some(e) =
+                platform_limit_error(limit_platform.as_deref(), limit_reason.as_deref())
+            {
                 return Err(format!("assign_repo_task_lane: {e}"));
             }
         }
@@ -5431,7 +5404,6 @@ fn verb_block(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
-
 fn emit_dep_transitions(
     t: &TursoBackend,
     task_id: i64,
@@ -5531,11 +5503,8 @@ fn dep_recheck_one(
         let obs = match kind.as_str() {
             "task" => {
                 let dep_id = dep.get("task_id").and_then(|v| v.as_i64()).unwrap_or(0);
-                let st = get_task(t, dep_id)?.and_then(|r| {
-                    r.get("status")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                });
+                let st = get_task(t, dep_id)?
+                    .and_then(|r| r.get("status").and_then(|v| v.as_str()).map(str::to_string));
                 task_dep_obs(st.as_deref(), dep_id)
             }
             "issue" | "pr" | "ci" => {
@@ -5549,9 +5518,9 @@ fn dep_recheck_one(
                         (Some(p), "issue") => p.probe_issue(repo, num("number")),
                         (Some(p), "pr") => p.probe_pr(repo, num("number")),
                         (Some(p), "ci") => p.probe_ci(repo, num("run_id")),
-                        _ => DepObs::Failed(
-                            "no github probe configured on this broker".to_string(),
-                        ),
+                        _ => {
+                            DepObs::Failed("no github probe configured on this broker".to_string())
+                        }
                     };
                     cache.insert(key, o.clone());
                     o
@@ -5640,8 +5609,7 @@ pub fn run_dep_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
         &[Arg::Text(iso(now_unix_v))],
         &TASK_JSON_COLS,
     )?;
-    let mut cache: std::collections::HashMap<String, DepObs> =
-        std::collections::HashMap::new();
+    let mut cache: std::collections::HashMap<String, DepObs> = std::collections::HashMap::new();
     let (mut checked, mut unblocked, mut ttl_expired, mut still_blocked, mut failures) =
         (0i64, 0i64, 0i64, 0i64, 0i64);
     for row in &rows {
@@ -7307,7 +7275,10 @@ mod tests {
             "record refuses an unregistered owner lane"
         );
         let list = seg8217(src, "fn verb_stack_list(", "\nfn verb_signal_count(");
-        assert!(list.contains("stack_state("), "list answers the derived stack state");
+        assert!(
+            list.contains("stack_state("),
+            "list answers the derived stack state"
+        );
     }
 
     #[test]
@@ -7332,11 +7303,42 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), 36, "duplicate lane ids in the canonical set");
         let expected_ids: Vec<&str> = vec![
-            "any-a", "any-b", "any-c", "any-d", "any-e", "any-f", "any-g", "any-h", "any-i",
-            "any-j", "any-k", "any-l", "any-m", "any-n", "any-o", "any-p", "any-q", "any-r",
-            "any-s", "code-a", "code-b", "code-c", "code-d", "code-e", "code-f", "code-g",
-            "code-h", "code-i", "code-j", "not-code-a", "not-code-b", "not-code-c",
-            "not-code-d", "not-code-e", "not-code-f", "not-code-g",
+            "any-a",
+            "any-b",
+            "any-c",
+            "any-d",
+            "any-e",
+            "any-f",
+            "any-g",
+            "any-h",
+            "any-i",
+            "any-j",
+            "any-k",
+            "any-l",
+            "any-m",
+            "any-n",
+            "any-o",
+            "any-p",
+            "any-q",
+            "any-r",
+            "any-s",
+            "code-a",
+            "code-b",
+            "code-c",
+            "code-d",
+            "code-e",
+            "code-f",
+            "code-g",
+            "code-h",
+            "code-i",
+            "code-j",
+            "not-code-a",
+            "not-code-b",
+            "not-code-c",
+            "not-code-d",
+            "not-code-e",
+            "not-code-f",
+            "not-code-g",
         ];
         assert_eq!(
             ids, expected_ids,
@@ -7379,9 +7381,23 @@ mod tests {
         assert_eq!(
             enabled,
             [
-                "any-a", "any-b", "any-c", "any-d", "any-n", "any-o", "code-a", "code-b",
-                "code-c", "code-d", "code-f", "code-g", "code-h", "code-i", "code-j",
-                "not-code-d", "not-code-g",
+                "any-a",
+                "any-b",
+                "any-c",
+                "any-d",
+                "any-n",
+                "any-o",
+                "code-a",
+                "code-b",
+                "code-c",
+                "code-d",
+                "code-f",
+                "code-g",
+                "code-h",
+                "code-i",
+                "code-j",
+                "not-code-d",
+                "not-code-g",
             ]
         );
         // Worker ownership: the renamed lanes keep the worker of
@@ -7415,7 +7431,13 @@ mod tests {
         }
         // Nothing outside the canonical set is seeded: a deleted
         // legacy lane stays deleted across broker restarts.
-        for legacy in ["openchamber-a", "openchamber-b", "nix-a", "opencode-a", "code-z"] {
+        for legacy in [
+            "openchamber-a",
+            "openchamber-b",
+            "nix-a",
+            "opencode-a",
+            "code-z",
+        ] {
             assert!(
                 !sql.contains(&format!("('{legacy}'")),
                 "seed must not name {legacy}"
@@ -7692,7 +7714,10 @@ mod tests {
         let pred = default_pick_predicate();
         assert!(pred.contains("status = 'queued' AND attempts < max_attempts"));
         assert!(pred.contains("status = 'parked' AND not_before IS NOT NULL AND not_before <= ?"));
-        assert!(!pred.contains("NOT ("), "no sink exclusion since #8234: {pred}");
+        assert!(
+            !pred.contains("NOT ("),
+            "no sink exclusion since #8234: {pred}"
+        );
         assert!(pred.contains("status = 'handed_off'"));
         assert!(pred.contains("json_extract(progress, '$.lane') = 'opencode'"));
         assert!(
@@ -7774,7 +7799,11 @@ mod tests {
         assert!(!lane_flip_to_opencode("direct", None, None));
         assert!(!lane_flip_to_opencode("direct", None, Some("  ")));
         // A bound row never flips, either direction.
-        assert!(!lane_flip_to_opencode("direct", Some("ses_1"), Some("reason")));
+        assert!(!lane_flip_to_opencode(
+            "direct",
+            Some("ses_1"),
+            Some("reason")
+        ));
         // Opencode rows are not this flip's business.
         assert!(!lane_flip_to_opencode("opencode", None, Some("reason")));
     }
@@ -7798,7 +7827,14 @@ mod tests {
         // claimed with --session-id).
         let row = transfer_row("claimed", json!({"lane": "direct"}), live);
         assert_eq!(
-            transfer_refusal(&row, "ses_muse_1", Some("ses_muse_1"), None, Some("ses_new"), now),
+            transfer_refusal(
+                &row,
+                "ses_muse_1",
+                Some("ses_muse_1"),
+                None,
+                Some("ses_new"),
+                now
+            ),
             None
         );
         // Holder mark checkpointed into progress.from_session.
@@ -7819,7 +7855,14 @@ mod tests {
             live,
         );
         assert_eq!(
-            transfer_refusal(&row, "ses_holder", None, Some("ses_holder"), Some("ses_new"), now),
+            transfer_refusal(
+                &row,
+                "ses_holder",
+                None,
+                Some("ses_holder"),
+                Some("ses_new"),
+                now
+            ),
             None
         );
     }
@@ -7831,21 +7874,34 @@ mod tests {
         // A random session cannot poach a claimed task by id:
         // its id matches no holder mark.
         let row = transfer_row("claimed", json!({"lane": "direct"}), live);
-        let r = transfer_refusal(&row, "ses_random", Some("ses_muse_1"), None, Some("ses_new"), now)
-            .expect("poach must refuse");
+        let r = transfer_refusal(
+            &row,
+            "ses_random",
+            Some("ses_muse_1"),
+            None,
+            Some("ses_new"),
+            now,
+        )
+        .expect("poach must refuse");
         assert!(r.contains("only the current holder"), "{r}");
         // No holder mark anywhere: nobody can give the task away.
         assert!(transfer_refusal(&row, "ses_muse_1", None, None, Some("ses_new"), now).is_some());
         // Terminal states refuse.
         for st in ["done", "cancelled", "failed"] {
             let row = transfer_row(st, json!({"from_session": "ses_m"}), live);
-            assert!(transfer_refusal(&row, "ses_m", None, None, None, now).is_some(), "{st}");
+            assert!(
+                transfer_refusal(&row, "ses_m", None, None, None, now).is_some(),
+                "{st}"
+            );
         }
         // Queued and parked rows are not transfer sources (a
         // genuine wait-park stays excluded, as by-id claim has it).
         for st in ["queued", "parked", "blocked"] {
             let row = transfer_row(st, json!({"from_session": "ses_m"}), live);
-            assert!(transfer_refusal(&row, "ses_m", None, None, None, now).is_some(), "{st}");
+            assert!(
+                transfer_refusal(&row, "ses_m", None, None, None, now).is_some(),
+                "{st}"
+            );
         }
         // A dead lease is not a live claim.
         let row = transfer_row(
@@ -7896,7 +7952,10 @@ mod tests {
         assert!(!platform_limit_invalid(None, None));
         assert_eq!(platform_limit_error(None, None), None);
         assert_eq!(platform_limit_refusal(None, None, Some("muse")), None);
-        assert_eq!(platform_limit_refusal(None, None, Some("openchamber")), None);
+        assert_eq!(
+            platform_limit_refusal(None, None, Some("openchamber")),
+            None
+        );
         assert_eq!(platform_limit_refusal(None, None, None), None);
         // Recording one demands a real family AND a reason.
         assert!(platform_limit_error(Some("muse"), Some("needs claude-only context")).is_none());
@@ -7920,7 +7979,10 @@ mod tests {
         // limitation and its reason — and an undeclared family
         // cannot take a limited task.
         let reason = Some("needs claude-only context window");
-        assert_eq!(platform_limit_refusal(Some("muse"), reason, Some("muse")), None);
+        assert_eq!(
+            platform_limit_refusal(Some("muse"), reason, Some("muse")),
+            None
+        );
         let r = platform_limit_refusal(Some("muse"), reason, Some("openchamber"))
             .expect("muse-limited task refuses an opencode transfer");
         assert!(r.contains("limited to platform 'muse'"), "{r}");
@@ -8242,31 +8304,41 @@ mod tests {
         assert_eq!(dep_key(&deps[2]), "task:5865");
         assert_eq!(dep_key(&deps[3]), "ci:developing-today/code#12345");
         // A dep the broker cannot watch is a block-time error.
-        assert!(parse_block_deps(
-            &json!({"deps": [{"kind": "pr", "repo": "noslash", "number": 1}]}),
-            "w", now,
-        )
-        .is_err());
-        assert!(parse_block_deps(
-            &json!({"deps": [{"kind": "pr", "repo": "a/b", "number": 0}]}),
-            "w", now,
-        )
-        .is_err());
-        assert!(parse_block_deps(
-            &json!({"deps": [{"kind": "task", "task_id": -3}]}),
-            "w", now,
-        )
-        .is_err());
-        assert!(parse_block_deps(
-            &json!({"deps": [{"kind": "ci", "repo": "a/b"}]}),
-            "w", now,
-        )
-        .is_err());
-        assert!(parse_block_deps(
-            &json!({"deps": [{"kind": "milestone", "number": 1}]}),
-            "w", now,
-        )
-        .is_err());
+        assert!(
+            parse_block_deps(
+                &json!({"deps": [{"kind": "pr", "repo": "noslash", "number": 1}]}),
+                "w",
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_block_deps(
+                &json!({"deps": [{"kind": "pr", "repo": "a/b", "number": 0}]}),
+                "w",
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_block_deps(
+                &json!({"deps": [{"kind": "task", "task_id": -3}]}),
+                "w",
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_block_deps(&json!({"deps": [{"kind": "ci", "repo": "a/b"}]}), "w", now,).is_err()
+        );
+        assert!(
+            parse_block_deps(
+                &json!({"deps": [{"kind": "milestone", "number": 1}]}),
+                "w",
+                now,
+            )
+            .is_err()
+        );
         assert!(parse_block_deps(&json!({"deps": "pr"}), "w", now).is_err());
     }
 
@@ -8694,7 +8766,11 @@ mod tests {
         assert!(handoff_park(&handoff, false, &json!({"kind": "time"})));
         // A caller-named real wait always wins, even on a
         // handoff-shaped row: CI, a task dependency, a quota reset.
-        assert!(!handoff_park(&handoff, false, &json!({"kind": "ci", "pr": 1})));
+        assert!(!handoff_park(
+            &handoff,
+            false,
+            &json!({"kind": "ci", "pr": 1})
+        ));
         assert!(!handoff_park(
             &handoff,
             false,
@@ -9042,7 +9118,10 @@ mod tests {
             Ok(BATCH_CLAIM_MAX)
         );
         let over = parse_batch_count(&json!({"count": BATCH_CLAIM_MAX + 1})).unwrap_err();
-        assert!(over.contains("out of range") && over.contains("1..=5"), "{over}");
+        assert!(
+            over.contains("out of range") && over.contains("1..=5"),
+            "{over}"
+        );
         assert!(parse_batch_count(&json!({"count": 0})).is_err());
         assert!(parse_batch_count(&json!({"count": -2})).is_err());
     }
@@ -9083,7 +9162,10 @@ mod tests {
         let c = flow.find("verb_claim(").expect("claim step");
         let l = flow.find("verb_lane(").expect("lane step");
         let b = flow.find("verb_bind(").expect("bind step");
-        assert!(pre < c && c < l && l < b, "steps run precheck -> claim -> lane -> bind");
+        assert!(
+            pre < c && c < l && l < b,
+            "steps run precheck -> claim -> lane -> bind"
+        );
         assert!(flow.contains("\"bind_row\""), "answer carries the bind row");
         assert!(flow.contains("\"lane_row\""), "answer carries the lane row");
     }
@@ -9103,8 +9185,14 @@ mod tests {
             2,
             "lane and bind failures both carry claim_flow_partial"
         );
-        assert!(flow.contains("\"step\": \"lane\""), "lane partial names its step");
-        assert!(flow.contains("\"step\": \"bind\""), "bind partial names its step");
+        assert!(
+            flow.contains("\"step\": \"lane\""),
+            "lane partial names its step"
+        );
+        assert!(
+            flow.contains("\"step\": \"bind\""),
+            "bind partial names its step"
+        );
         assert!(
             !flow.contains("return lane;") && !flow.contains("return bind;"),
             "post-commit step envelopes are never returned verbatim"
@@ -9125,7 +9213,10 @@ mod tests {
             batch.contains("claim_pick_once("),
             "batch = the single pick, repeated"
         );
-        assert!(batch.contains("\"rows\": rows"), "batch returns the claimed set");
+        assert!(
+            batch.contains("\"rows\": rows"),
+            "batch returns the claimed set"
+        );
         let single = seg8217(src, "fn verb_claim(", "\nfn verb_bind(");
         assert!(single.contains("count > 1"), "single claim routes batches");
         assert!(
@@ -9168,12 +9259,14 @@ mod tests {
         let src = include_str!("turso_queue.rs");
         let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
         assert_eq!(
-            pick.matches("pick_args.push(arg_str(family.as_deref()))").count(),
+            pick.matches("pick_args.push(arg_str(family.as_deref()))")
+                .count(),
             2,
             "candidate SELECT binds the family twice"
         );
         assert_eq!(
-            pick.matches("upd_args.push(arg_str(family.as_deref()))").count(),
+            pick.matches("upd_args.push(arg_str(family.as_deref()))")
+                .count(),
             2,
             "claim UPDATE binds the family twice"
         );
@@ -9191,8 +9284,7 @@ mod tests {
             "by-id claim enforces the limitation"
         );
         assert!(
-            seg.contains("platform_limit = NULL")
-                && seg.contains("platform_limit_reason = NULL"),
+            seg.contains("platform_limit = NULL") && seg.contains("platform_limit_reason = NULL"),
             "an invalid stored limit is cleared, not enforced"
         );
     }
@@ -9264,7 +9356,11 @@ mod tests {
         // session binding cleared and a `released` audit event;
         // attempts are NOT handed back.
         let src = include_str!("turso_queue.rs");
-        let seg = seg8217(src, "/// Release a claimed task straight back", "\nfn verb_park(");
+        let seg = seg8217(
+            src,
+            "/// Release a claimed task straight back",
+            "\nfn verb_park(",
+        );
         for needle in [
             "a release requires a reason",
             "claimed_by(",
@@ -9289,7 +9385,10 @@ mod tests {
         let mut args: Vec<Arg> = Vec::new();
         let sql = filter_sql(&not_code, &mut args);
         assert!(sql.contains("NOT"), "negation compiles: {sql}");
-        assert!(sql.contains("json_extract(payload, '$.repo')"), "repo identity: {sql}");
+        assert!(
+            sql.contains("json_extract(payload, '$.repo')"),
+            "repo identity: {sql}"
+        );
         assert_eq!(args.len(), 2, "repo equality binds the value twice: {sql}");
         match (&args[0], &args[1]) {
             (Arg::Text(a), Arg::Text(b)) => assert_eq!((a.as_str(), b.as_str()), ("code", "code")),
@@ -9309,7 +9408,10 @@ mod tests {
         let mut args: Vec<Arg> = Vec::new();
         let sql = filter_sql(&expr, &mut args);
         assert!(sql.contains("priority <= ?"), "{sql}");
-        assert!(matches!(args.last(), Some(Arg::Int(3))), "priority binds an integer");
+        assert!(
+            matches!(args.last(), Some(Arg::Int(3))),
+            "priority binds an integer"
+        );
         // Malformed expressions are usage errors, never silent.
         for bad in [
             "",
@@ -9363,21 +9465,33 @@ mod tests {
         let not_code = parse_filter("repo != code").unwrap();
         assert!(!filter_matches(&not_code, &code_task), "code task is code");
         assert!(filter_matches(&not_code, &nix_task), "nix task is not code");
-        assert!(filter_matches(&not_code, &meta_task), "meta task is not code");
+        assert!(
+            filter_matches(&not_code, &meta_task),
+            "meta task is not code"
+        );
         let code_only = parse_filter("repo = code").unwrap();
-        assert!(filter_matches(&code_only, &code_task), "payload repo basename matches");
+        assert!(
+            filter_matches(&code_only, &code_task),
+            "payload repo basename matches"
+        );
         assert!(
             filter_matches(&code_only, &stream_only_task),
             "stream-derived identity matches a payload without repo"
         );
         assert!(!filter_matches(&code_only, &nix_task));
         let full_name = parse_filter("repo = developing-today/code").unwrap();
-        assert!(filter_matches(&full_name, &code_task), "full owner/name matches");
+        assert!(
+            filter_matches(&full_name, &code_task),
+            "full owner/name matches"
+        );
         // Priority and kind dimensions.
         let urgent_code = parse_filter("priority <= 2 AND kind = small_fix").unwrap();
         assert!(filter_matches(&urgent_code, &code_task));
         assert!(filter_matches(&urgent_code, &nix_task));
-        assert!(!filter_matches(&urgent_code, &stream_only_task), "priority 3 is not <= 2");
+        assert!(
+            !filter_matches(&urgent_code, &stream_only_task),
+            "priority 3 is not <= 2"
+        );
     }
 
     #[test]
@@ -9461,7 +9575,10 @@ mod tests {
         // the pick spans the whole queue in priority order.
         let scope = claim_scope(None, None, &claimer);
         assert!(!scope.sql.contains("queue = ?"), "unscoped: {}", scope.sql);
-        assert!(scope.sql.contains("requires.platform"), "requirements always bind");
+        assert!(
+            scope.sql.contains("requires.platform"),
+            "requirements always bind"
+        );
         assert_eq!(scope.args.len(), 5);
         // A stream-scoped claim keeps the old shape: queue first.
         let scope = claim_scope(Some("repo-health-code-pilot"), None, &claimer);
@@ -9498,12 +9615,21 @@ mod tests {
         let src = include_str!("turso_queue.rs");
         let single = seg8217(src, "fn verb_claim(", "\nfn verb_bind(");
         assert!(single.contains("parse_filter("), "claim parses --filter");
-        assert!(single.contains("claim_scope("), "claim builds the union scope");
-        assert!(single.contains("\"filter\""), "claim reads the filter field");
+        assert!(
+            single.contains("claim_scope("),
+            "claim builds the union scope"
+        );
+        assert!(
+            single.contains("\"filter\""),
+            "claim reads the filter field"
+        );
         assert!(single.contains("\"pool\""), "claim reads the pool identity");
         let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
         assert!(pick.contains("scope.sql"), "pick SELECT applies the scope");
-        assert!(pick.contains("scope.args"), "pick binds the scope arguments");
+        assert!(
+            pick.contains("scope.args"),
+            "pick binds the scope arguments"
+        );
         let preamble = seg8217(src, "fn claim_preamble(", "\nfn claim_pick_once(");
         assert!(
             preamble.contains("lane_queue_binds("),

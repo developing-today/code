@@ -24,9 +24,7 @@ Run: python3 infra/github-backup/tests/test_drain_wrapper.py
 import os, shutil, stat, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WRAPPER = os.path.abspath(
-    os.path.join(HERE, "..", "systemd", "drain-wrapper.sh")
-)
+WRAPPER = os.path.abspath(os.path.join(HERE, "..", "systemd", "drain-wrapper.sh"))
 
 PASS = []
 
@@ -74,9 +72,7 @@ def write_exec(path, text):
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
 
-def run_case(
-    token_env=None, token_file=None, env_script=None, env_script_dirs=()
-):
+def run_case(token_env=None, token_file=None, env_script=None, env_script_dirs=()):
     """Run the wrapper in a fresh sandbox; return (rc, stderr, drain, markers)."""
     root = tempfile.mkdtemp(prefix="drain-wrapper-test-")
     try:
@@ -137,11 +133,16 @@ rc, err, drain, sourced = run_case(
     env_script_dirs=BOTH_DIRS,
 )
 check("1: pre-set BWS_ACCESS_TOKEN -> exit 0", rc == 0)
-check("1: drain proceeds with credentials", drain is not None
-      and drain["url"] == "https://worker.invalid"
-      and drain["bearer"] == "stub-bearer")
-check("1: environment token kept (token file not exported)",
-      drain is not None and drain["token"] == "env-token")
+check(
+    "1: drain proceeds with credentials",
+    drain is not None
+    and drain["url"] == "https://worker.invalid"
+    and drain["bearer"] == "stub-bearer",
+)
+check(
+    "1: environment token kept (token file not exported)",
+    drain is not None and drain["token"] == "env-token",
+)
 check("1: bws-env.sh not sourced", not sourced)
 
 # 2. token file present: exported, bare bws succeeds, no fallback.
@@ -151,40 +152,46 @@ rc, err, drain, sourced = run_case(
     env_script_dirs=BOTH_DIRS,
 )
 check("2: token file -> exit 0", rc == 0)
-check("2: drain proceeds with credentials", drain is not None
-      and drain["url"] == "https://worker.invalid"
-      and drain["bearer"] == "stub-bearer")
-check("2: token exported from ~/.config/bws/access-token",
-      drain is not None and drain["token"] == "file-token")
+check(
+    "2: drain proceeds with credentials",
+    drain is not None
+    and drain["url"] == "https://worker.invalid"
+    and drain["bearer"] == "stub-bearer",
+)
+check(
+    "2: token exported from ~/.config/bws/access-token",
+    drain is not None and drain["token"] == "file-token",
+)
 check("2: bws-env.sh not sourced", not sourced)
 
 # 3. bare bws fails; bws-env.sh at each candidate path is sourced.
 for d in BOTH_DIRS:
-    rc, err, drain, sourced = run_case(
-        env_script=ENV_SCRIPT, env_script_dirs=(d,)
-    )
+    rc, err, drain, sourced = run_case(env_script=ENV_SCRIPT, env_script_dirs=(d,))
     check("3: fallback at ~/%s/bws-env.sh -> exit 0" % d, rc == 0)
     check("3: fallback at ~/%s/bws-env.sh sourced" % d, sourced)
-    check("3: fallback at ~/%s/bws-env.sh -> drain proceeds" % d,
-          drain is not None
-          and drain["url"] == "https://worker.invalid"
-          and drain["bearer"] == "stub-bearer"
-          and drain["token"] == "fallback-token")
+    check(
+        "3: fallback at ~/%s/bws-env.sh -> drain proceeds" % d,
+        drain is not None
+        and drain["url"] == "https://worker.invalid"
+        and drain["bearer"] == "stub-bearer"
+        and drain["token"] == "fallback-token",
+    )
 
 # 3b. both candidate paths present: both are sourced, drain proceeds.
-rc, err, drain, sourced = run_case(
-    env_script=ENV_SCRIPT, env_script_dirs=BOTH_DIRS
+rc, err, drain, sourced = run_case(env_script=ENV_SCRIPT, env_script_dirs=BOTH_DIRS)
+check(
+    "3b: both candidates present -> exit 0 and drain proceeds",
+    rc == 0 and drain is not None and drain["token"] == "fallback-token",
 )
-check("3b: both candidates present -> exit 0 and drain proceeds",
-      rc == 0 and drain is not None and drain["token"] == "fallback-token")
 
 # 4. no working credential path: fail before the drain, with a message.
 rc, err, drain, sourced = run_case()
 check("4: no credential path -> non-zero exit", rc != 0)
 check("4: drain target not invoked", drain is None)
-check("4: error is comprehensible (names the credential problem)",
-      "bws" in err.lower() or "bitwarden" in err.lower()
-      or "credential" in err.lower())
+check(
+    "4: error is comprehensible (names the credential problem)",
+    "bws" in err.lower() or "bitwarden" in err.lower() or "credential" in err.lower(),
+)
 check("4: no raw Python traceback", "Traceback" not in err and "KeyError" not in err)
 
 # 4b. a bws-env.sh that exists but yields no token is not a working path.

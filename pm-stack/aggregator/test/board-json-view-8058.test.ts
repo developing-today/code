@@ -25,12 +25,7 @@ const item = (ref: RefKey): GhItem => ({
   updatedAt: iso(DAY),
 });
 
-const card = (
-  title: string,
-  status: BoardItem["status"],
-  links: string[],
-  updatedAt: string = iso(0),
-): BoardItem => ({
+const card = (title: string, status: BoardItem["status"], links: string[], updatedAt: string = iso(0)): BoardItem => ({
   id: `kaneo:code/${title}`,
   title,
   repo: "developing-today/code",
@@ -40,8 +35,7 @@ const card = (
   links: links.map((ref) => ({ ref, relation: "tracks" as const })),
 });
 
-const itemsMap = (refs: string[]): Map<RefKey, GhItem> =>
-  new Map(refs.map((ref) => [ref, item(ref)] as const));
+const itemsMap = (refs: string[]): Map<RefKey, GhItem> => new Map(refs.map((ref) => [ref, item(ref)] as const));
 
 const isMatch = (c: BoardItem) => c.title.startsWith("match");
 
@@ -78,9 +72,7 @@ describe("boardJsonViewBody (#8058)", () => {
 
     expect(body.board).toHaveLength(DONE_STRIP_RENDER_LIMIT);
     expect(body.board.map((c) => c.title)).toContain("match-0");
-    expect(body.board.map((c) => c.title)).not.toContain(
-      `match-${DONE_STRIP_RENDER_LIMIT + 4}`,
-    );
+    expect(body.board.map((c) => c.title)).not.toContain(`match-${DONE_STRIP_RENDER_LIMIT + 4}`);
     expect(body.items).toHaveLength(DONE_STRIP_RENDER_LIMIT);
   });
 

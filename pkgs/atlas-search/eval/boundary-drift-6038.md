@@ -2,8 +2,8 @@
 
 **Question (issue #6038, parent #6028):** span reuse assumes a span's
 stored vector stays valid when the span is reused in a new version.
-But an embedding is a function of the chunk's exact text *including
-its window neighbors*: the same paragraph embedded with different
+But an embedding is a function of the chunk's exact text _including
+its window neighbors_: the same paragraph embedded with different
 surrounding text is a different vector, and its rank for a given
 query can move. How much?
 
@@ -27,7 +27,7 @@ context change.**
 - **Original window W0** = previous paragraph + target + next
   paragraph (blank-line joined) — the production chunk shape.
 - **Perturbations** (per target):
-  - `boundary_shift` — drop the first sentence of the *previous*
+  - `boundary_shift` — drop the first sentence of the _previous_
     paragraph only (the target paragraph stays byte-identical and
     the blank-line window shape is preserved); append the first
     sentence of the paragraph after `next` to the end of `next`
@@ -62,21 +62,21 @@ the numbers below are its readback.
 
 ## Results — cosine drift (1 − cosine similarity vs W0, n = 50 targets)
 
-| perturbation | median | p95 | mean | max |
-|---|---|---|---|---|
-| boundary_shift | 0.045 | 0.175 | 0.060 | 0.301 |
-| neighbor_replace_prev | 0.292 | 0.554 | 0.306 | 0.745 |
-| neighbor_replace_next | 0.121 | 0.360 | 0.147 | 0.438 |
-| target_alone | 0.168 | 0.478 | 0.208 | 0.618 |
+| perturbation          | median | p95   | mean  | max   |
+| --------------------- | ------ | ----- | ----- | ----- |
+| boundary_shift        | 0.045  | 0.175 | 0.060 | 0.301 |
+| neighbor_replace_prev | 0.292  | 0.554 | 0.306 | 0.745 |
+| neighbor_replace_next | 0.121  | 0.360 | 0.147 | 0.438 |
+| target_alone          | 0.168  | 0.478 | 0.208 | 0.618 |
 
 ## Results — rank movement (pool of 50, 20 queries, 1,000 pairs per type)
 
-| perturbation | median \|Δrank\| | p95 \|Δrank\| | max \|Δrank\| | top-10 flips |
-|---|---|---|---|---|
-| boundary_shift | 2 | 10 | 22 | 58 / 1000 (5.8%) |
-| neighbor_replace_prev | 7 | 27 | 42 | 178 / 1000 (17.8%) |
-| neighbor_replace_next | 4 | 21 | 36 | 103 / 1000 (10.3%) |
-| target_alone | 5 | 19 | 39 | 119 / 1000 (11.9%) |
+| perturbation          | median \|Δrank\| | p95 \|Δrank\| | max \|Δrank\| | top-10 flips       |
+| --------------------- | ---------------- | ------------- | ------------- | ------------------ |
+| boundary_shift        | 2                | 10            | 22            | 58 / 1000 (5.8%)   |
+| neighbor_replace_prev | 7                | 27            | 42            | 178 / 1000 (17.8%) |
+| neighbor_replace_next | 4                | 21            | 36            | 103 / 1000 (10.3%) |
+| target_alone          | 5                | 19            | 39            | 119 / 1000 (11.9%) |
 
 Notes on the shape of the numbers:
 
@@ -120,7 +120,7 @@ Notes on the shape of the numbers:
 
 - 50 targets / 20 queries: distributions are indicative, not
   tight; medians are stable at this size, p95s are coarse.
-- Donor neighbors are real corpus paragraphs from *other*
+- Donor neighbors are real corpus paragraphs from _other_
   messages — a harsher change than an edited version of the same
   neighbor. An edit-in-place neighbor change would land between
   `boundary_shift` and `neighbor_replace_*`; both endpoints of
@@ -135,7 +135,7 @@ Notes on the shape of the numbers:
 The first version of this experiment had three defects, all caught
 in Codex review of PR #7661 and fixed before merge:
 
-1. `boundary_shift` originally split the *whole window* into
+1. `boundary_shift` originally split the _whole window_ into
    sentences and dropped the first one — when the previous
    paragraph had no terminal punctuation its first "sentence"
    merged into the target's first sentence, so the shift could eat

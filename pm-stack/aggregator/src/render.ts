@@ -553,17 +553,17 @@ export function renderSearch(
   for (const result of results) {
     if (result.kind === "registry") chipKeys.add("registry");
     if (result.kind === "dns") chipKeys.add("dns");
-    if (result.kind === "service") { chipKeys.add("quota"); chipKeys.add("usage"); }
-    if (result.kind === "tier") { chipKeys.add("orchestration"); chipKeys.add("attention"); chipKeys.add("registry"); }
+    if (result.kind === "service") {
+      chipKeys.add("quota");
+      chipKeys.add("usage");
+    }
+    if (result.kind === "tier") {
+      chipKeys.add("orchestration");
+      chipKeys.add("attention");
+      chipKeys.add("registry");
+    }
   }
-  return layout(
-    "Search",
-    body,
-    provenance,
-    "/search",
-    "",
-    detail ? freshnessChips(detail, [...chipKeys]) : "",
-  );
+  return layout("Search", body, provenance, "/search", "", detail ? freshnessChips(detail, [...chipKeys]) : "");
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -608,9 +608,8 @@ export function authorBadge(a: DashAuthor): string {
 }
 
 export function dashCommentHtml(c: DashComment, showObject = false): string {
-  const verificationChip = c.authorVerified === true
-    ? `<span class="badge">verified</span>`
-    : `<span class="badge">unverified</span>`;
+  const verificationChip =
+    c.authorVerified === true ? `<span class="badge">verified</span>` : `<span class="badge">unverified</span>`;
   const kindChip =
     c.kind === "message"
       ? `<span class="badge msg">✉ message to Muse</span> <span class="muted">${c.triageState === "triaged" ? "triaged by the orchestrator" : "awaiting triage"}</span>`
@@ -1584,8 +1583,12 @@ export function renderBoardBody(
           : `${esc(k)} (${colItems.length}/${wipByLane.get(k)?.cap ?? 0})`;
       const summary = wipByLane.get(k);
       const scopeFlags = [
-        ...(summary?.projects ?? []).filter((scope) => scope.overCap).map((scope) => `project ${scope.key} ${scope.count}/${scope.cap}`),
-        ...(summary?.epics ?? []).filter((scope) => scope.overCap).map((scope) => `epic ${scope.key} ${scope.count}/${scope.cap}`),
+        ...(summary?.projects ?? [])
+          .filter((scope) => scope.overCap)
+          .map((scope) => `project ${scope.key} ${scope.count}/${scope.cap}`),
+        ...(summary?.epics ?? [])
+          .filter((scope) => scope.overCap)
+          .map((scope) => `epic ${scope.key} ${scope.count}/${scope.cap}`),
       ];
       if (summary?.overCap) scopeFlags.unshift(`lane over cap by ${summary.count - summary.cap}`);
       const overCapBadges = scopeFlags
@@ -1689,7 +1692,12 @@ export function forecastSummaryHtml(contracts: ForecastContract[] | undefined): 
   return `<div class="forecast">${lines}</div>`;
 }
 
-function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow, forecasts?: Map<RefKey, ForecastContract[]>, spend?: SpendCardsView | null): string {
+function roadmapDrilldown(
+  drill: RoadmapDrill,
+  row: RoadmapRow,
+  forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
+): string {
   const parts: string[] = [];
   if (!drill.epic) {
     parts.push(`<p class="muted">No epic yet — no Project epic matches this roadmap row.</p>`);
@@ -1840,7 +1848,11 @@ export function renderRoadmap(
           .map(([theme, themeRows]) => {
             const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
             const cards = (laneRows: RoadmapRow[]) =>
-              laneRows.map((row) => roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts, spend)).join("");
+              laneRows
+                .map((row) =>
+                  roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts, spend),
+                )
+                .join("");
             const lanes = dg.lanes
               .map((lane) => {
                 const laneRows = lane.rows.filter((row) => (row.area || "Unthemed") === theme);
@@ -1849,8 +1861,12 @@ export function renderRoadmap(
               .join("");
             const outsideRows = dg.outsideRows.filter((row) => (row.area || "Unthemed") === theme);
             const coarseRows = dg.coarse.filter((row) => (row.area || "Unthemed") === theme);
-            const outside = outsideRows.length ? `<h3>Outside this window (${outsideRows.length})</h3>${cards(outsideRows)}` : "";
-            const coarse = coarseRows.length ? `<h3>Undated or coarse horizons (${coarseRows.length})</h3>${cards(coarseRows)}` : "";
+            const outside = outsideRows.length
+              ? `<h3>Outside this window (${outsideRows.length})</h3>${cards(outsideRows)}`
+              : "";
+            const coarse = coarseRows.length
+              ? `<h3>Undated or coarse horizons (${coarseRows.length})</h3>${cards(coarseRows)}`
+              : "";
             return `<section class="roadmap-theme"><h2>${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></h2>${lanes}${outside}${coarse}</section>`;
           })
           .join("")
@@ -2181,10 +2197,7 @@ function chargesStripHtml(usage: UsageView): string {
 /** Lazy-refresh strip (#1171): a visible "refreshing" marker while a
  *  gatherer run is in flight, plus the manual refresh-now control. Both
  *  use the same trigger path; neither blocks the page on provider calls. */
-function quotaRefreshHtml(
-  refresh?: import("./quota-refresh.ts").RefreshStatus,
-  generatedAt?: string | null,
-): string {
+function quotaRefreshHtml(refresh?: import("./quota-refresh.ts").RefreshStatus, generatedAt?: string | null): string {
   if (!refresh) return "";
   const marker = refresh.refreshing
     ? `<span class="badge refreshing" data-quota-refreshing="true">refreshing — the quota gatherer is running; reload for updated data</span>`
@@ -2281,9 +2294,7 @@ export function renderQuota(
     ...view.pools.map((p) => p.id),
     ...(view.burn ?? []).map((b) => b.provider),
     ...(view.burn ?? []).map((b) => b.pool),
-    ...(view.choices
-      ? [...view.choices.hasHeadroom, ...view.choices.burnBeforeReset, ...view.choices.doNotStart]
-      : []),
+    ...(view.choices ? [...view.choices.hasHeadroom, ...view.choices.burnBeforeReset, ...view.choices.doNotStart] : []),
     ...(view.credentialLifecycle ?? []).map((c) => c.providerName),
   ]);
   const display = (name: string) => displayNames.get(name) ?? name;
@@ -2665,7 +2676,8 @@ function tierItemCard(
   // carries a gh: ref, and every card expands inline to its full
   // detail — source, state, since/lastSeenAt, horizon, blockedBy,
   // the question payload, and the recorded action history.
-  const titleHtml = item.ref && isValidRef(item.ref) ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
+  const titleHtml =
+    item.ref && isValidRef(item.ref) ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
   const questionPayload = item.questions?.length
     ? `<dt>Questions</dt><dd>${item.questions
         .map(
@@ -3500,8 +3512,12 @@ export function renderTodayBody(
   }
   const wipViolations = (today.wipLanes ?? []).flatMap((lane) => [
     ...(lane.overCap ? [`${lane.lane} ${lane.count}/${lane.cap}`] : []),
-    ...lane.projects.filter((scope) => scope.overCap).map((scope) => `project ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
-    ...lane.epics.filter((scope) => scope.overCap).map((scope) => `epic ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+    ...lane.projects
+      .filter((scope) => scope.overCap)
+      .map((scope) => `project ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+    ...lane.epics
+      .filter((scope) => scope.overCap)
+      .map((scope) => `epic ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
   ]);
   if (wipViolations.length) {
     alerts.push(
@@ -6364,23 +6380,21 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
       : `${v} <span class="muted">(${d > 0 ? "+" : ""}${d})</span>`;
   };
   const rows = current.repos
-    .map(
-      (r) => {
-        const state = staleIssueState(r);
-        const status =
-          state === "error"
-            ? `Collection error${r.staleIssuesError ? `: ${esc(r.staleIssuesError)}` : ""}`
-            : state === "stale"
-              ? "STALE — collection is over 7 days old"
-              : state === "unavailable"
-                ? "Unavailable — collection failed or not collected"
-                : "Current";
-        const collectedAt = r.staleIssuesCollectedAt
-          ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
-          : "—";
-        return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
-      },
-    )
+    .map((r) => {
+      const state = staleIssueState(r);
+      const status =
+        state === "error"
+          ? `Collection error${r.staleIssuesError ? `: ${esc(r.staleIssuesError)}` : ""}`
+          : state === "stale"
+            ? "STALE — collection is over 7 days old"
+            : state === "unavailable"
+              ? "Unavailable — collection failed or not collected"
+              : "Current";
+      const collectedAt = r.staleIssuesCollectedAt
+        ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
+        : "—";
+      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
+    })
     .join("");
   const note = baseline
     ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
@@ -6800,22 +6814,22 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
   const ranked = g.rankedBlocked;
   const rankedHtml = ranked.length
     ? `<ul class="epic-graph-list">${ranked
-        .map(
-          (r) => {
-            const blockerItems = r.blockers.map((b) => poolRefLink(b));
-            const contributingItems = r.contributingItems.length > 0
+        .map((r) => {
+          const blockerItems = r.blockers.map((b) => poolRefLink(b));
+          const contributingItems =
+            r.contributingItems.length > 0
               ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => poolRefLink(ci)).join(", ")}</span>`
               : "";
-            return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
-          },
-        )
+          return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
+        })
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
 
   const rankedBlockersHtml = g.rankedBlockers.length
     ? `<ol class="epic-graph-list">${g.rankedBlockers
         .map((blocker) => {
-          const stateText = blocker.state === null ? "outside this pool; status unknown — unresolved" : "open unresolved blocker";
+          const stateText =
+            blocker.state === null ? "outside this pool; status unknown — unresolved" : "open unresolved blocker";
           const downstream = blocker.downstreamItems
             .map((item) => {
               const weightText = item.effortWeight === null ? "unsized" : `effort weight ${item.effortWeight}`;

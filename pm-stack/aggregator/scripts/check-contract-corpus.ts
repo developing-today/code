@@ -137,14 +137,24 @@ async function main(): Promise<void> {
     const quotaObj = isPlainObject(quota) ? quota : null;
     const pools = quotaObj && Array.isArray(quotaObj.pools) ? (quotaObj.pools as unknown[]) : null;
     const burn = quotaObj && Array.isArray(quotaObj.burn) ? (quotaObj.burn as unknown[]) : null;
-    check("corpus quota: every pool passes isQuotaPool", pools !== null && pools.every(isQuotaPool), pools === null ? "quota.json has no pools array" : undefined);
+    check(
+      "corpus quota: every pool passes isQuotaPool",
+      pools !== null && pools.every(isQuotaPool),
+      pools === null ? "quota.json has no pools array" : undefined,
+    );
     check(
       "corpus quota: every window passes isQuotaWindow",
       pools !== null &&
-        pools.every((p) => isPlainObject(p) && Array.isArray(p.windows) && (p.windows as unknown[]).every(isQuotaWindow)),
+        pools.every(
+          (p) => isPlainObject(p) && Array.isArray(p.windows) && (p.windows as unknown[]).every(isQuotaWindow),
+        ),
       pools === null ? "quota.json has no pools array" : undefined,
     );
-    check("corpus quota: every burn segment passes isBurnSegment", burn !== null && burn.every(isBurnSegment), burn === null ? "quota.json has no burn array" : undefined);
+    check(
+      "corpus quota: every burn segment passes isBurnSegment",
+      burn !== null && burn.every(isBurnSegment),
+      burn === null ? "quota.json has no burn array" : undefined,
+    );
     // sanitizeQuotaView is not total: a quota object missing the fields it
     // dereferences (e.g. choices, feed.ts) throws instead of dropping. A
     // throw here is one more shape failure to report, not a crash (#7048).
@@ -160,7 +170,8 @@ async function main(): Promise<void> {
     check(
       "corpus quota sanitizes with zero drops",
       san !== null &&
-        san.droppedPools + san.droppedCredentials + san.droppedWindows + san.droppedActiveSessions + san.droppedBurn === 0,
+        san.droppedPools + san.droppedCredentials + san.droppedWindows + san.droppedActiveSessions + san.droppedBurn ===
+          0,
       sanError ?? (san === null ? "quota.json is not an object" : undefined),
     );
   }

@@ -180,7 +180,7 @@ STUB
 chmod +x "$STUB_BIN/sops" "$STUB_BIN/curl-grist" "$STUB_BIN/curl-pad"
 # Expose the pre-isolation bun through the stub bin, which run_grist
 # already puts on the isolated PATH, so seed.sh finds bun on CI.
-if [[ -n "$BUN_BIN" ]]; then
+if [[ -n $BUN_BIN ]]; then
   ln -sf "$BUN_BIN" "$STUB_BIN/bun"
 fi
 

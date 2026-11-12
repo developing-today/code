@@ -38,10 +38,14 @@ def iso_age(seconds):
 class Harness:
     """One drain run against a stub Worker + stub fetch."""
 
-    def __init__(self, events, planned, fetch_results, initial_state=None, plan_raw=None):
+    def __init__(
+        self, events, planned, fetch_results, initial_state=None, plan_raw=None
+    ):
         self.root = tempfile.mkdtemp(prefix="ghb-drain-test-")
         with open(os.path.join(self.root, "plan.json"), "w") as f:
-            json.dump(plan_raw if plan_raw is not None else [{"repo": r} for r in planned], f)
+            json.dump(
+                plan_raw if plan_raw is not None else [{"repo": r} for r in planned], f
+            )
         if initial_state is not None:
             with open(os.path.join(self.root, "state.json"), "w") as f:
                 json.dump(initial_state, f)
@@ -453,7 +457,9 @@ for bad in ("garbage", None, 42):
     check(f"{tag}: exit 0", rc == 0)
     check(f"{tag}: only valid event acked", h.acked_ids() == ["e17"])
     check(f"{tag}: valid event fetched", h.fetch_calls == ["owner/repo"])
-    check(f"{tag}: DRAIN-DROP malformed logged", "DRAIN-DROP malformed" in h.fetch_log())
+    check(
+        f"{tag}: DRAIN-DROP malformed logged", "DRAIN-DROP malformed" in h.fetch_log()
+    )
     summary = json.loads(buf.getvalue().strip().splitlines()[-1])
     check(f"{tag}: counted dropped_malformed", summary.get("dropped_malformed") == 1)
 
@@ -464,7 +470,10 @@ idless_cases = [
     ("foreign", {"repo": "stranger/pwned", "event": "push", "ts": iso_age(60)}),
     ("no-repo", {"event": "push", "ts": iso_age(60)}),
     ("planned", {"repo": "owner/repo", "event": "push", "ts": iso_age(60)}),
-    ("non-string-id", {"id": 42, "repo": "owner/repo", "event": "push", "ts": iso_age(60)}),
+    (
+        "non-string-id",
+        {"id": 42, "repo": "owner/repo", "event": "push", "ts": iso_age(60)},
+    ),
 ]
 for name, bad in idless_cases:
     h = Harness([bad, ev("e18", "owner/repo")], ["owner/repo"], {"owner/repo": "ok"})
@@ -474,9 +483,15 @@ for name, bad in idless_cases:
     check(f"id-less {name}: exit 0", rc == 0)
     check(f"id-less {name}: only valid event acked", h.acked_ids() == ["e18"])
     check(f"id-less {name}: valid event fetched", h.fetch_calls == ["owner/repo"])
-    check(f"id-less {name}: DRAIN-DROP malformed logged", "DRAIN-DROP malformed" in h.fetch_log())
+    check(
+        f"id-less {name}: DRAIN-DROP malformed logged",
+        "DRAIN-DROP malformed" in h.fetch_log(),
+    )
     summary = json.loads(buf.getvalue().strip().splitlines()[-1])
-    check(f"id-less {name}: counted dropped_malformed", summary.get("dropped_malformed") == 1)
+    check(
+        f"id-less {name}: counted dropped_malformed",
+        summary.get("dropped_malformed") == 1,
+    )
 
 
 # 17. a page stream that never completes — every page incomplete with a
@@ -523,7 +538,9 @@ _huge_calls = {"n": 0}
 def _huge_page_req(path, payload=None):
     _huge_calls["n"] += 1
     return {
-        "events": [ev(f"huge-{_huge_calls['n']}-{i}", "owner/repo") for i in range(30_000)],
+        "events": [
+            ev(f"huge-{_huge_calls['n']}-{i}", "owner/repo") for i in range(30_000)
+        ],
         "cursor": f"huge-cursor-{_huge_calls['n']}",
         "list_complete": False,
     }
@@ -579,7 +596,10 @@ h = Harness(
     plan_raw=["o/r1", 123, {"repo": "owner/repo"}],
 )
 check("poison plan entries: exit 0", h.run() == 0)
-check("poison plan entries: fetched + acked", h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"])
+check(
+    "poison plan entries: fetched + acked",
+    h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"],
+)
 check("poison plan entries: coalesce stamp set", "drain_last::owner/repo" in h.state())
 
 # 21. plan top level is a dict (#6835): whole file treated as empty,
@@ -591,7 +611,10 @@ h = Harness(
     plan_raw={"repo": "owner/repo"},
 )
 check("dict plan: exit 0", h.run() == 0)
-check("dict plan: event acked as unplanned", h.acked_ids() == ["e1"] and h.fetch_calls == [])
+check(
+    "dict plan: event acked as unplanned",
+    h.acked_ids() == ["e1"] and h.fetch_calls == [],
+)
 check("dict plan: fetch.log note", "unplanned repo" in h.fetch_log())
 
 # 22. state top level is a list (#6835): whole file treated as empty,
@@ -603,8 +626,14 @@ h = Harness(
     initial_state=[],
 )
 check("list state: exit 0", h.run() == 0)
-check("list state: fetched + acked", h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"])
-check("list state: rewritten as object with stamp", isinstance(h.state(), dict) and "drain_last::owner/repo" in h.state())
+check(
+    "list state: fetched + acked",
+    h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"],
+)
+check(
+    "list state: rewritten as object with stamp",
+    isinstance(h.state(), dict) and "drain_last::owner/repo" in h.state(),
+)
 
 # 23. drain_last wrong shape (#6835): string/dict stamps are dropped and
 # treated as absent — the coalesce window does not apply, fetch runs
@@ -616,8 +645,14 @@ for bad_stamp in ("soon", {"t": 1}):
         initial_state={"drain_last::owner/repo": bad_stamp},
     )
     check(f"drain_last {type(bad_stamp).__name__}: exit 0", h.run() == 0)
-    check(f"drain_last {type(bad_stamp).__name__}: fetched + acked", h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"])
-    check(f"drain_last {type(bad_stamp).__name__}: stamp rewritten numeric", isinstance(h.state()["drain_last::owner/repo"], float))
+    check(
+        f"drain_last {type(bad_stamp).__name__}: fetched + acked",
+        h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"],
+    )
+    check(
+        f"drain_last {type(bad_stamp).__name__}: stamp rewritten numeric",
+        isinstance(h.state()["drain_last::owner/repo"], float),
+    )
 
 # 24. drain_fail wrong shape (#6835): int/string counters are dropped and
 # the failure count starts fresh instead of crashing the tick
@@ -629,7 +664,12 @@ for bad_counter in (3, "many"):
         initial_state={"drain_fail::owner/repo": bad_counter},
     )
     check(f"drain_fail {type(bad_counter).__name__}: exit 0", h.run() == 0)
-    check(f"drain_fail {type(bad_counter).__name__}: event NOT acked", h.acked_ids() == [])
-    check(f"drain_fail {type(bad_counter).__name__}: count starts fresh", h.state()["drain_fail::owner/repo"]["count"] == 1)
+    check(
+        f"drain_fail {type(bad_counter).__name__}: event NOT acked", h.acked_ids() == []
+    )
+    check(
+        f"drain_fail {type(bad_counter).__name__}: count starts fresh",
+        h.state()["drain_fail::owner/repo"]["count"] == 1,
+    )
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")

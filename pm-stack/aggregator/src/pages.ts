@@ -96,7 +96,8 @@ export const PAGES: PageDef[] = [
     id: "decisions",
     title: "Decision sets",
     route: "/decisions",
-    blurb: "Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.",
+    blurb:
+      "Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.",
     group: "overview",
     nav: "dropdown",
   },

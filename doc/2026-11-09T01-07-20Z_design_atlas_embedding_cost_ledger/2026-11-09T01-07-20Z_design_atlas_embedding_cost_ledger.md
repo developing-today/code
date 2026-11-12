@@ -14,13 +14,13 @@ Embedding a corpus is cheap exactly once. Published prices verified for
 #6058 (Sept–Oct 2026): OpenAI text-embedding-3-small $0.02/1M tokens
 ($0.01 batch), text-embedding-3-large $0.13/1M, self-hosted BGE-M3
 ≈ $0.001/1M at high GPU utilization. At corpus scale (~107,639 chunks ≈
-27–54M tokens) a *full* re-embed costs $0.27–$7.00 depending on route —
+27–54M tokens) a _full_ re-embed costs $0.27–$7.00 depending on route —
 a rounding error against the standing plan cap.
 
 The cost risk is therefore not the corpus; it is **churn**: re-embedding
 the unchanged 95% on every version of every log, forever, amplified by
 5–20× corpus growth from comments/docs expansion. Storage and DB-count
-quotas bind before embedding spend does — *if deltas work*. The ledger
+quotas bind before embedding spend does — _if deltas work_. The ledger
 exists to prove, per batch and per source class, that deltas do work,
 and to say so loudly the moment they stop working. It is an accounting
 record with one alert rule, not a budget system.
@@ -36,9 +36,9 @@ record with one alert rule, not a budget system.
    per-batch attestation record (#6045) carries, so a ledger row, its
    attestation, and its chunks join on one key.
 3. **New vs reused is #6028's classification, not a new one.** A chunk
-   is *reused* when the delta protocol's span matching anchors it to a
+   is _reused_ when the delta protocol's span matching anchors it to a
    prior embed (including spans whose head/tail matched prior embeds);
-   it is *new* when the batch actually embeds it. The ledger records
+   it is _new_ when the batch actually embeds it. The ledger records
    the counts the delta protocol already computes; it never re-derives
    them.
 4. **Cost is frozen at write time.** Each row stores the model and the
@@ -52,32 +52,32 @@ record with one alert rule, not a budget system.
 
 ## Ledger schema (per batch)
 
-| Field | Type | Meaning |
-|---|---|---|
-| `batch_id` | string (key) | The batch key shared with the #6045 attestation record. One row per `batch_id`; re-emission of the same batch is idempotent on this key. |
-| `recorded_at` | UTC timestamp | When the ledger row was written (batch publish/reject time). |
-| `source_class` | enum (below) | The class of source the batch ingested. |
-| `chunks_new` | integer ≥ 0 | Chunks this batch embedded (no prior-embed span match under #6028). |
-| `chunks_reused` | integer ≥ 0 | Chunks anchored to prior embeds by #6028 span matching; not re-embedded, not re-tagged, not re-dated. |
-| `tokens_embedded` | integer ≥ 0 | Tokens actually sent to the embedder: tokens of `chunks_new` only. Reused chunks contribute 0. |
-| `model` | string | Embedder identity for the batch (e.g. `text-embedding-3-small`, the #6059 local model id, a #6069 Modal route id), as reported by the route that ran. |
-| `usd` | decimal ≥ 0 | Computed cost of the batch: `tokens_embedded × unit price(model, recorded_at) / 1,000,000`, frozen at write time. |
-| `usd_per_1m_tokens` | decimal ≥ 0 | The unit price used for `usd`, stored with the row so the computation is auditable after price changes. Local/self-hosted routes record their computed unit cost the same way (0 is not a valid shortcut for "local"). |
-| `outcome` | enum: `published` \| `rejected` | Whether the batch passed the staging/publish gate. Rejected batches still consumed embedding spend if they embedded before rejection. |
-| `attestation_ref` | string | Reference to the batch's #6045 attestation record (same `batch_id`; stored explicitly so the join survives either store moving). |
+| Field               | Type                            | Meaning                                                                                                                                                                                                                |
+| ------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `batch_id`          | string (key)                    | The batch key shared with the #6045 attestation record. One row per `batch_id`; re-emission of the same batch is idempotent on this key.                                                                               |
+| `recorded_at`       | UTC timestamp                   | When the ledger row was written (batch publish/reject time).                                                                                                                                                           |
+| `source_class`      | enum (below)                    | The class of source the batch ingested.                                                                                                                                                                                |
+| `chunks_new`        | integer ≥ 0                     | Chunks this batch embedded (no prior-embed span match under #6028).                                                                                                                                                    |
+| `chunks_reused`     | integer ≥ 0                     | Chunks anchored to prior embeds by #6028 span matching; not re-embedded, not re-tagged, not re-dated.                                                                                                                  |
+| `tokens_embedded`   | integer ≥ 0                     | Tokens actually sent to the embedder: tokens of `chunks_new` only. Reused chunks contribute 0.                                                                                                                         |
+| `model`             | string                          | Embedder identity for the batch (e.g. `text-embedding-3-small`, the #6059 local model id, a #6069 Modal route id), as reported by the route that ran.                                                                  |
+| `usd`               | decimal ≥ 0                     | Computed cost of the batch: `tokens_embedded × unit price(model, recorded_at) / 1,000,000`, frozen at write time.                                                                                                      |
+| `usd_per_1m_tokens` | decimal ≥ 0                     | The unit price used for `usd`, stored with the row so the computation is auditable after price changes. Local/self-hosted routes record their computed unit cost the same way (0 is not a valid shortcut for "local"). |
+| `outcome`           | enum: `published` \| `rejected` | Whether the batch passed the staging/publish gate. Rejected batches still consumed embedding spend if they embedded before rejection.                                                                                  |
+| `attestation_ref`   | string                          | Reference to the batch's #6045 attestation record (same `batch_id`; stored explicitly so the join survives either store moving).                                                                                       |
 
 ### Source classes
 
 The initial class set follows #6019's source set; classes are added by
 amending this design, never by free text at write time.
 
-| `source_class` | Append-mostly? | Notes |
-|---|---|---|
-| `code-repo` | no | Edits rewrite files; moderate reuse expected, no alert baseline yet. |
-| `docs` | no | Hand-edited; same posture as `code-repo`. |
-| `logs` | **yes** | Append-only operational logs — the canonical churn risk. |
-| `chat-transcripts` | **yes** | Sessions append; history is immutable once written. |
-| `comments` | **yes** | Issue/PR comment streams append per thread. |
+| `source_class`     | Append-mostly? | Notes                                                                |
+| ------------------ | -------------- | -------------------------------------------------------------------- |
+| `code-repo`        | no             | Edits rewrite files; moderate reuse expected, no alert baseline yet. |
+| `docs`             | no             | Hand-edited; same posture as `code-repo`.                            |
+| `logs`             | **yes**        | Append-only operational logs — the canonical churn risk.             |
+| `chat-transcripts` | **yes**        | Sessions append; history is immutable once written.                  |
+| `comments`         | **yes**        | Issue/PR comment streams append per thread.                          |
 
 "Append-mostly" is a property of the class, recorded here, because the
 alert rule is defined only over append-mostly classes: for them,
@@ -125,13 +125,13 @@ Baselines are populated from the first real ingest batches — which
 wait on the first-pass corpus ingestion (#6025) running over the delta
 protocol (#6028).
 
-| `source_class` | `baseline_reuse_ratio` | `baseline_window` | `batches_observed` | Status |
-|---|---|---|---|---|
-| `code-repo` | — | — | 0 | UNPOPULATED — blocked on #6025 / #6028 |
-| `docs` | — | — | 0 | UNPOPULATED — blocked on #6025 / #6028 |
-| `logs` | — | — | 0 | UNPOPULATED — blocked on #6025 / #6028 |
-| `chat-transcripts` | — | — | 0 | UNPOPULATED — blocked on #6025 / #6028 |
-| `comments` | — | — | 0 | UNPOPULATED — blocked on #6025 / #6028 |
+| `source_class`     | `baseline_reuse_ratio` | `baseline_window` | `batches_observed` | Status                                 |
+| ------------------ | ---------------------- | ----------------- | ------------------ | -------------------------------------- |
+| `code-repo`        | —                      | —                 | 0                  | UNPOPULATED — blocked on #6025 / #6028 |
+| `docs`             | —                      | —                 | 0                  | UNPOPULATED — blocked on #6025 / #6028 |
+| `logs`             | —                      | —                 | 0                  | UNPOPULATED — blocked on #6025 / #6028 |
+| `chat-transcripts` | —                      | —                 | 0                  | UNPOPULATED — blocked on #6025 / #6028 |
+| `comments`         | —                      | —                 | 0                  | UNPOPULATED — blocked on #6025 / #6028 |
 
 When populated, a baseline records the median reuse ratio over a named
 window of consecutive published batches for that class. Until then the

@@ -105,10 +105,7 @@ export function createDashboardResponseDeadline(options: DeadlineOptions = {}) {
 
     let result: { kind: "timeout" } | { kind: "response"; response: Response };
     try {
-      result = await Promise.race([
-        pending.then((response) => ({ kind: "response" as const, response })),
-        timeout,
-      ]);
+      result = await Promise.race([pending.then((response) => ({ kind: "response" as const, response })), timeout]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }

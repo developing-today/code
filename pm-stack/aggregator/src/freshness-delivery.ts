@@ -100,10 +100,12 @@ export function freshnessPatchFrame(page: string): string | null {
   const fragment = FRESHNESS_PAGE_FRAGMENTS[page];
   if (!fragment) return null;
   const element = `<div id="${fragment.id}" data-frag data-on-load="@get('${fragment.path}')" data-on-dashrefresh__window="@get('${fragment.path}')"><div class="skel">Refreshing…</div></div>`;
-  const lines = element.split("\n").map((line) => `data: elements ${line}`).join("\n");
+  const lines = element
+    .split("\n")
+    .map((line) => `data: elements ${line}`)
+    .join("\n");
   return `event: datastar-patch-elements\ndata: mode outer\ndata: selector #${fragment.id}\n${lines}\n\n`;
 }
-
 
 /** A source is "live" while a retained notice is younger than the read
  *  cadence the dashboard already tolerates (5 minutes), "stale" inside the

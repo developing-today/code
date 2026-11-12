@@ -64,9 +64,7 @@ export class OpenCodeClient {
       // A connection failure (server down, refused) is an upstream
       // failure, not a caller error: surface it as OpenCodeError so
       // routes answer the documented 502 instead of a raw 500.
-      throw new OpenCodeError(
-        `opencode ${method} ${path} unreachable: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      throw new OpenCodeError(`opencode ${method} ${path} unreachable: ${e instanceof Error ? e.message : String(e)}`);
     }
     const text = await res.text();
     if (!res.ok) {

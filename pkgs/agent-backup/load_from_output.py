@@ -8,6 +8,7 @@ result; rows are extracted from result.rows (or rows). The spec file is a
 load_rows.py spec WITHOUT "rows" (rows are injected from the output file).
 Prints load_rows.py's result; exit code propagates.
 """
+
 import json
 import subprocess
 import sys
@@ -50,8 +51,7 @@ def main():
     with open(spec_file) as f:
         spec = json.load(f)
     spec["rows"] = rows
-    p = subprocess.run([sys.executable, LOADER], input=json.dumps(spec),
-                       text=True)
+    p = subprocess.run([sys.executable, LOADER], input=json.dumps(spec), text=True)
     sys.exit(p.returncode)
 
 

@@ -52,10 +52,19 @@ class Result:
         self.stderr = stderr
 
 
-def make_fake_run(binds, *, session_get="gone", session_get_status=None,
-                  messages="[]", messages_status=200,
-                  prompt_status=200, create_status=200,
-                  delete_status=200, prompts=None, deletes=None):
+def make_fake_run(
+    binds,
+    *,
+    session_get="gone",
+    session_get_status=None,
+    messages="[]",
+    messages_status=200,
+    prompt_status=200,
+    create_status=200,
+    delete_status=200,
+    prompts=None,
+    deletes=None,
+):
     """Build a subprocess.run stub dispatching on argv shape.
 
     binds: list collecting every repo-queue bind argv.
@@ -96,30 +105,38 @@ def make_fake_run(binds, *, session_get="gone", session_get_status=None,
             return reply("", prompt_status)
         if argv[0] == "curl" and "-X" in argv and "POST" in argv:
             if 200 <= create_status < 300:
-                body = json.dumps({
-                    "id": "ses_new1",
-                    "location": {"directory": str(claimant.PRIMARY_CLONE)},
-                })
+                body = json.dumps(
+                    {
+                        "id": "ses_new1",
+                        "location": {"directory": str(claimant.PRIMARY_CLONE)},
+                    }
+                )
             else:
-                body = json.dumps({
-                    "_tag": "UnauthorizedError",
-                    "message": "Authentication required",
-                })
+                body = json.dumps(
+                    {
+                        "_tag": "UnauthorizedError",
+                        "message": "Authentication required",
+                    }
+                )
             return reply(body, create_status)
         if argv[0] == "curl" and "/api/session/" in joined:
             status = session_get_status
             if status is None:
                 status = 404 if session_get == "gone" else 200
             if 200 <= status < 300:
-                body = json.dumps({
-                    "id": "ses_gone",
-                    "time": {"created": 1, "updated": 2},
-                })
+                body = json.dumps(
+                    {
+                        "id": "ses_gone",
+                        "time": {"created": 1, "updated": 2},
+                    }
+                )
             elif status == 401:
-                body = json.dumps({
-                    "_tag": "UnauthorizedError",
-                    "message": "Authentication required",
-                })
+                body = json.dumps(
+                    {
+                        "_tag": "UnauthorizedError",
+                        "message": "Authentication required",
+                    }
+                )
             else:
                 body = json.dumps({"error": "session not found"})
             return reply(body, status)
@@ -145,8 +162,7 @@ def stub_claimed_rows(rows):
     def fake_fetch(queue):
         return list(rows) if queue == claimant.QUEUES[0] else []
 
-    return patch.object(poll_mod, "fetch_claimed_rows",
-                        side_effect=fake_fetch)
+    return patch.object(poll_mod, "fetch_claimed_rows", side_effect=fake_fetch)
 
 
 CANDIDATE = {
@@ -163,9 +179,12 @@ CANDIDATE = {
 class TestLaunchStep(unittest.TestCase):
     def test_valid_candidate_launches_and_binds(self):
         binds = []
-        with patch.object(claimant, "run_poll",
-                          return_value={"candidates": [dict(CANDIDATE)]}), \
-             patch.object(claimant.subprocess, "run", make_fake_run(binds)):
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
             launched, skips = claimant.launch_step("live", 3)
         self.assertEqual(skips, [])
         self.assertEqual(len(launched), 1)
@@ -195,11 +214,13 @@ class TestLaunchStep(unittest.TestCase):
                 return Result(0, json.dumps({"id": 888, "status": "claimed"}))
             return base_fake(cmd, **kwargs)
 
-        parked = dict(CANDIDATE, id=888, status="handed_off",
-                      queue=claimant.QUEUES[0])
-        with patch.object(claimant, "run_poll",
-                          return_value={"candidates": [dict(parked)]}), \
-             patch.object(claimant.subprocess, "run", fake_run):
+        parked = dict(CANDIDATE, id=888, status="handed_off", queue=claimant.QUEUES[0])
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(parked)]}
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
             launched, skips = claimant.launch_step("live", 3)
         self.assertEqual(skips, [])
         self.assertEqual(len(launched), 1)
@@ -216,9 +237,11 @@ class TestLaunchStep(unittest.TestCase):
         # The collection loop claims broker-picked handoffs until
         # the broker answers {"task": null}; every claim is a
         # no-id handoff claim under the openchamber family.
-        rows = [Result(0, json.dumps({"id": 501, "status": "claimed"})),
-                Result(0, json.dumps({"id": 502, "status": "claimed"})),
-                Result(0, json.dumps({"task": None}))]
+        rows = [
+            Result(0, json.dumps({"id": 501, "status": "claimed"})),
+            Result(0, json.dumps({"id": 502, "status": "claimed"})),
+            Result(0, json.dumps({"task": None})),
+        ]
         argvs = []
 
         def fake_run(cmd, **kwargs):
@@ -242,8 +265,10 @@ class TestLaunchStep(unittest.TestCase):
                 return {"candidates": [dict(CANDIDATE)]}
             return {"candidates": []}
 
-        with patch.object(claimant, "run_poll", side_effect=poll_stub), \
-             patch.object(claimant.subprocess, "run", make_fake_run([])):
+        with (
+            patch.object(claimant, "run_poll", side_effect=poll_stub),
+            patch.object(claimant.subprocess, "run", make_fake_run([])),
+        ):
             launched, skips = claimant.launch_step("live", 3)
         self.assertEqual(launched, [])
         self.assertEqual(skips, [{"task_id": 777, "reason": "task_state_changed"}])
@@ -252,23 +277,29 @@ class TestLaunchStep(unittest.TestCase):
         # #7366: a shadow fire must not create, bind or prompt — the
         # candidate is reported as a would-launch skip only.
         binds = []
-        with patch.object(claimant, "run_poll",
-                          return_value={"candidates": [dict(CANDIDATE)]}), \
-             patch.object(claimant.subprocess, "run", make_fake_run(binds)):
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
             launched, skips = claimant.launch_step("shadow", 3)
         self.assertEqual(launched, [])
-        self.assertEqual(skips, [{"task_id": 777,
-                                  "reason": "shadow_would_launch"}])
+        self.assertEqual(skips, [{"task_id": 777, "reason": "shadow_would_launch"}])
         self.assertEqual(binds, [])
 
     def test_failed_prompt_flags_the_launch(self):
         # #7356: the prompt POST is rejected and no message landed —
         # the launch is recorded, but flagged, never read as clean.
         binds = []
-        with patch.object(claimant, "run_poll",
-                          return_value={"candidates": [dict(CANDIDATE)]}), \
-             patch.object(claimant.subprocess, "run",
-                          make_fake_run(binds, prompt_status=500)):
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, prompt_status=500)
+            ),
+        ):
             launched, skips = claimant.launch_step("live", 3)
         self.assertEqual(skips, [])
         self.assertEqual(len(launched), 1)
@@ -279,11 +310,16 @@ class TestLaunchStep(unittest.TestCase):
         # The POST's response was lost but the message landed: the
         # reconcile read sees it and no resend/flag happens.
         binds = []
-        with patch.object(claimant, "run_poll",
-                          return_value={"candidates": [dict(CANDIDATE)]}), \
-             patch.object(claimant.subprocess, "run",
-                          make_fake_run(binds, prompt_status=500,
-                                        messages='[{"id": "m1"}]')):
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, prompt_status=500, messages='[{"id": "m1"}]'),
+            ),
+        ):
             launched, skips = claimant.launch_step("live", 3)
         self.assertEqual(skips, [])
         self.assertEqual(len(launched), 1)
@@ -296,18 +332,26 @@ class TestLaunchStep(unittest.TestCase):
         # the first one. The launch is flagged instead.
         binds = []
         prompts = []
-        with patch.object(claimant, "run_poll",
-                          return_value={"candidates": [dict(CANDIDATE)]}), \
-             patch.object(claimant.subprocess, "run",
-                          make_fake_run(binds, prompt_status=500,
-                                        messages='{"error": "boom"}',
-                                        prompts=prompts)):
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(
+                    binds,
+                    prompt_status=500,
+                    messages='{"error": "boom"}',
+                    prompts=prompts,
+                ),
+            ),
+        ):
             launched, skips = claimant.launch_step("live", 3)
         self.assertEqual(skips, [])
         self.assertEqual(len(launched), 1)
         self.assertEqual(launched[0].get("prompt_failed"), True)
         self.assertEqual(len(prompts), 1)
-
 
     def test_create_401_skip_names_the_transport_failure(self):
         # #7367 acceptance: with the transport returning 401 for
@@ -315,10 +359,14 @@ class TestLaunchStep(unittest.TestCase):
         # failure - never session_wrong_location, which blamed a
         # session that was never created.
         binds = []
-        with patch.object(claimant, "run_poll",
-                          return_value={"candidates": [dict(CANDIDATE)]}), \
-             patch.object(claimant.subprocess, "run",
-                          make_fake_run(binds, create_status=401)):
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, create_status=401)
+            ),
+        ):
             launched, skips = claimant.launch_step("live", 3)
         self.assertEqual(launched, [])
         self.assertEqual(len(skips), 1)
@@ -330,14 +378,21 @@ class TestLaunchStep(unittest.TestCase):
 class TestSupervisionStep(unittest.TestCase):
     def test_gone_zero_message_session_is_recovered(self):
         binds = []
-        with stub_claimed_rows([BOUND_ROW]), \
-             patch.object(claimant.subprocess, "run", make_fake_run(binds)):
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
             recovered = claimant.supervision_step("live")
-        self.assertEqual(recovered, [{
-            "task_id": 4242,
-            "session_id": "ses_gone",
-            "reason": "zero_message",
-        }])
+        self.assertEqual(
+            recovered,
+            [
+                {
+                    "task_id": 4242,
+                    "session_id": "ses_gone",
+                    "reason": "zero_message",
+                }
+            ],
+        )
         self.assertEqual(len(binds), 1)
         bind_argv = [str(part) for part in binds[0]]
         self.assertIn(claimant.LAUNCHED_BY_RECOVERY_ZERO_MESSAGE, bind_argv)
@@ -345,9 +400,12 @@ class TestSupervisionStep(unittest.TestCase):
 
     def test_active_session_is_left_bound(self):
         binds = []
-        with stub_claimed_rows([BOUND_ROW]), \
-             patch.object(claimant.subprocess, "run",
-                          make_fake_run(binds, session_get="active")):
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, session_get="active")
+            ),
+        ):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered, [])
         self.assertEqual(binds, [])
@@ -356,16 +414,27 @@ class TestSupervisionStep(unittest.TestCase):
         # #3026: the old endpoint 404s with an empty body, and the old
         # read parsed that as []. Unknown must leave the task bound:
         # no DELETE, no recovery bind, no candidate.
-        for status, body in ((404, ""), (200, ""),
-                             (401, '{"_tag": "UnauthorizedError"}')):
+        for status, body in (
+            (404, ""),
+            (200, ""),
+            (401, '{"_tag": "UnauthorizedError"}'),
+        ):
             with self.subTest(status=status, body=body):
                 binds = []
                 deletes = []
-                with stub_claimed_rows([BOUND_ROW]), \
-                     patch.object(claimant.subprocess, "run",
-                                  make_fake_run(binds, messages=body,
-                                                messages_status=status,
-                                                deletes=deletes)):
+                with (
+                    stub_claimed_rows([BOUND_ROW]),
+                    patch.object(
+                        claimant.subprocess,
+                        "run",
+                        make_fake_run(
+                            binds,
+                            messages=body,
+                            messages_status=status,
+                            deletes=deletes,
+                        ),
+                    ),
+                ):
                     recovered = claimant.supervision_step("live")
                 self.assertEqual(recovered, [])
                 self.assertEqual(binds, [])
@@ -375,25 +444,38 @@ class TestSupervisionStep(unittest.TestCase):
         # The live 200 shape: {"data": [...], "cursor": {...}}. A
         # dict wrapping a confirmed empty list is still zero messages.
         binds = []
-        with stub_claimed_rows([BOUND_ROW]), \
-             patch.object(claimant.subprocess, "run",
-                          make_fake_run(binds,
-                                        messages='{"data": [], "cursor": {}}')):
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, messages='{"data": [], "cursor": {}}'),
+            ),
+        ):
             recovered = claimant.supervision_step("live")
-        self.assertEqual(recovered, [{
-            "task_id": 4242,
-            "session_id": "ses_gone",
-            "reason": "zero_message",
-        }])
+        self.assertEqual(
+            recovered,
+            [
+                {
+                    "task_id": 4242,
+                    "session_id": "ses_gone",
+                    "reason": "zero_message",
+                }
+            ],
+        )
         self.assertEqual(len(binds), 1)
 
     def test_bound_session_with_messages_is_not_recovered(self):
         binds = []
         deletes = []
-        with stub_claimed_rows([BOUND_ROW]), \
-             patch.object(claimant.subprocess, "run",
-                          make_fake_run(binds, messages='[{"id": "m1"}]',
-                                        deletes=deletes)):
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, messages='[{"id": "m1"}]', deletes=deletes),
+            ),
+        ):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered, [])
         self.assertEqual(binds, [])
@@ -405,9 +487,12 @@ class TestSupervisionStep(unittest.TestCase):
         row = dict(BOUND_ROW, lease_until="2999-01-01T00:00:00Z")
         binds = []
         deletes = []
-        with stub_claimed_rows([row]), \
-             patch.object(claimant.subprocess, "run",
-                          make_fake_run(binds, deletes=deletes)):
+        with (
+            stub_claimed_rows([row]),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
+            ),
+        ):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered, [])
         self.assertEqual(binds, [])
@@ -419,9 +504,12 @@ class TestSupervisionStep(unittest.TestCase):
         row = dict(BOUND_ROW, lease_until="not-a-timestamp")
         binds = []
         deletes = []
-        with stub_claimed_rows([row]), \
-             patch.object(claimant.subprocess, "run",
-                          make_fake_run(binds, deletes=deletes)):
+        with (
+            stub_claimed_rows([row]),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
+            ),
+        ):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered, [])
         self.assertEqual(binds, [])
@@ -431,17 +519,20 @@ class TestSupervisionStep(unittest.TestCase):
         with patch.object(claimant.subprocess, "run", make_fake_run([])):
             self.assertEqual(claimant.supervision_step("shadow"), [])
 
-
     def test_session_get_401_is_unknown_not_gone(self):
         # #7367: a 401 session GET is an unverified read. It must
         # never read as "gone": no recovery candidate, no DELETE,
         # no binding clear - the task stays bound.
         binds = []
         deletes = []
-        with stub_claimed_rows([BOUND_ROW]), \
-             patch.object(claimant.subprocess, "run",
-                          make_fake_run(binds, session_get_status=401,
-                                        deletes=deletes)):
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, session_get_status=401, deletes=deletes),
+            ),
+        ):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered, [])
         self.assertEqual(binds, [])
@@ -453,10 +544,14 @@ class TestSupervisionStep(unittest.TestCase):
         # so the recovery bind that clears the binding must not run.
         binds = []
         deletes = []
-        with stub_claimed_rows([BOUND_ROW]), \
-             patch.object(claimant.subprocess, "run",
-                          make_fake_run(binds, delete_status=401,
-                                        deletes=deletes)):
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, delete_status=401, deletes=deletes),
+            ),
+        ):
             claimant.supervision_step("live")
         self.assertEqual(len(deletes), 1)
         self.assertEqual(binds, [])
@@ -477,21 +572,24 @@ class TestMainFireLog(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             fires = state_dir / "fires.jsonl"
-            with patch.object(claimant, "read_mode", return_value="live"), \
-                 patch.object(claimant, "run_poll", side_effect=poll_stub), \
-                 stub_claimed_rows([]), \
-                 patch.object(claimant, "get_active_root_session_count",
-                              return_value=0), \
-                 patch.object(claimant.subprocess, "run", make_fake_run([])), \
-                 patch.object(claimant, "STATE_DIR", state_dir), \
-                 patch.object(claimant, "FIRES_FILE", fires):
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "run_poll", side_effect=poll_stub),
+                stub_claimed_rows([]),
+                patch.object(claimant, "get_active_root_session_count", return_value=0),
+                patch.object(claimant.subprocess, "run", make_fake_run([])),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
                 self.assertEqual(claimant.main(), 0)
-            entries = [json.loads(line)
-                       for line in fires.read_text().splitlines() if line]
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["sessions_launched"], [])
-        self.assertEqual(entries[0]["skips"],
-                         [{"task_id": 777, "reason": "task_state_changed"}])
+        self.assertEqual(
+            entries[0]["skips"], [{"task_id": 777, "reason": "task_state_changed"}]
+        )
 
 
 class TestCapUnknownFireLog(unittest.TestCase):
@@ -502,17 +600,22 @@ class TestCapUnknownFireLog(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             fires = state_dir / "fires.jsonl"
-            with patch.object(claimant, "read_mode", return_value="live"), \
-                 patch.object(claimant, "run_poll",
-                              return_value={"candidates": [dict(CANDIDATE)]}), \
-                 stub_claimed_rows([]), \
-                 patch.object(claimant, "get_active_root_session_count",
-                              return_value=-1), \
-                 patch.object(claimant, "STATE_DIR", state_dir), \
-                 patch.object(claimant, "FIRES_FILE", fires):
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(
+                    claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+                ),
+                stub_claimed_rows([]),
+                patch.object(
+                    claimant, "get_active_root_session_count", return_value=-1
+                ),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
                 self.assertEqual(claimant.main(), 1)
-            entries = [json.loads(line)
-                       for line in fires.read_text().splitlines() if line]
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
         self.assertEqual(len(entries), 1)
         self.assertIsNone(entries[0]["cap_room"])
         self.assertEqual(entries[0]["skips"], [{"reason": "cap_unknown"}])
@@ -527,15 +630,19 @@ class TestGateUnknownFireLog(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             fires = state_dir / "fires.jsonl"
-            with patch.object(claimant, "read_mode", return_value="live"), \
-                 patch.object(claimant, "run_poll",
-                              side_effect=RuntimeError("poll blew up")), \
-                 stub_claimed_rows([]), \
-                 patch.object(claimant, "STATE_DIR", state_dir), \
-                 patch.object(claimant, "FIRES_FILE", fires):
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(
+                    claimant, "run_poll", side_effect=RuntimeError("poll blew up")
+                ),
+                stub_claimed_rows([]),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
                 self.assertEqual(claimant.main(), 1)
-            entries = [json.loads(line)
-                       for line in fires.read_text().splitlines() if line]
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
         self.assertEqual(len(entries), 1)
         self.assertIsNone(entries[0]["candidates_seen"])
         self.assertIsNone(entries[0]["cap_room"])
@@ -550,14 +657,16 @@ class TestGateExitFireLog(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             fires = state_dir / "fires.jsonl"
-            with patch.object(claimant, "read_mode", return_value="shadow"), \
-                 patch.object(claimant, "run_poll",
-                              return_value={"candidates": []}), \
-                 patch.object(claimant, "STATE_DIR", state_dir), \
-                 patch.object(claimant, "FIRES_FILE", fires):
+            with (
+                patch.object(claimant, "read_mode", return_value="shadow"),
+                patch.object(claimant, "run_poll", return_value={"candidates": []}),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
                 self.assertEqual(claimant.main(), 0)
-            entries = [json.loads(line)
-                       for line in fires.read_text().splitlines() if line]
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
         self.assertEqual(len(entries), 1)
         self.assertIsNone(entries[0]["cap_room"])
         self.assertEqual(entries[0]["skips"], [{"reason": "no_candidates"}])

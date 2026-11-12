@@ -27,7 +27,7 @@ Verified against origin/main `e648d70e8e9b9c2de86d854d98ba4eaa557893bd`
   `test-provider` feature and is not part of the production catalog.)
 - The declared set already exists in the same representation:
   `Wants` / `parse_wants` (`WANTS_VERSION = 1`, `MAX_WANTS_ENTRIES =
-  64`) hold `BTreeSet<String>` over catalog names, and `CapLedger`
+64`) hold `BTreeSet<String>` over catalog names, and `CapLedger`
   keeps `granted` / `allowed` as `BTreeSet<String>` plus per-name
   `CapUsage { allowed, denied }` counts, with unattributable use
   aggregated under `UNKNOWN_CAP_USAGE_KEY = "<unknown>"`.
@@ -62,12 +62,13 @@ the over-approximation rules, the dynamic-dispatch limitation and its
 marking, and the output contract.
 
 Out of scope (owned elsewhere, cited not re-decided):
+
 - Implementing the tool (this spec is the deliverable of #5998).
 - The permission-UX surfacing of over-declaration (sibling under
   #5955); this spec only emits the sets that UX diffs.
-- The dynamic-loading exception *policy* — which uncertified worlds
+- The dynamic-loading exception _policy_ — which uncertified worlds
   may run, and under what ceiling (follow-up under #5955). This spec
-  defines only how the tool *marks* uncertified output (§6).
+  defines only how the tool _marks_ uncertified output (§6).
 - `used_observed`: produced by the existing `CapLedger` / `CapUsage`
   instrumentation at runtime, not by this tool. The two producers
   emit the same set type and are reconciled by the registry per the
@@ -121,7 +122,7 @@ depends on it: derivation is from code and catalog only.
 
 ## 3. Reference model — what counts as using a capability
 
-A *reference* is an occurrence, inside a reachable definition (§4),
+A _reference_ is an occurrence, inside a reachable definition (§4),
 of one of the following two shapes. These are the only two channels
 by which Roc world code can name a capability (§0).
 
@@ -199,27 +200,27 @@ arrays), the entries of those arrays are capability positions,
 recognised per the runtime's own schema (`parse_wants` in
 `world_caps.rs`): `subscribe` entries are strings — subscription
 specifications, subject to the normalisation below — while
-`requests` entries are *objects*, and each object's `cap` string
+`requests` entries are _objects_, and each object's `cap` string
 field is the capability position (a §3.2 position-1 reference,
 matched exactly against the catalog). A parsed document whose
 entries deviate from that schema (a non-object request entry, a
 non-string `cap`) is a document the runtime itself rejects; the
 scan does not guess at it — that shape triggers the §6 uncertainty
 marking. A
-wants-shaped string that does *not* statically parse — built by
+wants-shaped string that does _not_ statically parse — built by
 interpolation or concatenation, so its entries may be produced at
 runtime — is not partially guessed at: it triggers the §6
 uncertainty marking instead.
 
 **Subscription specifications are normalised before catalog
-matching.** A `subscribe` entry is a subscription *specification*,
+matching.** A `subscribe` entry is a subscription _specification_,
 not a catalog name: the runtime parses it with
 `Subscription::parse` (`world_caps.rs`) and grants the capability
 `Subscription::cap` returns. At the verified commit the mapping is:
 `players` → `players`; `time.tick:<ms>` (a positive u64 interval)
 → `time.tick`; any other spec is `Unknown` and maps to itself.
 Rule: normalise every subscribe entry through exactly these
-runtime semantics, then apply catalog matching to the *result* —
+runtime semantics, then apply catalog matching to the _result_ —
 so `time.tick:5000` (already used by the lounge example) counts as
 a use of `time.tick` even when no literal `time.tick` appears
 anywhere, and an `Unknown` spec counts only when it is exactly a
@@ -246,10 +247,10 @@ grows, this rule grows with it — the snapshot's `catalog_commit`
    invokes: the fields of the app's `program` record (`init`,
    `update`, `view`, `layout`, `records`, `wants`, `snapshot`,
    `restore` — those present), plus any definition exported by the
-   entry module. Everything reachable from a seed is *reachable*;
+   entry module. Everything reachable from a seed is _reachable_;
    reachability is a fixpoint over the definition graph.
 4. **Collection.** Collect references per §3 in two passes with
-   different reachability treatment. (a) *Platform-module imports*
+   different reachability treatment. (a) _Platform-module imports_
    (§3.1) are collected from **every file in the closure**,
    independent of definition reachability: a library that the entry
    imports but whose definitions are never referenced still belongs
@@ -257,7 +258,7 @@ grows, this rule grows with it — the snapshot's `catalog_commit`
    gate (`check_imports` in `world_compile.rs`) refuses an
    ungranted platform import in any submitted file, so the grant is
    required to compile the unchanged sources whether or not a
-   definition is reached. (b) *Host-provider references* (§3.2) are
+   definition is reached. (b) _Host-provider references_ (§3.2) are
    collected per reachable definition: catalog-name literals in its
    body, serialized-wants extraction, and subscription
    normalisation, all per §3.2. Union both passes into the
@@ -271,7 +272,7 @@ grows, this rule grows with it — the snapshot's `catalog_commit`
    catalog snapshot: any candidate name not in the snapshot is
    dropped and reported on stderr as a stale-catalog warning (it
    cannot be emitted — the output invariant is `used_static ⊆
-   catalog`). Emit per §7, names sorted (BTreeSet order: byte-wise
+catalog`). Emit per §7, names sorted (BTreeSet order: byte-wise
    lexicographic, so `RocCap` sorts before `chat.say`).
 
 Properties the implementation must hold (the implementer's test
@@ -329,7 +330,7 @@ double-counts (the output is a set).
 ### 5.4 No path sensitivity, no constant folding beyond literals
 
 Branches, guards, and early returns do not narrow the set.
-Arithmetic or concatenation that *produces* a catalog name is not
+Arithmetic or concatenation that _produces_ a catalog name is not
 folded — it is not a literal, so §6 applies instead.
 
 ## 6. Dynamic dispatch — the explicit limitation, and its marking
@@ -344,7 +345,7 @@ reachable code, defeat static derivation for the affected requests:
   parse (§3.2) — interpolated or concatenated, so its
   subscribe/requests entries may never appear as literals;
 - code loaded or generated outside the scanned closure (the
-  dynamic-loading case whose *policy* belongs to the #5955
+  dynamic-loading case whose _policy_ belongs to the #5955
   follow-up).
 
 Marking rule (normative): when the scan encounters a non-literal in
@@ -388,7 +389,7 @@ One JSON object per scan, written to stdout or to `--out <path>`:
 `used_static` is exactly the `used.static` array of the #5958
 registry schema (record §5): the same names, the same sorted order,
 dropped into the registry entry unchanged — the registry
-representation *is* a `BTreeSet<String>` of catalog names serialized
+representation _is_ a `BTreeSet<String>` of catalog names serialized
 as a sorted JSON array, so used vs declared is a plain set diff with
 no translation layer. `vocab_version` and `wants_version` are the
 constants of the same names in `world_caps.rs` at the catalog
@@ -468,7 +469,7 @@ their formats (§2), the two reference shapes (§3), the five
 algorithm steps and four test-oracle properties (§4), the widening
 rules (§5), the uncertainty marking (§6), and the byte-level output
 contract with exit codes (§7) are all fixed above. Remaining choices
-that are *not* design decisions — implementation language, Roc
+that are _not_ design decisions — implementation language, Roc
 parser/library selection, internal graph representation, CLI
 framework — are left to the implementation PR, which should land
 with the §7.4 fixtures as tests and the §4 properties as property

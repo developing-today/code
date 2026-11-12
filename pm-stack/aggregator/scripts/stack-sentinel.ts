@@ -117,8 +117,7 @@ async function postTransition(
     source: "stack-sentinel",
     key: `service:${probe.id}`,
     severity: "warning",
-    title:
-      entry.state === "down" ? `Stack health: ${probe.name} is down` : `Stack health: ${probe.name} recovered`,
+    title: entry.state === "down" ? `Stack health: ${probe.name} is down` : `Stack health: ${probe.name} recovered`,
     body: entry.detail ?? "",
     stackHealth: {
       serviceId: probe.id,

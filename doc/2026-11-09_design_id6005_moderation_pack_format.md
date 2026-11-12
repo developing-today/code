@@ -20,7 +20,7 @@
   [#5545](https://github.com/developing-today/code/issues/5545) (writer-set
   authority — who may change a pack is a writer-set question, §7),
   [#6007](https://github.com/developing-today/code/issues/6007) (preset tier
-  defaults — a pack may *name* a preset; the preset's contents are #6007's,
+  defaults — a pack may _name_ a preset; the preset's contents are #6007's,
   not this note's).
 - **Scope guard (from #6005):** the pack format only. No moderation
   runtime, no board behavior, no preset contents, no feed protocol.
@@ -37,7 +37,7 @@
    blacklist feeds plus policy presets); rules-as-code packs have no
    successful mainstream precedent, and executable shared moderation is
    the Garry's Mod failure mode. If a behavior cannot be expressed as
-   data in this format, it belongs in a moderation *library* under
+   data in this format, it belongs in a moderation _library_ under
    #5973 — never smuggled into a pack.
 2. **The shared core and the local parameters are different objects.**
    A pack has a static, shareable **core** (policy rules + feed
@@ -72,13 +72,13 @@
 A pack is a signed object in the `pkgs/id` signed-object shape — the
 same substrate the feed protocol reuses — not a new envelope:
 
-| Field | Meaning |
-|---|---|
-| `author` | The pack author's Ed25519 verifying key (32 bytes). The author is the pack's identity root; there is no separate registry. |
-| `pack_id` | BLAKE3 over the canonical encoding of the pack's **genesis object** (§2). Stable for the pack's life; a fork gets a new genesis and therefore a new `pack_id`. |
-| `name` | Human-readable, non-unique, display only. Never used for resolution. |
-| `seq` / `prev` | Per-author sequence number and prev-hash link, exactly as in the feed protocol's object chain. A pack version is one object in this chain. |
-| `id` | BLAKE3 over the encoded bytes of this version object, including the signature. Citing a pack version means citing this `id`. |
+| Field          | Meaning                                                                                                                                                        |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `author`       | The pack author's Ed25519 verifying key (32 bytes). The author is the pack's identity root; there is no separate registry.                                     |
+| `pack_id`      | BLAKE3 over the canonical encoding of the pack's **genesis object** (§2). Stable for the pack's life; a fork gets a new genesis and therefore a new `pack_id`. |
+| `name`         | Human-readable, non-unique, display only. Never used for resolution.                                                                                           |
+| `seq` / `prev` | Per-author sequence number and prev-hash link, exactly as in the feed protocol's object chain. A pack version is one object in this chain.                     |
+| `id`           | BLAKE3 over the encoded bytes of this version object, including the signature. Citing a pack version means citing this `id`.                                   |
 
 A world **pins** a pack the same way a pack pins a feed (feed protocol
 §4): by `pack_id` + author key. A subscription to a pack tracks the
@@ -100,13 +100,13 @@ compactness.)
 
 Each rule in the core is a declaration with:
 
-| Field | Meaning |
-|---|---|
-| `rule_id` | Author-scoped stable string (e.g. `spam/first-post-links`). Stable across versions while the rule's intent is unchanged; a rule whose action changes materially gets a new `rule_id`. |
-| `subject` | What the rule matches: a subject kind from the feed protocol's entry kinds (principal, content hash, domain, …). The pack format defines no new subject kinds. |
-| `match` | The data the subject is matched against (literal values, or a reference to a named list *inside this core*). No patterns that require evaluation beyond literal/prefix membership — see rule 1 of §0. |
-| `action` | One of the feed protocol's action vocabulary (`allow`, `flag`, `quarantine`, `deny` — the exact enum is #5973's interface to fix; this format requires only that the action be a value from a named, versioned vocabulary, never free text). |
-| `note` | Human-readable rationale, display only. Required, so every rule can appear in a §0-rule-6 explanation with its author's own words. |
+| Field     | Meaning                                                                                                                                                                                                                                      |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rule_id` | Author-scoped stable string (e.g. `spam/first-post-links`). Stable across versions while the rule's intent is unchanged; a rule whose action changes materially gets a new `rule_id`.                                                        |
+| `subject` | What the rule matches: a subject kind from the feed protocol's entry kinds (principal, content hash, domain, …). The pack format defines no new subject kinds.                                                                               |
+| `match`   | The data the subject is matched against (literal values, or a reference to a named list _inside this core_). No patterns that require evaluation beyond literal/prefix membership — see rule 1 of §0.                                        |
+| `action`  | One of the feed protocol's action vocabulary (`allow`, `flag`, `quarantine`, `deny` — the exact enum is #5973's interface to fix; this format requires only that the action be a value from a named, versioned vocabulary, never free text). |
+| `note`    | Human-readable rationale, display only. Required, so every rule can appear in a §0-rule-6 explanation with its author's own words.                                                                                                           |
 
 ### 2.2 Feed subscriptions
 
@@ -138,18 +138,18 @@ change; supplying parameters is the same kind of act).
 
 The parameter schema declares, per parameter: `name`, `type`,
 `default` (used when a world's block omits it), and `range` where the
-type has one. The format fixes the schema *mechanism*; the following
+type has one. The format fixes the schema _mechanism_; the following
 parameters are the ones #6005 names, and every conforming core that
 supports the corresponding behavior must declare them under these
 names so packs stay comparable across worlds:
 
-| Parameter | Type | Meaning |
-|---|---|---|
-| `report_quarantine_threshold` | integer ≥ 1 | Distinct-reporter count at which reported content is auto-quarantined pending review. |
-| `moderators` | set of principal ids | Principals holding moderator powers under this pack in this world. |
-| `reviewers` | set of principal ids | Principals who may review quarantines and appeals. May overlap `moderators`; neither set implies the other. |
-| `local_exemptions` | reference | Names the world's local exemption list (§5). A reference, never the list itself — the list is world state. |
-| `appeal_window` | duration | How long a quarantined/denied subject's author may appeal. (Declared here because #5973 names appeal as a hook; its default is a preset question for #6007, not this note.) |
+| Parameter                     | Type                 | Meaning                                                                                                                                                                     |
+| ----------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `report_quarantine_threshold` | integer ≥ 1          | Distinct-reporter count at which reported content is auto-quarantined pending review.                                                                                       |
+| `moderators`                  | set of principal ids | Principals holding moderator powers under this pack in this world.                                                                                                          |
+| `reviewers`                   | set of principal ids | Principals who may review quarantines and appeals. May overlap `moderators`; neither set implies the other.                                                                 |
+| `local_exemptions`            | reference            | Names the world's local exemption list (§5). A reference, never the list itself — the list is world state.                                                                  |
+| `appeal_window`               | duration             | How long a quarantined/denied subject's author may appeal. (Declared here because #5973 names appeal as a hook; its default is a preset question for #6007, not this note.) |
 
 A world **may not** narrow a core rule by parameter. Parameters tune
 thresholds, people, and windows; they never disable, reorder, or
@@ -261,8 +261,8 @@ legitimately make outcomes differ (§0 rule 5).
 
 ---
 
-*Evidence baseline: `origin/main` at drafting (2026-11-09); the feed
+_Evidence baseline: `origin/main` at drafting (2026-11-09); the feed
 protocol spec and the #5906 KDL/JSON decision record read in full;
 issues #6005, #5973 read in full. No merged PR implements any part of
 this format yet; PR #7708 (referenced from the #6005 packet) is an
-adjacent input, not an implementation of this spec.*
+adjacent input, not an implementation of this spec._

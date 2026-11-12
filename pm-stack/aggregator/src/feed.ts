@@ -304,8 +304,7 @@ function isLinedUpElement(v: unknown): boolean {
     // its blockers were silently dropped by the canonical layer
     // (asBlockers), rendering a blocked task as unblocked. Absence is
     // fine; a present value must be an array of dependency elements.
-    (v.blockedBy === undefined ||
-      (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
+    (v.blockedBy === undefined || (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
   );
 }
 

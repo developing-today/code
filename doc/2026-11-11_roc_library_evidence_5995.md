@@ -4,10 +4,10 @@ Status: **complete**. Evidence for [#5995](https://github.com/developing-today/c
 
 ## The two compiler lines
 
-| Line | Compiler | Source |
-| --- | --- | --- |
-| Pinned / tracked (new compiler) | `nightly-2026-10-04-130536d` (pin), `nightly-2026-10-06-c34079d` (installed) | `pkgs/id/nix/roc-version`, `pkgs/id/nix/roc.nix`; system `roc` on the laptop |
-| Legacy (old compiler) | `alpha4-rolling`, internally `roc_nightly-linux_x86_64-2025-09-09-d73ea109`, "roc nightly pre-release, built from commit d73ea109" | `roc-lang/roc` GitHub release `alpha4-rolling`, asset `roc-linux_x86_64-alpha4-rolling.tar.gz`, sha256 `96e8be05e6f7176433ada74532ff36a62b8dc44c5247a82cdf919f2dadc5178b` |
+| Line                            | Compiler                                                                                                                           | Source                                                                                                                                                                    |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pinned / tracked (new compiler) | `nightly-2026-10-04-130536d` (pin), `nightly-2026-10-06-c34079d` (installed)                                                       | `pkgs/id/nix/roc-version`, `pkgs/id/nix/roc.nix`; system `roc` on the laptop                                                                                              |
+| Legacy (old compiler)           | `alpha4-rolling`, internally `roc_nightly-linux_x86_64-2025-09-09-d73ea109`, "roc nightly pre-release, built from commit d73ea109" | `roc-lang/roc` GitHub release `alpha4-rolling`, asset `roc-linux_x86_64-alpha4-rolling.tar.gz`, sha256 `96e8be05e6f7176433ada74532ff36a62b8dc44c5247a82cdf919f2dadc5178b` |
 
 The checked-in `pkgs/roc` build scripts (`pkgs/roc/lib/build.sh`, `pkgs/roc/applications/hello/rust-basic-cli/Platform/Lib/build.sh`) invoke `roc build --lib` and `roc preprocess-host`; those are legacy-compiler commands, as the next section shows.
 

@@ -39,12 +39,7 @@ export interface TaskRow {
  * shape-untrusted: a bare cast lets a string body resolve as a
  * phantom TaskRow and a null body escape as a raw TypeError. */
 function isTaskRow(v: unknown): v is TaskRow {
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    !Array.isArray(v) &&
-    typeof (v as { id?: unknown }).id === "number"
-  );
+  return typeof v === "object" && v !== null && !Array.isArray(v) && typeof (v as { id?: unknown }).id === "number";
 }
 
 /** The first row of a parsed rows body, or null when the body is
@@ -190,16 +185,16 @@ export class QueueClient {
    * PostgREST failure must fail closed (the route answers 502), never
    * read as no task, so no gate. */
   async findTaskBySessionId(sessionId: string): Promise<TaskRow | null> {
-    const live = await this.findTaskByProgressField('progress->>session_id', sessionId);
+    const live = await this.findTaskByProgressField("progress->>session_id", sessionId);
     if (live) return live;
-    return this.findTaskByProgressField('progress->session_cleared->>session_id', sessionId);
+    return this.findTaskByProgressField("progress->session_cleared->>session_id", sessionId);
   }
 
   private async findTaskByProgressField(field: string, sessionId: string): Promise<TaskRow | null> {
-    const url = this.baseUrl + '/rest/v1/tasks?' + field + '=eq.' + encodeURIComponent(sessionId) + '&select=*&limit=1';
+    const url = this.baseUrl + "/rest/v1/tasks?" + field + "=eq." + encodeURIComponent(sessionId) + "&select=*&limit=1";
     const res = await fetch(url, { headers: this.headers(false) });
     if (!res.ok) {
-      throw new QueueError('task lookup by session failed (HTTP ' + res.status + ')', res.status);
+      throw new QueueError("task lookup by session failed (HTTP " + res.status + ")", res.status);
     }
     // This lookup backs the session route's repo gate, so a
     // malformed 200 body fails closed with QueueError (#7299),

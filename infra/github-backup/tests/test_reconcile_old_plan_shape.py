@@ -40,14 +40,25 @@ def bare_mirror(root, repo):
         "GIT_COMMITTER_EMAIL": "ghb-test@example.invalid",
     }
     tree = subprocess.run(
-        ["git", "-C", path, "mktree"], input="", capture_output=True, text=True, check=True
+        ["git", "-C", path, "mktree"],
+        input="",
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     commit = subprocess.run(
         ["git", "-C", path, "commit-tree", tree, "-m", "seed"],
-        capture_output=True, text=True, check=True, env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
     ).stdout.strip()
-    subprocess.run(["git", "-C", path, "update-ref", "refs/heads/main", commit], check=True)
-    subprocess.run(["git", "-C", path, "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+    subprocess.run(
+        ["git", "-C", path, "update-ref", "refs/heads/main", commit], check=True
+    )
+    subprocess.run(
+        ["git", "-C", path, "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+    )
 
 
 def plan_item(repo, parent=None):
@@ -124,9 +135,15 @@ def clean_scenario(name, old_plan, expect_problem_for=None):
     bare_mirror(root, "good-owner/newrepo")
     rc, report, plan, stderr, reports = run_main(root, CLEAN_CFG, CLEAN_INV)
     check(f"{name}: sweep completes (rc 0)", rc == 0)
-    check(f"{name}: new plan.json written", [p["repo"] for p in plan] == ["good-owner/newrepo"])
+    check(
+        f"{name}: new plan.json written",
+        [p["repo"] for p in plan] == ["good-owner/newrepo"],
+    )
     check(f"{name}: dated report written", len(reports) == 1)
-    check(f"{name}: MANIFEST regenerated", os.path.exists(os.path.join(root, "MANIFEST.json")))
+    check(
+        f"{name}: MANIFEST regenerated",
+        os.path.exists(os.path.join(root, "MANIFEST.json")),
+    )
     if expect_problem_for is not None:
         check(
             f"{name}: poison named in problems output",
@@ -143,8 +160,13 @@ clean_scenario("entry null", [None], "entry 0")
 clean_scenario("top-level object", {"repo": "good-owner/oldrepo"}, "top level")
 
 # A valid old entry still participates: it shows up as removed in the diff.
-report = clean_scenario("mixed valid + poison", [plan_item("good-owner/oldrepo"), 123], "entry 1")
-check("mixed valid + poison: valid entry counted as removed", "1 no longer planned" in report)
+report = clean_scenario(
+    "mixed valid + poison", [plan_item("good-owner/oldrepo"), 123], "entry 1"
+)
+check(
+    "mixed valid + poison: valid entry counted as removed",
+    "1 no longer planned" in report,
+)
 
 # A fully poisoned previous plan behaves as an empty previous plan.
 report = clean_scenario("fully poisoned", [123, "x", None, {"repo": 123}])
@@ -173,7 +195,9 @@ RET_INV = (
 rc, report, plan, stderr, reports = run_main(root, RET_CFG, RET_INV)
 check("retention path: sweep survives {repo: 123} (rc 1 = inventory error)", rc == 1)
 plan_repos = [p["repo"] for p in plan]
-check("retention path: valid failed-owner entry retained", "bad-owner/keep1" in plan_repos)
+check(
+    "retention path: valid failed-owner entry retained", "bad-owner/keep1" in plan_repos
+)
 check("retention path: poison entry named in problems output", "entry 0" in stderr)
 check(
     "retention path: report names the retention",

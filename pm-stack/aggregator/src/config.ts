@@ -166,10 +166,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
-    freshnessFile: s(
-      env.PM_AGG_FRESHNESS_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "freshness.json"),
-    ),
+    freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),
     // Default is the state dir, NOT cwd (#5389): aggregator runtime state
     // lives in ~/.local/state/pm-aggregator (2026-10-27 precedent), and the
@@ -192,10 +189,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_NEEDS_DREW_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "needs-drew.json"),
     ),
-    decisionsFile: s(
-      env.PM_AGG_DECISIONS_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "decisions.json"),
-    ),
+    decisionsFile: s(env.PM_AGG_DECISIONS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "decisions.json")),
     stackHealthFile: s(
       env.PM_AGG_STACK_HEALTH_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "stack-health.json"),

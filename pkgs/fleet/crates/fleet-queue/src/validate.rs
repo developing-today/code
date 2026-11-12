@@ -821,29 +821,69 @@ mod tests {
     fn packet_max_attempts_validation_and_selection() {
         let payload = payload_with(json!({"issue": {"number": 6423}}));
         let base = json!({"title": "test", "priority": 30, "payload": payload});
-        for bad in [json!(0), json!(-1), json!(101), json!(1.5), json!("4"), json!(null)] {
+        for bad in [
+            json!(0),
+            json!(-1),
+            json!(101),
+            json!(1.5),
+            json!("4"),
+            json!(null),
+        ] {
             for top in [true, false] {
                 let mut packet = base.clone();
-                if top { packet["max_attempts"] = bad.clone(); }
-                else { packet["payload"]["max_attempts"] = bad.clone(); }
-                let field = if top { "packet.max_attempts" } else { "payload.max_attempts" };
-                assert!(validate_packet(&packet).0.iter().any(|e| e.contains(field)), "{packet}");
+                if top {
+                    packet["max_attempts"] = bad.clone();
+                } else {
+                    packet["payload"]["max_attempts"] = bad.clone();
+                }
+                let field = if top {
+                    "packet.max_attempts"
+                } else {
+                    "payload.max_attempts"
+                };
+                assert!(
+                    validate_packet(&packet).0.iter().any(|e| e.contains(field)),
+                    "{packet}"
+                );
             }
         }
         let mut packet = base.clone();
         packet["max_attempts"] = json!(5);
-        assert!(validate_packet(&packet).0.iter().any(|e| e.contains("must match")));
+        assert!(
+            validate_packet(&packet)
+                .0
+                .iter()
+                .any(|e| e.contains("must match"))
+        );
         for n in [1, 4, 100] {
             packet["max_attempts"] = json!(n);
             packet["payload"]["max_attempts"] = json!(n);
-            assert!(!validate_packet(&packet).0.iter().any(|e| e.contains("max_attempts")));
+            assert!(
+                !validate_packet(&packet)
+                    .0
+                    .iter()
+                    .any(|e| e.contains("max_attempts"))
+            );
             assert_eq!(task_from_packet(&packet, "q")["max_attempts"], n);
         }
-        packet["payload"].as_object_mut().unwrap().remove("max_attempts");
-        assert!(!validate_packet(&packet).0.iter().any(|e| e.contains("max_attempts")));
+        packet["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("max_attempts");
+        assert!(
+            !validate_packet(&packet)
+                .0
+                .iter()
+                .any(|e| e.contains("max_attempts"))
+        );
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 100);
         packet.as_object_mut().unwrap().remove("max_attempts");
-        assert!(!validate_packet(&packet).0.iter().any(|e| e.contains("max_attempts")));
+        assert!(
+            !validate_packet(&packet)
+                .0
+                .iter()
+                .any(|e| e.contains("max_attempts"))
+        );
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 4);
         packet["payload"]["max_attempts"] = json!(7);
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 7);
@@ -1015,7 +1055,11 @@ mod tests {
             ("/body", json!(""), "packet.body"),
             ("/payload/problem", json!(123), "payload.problem"),
             ("/payload/problem", json!({"x": 1}), "payload.problem"),
-            ("/payload/priority_reason", json!(123), "payload.priority_reason"),
+            (
+                "/payload/priority_reason",
+                json!(123),
+                "payload.priority_reason",
+            ),
             ("/payload/dedupe/checked_at", json!(123), "payload.dedupe"),
             ("/payload/dedupe/basis", json!(123), "payload.dedupe"),
             ("/payload/evidence", json!([123]), "payload.evidence"),
@@ -1024,10 +1068,26 @@ mod tests {
             ("/payload/evidence", json!([["t"]]), "payload.evidence"),
             ("/payload/acceptance", json!([123]), "payload.acceptance"),
             ("/payload/tests", json!([123]), "payload.tests"),
-            ("/payload/context_refs", json!([null]), "payload.context_refs"),
-            ("/payload/scope/include", json!([123]), "payload.scope.include"),
-            ("/payload/scope/exclude", json!([123]), "payload.scope.exclude"),
-            ("/payload/scope/exclude", json!("y"), "payload.scope.exclude"),
+            (
+                "/payload/context_refs",
+                json!([null]),
+                "payload.context_refs",
+            ),
+            (
+                "/payload/scope/include",
+                json!([123]),
+                "payload.scope.include",
+            ),
+            (
+                "/payload/scope/exclude",
+                json!([123]),
+                "payload.scope.exclude",
+            ),
+            (
+                "/payload/scope/exclude",
+                json!("y"),
+                "payload.scope.exclude",
+            ),
             ("/payload/risk/flags", json!([123]), "payload.risk.flags"),
         ];
         for (pointer, bad, field) in cases {

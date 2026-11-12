@@ -291,7 +291,8 @@ export async function collectClaudeAdapter(opts: {
 export function claudeCredentialRefFromConfig(value: string | undefined): CredentialRef | null {
   if (!value || value.trim() === "") return null;
   const v = value.trim();
-  if (v.startsWith("bitwarden:")) return validateCredentialRef({ kind: "bitwarden", name: v.slice("bitwarden:".length) });
+  if (v.startsWith("bitwarden:"))
+    return validateCredentialRef({ kind: "bitwarden", name: v.slice("bitwarden:".length) });
   if (v.startsWith("file:")) return validateCredentialRef({ kind: "file", path: v.slice("file:".length), mode: 0o600 });
   throw new AdapterError(
     "fetch-failed",
@@ -344,6 +345,7 @@ export async function gatherClaude(opts: {
   return collectClaudeAdapter({
     now: opts.now,
     previous: opts.previous,
-    fetchPayload: () => fetchClaudePayload({ sessionKey: sessionKey as string, fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs }),
+    fetchPayload: () =>
+      fetchClaudePayload({ sessionKey: sessionKey as string, fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs }),
   });
 }

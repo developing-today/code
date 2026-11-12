@@ -276,12 +276,7 @@ export function collectFileExportAdapter(opts: {
     if (!isRecord(w)) {
       return retainedOutcome("unparseable", previous, now, "ok", "file-export drift: window element is not an object");
     }
-    if (
-      !isNonEmptyString(w.name) ||
-      !isFiniteNumber(w.usedPct) ||
-      w.usedPct < 0 ||
-      w.usedPct > 100
-    ) {
+    if (!isNonEmptyString(w.name) || !isFiniteNumber(w.usedPct) || w.usedPct < 0 || w.usedPct > 100) {
       return retainedOutcome(
         "unparseable",
         previous,

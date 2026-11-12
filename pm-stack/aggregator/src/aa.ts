@@ -634,7 +634,7 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     multiplier: 6,
     note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×).",
   },
-  "_commandcode": {
+  _commandcode: {
     plan: "Command Code GOAT",
     multiplier: 7,
     note: "0/mo → 0 credits (7×); the entry Go tier is  → 0 credits (10×). Tier on the account is unconfirmed.",
@@ -664,7 +664,7 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     multiplier: null,
     note: "Main ChatGPT account door (drewrypope, self-contained _openai instance; renamed from openai.main 2026-11-10, code#8163).",
   },
-  "_claude": {
+  _claude: {
     plan: "Claude plan",
     multiplier: null,
     note: "Claude Code door — the fork's fleet-built _claude provider (renamed from claude-code 2026-11-07, #1823).",
@@ -845,7 +845,9 @@ export function sectionPoolIdsFromConfig(text: string, poolIds: readonly string[
       continue;
     }
     const doors = new Set([...leaves].map((leaf) => leaf.split("/")[0]));
-    out[section] = [...new Set(poolIds.filter((poolId) => [...doors].some((door) => poolServesDoor(poolId, door))))].sort();
+    out[section] = [
+      ...new Set(poolIds.filter((poolId) => [...doors].some((door) => poolServesDoor(poolId, door)))),
+    ].sort();
   }
   return out;
 }
@@ -1327,7 +1329,14 @@ export function isAaSection(v: unknown): v is AaFeedSection {
     (s.coverage === undefined ||
       (typeof s.coverage === "object" &&
         s.coverage !== null &&
-        (["measuredNotPooled", "catalogNotPooledMeasured", "measuredNotInCatalog", "catalogNotPooledUnmeasured"] as const).every(
+        (
+          [
+            "measuredNotPooled",
+            "catalogNotPooledMeasured",
+            "measuredNotInCatalog",
+            "catalogNotPooledUnmeasured",
+          ] as const
+        ).every(
           (k) => Array.isArray(s.coverage?.[k]) && (s.coverage?.[k] as unknown[]).every((n) => typeof n === "string"),
         ))) &&
     (s.catalog === undefined ||

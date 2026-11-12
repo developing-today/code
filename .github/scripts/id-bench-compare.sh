@@ -39,7 +39,7 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
   exit 2
 fi
 
-if ! [[ "$threshold" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+if ! [[ $threshold =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   echo "id-bench-compare.sh: error: BENCH_REGRESSION_THRESHOLD_PCT must be a non-negative number, got '$threshold'" >&2
   exit 2
 fi

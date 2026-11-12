@@ -108,7 +108,9 @@ function buildItemBriefWithIndexes(
     : blocked
       ? `Blocked by ${activeBlockers
           .map((b) => `${b.ref}${b.state === "unknown" ? " (state unknown — not in the current pool)" : ""}`)
-          .join(", ")}.${invalidBlockerCount ? ` ${invalidBlockerCount} malformed edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted.` : ""}`
+          .join(
+            ", ",
+          )}.${invalidBlockerCount ? ` ${invalidBlockerCount} malformed edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted.` : ""}`
       : invalidBlockerCount
         ? `Unknown — valid blockers (${blockers.map((b) => b.ref).join(", ")}) are closed or merged, but ${invalidBlockerCount} malformed edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted.`
         : `Not blocked — every recorded blocker (${blockers.map((b) => b.ref).join(", ")}) is closed or merged.`;

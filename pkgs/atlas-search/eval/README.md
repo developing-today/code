@@ -1,6 +1,6 @@
 # Atlas retrieval evaluation harness (#5741)
 
-The harness the #5741 test plan builds *first*, before any signal
+The harness the #5741 test plan builds _first_, before any signal
 (SPLADE included) is adopted or rejected: saved rankings from any
 signal combination are scored offline against judged qrels, so the
 ablation matrix — {dense} / {BM25} / {SPLADE} / {dense+BM25} (today's
@@ -45,9 +45,9 @@ synthetic `eval-smoke.json` fixture is not held-out evaluation evidence.
 ```json
 {
   "format": "atlas-eval/v1",
-  "queries": [{"id": "q1", "class": "code", "split": "dev", "text": "..."}],
-  "qrels":   [{"query": "q1", "doc": "chunk-1", "grade": 2}],
-  "runs":    [{"signal": "dense", "results": {"q1": ["chunk-2", "chunk-1"]}}]
+  "queries": [{ "id": "q1", "class": "code", "split": "dev", "text": "..." }],
+  "qrels": [{ "query": "q1", "doc": "chunk-1", "grade": 2 }],
+  "runs": [{ "signal": "dense", "results": { "q1": ["chunk-2", "chunk-1"] } }]
 }
 ```
 

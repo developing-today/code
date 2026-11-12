@@ -58,8 +58,8 @@ excluded=(
 # dropped. Used for both the fixture flake set and the listed set so
 # cosmetic file-format differences never read as different checks.
 normalise_names() {
-  sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-    | grep -v -e '^#' -e '^$' || true
+  sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' |
+    grep -v -e '^#' -e '^$' || true
 }
 
 if [[ -n ${ID_FLAKE_CHECKS_FILE:-} ]]; then

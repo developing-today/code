@@ -244,18 +244,20 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
 
   test("scheduled fetch keeps the full item total and publishes one-page audit metadata", async () => {
     const mockFetch = (async () => new Response(JSON.stringify(GQL), { status: 200 })) as unknown as typeof fetch;
-    const snapshot = await fetchProjectSnapshot(
-      "test-token",
-      mockFetch,
-      "2026-11-01T21:00:00.000Z",
-    );
+    const snapshot = await fetchProjectSnapshot("test-token", mockFetch, "2026-11-01T21:00:00.000Z");
     expect(snapshot.items).toHaveLength(2);
     expect(snapshot.audit.totalItems).toBe(3);
     expect(snapshot.audit.fields.map((field) => field.name)).toEqual(["Status", "Area"]);
-    expect(snapshot.audit.views).toEqual([{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }]);
+    expect(snapshot.audit.views).toEqual([
+      { id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" },
+    ]);
     expect(snapshot.audit.counts.status).toEqual({ "(unset)": 1, Done: 1, "In Progress": 1 });
     expect(snapshot.audit.counts.area).toEqual({ "(unset)": 2, "lab-cluster": 1 });
-    expect(snapshot.audit.counts.repo).toEqual({ "(unlinked)": 1, "developing-today/code": 1, "dezren39/darwin-nix": 1 });
+    expect(snapshot.audit.counts.repo).toEqual({
+      "(unlinked)": 1,
+      "developing-today/code": 1,
+      "dezren39/darwin-nix": 1,
+    });
   });
 });
 
@@ -559,7 +561,10 @@ describe("Project #4 audit snapshot (#1218)", () => {
                 id: "PVTSSF_status",
                 name: "Status",
                 dataType: "SINGLE_SELECT",
-                options: [{ id: "opt_open", name: "In Progress" }, { id: "opt_done", name: "Done" }],
+                options: [
+                  { id: "opt_open", name: "In Progress" },
+                  { id: "opt_done", name: "Done" },
+                ],
               },
               { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT", options: [{ id: "opt_lab", name: "lab" }] },
             ],
@@ -574,7 +579,12 @@ describe("Project #4 audit snapshot (#1218)", () => {
       [
         {
           content: { repository: { nameWithOwner: "developing-today/code" } },
-          fieldValues: { nodes: [{ name: "In Progress", field: { name: "Status" } }, { name: "lab", field: { name: "Area" } }] },
+          fieldValues: {
+            nodes: [
+              { name: "In Progress", field: { name: "Status" } },
+              { name: "lab", field: { name: "Area" } },
+            ],
+          },
         },
         {
           content: { repository: { nameWithOwner: "dezren39/nix" } },
@@ -588,7 +598,15 @@ describe("Project #4 audit snapshot (#1218)", () => {
     expect(audit).toMatchObject({
       totalItems: 3,
       fields: [
-        { id: "PVTSSF_status", name: "Status", dataType: "SINGLE_SELECT", options: [{ id: "opt_open", name: "In Progress" }, { id: "opt_done", name: "Done" }] },
+        {
+          id: "PVTSSF_status",
+          name: "Status",
+          dataType: "SINGLE_SELECT",
+          options: [
+            { id: "opt_open", name: "In Progress" },
+            { id: "opt_done", name: "Done" },
+          ],
+        },
         { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT" },
       ],
       views: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }],

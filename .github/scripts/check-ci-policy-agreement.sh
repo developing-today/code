@@ -63,10 +63,10 @@ WAIVERS=(
 
 required_trigger() {
   case "$1" in
-    pr) echo "pull_request" ;;
-    main) echo "push" ;;
-    nightly) echo "schedule" ;;
-    *) echo "" ;;
+  pr) echo "pull_request" ;;
+  main) echo "push" ;;
+  nightly) echo "schedule" ;;
+  *) echo "" ;;
   esac
 }
 

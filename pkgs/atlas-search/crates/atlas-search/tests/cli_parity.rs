@@ -445,7 +445,10 @@ fn build_shard_dir(db: &Path, tag: &str) -> PathBuf {
             ("part", part.trim_start_matches('0').to_string()),
             ("expected_chunks", ids.len().to_string()),
             ("metric", "cosine".to_string()),
-            ("embedding_model", "snowflake-arctic-embed-m-v2.0".to_string()),
+            (
+                "embedding_model",
+                "snowflake-arctic-embed-m-v2.0".to_string(),
+            ),
         ] {
             con.execute(
                 "INSERT INTO atlas_manifest VALUES (?, ?)",

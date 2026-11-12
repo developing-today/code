@@ -165,7 +165,6 @@ def parse_lease_ms(value):
     return int(dt.timestamp() * 1000)
 
 
-
 def _session_timing(session):
     """(idle, updated_ms) for a session entry, or None when its timing
     cannot be read (#6868).
@@ -378,20 +377,21 @@ def _broker_post(path, body):
     if not url:
         url = BROKER_URL_FILE.read_text().strip()
     token_file = os.environ.get("REPO_QUEUE_TOKEN_FILE", "").strip()
-    token = Path(token_file).read_text().strip() if token_file \
+    token = (
+        Path(token_file).read_text().strip()
+        if token_file
         else BROKER_TOKEN_FILE.read_text().strip()
+    )
     req = urllib.request.Request(
         url.rstrip("/") + path,
         data=json.dumps(body).encode(),
-        headers={"X-Agent-Token": token,
-                 "Content-Type": "application/json"},
+        headers={"X-Agent-Token": token, "Content-Type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as res:
         data = json.loads(res.read() or "null")
     if isinstance(data, dict) and data.get("ok") is False:
-        raise RuntimeError(
-            f"broker {path} failed: {str(data.get('error'))[:200]}")
+        raise RuntimeError(f"broker {path} failed: {str(data.get('error'))[:200]}")
     return data
 
 
@@ -405,12 +405,15 @@ def _fetch_rows(queue, status):
     rows, and the cap still fails closed via the session reads, so a
     partial view can never cause a launch by itself."""
     try:
-        data = _broker_post("/list", {
-            "queue": queue,
-            "status": status,
-            "rich": True,
-            "limit": LIST_LIMIT,
-        })
+        data = _broker_post(
+            "/list",
+            {
+                "queue": queue,
+                "status": status,
+                "rich": True,
+                "limit": LIST_LIMIT,
+            },
+        )
     except Exception as e:
         print(f"Warning: Could not poll queue {queue}: {e}", file=sys.stderr)
         return []
@@ -615,7 +618,9 @@ def main():
             _candidate_entry(r, q) for r in get_handed_off_candidates(handed_off_rows)
         )
         stuck = [
-            _stuck_entry(r, q, session_by_id.get((r.get("progress") or {}).get("session_id")))
+            _stuck_entry(
+                r, q, session_by_id.get((r.get("progress") or {}).get("session_id"))
+            )
             for r in get_stuck_bound(rows, session_by_id, active_ids, now_ms)
         ]
         out["queues"][q] = {

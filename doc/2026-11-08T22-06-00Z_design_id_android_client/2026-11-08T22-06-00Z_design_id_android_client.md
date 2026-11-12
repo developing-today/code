@@ -14,13 +14,13 @@ This is a design for the product and its boundaries, not an implementation. #183
 
 ## Decisions at a glance
 
-| Question | Decision |
-|---|---|
-| Thin, thick, or per-world client? | **Thick/local-first client.** No thin/thick selector in v1; local-only, cached, connected, and synchronized are lifecycle states of the same world model, not different client products. |
-| Play, sideload, or both? | **Both**, from one source and package identity when signing permits. Start with signed sideload artifacts for the personal fleet; publish the same release lineage through Play when its signing and policy setup is ready. Both update paths use Android's package installer/Play; no silent self-installer. |
-| What survives from #1831? | Its accepted input-event model survives as the **Android producer mapping** for remote-drive mode. The shell contract owns framing, versioning, refusal behavior, and conformance; no Android-only wire protocol. |
-| What wakes the app without a central server? | **No guaranteed event wake.** Foreground activity syncs immediately; opt-in WorkManager jobs are best-effort. No always-on socket, false `online` presence, or required central push service in v1. |
-| Android UI vs shared Rust UI? | **Kotlin/Compose** for Android UI and platform integrations; Rust remains the shared domain/protocol core. #788's Bevy recommendation is for a separate native reference shell, not an Android product UI. |
+| Question                                     | Decision                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Thin, thick, or per-world client?            | **Thick/local-first client.** No thin/thick selector in v1; local-only, cached, connected, and synchronized are lifecycle states of the same world model, not different client products.                                                                                                                      |
+| Play, sideload, or both?                     | **Both**, from one source and package identity when signing permits. Start with signed sideload artifacts for the personal fleet; publish the same release lineage through Play when its signing and policy setup is ready. Both update paths use Android's package installer/Play; no silent self-installer. |
+| What survives from #1831?                    | Its accepted input-event model survives as the **Android producer mapping** for remote-drive mode. The shell contract owns framing, versioning, refusal behavior, and conformance; no Android-only wire protocol.                                                                                             |
+| What wakes the app without a central server? | **No guaranteed event wake.** Foreground activity syncs immediately; opt-in WorkManager jobs are best-effort. No always-on socket, false `online` presence, or required central push service in v1.                                                                                                           |
+| Android UI vs shared Rust UI?                | **Kotlin/Compose** for Android UI and platform integrations; Rust remains the shared domain/protocol core. #788's Bevy recommendation is for a separate native reference shell, not an Android product UI.                                                                                                    |
 
 ## 1. Context and constraints
 
@@ -74,11 +74,11 @@ The platform boundary exposes sign/verify operations or a short-lived key handle
 
 ### 2.3 Custody claims
 
-| Actor | Can sign as the user's root identity? | Can block access? | Recovery |
-|---|---|---|---|
-| Android OS / device owner | Merely holding the phone does not export the key; a compromised OS or app process may still invoke an authorized signer, so hardware backing is not protection from a hostile live OS. Root-key extraction resistance depends on verified Keystore support. | The OS can lock, wipe, invalidate, or—if compromised—misuse local key operations. | No recovery by the OS alone. Use the #5684 recovery path. |
-| ID service / remote world host | No key custody and no authority from an Android permission or login token. | Can deny connectivity or reject a request under its existing authority rules. | Cannot recover the user's private key. |
-| User's other enrolled device / recovery material | Only within the delegation or recovery authority explicitly granted under #5684. | Can revoke that device's delegation if authorized. | Exact process is #5684's decision. |
+| Actor                                            | Can sign as the user's root identity?                                                                                                                                                                                                                       | Can block access?                                                                 | Recovery                                                  |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Android OS / device owner                        | Merely holding the phone does not export the key; a compromised OS or app process may still invoke an authorized signer, so hardware backing is not protection from a hostile live OS. Root-key extraction resistance depends on verified Keystore support. | The OS can lock, wipe, invalidate, or—if compromised—misuse local key operations. | No recovery by the OS alone. Use the #5684 recovery path. |
+| ID service / remote world host                   | No key custody and no authority from an Android permission or login token.                                                                                                                                                                                  | Can deny connectivity or reject a request under its existing authority rules.     | Cannot recover the user's private key.                    |
+| User's other enrolled device / recovery material | Only within the delegation or recovery authority explicitly granted under #5684.                                                                                                                                                                            | Can revoke that device's delegation if authorized.                                | Exact process is #5684's decision.                        |
 
 ## 3. Offline worlds and synchronization
 
@@ -199,24 +199,24 @@ These slices are tracked in [#7938 — implement: native Android client v1](http
 7. **Build isolation:** the Android app consumes a client-only Rust facade and does not pull CLI, sandbox, web, or server-listener features into the shipped app.
 8. **Platform provenance:** Android permission and AppFunctions state are projections/second gates; ID's signed declaration and grant checks remain authoritative.
 
-| #5780 acceptance | Covered by |
-|---|---|
-| Keystore/StrongBox custody applying #5684 to mobile | §2, including the explicit real-device Keystore spike and #5684-owned recovery handoff |
-| Offline local journal + sync through #3447 seams | §3 and follow-on 3 |
-| Shell contract on mobile and native surfaces | §4 and §6.1 |
-| Phone as #5686 provider with Android runtime permissions | §5, adopting #5903's two-gate and lifecycle decisions |
-| Rust client-only build shape and Android UI decision | §6; dedicated `id-client` seam, Kotlin/Compose UI |
-| Four open questions | §§3, 6, 7, and explicit answer table in §8 |
-| Implementation next actions do not sit silently | §9 |
+| #5780 acceptance                                         | Covered by                                                                             |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Keystore/StrongBox custody applying #5684 to mobile      | §2, including the explicit real-device Keystore spike and #5684-owned recovery handoff |
+| Offline local journal + sync through #3447 seams         | §3 and follow-on 3                                                                     |
+| Shell contract on mobile and native surfaces             | §4 and §6.1                                                                            |
+| Phone as #5686 provider with Android runtime permissions | §5, adopting #5903's two-gate and lifecycle decisions                                  |
+| Rust client-only build shape and Android UI decision     | §6; dedicated `id-client` seam, Kotlin/Compose UI                                      |
+| Four open questions                                      | §§3, 6, 7, and explicit answer table in §8                                             |
+| Implementation next actions do not sit silently          | §9                                                                                     |
 
 ## Alternatives rejected
 
-| Alternative | Why rejected |
-|---|---|
-| Thin remote-only app | Contradicts the local journal/offline-world requirement and makes network access the condition for reading local work. |
-| User-selectable thin/thick mode for each world in v1 | Adds a second state/permission model before storage or sync evidence demonstrates the need. |
-| Treat Android permission/AppFunctions as the provider grant | Android permissions are app-level/platform authority; #5686/#5903 require independent, consumer- and purpose-scoped ID grants. |
-| Keep a long-lived socket and report continuous presence | Android background/battery rules and peer NAT make that promise false without an always-reachable service. |
-| Reimplement pointer events in an Android-only protocol | Duplicates #1831 and breaks parity with terminal/web/native shells. |
-| Build the Android UI in Bevy/shared Rust immediately | #788 selects Bevy for a different native-shell goal; no Android accessibility/lifecycle evidence supports sharing the whole UI. Keep the domain and protocol shared instead. |
-| Automatically host local worlds from the phone | Violates #790's client-only default and creates unreviewed listener, battery, and authority behavior. |
+| Alternative                                                 | Why rejected                                                                                                                                                                 |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Thin remote-only app                                        | Contradicts the local journal/offline-world requirement and makes network access the condition for reading local work.                                                       |
+| User-selectable thin/thick mode for each world in v1        | Adds a second state/permission model before storage or sync evidence demonstrates the need.                                                                                  |
+| Treat Android permission/AppFunctions as the provider grant | Android permissions are app-level/platform authority; #5686/#5903 require independent, consumer- and purpose-scoped ID grants.                                               |
+| Keep a long-lived socket and report continuous presence     | Android background/battery rules and peer NAT make that promise false without an always-reachable service.                                                                   |
+| Reimplement pointer events in an Android-only protocol      | Duplicates #1831 and breaks parity with terminal/web/native shells.                                                                                                          |
+| Build the Android UI in Bevy/shared Rust immediately        | #788 selects Bevy for a different native-shell goal; no Android accessibility/lifecycle evidence supports sharing the whole UI. Keep the domain and protocol shared instead. |
+| Automatically host local worlds from the phone              | Violates #790's client-only default and creates unreviewed listener, battery, and authority behavior.                                                                        |

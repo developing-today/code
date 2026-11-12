@@ -29,10 +29,12 @@ The OpenCode lane claimant/executor for **slice 1** of issue #3026 has been **fu
 ## 📁 Files Created (27 files, 989+ lines of code)
 
 ### Core Implementation (2 files)
+
 - `pm-stack/opencode-claimant/claimant.py` (530 lines) - Main execution script
 - `pm-stack/opencode-claimant/poll.py` (459 lines) - Candidate discovery
 
 ### Documentation (8 files)
+
 - `pm-stack/opencode-claimant/README.md`
 - `pm-stack/opencode-claimant/Makefile`
 - `pm-stack/opencode-claimant/SLICE1_FINAL_CONFIRMATION.md`
@@ -43,6 +45,7 @@ The OpenCode lane claimant/executor for **slice 1** of issue #3026 has been **fu
 - `SLICE1_COMPLETION_REPORT.md` (this file)
 
 ### Testing (3 files + directory)
+
 - `pm-stack/opencode-claimant/test_slice1.sh` - Test suite
 - `pm-stack/opencode-claimant/verify_slice1.sh` - Verification script (43/43 checks)
 - `pm-stack/opencode-claimant/test/` - Test infrastructure
@@ -50,6 +53,7 @@ The OpenCode lane claimant/executor for **slice 1** of issue #3026 has been **fu
 - `pm-stack/opencode-claimant/test_poll.py` - Unit tests
 
 ### Database Migrations (4 files)
+
 - `pm-stack/opencode-claimant/migration-0021.sql`
 - `pm-stack/opencode-claimant/migration-0022.sql`
 - `pm-stack/opencode-claimant/migration-0023.sql`
@@ -60,39 +64,46 @@ The OpenCode lane claimant/executor for **slice 1** of issue #3026 has been **fu
 ## ✅ Key Features Implemented
 
 ### Mode Handling
+
 - ✅ Shadow mode (default, read-only)
 - ✅ Live mode (full execution)
 - ✅ Automatic fallback to shadow on missing/unreadable file
 
 ### Concurrency Control
+
 - ✅ 36-session cap (raised from 12→20→36)
 - ✅ Active root session counting
 - ✅ Fail-closed behavior when server unreadable
 
 ### Recovery Rules (#4758, #4912)
+
 - ✅ Zero-message recovery - identifies and recovers stuck sessions
 - ✅ Gone-session recovery - handles missing sessions
 - ✅ Exhausted attempts handling - terminal failure
 - ✅ Atomic recovery operations with compare-and-clear guards
 
 ### Atomic Operations
+
 - ✅ Session creation and binding in single atomic operation
 - ✅ Migration 0021: `bind_repo_task_lane_session`
 - ✅ Migration 0022: Atomic recovery operations
 - ✅ Prevents double-binding and race conditions
 
 ### Session Management
+
 - ✅ Session creation via OpenCode server API
 - ✅ Location verification (#4870 fix)
 - ✅ Correct request shape for session creation
 - ✅ Atomic binding with repo-queue
 
 ### Task State Verification
+
 - ✅ Re-verifies task state before launch
 - ✅ Prevents double-execution
 - ✅ Validates lane, session_id, and stage
 
 ### Queue Monitoring
+
 - ✅ Monitors four queues:
   - `repo-health-code-pilot`
   - `repo-health-opencode-pilot`
@@ -100,6 +111,7 @@ The OpenCode lane claimant/executor for **slice 1** of issue #3026 has been **fu
   - `repo-health-nix-pilot`
 
 ### Comprehensive Logging
+
 - ✅ Fire log at `~/.local/state/opencode-claimant/fires.jsonl`
 - ✅ JSON format with timestamp, mode, candidates, launched sessions, cap room, skips
 - ✅ Complete audit trail
@@ -109,6 +121,7 @@ The OpenCode lane claimant/executor for **slice 1** of issue #3026 has been **fu
 ## 📊 Verification Results
 
 ### Verification Script
+
 ```
 ==========================================
 Verification Complete: 43 / 43 checks passed
@@ -117,6 +130,7 @@ Verification Complete: 43 / 43 checks passed
 ```
 
 ### Test Suite
+
 ```
 === Testing OpenCode Lane Claimant/Executor - Slice 1 ===
 
@@ -147,6 +161,7 @@ Test 5: Verifying constants...
 ## 🚀 How to Use
 
 ### Run the Claimant
+
 ```bash
 cd /home/user/git/code
 
@@ -159,6 +174,7 @@ python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Verify Implementation
+
 ```bash
 # Run verification (43/43 checks)
 bash pm-stack/opencode-claimant/verify_slice1.sh
@@ -180,13 +196,14 @@ cat ~/.local/state/opencode-claimant/fires.jsonl
 ✅ No double-binding - Never binds a session you didn't create  
 ✅ Atomic operations - Bind and recovery use compare-and-clear guards  
 ✅ Session location verification - Verify location.directory before binding  
-✅ Task state verification - Re-verify task state before launch  
+✅ Task state verification - Re-verify task state before launch
 
 ---
 
 ## 📚 References
 
 ### Issues
+
 - **#3026** - OpenCode lane claimant/executor implementation
 - **#4912** - Recovery rules and supervision design
 - **#4758** - Zero-message session recovery
@@ -194,6 +211,7 @@ cat ~/.local/state/opencode-claimant/fires.jsonl
 - **#5857** - Session creation request shape
 
 ### Migrations
+
 - **Migration 0021**: bind_repo_task_lane_session
 - **Migration 0022**: Atomic recovery operations
 - **Migration 0023**: Additional schema updates
@@ -206,6 +224,7 @@ cat ~/.local/state/opencode-claimant/fires.jsonl
 The implementation is **complete and production-ready**. All requirements from issue #3026 slice 1 have been met.
 
 ### Future Slices
+
 - **Slice 2**: Parallel-run gate implementation
 - **Slice 3+**: Additional features and optimizations
 
@@ -225,6 +244,6 @@ The OpenCode lane claimant/executor slice 1 implementation is:
 
 ---
 
-*Task completed: November 7, 2026*
-*Implementation status: PRODUCTION-READY*
-*Verification: 43/43 checks passed*
+_Task completed: November 7, 2026_
+_Implementation status: PRODUCTION-READY_
+_Verification: 43/43 checks passed_

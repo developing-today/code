@@ -10,14 +10,14 @@
 
 ## Contract summary
 
-| Question | Contract |
-| --- | --- |
-| What an invocation receives | A budget bundle: **fuel budget** (the bound), an **optional wall-clock deadline** (cooperative, single-host backstop only), the tick identity, and the binding's **resume checkpoint** if one survives from a killed invocation (C1) |
-| How a function watches itself | Host-provided self-observation: `fuel_used()` / `fuel_remaining()` and, where a deadline exists, `time_remaining()` — the Screeps property the issue cites: usage is self-observable, so cooperation is possible (C1) |
-| What a checkpoint is | A function-initiated, host-mediated save of **function-local progress** (opaque state blob + monotonic sequence), taken at the function's own yield points. A checkpoint is **not** a world-state commit and never extends the budget (C2) |
-| What a kill observes | Exactly the #5967 failure-table row: **default intent, pre-tick state (no commit), strike +1**, plus an outcome record naming the kill kind (`fuel-exhausted` or `timeout`), fuel spent, and the checkpoint offered to the next invocation (C3) |
-| Partial results | **Discarded.** No partial intent, no partial state commit, ever. The only survivor of a killed invocation is its last checkpoint, and it revives as *input* to a later invocation, not as effect (C3) |
-| Repeat offenders | The #5967 strike discipline (consecutive failures, success resets, suspension at the world-configured limit, default 3), surfaced to the world author as queryable outcome records and a suspension event (C4) |
+| Question                      | Contract                                                                                                                                                                                                                                        |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| What an invocation receives   | A budget bundle: **fuel budget** (the bound), an **optional wall-clock deadline** (cooperative, single-host backstop only), the tick identity, and the binding's **resume checkpoint** if one survives from a killed invocation (C1)            |
+| How a function watches itself | Host-provided self-observation: `fuel_used()` / `fuel_remaining()` and, where a deadline exists, `time_remaining()` — the Screeps property the issue cites: usage is self-observable, so cooperation is possible (C1)                           |
+| What a checkpoint is          | A function-initiated, host-mediated save of **function-local progress** (opaque state blob + monotonic sequence), taken at the function's own yield points. A checkpoint is **not** a world-state commit and never extends the budget (C2)      |
+| What a kill observes          | Exactly the #5967 failure-table row: **default intent, pre-tick state (no commit), strike +1**, plus an outcome record naming the kill kind (`fuel-exhausted` or `timeout`), fuel spent, and the checkpoint offered to the next invocation (C3) |
+| Partial results               | **Discarded.** No partial intent, no partial state commit, ever. The only survivor of a killed invocation is its last checkpoint, and it revives as _input_ to a later invocation, not as effect (C3)                                           |
+| Repeat offenders              | The #5967 strike discipline (consecutive failures, success resets, suspension at the world-configured limit, default 3), surfaced to the world author as queryable outcome records and a suspension event (C4)                                  |
 
 ## C1 — Invocation: the budget bundle and self-observation
 
@@ -39,7 +39,7 @@
   1. **A checkpoint is not a commit.** World-visible state changes only through the intent a `step` returns and the mapping accepts (#5967/#5968). Checkpoint state is invisible to the world, to other bindings, and to adjudication.
   2. **A checkpoint does not buy time.** Taking one costs whatever the seam charges and never extends `fuel_budget` or `deadline`. Checkpoint frequency is the function's own trade-off: more checkpoints, less lost progress per kill, more fuel spent saving.
   3. **A checkpoint survives exactly one kill.** On a hard kill (C3), the last checkpoint taken during the killed invocation replaces any older one and is offered as `resume` to the binding's next invocation. A successful invocation **consumes** it (the offer is not repeated), and a checkpoint taken during a successful invocation is discarded at tick end unless the function explicitly carries it forward as its closing action — the default is that checkpoints are kill insurance, not a persistence channel (persistence is binding-owned state under #5967, a different mechanism).
-- A function is **never required** to checkpoint. The convention exists so a long-running function *can* degrade to a defined intent with bounded rework, per the issue's framing; a function that ignores checkpoints simply restarts from its binding state after a kill.
+- A function is **never required** to checkpoint. The convention exists so a long-running function _can_ degrade to a defined intent with bounded rework, per the issue's framing; a function that ignores checkpoints simply restarts from its binding state after a kill.
 
 ## C3 — Hard-kill semantics: what the world observes
 
@@ -49,7 +49,7 @@
   - **State:** **pre-tick state — no commit.** Nothing the invocation did to world-visible state exists, including work done before its last checkpoint (checkpoints are function-local, C2 rule 1).
   - **Discarded, explicitly:** any partially constructed intent; any host work product of the invocation beyond the charges already made (charges for host work actually performed stand — they price work done, per the #5966 host-side accounting seam — but buy no state).
   - **Strikes:** strike +1 (§C4).
-  - **Outcome record:** the host records `{ binding, tick, kind: fuel-exhausted | timeout, fuel_spent, checkpoint_offered: sequence | none }`. This record is the *only* narrative of the kill; in particular a cross-host record never carries a wall-clock kind (C1).
+  - **Outcome record:** the host records `{ binding, tick, kind: fuel-exhausted | timeout, fuel_spent, checkpoint_offered: sequence | none }`. This record is the _only_ narrative of the kill; in particular a cross-host record never carries a wall-clock kind (C1).
 - A kill is **not a crash**: it carries no trap class, is not flagged as a contract violation, and does not by itself say anything about the function's correctness — only about its cost against its budget.
 
 ## C4 — Repeat offenders: strikes and surfacing
@@ -75,7 +75,7 @@
 - **Budget extension on checkpoint** ("checkpoint to buy another slice") — turns the bound into a negotiation and makes fuel spent unaccountable per tick; a function that needs more budget needs a bigger bundle next tick, under the world's budget policy.
 - **Partial-intent salvage** (apply the intents computed before the kill) — the intent is only meaningful as the function's complete answer for the tick; a prefix of it is a different, unreviewed decision. Discarded (C3).
 - **Wall-clock as the primary bound** — non-deterministic across hosts; rejected by #5967 C4 before this contract was written.
-- **Kill-warning / graceful-shutdown callback** — unbounded work at the exact moment the bound fired; the checkpoint convention is the graceful path, taken *before* the boundary.
+- **Kill-warning / graceful-shutdown callback** — unbounded work at the exact moment the bound fired; the checkpoint convention is the graceful path, taken _before_ the boundary.
 - **Silent suspension after repeated kills** — an author and a user who cannot see why a function stopped will route around the platform; surfacing is contractual (C4).
 
 ## What this contract does not do

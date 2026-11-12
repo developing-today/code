@@ -37,8 +37,7 @@ use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
     JobCreated, JobDeleted, JobListResponse, JobStatus, JobStatusResponse, JobSummary,
     SearchMode as ProtoSearchMode, SearchPage, SearchParametersV1, SearchRequest,
-    Sensitivity as ProtoSensitivity,
-    VectorBackend as ProtoVectorBackend,
+    Sensitivity as ProtoSensitivity, VectorBackend as ProtoVectorBackend,
 };
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
@@ -211,7 +210,9 @@ fn home_dir() -> PathBuf {
     // resolved state/config/token paths relative to the CWD.
     match std::env::var_os("HOME") {
         Some(home) if !home.is_empty() => PathBuf::from(home),
-        _ => panic!("HOME is not set or is empty: fleet-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+        _ => panic!(
+            "HOME is not set or is empty: fleet-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+        ),
     }
 }
 

@@ -6,8 +6,7 @@ import { join } from "node:path";
 // floor in the stylesheet. Static assertions, same style as nav.test.ts —
 // the rendered measurements live on issue #1180.
 const SRC = join(import.meta.dir, "..", "src");
-const renderSource =
-  readFileSync(join(SRC, "ui.css"), "utf8") + "\n" + readFileSync(join(SRC, "render.ts"), "utf8");
+const renderSource = readFileSync(join(SRC, "ui.css"), "utf8") + "\n" + readFileSync(join(SRC, "render.ts"), "utf8");
 
 function cssRule(selector: string): string {
   const start = renderSource.indexOf(`\n${selector} {`);
@@ -52,7 +51,9 @@ describe("tap targets are at least 40px tall (#1180)", () => {
     expect(renderSource).toMatch(/\.item-session-records > \.session-record-line \{[^}]*max-width: 100%;/);
     expect(renderSource).toMatch(/\.item-session-records \.session-record-meta \{[^}]*overflow-wrap: anywhere;/);
     expect(renderSource).toMatch(/\.item-session-records \.session-record-line \.badge \{[^}]*white-space: normal;/);
-    expect(renderSource).toMatch(/\.item-session-records \.session-record-line \.badge \{[^}]*overflow-wrap: anywhere;/);
+    expect(renderSource).toMatch(
+      /\.item-session-records \.session-record-line \.badge \{[^}]*overflow-wrap: anywhere;/,
+    );
     expect(renderSource).toContain('<div class="attention-card-header">');
     expect(renderSource).toContain('<div class="item-session-records">');
   });

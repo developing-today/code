@@ -254,7 +254,9 @@ describe("buildQueueView (#1160)", () => {
     expect(view.nextUp[0].url).toBe("https://github.com/developing-today/code/issues/51");
     expect(view.nextUp[0].epic).toEqual({ ref: epicRef, title: epicRef });
     expect(renderQueueBody(view)).toContain(`Epic: ${epicRef}`);
-    expect(renderQueueBody(view)).not.toContain(`<a href="https://github.com/developing-today/code/issues/99999999999999999999">`);
+    expect(renderQueueBody(view)).not.toContain(
+      `<a href="https://github.com/developing-today/code/issues/99999999999999999999">`,
+    );
   });
 
   test("keeps generated URLs for valid lined-up refs and out-of-pool epic refs", () => {

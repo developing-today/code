@@ -25,19 +25,19 @@ export NFT=${NFT:-$(command -v nft || true)}
 export RELAY_BIN=${RELAY_BIN:-$(command -v iroh-relay || true)}
 export C2_BIN=${C2_BIN:-$ROOT/target/debug/c2-holepunch}
 for variable in NFT RELAY_BIN C2_BIN; do
-	value=${!variable}
-	resolved=$(command -v "$value" || true)
-	if [ -z "$resolved" ]; then
-		echo "$variable must name an executable; run the documented nix c2-lab entry point" >&2
-		exit 127
-	fi
-	printf -v "$variable" '%s' "$resolved"
+  value=${!variable}
+  resolved=$(command -v "$value" || true)
+  if [ -z "$resolved" ]; then
+    echo "$variable must name an executable; run the documented nix c2-lab entry point" >&2
+    exit 127
+  fi
+  printf -v "$variable" '%s' "$resolved"
 done
 export NFT RELAY_BIN C2_BIN
 
 if [ "${1:-}" != "--inner" ]; then
-	nat=${1:?usage: run.sh cone|restricted|symmetric [TAG] [WINDOW]}
-	exec unshare -Urn bash "$LAB/run.sh" --inner "$nat" "${2:-1}" "${3:-60}"
+  nat=${1:?usage: run.sh cone|restricted|symmetric [TAG] [WINDOW]}
+  exec unshare -Urn bash "$LAB/run.sh" --inner "$nat" "${2:-1}" "${3:-60}"
 fi
 shift
 
@@ -63,31 +63,31 @@ standin_pid=""
 serve_pid=""
 
 cleanup() {
-	[ -n "$serve_pid" ] && kill "$serve_pid" 2>/dev/null || true
-	[ -n "$standin_pid" ] && kill "$standin_pid" 2>/dev/null || true
-	[ -n "$relay_pid" ] && kill "$relay_pid" 2>/dev/null || true
-	topo_down
-	rm -rf "$STATE"
+  [ -n "$serve_pid" ] && kill "$serve_pid" 2>/dev/null || true
+  [ -n "$standin_pid" ] && kill "$standin_pid" 2>/dev/null || true
+  [ -n "$relay_pid" ] && kill "$relay_pid" 2>/dev/null || true
+  topo_down
+  rm -rf "$STATE"
 }
 trap cleanup EXIT
 
 # Lab certificates: a CA, and a relay certificate for the IP 10.0.0.1 signed by it. The peers trust
 # only the CA. Two days is enough for one run.
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 \
-	-keyout "$STATE/ca.key" -out "$STATE/ca.pem" -subj "/CN=c2 lab CA" \
-	-addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
+  -keyout "$STATE/ca.key" -out "$STATE/ca.pem" -subj "/CN=c2 lab CA" \
+  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
-	-keyout "$STATE/relay.key" -out "$STATE/relay.csr" -subj "/CN=10.0.0.1" 2>/dev/null
+  -keyout "$STATE/relay.key" -out "$STATE/relay.csr" -subj "/CN=10.0.0.1" 2>/dev/null
 printf 'subjectAltName=IP:10.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' \
-	>"$STATE/leaf.ext"
+  >"$STATE/leaf.ext"
 openssl x509 -req -in "$STATE/relay.csr" -CA "$STATE/ca.pem" -CAkey "$STATE/ca.key" -CAcreateserial \
-	-days 2 -out "$STATE/relay.pem" -extfile "$STATE/leaf.ext" 2>/dev/null
+  -days 2 -out "$STATE/relay.pem" -extfile "$STATE/leaf.ext" 2>/dev/null
 openssl x509 -in "$STATE/ca.pem" -outform DER -out "$STATE/ca.der"
 
 # The home relay in the root namespace: plain HTTP for relay traffic, and QAD on UDP 7842 unless
 # HOME_QAD=off. With QAD on this is setup B (vps.toml) without the public TLS listener.
 if [ "$HOME_QAD" = on ]; then
-	cat >"$STATE/relay.toml" <<EOF
+  cat >"$STATE/relay.toml" <<EOF
 http_bind_addr = "10.0.0.1:3340"
 enable_quic_addr_discovery = true
 metrics_bind_addr = "127.0.0.1:9090"
@@ -100,7 +100,7 @@ manual_key_path = "$STATE/relay.key"
 dangerous_http_only = true
 EOF
 else
-	cat >"$STATE/relay.toml" <<EOF
+  cat >"$STATE/relay.toml" <<EOF
 http_bind_addr = "10.0.0.1:3340"
 enable_quic_addr_discovery = false
 metrics_bind_addr = "127.0.0.1:9090"
@@ -119,7 +119,7 @@ relay_pid=$!
 # never dialled, so it cannot become home.
 STANDIN_ARGS=()
 if [ "$STANDIN" = on ]; then
-	cat >"$STATE/standin.toml" <<EOF
+  cat >"$STATE/standin.toml" <<EOF
 http_bind_addr = "10.0.0.1:3341"
 enable_relay = false
 enable_metrics = false
@@ -132,53 +132,53 @@ manual_cert_path = "$STATE/relay.pem"
 manual_key_path = "$STATE/relay.key"
 dangerous_http_only = true
 EOF
-	RUST_LOG=info "$RELAY_BIN" --config-path "$STATE/standin.toml" >"$LOGS/$NAME-standin.txt" 2>&1 &
-	standin_pid=$!
-	STANDIN_ARGS=(--standin-url http://10.0.0.1:3341)
+  RUST_LOG=info "$RELAY_BIN" --config-path "$STATE/standin.toml" >"$LOGS/$NAME-standin.txt" 2>&1 &
+  standin_pid=$!
+  STANDIN_ARGS=(--standin-url http://10.0.0.1:3341)
 fi
 
 # The relay is ready when /ping answers 200. Checked with bash's /dev/tcp, so no HTTP client is needed.
 ready=no
 for _ in $(seq 100); do
-	if { exec 3<>/dev/tcp/10.0.0.1/3340; } 2>/dev/null; then
-		printf 'GET /ping HTTP/1.1\r\nHost: 10.0.0.1\r\nConnection: close\r\n\r\n' >&3
-		status=$(head -n1 <&3 | tr -d '\r')
-		exec 3>&- 3<&-
-		case "$status" in
-		*" 200 "*)
-			ready=yes
-			break
-			;;
-		esac
-	fi
-	sleep 0.1
+  if { exec 3<>/dev/tcp/10.0.0.1/3340; } 2>/dev/null; then
+    printf 'GET /ping HTTP/1.1\r\nHost: 10.0.0.1\r\nConnection: close\r\n\r\n' >&3
+    status=$(head -n1 <&3 | tr -d '\r')
+    exec 3>&- 3<&-
+    case "$status" in
+    *" 200 "*)
+      ready=yes
+      break
+      ;;
+    esac
+  fi
+  sleep 0.1
 done
 [ "$ready" = yes ] || {
-	echo "relay did not answer /ping; see $LOGS/$NAME-relay.txt" >&2
-	exit 1
+  echo "relay did not answer /ping; see $LOGS/$NAME-relay.txt" >&2
+  exit 1
 }
 
 # host-a runs the echo endpoint. nsenter without --fork execs the program, so $! is its PID.
 nsenter --net="/proc/$(ns_pid host-a)/ns/net" -- "$C2_BIN" serve \
-	--port "$PORT" --relay "$RELAY_URL" --ca "$STATE/ca.der" --ticket "$STATE/ticket.txt" \
-	--home-qad "$HOME_QAD" --n0 "$N0" "${STANDIN_ARGS[@]}" >"$LOGS/$NAME-serve.txt" 2>&1 &
+  --port "$PORT" --relay "$RELAY_URL" --ca "$STATE/ca.der" --ticket "$STATE/ticket.txt" \
+  --home-qad "$HOME_QAD" --n0 "$N0" "${STANDIN_ARGS[@]}" >"$LOGS/$NAME-serve.txt" 2>&1 &
 serve_pid=$!
 for _ in $(seq 300); do
-	[ -s "$STATE/ticket.txt" ] && break
-	kill -0 "$serve_pid" 2>/dev/null || break
-	sleep 0.2
+  [ -s "$STATE/ticket.txt" ] && break
+  kill -0 "$serve_pid" 2>/dev/null || break
+  sleep 0.2
 done
 [ -s "$STATE/ticket.txt" ] || {
-	echo "server wrote no ticket; see $LOGS/$NAME-serve.txt" >&2
-	exit 1
+  echo "server wrote no ticket; see $LOGS/$NAME-serve.txt" >&2
+  exit 1
 }
 
 # host-b dials from its own network and holds the connection for WINDOW seconds.
 set +e
 timeout "$((WINDOW + 180))" nsenter --net="/proc/$(ns_pid host-b)/ns/net" -- "$C2_BIN" dial \
-	--port "$PORT" --relay "$RELAY_URL" --ca "$STATE/ca.der" --ticket "$STATE/ticket.txt" \
-	--window "$WINDOW" --home-qad "$HOME_QAD" --n0 "$N0" "${STANDIN_ARGS[@]}" \
-	>"$LOGS/$NAME-dial.txt" 2>&1
+  --port "$PORT" --relay "$RELAY_URL" --ca "$STATE/ca.der" --ticket "$STATE/ticket.txt" \
+  --window "$WINDOW" --home-qad "$HOME_QAD" --n0 "$N0" "${STANDIN_ARGS[@]}" \
+  >"$LOGS/$NAME-dial.txt" 2>&1
 dial_status=$?
 set -e
 

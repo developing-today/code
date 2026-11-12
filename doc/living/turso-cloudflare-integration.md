@@ -11,6 +11,7 @@ Turso and Cloudflare already run together all over the fleet — but each pairin
 ## Current state (from the register)
 
 **Turso side (T1–T5):**
+
 - T1 — coordination schema v1 in the Turso DB `muse-meta` (coord_workers / coord_tasks / coord_leases / coord_events / coord_checkpoints), shipped and verified 2026-10-20; ancestor of the fleet queue.
 - T2 — temporary-surplus designs (drafted; the surplus-month frame has passed; Part A patterns read as standing practice).
 - T3 — the Turso + Cloudflare **idea engine**: a standing cron producing one buildable idea per run within the budget rules (free tiers first; Turso $5 + Cloudflare $5 in play; $25–30 maybe later; $75 out); 131 dated ideas 2026-10-20 → 2026-11-11, preserved in register Appendix A. Several early ideas visibly exist as live Workers (agent-inbox, webhook-gateway) though the log itself records no pickups.
@@ -18,6 +19,7 @@ Turso and Cloudflare already run together all over the fleet — but each pairin
 - T5 — Turso remedy ruling pending Drew (code#5468: prune/compact, scope sync, or raise the plan; live figure 2026-11-11: storage 45%, rows-read 2%).
 
 **Cloudflare side (C1–C9):**
+
 - C1 — nix-cache: a Nix binary cache using the full Workers set (Worker front door, R2 `nix-cache-nars`, KV INDEX, D1, Queues, daily cron), shipped and round-trip-verified 2026-10-05; zstd push path (C1.2) and presigned R2 uploads (C1.3) followed. Open follow-up: no retention/LRU GC yet.
 - C2 — credential architecture: purpose-scoped tokens, never one broad key; account-wide token vaulted, never deployed.
 - C4/C5 — AI Gateway `opencode-gateway` exists; AI Gateway is transport-only for the grounded search plane by Drew's narrow ruling (C5), blocked on a billing choice.

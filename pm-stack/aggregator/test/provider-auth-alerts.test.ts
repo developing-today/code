@@ -9,11 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  providerAuthPathsIn,
-  providerAuthProblemLines,
-  readProviderAuthAlerts,
-} from "../src/provider-auth-alerts.ts";
+import { providerAuthPathsIn, providerAuthProblemLines, readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { overlayQuotaCurrent, parseQuotaCurrent } from "../src/quota-current.ts";
 import { renderQuota } from "../src/render.ts";
 import type { QuotaCurrentFile, QuotaView } from "../src/model.ts";
@@ -84,7 +80,10 @@ describe("readProviderAuthAlerts", () => {
 
   test("stale file projects as stale even when its last status was valid", async () => {
     const staleMeta = { ...metaValid, checkedAt: iso(2 * 3_600_000) };
-    const dir = await fixtureDir({ "opendesign-renewal.json": { ...opendesignAttention, status: "valid", alert: null, alertSince: null }, "meta-renewal.json": staleMeta });
+    const dir = await fixtureDir({
+      "opendesign-renewal.json": { ...opendesignAttention, status: "valid", alert: null, alertSince: null },
+      "meta-renewal.json": staleMeta,
+    });
     const alerts = await readProviderAuthAlerts(providerAuthPathsIn(dir), { now: NOW });
     expect(alerts.find((a) => a.provider === "meta")!.reporting).toBe("stale");
     expect(providerAuthProblemLines(alerts)[0]).toContain("keeper not reporting");
@@ -128,7 +127,11 @@ describe("gather -> overlay -> board", () => {
       ],
     })!;
 
-  const view = (): QuotaView => ({ pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } });
+  const view = (): QuotaView => ({
+    pools: [],
+    burn: [],
+    choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] },
+  });
 
   test("overlay carries providerAuth onto the quota view", () => {
     const out = overlayQuotaCurrent(view(), file(), NOW);

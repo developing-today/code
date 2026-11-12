@@ -369,7 +369,9 @@ describe("quota-current overlay", () => {
     const parsed = parseQuotaCurrent(doc);
     expect(parsed?.providers[0].state).toBe("lapsed");
     const view = baseView();
-    view.pools.push(pool("opencode-go", [{ name: "monthly", unit: "other", limit: 100, used: 62, percent: 62, resetsAt: null }]));
+    view.pools.push(
+      pool("opencode-go", [{ name: "monthly", unit: "other", limit: 100, used: 62, percent: 62, resetsAt: null }]),
+    );
     view.choices = {
       hasHeadroom: ["opencode-go"],
       burnBeforeReset: ["opencode-go"],
@@ -504,7 +506,14 @@ describe("overlayTursoUsage (#1049)", () => {
     svc.metrics = [
       { id: "databases", label: "Databases", used: 40, limit: 100, unit: "count", percent: 40, highlight: true },
       { id: "storage", label: "Storage", used: 7.358009, limit: 5, unit: "gb", highlight: true },
-      { id: "rows-read", label: "Rows read / month", used: 821_437_321, limit: 500_000_000, unit: "rows", highlight: true },
+      {
+        id: "rows-read",
+        label: "Rows read / month",
+        used: 821_437_321,
+        limit: 500_000_000,
+        unit: "rows",
+        highlight: true,
+      },
     ];
     const at = iso(5 * 60_000);
     const out = overlayTursoUsage(
@@ -515,7 +524,11 @@ describe("overlayTursoUsage (#1049)", () => {
           providerId: "turso",
           source: "opencode-quota",
           measuredAt: at,
-          windows: [tursoWin("databases", 44, 44, at), tursoWin("rows-written", 1_672_071, 16.721, at), tursoWin("sync", 0, 0, at)],
+          windows: [
+            tursoWin("databases", 44, 44, at),
+            tursoWin("rows-written", 1_672_071, 16.721, at),
+            tursoWin("sync", 0, 0, at),
+          ],
         }),
       ]),
       NOW,
@@ -836,9 +849,7 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
     expect(byId.get("opencode-go.drewrypope")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
     expect(byId.get("opencode-go.popesdrew")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
     expect(byId.get("_antigravity.gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
-    expect(byId.get("_antigravity.claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([
-      ["weekly", 90],
-    ]);
+    expect(byId.get("_antigravity.claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 90]]);
     for (const id of [
       "opencode-go.drewrypope",
       "opencode-go.popesdrew",
@@ -1172,7 +1183,9 @@ describe("shell-pool stale/retained path (#6942)", () => {
     const at = iso(QUOTA_CURRENT_FRESH_MS + 10 * 60_000);
     const out = overlayQuotaCurrent(
       shellView(),
-      file([entry({ serviceId: "opendesign", source: "opencode-quota", measuredAt: at, windows: [win("5h", 12, at)] })]),
+      file([
+        entry({ serviceId: "opendesign", source: "opencode-quota", measuredAt: at, windows: [win("5h", 12, at)] }),
+      ]),
       NOW,
     );
     const od = out.pools.find((p) => p.id === "opendesign")!;
@@ -1184,10 +1197,7 @@ describe("shell-pool stale/retained path (#6942)", () => {
   test("an errored shell pool with adopted windows is excluded from model-choice guidance", () => {
     const out = overlayQuotaCurrent(
       shellView(),
-      legErrorFile([
-        retainedEntry(),
-        entry({ serviceId: "meta", windows: [win("5h", 1.33, iso(5 * 60_000))] }),
-      ]),
+      legErrorFile([retainedEntry(), entry({ serviceId: "meta", windows: [win("5h", 1.33, iso(5 * 60_000))] })]),
       NOW,
     );
     const od = out.pools.find((p) => p.id === "opendesign")!;

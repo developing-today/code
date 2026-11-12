@@ -27,13 +27,7 @@
  */
 import { Turso, iArg, tArg } from "./turso";
 import { FLEET_REPOS, buildRunRow, skipReason } from "./policy";
-import {
-  advanceSnapshot,
-  appendAgentEvent,
-  queueNow,
-  stampDirtyWatermark,
-  type SinkEnv,
-} from "./sink";
+import { advanceSnapshot, appendAgentEvent, queueNow, stampDirtyWatermark, type SinkEnv } from "./sink";
 import { mirrorCommentEvent, mirrorIssueEvent, mirrorPrEvent } from "./mirror";
 
 export interface Env extends SinkEnv {
@@ -50,14 +44,8 @@ async function hmacHex(secret: string, body: string): Promise<string> {
     false,
     ["sign"],
   );
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(body),
-  );
-  return [...new Uint8Array(sig)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function timingSafeEqual(a: string, b: string): boolean {
@@ -76,18 +64,13 @@ function json(body: unknown, status = 200): Response {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    if (req.method === "GET")
-      return new Response("github-ci worker ok", { status: 200 });
-    if (req.method !== "POST")
-      return new Response("method not allowed", { status: 405 });
+    if (req.method === "GET") return new Response("github-ci worker ok", { status: 200 });
+    if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
 
     const raw = await req.text();
     const secret = env.GITHUB_WEBHOOK_SECRET ?? "";
     if (secret) {
-      const given = (req.headers.get("x-hub-signature-256") ?? "").replace(
-        "sha256=",
-        "",
-      );
+      const given = (req.headers.get("x-hub-signature-256") ?? "").replace("sha256=", "");
       const expected = await hmacHex(secret, raw);
       if (!timingSafeEqual(given, expected)) {
         return new Response("bad signature", { status: 401 });
@@ -122,42 +105,28 @@ export default {
       if (eventType === "push" && isFleet) {
         const after = String(payload.after ?? "");
         const ref = String(payload.ref ?? "");
-        const payloadDefaultBranch =
-          typeof repo.default_branch === "string" ? repo.default_branch : null;
-        await advanceSnapshot(
-          env,
-          repoName,
-          after,
-          ref,
-          nowIso,
-          payloadDefaultBranch,
-        );
+        const payloadDefaultBranch = typeof repo.default_branch === "string" ? repo.default_branch : null;
+        await advanceSnapshot(env, repoName, after, ref, nowIso, payloadDefaultBranch);
         await appendAgentEvent(env, "push", { repo: repoName, after, ref });
         return json({ ok: true, repo: repoName, after });
       }
 
       // ---------------------------------------- pull_request / issues ---
       if ((eventType === "pull_request" || eventType === "issues") && isFleet) {
-        const obj = (payload.pull_request ?? payload.issue ?? {}) as Record<
-          string,
-          unknown
-        >;
+        const obj = (payload.pull_request ?? payload.issue ?? {}) as Record<string, unknown>;
         const action = String(payload.action ?? "");
         const detail = {
           repo: repoName,
           action,
           number: Number(obj.number ?? 0) || null,
           title: (obj.title as string) ?? null,
-          label:
-            ((payload.label as Record<string, unknown> | undefined)
-              ?.name as string) ?? null,
+          label: ((payload.label as Record<string, unknown> | undefined)?.name as string) ?? null,
         };
         await appendAgentEvent(env, eventType, detail);
         await stampDirtyWatermark(env, repoName, eventType, nowIso);
         // #8580: the mirror row is the read model; a failed write is
         // fatal like the ci_events insert (500 -> GitHub retries).
-        if (eventType === "issues")
-          await mirrorIssueEvent(env, payload, repoName);
+        if (eventType === "issues") await mirrorIssueEvent(env, payload, repoName);
         else await mirrorPrEvent(env, payload, repoName);
         return json({ ok: true, repo: repoName, event: eventType });
       }
@@ -183,20 +152,12 @@ export default {
       }
 
       // -------------------------------------------------- workflow_run ---
-      const { row, runId, action, conclusion } = buildRunRow(
-        payload,
-        repoName,
-        eventType,
-        queueNow(),
-      );
+      const { row, runId, action, conclusion } = buildRunRow(payload, repoName, eventType, queueNow());
       const skipped = skipReason(action, conclusion);
       if (skipped) {
         return json({ ok: true, skipped, repo: repoName, run_id: runId });
       }
-      const platform = new Turso(
-        env.TURSO_PLATFORM_URL,
-        env.TURSO_PLATFORM_TOKEN,
-      );
+      const platform = new Turso(env.TURSO_PLATFORM_URL, env.TURSO_PLATFORM_TOKEN);
       await platform.execute(
         `INSERT OR IGNORE INTO ci_events (received_at, source, event_type,
            action, repo, workflow_name, workflow_id, run_id, run_attempt,
@@ -233,9 +194,7 @@ export default {
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error(
-        `github-ci worker failed (${eventType} ${repoName}): ${msg}`,
-      );
+      console.error(`github-ci worker failed (${eventType} ${repoName}): ${msg}`);
       return new Response(`receiver failed: ${msg}`, { status: 500 });
     }
   },

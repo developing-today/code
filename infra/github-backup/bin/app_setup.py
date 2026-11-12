@@ -164,9 +164,7 @@ def validate_conversion(conv):
     nothing, never a partial credential set. Returns the validated
     (id, client_id, client_secret, pem, slug) tuple."""
     if not isinstance(conv, dict):
-        raise RuntimeError(
-            "conversion response is not an object — nothing stored"
-        )
+        raise RuntimeError("conversion response is not an object — nothing stored")
     problems = []
     if not isinstance(conv.get("id"), int) or isinstance(conv.get("id"), bool):
         problems.append("'id' must be an integer")

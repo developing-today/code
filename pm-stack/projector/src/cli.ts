@@ -38,9 +38,7 @@ if (cmd === "reconcile") {
     console.error("queue-view: --tasks <file> is required (queue task records as JSON)");
     process.exit(2);
   }
-  const parsed = JSON.parse(readFileSync(tasksPath, "utf8")) as
-    | QueueTaskRecord[]
-    | { tasks: QueueTaskRecord[] };
+  const parsed = JSON.parse(readFileSync(tasksPath, "utf8")) as QueueTaskRecord[] | { tasks: QueueTaskRecord[] };
   const tasks = Array.isArray(parsed) ? parsed : parsed.tasks;
   if (!Array.isArray(tasks)) {
     console.error("queue-view: tasks file must be a JSON array or { tasks: [...] }");

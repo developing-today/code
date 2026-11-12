@@ -279,7 +279,7 @@ describe("views store (#1276)", () => {
       }
       const expected = oracleValid(views);
       const first = await verdict(views);
-      expect(first.accepted, ).toBe(expected);
+      expect(first.accepted).toBe(expected);
       // Row-order invariance: a shuffled copy gets the same verdict.
       const shuffled = [...views];
       for (let i = shuffled.length - 1; i > 0; i--) {
@@ -287,7 +287,7 @@ describe("views store (#1276)", () => {
         [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
       }
       const second = await verdict(shuffled);
-      expect(second.accepted, ).toBe(expected);
+      expect(second.accepted).toBe(expected);
     }
   });
 

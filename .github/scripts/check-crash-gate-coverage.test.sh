@@ -31,15 +31,18 @@ crash_dir="$tmp/pkgs/id/tests/crash"
 
 failures=0
 pass() { echo "ok - $1"; }
-fail() { echo "FAIL - $1" >&2; failures=$((failures + 1)); }
+fail() {
+  echo "FAIL - $1" >&2
+  failures=$((failures + 1))
+}
 
 assert_exit() { # <desc> <expected> <actual>
   if [ "$2" -eq "$3" ]; then pass "$1"; else fail "$1 (exit $3, want $2)"; fi
 }
 assert_contains() { # <desc> <haystack> <needle>
   case "$2" in
-    *"$3"*) pass "$1" ;;
-    *) fail "$1 (missing: $3)" ;;
+  *"$3"*) pass "$1" ;;
+  *) fail "$1 (missing: $3)" ;;
   esac
 }
 
@@ -263,16 +266,22 @@ for gen_vis in "" "pub " "pub(crate) "; do
       for gen_parity in 0 1; do
         gen_i=$((gen_i + 1))
         case $((gen_i % 3)) in
-          0) gen_comment="// generated: #[ignore] in a comment is not an attribute" ;;
-          1) gen_comment="/* generated: #[ignore] in a block comment */" ;;
-          *) gen_comment="" ;;
+        0) gen_comment="// generated: #[ignore] in a comment is not an attribute" ;;
+        1) gen_comment="/* generated: #[ignore] in a block comment */" ;;
+        *) gen_comment="" ;;
         esac
         case $((gen_i % 2)) in
-          0) gen_reason='"gate"' ;;
-          *) gen_reason='r#"gate"#' ;;
+        0) gen_reason='"gate"' ;;
+        *) gen_reason='r#"gate"#' ;;
         esac
         if [ $((gen_i % 2)) -eq 0 ]; then gen_indent="    "; else gen_indent=""; fi
-        if [ "$gen_parity" -eq 0 ]; then gen_name="gen_uncovered_${gen_i}_gate"; gen_want=1; else gen_name="gen_covered_${gen_i}_full_sweep_has_no_failures_gate"; gen_want=0; fi
+        if [ "$gen_parity" -eq 0 ]; then
+          gen_name="gen_uncovered_${gen_i}_gate"
+          gen_want=1
+        else
+          gen_name="gen_covered_${gen_i}_full_sweep_has_no_failures_gate"
+          gen_want=0
+        fi
         out="$(
           {
             [ -n "$gen_comment" ] && printf '%s\n' "$gen_comment"

@@ -46,7 +46,8 @@ function exactRecord(value: unknown, keys: readonly string[]): value is Record<s
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return false;
   const actual = Reflect.ownKeys(value);
-  if (actual.length !== keys.length || actual.some((key) => typeof key !== "string" || !keys.includes(key))) return false;
+  if (actual.length !== keys.length || actual.some((key) => typeof key !== "string" || !keys.includes(key)))
+    return false;
   return keys.every((key) => {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     return descriptor !== undefined && descriptor.enumerable && Object.hasOwn(descriptor, "value");
@@ -109,7 +110,12 @@ function normalizeNotice(value: unknown): FreshnessNotice {
 function normalizeJournal(value: unknown): JournalFile {
   if (!exactRecord(value, JOURNAL_KEYS)) throw new Error("invalid freshness journal shape");
   const row = value as Record<string, unknown>;
-  if (row.version !== 1 || !Number.isSafeInteger(row.cursor) || (row.cursor as number) < 0 || !Array.isArray(row.events)) {
+  if (
+    row.version !== 1 ||
+    !Number.isSafeInteger(row.cursor) ||
+    (row.cursor as number) < 0 ||
+    !Array.isArray(row.events)
+  ) {
     throw new Error("invalid freshness journal metadata");
   }
   const events = row.events.map(normalizeNotice);
@@ -134,7 +140,9 @@ function normalizeOutboxEntry(value: unknown): OutboxEntry {
 
 function retention(events: FreshnessNotice[], now: number): FreshnessNotice[] {
   const cutoff = now - RETENTION_MS;
-  return events.filter((event) => (parseIsoDate(event.observedAt)?.getTime() ?? -Infinity) >= cutoff).slice(-MAX_NOTICES);
+  return events
+    .filter((event) => (parseIsoDate(event.observedAt)?.getTime() ?? -Infinity) >= cutoff)
+    .slice(-MAX_NOTICES);
 }
 
 function makeNotice(input: FreshnessInput, sequence: number, observedAt: string): FreshnessNotice {
@@ -200,7 +208,10 @@ export class FreshnessStore {
     });
   }
 
-  listAfter(after: number, scope?: string): Promise<{ cursor: number; resetRequired: boolean; events: FreshnessNotice[] }> {
+  listAfter(
+    after: number,
+    scope?: string,
+  ): Promise<{ cursor: number; resetRequired: boolean; events: FreshnessNotice[] }> {
     return this.serialize(async () => {
       if (!Number.isSafeInteger(after) || after < 0) throw new Error("after must be a non-negative safe integer");
       if (scope !== undefined && typeof scope !== "string") throw new Error("scope must be a string");
@@ -209,7 +220,8 @@ export class FreshnessStore {
       await this.flush(now);
       const visible = retention(this.events, now.getTime());
       const firstSequence = visible[0]?.sequence;
-      const resetRequired = after > this.cursor || (after < this.cursor && (firstSequence === undefined || after < firstSequence - 1));
+      const resetRequired =
+        after > this.cursor || (after < this.cursor && (firstSequence === undefined || after < firstSequence - 1));
       return {
         cursor: this.cursor,
         resetRequired,
@@ -222,7 +234,10 @@ export class FreshnessStore {
 
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
     const run = this.operationChain.then(operation, operation);
-    this.operationChain = run.then(() => undefined, () => undefined);
+    this.operationChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
     return run;
   }
 

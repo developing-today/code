@@ -50,7 +50,20 @@ VALID_REST = VALID_START + ["-"]
 
 INVALID_SYMBOLS = list(" !\"#$%&'()*+,./:;<=>?@[\\]^_`{|}~") + ["\n", "\r", "\t"]
 UPPERCASE = [chr(c) for c in range(ord("A"), ord("Z") + 1)]
-UNICODE_EXTRA = ["é", "ü", "ñ", "λ", "д", "€", "🚀", "—", "…", "\u0000", "\u001f", "\ufffd"]
+UNICODE_EXTRA = [
+    "é",
+    "ü",
+    "ñ",
+    "λ",
+    "д",
+    "€",
+    "🚀",
+    "—",
+    "…",
+    "\u0000",
+    "\u001f",
+    "\ufffd",
+]
 
 BASE_DEFN = {
     "package": "/nix/store/test-package-1.0",
@@ -87,16 +100,18 @@ def gen_valid_target(rng):
 
 
 def gen_invalid_target(rng):
-    kind = rng.choice([
-        "empty",
-        "leading_hyphen",
-        "whitespace",
-        "newline",
-        "uppercase",
-        "symbols",
-        "unicode",
-        "mixed_valid_prefix",
-    ])
+    kind = rng.choice(
+        [
+            "empty",
+            "leading_hyphen",
+            "whitespace",
+            "newline",
+            "uppercase",
+            "symbols",
+            "unicode",
+            "mixed_valid_prefix",
+        ]
+    )
     if kind == "empty":
         return ""
     if kind == "leading_hyphen":
@@ -169,7 +184,9 @@ def main(argv):
         # 2. Invalid target case
         invalid_s = gen_invalid_target(rng)
         if is_valid_target(invalid_s):
-            print(f"generator error: invalid candidate accepted by oracle: {invalid_s!r}")
+            print(
+                f"generator error: invalid candidate accepted by oracle: {invalid_s!r}"
+            )
             return 1
 
         reg_invalid = {"svc": dict(BASE_DEFN, targets=[invalid_s])}

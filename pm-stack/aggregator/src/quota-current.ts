@@ -124,9 +124,7 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
   // boundary like the provider list — a non-array value is dropped
   // and malformed rows are filtered, so one bad section can never
   // throw in the overlay and suppress the unrelated quota data.
-  const providerAuth = Array.isArray(doc.providerAuth)
-    ? doc.providerAuth.filter(isProviderAuthAlert)
-    : undefined;
+  const providerAuth = Array.isArray(doc.providerAuth) ? doc.providerAuth.filter(isProviderAuthAlert) : undefined;
   return {
     ...doc,
     providers: validProviders,

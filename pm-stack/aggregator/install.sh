@@ -190,7 +190,6 @@ if [ "$CHANGED" -eq 1 ]; then
   ENV_RENDERED=1
   chmod 600 "$ENV_FILE"
 
-
   if [ -L "$UNIT_DST" ]; then
     echo "pm-aggregator.service is symlink-managed at $UNIT_DST; skipping unit copy"
   else

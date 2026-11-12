@@ -44,14 +44,12 @@ describe("filterRoadmapForView (#8723, the /roadmap rule shared with /api/roadma
       row("grist:kept", "Fleet", ["developing-today/code#1", "dezren39/darwin-nix#2"]),
       row("grist:dropped", "Other", ["developing-today/code#3"]),
     ];
-    const items = new Map(
-      [
-        ["developing-today/code#1", item("developing-today/code#1", "alice")],
-        ["dezren39/darwin-nix#2", item("dezren39/darwin-nix#2", "bob")],
-        ["developing-today/code#3", item("developing-today/code#3", "bob")],
-        ["developing-today/code#4", item("developing-today/code#4", "alice")],
-      ] as [RefKey, GhItem][],
-    );
+    const items = new Map([
+      ["developing-today/code#1", item("developing-today/code#1", "alice")],
+      ["dezren39/darwin-nix#2", item("dezren39/darwin-nix#2", "bob")],
+      ["developing-today/code#3", item("developing-today/code#3", "bob")],
+      ["developing-today/code#4", item("developing-today/code#4", "alice")],
+    ] as [RefKey, GhItem][]);
     // View keeps only owner alice's items: row "kept" matches via its
     // link to #1; #2 fails the view (bob) but is linked from the kept
     // row, so it ships -- the parity the JSON twin was missing. #3 is
@@ -84,8 +82,14 @@ describe("filterRoadmapForView (#8723, the /roadmap rule shared with /api/roadma
 
 describe("roadmap handler wiring (#8723 regression pin)", () => {
   const server = readFileSync(join(import.meta.dir, "../src/server.ts"), "utf8");
-  const htmlBlock = server.slice(server.indexOf('if (path === "/roadmap")'), server.indexOf('if (path === "/api/flow-analytics.json")'));
-  const jsonBlock = server.slice(server.indexOf('if (path === "/api/roadmap.json")'), server.indexOf('if (path === "/api/quota.json")'));
+  const htmlBlock = server.slice(
+    server.indexOf('if (path === "/roadmap")'),
+    server.indexOf('if (path === "/api/flow-analytics.json")'),
+  );
+  const jsonBlock = server.slice(
+    server.indexOf('if (path === "/api/roadmap.json")'),
+    server.indexOf('if (path === "/api/quota.json")'),
+  );
 
   test("the HTML handler filters through the shared composition", () => {
     expect(htmlBlock).toContain("filterRoadmapForView");

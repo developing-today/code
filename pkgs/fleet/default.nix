@@ -87,16 +87,15 @@ let
       static ? false,
     }:
     let
-      cargoFlags =
-        [
-          "-p"
-          "fleet"
-        ]
-        ++ lib.optionals (features != null) [ "--no-default-features" ]
-        ++ lib.optionals (features != null && features != [ ]) [
-          "--features"
-          (lib.concatStringsSep "," features)
-        ];
+      cargoFlags = [
+        "-p"
+        "fleet"
+      ]
+      ++ lib.optionals (features != null) [ "--no-default-features" ]
+      ++ lib.optionals (features != null && features != [ ]) [
+        "--features"
+        (lib.concatStringsSep "," features)
+      ];
 
       # ONNX Runtime is dynamically loaded (atlas-embed's ort
       # load-dynamic) and never downloaded; the search serve role

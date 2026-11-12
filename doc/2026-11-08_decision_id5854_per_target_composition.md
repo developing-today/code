@@ -12,7 +12,7 @@
 - **Settled sibling:** [#5853](https://github.com/developing-today/code/issues/5853)
   (closed; `doc/2026-11-08_decision_id5853_custom_gui_rendering_overrides.md`).
   That record fixes presentation overrides inside the override map and
-  explicitly leaves the cascade *between* style assertions, override
+  explicitly leaves the cascade _between_ style assertions, override
   maps, and raw CSS to this follow-on (§5 of that record). This record
   settles exactly that ordering, plus theme resolution, asset
   substitution, and conditional blocks.
@@ -23,15 +23,15 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| Composition order (low → high precedence) | (1) target platform defaults → (2) theme/token values → (3) semantic style assertions → (4) per-target override map (style overrides, then presentation overrides per #5853) → (5) raw CSS, web target only (§2) |
-| Conditional blocks | Not a cascade layer: they include/exclude non-essential embellishment *before* the cascade runs; included content then cascades normally (§5) |
-| Theme resolution | Assertions name roles/tokens, never values; a per-target theme resolves each token. Theme layering: programme base theme → target theme → mode variant (dark/light/high-contrast). On native targets the OS selects the mode; the programme supplies the values for every mode (§3) |
-| Asset substitution | Three distinct mechanisms, never conflated: theme asset table (token assets), override-map asset substitution (content assets), #5853 asset presentations (element presentations). Substitution changes the asset, never the semantics attached to it (§4) |
-| Raw HTML/CSS | Always supported (parent rule). Raw CSS is the highest layer *on the web target only*; on GUI/native targets raw CSS is not translated — it is ignored with a build-time warning, and raw HTML degrades per the parent's fallback rules (§2.3) |
-| Conflict reporting | Deterministic, build-time: same-specificity override ties are errors (#5853 §2.5); raw CSS overriding an assertion-derived property is a *reported* override (lint listing), never silent; an assertion with no mapping on a target warns and falls back to that layer's default (§6) |
-| Cross-target leakage | None: themes, override maps, asset tables, and conditional predicates are target-local. Nothing declared for one target changes another target's rendering (§2.4) |
+| Question                                  | Decision                                                                                                                                                                                                                                                                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Composition order (low → high precedence) | (1) target platform defaults → (2) theme/token values → (3) semantic style assertions → (4) per-target override map (style overrides, then presentation overrides per #5853) → (5) raw CSS, web target only (§2)                                                                      |
+| Conditional blocks                        | Not a cascade layer: they include/exclude non-essential embellishment _before_ the cascade runs; included content then cascades normally (§5)                                                                                                                                         |
+| Theme resolution                          | Assertions name roles/tokens, never values; a per-target theme resolves each token. Theme layering: programme base theme → target theme → mode variant (dark/light/high-contrast). On native targets the OS selects the mode; the programme supplies the values for every mode (§3)   |
+| Asset substitution                        | Three distinct mechanisms, never conflated: theme asset table (token assets), override-map asset substitution (content assets), #5853 asset presentations (element presentations). Substitution changes the asset, never the semantics attached to it (§4)                            |
+| Raw HTML/CSS                              | Always supported (parent rule). Raw CSS is the highest layer _on the web target only_; on GUI/native targets raw CSS is not translated — it is ignored with a build-time warning, and raw HTML degrades per the parent's fallback rules (§2.3)                                        |
+| Conflict reporting                        | Deterministic, build-time: same-specificity override ties are errors (#5853 §2.5); raw CSS overriding an assertion-derived property is a _reported_ override (lint listing), never silent; an assertion with no mapping on a target warns and falls back to that layer's default (§6) |
+| Cross-target leakage                      | None: themes, override maps, asset tables, and conditional predicates are target-local. Nothing declared for one target changes another target's rendering (§2.4)                                                                                                                     |
 
 ## 1. What is already fixed (not re-decided here)
 
@@ -45,7 +45,7 @@
    override map, binds by element instance or kind+variant+state,
    covers every interaction state or fails at build time, always falls
    back to the standard rendering, and never carries essential content.
-   Its §2.5 specificity order *inside* the override layer (instance >
+   Its §2.5 specificity order _inside_ the override layer (instance >
    kind+variant+state > kind default; ties are build-time errors) is
    adopted unchanged by this record.
 3. Nothing in §2–§6 changes a parent or #5853 decision. §8 says so
@@ -65,7 +65,7 @@ by applying, in order:
 2. **Theme/token values.** The target's theme (§3) supplies the value
    of every named role/token the lower and higher layers reference
    (colour roles, typography roles, spacing/density, asset tokens).
-   A theme supplies *values only* — it cannot introduce, remove, or
+   A theme supplies _values only_ — it cannot introduce, remove, or
    rebind an assertion or an override.
 3. **Semantic style assertions.** The author's assertions from the one
    semantic source (e.g. "this form's primary action uses the `accent`
@@ -75,12 +75,12 @@ by applying, in order:
    GUI: the standard rendering, styled). Assertions reference roles,
    never raw values.
 4. **Per-target override map.** Two entry kinds, applied in this order:
-   (a) *style overrides* — element+assertion → adjusted presentation
-   values for this target only; (b) *presentation overrides* (#5853) —
+   (a) _style overrides_ — element+assertion → adjusted presentation
+   values for this target only; (b) _presentation overrides_ (#5853) —
    replace the element's rendering wholesale. When a presentation
    override applies, style assertions and style overrides for that
    element no longer affect its appearance; they still define its
-   *fallback* standard rendering (#5853 §2.4), so they are never dead
+   _fallback_ standard rendering (#5853 §2.4), so they are never dead
    configuration. Inside this layer, #5853 §2.5 specificity decides.
 5. **Raw CSS (web target only).** Author raw CSS applies last, per
    property: a raw-CSS declaration wins over the assertion-derived
@@ -96,11 +96,11 @@ by applying, in order:
 - Assertions: more specific wins — instance assertion > kind+variant+
   state assertion > kind default assertion; an exact tie between two
   assertions in the source is an authoring error reported at build
-  time, never resolved by source order alone. (Source order is *not*
+  time, never resolved by source order alone. (Source order is _not_
   a cascade input; determinism is.)
 - Themes: §3's layering (base → target → mode variant).
 - Override map: #5853 §2.5, unchanged.
-- Raw CSS (web): the web platform's own CSS cascade applies *inside*
+- Raw CSS (web): the web platform's own CSS cascade applies _inside_
   this layer only — including source-order resolution of
   equal-specificity declarations, which §9 invariant 2 expressly
   exempts; it does not reach back into layers 1–4.
@@ -114,7 +114,7 @@ by applying, in order:
   construct has no GUI/native rendering it degrades to the
   author-supplied fallback content or the target's webview embedding,
   per element class — the per-class table belongs to #5851/#5852; this
-  record fixes only that raw HTML *never* outranks the semantic
+  record fixes only that raw HTML _never_ outranks the semantic
   layer's accessibility contract.
 
 ### 2.4 Target locality
@@ -161,7 +161,7 @@ Three mechanisms, deliberately distinct:
    declares intrinsic size/aspect so layout reserves the right box.
    The accessible name/description and any caption stay in the
    semantic source and are unchanged by substitution.
-3. **Presentation assets.** Image/sprite assets that *are* an
+3. **Presentation assets.** Image/sprite assets that _are_ an
    element's presentation are #5853 asset presentations — not asset
    substitution, and governed by #5853's state-completeness and
    fallback rules, not this section.

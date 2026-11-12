@@ -298,10 +298,15 @@ async function runOpenDesignRenewal(tickAt: string): Promise<void> {
       installCmd.length > 0
         ? async (root: string): Promise<void> => {
             await new Promise<void>((resolve, reject) => {
-              execFile(installCmd[0], installCmd.slice(1), { cwd: root, timeout: 240_000, maxBuffer: 16 * 1024 * 1024 }, (err) => {
-                if (err) reject(new Error("OPENCHAMBER_LIB_INSTALL_CMD failed in the OpenChamber lib checkout"));
-                else resolve();
-              });
+              execFile(
+                installCmd[0],
+                installCmd.slice(1),
+                { cwd: root, timeout: 240_000, maxBuffer: 16 * 1024 * 1024 },
+                (err) => {
+                  if (err) reject(new Error("OPENCHAMBER_LIB_INSTALL_CMD failed in the OpenChamber lib checkout"));
+                  else resolve();
+                },
+              );
             });
           }
         : undefined;
@@ -310,8 +315,12 @@ async function runOpenDesignRenewal(tickAt: string): Promise<void> {
       log: (line) => console.log("quota-gatherer: " + line),
       ...(install ? { install } : {}),
     });
-    const credentials = (await import(join(libDir, "quota/credentials/providers.js"))) as unknown as OpenDesignCredentialsModule;
-    const provider = (await import(join(libDir, "quota/providers/opendesign.js"))) as unknown as OpenDesignProviderModule;
+    const credentials = (await import(
+      join(libDir, "quota/credentials/providers.js")
+    )) as unknown as OpenDesignCredentialsModule;
+    const provider = (await import(
+      join(libDir, "quota/providers/opendesign.js")
+    )) as unknown as OpenDesignProviderModule;
     const state = await renewOpenDesignSession({
       readCredential: () => credentials.readManagedCredential("opendesign"),
       writeCredential: (value) => {
@@ -395,8 +404,7 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
   const anyMeasured = entries.some((e) => entryHasMeasuredWindow(e));
   if (anyOk && !anyMeasured) {
     const reason =
-      entries.find((e) => e.error)?.error ??
-      "no-data: provider reported ok but no window carried a percentage";
+      entries.find((e) => e.error)?.error ?? "no-data: provider reported ok but no window carried a percentage";
     for (const e of entries) {
       if (e.state === "ok") e.state = "error";
       if (!e.error) e.error = reason;
@@ -690,10 +698,7 @@ async function writeTursoRecords(entries: QuotaCurrentEntry[], tickAt: string): 
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        requests: [
-          { type: "execute", stmt: { sql: query } },
-          { type: "close" },
-        ],
+        requests: [{ type: "execute", stmt: { sql: query } }, { type: "close" }],
       }),
     });
     if (!res.ok) {
@@ -767,10 +772,11 @@ async function main(): Promise<number> {
           ? retained
           : retained.filter(
               (previous) =>
-                !lapsed.some((current) =>
-                  (current.credentialId && previous.credentialId === current.credentialId) ||
-                  (current.credentialLabel &&
-                    previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
+                !lapsed.some(
+                  (current) =>
+                    (current.credentialId && previous.credentialId === current.credentialId) ||
+                    (current.credentialLabel &&
+                      previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
                 ),
             );
         run.entries = [...markRetained(retainedSiblings, tickAt), ...lapsed];
@@ -813,8 +819,7 @@ async function main(): Promise<number> {
   // project as "keeper not reporting", never silence). Fail-soft:
   // the reader never throws.
   const providerAuth = await readProviderAuthAlerts({
-    opendesign:
-      process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
+    opendesign: process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
     meta: process.env.META_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "meta-renewal.json"),
   });
   const file: QuotaCurrentFile = {

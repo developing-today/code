@@ -359,12 +359,12 @@ type Defaults struct {
 	// protocol era it tries first, how long it waits to find out, and where
 	// it remembers the answer.
 	Upstream struct {
-		Protocol       string `json:"protocol"`
-		ProbeTimeout   string `json:"probeTimeout"`
-		EraCache       bool   `json:"eraCache"`
-		EraFile        string `json:"eraFile"`
-		EraFileVersion int    `json:"eraFileVersion"`
-		ErrorBodyLimit string `json:"errorBodyLimit"`
+		Protocol          string `json:"protocol"`
+		ProbeTimeout      string `json:"probeTimeout"`
+		EraCache          bool   `json:"eraCache"`
+		EraFile           string `json:"eraFile"`
+		EraFileVersion    int    `json:"eraFileVersion"`
+		ErrorBodyLimit    string `json:"errorBodyLimit"`
 		ResponseBodyLimit string `json:"responseBodyLimit"`
 		// SSEReconnectDelay is the wait before resuming a Streamable HTTP
 		// stream the server closed without saying how long to wait (no

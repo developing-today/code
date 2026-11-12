@@ -113,13 +113,13 @@ A wholly stateless proxy is rejected because live forwarding requires connection
 
 ## 6. Alternatives considered
 
-| Option | Decision | Reason |
-| --- | --- | --- |
-| Dumb opaque byte pipe with no ID-aware routing/control | Reject | It cannot distinguish lookup from home publication, enforce identity-scoped quotas, or report partial multi-home registration. Payload opacity is retained, but the service still needs authenticated routing and bounded resource control. |
-| ID-aware relay with bounded live forwarding and expiring leases | **Choose** | Supports lookup/home-role separation, multiple independent homes, explicit receipts and backpressure, while keeping application validity and durable truth with ID peers. |
-| Durable store-and-forward broker for all traffic | Reject | Duplicates event-graph retention/sync, creates deletion and replay obligations, and makes broker storage/trust part of message validity. Live traffic is intentionally not replayed. |
-| One mandatory home relay/provider | Reject | Creates a discovery and availability single point of failure and prevents private/self-hosted deployments. |
-| Fully stateless relay with no session state | Reject | Cannot implement live connection mapping or bounded per-stream flow control. Keep the state local, volatile, and bounded instead. |
+| Option                                                          | Decision   | Reason                                                                                                                                                                                                                                      |
+| --------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dumb opaque byte pipe with no ID-aware routing/control          | Reject     | It cannot distinguish lookup from home publication, enforce identity-scoped quotas, or report partial multi-home registration. Payload opacity is retained, but the service still needs authenticated routing and bounded resource control. |
+| ID-aware relay with bounded live forwarding and expiring leases | **Choose** | Supports lookup/home-role separation, multiple independent homes, explicit receipts and backpressure, while keeping application validity and durable truth with ID peers.                                                                   |
+| Durable store-and-forward broker for all traffic                | Reject     | Duplicates event-graph retention/sync, creates deletion and replay obligations, and makes broker storage/trust part of message validity. Live traffic is intentionally not replayed.                                                        |
+| One mandatory home relay/provider                               | Reject     | Creates a discovery and availability single point of failure and prevents private/self-hosted deployments.                                                                                                                                  |
+| Fully stateless relay with no session state                     | Reject     | Cannot implement live connection mapping or bounded per-stream flow control. Keep the state local, volatile, and bounded instead.                                                                                                           |
 
 ## 7. Invariants and implementation acceptance
 

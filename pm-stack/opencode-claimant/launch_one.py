@@ -91,7 +91,8 @@ def _load_sibling(name):
     same by-path loading claimant.py uses for poll.py — the sibling
     in THIS checkout, never the primary clone's copy."""
     spec = importlib.util.spec_from_file_location(
-        f"launch_one_{name}", HERE / f"{name}.py")
+        f"launch_one_{name}", HERE / f"{name}.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -105,8 +106,14 @@ CLAIMANT_WORKER = "opencode-claimant"
 
 REPOS = {
     "repo-health-code-pilot": ("developing-today/code", "/home/user/git/code"),
-    "repo-health-opencode-pilot": ("developing-today-forks/opencode", "/home/user/git/opencode"),
-    "repo-health-openchamber-pilot": ("developing-today-forks/openchamber", "/home/user/git/openchamber-fork"),
+    "repo-health-opencode-pilot": (
+        "developing-today-forks/opencode",
+        "/home/user/git/opencode",
+    ),
+    "repo-health-openchamber-pilot": (
+        "developing-today-forks/openchamber",
+        "/home/user/git/openchamber-fork",
+    ),
     "repo-health-nix-pilot": ("dezren39/nix", "/home/user/git/nix"),
 }
 HARD_STOP = {"held", "user/owned", "do-not-merge", "do-not-auto-edit"}
@@ -133,17 +140,20 @@ def log(rec):
 def journal(rec):
     claimant.ensure_state_dir()
     with open(STATE_DIR / "inflight.jsonl", "a") as f:
-        f.write(json.dumps(
-            {"at": datetime.now(timezone.utc).isoformat(), **rec}) + "\n")
+        f.write(
+            json.dumps({"at": datetime.now(timezone.utc).isoformat(), **rec}) + "\n"
+        )
 
 
 def queue(*args, timeout=120):
-    p = subprocess.run([repo_queue_cmd(), *args],
-                       capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(
+        [repo_queue_cmd(), *args], capture_output=True, text=True, timeout=timeout
+    )
     return p.returncode, p.stdout, p.stderr
 
 
 # --- Candidate discovery (delegated to poll.py) ---------------------
+
 
 def explain_not_candidate(row):
     """Why poll.is_candidate / is_handoff_waiting said no, in words a
@@ -161,7 +171,8 @@ def explain_not_candidate(row):
     if prog.get("stage") not in YIELD_STAGES:
         reasons.append(
             f"stage is {prog.get('stage')!r}, not a recorded yield "
-            f"({'/'.join(YIELD_STAGES)})")
+            f"({'/'.join(YIELD_STAGES)})"
+        )
     lane_id = row.get("lane_id")
     if lane_id and poll.UUID_LANE.match(str(lane_id)):
         reasons.append(f"claiming lane {lane_id} is an OpenChamber scheduled lane")
@@ -189,6 +200,7 @@ def find_row(queue_name, task_id):
 
 
 # --- Task facts ------------------------------------------------------
+
 
 def packet_for(row):
     """The task packet: poll.normalize_row lifts the payload column
@@ -237,9 +249,11 @@ def hard_stop_reason(repo, ref):
     if not ref:
         return None
     kind, num = ref
-    cmd = (["pr", "view", str(num), "--repo", repo, "--json", "labels,state,title"]
-           if kind == "pr" else
-           ["issue", "view", str(num), "--repo", repo, "--json", "labels,state,title"])
+    cmd = (
+        ["pr", "view", str(num), "--repo", repo, "--json", "labels,state,title"]
+        if kind == "pr"
+        else ["issue", "view", str(num), "--repo", repo, "--json", "labels,state,title"]
+    )
     try:
         p = subprocess.run(["gh", *cmd], capture_output=True, text=True, timeout=60)
         if p.returncode != 0:
@@ -278,6 +292,7 @@ def exhausted(row):
 
 # --- Prompt / agent note (the helper's shapes, claimant-safe) --------
 
+
 def build_prompt(row, ref, repo, directory, sid, worker_id, sender_notes=None):
     prog = claimant._prompt_safe_packet(row.get("progress") or {})
     prov, mdl = route_for(row)
@@ -292,13 +307,13 @@ SENDER NOTES (from the Muse session that sent this task — follow these)
     return f"""You are an OpenCode queue worker launched by the opencode claimant for an already-claimed queue task. Work ONLY this task. Do NOT claim another task and do NOT run `repo-queue claim`.
 
 TASK
-- Queue: {row.get('queue') or ''}
-- Task id: {row.get('id')}
-- Title: {row.get('title')}
-- Dedupe key: {row.get('dedupe_key')}
+- Queue: {row.get("queue") or ""}
+- Task id: {row.get("id")}
+- Title: {row.get("title")}
+- Dedupe key: {row.get("dedupe_key")}
 - Issue/PR anchor: {reftext}
-- Priority: {row.get('priority')}
-- Attempts: {row.get('attempts')}/{row.get('max_attempts')}
+- Priority: {row.get("priority")}
+- Attempts: {row.get("attempts")}/{row.get("max_attempts")}
 - Claiming worker (pass --worker {worker_id} on EVERY repo-queue verb): {worker_id}
 - Bound session id (use this exact id in every --execution record): {sid}
 - Target repo: {repo}
@@ -308,14 +323,14 @@ TASK
 QUEUE CLI
 - `repo-queue` is {rq} (also on PATH).
 - Heartbeat while you work so the lease stays alive:
-  `repo-queue heartbeat {row.get('id')} --worker {worker_id} --progress '{{"note":"..."}}'`
+  `repo-queue heartbeat {row.get("id")} --worker {worker_id} --progress '{{"note":"..."}}'`
 - Record progress:
-  `repo-queue checkpoint {row.get('id')} --worker {worker_id} --stage <stage> --progress '<json object>'`
+  `repo-queue checkpoint {row.get("id")} --worker {worker_id} --stage <stage> --progress '<json object>'`
 - Finish with exactly ONE terminal verb, as {worker_id}, carrying the execution record:
-  - `repo-queue complete {row.get('id')} --worker {worker_id} --result '<json object>' --execution '{{"lane":"opencode","session_id":"{sid}"}}'`
-  - `repo-queue park {row.get('id')} --worker {worker_id} --reason '<text>' --delay-seconds <n> --execution '{{"lane":"opencode","session_id":"{sid}"}}'`
-  - `repo-queue fail {row.get('id')} --worker {worker_id} --error '<text>' --reason-class transient|deterministic|blocked --execution '{{"lane":"opencode","session_id":"{sid}"}}'`
-  - `repo-queue block {row.get('id')} --worker {worker_id} --reason-class <class> --blocker '<text>'` (block takes no --execution flag)
+  - `repo-queue complete {row.get("id")} --worker {worker_id} --result '<json object>' --execution '{{"lane":"opencode","session_id":"{sid}"}}'`
+  - `repo-queue park {row.get("id")} --worker {worker_id} --reason '<text>' --delay-seconds <n> --execution '{{"lane":"opencode","session_id":"{sid}"}}'`
+  - `repo-queue fail {row.get("id")} --worker {worker_id} --error '<text>' --reason-class transient|deterministic|blocked --execution '{{"lane":"opencode","session_id":"{sid}"}}'`
+  - `repo-queue block {row.get("id")} --worker {worker_id} --reason-class <class> --blocker '<text>'` (block takes no --execution flag)
   Do not leave the task claimed without a terminal record.
 
 RULES
@@ -335,13 +350,13 @@ def note_body(row, ref, sid, url):
     return f"""🤖 **Agent note** · handed off
 
 - **Agent:** opencode claimant (opencode-claimant)
-- **Session / ID:** queue task {row.get('id')}; bound session `{sid}`
+- **Session / ID:** queue task {row.get("id")}; bound session `{sid}`
 - **Found via:** queue task handoff on the opencode execution lane
-- **Task:** {row.get('title')}
-- **Expectation:** the bound worker session works task {row.get('id')} to a terminal queue state and must not claim another task. It revalidates the issue/PR before acting.
-- **Links:** {url or 'none recorded'}
+- **Task:** {row.get("title")}
+- **Expectation:** the bound worker session works task {row.get("id")} to a terminal queue state and must not claim another task. It revalidates the issue/PR before acting.
+- **Links:** {url or "none recorded"}
 
-<!-- agent-note:v1 agent=opencode-claimant state=handed-off task={row.get('id')} session={sid} at={datetime.now(timezone.utc).isoformat()} -->"""
+<!-- agent-note:v1 agent=opencode-claimant state=handed-off task={row.get("id")} session={sid} at={datetime.now(timezone.utc).isoformat()} -->"""
 
 
 def post_agent_note(row, ref, repo, sid):
@@ -352,17 +367,22 @@ def post_agent_note(row, ref, repo, sid):
     claimant.ensure_state_dir()
     with open(path, "w") as f:
         f.write(note_body(row, ref, sid, url))
-    ncmd = (["pr", "comment", str(ref[1]), "--repo", repo, "--body-file", str(path)]
-            if ref[0] == "pr" else
-            ["issue", "comment", str(ref[1]), "--repo", repo, "--body-file", str(path)])
+    ncmd = (
+        ["pr", "comment", str(ref[1]), "--repo", repo, "--body-file", str(path)]
+        if ref[0] == "pr"
+        else ["issue", "comment", str(ref[1]), "--repo", repo, "--body-file", str(path)]
+    )
     try:
         p = subprocess.run(["gh", *ncmd], capture_output=True, text=True, timeout=60)
-        return p.returncode == 0, (None if p.returncode == 0 else p.stderr.strip()[:300])
+        return p.returncode == 0, (
+            None if p.returncode == 0 else p.stderr.strip()[:300]
+        )
     except Exception as e:
         return False, str(e)[:300]
 
 
 # --- The launch sequence ----------------------------------------------
+
 
 def collect_sink_claim(queue_name, task_id):
     """Claim THIS sink row (status 'handed_off') by id, as the
@@ -371,10 +391,17 @@ def collect_sink_claim(queue_name, task_id):
     wrapper, or {"task": null} when the broker would not hand it
     over; only a row whose id is the requested task counts."""
     try:
-        rc, out, err = queue("claim", "--queue", queue_name,
-                             "--worker", CLAIMANT_WORKER,
-                             "--platform", "openchamber",
-                             "--task", str(task_id))
+        rc, out, err = queue(
+            "claim",
+            "--queue",
+            queue_name,
+            "--worker",
+            CLAIMANT_WORKER,
+            "--platform",
+            "openchamber",
+            "--task",
+            str(task_id),
+        )
     except Exception as e:
         return None, str(e)[:300]
     data = None
@@ -393,18 +420,31 @@ def collect_sink_claim(queue_name, task_id):
 def launch(queue_name, task_id):
     mode = claimant.read_mode()
     if mode != "live":
-        return {"task": task_id, "queue": queue_name, "ok": False,
-                "reason": f"mode_not_live: mode file reads {mode!r}; "
-                          f"--launch requires 'live' (preflight is read-only)"}
+        return {
+            "task": task_id,
+            "queue": queue_name,
+            "ok": False,
+            "reason": f"mode_not_live: mode file reads {mode!r}; "
+            f"--launch requires 'live' (preflight is read-only)",
+        }
 
     row, status, candidate, reasons = find_row(queue_name, task_id)
     if row is None or not candidate:
-        return {"task": task_id, "queue": queue_name, "ok": False,
-                "reason": "not_a_candidate", "detail": reasons}
+        return {
+            "task": task_id,
+            "queue": queue_name,
+            "ok": False,
+            "reason": "not_a_candidate",
+            "detail": reasons,
+        }
     if exhausted(row):
-        return {"task": task_id, "queue": queue_name, "ok": False,
-                "reason": "attempts_exhausted",
-                "attempts": f"{row.get('attempts')}/{row.get('max_attempts')}"}
+        return {
+            "task": task_id,
+            "queue": queue_name,
+            "ok": False,
+            "reason": "attempts_exhausted",
+            "attempts": f"{row.get('attempts')}/{row.get('max_attempts')}",
+        }
 
     repo = repo_for(row, queue_name)
     directory = REPOS[queue_name][1]
@@ -415,11 +455,20 @@ def launch(queue_name, task_id):
 
     cap_room = claimant.cap_step()
     if cap_room == -1:
-        return {"task": task_id, "queue": queue_name, "ok": False,
-                "reason": "cap_unknown: session count unreadable; launching nothing"}
+        return {
+            "task": task_id,
+            "queue": queue_name,
+            "ok": False,
+            "reason": "cap_unknown: session count unreadable; launching nothing",
+        }
     if cap_room <= 0:
-        return {"task": task_id, "queue": queue_name, "ok": False,
-                "reason": "cap_saturated", "cap_room": cap_room}
+        return {
+            "task": task_id,
+            "queue": queue_name,
+            "ok": False,
+            "reason": "cap_saturated",
+            "cap_room": cap_room,
+        }
 
     worker_id = row.get("worker_id")
     if status == "handed_off":
@@ -431,85 +480,152 @@ def launch(queue_name, task_id):
         # claimant.py's sink path.
         claimed, claim_err = collect_sink_claim(queue_name, task_id)
         if claimed is None:
-            return {"task": task_id, "queue": queue_name, "ok": False,
-                    "reason": "sink_claim_failed", "detail": claim_err}
+            return {
+                "task": task_id,
+                "queue": queue_name,
+                "ok": False,
+                "reason": "sink_claim_failed",
+                "detail": claim_err,
+            }
         worker_id = CLAIMANT_WORKER
     else:
         # Re-verify immediately before creating anything (claimant
         # step 4a): a state change means someone else owns it now.
         row2, _s2, cand2, reasons2 = find_row(queue_name, task_id)
         if row2 is None or not cand2:
-            return {"task": task_id, "queue": queue_name, "ok": False,
-                    "reason": "task_state_changed", "detail": reasons2}
+            return {
+                "task": task_id,
+                "queue": queue_name,
+                "ok": False,
+                "reason": "task_state_changed",
+                "detail": reasons2,
+            }
         row = row2
 
     prov, mdl = route_for(row)
-    title = f"queue task {task_id}" + (f" · {ref[0]} #{ref[1]}" if ref else "") \
+    title = (
+        f"queue task {task_id}"
+        + (f" · {ref[0]} #{ref[1]}" if ref else "")
         + f" · {str(row.get('title'))[:70]}"
-    body = {"title": title, "location": {"directory": directory},
-            "model": {"id": mdl, "providerID": prov}, "agent": "build"}
+    )
+    body = {
+        "title": title,
+        "location": {"directory": directory},
+        "model": {"id": mdl, "providerID": prov},
+        "agent": "build",
+    }
 
     # CREATE — through claimant.py's verified transport.
     status_code, payload = claimant._server_request(
-        "POST", "/api/session", body=body, timeout=15)
+        "POST", "/api/session", body=body, timeout=15
+    )
     if not claimant._is_2xx(status_code):
-        rec = {"kind": "launch_one", "task": task_id, "ok": False,
-               "phase": "create",
-               "error": f"session creation failed: http status "
-                        f"{status_code if status_code is not None else 'unknown'}"}
+        rec = {
+            "kind": "launch_one",
+            "task": task_id,
+            "ok": False,
+            "phase": "create",
+            "error": f"session creation failed: http status "
+            f"{status_code if status_code is not None else 'unknown'}",
+        }
         log(rec)
         return {"task": task_id, "queue": queue_name, **rec}
     sess = claimant._unwrap_envelope(payload)
     sid = sess.get("id") if isinstance(sess, dict) else None
     if not sid:
-        rec = {"kind": "launch_one", "task": task_id, "ok": False,
-               "phase": "create", "error": "no session id in create response"}
+        rec = {
+            "kind": "launch_one",
+            "task": task_id,
+            "ok": False,
+            "phase": "create",
+            "error": "no session id in create response",
+        }
         log(rec)
         return {"task": task_id, "queue": queue_name, **rec}
-    journal({"task": task_id, "queue": queue_name, "session_id": sid,
-             "phase": "created"})
+    journal(
+        {"task": task_id, "queue": queue_name, "session_id": sid, "phase": "created"}
+    )
 
     # VERIFY LOCATION before binding.
     loc = (sess or {}).get("location") or {}
     got = loc.get("directory")
     if not got or os.path.realpath(got) != os.path.realpath(directory):
         deleted = claimant._delete_session(sid)
-        args = ["checkpoint", str(task_id), "--worker", worker_id,
-                "--stage", "launch_failed",
-                "--progress", json.dumps({
-                    "lane": "opencode", "launched_by": "opencode-claimant",
+        args = [
+            "checkpoint",
+            str(task_id),
+            "--worker",
+            worker_id,
+            "--stage",
+            "launch_failed",
+            "--progress",
+            json.dumps(
+                {
+                    "lane": "opencode",
+                    "launched_by": "opencode-claimant",
                     "launch_failed": "location_mismatch",
                     "requested_directory": directory,
                     "created_directory": got,
                     "session_id": None,
-                    "launch_failed_session_id": sid})]
+                    "launch_failed_session_id": sid,
+                }
+            ),
+        ]
         rc, _out, err = queue(*args)
-        rec = {"kind": "launch_one", "task": task_id, "session": sid,
-               "ok": False, "phase": "location", "requested": directory,
-               "got": got, "session_cleanup": "deleted" if deleted else "delete_unverified",
-               "checkpoint_rc": rc, "checkpoint_err": err.strip()[:200]}
+        rec = {
+            "kind": "launch_one",
+            "task": task_id,
+            "session": sid,
+            "ok": False,
+            "phase": "location",
+            "requested": directory,
+            "got": got,
+            "session_cleanup": "deleted" if deleted else "delete_unverified",
+            "checkpoint_rc": rc,
+            "checkpoint_err": err.strip()[:200],
+        }
         log(rec)
         return {"task": task_id, "queue": queue_name, **rec}
 
     # BIND — a failure deletes the created session: no orphan.
-    rc, _out, err = queue("bind", str(task_id), "--worker", CLAIMANT_WORKER,
-                          "--session-id", sid, "--launched-by", CLAIMANT_WORKER)
+    rc, _out, err = queue(
+        "bind",
+        str(task_id),
+        "--worker",
+        CLAIMANT_WORKER,
+        "--session-id",
+        sid,
+        "--launched-by",
+        CLAIMANT_WORKER,
+    )
     if rc != 0:
         deleted = claimant._delete_session(sid)
-        rec = {"kind": "launch_one", "task": task_id, "session": sid,
-               "ok": False, "phase": "bind", "error": err.strip()[:300],
-               "session_cleanup": "deleted" if deleted else "delete_unverified"}
+        rec = {
+            "kind": "launch_one",
+            "task": task_id,
+            "session": sid,
+            "ok": False,
+            "phase": "bind",
+            "error": err.strip()[:300],
+            "session_cleanup": "deleted" if deleted else "delete_unverified",
+        }
         log(rec)
         return {"task": task_id, "queue": queue_name, **rec}
-    journal({"task": task_id, "queue": queue_name, "session_id": sid,
-             "phase": "bound"})
+    journal({"task": task_id, "queue": queue_name, "session_id": sid, "phase": "bound"})
 
     # CHECKPOINT launched, as the claiming worker (ownership).
     rc2, _o2, err2 = queue(
-        "checkpoint", str(task_id), "--worker", worker_id,
-        "--stage", "launched",
-        "--progress", json.dumps({"lane": "opencode", "session_id": sid,
-                                  "launched_by": "opencode-claimant"}))
+        "checkpoint",
+        str(task_id),
+        "--worker",
+        worker_id,
+        "--stage",
+        "launched",
+        "--progress",
+        json.dumps(
+            {"lane": "opencode", "session_id": sid, "launched_by": "opencode-claimant"}
+        ),
+    )
 
     # PROMPT — verified send with reconcile-before-resend inside
     # claimant._send_prompt. A bound session that cannot be prompted
@@ -522,24 +638,47 @@ def launch(queue_name, task_id):
     if ref:
         note_ok, note_err = post_agent_note(row, ref, repo, sid)
 
-    rec = {"kind": "launch_one", "task": task_id, "queue": queue_name,
-           "session_id": sid, "session": sid, "repo": repo,
-           "directory": directory, "route": f"{prov}/{mdl}",
-           "worker_id": worker_id, "source_status": status,
-           "ok": prompt_ok, "checkpoint_rc": rc2,
-           "checkpoint_err": err2.strip()[:200] if rc2 != 0 else None,
-           "prompt_ok": prompt_ok, "note_ok": note_ok,
-           "note_error": note_err, "ref": ref, "title": row.get("title")}
+    rec = {
+        "kind": "launch_one",
+        "task": task_id,
+        "queue": queue_name,
+        "session_id": sid,
+        "session": sid,
+        "repo": repo,
+        "directory": directory,
+        "route": f"{prov}/{mdl}",
+        "worker_id": worker_id,
+        "source_status": status,
+        "ok": prompt_ok,
+        "checkpoint_rc": rc2,
+        "checkpoint_err": err2.strip()[:200] if rc2 != 0 else None,
+        "prompt_ok": prompt_ok,
+        "note_ok": note_ok,
+        "note_error": note_err,
+        "ref": ref,
+        "title": row.get("title"),
+    }
     log(rec)
-    journal({"task": task_id, "queue": queue_name, "session_id": sid,
-             "phase": "prompted", "prompt_ok": prompt_ok})
+    journal(
+        {
+            "task": task_id,
+            "queue": queue_name,
+            "session_id": sid,
+            "phase": "prompted",
+            "prompt_ok": prompt_ok,
+        }
+    )
     if not prompt_ok:
-        rec = {**rec, "reason": "prompt_failed: binding stands; "
-                                 "supervision owns the bound session"}
+        rec = {
+            **rec,
+            "reason": "prompt_failed: binding stands; "
+            "supervision owns the bound session",
+        }
     return rec
 
 
 # --- Preflight (read-only) ---------------------------------------------
+
 
 def would_steps(queue_name, row, status, worker_id):
     directory = REPOS[queue_name][1]
@@ -549,7 +688,8 @@ def would_steps(queue_name, row, status, worker_id):
         steps.append(
             f"collect the sink row's claim by id: repo-queue claim "
             f"--queue {queue_name} --worker {CLAIMANT_WORKER} "
-            f"--platform openchamber --task {row.get('id')}")
+            f"--platform openchamber --task {row.get('id')}"
+        )
     steps += [
         f"create an OpenCode session in {directory} (route {prov}/{mdl}, agent build)",
         "verify the created session's location.directory equals that primary; "
@@ -567,16 +707,23 @@ def would_steps(queue_name, row, status, worker_id):
 def preflight(queue_name, task_id):
     row, status, candidate, reasons = find_row(queue_name, task_id)
     if row is None:
-        return {"task": task_id, "queue": queue_name, "candidate": False,
-                "ok": False, "reasons": reasons, "blockers": reasons,
-                "would": []}
+        return {
+            "task": task_id,
+            "queue": queue_name,
+            "candidate": False,
+            "ok": False,
+            "reasons": reasons,
+            "blockers": reasons,
+            "would": [],
+        }
     repo = repo_for(row, queue_name)
     ref = ref_for(row)
     blockers = list(reasons)
     exh = exhausted(row)
     if candidate and exh:
         blockers.append(
-            f"attempts exhausted ({row.get('attempts')}/{row.get('max_attempts')})")
+            f"attempts exhausted ({row.get('attempts')}/{row.get('max_attempts')})"
+        )
     hs = hard_stop_reason(repo, ref) if candidate and not exh else None
     if hs:
         blockers.append(hs)
@@ -587,18 +734,30 @@ def preflight(queue_name, task_id):
         blockers.append(f"cap_saturated: cap_room={cap_room}")
     mode = claimant.read_mode()
     if mode != "live":
-        blockers.append(f"mode_not_live: mode file reads {mode!r}; --launch would refuse")
+        blockers.append(
+            f"mode_not_live: mode file reads {mode!r}; --launch would refuse"
+        )
     worker_id = row.get("worker_id") or (
-        CLAIMANT_WORKER if status == "handed_off" else None)
+        CLAIMANT_WORKER if status == "handed_off" else None
+    )
     return {
-        "task": task_id, "queue": queue_name, "candidate": candidate,
+        "task": task_id,
+        "queue": queue_name,
+        "candidate": candidate,
         "ok": candidate and not blockers,
-        "status": status, "stage": (row.get("progress") or {}).get("stage"),
-        "title": row.get("title"), "worker": worker_id,
+        "status": status,
+        "stage": (row.get("progress") or {}).get("stage"),
+        "title": row.get("title"),
+        "worker": worker_id,
         "attempts": f"{row.get('attempts')}/{row.get('max_attempts')}",
-        "exhausted": exh, "ref": ref, "hard_stop": hs, "repo": repo,
-        "directory": REPOS[queue_name][1], "route": route_for(row),
-        "cap_room": cap_room if cap_room != -1 else None, "mode": mode,
+        "exhausted": exh,
+        "ref": ref,
+        "hard_stop": hs,
+        "repo": repo,
+        "directory": REPOS[queue_name][1],
+        "route": route_for(row),
+        "cap_room": cap_room if cap_room != -1 else None,
+        "mode": mode,
         "blockers": blockers,
         "would": would_steps(queue_name, row, status, worker_id) if candidate else [],
     }
@@ -606,12 +765,14 @@ def preflight(queue_name, task_id):
 
 # --- CLI -----------------------------------------------------------------
 
+
 def parse_spec(spec):
     queue_name, sep, task_text = spec.partition(":")
     if not sep or queue_name not in REPOS or not task_text.isdigit():
         raise ValueError(
             f"bad spec {spec!r}: expected <queue>:<task_id> with queue in "
-            f"{sorted(REPOS)}")
+            f"{sorted(REPOS)}"
+        )
     return queue_name, int(task_text)
 
 
@@ -629,8 +790,11 @@ def main(argv):
         print(f"error: {e}", file=sys.stderr)
         return 2
     if mode == "--launch" and len(specs) != 1:
-        print("error: --launch takes exactly one <queue>:<task_id> "
-              "(this is the per-task trigger)", file=sys.stderr)
+        print(
+            "error: --launch takes exactly one <queue>:<task_id> "
+            "(this is the per-task trigger)",
+            file=sys.stderr,
+        )
         return 2
     if mode == "--preflight":
         out = [preflight(q, t) for q, t in specs]

@@ -56,11 +56,7 @@ async function reconcileStream(
   // so upserts from it store the truth on first sight and heal any legacy
   // false-default rows on a later pass. The issues stream is unchanged.
   if (stream === "prs") {
-    const pulls = await listResource<Record<string, any>>(
-      auth,
-      `repos/${repo}/pulls?per_page=100&state=all`,
-      fetchFn,
-    );
+    const pulls = await listResource<Record<string, any>>(auth, `repos/${repo}/pulls?per_page=100&state=all`, fetchFn);
     let cursor: string | null = null;
     let skipped = 0;
     for (const pr of pulls) {
@@ -199,7 +195,14 @@ async function reconcileStream(
         errors.push({ pr: pr.number, error: String((e as Error).message) });
       }
     }
-    return { repo, stream, written: written.n, ...(skipped > 0 ? { skipped } : {}), cursor, ...(errors.length > 0 ? { errors } : {}) };
+    return {
+      repo,
+      stream,
+      written: written.n,
+      ...(skipped > 0 ? { skipped } : {}),
+      cursor,
+      ...(errors.length > 0 ? { errors } : {}),
+    };
   }
 
   return { repo, stream, written: 0, cursor: null };

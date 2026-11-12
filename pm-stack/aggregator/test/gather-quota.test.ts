@@ -505,9 +505,7 @@ test("a lapsed Go workspace survives retention when a sibling workspace fails", 
       .trim()
       .split("\n")
       .map((line: string) => JSON.parse(line));
-    expect(records.some((record: { serviceId: string }) => record.serviceId === "opencode-go.drewrypope")).toBe(
-      false,
-    );
+    expect(records.some((record: { serviceId: string }) => record.serviceId === "opencode-go.drewrypope")).toBe(false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -541,9 +539,17 @@ test("an uninstalled lib checkout dependency is installed and the OpenDesign kee
     // but node_modules was never installed — the #8759 defect shape.
     await mkdir(join(libDir, "quota/credentials"), { recursive: true });
     await mkdir(join(libDir, "quota/providers"), { recursive: true });
-    await writeFile(join(checkoutRoot, "package.json"), JSON.stringify({ dependencies: { "fake-dep": "1.0.0" } }), "utf8");
+    await writeFile(
+      join(checkoutRoot, "package.json"),
+      JSON.stringify({ dependencies: { "fake-dep": "1.0.0" } }),
+      "utf8",
+    );
     await writeFile(join(checkoutRoot, "bun.lock"), "", "utf8");
-    await writeFile(join(libDir, "quota/index.js"), "export async function listConfiguredQuotaProviders() { return []; }\n", "utf8");
+    await writeFile(
+      join(libDir, "quota/index.js"),
+      "export async function listConfiguredQuotaProviders() { return []; }\n",
+      "utf8",
+    );
     await writeFile(
       join(libDir, "quota/credentials/providers.js"),
       "import 'fake-dep';\nexport function readManagedCredential() { return null; }\nexport function writeManagedCredential() {}\n",

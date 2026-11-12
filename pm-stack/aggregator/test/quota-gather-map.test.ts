@@ -729,8 +729,26 @@ describe("entryFromTurso (#1049)", () => {
     // ~213%. /plans is the source of truth.
     const plansDoc = {
       plans: [
-        { name: "starter", quotas: { rowsRead: 500_000_000, rowsWritten: 10_000_000, databases: 100, storage: 5_000_000_000, bytesSynced: 3_000_000_000 } },
-        { name: "Scaler", quotas: { rowsRead: 100_000_000_000, rowsWritten: 100_000_000, databases: 1_000_000_000, storage: 24_000_000_000, bytesSynced: 24_000_000_000 } },
+        {
+          name: "starter",
+          quotas: {
+            rowsRead: 500_000_000,
+            rowsWritten: 10_000_000,
+            databases: 100,
+            storage: 5_000_000_000,
+            bytesSynced: 3_000_000_000,
+          },
+        },
+        {
+          name: "Scaler",
+          quotas: {
+            rowsRead: 100_000_000_000,
+            rowsWritten: 100_000_000,
+            databases: 1_000_000_000,
+            storage: 24_000_000_000,
+            bytesSynced: 24_000_000_000,
+          },
+        },
       ],
     };
     const entry = entryFromTurso(
@@ -1021,10 +1039,7 @@ describe("pool splits (#1331)", () => {
     );
     expect(other.state).toBe("error");
     // Recovery shape: the next good read is a plain ok entry again.
-    const recovered = entryFromResult(
-      { ...base, ok: true, usage: { windows: { weekly: { usedPercent: 42 } } } },
-      TICK,
-    );
+    const recovered = entryFromResult({ ...base, ok: true, usage: { windows: { weekly: { usedPercent: 42 } } } }, TICK);
     expect(recovered.state).toBe("ok");
     expect(recovered.error).toBeUndefined();
   });
@@ -1284,7 +1299,8 @@ describe("openaiPoolServiceId — folded _openai rows file under their own OpenA
     windowSeconds,
     resetAt: 1794364348000,
   });
-  const foldedResult = ( // the fork's folded OpenAI quota answer (providerId "_openai" since fork PR #2261; "codex" before)
+  const foldedResult = (
+    // the fork's folded OpenAI quota answer (providerId "_openai" since fork PR #2261; "codex" before)
     credentialLabel: string | undefined,
     providerName: string,
     windows: Record<string, ReturnType<typeof win>>,
@@ -1331,12 +1347,21 @@ describe("openaiPoolServiceId — folded _openai rows file under their own OpenA
 
   test("a pre-rename fork answer (providerId codex) still files under the new ids", () => {
     const legacy = entryFromResult(
-      { ...foldedResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", { weekly: win(65, 604_800) }) },
+      {
+        ...foldedResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", {
+          weekly: win(65, 604_800),
+        }),
+      },
       TICK,
     );
     expect(legacy.serviceId).toBe("_openai.alt");
     const legacyRaw = entryFromResult(
-      { ...foldedResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", { weekly: win(65, 604_800) }), providerId: "codex" },
+      {
+        ...foldedResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", {
+          weekly: win(65, 604_800),
+        }),
+        providerId: "codex",
+      },
       TICK,
     );
     expect(legacyRaw.providerId).toBe("_openai");

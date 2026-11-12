@@ -1,6 +1,6 @@
 # Restore / recreate procedure for selective exports
 
-**Scope:** any restore that rebuilds a store from a *selective*
+**Scope:** any restore that rebuilds a store from a _selective_
 (per-table) export — a hand-built manifest, a partial dump, a
 table-by-table copy — into a fresh store. Whole-database moves
 (file copy, full dump/restore, provider-level replication) are out

@@ -1417,7 +1417,7 @@ let
     in
     {
       packages.deploy = deployPkgs.deploy;
-      deployTargets = deployPkgs.deployTargets;
+      inherit (deployPkgs) deployTargets;
       checks = {
         deploy-list =
           pkgs.runCommandLocal "check-deploy-list"

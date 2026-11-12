@@ -4,7 +4,7 @@
 **Slice:** 1 (Claim/Bind/Launch/Record)  
 **Status:** ✅ **COMPLETE AND PRODUCTION-READY**  
 **Date:** November 7, 2026  
-**Implementation Date:** November 7, 2026  
+**Implementation Date:** November 7, 2026
 
 ---
 
@@ -25,14 +25,14 @@ The OpenCode lane claimant/executor **slice 1** has been **fully implemented, te
 
 ### 6-Step Execution Flow (All Steps Implemented ✅)
 
-| Step | Description | Implementation Status | Key Features |
-|------|-------------|---------------------|--------------|
-| **1. Supervision** | Check bound sessions for recovery candidates | ✅ COMPLETE | Zero-message recovery (#4758), gone-session recovery, atomic recovery operations |
-| **2. Gate** | Discover unbound opencode-lane candidates | ✅ COMPLETE | Filters for lane="opencode", unbound tasks, correct stage |
-| **3. Cap** | Enforce 36-session concurrency limit | ✅ COMPLETE | Active root session counting, fail-closed behavior |
-| **4. Launch** | Create sessions and bind tasks | ✅ COMPLETE | Session creation API, location verification (#4870), atomic binding |
-| **5. Terminal States** | Handled by worker sessions | ✅ COMPLETE | Documented, workers use repo-queue terminal verbs |
-| **6. Logging** | Record fire execution results | ✅ COMPLETE | fires.jsonl with all execution details |
+| Step                   | Description                                  | Implementation Status | Key Features                                                                     |
+| ---------------------- | -------------------------------------------- | --------------------- | -------------------------------------------------------------------------------- |
+| **1. Supervision**     | Check bound sessions for recovery candidates | ✅ COMPLETE           | Zero-message recovery (#4758), gone-session recovery, atomic recovery operations |
+| **2. Gate**            | Discover unbound opencode-lane candidates    | ✅ COMPLETE           | Filters for lane="opencode", unbound tasks, correct stage                        |
+| **3. Cap**             | Enforce 36-session concurrency limit         | ✅ COMPLETE           | Active root session counting, fail-closed behavior                               |
+| **4. Launch**          | Create sessions and bind tasks               | ✅ COMPLETE           | Session creation API, location verification (#4870), atomic binding              |
+| **5. Terminal States** | Handled by worker sessions                   | ✅ COMPLETE           | Documented, workers use repo-queue terminal verbs                                |
+| **6. Logging**         | Record fire execution results                | ✅ COMPLETE           | fires.jsonl with all execution details                                           |
 
 ---
 
@@ -87,6 +87,7 @@ The OpenCode lane claimant/executor **slice 1** has been **fully implemented, te
 ### Mode System ✅
 
 - **Shadow mode** (default): Discovery only, no mutations
+
   ```bash
   python3 pm-stack/opencode-claimant/claimant.py
   ```
@@ -100,6 +101,7 @@ The OpenCode lane claimant/executor **slice 1** has been **fully implemented, te
 ### Four Queue Monitoring ✅
 
 All four opencode queues supported:
+
 1. `repo-health-code-pilot`
 2. `repo-health-opencode-pilot`
 3. `repo-health-openchamber-pilot`
@@ -116,6 +118,7 @@ All four opencode queues supported:
 ### Recovery Rules (#4758) ✅
 
 **Zero-Message Recovery:**
+
 - Bound session with no messages
 - No activity markers
 - Silent for >30 minutes
@@ -124,12 +127,14 @@ All four opencode queues supported:
 - launched_by: `opencode-claimant-recovery:zero-message-deleted`
 
 **Gone-Session Recovery:**
+
 - Bound session absent from server
 - Attempts remaining
 - Process: verify absence → reclaim atomically
 - launched_by: `opencode-claimant-recovery:gone-session`
 
 **Exhausted Attempts:**
+
 - Delete zero-message session
 - Fail task terminally with session_id in execution record
 - Use repo-queue fail with deterministic reason class
@@ -205,21 +210,25 @@ REPO_QUEUE_CMD = Path.home() / "fleet-brokers" / "bin" / "repo-queue"
 ## 🧪 Testing & Verification
 
 ### Quick Test
+
 ```bash
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Full Test Suite
+
 ```bash
 bash pm-stack/opencode-claimant/test_slice1.sh
 ```
 
 ### Comprehensive Verification
+
 ```bash
 bash pm-stack/opencode-claimant/verify_slice1.sh
 ```
 
 ### Unit Tests
+
 ```bash
 cd pm-stack/opencode-claimant/test
 python3 -m unittest discover

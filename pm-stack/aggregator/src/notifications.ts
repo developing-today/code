@@ -77,7 +77,8 @@ export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
   {
     id: "section-risk",
     label: "Section failure / severe risk",
-    blurb: "A whole route section (workhorse, speed, specialist, summit, small) fails or is at severe risk. Shows the pools pending wall, which are walled, and the soonest resets.",
+    blurb:
+      "A whole route section (workhorse, speed, specialist, summit, small) fails or is at severe risk. Shows the pools pending wall, which are walled, and the soonest resets.",
   },
   {
     id: "stack-health",
@@ -87,7 +88,8 @@ export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
   {
     id: "blocked-age",
     label: "Blocked-age reminders",
-    blurb: "A needs-Drew item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
+    blurb:
+      "A needs-Drew item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
   },
 ];
 
@@ -234,7 +236,13 @@ function localClock(at: number, timeZone: string): LocalClock {
     hourCycle: "h23",
   }).formatToParts(new Date(at));
   const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value);
-  return { year: value("year"), month: value("month"), day: value("day"), hour: value("hour"), minute: value("minute") };
+  return {
+    year: value("year"),
+    month: value("month"),
+    day: value("day"),
+    hour: value("hour"),
+    minute: value("minute"),
+  };
 }
 
 function localTimeToInstant(clock: LocalClock, timeZone: string): number {
@@ -266,7 +274,8 @@ export function nextNotificationDigestAt(
   };
   const start = toMinute(quiet.start);
   const end = toMinute(quiet.end);
-  const inQuiet = quiet.enabled !== false && (start <= end ? minute >= start && minute < end : minute >= start || minute < end);
+  const inQuiet =
+    quiet.enabled !== false && (start <= end ? minute >= start && minute < end : minute >= start || minute < end);
   const useEndToday = minute < end;
   const dayOffset = inQuiet ? (minute >= start && start > end ? 1 : 0) : minute < 12 * 60 ? 0 : useEndToday ? 0 : 1;
   const day = new Date(Date.UTC(clock.year, clock.month - 1, clock.day + dayOffset));
@@ -302,12 +311,10 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
     : itemRef && /^[-\w.]+\/[-\w.]+#\d+$/.test(itemRef)
       ? `https://github.com/${itemRef.replace("#", "/issues/")}`
       : `/attention#${encodeURIComponent(itemId ?? "unknown")}`;
-  const observedAt = isTierItem ? item.since : item.tierSince ?? item.lastActivityAt ?? item.createdAt ?? new Date(now).toISOString();
-  const actedRefs = [
-    objectRef,
-    ...(itemId ? [`orch:${itemId}`] : []),
-    ...(itemRef ? [`gh:${itemRef}`] : []),
-  ];
+  const observedAt = isTierItem
+    ? item.since
+    : (item.tierSince ?? item.lastActivityAt ?? item.createdAt ?? new Date(now).toISOString());
+  const actedRefs = [objectRef, ...(itemId ? [`orch:${itemId}`] : []), ...(itemRef ? [`gh:${itemRef}`] : [])];
   const entry = candidate({
     class: "needs-drew",
     objectRef,
@@ -316,7 +323,11 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
     url,
     observedAt,
     actedRefs,
-    state: { tier: "needs-drew", state: "state" in item ? item.state : undefined, kind: isTierItem ? item.kind : undefined },
+    state: {
+      tier: "needs-drew",
+      state: "state" in item ? item.state : undefined,
+      kind: isTierItem ? item.kind : undefined,
+    },
   });
   const since = Date.parse(observedAt);
   if (!Number.isFinite(since) || now - since < BLOCKED_AGE_REMINDER_MS) return [entry];
@@ -372,7 +383,10 @@ export function decideNotification(
   // for this class+object suppress a recurrence of the same state.
   const recoveredAt =
     history
-      .filter((entry) => entry.outcome === "recovered" && entry.class === candidate.class && entry.objectRef === candidate.objectRef)
+      .filter(
+        (entry) =>
+          entry.outcome === "recovered" && entry.class === candidate.class && entry.objectRef === candidate.objectRef,
+      )
       .map((entry) => Date.parse(entry.at))
       .filter(Number.isFinite)
       .sort((a, b) => b - a)[0] ?? -Infinity;
@@ -420,10 +434,7 @@ export function formatResetCompact(ms: number): string {
 
 /** Derive stable, fixture-testable notifications from the same views the UI serves. */
 export function buildNotificationCandidates(snapshot: NotificationSnapshot, now = Date.now()): NotificationCandidate[] {
-  const attentionItems: Array<TierItem | TieredEntry> = [
-    ...snapshot.attention.drew,
-    ...snapshot.attention.drewExtra,
-  ];
+  const attentionItems: Array<TierItem | TieredEntry> = [...snapshot.attention.drew, ...snapshot.attention.drewExtra];
   const attentionCandidates = attentionItems.flatMap((item) => tierItemCandidate(item, now));
   const drewActivity = snapshot.drewActivity ?? [];
   const candidates = attentionCandidates.filter((entry) => {
@@ -451,7 +462,10 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
       const wallLifts = pool.wallLiftsAt ? Date.parse(pool.wallLiftsAt) : NaN;
       const resetAt = Number.isFinite(wallLifts)
         ? wallLifts
-        : (exhausted.length ? exhausted : windows).map((w) => Date.parse(w.resetsAt ?? "")).filter(Number.isFinite).sort((a, b) => a - b)[0];
+        : (exhausted.length ? exhausted : windows)
+            .map((w) => Date.parse(w.resetsAt ?? ""))
+            .filter(Number.isFinite)
+            .sort((a, b) => a - b)[0];
       const wellBeforeReset = resetAt !== undefined && resetAt - now >= QUOTA_WELL_BEFORE_RESET_MS;
       if (soleDoor || wellBeforeReset) {
         candidates.push(
@@ -540,13 +554,17 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
     const walledPools = serving.filter((entry) => entry.walled);
     const pendingPools = serving.filter((entry) => !entry.walled && entry.pendingPct !== null);
     const failed = walledPools.length === serving.length;
-    const severeRisk = !failed && pendingPools.length > 0 && pendingPools.length === serving.length - walledPools.length;
+    const severeRisk =
+      !failed && pendingPools.length > 0 && pendingPools.length === serving.length - walledPools.length;
     if (!failed && !severeRisk) continue;
     const resetSort = (a: number | null, b: number | null) => (a ?? Infinity) - (b ?? Infinity);
     const walledPart = walledPools
       .slice()
       .sort((a, b) => resetSort(a.wallResetAt, b.wallResetAt))
-      .map((entry) => `${entry.id}${entry.wallResetAt !== null ? ` (resets ${formatResetCompact(entry.wallResetAt)})` : ""}`)
+      .map(
+        (entry) =>
+          `${entry.id}${entry.wallResetAt !== null ? ` (resets ${formatResetCompact(entry.wallResetAt)})` : ""}`,
+      )
       .join(", ");
     const pendingPart = pendingPools
       .slice()

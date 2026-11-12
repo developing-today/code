@@ -51,8 +51,8 @@ out="$(OPENCODE_TMP_DIR="$OC_TMP" MCPX_TMP_DIR="$FAKE_TMP" bash "$SCRIPT" 2>&1)"
 echo "$out"
 
 case "$out" in
-  *"opencode-tmp removed=2"*mcpx-bin\ removed=1*) ;;
-  *) fail "unexpected counts line: $out" ;;
+*"opencode-tmp removed=2"*mcpx-bin\ removed=1*) ;;
+*) fail "unexpected counts line: $out" ;;
 esac
 
 check_gone "$OC_TMP/old-dir"
@@ -71,8 +71,8 @@ out="$(OPENCODE_TMP_DIR="$TMP_ROOT/nope" MCPX_TMP_DIR="$TMP_ROOT/also-nope" bash
   exit 1
 }
 case "$out" in
-  *"removed=0"*) ;;
-  *) fail "missing-root run should report removed=0: $out" ;;
+*"removed=0"*) ;;
+*) fail "missing-root run should report removed=0: $out" ;;
 esac
 
 if [ "$failures" -gt 0 ]; then

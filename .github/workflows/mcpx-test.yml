@@ -161,7 +161,6 @@ jobs:
           fi
           go vet ./...
 
-
   plugin-ts:
     name: "basic: mcpx-test plugin-ts"
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false

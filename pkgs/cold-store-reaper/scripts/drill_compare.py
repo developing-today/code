@@ -96,7 +96,9 @@ def _d1_error_from_body(raw, what):
         detail = f"error {code}: {message}" if code is not None else message
         return D1Error(f"{what}: {detail}")
     text = (raw or b"").decode("utf-8", "replace").strip()
-    return D1Error(f"{what}: {text[:200] if text else 'no error detail in response body'}")
+    return D1Error(
+        f"{what}: {text[:200] if text else 'no error detail in response body'}"
+    )
 
 
 def d1(sql):

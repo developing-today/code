@@ -2170,7 +2170,9 @@ class TestCrawlContentLength(unittest.TestCase):
 
         body_prefix is sent immediately; the socket is then held open
         for hold_seconds (the wedge posture) before reading."""
-        with socket.create_connection(("127.0.0.1", self.port), timeout=read_timeout) as sock:
+        with socket.create_connection(
+            ("127.0.0.1", self.port), timeout=read_timeout
+        ) as sock:
             sock.sendall(head)
             if body_prefix:
                 sock.sendall(body_prefix)
@@ -2202,7 +2204,8 @@ class TestCrawlContentLength(unittest.TestCase):
 
     def test_negative_length_gets_prompt_400(self):
         status, raw = self.raw_request(
-            self.post_head(b"-1"), body_prefix=b'{"url":', hold_seconds=0.2)
+            self.post_head(b"-1"), body_prefix=b'{"url":', hold_seconds=0.2
+        )
         self.assertEqual(status, 400)
         self.assertIn(b"Content-Length", raw)
         self.assert_get_still_answers()
@@ -2210,7 +2213,9 @@ class TestCrawlContentLength(unittest.TestCase):
     def test_oversized_length_gets_prompt_400(self):
         status, raw = self.raw_request(
             self.post_head(str(app._CRAWL_REQUEST_MAX_BODY_BYTES + 1).encode()),
-            body_prefix=b'{"url":', hold_seconds=0.2)
+            body_prefix=b'{"url":',
+            hold_seconds=0.2,
+        )
         self.assertEqual(status, 400)
         self.assertIn(b"Content-Length", raw)
         self.assert_get_still_answers()
@@ -2232,7 +2237,8 @@ class TestCrawlContentLength(unittest.TestCase):
         app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS = 1
         try:
             status, _ = self.raw_request(
-                self.post_head(b"100"), body_prefix=b'{"url": "x"', read_timeout=8.0)
+                self.post_head(b"100"), body_prefix=b'{"url": "x"', read_timeout=8.0
+            )
         finally:
             app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS = orig
         self.assertEqual(status, 408)
@@ -2241,7 +2247,8 @@ class TestCrawlContentLength(unittest.TestCase):
     def test_well_formed_control_still_200(self):
         body = json.dumps({"url": "http://example.com/"}).encode()
         status, raw = self.raw_request(
-            self.post_head(str(len(body)).encode()), body_prefix=body)
+            self.post_head(str(len(body)).encode()), body_prefix=body
+        )
         self.assertEqual(status, 200)
         self.assertIn(b'"status_code": 200', raw)
         self.assert_get_still_answers()

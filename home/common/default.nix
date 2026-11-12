@@ -1104,8 +1104,6 @@ in
     # inherits them — the mcpx daemon receives them the same way.)
   };
 
-
-
   services.opencode = {
     # enable comes from the cascade (mkDefault at each layer).
     #

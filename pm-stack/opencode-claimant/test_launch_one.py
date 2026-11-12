@@ -52,10 +52,16 @@ PRIMARY = "/home/user/git/code"
 
 def claimed_row(**over):
     row = {
-        "id": 777, "queue": QUEUE, "status": "claimed",
-        "title": "Fix the thing", "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:4242",
-        "priority": 10, "attempts": 1, "max_attempts": 5,
-        "worker_id": "repo-worker-code", "lane_id": "code-a",
+        "id": 777,
+        "queue": QUEUE,
+        "status": "claimed",
+        "title": "Fix the thing",
+        "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:4242",
+        "priority": 10,
+        "attempts": 1,
+        "max_attempts": 5,
+        "worker_id": "repo-worker-code",
+        "lane_id": "code-a",
         "progress": {"lane": "opencode", "stage": "handed_off"},
         "payload": {"repo": "developing-today/code", "issue": {"number": 4242}},
     }
@@ -79,15 +85,12 @@ def serve(claimed=(), sink=()):
         return list(sink) if queue == QUEUE else []
 
     return patch.multiple(
-        poll, fetch_claimed_rows=fetch_claimed,
-        fetch_handed_off_rows=fetch_handed_off
+        poll, fetch_claimed_rows=fetch_claimed, fetch_handed_off_rows=fetch_handed_off
     )
 
 
 def live_and_room(room=3):
-    return patch.multiple(
-        claimant, read_mode=lambda: "live", cap_step=lambda: room
-    )
+    return patch.multiple(claimant, read_mode=lambda: "live", cap_step=lambda: room)
 
 
 class TestRepoQueueResolution(unittest.TestCase):
@@ -117,8 +120,13 @@ class TestFindRow(unittest.TestCase):
         self.assertEqual(status, "handed_off")
 
     def test_bound_row_is_not_candidate_and_says_why(self):
-        row = claimed_row(progress={"lane": "opencode", "stage": "handed_off",
-                                    "session_id": "ses_bound"})
+        row = claimed_row(
+            progress={
+                "lane": "opencode",
+                "stage": "handed_off",
+                "session_id": "ses_bound",
+            }
+        )
         with serve(claimed=[row]):
             _r, _s, cand, reasons = launch_one.find_row(QUEUE, 777)
         self.assertFalse(cand)
@@ -142,8 +150,9 @@ class TestFindRow(unittest.TestCase):
         # A genuine wait park (status 'parked') is never a sink
         # candidate — even served through the sink fetch, the
         # status gate in is_handoff_waiting refuses it (#8234).
-        row = sink_row(status="parked",
-                       progress={"lane": "opencode", "stage": "awaiting_ci"})
+        row = sink_row(
+            status="parked", progress={"lane": "opencode", "stage": "awaiting_ci"}
+        )
         with serve(sink=[row]):
             _r, _s, cand, _reasons = launch_one.find_row(QUEUE, 777)
         self.assertFalse(cand)
@@ -157,8 +166,11 @@ class TestFindRow(unittest.TestCase):
 
 class TestPreflight(unittest.TestCase):
     def test_sink_candidate_reports_would_steps(self):
-        with serve(sink=[sink_row()]), live_and_room(2), \
-             patch.object(launch_one, "hard_stop_reason", return_value=None):
+        with (
+            serve(sink=[sink_row()]),
+            live_and_room(2),
+            patch.object(launch_one, "hard_stop_reason", return_value=None),
+        ):
             out = launch_one.preflight(QUEUE, 777)
         self.assertTrue(out["candidate"])
         self.assertTrue(out["ok"])
@@ -167,17 +179,22 @@ class TestPreflight(unittest.TestCase):
         self.assertTrue(any("bind" in step for step in out["would"]))
 
     def test_cap_saturated_blocks(self):
-        with serve(claimed=[claimed_row()]), live_and_room(0), \
-             patch.object(launch_one, "hard_stop_reason", return_value=None):
+        with (
+            serve(claimed=[claimed_row()]),
+            live_and_room(0),
+            patch.object(launch_one, "hard_stop_reason", return_value=None),
+        ):
             out = launch_one.preflight(QUEUE, 777)
         self.assertTrue(out["candidate"])
         self.assertFalse(out["ok"])
         self.assertTrue(any("cap_saturated" in b for b in out["blockers"]))
 
     def test_held_label_blocks(self):
-        with serve(claimed=[claimed_row()]), live_and_room(2), \
-             patch.object(launch_one, "hard_stop_reason",
-                          return_value="hard-stop:held"):
+        with (
+            serve(claimed=[claimed_row()]),
+            live_and_room(2),
+            patch.object(launch_one, "hard_stop_reason", return_value="hard-stop:held"),
+        ):
             out = launch_one.preflight(QUEUE, 777)
         self.assertFalse(out["ok"])
         self.assertEqual(out["hard_stop"], "hard-stop:held")
@@ -205,7 +222,11 @@ class FakeQueue:
         if verb == "bind":
             return self.bind_rc, "", "bind boom" if self.bind_rc else ""
         if verb == "claim":
-            out = json.dumps(self.claim_row) if self.claim_row is not None else '{"task": null}'
+            out = (
+                json.dumps(self.claim_row)
+                if self.claim_row is not None
+                else '{"task": null}'
+            )
             return self.claim_rc, out, ""
         return 0, "", ""
 
@@ -219,8 +240,7 @@ def fake_server(create_directory=PRIMARY, prompt_ok=True):
 
     def server_request(method, path, body=None, timeout=5):
         if method == "POST" and path == "/api/session":
-            return 201, {"id": "ses_new1",
-                         "location": {"directory": create_directory}}
+            return 201, {"id": "ses_new1", "location": {"directory": create_directory}}
         raise AssertionError(f"unexpected server call {method} {path}")
 
     def delete_session(sid):
@@ -237,22 +257,22 @@ def fake_server(create_directory=PRIMARY, prompt_ok=True):
 
 
 def no_journal():
-    return patch.multiple(launch_one, log=lambda rec: None,
-                          journal=lambda rec: None)
+    return patch.multiple(launch_one, log=lambda rec: None, journal=lambda rec: None)
 
 
 class TestLaunch(unittest.TestCase):
-    def run_launch(self, *, rows_kw, fq, server_kw=None, room=3,
-                   mode="live", hs=None):
+    def run_launch(self, *, rows_kw, fq, server_kw=None, room=3, mode="live", hs=None):
         server_patches, deleted = fake_server(**(server_kw or {}))
-        with serve(**rows_kw), \
-             patch.object(claimant, "read_mode", return_value=mode), \
-             patch.object(claimant, "cap_step", return_value=room), \
-             patch.object(launch_one, "hard_stop_reason", return_value=hs), \
-             patch.object(launch_one, "queue", fq), \
-             patch.object(launch_one, "post_agent_note",
-                          return_value=(True, None)), \
-             server_patches, no_journal():
+        with (
+            serve(**rows_kw),
+            patch.object(claimant, "read_mode", return_value=mode),
+            patch.object(claimant, "cap_step", return_value=room),
+            patch.object(launch_one, "hard_stop_reason", return_value=hs),
+            patch.object(launch_one, "queue", fq),
+            patch.object(launch_one, "post_agent_note", return_value=(True, None)),
+            server_patches,
+            no_journal(),
+        ):
             rec = launch_one.launch(QUEUE, 777)
         return rec, deleted
 
@@ -272,31 +292,31 @@ class TestLaunch(unittest.TestCase):
 
     def test_shadow_mode_refuses_before_any_mutation(self):
         fq = FakeQueue()
-        rec, _d = self.run_launch(rows_kw={"claimed": [claimed_row()]},
-                                  fq=fq, mode="shadow")
+        rec, _d = self.run_launch(
+            rows_kw={"claimed": [claimed_row()]}, fq=fq, mode="shadow"
+        )
         self.assertFalse(rec["ok"])
         self.assertIn("mode_not_live", rec["reason"])
         self.assertEqual(fq.calls, [])
 
     def test_cap_saturated_refuses(self):
         fq = FakeQueue()
-        rec, _d = self.run_launch(rows_kw={"claimed": [claimed_row()]},
-                                  fq=fq, room=0)
+        rec, _d = self.run_launch(rows_kw={"claimed": [claimed_row()]}, fq=fq, room=0)
         self.assertFalse(rec["ok"])
         self.assertEqual(rec["reason"], "cap_saturated")
         self.assertEqual(fq.calls, [])
 
     def test_cap_unknown_refuses(self):
         fq = FakeQueue()
-        rec, _d = self.run_launch(rows_kw={"claimed": [claimed_row()]},
-                                  fq=fq, room=-1)
+        rec, _d = self.run_launch(rows_kw={"claimed": [claimed_row()]}, fq=fq, room=-1)
         self.assertFalse(rec["ok"])
         self.assertIn("cap_unknown", rec["reason"])
 
     def test_held_label_refuses(self):
         fq = FakeQueue()
-        rec, _d = self.run_launch(rows_kw={"claimed": [claimed_row()]},
-                                  fq=fq, hs="hard-stop:do-not-merge")
+        rec, _d = self.run_launch(
+            rows_kw={"claimed": [claimed_row()]}, fq=fq, hs="hard-stop:do-not-merge"
+        )
         self.assertFalse(rec["ok"])
         self.assertEqual(rec["reason"], "hard-stop:do-not-merge")
         self.assertEqual(fq.calls, [])
@@ -312,8 +332,10 @@ class TestLaunch(unittest.TestCase):
     def test_location_mismatch_deletes_and_checkpoints_launch_failed(self):
         fq = FakeQueue()
         rec, deleted = self.run_launch(
-            rows_kw={"claimed": [claimed_row()]}, fq=fq,
-            server_kw={"create_directory": "/home/user"})
+            rows_kw={"claimed": [claimed_row()]},
+            fq=fq,
+            server_kw={"create_directory": "/home/user"},
+        )
         self.assertFalse(rec["ok"])
         self.assertEqual(rec["phase"], "location")
         self.assertEqual(deleted, ["ses_new1"])
@@ -324,14 +346,16 @@ class TestLaunch(unittest.TestCase):
     def test_prompt_failure_reports_failure_but_keeps_the_binding(self):
         fq = FakeQueue()
         rec, deleted = self.run_launch(
-            rows_kw={"claimed": [claimed_row()]}, fq=fq,
-            server_kw={"prompt_ok": False})
+            rows_kw={"claimed": [claimed_row()]}, fq=fq, server_kw={"prompt_ok": False}
+        )
         self.assertFalse(rec["ok"])
         self.assertIn("prompt_failed", rec["reason"])
         self.assertEqual(deleted, [])  # bound session is supervision's, not deleted
 
     def test_sink_candidate_claims_by_id_then_launches(self):
-        fq = FakeQueue(claim_row={"task": {"id": 777, "worker_id": "opencode-claimant"}})
+        fq = FakeQueue(
+            claim_row={"task": {"id": 777, "worker_id": "opencode-claimant"}}
+        )
         rec, _d = self.run_launch(rows_kw={"sink": [sink_row()]}, fq=fq)
         self.assertTrue(rec["ok"], rec)
         self.assertEqual(fq.verbs(), ["claim", "bind", "checkpoint"])
@@ -358,12 +382,14 @@ class TestCli(unittest.TestCase):
 
     def test_launch_takes_exactly_one_spec(self):
         self.assertEqual(
-            launch_one.main(["launch_one.py", "--launch",
-                             f"{QUEUE}:1", f"{QUEUE}:2"]), 2)
+            launch_one.main(["launch_one.py", "--launch", f"{QUEUE}:1", f"{QUEUE}:2"]),
+            2,
+        )
 
     def test_ref_for_dedupe_and_packet(self):
-        row = claimed_row(progress={"lane": "opencode", "stage": "handed_off"},
-                          payload={})
+        row = claimed_row(
+            progress={"lane": "opencode", "stage": "handed_off"}, payload={}
+        )
         self.assertEqual(launch_one.ref_for(row), ("issue", 4242))
         row2 = claimed_row()
         self.assertEqual(launch_one.ref_for(row2), ("issue", 4242))

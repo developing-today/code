@@ -9,7 +9,7 @@ Back up Muse's durable state — memory and avatar — so it can be restored aft
 ## What lives where
 
 - **Memory (source of truth):** `dezren39/hatch-personal` (private git repo). On disk it is `~/hatch-personal/`, symlinked back to `~/MEMORY.md`, `~/memory/`, `~/USER.md`, etc. Backup = commit + push the private repo (surgical staging — memory files only when that is the task). The full symlink restore map is in `hatch-personal/library/inventory/symlink-map.md`.
-- **Avatar:** source image + generated renders under `~/workspace/avatars/`, tracked in the public repo `dezren39/hatch`. Drew wants the backup to clearly include the avatar *and its animations*, with liked animations restorable if an accidental source-image edit produces renders he dislikes — i.e. keep prior render sets, don't just overwrite them; a new source image gets a new render set alongside the old.
+- **Avatar:** source image + generated renders under `~/workspace/avatars/`, tracked in the public repo `dezren39/hatch`. Drew wants the backup to clearly include the avatar _and its animations_, with liked animations restorable if an accidental source-image edit produces renders he dislikes — i.e. keep prior render sets, don't just overwrite them; a new source image gets a new render set alongside the old.
 - **Too big for git:** session transcripts (`~/agents/`, ~1 GB) and similar bulk go as tarballs to the dedicated Google Drive **"Muse Backups"** folder, never into either git repo.
 - **Secrets are never part of a backup.** They live in Bitwarden; backups reference names only. Credential files are SECRET-SKIP (paths + sizes in the private inventory classification) — never copied into a backup set.
 

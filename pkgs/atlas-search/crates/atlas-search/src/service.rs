@@ -54,7 +54,9 @@ fn home_dir() -> PathBuf {
     // resolved state/config/token paths relative to the CWD.
     match std::env::var_os("HOME") {
         Some(home) if !home.is_empty() => PathBuf::from(home),
-        _ => panic!("HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+        _ => panic!(
+            "HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+        ),
     }
 }
 

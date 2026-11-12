@@ -9,6 +9,7 @@ Living document · Status: shipped (2026-10-19) · Register entry F2.2 · Tracki
 - Do not lose anything the nix copy implemented that code lacked.
 
 Origin (2026-10-19):
+
 - Drew asked whether there were "two full source apps in 2 places?" —
   confirmed yes.
 - Recorded directive: "remove the duplicate mcpx copy from dezren39/nix;
@@ -37,6 +38,7 @@ Origin (2026-10-19):
 - No second full mcpx source tree in nix.
 
 Related consolidation (register F2.4, 2026-11-03, separate entry):
+
 - CheckPhase adaptations were later moved into code's `pkgs/mcpx/package.nix`.
 - Daemon modules originate with mcpx in code, are re-exported by opencode,
   passed through by openchamber, and consumed by nix via the single

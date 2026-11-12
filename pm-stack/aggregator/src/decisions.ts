@@ -301,7 +301,11 @@ async function readDecisionsData(file: string): Promise<DecisionsData> {
       return {
         sets: shape.sets.filter(
           (s): s is DecisionSet =>
-            !!s && typeof s === "object" && typeof s.setId === "string" && typeof s.token === "string" && Array.isArray(s.items),
+            !!s &&
+            typeof s === "object" &&
+            typeof s.setId === "string" &&
+            typeof s.token === "string" &&
+            Array.isArray(s.items),
         ),
         drafts,
       };
@@ -405,7 +409,6 @@ export async function getDecisionSet(file: string, setId: string): Promise<Decis
   const sets = await readDecisionSets(file);
   return sets.find((s) => s.setId === setId) ?? null;
 }
-
 
 // --- Decision drafts (server layer, #8766 both-layers upgrade) --------
 //
@@ -923,7 +926,6 @@ export async function listDecisionResolutions(file: string): Promise<DecisionRes
   }
   return out;
 }
-
 
 function emptySetDrafts(): DecisionSetDrafts {
   return { questions: {}, bulk: [], bulkLean: "", bulkNote: "", updatedAt: "" };

@@ -59,7 +59,10 @@ describe("section-risk class registration (#8882)", () => {
 describe("section-risk derivation (#8882)", () => {
   test("every workhorse pool walled -> exactly one FAILED candidate, compact body, soonest reset first", () => {
     const candidates = sectionCandidates(
-      [pool("pool-a", "healthy", [{ percent: 100, resetsAt: SAT }]), pool("pool-b", "walled", [{ percent: 100, resetsAt: FRI }])],
+      [
+        pool("pool-a", "healthy", [{ percent: 100, resetsAt: SAT }]),
+        pool("pool-b", "walled", [{ percent: 100, resetsAt: FRI }]),
+      ],
       { workhorse: ["pool-a", "pool-b"] },
     );
     expect(candidates).toHaveLength(1);

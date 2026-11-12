@@ -1492,7 +1492,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.connection.settimeout(left)
                 chunk = self.rfile.read(min(remaining, _CRAWL_READ_CHUNK_BYTES))
                 if not chunk:
-                    raise ValueError("request body ended before Content-Length bytes arrived")
+                    raise ValueError(
+                        "request body ended before Content-Length bytes arrived"
+                    )
                 chunks.append(chunk)
                 remaining -= len(chunk)
         finally:
@@ -1517,8 +1519,10 @@ class Handler(BaseHTTPRequestHandler):
         if length < 0 or length > _CRAWL_REQUEST_MAX_BODY_BYTES:
             return self._send(
                 400,
-                {"error": f"Content-Length {length} out of range: "
-                          f"0..{_CRAWL_REQUEST_MAX_BODY_BYTES}"},
+                {
+                    "error": f"Content-Length {length} out of range: "
+                    f"0..{_CRAWL_REQUEST_MAX_BODY_BYTES}"
+                },
             )
         try:
             url = json.loads(self._read_request_body(length))["url"]

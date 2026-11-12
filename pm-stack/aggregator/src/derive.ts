@@ -845,8 +845,7 @@ export function deriveToday(
     }
   }
   const byPriority = (a: BoardItem, b: BoardItem) =>
-    priorityRank(a.priority) - priorityRank(b.priority) ||
-    (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+    priorityRank(a.priority) - priorityRank(b.priority) || (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
   for (const item of board
     .filter((b) => b.status === "in-progress")
     .sort(byPriority)
@@ -905,7 +904,16 @@ export function deriveToday(
 // PAYG over $5 (unbilled accrual only — Q3 default), surfaces worst-first.
 // ---------------------------------------------------------------------------
 
-import { countedEstimate, type AttentionFlag, type Horizon, type QuotaAction, type QuotaActionKind, type QuotaView, type SnapshotRecord, type UsageView } from "./model.ts";
+import {
+  countedEstimate,
+  type AttentionFlag,
+  type Horizon,
+  type QuotaAction,
+  type QuotaActionKind,
+  type QuotaView,
+  type SnapshotRecord,
+  type UsageView,
+} from "./model.ts";
 
 export const BUBBLE_PCT = 80;
 export const BUBBLE_USD = 5;
@@ -1106,9 +1114,7 @@ export function buildQuotaActions(
   const rank: Record<QuotaActionKind, number> = { expiry: 0, walled: 1, "high-usage": 2 };
   return actions.sort(
     (a, b) =>
-      rank[a.kind] - rank[b.kind] ||
-      (a.deadline ?? "").localeCompare(b.deadline ?? "") ||
-      a.id.localeCompare(b.id),
+      rank[a.kind] - rank[b.kind] || (a.deadline ?? "").localeCompare(b.deadline ?? "") || a.id.localeCompare(b.id),
   );
 }
 
@@ -1143,9 +1149,13 @@ export function quotaActionTierItems(actions: QuotaAction[], now = Date.now()): 
       reason: a.detail,
       since: at,
       lastSeenAt: at,
-      horizon: (
-        Number.isFinite(left) ? (left <= 86_400_000 ? "today" : left <= 3 * 86_400_000 ? "next-3-days" : "longer") : "longer"
-      ) as Horizon,
+      horizon: (Number.isFinite(left)
+        ? left <= 86_400_000
+          ? "today"
+          : left <= 3 * 86_400_000
+            ? "next-3-days"
+            : "longer"
+        : "longer") as Horizon,
       recommendedAction: a.detail,
     };
   });

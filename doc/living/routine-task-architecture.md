@@ -11,6 +11,7 @@ Living document · Status: shipped (2026-10-04/05) · Register entry F4.2 · Tra
   2026-10-05.
 
 Drew's rulings in the redesign:
+
 - Time-based per-section scheduling instead of a run counter —
   "a counter breaks if the job interval changes".
 - Per-section `todo_sources` allowlists.

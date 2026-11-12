@@ -17,7 +17,7 @@ dispatch: a bounded pool, exclusive leases, no concurrent writers.
 - Pool dirs live under `~/build-cache/broker-pool/`, keyed by
   `(repo, profile label, rustc version + host triple)`. Dependency
   artifacts are checkout-independent, so a pooled dir stays warm
-  across *different worktrees of the same repo*; only workspace
+  across _different worktrees of the same repo_; only workspace
   member crates are path-sensitive (measured split is on code#6797).
 - `checkout` grants an **exclusive lease** on a warm pooled dir (or
   creates one). A concurrent request for the same key gets a second

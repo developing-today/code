@@ -40,10 +40,10 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
             cfg = Path(tmp) / "opencode.jsonc"
             cfg.write_text(
-                '{\n'
+                "{\n"
                 '  "model": "opencode-route/workhorse",\n'
                 '  "small_model": "opencode-route/speed"\n'
-                '}\n'
+                "}\n"
             )
             result = run_gate(["--config", str(cfg), "opencode-route"])
             self.assertEqual(result.returncode, 1)
@@ -56,7 +56,9 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
             clean = Path(tmp) / "clean.jsonc"
             clean.write_text('{\n  "model": "native/model"\n}\n')
             dirty = Path(tmp) / "dirty.jsonc"
-            dirty.write_text('{\n  "agents": {"a": {"model": "opencode-route/scout"}}\n}\n')
+            dirty.write_text(
+                '{\n  "agents": {"a": {"model": "opencode-route/scout"}}\n}\n'
+            )
             result = run_gate(
                 ["--config", str(clean), "--config", str(dirty), "opencode-route"]
             )
@@ -71,7 +73,10 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
             result = run_gate(["--config", str(cfg), "old-provider", "new-provider"])
             self.assertEqual(result.returncode, 1)
             self.assertIn("old-provider", result.stderr)
-            self.assertIn("Retirement gate OK: no references to provider 'new-provider'", result.stdout)
+            self.assertIn(
+                "Retirement gate OK: no references to provider 'new-provider'",
+                result.stdout,
+            )
 
     def test_missing_config_is_error(self):
         result = run_gate(["--config", "/nonexistent/opencode.jsonc", "opencode-route"])
@@ -109,7 +114,6 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("--allow-empty", result.stdout)
 
-
     def test_provider_id_substring_of_others_passes(self):
         # Codex finding 4506371633 (PR #7679): matching is by provider
         # identity, not substring. Retiring "opencode" must not be
@@ -118,11 +122,11 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
             cfg = Path(tmp) / "opencode.jsonc"
             cfg.write_text(
-                '{\n'
+                "{\n"
                 '  "model": "opencode-route/workhorse",\n'
                 '  "provider": {"opencode-go.drewrypope": {}},\n'
                 '  "plugin": ["@opencode/ai/providers/claude-code"]\n'
-                '}\n'
+                "}\n"
             )
             result = run_gate(["--config", str(cfg), "opencode"])
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -134,10 +138,10 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
             cfg = Path(tmp) / "opencode.jsonc"
             cfg.write_text(
-                '{\n'
+                "{\n"
                 '  "provider": {"opencode": {"options": {}}},\n'
                 '  "model": "opencode/some-model"\n'
-                '}\n'
+                "}\n"
             )
             result = run_gate(["--config", str(cfg), "opencode"])
             self.assertEqual(result.returncode, 1)
@@ -179,12 +183,12 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
             cfg = Path(tmp) / "opencode.jsonc"
             cfg.write_text(
-                '{\n'
-                '  // openai-codex retired 2026-11-01; see history.\n'
-                '  /* opencode-route was here,\n'
-                '     multi-line note about opencode-route */\n'
+                "{\n"
+                "  // openai-codex retired 2026-11-01; see history.\n"
+                "  /* opencode-route was here,\n"
+                "     multi-line note about opencode-route */\n"
                 '  "model": "native-provider/model"\n'
-                '}\n'
+                "}\n"
             )
             for provider in ("openai-codex", "opencode-route"):
                 result = run_gate(["--config", str(cfg), provider])
@@ -195,10 +199,10 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
             cfg = Path(tmp) / "opencode.jsonc"
             cfg.write_text(
-                '{\n'
-                '  // opencode-route mentioned in a comment\n'
+                "{\n"
+                "  // opencode-route mentioned in a comment\n"
                 '  "small_model": "opencode-route/speed"\n'
-                '}\n'
+                "}\n"
             )
             result = run_gate(["--config", str(cfg), "opencode-route"])
             self.assertEqual(result.returncode, 1)
@@ -209,10 +213,10 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
             cfg = Path(tmp) / "opencode.jsonc"
             cfg.write_text(
-                '{\n'
+                "{\n"
                 '  "endpoint": "http://127.0.0.1:18750",\n'
                 '  "model": "opencode-route/workhorse"\n'
-                '}\n'
+                "}\n"
             )
             result = run_gate(["--config", str(cfg), "opencode-route"])
             self.assertEqual(result.returncode, 1)
@@ -227,13 +231,13 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
             cfg = Path(tmp) / "opencode.jsonc"
             cfg.write_text(
-                '{\n'
+                "{\n"
                 '  "disabled_providers": [\n'
                 '    "google-vertex",\n'
                 '    "openai-codex"\n'
-                '  ],\n'
+                "  ],\n"
                 '  "model": "native-provider/model"\n'
-                '}\n'
+                "}\n"
             )
             for provider in ("google-vertex", "openai-codex"):
                 result = run_gate(["--config", str(cfg), provider])
@@ -246,10 +250,10 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
             cfg = Path(tmp) / "opencode.jsonc"
             cfg.write_text(
-                '{\n'
+                "{\n"
                 '  "disabled_providers": ["google-vertex"],\n'
                 '  "provider": {"google-vertex": {"options": {}}}\n'
-                '}\n'
+                "}\n"
             )
             result = run_gate(["--config", str(cfg), "google-vertex"])
             self.assertEqual(result.returncode, 1)
@@ -264,11 +268,11 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
             cfg = Path(tmp) / "opencode.jsonc"
             cfg.write_text(
-                '{\n'
+                "{\n"
                 '  "provider": {"some-provider": {"options": {\n'
                 '    "disabled_providers": ["opencode-route/workhorse"]\n'
-                '  }}}\n'
-                '}\n'
+                "  }}}\n"
+                "}\n"
             )
             result = run_gate(["--config", str(cfg), "opencode-route"])
             self.assertEqual(result.returncode, 1, result.stderr)
@@ -282,10 +286,10 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
             cfg = Path(tmp) / "opencode.jsonc"
             cfg.write_text(
-                '{\n'
-                '  /* retirement note that is never closed\n'
+                "{\n"
+                "  /* retirement note that is never closed\n"
                 '  "model": "opencode-route/workhorse"\n'
-                '}\n'
+                "}\n"
             )
             result = run_gate(["--config", str(cfg), "opencode-route"])
             self.assertEqual(result.returncode, 2, result.stderr)
@@ -302,8 +306,10 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("must not be empty", result.stderr)
 
-    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
-                     "root can read chmod-0 files; grep-error path not exercisable")
+    @unittest.skipIf(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        "root can read chmod-0 files; grep-error path not exercisable",
+    )
     def test_unreadable_config_fails_closed(self):
         # Codex finding 4506184829 (PR #7679): a config that exists but
         # cannot be searched is a configuration error (exit 2), never

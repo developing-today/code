@@ -17,12 +17,12 @@ it and says so.
 
 ## 1. Levels: a fixed, ordered set of four
 
-| Level | Name | Meaning |
-| --- | --- | --- |
-| S0 | Public | Intended to be world-readable. |
-| S1 | Internal | For the owner's people/agents; not for strangers. |
-| S2 | Confidential | Named-principal material; the default (see §3). |
-| S3 | Restricted | Local-only in v1; never leaves the server via remote query (§5). |
+| Level | Name         | Meaning                                                          |
+| ----- | ------------ | ---------------------------------------------------------------- |
+| S0    | Public       | Intended to be world-readable.                                   |
+| S1    | Internal     | For the owner's people/agents; not for strangers.                |
+| S2    | Confidential | Named-principal material; the default (see §3).                  |
+| S3    | Restricted   | Local-only in v1; never leaves the server via remote query (§5). |
 
 The levels are a **total order**: a clearance is a single level, and a
 datum is visible to a requester iff `classification <= clearance`.
@@ -129,11 +129,11 @@ Filtering is server-side, before anything leaves the server
 The parent requires a per-level pick; silent filtering and existence
 leaks are both failure modes.
 
-| Withheld level | What the requester learns |
-| --- | --- |
-| S0/S1 | The count of withheld rows (`withheld_count`). |
-| S2 | That withholding happened (a boolean) and which fields were withheld (names + levels, §5) — **not** row counts; volume of confidential data is itself confidential. |
-| S3 | Nothing: no count, no existence signal in the result. The withholding is recorded in the serving server's audit log, visible to its owner (parent §2 audit). |
+| Withheld level | What the requester learns                                                                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S0/S1          | The count of withheld rows (`withheld_count`).                                                                                                                      |
+| S2             | That withholding happened (a boolean) and which fields were withheld (names + levels, §5) — **not** row counts; volume of confidential data is itself confidential. |
+| S3             | Nothing: no count, no existence signal in the result. The withholding is recorded in the serving server's audit log, visible to its owner (parent §2 audit).        |
 
 ## 7. Encrypted data
 

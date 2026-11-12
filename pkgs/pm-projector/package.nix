@@ -71,7 +71,7 @@ let
 in
 stdenvNoCC.mkDerivation {
   pname = "pm-projector";
-  version = manifest.version;
+  inherit (manifest) version;
   inherit src;
 
   nativeBuildInputs = [ makeWrapper ];

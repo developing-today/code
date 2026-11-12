@@ -27,7 +27,11 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-function makeSet(setId: string, createdAt: string, resolutions: Array<"answered" | "deferred" | "request-info" | null>): DecisionSet {
+function makeSet(
+  setId: string,
+  createdAt: string,
+  resolutions: Array<"answered" | "deferred" | "request-info" | null>,
+): DecisionSet {
   return {
     setId,
     title: `Set ${setId}`,
@@ -115,7 +119,9 @@ describe("decisionSetsForView — America/Chicago boundaries (#8867)", () => {
     const justBeforeMidnightChicago = makeSet("a", "2026-11-11T05:59:59.000Z", [null]); // Nov 10, 23:59:59 CST
     const midnightChicago = makeSet("b", "2026-11-11T06:00:00.000Z", [null]); // Nov 11, 00:00:00 CST
     const utcMidnight = makeSet("c", "2026-11-11T00:30:00.000Z", [null]); // Nov 10, 18:30 CST
-    const ids = decisionSetsForView([justBeforeMidnightChicago, midnightChicago, utcMidnight], "today", NOW).map((s) => s.setId);
+    const ids = decisionSetsForView([justBeforeMidnightChicago, midnightChicago, utcMidnight], "today", NOW).map(
+      (s) => s.setId,
+    );
     expect(ids).toEqual(["b"]);
   });
 
@@ -124,7 +130,9 @@ describe("decisionSetsForView — America/Chicago boundaries (#8867)", () => {
     const mondayStart = makeSet("mon", "2026-11-09T06:00:00.000Z", [null]); // Mon Nov 9, 00:00 CST
     const sundayEnd = makeSet("sun-end", "2026-11-16T05:59:59.000Z", [null]); // Sun Nov 15, 23:59:59 CST
     const mondayAfter = makeSet("mon-after", "2026-11-16T06:00:00.000Z", [null]); // Mon Nov 16, 00:00 CST
-    const ids = decisionSetsForView([sundayBefore, mondayStart, sundayEnd, mondayAfter], "week", NOW).map((s) => s.setId);
+    const ids = decisionSetsForView([sundayBefore, mondayStart, sundayEnd, mondayAfter], "week", NOW).map(
+      (s) => s.setId,
+    );
     expect(ids.sort()).toEqual(["mon", "sun-end"]);
   });
 
@@ -132,7 +140,11 @@ describe("decisionSetsForView — America/Chicago boundaries (#8867)", () => {
     const older = makeSet("older", "2026-10-01T12:00:00.000Z", [null]);
     const newer = makeSet("newer", "2026-11-11T12:00:00.000Z", [null]);
     const middle = makeSet("middle", "2026-11-01T12:00:00.000Z", [null]);
-    expect(decisionSetsForView([older, newer, middle], "all", NOW).map((s) => s.setId)).toEqual(["newer", "middle", "older"]);
+    expect(decisionSetsForView([older, newer, middle], "all", NOW).map((s) => s.setId)).toEqual([
+      "newer",
+      "middle",
+      "older",
+    ]);
     // "today"/"week" keep the same newest-first order within the view.
     const t1 = makeSet("t1", "2026-11-11T08:00:00.000Z", [null]);
     const t2 = makeSet("t2", "2026-11-11T16:00:00.000Z", [null]);

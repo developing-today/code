@@ -356,7 +356,6 @@ class TestAuth(ColdStoreTestBase):
         self.assertNotIn("fake-refresh-token", json.dumps(result))
 
 
-
 class TestTokenResponseShapes(ColdStoreTestBase):
     """#6846: a shape-drifted HTTP-200 token response must raise the
     module's ColdStoreError naming the flow and the shape — never a
@@ -365,9 +364,7 @@ class TestTokenResponseShapes(ColdStoreTestBase):
     """
 
     def stub_token(self, body: bytes):
-        return mock.patch(
-            "cold_store.http_request", return_value=(200, {}, body)
-        )
+        return mock.patch("cold_store.http_request", return_value=(200, {}, body))
 
     # -- access_token -------------------------------------------------
     def test_access_token_non_json_body(self):
@@ -854,8 +851,7 @@ class TestWrongShapePrivateJson(ColdStoreTestBase):
     silently mistyped folder id used against Drive."""
 
     def test_non_object_credentials_raise_cold_store_error(self):
-        for payload in ('[]', '[{"client_id": "x"}]', '"hello"', "123",
-                        "null", "true"):
+        for payload in ("[]", '[{"client_id": "x"}]', '"hello"', "123", "null", "true"):
             self.store.credentials_path.write_text(payload)
             with self.assertRaises(cold_store.ColdStoreError) as ctx:
                 self.store.load_credentials()
@@ -876,15 +872,19 @@ class TestWrongShapePrivateJson(ColdStoreTestBase):
             self.assertIn(key, str(ctx.exception), key)
 
     def test_non_object_state_raises_cold_store_error(self):
-        for payload in ('[]', '"hello"', "123", "null", "true"):
+        for payload in ("[]", '"hello"', "123", "null", "true"):
             self.store.state_path.write_text(payload)
             with self.assertRaises(cold_store.ColdStoreError) as ctx:
                 self.store.load_state()
             self.assertIn("state.json", str(ctx.exception), payload)
 
     def test_non_object_folders_raises_cold_store_error(self):
-        for payload in ('{"folders": "abc"}', '{"folders": 123}',
-                        '{"folders": ["root"]}', '{"folders": null}'):
+        for payload in (
+            '{"folders": "abc"}',
+            '{"folders": 123}',
+            '{"folders": ["root"]}',
+            '{"folders": null}',
+        ):
             self.store.state_path.write_text(payload)
             with self.assertRaises(cold_store.ColdStoreError) as ctx:
                 self.store.load_state()
@@ -897,9 +897,7 @@ class TestWrongShapePrivateJson(ColdStoreTestBase):
         self.assertIn("state.json", str(ctx.exception))
 
     def test_happy_path_controls_still_pass(self):
-        self.assertEqual(
-            self.store.load_credentials()["client_id"], "fake-client-id"
-        )
+        self.assertEqual(self.store.load_credentials()["client_id"], "fake-client-id")
         self.store.save_state({"folders": {"a": "1"}})
         self.assertEqual(self.store.load_state(), {"folders": {"a": "1"}})
 
@@ -952,7 +950,9 @@ def make_d1_handler(fake: FakeD1):
                     200,
                     {
                         "success": False,
-                        "errors": [{"code": 7403, "message": "definitive probe failure"}],
+                        "errors": [
+                            {"code": 7403, "message": "definitive probe failure"}
+                        ],
                         "result": None,
                     },
                 )
@@ -1457,6 +1457,7 @@ class TestDriveResponseShapes(ColdStoreTestBase):
         blob.write_bytes(b"bundle")
         for body in (b"not json", b"[]", b'{"id":7}'):
             with self.subTest(body=body):
+
                 def fake_http(method, _url, **_kwargs):
                     if method == "POST":
                         return 200, {"Location": "https://upload.example/session"}, b""
@@ -3574,7 +3575,6 @@ class TestD1ResponseShapes(ColdStoreTestBase):
                     self.store.sync_manifest()
 
 
-
 class TestResumableUploadStalls(ColdStoreTestBase):
     """#2797: a 308 whose Range stops advancing must not loop forever,
     and a Range-less 308 must not count unacknowledged bytes as sent."""
@@ -3652,16 +3652,33 @@ class TestListingBounds6602Drive(ColdStoreTestBase):
     def _fresh_token_fake(self, calls):
         def fake(method, url, headers=None, **kw):
             calls["n"] += 1
-            body = {"files": [{"id": "f1", "name": "b", "size": 1,
-                               "createdTime": "2026-01-01T00:00:00Z"}],
-                    "nextPageToken": "tok-%d" % calls["n"]}
+            body = {
+                "files": [
+                    {
+                        "id": "f1",
+                        "name": "b",
+                        "size": 1,
+                        "createdTime": "2026-01-01T00:00:00Z",
+                    }
+                ],
+                "nextPageToken": "tok-%d" % calls["n"],
+            }
             return 200, {}, json.dumps(body).encode()
+
         return fake
 
     def test_drive_fresh_token_stream_hits_page_bound(self):
         calls = {"n": 0}
-        with mock.patch.object(cold_store, "http_request", self._fresh_token_fake(calls)), mock.patch.object(cold_store, "LIST_MAX_PAGES", 5):
-            with mock.patch.object(self.store, "_folder_id", lambda name: "folder1"), mock.patch.object(self.store, "_auth_headers", lambda: {}):
+        with (
+            mock.patch.object(
+                cold_store, "http_request", self._fresh_token_fake(calls)
+            ),
+            mock.patch.object(cold_store, "LIST_MAX_PAGES", 5),
+        ):
+            with (
+                mock.patch.object(self.store, "_folder_id", lambda name: "folder1"),
+                mock.patch.object(self.store, "_auth_headers", lambda: {}),
+            ):
                 with self.assertRaises(cold_store.ColdStoreError) as ctx:
                     self.store.list_backups("supabase")
         self.assertIn("supabase", str(ctx.exception))
@@ -3669,8 +3686,16 @@ class TestListingBounds6602Drive(ColdStoreTestBase):
 
     def test_drive_result_bound_trips(self):
         calls = {"n": 0}
-        with mock.patch.object(cold_store, "http_request", self._fresh_token_fake(calls)), mock.patch.object(cold_store, "LIST_MAX_RESULTS", 0):
-            with mock.patch.object(self.store, "_folder_id", lambda name: "folder1"), mock.patch.object(self.store, "_auth_headers", lambda: {}):
+        with (
+            mock.patch.object(
+                cold_store, "http_request", self._fresh_token_fake(calls)
+            ),
+            mock.patch.object(cold_store, "LIST_MAX_RESULTS", 0),
+        ):
+            with (
+                mock.patch.object(self.store, "_folder_id", lambda name: "folder1"),
+                mock.patch.object(self.store, "_auth_headers", lambda: {}),
+            ):
                 with self.assertRaises(cold_store.ColdStoreError):
                     self.store.list_backups("supabase")
 
@@ -3681,15 +3706,20 @@ class TestListingBounds6602S3(S3TestBase):
 
         def fake(method, bucket, query=None, **kw):
             calls["n"] += 1
-            body = ("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
-                    "<IsTruncated>true</IsTruncated>"
-                    f"<NextContinuationToken>tok-{calls[chr(110)]}</NextContinuationToken>"
-                    "<Contents><Key>k1</Key><Size>1</Size>"
-                    "<LastModified>2026-10-01T00:00:00.000Z</LastModified></Contents>"
-                    "</ListBucketResult>")
+            body = (
+                '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                "<IsTruncated>true</IsTruncated>"
+                f"<NextContinuationToken>tok-{calls[chr(110)]}</NextContinuationToken>"
+                "<Contents><Key>k1</Key><Size>1</Size>"
+                "<LastModified>2026-10-01T00:00:00.000Z</LastModified></Contents>"
+                "</ListBucketResult>"
+            )
             return 200, {}, body.encode()
 
-        with mock.patch.object(self.store, "_s3_request", fake), mock.patch.object(cold_store, "LIST_MAX_PAGES", 5):
+        with (
+            mock.patch.object(self.store, "_s3_request", fake),
+            mock.patch.object(cold_store, "LIST_MAX_PAGES", 5),
+        ):
             with self.assertRaises(cold_store.ColdStoreError) as ctx:
                 self.store.s3_list_objects("supabase-backups")
         self.assertIn("supabase-backups", str(ctx.exception))
@@ -3862,9 +3892,7 @@ class TestDriveResponseShapesProperty(ColdStoreTestBase):
             if rng.random() < 0.1:
                 entries.insert(rng.randrange(len(entries) + 1), 7)
             payload = {"files": entries}
-            expect_ok = all(
-                _pbt_entry_oracle(entry, require_size) for entry in entries
-            )
+            expect_ok = all(_pbt_entry_oracle(entry, require_size) for entry in entries)
             with self.subTest(payload=repr(payload)[:80], require_size=require_size):
                 if expect_ok:
                     self.assertIs(
@@ -3906,9 +3934,7 @@ class TestDriveResponseShapesProperty(ColdStoreTestBase):
                     )
                 elif payload[key] is None:
                     self.assertIsNone(
-                        cold_store._drive_optional_string(
-                            payload, key, "pbt.opt", None
-                        )
+                        cold_store._drive_optional_string(payload, key, "pbt.opt", None)
                     )
                     with self.assertRaises(cold_store.ColdStoreError):
                         cold_store._drive_optional_string(

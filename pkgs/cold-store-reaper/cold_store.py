@@ -1584,9 +1584,7 @@ class ColdStore:
         if status != 200:
             raise ColdStoreError(f"files.list for get-backup failed (HTTP {status})")
         what = "files.list for get-backup"
-        files = _drive_files(
-            _drive_parse_object(resp, what), what, require_size=True
-        )
+        files = _drive_files(_drive_parse_object(resp, what), what, require_size=True)
         if not files:
             raise ColdStoreError(f"backup not found: {db_name}/{name}")
         file_id = files[0]["id"]

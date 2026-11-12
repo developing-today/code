@@ -232,7 +232,8 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
  * quota would disagree about which pool a model draws from.
  */
 function antigravityPoolForModel(model: string, legacy = false): string {
-  if (legacy) return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
+  if (legacy)
+    return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
   return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;
 }
 
@@ -689,8 +690,7 @@ export function recordsFromEntries(
       // native-record branch; a prototype spelling falls through to the
       // normal pct path like any unknown window name.
       const nativeRecords = entry.serviceId === "turso" ? tursoNativeRecords(entry.planLabel) : undefined;
-      const native =
-        nativeRecords && Object.hasOwn(nativeRecords, w.name) ? nativeRecords[w.name] : undefined;
+      const native = nativeRecords && Object.hasOwn(nativeRecords, w.name) ? nativeRecords[w.name] : undefined;
       if (native) {
         if (w.value == null) continue;
         const key = `${entry.serviceId}|${w.name}`;
@@ -888,8 +888,9 @@ const positiveQuota = (v: unknown): number | null => (isFiniteNumber(v) && v > 0
  * behaviour).
  */
 export function resolveTursoLimits(planLabel?: string, plansDoc?: TursoPlansDoc | null): TursoLimits {
-  const fallback: TursoLimits =
-    (planLabel ? TURSO_PLAN_LIMITS[planLabel.toLowerCase()] : undefined) ?? { ...TURSO_LIMITS };
+  const fallback: TursoLimits = (planLabel ? TURSO_PLAN_LIMITS[planLabel.toLowerCase()] : undefined) ?? {
+    ...TURSO_LIMITS,
+  };
   if (!plansDoc || typeof planLabel !== "string" || planLabel === "" || !Array.isArray(plansDoc.plans)) {
     return fallback;
   }

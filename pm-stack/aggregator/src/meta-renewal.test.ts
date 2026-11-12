@@ -10,8 +10,7 @@ import {
 } from "./meta-renewal.ts";
 
 const NOW = new Date("2026-11-05T16:45:00.000Z");
-const fresh = (minsAgo: number): string =>
-  new Date(NOW.getTime() - minsAgo * 60_000).toISOString();
+const fresh = (minsAgo: number): string => new Date(NOW.getTime() - minsAgo * 60_000).toISOString();
 
 async function statePath(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "meta-renewal-"));

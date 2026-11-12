@@ -28,15 +28,15 @@ Read at `69aa168d5d` (origin/main at this correction pass; the original draft pi
 
 `WorldScopes` is a `u8` bitset (`pkgs/id/src/world/mod.rs:158`). Bits:
 
-| Scope | Bit | Meaning (`mod.rs:161-176`) |
-|---|---|---|
-| `JOIN` | `0b001` | join the world, receive snapshots/events |
-| `CHAT` | `0b010` | send chat |
-| `INPUT` | `0b100` | submit game input |
-| `DELEGATE` | `0b1000` | mint capabilities with a subset of this set |
-| `HISTORY` | `0b1_0000` | read chat without sending |
-| `BUILDER` | `0b10_0000` | install and upgrade the world's program — *admin authority bit* |
-| `MODERATOR` | `0b100_0000` | **revoke participants** — *admin authority bit* |
+| Scope       | Bit          | Meaning (`mod.rs:161-176`)                                      |
+| ----------- | ------------ | --------------------------------------------------------------- |
+| `JOIN`      | `0b001`      | join the world, receive snapshots/events                        |
+| `CHAT`      | `0b010`      | send chat                                                       |
+| `INPUT`     | `0b100`      | submit game input                                               |
+| `DELEGATE`  | `0b1000`     | mint capabilities with a subset of this set                     |
+| `HISTORY`   | `0b1_0000`   | read chat without sending                                       |
+| `BUILDER`   | `0b10_0000`  | install and upgrade the world's program — _admin authority bit_ |
+| `MODERATOR` | `0b100_0000` | **revoke participants** — _admin authority bit_                 |
 
 Two facts matter for governance:
 
@@ -52,13 +52,13 @@ These are separate existing authorities, not two halves of one role. §3 specifi
 
 ### 1.3 The roles record already deferred exactly this work
 
-`doc/2026-10-17T08-00-00Z_feature_world_roles_directory/…md` states: "Roles that would need new authority (a builder who installs modules, **a moderator who kicks**) stay future work: those are admin-token powers today, and handing them to a capability needs its own design." The `MODERATOR` bit and `BUILDER` bit have since landed, but the *governance* design that says who may hold them, and how a world delegates moderation without handing out admin, is what this record supplies.
+`doc/2026-10-17T08-00-00Z_feature_world_roles_directory/…md` states: "Roles that would need new authority (a builder who installs modules, **a moderator who kicks**) stay future work: those are admin-token powers today, and handing them to a capability needs its own design." The `MODERATOR` bit and `BUILDER` bit have since landed, but the _governance_ design that says who may hold them, and how a world delegates moderation without handing out admin, is what this record supplies.
 
 ### 1.4 There is no moderation provider, and adding one would be the wrong move
 
 The current catalog contains 19 entries (`world_caps.rs:219-247,346-502`), each manifesting a provider or platform module. `RequiredScope` has only `Join`, `Chat`, and `ChatRead` (`world_caps.rs:188-198`); it has no moderation authority. A `moderation.hide` provider would either be a grantable capability or require smuggling authority into the provider scope model. Neither is the design here; §2 makes the policy-module/authority-adapter split explicit.
 
-### 1.5 Writer-set authority is a *view* concept, and its implementation issue is closed
+### 1.5 Writer-set authority is a _view_ concept, and its implementation issue is closed
 
 The writer-set design record `doc/2026-10-30T13-15-00Z_design_id_writer_set_view_projection/` establishes: "ingest is a validity gate, never an authority gate; every object that verifies is stored; a view counts only its writer set." Issue [#5545](https://github.com/developing-today/code/issues/5545) is **CLOSED** because its v1 view-projection/discovery implementation landed in PR #6672; the issue and design remain the relevant source, not a live authority-grant mechanism. The follow-on writer-set v2 record (`doc/2026-11-08T11-10-00Z_design_id_writer_sets_v2/`, extends #5545) retains the same separation. See §3.3: writer-set membership never grants moderation authority.
 
@@ -70,12 +70,12 @@ The writer-set design record `doc/2026-10-30T13-15-00Z_design_id_writer_set_view
 
 A moderation library is world code that consumes typed governance inputs and per-world configuration, then returns a typed decision or recommendation. It does **not** execute moderation effects itself. The platform adapter owns event transport, authority checks, state mutation, and journaling. The four hooks named by the issue map onto that seam:
 
-| Hook | Direction | Mechanism owner | Policy / decision owner |
-|---|---|---|---|
-| **submission approval** | platform → library (request) → platform (decision) | platform: submission intake, validation, and journal | library evaluates the world's rules; §5 binds the result to the exact artifact |
-| **report intake** | platform → library (event) | platform: world-scoped report transport, rate limits, deduplication | library rules plus per-world thresholds |
-| **quarantine** | library → adapter (recommendation) → platform (effect) | adapter validates action scope and authority, then applies a permitted world effect | library recommends; configured authority decides or a narrow automation rule fires |
-| **appeal** | participant → platform → library (recommendation) → reviewer | platform: appeal intake and journal | library may recommend; an independent configured reviewer decides |
+| Hook                    | Direction                                                    | Mechanism owner                                                                     | Policy / decision owner                                                            |
+| ----------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| **submission approval** | platform → library (request) → platform (decision)           | platform: submission intake, validation, and journal                                | library evaluates the world's rules; §5 binds the result to the exact artifact     |
+| **report intake**       | platform → library (event)                                   | platform: world-scoped report transport, rate limits, deduplication                 | library rules plus per-world thresholds                                            |
+| **quarantine**          | library → adapter (recommendation) → platform (effect)       | adapter validates action scope and authority, then applies a permitted world effect | library recommends; configured authority decides or a narrow automation rule fires |
+| **appeal**              | participant → platform → library (recommendation) → reviewer | platform: appeal intake and journal                                                 | library may recommend; an independent configured reviewer decides                  |
 
 The split is: **mechanism and authority are platform-provided; policy is world-provided.** The library may not directly invoke a privileged API, mint a role, hide content, or revoke a participant. An automated outcome is possible only when the world config explicitly grants that narrow effect to a named rule and the adapter records it as a policy action. By default, quarantine is a recommendation for an authorized reviewer, not an action the library can take.
 
@@ -107,19 +107,18 @@ A global `ban` is not in v1. A world revoke does not prevent a principal joining
 
 **Default: no additional ordinary provider capabilities.** Submission, report, and appeal arrive as bounded governance events with a world-local target reference, principal reference, trusted event time, relevant public/published presentation, and the governing config/policy version. The library's policy function evaluates that input; it does not need a clock, an all-world content reader, presence enumeration, chat posting, or external I/O merely to decide.
 
-| Capability / input | Default | Why / constraint |
-|---|---|---|
-| Typed submission, report, appeal events | platform event channel, not `wants` | Carries only data the world/report audience is entitled to see; includes trusted event time and target references |
-| `records.read` | **not granted by default** | It is a broad ordinary provider today. A moderation library may receive it only by explicit world grant and only after the read path enforces the relevant audience/target scope; a bounded page size alone is not an authorization boundary |
-| `chat.history` | **not granted by default** | Add only when a world explicitly needs chat context and the reader has `CHAT`/`HISTORY` (`mod.rs:300-314`); prefer a bounded, authorized context in the event |
-| `players` / `players.list` | **not granted by default** | Presence is not required for content policy; add only for a declared, world-specific rule |
-| `time.now` / `time.tick` | **not granted by default** | Threshold windows use the trusted event timestamp; a runtime clock is not policy authority |
-| `chat.say` | **not granted by default** | Notices are a separate platform/UI effect; a moderator policy does not need chat-write authority |
-| `loc.position` / `loc.watch` | **not granted by the default profile** | Sensor providers are excluded from default ceilings and use a consent seam; moderation has no location need |
-| Network, arbitrary file, process, or moderation effect APIs | **not available** | No exfiltration or privilege escape; effects are returned as typed data and checked by the adapter |
+| Capability / input                                          | Default                                | Why / constraint                                                                                                                                                                                                                             |
+| ----------------------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Typed submission, report, appeal events                     | platform event channel, not `wants`    | Carries only data the world/report audience is entitled to see; includes trusted event time and target references                                                                                                                            |
+| `records.read`                                              | **not granted by default**             | It is a broad ordinary provider today. A moderation library may receive it only by explicit world grant and only after the read path enforces the relevant audience/target scope; a bounded page size alone is not an authorization boundary |
+| `chat.history`                                              | **not granted by default**             | Add only when a world explicitly needs chat context and the reader has `CHAT`/`HISTORY` (`mod.rs:300-314`); prefer a bounded, authorized context in the event                                                                                |
+| `players` / `players.list`                                  | **not granted by default**             | Presence is not required for content policy; add only for a declared, world-specific rule                                                                                                                                                    |
+| `time.now` / `time.tick`                                    | **not granted by default**             | Threshold windows use the trusted event timestamp; a runtime clock is not policy authority                                                                                                                                                   |
+| `chat.say`                                                  | **not granted by default**             | Notices are a separate platform/UI effect; a moderator policy does not need chat-write authority                                                                                                                                             |
+| `loc.position` / `loc.watch`                                | **not granted by the default profile** | Sensor providers are excluded from default ceilings and use a consent seam; moderation has no location need                                                                                                                                  |
+| Network, arbitrary file, process, or moderation effect APIs | **not available**                      | No exfiltration or privilege escape; effects are returned as typed data and checked by the adapter                                                                                                                                           |
 
 If a world explicitly grants an optional provider, the library's ordinary capability record remains subject to #5958's `requested` / `discovered_used` model and #6017's `effective_grant` / `observed` reporting. These are measurements and grants, not moderation authority. The legitimate default capability set is therefore **empty beyond the event input**; optional read/context providers are explicit, minimal, and audience-scoped.
-
 
 ---
 
@@ -127,13 +126,13 @@ If a world explicitly grants an optional provider, the library's ordinary capabi
 
 ### 3.1 Authorities that must remain separate
 
-| Authority | Where it lives | Granularity | Can the library hold it? |
-|---|---|---|---|
-| **Capability** (provider grant) | release `requested` plus world-instance `effective_grant` | per provider and world | No; providers are inputs/effects of the program, not action authority |
-| **World participant scope** | `WorldScopes` bits on a join capability | per world participant/session | No; issued by the platform and checked by the adapter |
-| **Directory level** | `Level` in a group (`directory.rs:33-46`) | account-level server authority | No; directory membership |
-| **World governance appointment** (this proposal) | signed, versioned world governance config | per world, actor, and decision kind | No; the config and adapter—not library code—bind and enforce it |
-| **Writer-set inclusion** | signed view/set objects | per view and causal frontier | No; it controls which valid writes count in that view, not who governs the world |
+| Authority                                        | Where it lives                                            | Granularity                         | Can the library hold it?                                                         |
+| ------------------------------------------------ | --------------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------- |
+| **Capability** (provider grant)                  | release `requested` plus world-instance `effective_grant` | per provider and world              | No; providers are inputs/effects of the program, not action authority            |
+| **World participant scope**                      | `WorldScopes` bits on a join capability                   | per world participant/session       | No; issued by the platform and checked by the adapter                            |
+| **Directory level**                              | `Level` in a group (`directory.rs:33-46`)                 | account-level server authority      | No; directory membership                                                         |
+| **World governance appointment** (this proposal) | signed, versioned world governance config                 | per world, actor, and decision kind | No; the config and adapter—not library code—bind and enforce it                  |
+| **Writer-set inclusion**                         | signed view/set objects                                   | per view and causal frontier        | No; it controls which valid writes count in that view, not who governs the world |
 
 The library receives only its ordinary, explicitly granted inputs and returns policy data. It neither holds nor derives participant, directory, world-governance, or writer-set authority.
 
@@ -164,7 +163,6 @@ Every governance outcome must satisfy, and implementation must test:
 3. **Appealable** — an outcome that removes or restricts something names its target and structured reason code; appeal input is separately retained under its privacy policy.
 4. **Authority-checked** — the journal proves the adapter checked the actor's current world-scoped authority or the exact configured automatic-action rule.
 5. **Projection-safe** — a withhold changes only the world moderation projection; it does not mutate signed content, the writer set, board state, or another world's state.
-
 
 ---
 
@@ -199,13 +197,13 @@ governance {
 Four properties this buys, each traceable to a requirement:
 
 - **Same policy, different people.** Moderator and reviewer sets are configuration; the library code and policy rules are identical across worlds.
-- **Same library, different threshold.** `report_quarantine`/`report_window` configure when a *recommendation* exists; they do not by themselves authorize an effect.
+- **Same library, different threshold.** `report_quarantine`/`report_window` configure when a _recommendation_ exists; they do not by themselves authorize an effect.
 - **Automation is explicit and narrow.** Only `withhold` may be set to `recommend` or `moderators`; v1 never lets a threshold alone revoke a participant. A report count is evidence, not a verdict.
 - **Local judgment is not surrendered.** `exemptions` is outside the shared core, so adopting a shared policy bundle does not override the world's carve-outs. This is the property [#6005](https://github.com/developing-today/code/issues/6005) requires of a data-only pack.
 
 ### 4.2 Format
 
-The issue names the KDL profile ([#5753](https://github.com/developing-today/code/issues/5753)). That work is **open and blocked**, and there is no `kdl` dependency in `pkgs/id` at this revision. This record therefore specifies the parameter *surface* above and **does not commit to a serialization**. When #5753 lands, the surface maps onto its profile. The block above is illustrative shape, not a wire format.
+The issue names the KDL profile ([#5753](https://github.com/developing-today/code/issues/5753)). That work is **open and blocked**, and there is no `kdl` dependency in `pkgs/id` at this revision. This record therefore specifies the parameter _surface_ above and **does not commit to a serialization**. When #5753 lands, the surface maps onto its profile. The block above is illustrative shape, not a wire format.
 
 ### 4.3 Where the config lives, and how it becomes authoritative
 
@@ -225,7 +223,7 @@ Two limits keep "config, not a fork" from becoming "config can grant anything":
 "Pre-approve specific designs" needs its object pinned. The issue's three candidates resolve differently:
 
 - **A world object submission** — content or a build a participant wants in this world: a map, a post, a model, or an attachable artifact. **This is the object pre-approval binds in v1.**
-- **A library** — approved as code to attach. That is the capability-footprint/attachment decision owned by the capability model ([#5958](https://github.com/developing-today/code/issues/5958), with observability in [#6017](https://github.com/developing-today/code/issues/6017)). Governance may *reference* an approved library and may require that approval before attaching it, but does not re-approve its capability set.
+- **A library** — approved as code to attach. That is the capability-footprint/attachment decision owned by the capability model ([#5958](https://github.com/developing-today/code/issues/5958), with observability in [#6017](https://github.com/developing-today/code/issues/6017)). Governance may _reference_ an approved library and may require that approval before attaching it, but does not re-approve its capability set.
 - **A user function** — a dynamic function (the S-brief of #5955). Same answer as libraries: capability-footprint approval, not this submission gate.
 
 So **pre-approval in this record means world submission/artifact approval**. Library and user-function capability approval are explicitly out of scope and delegated; their designs remain unsettled.
@@ -245,7 +243,7 @@ So **pre-approval in this record means world submission/artifact approval**. Lib
 
 ### 5.3 Who approves, and what approval is not
 
-Approvers are the config's `reviewers` (§4.1), distinct from `moderators`: a reviewer decides *may this artifact enter this world*, a moderator decides *must this effect remove or restrict something*. Worlds may appoint the same principals to both, but the decision kinds remain distinct.
+Approvers are the config's `reviewers` (§4.1), distinct from `moderators`: a reviewer decides _may this artifact enter this world_, a moderator decides _must this effect remove or restrict something_. Worlds may appoint the same principals to both, but the decision kinds remain distinct.
 
 Approval is **not** a capability grant, a signature by the submitter, a transfer of ownership, or a waiver of the artifact's own read/audience rules. It is one named gate, evaluated by the library and recorded by the adapter. The world retains its ordinary rights to withhold an approved object later through §2.3/§3.4.
 
@@ -301,7 +299,7 @@ Board moderation operates on the **signed public board graph and its default pro
 - **World report transport and privacy.** World reports need a platform intake path with retention, audience, and anti-abuse limits. Deferred: this is a world-instance transport and data-retention design, not a provider and not a board report. Default for v1: world-local/private intake with structured fields, trusted receipt time, bound retention, and no implicit forwarding. Filed as an implementation slice (§9).
 - **Appeal adjudication and escalation.** Who hears an appeal when the moderator is the accuser? §3.4 makes outcomes attributable and appealable; the adjudication ladder is not designed here. Default for v1: an independent configured reviewer; no automatic escalation to a server admin, and no platform-wide arbiter. Owner policy may later add a server-level escalation.
 - **Cross-world moderation signals.** Whether a shared pack or policy decision in one world informs another is feed-protocol territory (#6005, and the closed #6006). Default: no automatic cross-world effect; any sharing is advisory data adopted by each world's own config.
-- **Automated withhold:** v1 allows a configured threshold to create a *recommendation*, and permits automatic execution only when `decision_authority.withhold` explicitly opts in with a bounded action (for example, withhold from the default projection pending review). Revocation is never automatic. The exact automatic-action journaling shape is an implementation slice.
+- **Automated withhold:** v1 allows a configured threshold to create a _recommendation_, and permits automatic execution only when `decision_authority.withhold` explicitly opts in with a bounded action (for example, withhold from the default projection pending review). Revocation is never automatic. The exact automatic-action journaling shape is an implementation slice.
 - **Legacy admin-issued moderator scope:** whether config appointments will reuse `WorldScopes::MODERATOR`, add a distinct world-governance authorization, or migrate the scope requires implementation review; this record deliberately does not prescribe it beyond the non-widening invariants in §3.2.
 
 ## 8. Source and packet drift

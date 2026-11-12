@@ -294,14 +294,17 @@ export function isProjectAudit(value: unknown): value is ProjectAudit {
     Number.isInteger(value.totalItems) &&
     (value.totalItems as number) >= 0 &&
     Array.isArray(value.fields) &&
-    value.fields.every((field) =>
-      isRecord(field) &&
-      typeof field.id === "string" &&
-      typeof field.name === "string" &&
-      typeof field.dataType === "string" &&
-      (field.options === undefined ||
-        (Array.isArray(field.options) &&
-          field.options.every((option) => isRecord(option) && typeof option.id === "string" && typeof option.name === "string"))),
+    value.fields.every(
+      (field) =>
+        isRecord(field) &&
+        typeof field.id === "string" &&
+        typeof field.name === "string" &&
+        typeof field.dataType === "string" &&
+        (field.options === undefined ||
+          (Array.isArray(field.options) &&
+            field.options.every(
+              (option) => isRecord(option) && typeof option.id === "string" && typeof option.name === "string",
+            ))),
     ) &&
     Array.isArray(value.views) &&
     value.views.every(
@@ -385,7 +388,8 @@ export async function fetchProjectSnapshot(
         audit: parseProjectAudit(firstPage, auditItems, generatedAt),
       };
     }
-    if (!info.endCursor || info.endCursor === cursor) throw new Error("github GraphQL project pagination did not advance");
+    if (!info.endCursor || info.endCursor === cursor)
+      throw new Error("github GraphQL project pagination did not advance");
     if (page === 9) throw new Error(`github project pool truncated at 10-page cap (totalCount: ${info.totalCount})`);
     cursor = info.endCursor;
   }

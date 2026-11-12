@@ -1110,7 +1110,9 @@ async function main(): Promise<void> {
           gateNext = await count(`${base} label:next`);
         } catch (err) {
           failedRepos.add(repo);
-          console.error(`collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); backlog counts unavailable`);
+          console.error(
+            `collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); backlog counts unavailable`,
+          );
         }
         rows.push({ repo, openIssues, gateNow, gateNext, staleOpenIssues, staleIssuesCollectedAt, staleIssuesError });
       }
@@ -1306,7 +1308,9 @@ async function main(): Promise<void> {
         ? `, hub ${saas.length} services / ${payg?.length ?? 0} payg / ${charges?.length ?? 0} charges`
         : ", no hub sections") +
       (dedupedSnapshots.length ? `, snapshots ${dedupedSnapshots.length} records` : "") +
-      (projectAudit ? `, projects ${projectAudit.totalItems} total / ${projects?.length ?? 0} resolvable` : ", no projects section") +
+      (projectAudit
+        ? `, projects ${projectAudit.totalItems} total / ${projects?.length ?? 0} resolvable`
+        : ", no projects section") +
       (coverage ? `, coverage ${coverage.length} repos` : ", no coverage section") +
       (aa.status === "ok"
         ? `, aa ${aa.rankings?.length ?? 0} rankings / ${aa.configs?.length ?? 0} configs / ${aa.testRuns?.length ?? 0} test runs`

@@ -64,8 +64,7 @@ const EXIT_HTTP: i32 = 4;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const WORKFLOW_FILE: &str = "fleet-dispatch-test.yml";
-const DEFAULT_COMMANDS: &str =
-    "set -eux; echo dispatch-test smoke; git rev-parse HEAD; uname -a";
+const DEFAULT_COMMANDS: &str = "set -eux; echo dispatch-test smoke; git rev-parse HEAD; uname -a";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -255,11 +254,9 @@ fn parse_threshold(raw: Option<&str>, config: &Config) -> Result<u64> {
     match raw {
         None => Ok(config.dispatch_test_threshold()),
         Some(v) => {
-            let parsed = v.parse::<u64>().map_err(|_| {
-                usage(format!(
-                    "--threshold must be a positive integer, got {v:?}"
-                ))
-            })?;
+            let parsed = v
+                .parse::<u64>()
+                .map_err(|_| usage(format!("--threshold must be a positive integer, got {v:?}")))?;
             // #6603: 0 is the #6412 misspelling class on the CLI path
             // too — `active < 0` is false for every count, so no
             // execution home could ever be eligible.
@@ -1012,7 +1009,9 @@ fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
         &[],
     )?;
     if parsed.get("commands").is_some() && parsed.get("commands-file").is_some() {
-        return Err(usage("--commands and --commands-file are mutually exclusive"));
+        return Err(usage(
+            "--commands and --commands-file are mutually exclusive",
+        ));
     }
     let threshold = parse_threshold(parsed.get("threshold"), config)?;
     let submodule = match parsed.get("submodule") {
@@ -1123,10 +1122,7 @@ fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
         || {
             turso.execute(
                 "UPDATE jobs SET status = 'dispatched', updated_at = ? WHERE id = ?",
-                &[
-                    TursoArg::Text(now_rfc3339()),
-                    TursoArg::Text(id.clone()),
-                ],
+                &[TursoArg::Text(now_rfc3339()), TursoArg::Text(id.clone())],
             )?;
             Ok(())
         },
@@ -1610,7 +1606,14 @@ mod tests {
 
     #[test]
     fn submodule_names_are_single_path_segments() {
-        for ok in ["code", "opencode", "openchamber", "nix", "hatch-personal", "dezren39-zettel"] {
+        for ok in [
+            "code",
+            "opencode",
+            "openchamber",
+            "nix",
+            "hatch-personal",
+            "dezren39-zettel",
+        ] {
             assert!(valid_submodule(ok), "{ok} should be valid");
         }
         for bad in ["", ".", "..", "../code", "code/sub", "a b", "a/b", "x;rm"] {
@@ -1652,7 +1655,9 @@ mod tests {
             },
             || {
                 calls.borrow_mut().push("dispatch");
-                Err(transport_err("GitHub API: workflow does not have a workflow_dispatch trigger"))
+                Err(transport_err(
+                    "GitHub API: workflow does not have a workflow_dispatch trigger",
+                ))
             },
             || {
                 calls.borrow_mut().push("mark");

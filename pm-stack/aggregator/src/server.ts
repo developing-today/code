@@ -101,7 +101,16 @@ import {
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { allRefs, buildAttention, buildQuotaActions, deriveToday, filterAttentionViewByRefs, projectPace, quotaActionTierItems, type RoadmapGrain } from "./derive.ts";
+import {
+  allRefs,
+  buildAttention,
+  buildQuotaActions,
+  deriveToday,
+  filterAttentionViewByRefs,
+  projectPace,
+  quotaActionTierItems,
+  type RoadmapGrain,
+} from "./derive.ts";
 import {
   reconcileRoadmap,
   roadmapDriftReport,
@@ -204,7 +213,6 @@ import {
   type ForecastContract,
 } from "./forecast-contract.ts";
 
-
 // Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
 // pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
 // astral character straddling the cap is dropped whole, so a persisted
@@ -237,8 +245,8 @@ const loadSpendCards = async (): Promise<SpendCardsView | null> => {
 };
 
 async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
-  const targets = [...items.values()].filter((item) =>
-    item.labels.some((label) => label.toLowerCase() === "ready-for-agent") && /#\d+$/.test(item.ref),
+  const targets = [...items.values()].filter(
+    (item) => item.labels.some((label) => label.toLowerCase() === "ready-for-agent") && /#\d+$/.test(item.ref),
   );
   if (!targets.length) return [];
   const observedAt = new Date().toISOString();
@@ -256,20 +264,27 @@ async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
   }
   try {
     const state = await fetchRfaState(cfg.readyForAgent.baseUrl);
-    return targets.map((item) => {
-      const match = /^(.*)#(\d+)$/.exec(item.ref);
-      if (!match) return null;
-      return {
-        ref: item.ref,
-        state: dispatchStateFor(state, match[1], Number(match[2])) || RFA_NOT_PICKED_UP,
-        provenance: { source: "ready-for-agent", observedAt, repository: match[1] },
-      };
-    }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    return targets
+      .map((item) => {
+        const match = /^(.*)#(\d+)$/.exec(item.ref);
+        if (!match) return null;
+        return {
+          ref: item.ref,
+          state: dispatchStateFor(state, match[1], Number(match[2])) || RFA_NOT_PICKED_UP,
+          provenance: { source: "ready-for-agent", observedAt, repository: match[1] },
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
   } catch {
     return targets.map((item) => ({
       ref: item.ref,
       state: "unavailable",
-      provenance: { source: "ready-for-agent", observedAt, repository: item.ref.split("#")[0], error: "harness read failed" },
+      provenance: {
+        source: "ready-for-agent",
+        observedAt,
+        repository: item.ref.split("#")[0],
+        error: "harness read failed",
+      },
     }));
   }
 }
@@ -1026,7 +1041,9 @@ function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, ope
   const rows = visible
     .map((set) => {
       const s = decisionSetSummary(set);
-      const stamp = Number.isFinite(Date.parse(s.createdAt)) ? CHICAGO_STAMP.format(new Date(s.createdAt)) : s.createdAt;
+      const stamp = Number.isFinite(Date.parse(s.createdAt))
+        ? CHICAGO_STAMP.format(new Date(s.createdAt))
+        : s.createdAt;
       const breakdown = `${s.answered} answered · ${s.deferred} deferred · ${s.infoRequested} sent back for more info`;
       const state = s.fullyResolved ? `all settled — ${breakdown}` : `${s.openQuestions} open · ${breakdown}`;
       return `<div class="item"><h2><a href="${esc(decisionsPageUrl(set))}">${esc(s.title)}</a></h2>
@@ -1047,7 +1064,6 @@ ${visible.length ? rows : empty}
 </main></body></html>`;
 }
 
-
 function renderDecisionsForbidden(): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
@@ -1055,7 +1071,6 @@ function renderDecisionsForbidden(): string {
 <p class="context">This decisions link is unknown or its token does not match. Nothing about the set is shown without the correct link.</p>
 </main></body></html>`;
 }
-
 
 /** The PWA manifest (#3315 slice a, landed with #3676): start_url is
  * the attention view per the design; icons incl. maskable + iOS. */
@@ -1083,7 +1098,16 @@ function emptyQuotaView(): QuotaView {
   return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
 }
 function emptyUsageView(): UsageView {
-  return { services: [], uninstrumentedServices: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
+  return {
+    services: [],
+    uninstrumentedServices: [],
+    payg: [],
+    charges: [],
+    attention: [],
+    domains: null,
+    subscriptions: [],
+    history: {},
+  };
 }
 
 async function loadBoardContext() {
@@ -1148,7 +1172,10 @@ async function allForecastContracts(
     for (const subjectRef of subjects) {
       const poolItem = poolByRef.get(subjectRef);
       const statusDisagreement =
-        poolItem && poolItem.status && ((poolItem.state === "closed" && poolItem.status !== "Done") || (poolItem.state === "open" && poolItem.status === "Done"))
+        poolItem &&
+        poolItem.status &&
+        ((poolItem.state === "closed" && poolItem.status !== "Done") ||
+          (poolItem.state === "open" && poolItem.status === "Done"))
           ? `GitHub state ${poolItem.state} disagrees with Project Status ${poolItem.status}; both are shown, neither is preferred`
           : null;
       for (const c of subjectForecastContracts(cutoffs, subjectRef, {
@@ -1245,7 +1272,9 @@ async function searchContext(query: string) {
   // (registry taskRefs, tier-item refs) join the resolution set, or
   // their search badges always render unresolved even when the live
   // pool/projector could resolve them.
-  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(isValidRef);
+  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(
+    isValidRef,
+  );
   const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
   const items = await source.items(refs);
   const extras = { registry, dns, services: usage?.services ?? [], tierItems };
@@ -2194,7 +2223,9 @@ async function handler(req: Request): Promise<Response> {
       return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
     }
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale));
+    return html(
+      renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale),
+    );
   }
   if (path === "/frag/today") {
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
@@ -2364,23 +2395,53 @@ async function handler(req: Request): Promise<Response> {
     // only the named entries render, and the refs ride the fragment
     // URLs so the streamed sections stay filtered.
     const refsParam = url.searchParams.get("refs");
-    const refs = refsParam ? refsParam.split(",").map((ref) => ref.trim()).filter(Boolean) : [];
+    const refs = refsParam
+      ? refsParam
+          .split(",")
+          .map((ref) => ref.trim())
+          .filter(Boolean)
+      : [];
     if (url.searchParams.get("full") !== "1") {
       return html(renderAttentionShell(prov(), provDetail(), refsParam ?? undefined));
     }
     const rendered = await attentionRender();
     const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
-    return html(renderAttention(view, rendered.coverage, prov(), rendered.counts, provDetail(), rendered.act, rendered.briefs, rendered.census));
+    return html(
+      renderAttention(
+        view,
+        rendered.coverage,
+        prov(),
+        rendered.counts,
+        provDetail(),
+        rendered.act,
+        rendered.briefs,
+        rendered.census,
+      ),
+    );
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
     const refsParam = url.searchParams.get("refs");
-    const refs = refsParam ? refsParam.split(",").map((ref) => ref.trim()).filter(Boolean) : [];
+    const refs = refsParam
+      ? refsParam
+          .split(",")
+          .map((ref) => ref.trim())
+          .filter(Boolean)
+      : [];
     const rendered = await attentionRender();
     const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
-    const sections = attentionSections(view, rendered.coverage, rendered.counts, rendered.act, rendered.briefs, rendered.census);
-    return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section], refsParam ?? undefined)));
+    const sections = attentionSections(
+      view,
+      rendered.coverage,
+      rendered.counts,
+      rendered.act,
+      rendered.briefs,
+      rendered.census,
+    );
+    return sseResponse(
+      ssePatch(`#attn-${section}`, attentionFragment(section, sections[section], refsParam ?? undefined)),
+    );
   }
   if (path === "/assets/app.css") {
     // The committed Tailwind + DaisyUI build (Phase C): source is
@@ -2536,8 +2597,11 @@ async function handler(req: Request): Promise<Response> {
     // #5082: the live-source fan-out rides the programSources cache
     // (TTL + single-flight); the local-store reads and everything
     // view-dependent below stay per-request.
-    const [{ items, pool, rows, orchestration, census, poolAvailable }, formOpts, actionsByObject] =
-      await Promise.all([programSources(), commentFormOpts(), actionsStore.byObject()]);
+    const [{ items, pool, rows, orchestration, census, poolAvailable }, formOpts, actionsByObject] = await Promise.all([
+      programSources(),
+      commentFormOpts(),
+      actionsStore.byObject(),
+    ]);
     // #1276 (Codex P2, PR #4013): /projects redirects here with the
     // view parameters preserved, but this handler never resolved the
     // view — apply it to the pool before rendering, exactly as
@@ -2657,8 +2721,7 @@ async function handler(req: Request): Promise<Response> {
     const bounded = boardJsonViewBody(
       board,
       items,
-      (b) =>
-        linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+      (b) => linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
       { showAllDone },
     );
     return jsonCompact({ board: bounded.board, items: bounded.items, view: resolved.view?.id ?? null });
@@ -2914,9 +2977,7 @@ async function handler(req: Request): Promise<Response> {
       // 400 (the poster's bug should be loud at the poster), while a
       // store failure is logged and never fails the incident post.
       const ext =
-        rawBody && typeof rawBody === "object" && !Array.isArray(rawBody)
-          ? (rawBody as Record<string, unknown>)
-          : {};
+        rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? (rawBody as Record<string, unknown>) : {};
       const hasNeedsDrew = ext.needsDrew !== undefined;
       const hasStackHealth = ext.stackHealth !== undefined;
       const hasDecisionSet = ext.decisionSet !== undefined;
@@ -2934,9 +2995,7 @@ async function handler(req: Request): Promise<Response> {
             status,
           );
         } catch (err) {
-          console.error(
-            `alerts intake: needsDrew raise failed (${err instanceof Error ? err.message : "error"})`,
-          );
+          console.error(`alerts intake: needsDrew raise failed (${err instanceof Error ? err.message : "error"})`);
           return json({ incident, created }, status);
         }
       }
@@ -2950,9 +3009,7 @@ async function handler(req: Request): Promise<Response> {
           }
           requestAlertTick();
         } catch (err) {
-          console.error(
-            `alerts intake: stackHealth update failed (${err instanceof Error ? err.message : "error"})`,
-          );
+          console.error(`alerts intake: stackHealth update failed (${err instanceof Error ? err.message : "error"})`);
         }
         return json({ incident, created }, status);
       }
@@ -2962,14 +3019,9 @@ async function handler(req: Request): Promise<Response> {
         try {
           const set = await raiseDecisionSet(cfg.decisionsFile, v.value, parsed.value.source);
           requestAlertTick();
-          return json(
-            { incident, created, decisionSet: { setId: set.setId, pageUrl: decisionsPageUrl(set) } },
-            status,
-          );
+          return json({ incident, created, decisionSet: { setId: set.setId, pageUrl: decisionsPageUrl(set) } }, status);
         } catch (err) {
-          console.error(
-            `alerts intake: decisionSet raise failed (${err instanceof Error ? err.message : "error"})`,
-          );
+          console.error(`alerts intake: decisionSet raise failed (${err instanceof Error ? err.message : "error"})`);
           return json({ incident, created }, status);
         }
       }
@@ -3126,7 +3178,11 @@ async function handler(req: Request): Promise<Response> {
       typeof body.comment === "string" ? body.comment : undefined,
     );
     if (!result) return json({ error: "unknown set" }, 404);
-    return json({ outcomes: result.outcomes, deferredCount: result.deferredCount, ...decisionSetOpenState(result.set) });
+    return json({
+      outcomes: result.outcomes,
+      deferredCount: result.deferredCount,
+      ...decisionSetOpenState(result.set),
+    });
   }
   const decisionsReqInfoMatch = /^\/api\/decisions\/([^/]+)\/request-info$/.exec(path);
   if (req.method === "POST" && decisionsReqInfoMatch) {
@@ -3533,8 +3589,12 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
     readFile(cfg.opencodeConfigFile, "utf8").catch(() => ""),
   ]);
   const drewActivity = [
-    ...actions.filter((action) => action.author.kind === "drew").map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
-    ...comments.filter((comment) => comment.author.kind === "drew").map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
+    ...actions
+      .filter((action) => action.author.kind === "drew")
+      .map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
+    ...comments
+      .filter((comment) => comment.author.kind === "drew")
+      .map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
   ];
   return {
     attention: attention.view,
@@ -3542,7 +3602,10 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
     health,
     drewActivity,
     soleDoorPoolIds: deriveSoleDoorPoolIds(quota),
-    sectionPools: sectionPoolIdsFromConfig(opencodeConfigText, quota.pools.map((pool) => pool.id)),
+    sectionPools: sectionPoolIdsFromConfig(
+      opencodeConfigText,
+      quota.pools.map((pool) => pool.id),
+    ),
     needsDrewRaised,
     decisionSets,
     stackHealthDown,

@@ -71,7 +71,7 @@ outage is recoverable, a double-launch's damage is not.
   provider / model / variant — the leaf that actually served your
   last step, not your declared route) and pass it on the claim —
   `--model-provider <provider> --model-id <model>
-  --model-variant <variant>` (variant only when lastServing
+--model-variant <variant>` (variant only when lastServing
   carries one). The broker stamps it on the task
   (claim_provider / claim_model / claim_variant): the model AT
   CLAIM TIME — a later failover does not rewrite it. If the
@@ -164,7 +164,7 @@ outage is recoverable, a double-launch's damage is not.
    stuck_bound entry): reclaim the task to unbound with one atomic
    compare-and-clear CLI call:
    `bind <id> --worker opencode-claimant --session-id <old session
-   id> --launched-by opencode-claimant-recovery:zero-message-deleted`.
+id> --launched-by opencode-claimant-recovery:zero-message-deleted`.
    Migration 0022 makes this reserved `launched_by` value verify the
    old id against BOTH `tasks.progress.session_id` and the lane
    ledger, then clear both in one transaction and record
@@ -186,8 +186,8 @@ outage is recoverable, a double-launch's damage is not.
    zero-message session, first do the verified delete above; for a
    gone session, absence is already verified. Then terminally fail
    the task as its `worker_id` — `fail <id> --worker <worker_id>
-   --error "bound session <id> unavailable without terminal outcome; attempts
-   exhausted" --reason-class deterministic` with `--execution
+--error "bound session <id> unavailable without terminal outcome; attempts
+exhausted" --reason-class deterministic` with `--execution
    "{\"lane\": \"opencode\", \"session_id\": \"<the bound
       session id>\", \"fallback_reason\": \"launch_failed_attempts_exhausted\"}"
    so the bound session id survives in the execution record.
