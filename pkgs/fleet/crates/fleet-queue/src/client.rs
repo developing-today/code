@@ -843,7 +843,10 @@ fn parse_args(rest: &[String], flags: &[&str], bools: &[&str]) -> Args {
 /// (e.g. `--queue a --queue b` recorded queue=b), and a boolean given
 /// an inline value (`--dry-run=false`) used to be read as `true` —
 /// a real enqueue silently became a dry run that enqueued nothing
-/// and exited 0.
+/// and exited 0. A value flag followed by another flag token is the
+/// same class (#8582, Codex P1 on PR #8790): the flag token is not a
+/// value — `--head-sha --dry-run` used to persist "--dry-run" as the
+/// SHA on a mutating stack record instead of erroring.
 fn parse_args_inner(rest: &[String], flags: &[&str], bools: &[&str]) -> Result<Args, String> {
     let mut pos = Vec::new();
     let mut opts = Map::new();
@@ -870,7 +873,7 @@ fn parse_args_inner(rest: &[String], flags: &[&str], bools: &[&str]) -> Result<A
                 if let Some(v) = inline {
                     opts.insert(name, Value::String(v));
                     i += 1;
-                } else if i + 1 < rest.len() {
+                } else if i + 1 < rest.len() && !rest[i + 1].starts_with("--") {
                     opts.insert(name, Value::String(rest[i + 1].clone()));
                     i += 2;
                 } else {
@@ -4025,6 +4028,47 @@ mod tests {
         assert!(err.contains("--queue"), "error names the flag: {err}");
         // Inline and separate forms of the same flag also collide.
         assert!(parse_args_inner(&pos(&["--queue=a", "--queue", "b"]), &["queue"], &[]).is_err());
+    }
+
+    #[test]
+    fn flag_token_as_value_is_a_usage_error() {
+        // #8582 (Codex P1 on PR #8790): a value flag followed by a flag
+        // token used to consume that token as its value, so
+        // `stack record --head-sha --dry-run` persisted "--dry-run" as
+        // the head SHA on a mutating broker call instead of erroring.
+        // Oracle: the operator argument contract (AGENTS.md #3352) - a
+        // present-but-valueless option is a usage error naming the flag.
+        let err = parse_args_inner(
+            &pos(&["--head-sha", "--dry-run"]),
+            &["head-sha"],
+            &["dry-run"],
+        )
+        .err()
+        .expect("flag token must not be consumed as a value");
+        assert!(err.contains("--head-sha"), "error names the flag: {err}");
+        assert!(
+            err.contains("expected one argument"),
+            "error names the defect: {err}"
+        );
+        // Any flag-shaped token is refused, known or not, and the
+        // refusal fires even when a well-formed flag follows it.
+        assert!(
+            parse_args_inner(
+                &pos(&["--queue", "--bogus", "--limit", "5"]),
+                &["queue", "limit"],
+                &[]
+            )
+            .is_err()
+        );
+        // Ordinary values still parse, including single-dash values.
+        let args = parse_args_inner(&pos(&["--queue", "alpha"]), &["queue"], &[])
+            .ok()
+            .expect("ordinary value parses");
+        assert_eq!(args.get("queue").as_deref(), Some("alpha"));
+        let args = parse_args_inner(&pos(&["--limit", "-1"]), &["limit"], &[])
+            .ok()
+            .expect("single-dash value parses");
+        assert_eq!(args.get("limit").as_deref(), Some("-1"));
     }
 
     #[test]
