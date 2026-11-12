@@ -201,6 +201,11 @@ id-caps = { path = "crates/id-caps", default-features = false, features = [
 id-sync = { path = "crates/id-sync", default-features = false, features = [
   "test-utils",
 ] }
+# Web tests in the facade use the world's in-memory opener; feature-gated
+# so the production dependency surface does not expose test helpers.
+id-worlds = { path = "crates/id-worlds", default-features = false, features = [
+  "test-utils",
+] }
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
 rusqlite = { version = "0.32", features = ["bundled"] }
 wat = "=1.261.0"

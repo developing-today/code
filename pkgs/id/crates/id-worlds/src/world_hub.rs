@@ -866,21 +866,21 @@ impl WorldHub {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 #[allow(clippy::unwrap_used)]
-pub(crate) mod testing {
+pub mod testing {
     use super::*;
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
 
     /// In-memory worlds; `known` simulates worlds that exist in storage.
-    pub(crate) struct MemoryOpener {
-        pub(crate) known: StdMutex<Vec<String>>,
-        pub(crate) opens: AtomicUsize,
-        pub(crate) durable: bool,
+    pub struct MemoryOpener {
+        pub known: StdMutex<Vec<String>>,
+        pub opens: AtomicUsize,
+        pub durable: bool,
     }
 
     impl MemoryOpener {
-        pub(crate) fn new(durable: bool) -> Arc<Self> {
+        pub fn new(durable: bool) -> Arc<Self> {
             Arc::new(Self {
                 known: StdMutex::new(Vec::new()),
                 opens: AtomicUsize::new(0),
