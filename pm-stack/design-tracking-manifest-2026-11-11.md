@@ -1,0 +1,93 @@
+> Committed to developing-today/code per Drew's approval 2026-11-12; companion to pm-stack/design-register-2026-11-11.md, tracked from epic #8805.
+
+# Tracking manifest — completed designs that escaped documentation
+
+Companion to REGISTER.md (and GAP-ADDENDUM.md). Produced 2026-11-11 from Drew's
+orders: (1) at least one tracking issue for each completed design that escaped
+documentation; (2) every design doc given a committed home, with living-document
+counterparts tracking purpose, landed features, architecture, status, next
+steps, and unspecced future ideas.
+
+Scope worked: register entries with implementation_status shipped/completed
+(incl. all 29 triage-(b) DONE-WITHOUT-ISSUE items) whose tracking was
+NEVER-ISSUED or doc-only with no committed living doc — 36 designs — plus the
+gap-addendum fold-ins (G1–G7). Designs already tracked by open issues with
+docs (ID mill, Atlas epics) were left untouched, as were the coordinated
+switch and the queue-broker.
+
+Counts: **37 tracking issues filed** · **2 existing open issues used as the
+home** (commented, no twin filed) · **27 doc files committed** across 4 merged
+PRs (18 living docs written new, 9 previously-uncommitted docs committed
+as-is) · **14 designs found to already have a committed doc home** (recorded,
+no new doc) · the `design` label was created in developing-today/code
+(color 0e8a16, "Design record / living design doc tracking home") and applied
+to all 17 code-repo tracking issues (plus `app/pm-stack` on the 3 PM-stack
+ones). Note: developing-today/code's `docs/` is a symlink to `doc/`, so the
+living docs are addressed as `doc/living/…`.
+
+Doc PRs: developing-today/code#8819 (merged ac13883d, 19 files) ·
+developing-today/code#8839 (merged 0e2f33ba, 2 files) ·
+dezren39/hatch-personal#34 (merged 3ff02eac, 5 files; #33 was its
+conflicted first attempt, closed as superseded) ·
+dezren39/hatch-personal#44 (merged 47d9e74c, 1 file).
+
+## Register-derived scope (36)
+
+| Register | Design | Tracking issue | Living doc (committed home) | Notes |
+|---|---|---|---|---|
+| A1.1 | Atlas collector (atlas-ingest.py) + full-corpus ingest | [hatch-personal#35](https://github.com/dezren39/hatch-personal/issues/35) filed | dezren39/hatch-personal `workspace/turso-atlas/README.md` + `workspace/turso-atlas/docs/pro-month-plan.md` | Existing home found; no new doc |
+| A1.5 | Atlas corpus build-out — Turso delta publish + classification scheme-1.0 | [hatch-personal#36](https://github.com/dezren39/hatch-personal/issues/36) filed | hatch-personal `workspace/turso-atlas/docs/turso-delta-publish-message-parts-2026-10-26.md` + `classification-full-run-2026-10-26.md` | Existing home found |
+| A1.6 | Atlas migration — sandbox → laptop | [hatch-personal#37](https://github.com/dezren39/hatch-personal/issues/37) filed | hatch-personal `workspace/turso-atlas/docs/atlas-migration-sandbox-to-laptop-2026-10-28.md` | Living doc written new (PR hp#34); residual verification gap stated in doc + issue |
+| A1.7 | Atlas publish v2 — full-corpus rebuild for Turso | [hatch-personal#38](https://github.com/dezren39/hatch-personal/issues/38) filed | hatch-personal `workspace/turso-atlas/docs/turso-full-publish-v2-2026-10-31.md` | Build report fetched from the laptop's non-repo ~/atlas tree and committed verbatim (sha-verified, PR hp#34) |
+| A1.10 | Atlas canonical-session rebuild pass | [hatch-personal#39](https://github.com/dezren39/hatch-personal/issues/39) filed | hatch-personal `workspace/turso-atlas/docs/atlas-canonical-session-rebuild-2026-11-01.md` | Living doc written new (PR hp#34); no doc existed anywhere |
+| C1 | nix-cache — Nix binary cache on Cloudflare | [nix-cache#8](https://github.com/developing-today/nix-cache/issues/8) filed | developing-today/nix-cache `README.md` (Architecture) | Existing home found; repo previously had zero issues |
+| C1.1 | nix-cache benchmark program | [nix-cache#9](https://github.com/developing-today/nix-cache/issues/9) filed | nix-cache `BENCHMARK.md` | Existing home found |
+| C1.2 | nix-cache zstd push path | [nix-cache#10](https://github.com/developing-today/nix-cache/issues/10) filed | nix-cache `nix-cache-push-zstd.sh` + `BENCHMARK.md` | Existing home found |
+| C1.3 | nix-cache presigned R2 upload URLs | [nix-cache#11](https://github.com/developing-today/nix-cache/issues/11) filed | nix-cache `README.md` + `/presign` route in `src/index.ts` | Existing home found |
+| C2 | Cloudflare credential architecture — scoped tokens + Bitwarden backup | [code#8820](https://github.com/developing-today/code/issues/8820) filed | developing-today/code `doc/living/cloudflare-credential-architecture.md` | Living doc written new (PR code#8819) |
+| C4 | AI Gateway "opencode-gateway" | [code#8821](https://github.com/developing-today/code/issues/8821) filed | code `doc/living/ai-gateway-opencode-gateway.md` | Living doc written new; no doc existed (dashboard object) |
+| F2.2 | mcpx dedup — one canonical mcpx source in code | [code#8822](https://github.com/developing-today/code/issues/8822) filed | code `doc/living/mcpx-dedup-canonical-source.md` | Living doc written new |
+| F3.1 | OpenCode 2 fleet migration (core) | [opencode#2295](https://github.com/developing-today-forks/opencode/issues/2295) filed | code `doc/living/opencode-2-fleet-migration.md` | Living doc written new; still-live follow-up already tracked in opencode#2290 |
+| F4.1 | Fleet sweep/review job family | [code#8823](https://github.com/developing-today/code/issues/8823) filed | code `doc/living/fleet-sweep-review-job-family.md` | Living doc written new |
+| F4.2 | Routine-task architecture redesign | [code#8824](https://github.com/developing-today/code/issues/8824) filed | code `doc/living/routine-task-architecture.md` | Living doc written new |
+| F4.5 | Quota full-utilization program + burn plan | [code#8825](https://github.com/developing-today/code/issues/8825) filed | code `doc/living/quota-full-utilization-burn-plan.md` | Plan committed from ~/workspace/research_notes (PR code#8819); original issue #2173 is CLOSED, so this is the standing home |
+| F4.7 | Fleet roles — ONE minder, dropped-thread catcher, Builder's Advocate | [code#8826](https://github.com/developing-today/code/issues/8826) filed | code `doc/living/fleet-roles-minder-catcher-advocate.md` | Living doc written new; role-map issues #2131/#2152 are CLOSED |
+| F4.8 | One-queue model | [code#8827](https://github.com/developing-today/code/issues/8827) filed | code `doc/living/one-queue-model.md` | Design doc committed from the repo-health goal's hidden_files (PR code#8819) |
+| F4.9 | Lane naming law (FINAL) | [code#8828](https://github.com/developing-today/code/issues/8828) filed | code `doc/living/lane-naming-law.md` | Living doc written new; no doc existed (the broker registry was the only artifact) |
+| P1.1 | Project-tracking tooling evaluation | [code#8829](https://github.com/developing-today/code/issues/8829) filed | code `pm-stack/project-tracking-evaluation-2026-10-23.md` | Evaluation committed from ~/workspace/your_files (PR code#8819) |
+| P1.4 | PM stack needs-user action model | [code#8830](https://github.com/developing-today/code/issues/8830) filed | code `pm-stack/needs-user-actions-design-2026-10-26.md` | Design doc committed from ~/workspace (PR code#8819); contracts #1290–#1293 closed |
+| P2.1 | Pending-questions ledger / Outstanding Questions system | [code#8831](https://github.com/developing-today/code/issues/8831) filed | code `pm-stack/decisions-ledger-system.md` | Living doc written new; the ledger JSON itself stays the working artifact |
+| T1 | Turso coordination schema in muse-meta | [hatch-personal#40](https://github.com/dezren39/hatch-personal/issues/40) filed | hatch-personal `workspace/turso-atlas/docs/turso-coordination-schema-muse-meta.md` | Living doc written new (PR hp#34) |
+| T3 | Turso + Cloudflare idea engine (the vehicle) | [code#8832](https://github.com/developing-today/code/issues/8832) filed | code `doc/living/turso-cloudflare-idea-engine.md` | Living doc written new; tracks the engine, not the 131 ideas (Appendix A of the register) |
+| X1 | Nix persistence design — never-delete monotonic store | [hatch#8](https://github.com/dezren39/hatch/issues/8) filed | dezren39/hatch `notes/architecture/nix-persistence.md` | Existing home found |
+| X2 | Sol's six-point nix simplification plan | [hatch#9](https://github.com/dezren39/hatch/issues/9) filed | hatch `notes/architecture/` (nix-persistence.md, omnibin.md, dispatcher-vs-omnibin-run.md) | Existing home found (commit 9729491) |
+| X4 | Comprehensive environment knowledge base | [hatch#10](https://github.com/dezren39/hatch/issues/10) filed | hatch `notes/architecture/` (13 docs) | Existing home found (commit 57efbb6) |
+| X5.1 | Lab cluster stand-up research container | existing [code#1817](https://github.com/developing-today/code/issues/1817) used — living-doc link commented, no twin filed | code `planning/roadmaps/basement-cluster.md` | Existing home found; program epic is OPEN and serves as the tracking home |
+| X6 | Cold-store backup design + nightly run | [code#8833](https://github.com/developing-today/code/issues/8833) filed | code `doc/living/cold-store-backup.md` + `doc/living/cold-store-r2-layout-design-2026-10-25.md` | Living doc written new + original layout design committed from the lab-cluster goal files (PR code#8819) |
+| X7 | Supabase DIY backups + $30 ceiling doctrine | [hatch-personal#41](https://github.com/dezren39/hatch-personal/issues/41) filed | hatch-personal `workspace/supabase/ARCHITECTURE.md` | Existing home found; pipeline code still lives in ~/workspace/supabase/muse-dev/backup/ (noted on the issue) |
+| X8 | Supabase agent schema + coordination platform | [hatch-personal#42](https://github.com/dezren39/hatch-personal/issues/42) filed | hatch-personal `workspace/supabase/ARCHITECTURE.md` | Existing home found; migrations still in ~/workspace/supabase/muse-dev/ (noted on the issue) |
+| X10 | Globalping outside-in availability watch | [code#8835](https://github.com/developing-today/code/issues/8835) filed | code `doc/living/globalping-outside-in-watch.md` | Living doc written new (code#8834 was taken by another filing mid-run — sequence gap, not a missing item) |
+| X11 | Account connection campaign (vehicle) | [code#8836](https://github.com/developing-today/code/issues/8836) filed | code `doc/living/account-connection-campaign.md` | Living doc written new; the 17-account checklist deliberately NOT committed (account detail stays in the goal's hidden_files) |
+| X12 | OpenCode server on the sandbox (shipped-then-superseded) | [hatch#11](https://github.com/dezren39/hatch/issues/11) filed | hatch `TOOLS.md` (server section) + `tools/opencode.service`, `tools/install-opencode-service.sh` | Existing home found |
+| X13 | Late-night shift standing rule | [code#8837](https://github.com/developing-today/code/issues/8837) filed | code `doc/living/late-night-shift-silence-rule.md` | Living doc written new; rule also encoded in the job body by design |
+| X14 | Subscription / model tracker | [hatch-personal#43](https://github.com/dezren39/hatch-personal/issues/43) filed | hatch-personal `workspace/ai-subscriptions-tracker-2026-10-20.md` | Tracker committed from the workspace draft (PR hp#34) — placed in this PRIVATE repo, not public code, because it carries personal billing detail (order numbers, card last-4s) |
+
+## Gap-addendum fold-ins (G1–G7)
+
+| Gap | Design | Treatment | Living doc / tracking | Notes |
+|---|---|---|---|---|
+| G1 | *-direct providers emulation doctrine ("emulate, don't embed") | Register-only, no action (per fold-in instructions) | Tracked by [opencode#1717](https://github.com/developing-today-forks/opencode/issues/1717) (OPEN) | Doctrine; design doc remains in hatch-personal scratch (vibe-embed-2026-11-05) |
+| G2 | Docs migration program (hatch-personal / hatch / darwin-nix → code) | Living-doc check done; doc link commented on the existing tracking issue — no new issue | Plan committed: code `doc/living/docs-migration-plan-2026-11-04.md` (PR code#8839); tracking home stays [code#5983](https://github.com/developing-today/code/issues/5983) (comment 6812687697) + batches #5976/#5978/#5980/#5981/#5982 | Plan previously only in hatch-personal scratch |
+| G3 | Modal GPU credit allocation design | Tracking issue filed + living doc committed (standard pattern) | [hatch-personal#45](https://github.com/dezren39/hatch-personal/issues/45) filed; doc hatch-personal `workspace/turso-atlas/docs/modal-gpu-credit-allocation-design-2026-11-04.md` (PR hp#44) | Design committed from hatch-personal scratch with provenance header |
+| G4 | PM aggregator PWA + Web Push design | Living-doc check done; NO issue filed — a committed doc home exists, per the fold-in condition | code `doc/2026-11-01T03-54-00Z_design_pwa_push_notifications.md` (existing, in the doc/ corpus) | Original issue code#1254 is CLOSED; the design did not escape documentation. Scratch source: hatch-personal workspace/scratch/push-design.md. Its Web Push throat is what P1.12/#8568 later built into |
+| G5 | Time-based priority schedules for route pools | Not this lane's (being filed separately) | — | No action taken here |
+| G6 | OpenChamber retry-recovery controls (PR #385) | Tracking issue filed + living doc written (standard pattern) | [openchamber#2126](https://github.com/developing-today-forks/openchamber/issues/2126) filed; doc code `doc/living/openchamber-retry-recovery-controls.md` (PR code#8839) | No committed design doc existed in the fork (code only); review issue openchamber#388 is CLOSED |
+| G7 | OpenChamber Android app parity | Register-only, no action (per fold-in instructions) | Tracked in-repo in the openchamber fork (mobile issues #173/#390/#1341, closed) | No single parity issue by design of the record |
+
+## Judgment calls recorded
+
+- **X14 (subscription tracker)** was committed to the private dezren39/hatch-personal repo instead of the public developing-today/code repo: the document carries Drew's personal billing details. The living-doc requirement (a committed, versioned home) is met without publishing them.
+- **X11's account checklist** was not committed anywhere: the living doc describes the campaign and points at the checklist's location in the goal's hidden_files.
+- **F4.5 / F4.7** were treated as in-scope ("doc-only, no committed living doc") although their original asks carried issues (#2173, #2131/#2152) — all are CLOSED, so nothing open served as a tracking home; the new issues note the lineage.
+- **X5.1** uses the OPEN program epic code#1817 as its tracking home (commented with the living-doc link) instead of a twin issue.
+- **G4** got no new issue: its design is committed in the code repo's doc/ corpus and its own issue (#1254) existed and closed — it did not escape documentation.
