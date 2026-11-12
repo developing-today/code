@@ -376,11 +376,15 @@ impl KeysetState {
     }
 }
 
-/// Fold a verified log from its canonical genesis. Invalid/unauthorized
-/// continuations and their descendants are excluded; the smallest valid
-/// `(lamport, author, hash)` continuation wins each fork.
-pub fn fold(log: &Log) -> Result<KeysetState> {
-    let genesis = log
+/// Fold a log from a caller-trusted genesis hash. Any competing genesis is
+/// rejected, so a replica cannot reset authorization by injecting a new root
+/// after an admin rotation. The trusted hash must be persisted outside the
+/// mergeable log (for example, alongside the identity's initial keyset).
+/// Invalid/unauthorized continuations and their descendants are excluded; the
+/// smallest valid `(lamport, author, hash)` continuation wins each fork.
+pub fn fold(log: &Log, trusted_genesis_hash: &str) -> Result<KeysetState> {
+    validate_hash_or_empty(trusted_genesis_hash, false, "trusted_genesis_hash")?;
+    let roots = log
         .records
         .values()
         .filter(|record| {
@@ -389,8 +393,20 @@ pub fn fold(log: &Log) -> Result<KeysetState> {
         .filter(|record| {
             matches!(&record.entry, KeysetEntry::Genesis { admin_key, .. } if admin_key == &record.author)
         })
-        .min_by_key(|record| record.key())
-        .context("keyset log has no valid genesis record")?;
+        .collect::<Vec<_>>();
+    ensure!(
+        roots
+            .iter()
+            .any(|record| record.hash == trusted_genesis_hash),
+        "trusted keyset genesis is missing from log"
+    );
+    ensure!(
+        roots
+            .iter()
+            .all(|record| record.hash == trusted_genesis_hash),
+        "keyset log contains a competing genesis"
+    );
+    let genesis = roots[0];
 
     let KeysetEntry::Genesis {
         admin_key,
@@ -650,7 +666,7 @@ mod tests {
         for record in [&first, &enrolled, &revoked] {
             log.insert(record.clone()).unwrap();
         }
-        let state = fold(&log).unwrap();
+        let state = fold(&log, &first.hash).unwrap();
         assert!(state.is_admin(&public(1)));
         assert!(!state.is_device(&public(2)));
         assert_eq!(state.devices[&public(2)].enrolled_at, 2);
@@ -688,16 +704,65 @@ mod tests {
         for record in [&right, &left, &first] {
             b.insert(record.clone()).unwrap();
         }
-        assert_eq!(fold(&a).unwrap(), fold(&b).unwrap());
+        assert_eq!(
+            fold(&a, &first.hash).unwrap(),
+            fold(&b, &first.hash).unwrap()
+        );
         let winner = if left.key() < right.key() {
             &left
         } else {
             &right
         };
-        assert!(fold(&a).unwrap().devices.contains_key(match &winner.entry {
-            KeysetEntry::DeviceEnrolled { device_key, .. } => device_key,
-            _ => unreachable!(),
-        }));
+        assert!(
+            fold(&a, &first.hash)
+                .unwrap()
+                .devices
+                .contains_key(match &winner.entry {
+                    KeysetEntry::DeviceEnrolled { device_key, .. } => device_key,
+                    _ => unreachable!(),
+                })
+        );
+    }
+
+    #[test]
+    fn competing_genesis_cannot_reset_a_rotated_admin() {
+        let trusted = genesis();
+        let former_admin = key(1);
+        let replacement_admin = key(4);
+        let rotation = append(
+            &trusted,
+            &former_admin,
+            2,
+            KeysetEntry::AdminKeyRotated {
+                new_admin_key: public(4),
+            },
+            Some(&replacement_admin),
+        );
+        let forged_root = KeysetRecord::sign(
+            &former_admin,
+            0,
+            "",
+            KeysetEntry::Genesis {
+                admin_key: public(1),
+                device_key: public(1),
+                label: "replacement root".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+        let mut log = Log::default();
+        for record in [&trusted, &rotation, &forged_root] {
+            log.insert(record.clone()).unwrap();
+        }
+
+        assert!(fold(&log, &trusted.hash).is_err());
+
+        let mut trusted_only = Log::default();
+        trusted_only.insert(trusted.clone()).unwrap();
+        trusted_only.insert(rotation).unwrap();
+        let state = fold(&trusted_only, &trusted.hash).unwrap();
+        assert!(!state.is_admin(&public(1)));
+        assert!(state.is_admin(&public(4)));
     }
 
     proptest! {
@@ -711,7 +776,7 @@ mod tests {
             if reverse { records.reverse(); }
             let mut log = Log::default();
             for record in records { log.insert(record).unwrap(); }
-            let state = fold(&log).unwrap();
+            let state = fold(&log, &first.hash).unwrap();
             let winner = if left.key() < right.key() { "left" } else { "right" };
             prop_assert!(state.idp_bindings.contains_key(winner));
             prop_assert_eq!(state.idp_bindings.len(), 1);
