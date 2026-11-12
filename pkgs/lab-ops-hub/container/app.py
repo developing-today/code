@@ -1490,7 +1490,16 @@ class Handler(BaseHTTPRequestHandler):
                 if left <= 0:
                     raise TimeoutError("request body read timed out")
                 self.connection.settimeout(left)
-                chunk = self.rfile.read(min(remaining, _CRAWL_READ_CHUNK_BYTES))
+                # read1(), not read(): the buffered read() keeps
+                # recv-ing until the full count arrives, and a client
+                # dribbling bytes faster than the socket timeout keeps
+                # every recv alive, so read() outlives the absolute
+                # deadline (#8906; the _fetch_crawl pattern above).
+                # read1() returns after a single raw read, so the loop
+                # rechecks the deadline between chunks.
+                chunk = self.rfile.read1(min(remaining, _CRAWL_READ_CHUNK_BYTES))
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("request body read timed out")
                 if not chunk:
                     raise ValueError(
                         "request body ended before Content-Length bytes arrived"
