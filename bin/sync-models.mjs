@@ -176,7 +176,9 @@ async function discoverAntigravityModels() {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.includes('Fetching available models')) continue;
-      const parts = trimmed.split(/\s{2,}/);
+      // agy separates the id and name columns with a single tab
+      // (older builds used multi-space columns); accept either.
+      const parts = trimmed.split(/\t|\s{2,}/);
       if (parts.length >= 2) {
         const id = parts[0].trim();
         const name = parts[1].trim();
@@ -573,7 +575,7 @@ async function run() {
     }
 
     // Group models by base name (matching longest suffix first)
-    const effortSuffixes = ['-extra-low', '-medium', '-high', '-low'];
+    const effortSuffixes = ['-extra-low', '-xhigh', '-medium', '-high', '-low', '-extra'];
     const grouped = {};
 
     for (const m of agyModels) {
@@ -586,10 +588,14 @@ async function run() {
           break;
         }
       }
+      // Antigravity labels the xhigh tier "Extra" in some catalog
+      // spellings (-extra ids, "(Extra)" names); the fleet's variant
+      // name for that tier is xhigh.
+      if (effort === 'extra') effort = 'xhigh';
       if (!grouped[baseId]) {
         defineValue(grouped, baseId, {
           baseId,
-          name: m.name.replace(/\s*\((Low|Medium|High|Extra-Low)\)$/i, ''),
+          name: m.name.replace(/\s*\((Low|Medium|High|XHigh|Extra-Low|Extra)\)$/i, ''),
           efforts: new Set(),
           variants: {}
         });
