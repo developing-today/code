@@ -189,7 +189,6 @@ rec {
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-compat.follows = "flake-compat";
-      inputs.flake-utils.follows = "flake-utils";
     };
     nixvim = {
       # url = "github:nix-community/nixvim"; # ?shallow=1";
@@ -219,8 +218,6 @@ rec {
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.flake-utils.follows = "flake-utils";
-      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
     };
     pre-commit-hooks = {
       # TODO: use this?
@@ -352,7 +349,6 @@ rec {
       url = "github:nix-community/bun2nix";
       inputs = {
         flake-parts.follows = "id-flake-parts";
-        import-tree.follows = "id-import-tree";
         nixpkgs.follows = "id-nixpkgs";
         systems.follows = "id-systems";
       };

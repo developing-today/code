@@ -64,7 +64,7 @@ stdenv.mkDerivation (f: {
     mesa_glu
     pcre2
     protobuf
-    xorg.libXcursor
+    libxcursor
     xorg.libXdmcp
     xorgserver
   ];
