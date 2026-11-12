@@ -6452,7 +6452,7 @@ export function projectsBodyHtml(
       : []),
   ].join("");
   if (!pool.length) {
-    return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}<p class="muted">Live services: ${serviceHomeLinks()
+    return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}${opts.spend?.unattributed ? unattributedSpendHtml(opts.spend.unattributed) : ""}<p class="muted">Live services: ${serviceHomeLinks()
       .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
       .join(" · ")}</p>`;
   }
