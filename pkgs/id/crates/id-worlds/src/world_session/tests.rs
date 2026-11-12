@@ -19,6 +19,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    const SESSION_FRAME_TIMEOUT: Duration = Duration::from_secs(60);
+
     /// In-memory transport: tests push frames in and read frames out.
     struct ChannelIo {
         inbound: mpsc::Receiver<Inbound>,
@@ -2590,6 +2592,56 @@ mod tests {
         }
     }
 
+    /// Reject every write so session tests can exercise effect handling when
+    /// durable audit persistence fails.
+    #[derive(Clone, Default)]
+    struct FailingJournal(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl FailingJournal {
+        fn attempts(&self) -> usize {
+            self.0.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn record_attempt(&self) {
+            self.0
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    impl crate::world::WorldJournal for FailingJournal {
+        fn append(&mut self, _entry: &crate::world::JournalEntry) -> anyhow::Result<()> {
+            self.record_attempt();
+            anyhow::bail!("injected journal append failure")
+        }
+
+        fn append_transaction(
+            &mut self,
+            _entries: &[crate::world::JournalEntry],
+        ) -> anyhow::Result<()> {
+            self.record_attempt();
+            anyhow::bail!("injected journal transaction failure")
+        }
+    }
+
+    /// A durable session service whose journal fails every write and counts
+    /// attempts, so failure-path tests prove they reached persistence.
+    fn durable_service_with_failing_journal(
+        core: WorldCore,
+    ) -> (WorldHandle, WorldService, FailingJournal) {
+        use iroh_blobs::store::mem::MemStore;
+
+        let journal = FailingJournal::default();
+        let world = WorldHandle::spawn_durable(
+            core,
+            Box::new(NoProgram),
+            Some(Box::new(journal.clone())),
+        );
+        let blobs: Store = MemStore::new().into();
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(blobs);
+        (world, service, journal)
+    }
+
     /// A durable world behind a session service with a blob store, so
     /// joined installs can pin their module and journal their audit.
     fn durable_service() -> (WorldHandle, WorldService, CapturingJournal) {
@@ -2618,13 +2670,42 @@ mod tests {
     /// Read until a frame of `wanted` type arrives (broadcasts and view
     /// frames interleave freely in a joined session).
     async fn next_of_type(peer: &mut Peer, wanted: &str) -> serde_json::Value {
-        for _ in 0..32 {
-            let frame = peer.next().await.unwrap();
-            if frame["type"] == wanted {
-                return frame;
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            loop {
+                let frame = peer
+                    .next()
+                    .await
+                    .unwrap_or_else(|| panic!("session closed before a {wanted} frame"));
+                if frame["type"] == wanted {
+                    return frame;
+                }
             }
-        }
-        panic!("no {wanted} frame arrived");
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for a {wanted} frame"))
+    }
+
+    /// Read until an `error` frame arrives, failing if a frame of the
+    /// `forbidden` type shows up first. `next_of_type` alone would skip a
+    /// success ack sent ahead of a failure and so could not prove its absence.
+    async fn next_error_before(peer: &mut Peer, forbidden: &str) -> serde_json::Value {
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            loop {
+                let frame = peer
+                    .next()
+                    .await
+                    .expect("session closed before an error frame");
+                assert_ne!(
+                    frame["type"], forbidden,
+                    "a {forbidden} frame must not precede the failure: {frame}"
+                );
+                if frame["type"] == "error" {
+                    return frame;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for an error frame")
     }
 
     /// Send an upload's chunks after its `upload_ready`, then
@@ -2704,6 +2785,54 @@ mod tests {
                 .as_deref()
                 .is_some_and(|view| view.contains("count=0")),
             "the builder-installed program must serve views"
+        );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn joined_builder_install_journal_failure_does_not_ack_or_activate() {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let (_, builder_token) = core
+            .issue_capability(
+                "builder",
+                WorldScopes::from_role("builder").unwrap(),
+                crate::world::CapabilityBounds::default(),
+            )
+            .unwrap();
+        let (_, guest_token) = core
+            .issue_capability(
+                "guest",
+                WorldScopes::GUEST,
+                crate::world::CapabilityBounds::default(),
+            )
+            .unwrap();
+        let (world, service, journal) = durable_service_with_failing_journal(core);
+        let mut peer = join_as(&service, &builder_token).await;
+        let wasm = include_bytes!("../../../../examples/roc-counter/counter.wasm");
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "total_bytes": wasm.len(),
+            "module_hash": module_hash(wasm),
+            "seed": 12,
+        }))
+        .await;
+        let ready = next_of_type(&mut peer, "upload_ready").await;
+        upload_chunks(&mut peer, &ready, wasm).await;
+
+        let failed = next_error_before(&mut peer, "module_installed").await;
+        assert_eq!(
+            failed["message"], "world could not activate the module",
+            "the error must come from the failed activation transaction: {failed}"
+        );
+        assert_eq!(
+            journal.attempts(),
+            1,
+            "the install journal transaction must be attempted"
+        );
+        assert_eq!(
+            world.view(guest_token).await.unwrap(),
+            None,
+            "the old program must remain active when the install transaction fails"
         );
     }
 
@@ -2896,6 +3025,7 @@ mod tests {
     #[tokio::test]
     async fn joined_builder_native_upload_is_refused() {
         let (world, service, journal) = durable_service();
+        let service = service.with_native_enabled();
         let (_, builder_token) = world
             .issue(
                 "builder".to_owned(),
@@ -3009,6 +3139,53 @@ mod tests {
             1,
             "a no-op revoke must not journal"
         );
+    }
+
+    #[tokio::test]
+    async fn joined_moderator_revoke_journal_failure_reports_error_but_still_revokes() {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let (victim, victim_token) = core
+            .issue_capability(
+                "victim",
+                WorldScopes::GUEST,
+                crate::world::CapabilityBounds::default(),
+            )
+            .unwrap();
+        let (_, moderator_token) = core
+            .issue_capability(
+                "moderator",
+                WorldScopes::from_role("moderator").unwrap(),
+                crate::world::CapabilityBounds::default(),
+            )
+            .unwrap();
+        let (world, service, journal) = durable_service_with_failing_journal(core);
+        let mut victim_peer = join_as(&service, &victim_token).await;
+        let mut moderator_peer = join_as(&service, &moderator_token).await;
+
+        moderator_peer
+            .say(serde_json::json!({"type": "revoke", "participant_id": victim.id}))
+            .await;
+        let failed = next_error_before(&mut moderator_peer, "revoked").await;
+        assert!(
+            failed["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("revoke failed")),
+            "a failed audit append must not be reported as a successful revoke: {failed}"
+        );
+        assert_eq!(
+            journal.attempts(),
+            1,
+            "the revoke journal append must be attempted"
+        );
+        assert!(
+            world
+                .authorize(victim_token, WorldScopes::JOIN)
+                .await
+                .is_err(),
+            "the in-memory revocation must remain effective after persistence fails"
+        );
+        let victim_closed = next_of_type(&mut victim_peer, "error").await;
+        assert_eq!(victim_closed["message"], "world capability revoked");
     }
 
     #[tokio::test]
