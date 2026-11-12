@@ -7,7 +7,16 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 )
+
+// writeTimeout bounds one notify datagram. A notify is best-effort
+// daemon bookkeeping: it must never wedge startup, so Send fails with
+// an error after this long instead of blocking on a socket nobody is
+// draining (#5428: an abstract socket in the fleet-build container
+// accepted the connection and then blocked the write for the full
+// 1800s test timeout).
+const writeTimeout = 5 * time.Second
 
 // Send writes one state assignment, such as "READY=1", to $NOTIFY_SOCKET.
 // Outside systemd the variable is unset and Send does nothing.
@@ -18,11 +27,15 @@ func Send(state string) error {
 	}
 	// A leading '@' names an abstract socket. Go's net package takes the same
 	// convention, so the name is passed through unchanged.
-	conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: path, Net: "unixgram"})
+	dialer := net.Dialer{Timeout: writeTimeout}
+	conn, err := dialer.Dial("unixgram", path)
 	if err != nil {
 		return fmt.Errorf("notify %s: %w", path, err)
 	}
 	defer func() { _ = conn.Close() }()
+	if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return fmt.Errorf("notify %s: %w", path, err)
+	}
 	if _, err := conn.Write([]byte(state)); err != nil {
 		return fmt.Errorf("notify %s: %w", path, err)
 	}
