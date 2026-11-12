@@ -713,10 +713,11 @@
     // proxy block preserved here since 2026-10-25 was DELETED 2026-11-03
     // (Drew, direct order) together with the door's persona routes below.
     // The only design provider in this config is "opendesign" (further down).
-    "openai.alternate": {
-      "instanceOf": "openai",
-      "name": "OpenAI Alternate (Student - popesdrew)"
-    },
+    // "openai.alternate": retired 2026-11-12 -- definition deleted. The
+    // popesdrew door has been _openai.alt since the #8163 rename
+    // (2026-11-10); a parsed-config walk of this file found no reference
+    // to the old id outside its own definition (evidence in the
+    // retirement PR). Revert that PR to restore the definition.
     // _openai.alt (2026-11-10, Drew direct order): the popesdrew account
     // as an _openai-pattern instance - the second of the two self-contained
     // OpenAI doors (with _openai.main below). Same pattern as _openai.main:
@@ -725,8 +726,9 @@
     // ~/.codex/auth.json read, no codex-sync in its path. Seeded from the
     // popesdrew account credential openai.alternate already serves with -
     // the credential-store seeding is tracked with the #8163 follow-up;
-    // this definition is the config side. openai.alternate keeps its
-    // definition above, unseated, while the pool sits on this id.
+    // this definition is the config side. openai.alternate kept its
+    // definition above, unseated, while the pool sat on this id; that
+    // definition was retired 2026-11-12 (tombstone above).
     // 2026-11-11 (code#8653): the models maps pinned below these
     // doors by the #8163 rename are REMOVED. With a declared map the
     // fork resolves the models as plain Platform-API models and the
@@ -740,10 +742,11 @@
       "instanceOf": "openai",
       "name": "OpenAI Self-Contained Alt (popesdrew, no Codex)"
     },
-    "openai.main": {
-      "instanceOf": "openai",
-      "name": "OpenAI Main (drewrypope)"
-    },
+    // "openai.main": retired 2026-11-12 -- definition deleted. The
+    // drewrypope door has been _openai.main since the #8163 rename
+    // (2026-11-10); a parsed-config walk of this file found no reference
+    // to the old id outside its own definition (evidence in the
+    // retirement PR). Revert that PR to restore the definition.
     // _openai (2026-11-10, Drew direct order, #8163): the self-contained
     // main OpenAI door. Same drewrypope ChatGPT account as openai.main, but
     // its credential is its own: seeded into the store without the
