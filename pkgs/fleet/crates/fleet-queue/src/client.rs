@@ -3583,7 +3583,6 @@ fn cmd_stack_list(rest: &[String]) -> i32 {
     0
 }
 
-
 /// Body for the broker's /stack-transition route (#8582 increment
 /// 4), shaped and fail-fast validated here: the target state must
 /// parse in the pure core, and a move to `conflicted` must carry
@@ -3612,7 +3611,7 @@ pub(crate) fn stack_transition_body(
                     "stack transition: a move to conflicted requires --conflict-detail \
                      naming what the authoring lane must resolve"
                         .to_string(),
-                )
+                );
             }
         }
     }
@@ -3746,14 +3745,13 @@ fn cmd_stack_restack(rest: &[String]) -> i32 {
         .get_i64("position")
         .unwrap_or_else(|| die(2, "stack restack: --position is required"));
     let base = args.get("base").unwrap_or_else(|| {
-        die(2, "stack restack: --base is required (the branch's new base after restacking)")
+        die(
+            2,
+            "stack restack: --base is required (the branch's new base after restacking)",
+        )
     });
-    let body = match stack_restack_body(
-        &stack_id,
-        position,
-        &base,
-        args.get("head-sha").as_deref(),
-    ) {
+    let body = match stack_restack_body(&stack_id, position, &base, args.get("head-sha").as_deref())
+    {
         Ok(b) => b,
         Err(e) => die(2, &e),
     };
@@ -3913,9 +3911,23 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
     // land. A stale entry is only ever used as a force-with-lease
     // pin after a live ls-remote confirms the remote is still
     // exactly at that tip.
-    let tips_path = replay_run(&dir, "git", &replay_args(&["rev-parse", "--git-path", "fleet-replay-pre-rebase-tips.json"])).ok().map(|rel| {
+    let tips_path = replay_run(
+        &dir,
+        "git",
+        &replay_args(&[
+            "rev-parse",
+            "--git-path",
+            "fleet-replay-pre-rebase-tips.json",
+        ]),
+    )
+    .ok()
+    .map(|rel| {
         let path = std::path::Path::new(&rel);
-        if path.is_absolute() { path.to_path_buf() } else { std::path::Path::new(&dir).join(path) }
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::path::Path::new(&dir).join(path)
+        }
     });
     let mut pre_rebase_tips: std::collections::HashMap<i64, String> =
         std::collections::HashMap::new();
@@ -4016,13 +4028,9 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
         match step.action {
             crate::merge_intent::ReplayAction::Begin => {
                 if intent.state != crate::merge_intent::IntentState::Replaying {
-                    if let Err(e) = stack_transition_result(
-                        &stack_id,
-                        step.position,
-                        "replaying",
-                        None,
-                        None,
-                    ) {
+                    if let Err(e) =
+                        stack_transition_result(&stack_id, step.position, "replaying", None, None)
+                    {
                         return transient_exit(step, e, &landed);
                     }
                 }
@@ -4043,15 +4051,14 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                                 .ok()
                                 .and_then(|t| serde_json::from_str(&t).ok())
                                 .unwrap_or_default();
-                        let entry = saved
-                            .entry(stack_id.clone())
-                            .or_insert_with(|| json!({}));
+                        let entry = saved.entry(stack_id.clone()).or_insert_with(|| json!({}));
                         if let Some(obj) = entry.as_object_mut() {
                             for (pos, sha) in &pre_rebase_tips {
                                 obj.insert(pos.to_string(), json!(sha));
                             }
                         }
-                        let _ = std::fs::write(path, serde_json::to_string(&saved).unwrap_or_default());
+                        let _ =
+                            std::fs::write(path, serde_json::to_string(&saved).unwrap_or_default());
                     }
                 }
                 // Merge-bearing histories are refused, never
@@ -4068,11 +4075,7 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                 match replay_run(
                     &dir,
                     "git",
-                    &replay_args(&[
-                        "rev-list",
-                        "--merges",
-                        &format!("origin/main..{branch}"),
-                    ]),
+                    &replay_args(&["rev-list", "--merges", &format!("origin/main..{branch}")]),
                 ) {
                     Ok(list) if !list.is_empty() => {
                         return conflict_exit(
@@ -4117,9 +4120,7 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                         let _ = replay_run(&dir, "git", &replay_args(&["rebase", "--abort"]));
                         return conflict_exit(
                             step.position,
-                            format!(
-                                "rebase of {branch} onto origin/main failed at replay: {e}"
-                            ),
+                            format!("rebase of {branch} onto origin/main failed at replay: {e}"),
                             &landed,
                         );
                     }
@@ -4174,12 +4175,7 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                         let remote_is_ancestor = replay_run(
                             &dir,
                             "git",
-                            &replay_args(&[
-                                "merge-base",
-                                "--is-ancestor",
-                                &remote_sha,
-                                &branch,
-                            ]),
+                            &replay_args(&["merge-base", "--is-ancestor", &remote_sha, &branch]),
                         )
                         .is_ok();
                         if remote_sha == local_tip || remote_is_ancestor {
@@ -4190,9 +4186,7 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                                 "git",
                                 &replay_args(&[
                                     "push",
-                                    &format!(
-                                        "--force-with-lease=refs/heads/{branch}:{remote_sha}"
-                                    ),
+                                    &format!("--force-with-lease=refs/heads/{branch}:{remote_sha}"),
                                     "origin",
                                     &branch,
                                 ]),
@@ -4437,8 +4431,7 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                 // resumable: the PR is merged, the intent is still
                 // replaying, and the Merge arm's already-MERGED
                 // reconciliation lands it on the next pass.
-                if let Err(e) =
-                    replay_run(&dir, "git", &replay_args(&["fetch", "origin", "main"]))
+                if let Err(e) = replay_run(&dir, "git", &replay_args(&["fetch", "origin", "main"]))
                 {
                     return transient_exit(
                         step,
@@ -4465,11 +4458,18 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                 pre_rebase_tips.remove(&step.position);
                 if let Some(path) = &tips_path {
                     if let Ok(text) = std::fs::read_to_string(path) {
-                        if let Ok(mut saved) = serde_json::from_str::<serde_json::Map<String, Value>>(&text) {
-                            if let Some(obj) = saved.get_mut(&stack_id).and_then(|e| e.as_object_mut()) {
+                        if let Ok(mut saved) =
+                            serde_json::from_str::<serde_json::Map<String, Value>>(&text)
+                        {
+                            if let Some(obj) =
+                                saved.get_mut(&stack_id).and_then(|e| e.as_object_mut())
+                            {
                                 obj.remove(&step.position.to_string());
                             }
-                            let _ = std::fs::write(path, serde_json::to_string(&saved).unwrap_or_default());
+                            let _ = std::fs::write(
+                                path,
+                                serde_json::to_string(&saved).unwrap_or_default(),
+                            );
                         }
                     }
                 }
@@ -4654,7 +4654,6 @@ mod tests {
         assert!(batch_count_flag(Some(-3)).is_err());
         assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
     }
-
 
     #[test]
     fn stack_transition_body_carries_the_transition_shape_8582() {

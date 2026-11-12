@@ -6654,7 +6654,6 @@ fn verb_stack_list(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
-
 /// Move one recorded intent through its lifecycle (#8582
 /// increment 4): the storage half of the replay executor. The
 /// transition rules are the pure core's (`IntentState::
@@ -7524,7 +7523,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn stack_transition_wiring_8582() {
         // Source oracle for increment 4 of #8582: dispatch routes
@@ -7571,8 +7569,14 @@ mod tests {
             "dispatch routes /stack-restack"
         );
         let seg = seg8217(src, "fn verb_stack_restack(", "\nfn verb_signal_count(");
-        assert!(seg.contains("plan_restack("), "restack planning comes from the core");
-        assert!(seg.contains("base_branch = ?"), "restack writes the refreshed base");
+        assert!(
+            seg.contains("plan_restack("),
+            "restack planning comes from the core"
+        );
+        assert!(
+            seg.contains("base_branch = ?"),
+            "restack writes the refreshed base"
+        );
         assert!(
             seg.contains("stack_state("),
             "restack answers the derived stack state"

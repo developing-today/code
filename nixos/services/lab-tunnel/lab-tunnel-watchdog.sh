@@ -18,13 +18,13 @@ if [ -f "$countFile" ]; then
   count=$(cat "$countFile")
 fi
 if @curl@ -fsS -m 10 "@readyUrl@" >/dev/null 2>&1; then
-  echo 0 > "$countFile"
+  echo 0 >"$countFile"
   exit 0
 fi
 count=$((count + 1))
-echo "$count" > "$countFile"
+echo "$count" >"$countFile"
 echo "lab-tunnel-watchdog: /ready failed ($count consecutive)" >&2
 if [ "$count" -ge 3 ]; then
-  echo 0 > "$countFile"
+  echo 0 >"$countFile"
   exec @systemctl@ --user restart lab-tunnel.service
 fi

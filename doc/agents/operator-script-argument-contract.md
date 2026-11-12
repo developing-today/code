@@ -19,4 +19,3 @@ new operator scripts copy the strict pattern from a covered sibling
 (`provider-catalog-sync.mjs`, `append-usage-snapshots.ts`) and state
 the contract in their header comment. Deliberate exceptions are
 named, with their reason, in the #3353 closing inventory.
-

@@ -334,18 +334,14 @@ pub struct RestackRequest {
 /// itself restacked onto the new tip (Codex P1, PR #8849, comment
 /// 4548246107). The refresh also re-records this intent's own
 /// linkage to its new base's current head.
-pub fn plan_restack(
-    intents: &[MergeIntent],
-    req: &RestackRequest,
-) -> Result<MergeIntent, String> {
+pub fn plan_restack(intents: &[MergeIntent], req: &RestackRequest) -> Result<MergeIntent, String> {
     if req.new_base_branch.trim().is_empty() {
         return Err("merge-intent restack requires a non-empty new base_branch".to_string());
     }
     if let Some(sha) = &req.new_head_sha {
         if sha.trim().is_empty() {
             return Err(
-                "merge-intent restack requires a non-empty head_sha when one is given"
-                    .to_string(),
+                "merge-intent restack requires a non-empty head_sha when one is given".to_string(),
             );
         }
     }
@@ -505,7 +501,6 @@ pub fn replay_prefix<'a>(intents: &'a [MergeIntent], stack_id: &str) -> Vec<&'a 
         .take_while(|i| i.state == IntentState::Intended && !tainted.contains(i.branch.as_str()))
         .collect()
 }
-
 
 /// One step of a replay pass, planned by [`replay_plan`] from the
 /// recorded stack state alone (#8582 increment 4). The executor
@@ -953,7 +948,6 @@ mod tests {
         assert!(err.contains("already records repo"), "{err}");
     }
 
-
     #[test]
     fn replay_plan_walks_bottom_up_with_rebase_only_above_the_bottom() {
         // Oracle: the module doc's replay walk — push, PR, merge,
@@ -1204,7 +1198,10 @@ mod tests {
             stacked("s1", 1, "queue/b", "queue/a", IntentState::Intended),
             stacked("s1", 2, "queue/c", "queue/b", IntentState::Intended),
         ];
-        assert!(replay_prefix(&stack, "s1").is_empty(), "tainted stack is blocked");
+        assert!(
+            replay_prefix(&stack, "s1").is_empty(),
+            "tainted stack is blocked"
+        );
         // Restacking onto a still-tainted (or the abandoned) base
         // is refused: the withdrawn commits would remain.
         let onto_a = RestackRequest {
@@ -1282,7 +1279,10 @@ mod tests {
             new_base_branch: "main".to_string(),
             new_head_sha: None,
         };
-        assert!(plan_restack(&stack, &sealed).is_err(), "abandoned is terminal");
+        assert!(
+            plan_restack(&stack, &sealed).is_err(),
+            "abandoned is terminal"
+        );
         // An intent cannot be based on itself.
         let self_based = RestackRequest {
             position: 1,

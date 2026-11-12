@@ -76,7 +76,7 @@ render() {
   # --token-file (#8933: never through the connector's argv or
   # environment). tunnel.env is still rendered for rollback to the
   # pre-#8933 unit; nothing consumes it in the current unit.
-  printf '%s' "$(get cloudflare_tunnel_token)" > tunnel.token
+  printf '%s' "$(get cloudflare_tunnel_token)" >tunnel.token
   chmod 600 tunnel.token
   echo "TUNNEL_TOKEN=$(get cloudflare_tunnel_token)" >tunnel.env
   chmod 600 tunnel.env
