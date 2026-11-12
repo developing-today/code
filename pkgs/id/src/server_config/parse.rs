@@ -124,6 +124,18 @@ pub enum ConfigError {
         /// The field that was set to zero.
         field: &'static str,
     },
+    /// A `[[budgets.counterparty]]` window is longer than the millisecond
+    /// window it converts to can represent, so accepting it would silently
+    /// run a shorter window than the one configured.
+    #[error(
+        "`window_seconds` in [budgets] is {seconds} seconds, which overflows milliseconds; give at most {max_seconds}"
+    )]
+    WindowTooLarge {
+        /// The window length given, in seconds.
+        seconds: u64,
+        /// The largest window length that converts to milliseconds exactly.
+        max_seconds: u64,
+    },
     /// Two `[[budgets.counterparty]]` rows name the same peer.
     #[error("peer `{peer}` has more than one [[budgets.counterparty]] row; give each peer one row")]
     DuplicateCounterparty {
@@ -393,6 +405,12 @@ fn budget_policy(
                 field: "window_seconds",
             });
         }
+        if row.window_seconds > u64::MAX / 1_000 {
+            return Err(ConfigError::WindowTooLarge {
+                seconds: row.window_seconds,
+                max_seconds: u64::MAX / 1_000,
+            });
+        }
         if row.messages_per_window == Some(0) {
             return Err(ConfigError::ZeroBudget {
                 field: "messages_per_window",
@@ -407,7 +425,9 @@ fn budget_policy(
         policy.counterparty_overrides.push((
             peer,
             vec![BudgetLimit {
-                window_ms: row.window_seconds.saturating_mul(1_000),
+                // Exact: the check above refuses any window whose
+                // millisecond conversion would overflow.
+                window_ms: row.window_seconds * 1_000,
                 bytes_per_window: row.bytes_per_window,
                 messages_per_window: row.messages_per_window.unwrap_or(0),
             }],
@@ -1137,6 +1157,41 @@ mod tests {
             "[budgets]\n[[budgets.counterparty]]\npeer = \"nobody\"\nbytes_per_window = 5\nwindow_seconds = 60\n",
         );
         assert!(matches!(unknown, Err(ConfigError::UnknownKey { .. })));
+    }
+
+    #[test]
+    fn test_counterparty_window_at_the_millisecond_boundary_converts_exactly() {
+        // u64::MAX / 1000 is the largest window_seconds whose millisecond
+        // conversion is representable; it must convert exactly.
+        let max_seconds = u64::MAX / 1_000;
+        let parsed = config(&format!(
+            "[budgets]\n[[budgets.counterparty]]\npeer = \"ann\"\nbytes_per_window = 5\nwindow_seconds = {max_seconds}\n"
+        ))
+        .unwrap();
+        let overrides = &parsed.budgets().counterparty_overrides;
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0].1[0].window_ms, max_seconds * 1_000);
+    }
+
+    #[test]
+    fn test_counterparty_window_past_the_millisecond_boundary_is_refused() {
+        // The first overflowing value (and anything above it) is a config
+        // error, never a silently saturated window.
+        for seconds in [u64::MAX / 1_000 + 1, u64::MAX] {
+            let refused = config(&format!(
+                "[budgets]\n[[budgets.counterparty]]\npeer = \"ann\"\nbytes_per_window = 5\nwindow_seconds = {seconds}\n"
+            ));
+            assert!(
+                matches!(
+                    refused,
+                    Err(ConfigError::WindowTooLarge {
+                        seconds: given,
+                        max_seconds
+                    }) if given == seconds && max_seconds == u64::MAX / 1_000
+                ),
+                "window_seconds = {seconds} must be refused, got {refused:?}"
+            );
+        }
     }
 
     #[test]
