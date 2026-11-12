@@ -1129,7 +1129,7 @@ impl WorldHandle {
 
     /// Return the admin-only snapshot and presentation for a read-only host
     /// view. The caller must authenticate the world admin before invoking it.
-    pub(crate) async fn host_view(&self) -> Result<(WorldSnapshot, Option<String>)> {
+    pub async fn host_view(&self) -> Result<(WorldSnapshot, Option<String>)> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::HostView { reply })

@@ -1112,7 +1112,7 @@ async fn records_ticket_session<I: SessionIo>(
 }
 
 /// Compatibility alias for the provider manifest's shared records-page bound.
-pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = crate::world_caps::MAX_RECORDS_PAGE_BYTES;
+pub const MAX_RECORDS_PAGE_BYTES: usize = crate::world_caps::MAX_RECORDS_PAGE_BYTES;
 
 async fn records_session<I: SessionIo>(
     meter: &WorldMetrics,

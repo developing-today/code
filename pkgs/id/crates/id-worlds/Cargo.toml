@@ -43,6 +43,8 @@ sandbox = ["dep:wasmtime", "id-caps/sandbox", "id-core/sandbox"]
 # The russh dependency lives inside id-worlds (design feature
 # mapping); the facade `ssh` feature forwards here.
 ssh = ["dep:russh"]
+# Test harnesses used by the facade crate's web tests.
+test-utils = []
 
 [dependencies]
 anyhow = "1"

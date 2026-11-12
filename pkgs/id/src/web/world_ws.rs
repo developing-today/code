@@ -237,7 +237,7 @@ async fn metrics_handler(
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let handle = lease.service();
     let metrics = handle
-        .world
+        .world()
         .metrics()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1326,7 +1326,7 @@ mod tests {
     }
 
     #[cfg(feature = "sandbox")]
-    use crate::world_session::encode_hex;
+    use crate::web::templates::hex_encode as encode_hex;
 
     #[tokio::test]
     async fn http_invites_and_websocket_joins_route_by_world_name() {
