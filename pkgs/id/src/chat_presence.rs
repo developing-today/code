@@ -9,6 +9,37 @@
 //! its last heartbeat ages past [`PRESENCE_TTL_SECS`]; when it resumes, the next
 //! heartbeat makes it live again.
 //!
+//! # Gossip admission contract (#4502, Phase 5)
+//!
+//! **A gossip claim is stored only in the form its table's guards produce —
+//! canonical, scoped, and bounded — and every gossip ingest path enters
+//! through those guards. There is no second door.** The presence path is
+//! `decode_frame` → signature verification and group-membership scoping in
+//! `commands::serve::receive_presence_heartbeat` →
+//! [`PresenceTable::update_scoped`]. The unscoped `PresenceTable::update`
+//! entry point had no production caller and is removed; tests exercise the
+//! deterministic `update_at` core instead. The peer-announcement path is
+//! `SignedPeerAnnouncement::decode_frame` →
+//! [`crate::discovery::PeerDiscovery::update`], both in the serve receiver
+//! and the temporary table used by `commands::peers::discover_via_gossip`.
+//!
+//! `commands::peers::{query_local_peers, query_remote_peers, crawl_peers}`
+//! are deliberately a separate trust surface: they read a selected server's
+//! RPC snapshot for this one CLI output and never insert those claims into a
+//! local gossip table. Their combined output is capped by `--max-peers`;
+//! duplicate rows keep the newer advertised timestamp, so a stale gossip row
+//! cannot replace a fresher RPC row. This is display freshness, not an
+//! authentication guarantee for a remote RPC response.
+//!
+//! The gossip transport owns the frame-size bound: `pkgs/id` pins
+//! `iroh-gossip` 0.101.0 and uses `Gossip::builder().spawn` without overriding
+//! its default `Config::max_message_size` of 4 KiB. Presence `decode_frame`
+//! has no second byte limit; keep the transport configuration bounded, or add
+//! a matching decoder refusal if that configuration changes. Other
+//! `decode_frame` functions under `id-events::event_store::range` and
+//! `id-worlds::world::replication` decode their own non-gossip sync protocols
+//! and do not admit gossip claims.
+//!
 //! # Clock skew and the expiry basis (#8865)
 //!
 //! A sender's clock is not the receiver's clock. Expiry is therefore NOT
@@ -274,13 +305,6 @@ impl PresenceTable {
         Self::default()
     }
 
-    /// Records a heartbeat received at the local wall clock, with no membership
-    /// scoping (the transport layer's view; scoping is the receiver's job — see
-    /// [`update_scoped`](Self::update_scoped)). Returns whether it was accepted.
-    pub fn update(&self, heartbeat: PresenceHeartbeat) -> bool {
-        self.update_at(heartbeat, now_secs(), &|_, _| true)
-    }
-
     /// Records a heartbeat received at the local wall clock, keeping only the
     /// channels `is_member` confirms the sender belongs to. Returns whether the
     /// heartbeat was accepted.
@@ -293,7 +317,7 @@ impl PresenceTable {
     }
 
     /// Records a heartbeat as of `now` (unix seconds), the deterministic core of
-    /// [`update`](Self::update) and [`update_scoped`](Self::update_scoped).
+    /// [`update_scoped`](Self::update_scoped).
     ///
     /// Three guards, mirroring [`crate::discovery::PeerDiscovery`]:
     ///
