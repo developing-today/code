@@ -45,7 +45,7 @@ source in the fleet next to Muse (Archer) and Aster (Dot). It is installed
   sag, camsnap, discrawl, wacrawl, qmd) and runtime
   plugins (acpx, slack, discord, whatsapp, matrix, signal, codex,
   copilot, opencode, deepseek, meta, brave, tavily, exa, firecrawl,
-  perplexity, duckduckgo, tokenjuice) are packaged by Nix. Chat channels
+  perplexity, duckduckgo, tokenjuice, memory-lancedb, memory-wiki) are packaged by Nix. Chat channels
   stay inert until their one-time external setup — see
   `workspace/CHANNELS.md`.
 
