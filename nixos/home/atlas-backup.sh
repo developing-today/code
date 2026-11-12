@@ -253,7 +253,7 @@ sha, dates = "", []
 if os.path.isfile(sys.argv[1]):
     for line in open(sys.argv[1]):
         parts = [p.strip() for p in line.split("|")]
-        if len(parts) >= 3 and "sha256" in parts[1] and parts[2].startswith("OK"):
+        if len(parts) >= 3 and "sha256" in parts[1] and parts[2].upper().startswith("OK"):
             sha = parts[1].split("=", 1)[-1] if "=" in parts[1] else parts[1].split()[-1]
             dates.append(parts[0])
 print(sha)
@@ -410,6 +410,6 @@ if [ -n "$FAILED" ]; then
   verdict "FAILED legs=$FAILED sha256=$DIGEST size=$SIZE $LEG_STR counts=$COUNTS_CSV"
   exit 1
 fi
-log_line "sha256=$DIGEST | ok laptop/r2/drive | size=$SIZE | counts $COUNTS_CSV"
+log_line "sha256=$DIGEST | OK laptop/r2/drive | size=$SIZE | counts $COUNTS_CSV"
 verdict "OK sha256=$DIGEST size=$SIZE laptop=ok r2=ok drive=ok counts=$COUNTS_CSV"
 exit 0
