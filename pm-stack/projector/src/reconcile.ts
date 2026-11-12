@@ -3,7 +3,7 @@
 // an upsert keyed by a repo-qualified ID, and a monotonic guard prevents stale
 // overwrites. Cursors (repo, stream) make each poll incremental.
 import type { Client } from "@libsql/client";
-import { fromIssueOrPr } from "./projector";
+import { fromIssueOrPr, isPlainObject, isProjectableItem } from "./projector";
 import * as store from "./store";
 import { apiTokenFor, listResource, type GitHubAuth } from "./github";
 
@@ -30,6 +30,7 @@ async function reconcileStream(
   repo: string;
   stream: Stream;
   written: number;
+  skipped?: number;
   cursor: string | null;
   error?: string;
   errors?: { pr: number; error: string }[];
@@ -55,27 +56,33 @@ async function reconcileStream(
   // so upserts from it store the truth on first sight and heal any legacy
   // false-default rows on a later pass. The issues stream is unchanged.
   if (stream === "prs") {
-    const pulls = await listResource<Record<string, any>>(
-      auth,
-      `repos/${repo}/pulls?per_page=100&state=all`,
-      fetchFn,
-    );
+    const pulls = await listResource<Record<string, any>>(auth, `repos/${repo}/pulls?per_page=100&state=all`, fetchFn);
     let cursor: string | null = null;
+    let skipped = 0;
     for (const pr of pulls) {
+      if (!isProjectableItem(pr)) {
+        skipped++;
+        continue;
+      }
       const row = fromIssueOrPr(repo, pr, "pr");
       await store.upsertItem(db, row);
       await mark(1);
       const u = pr.updated_at ?? pr.created_at;
       if (typeof u === "string" && (!cursor || u > cursor)) cursor = u;
     }
-    return { repo, stream, written: written.n, cursor };
+    return { repo, stream, written: written.n, ...(skipped > 0 ? { skipped } : {}), cursor };
   }
 
   if (stream === "issues") {
     const path = `repos/${repo}/issues?${q}&filter=all`;
     const rows = await listResource<Record<string, any>>(auth, path, fetchFn);
     let cursor: string | null = null;
+    let skipped = 0;
     for (const obj of rows) {
+      if (!isProjectableItem(obj)) {
+        skipped++;
+        continue;
+      }
       if (Boolean(obj.pull_request)) continue;
       const row = fromIssueOrPr(repo, obj, "issue");
       await store.upsertItem(db, row);
@@ -83,7 +90,7 @@ async function reconcileStream(
       const u = obj.updated_at ?? obj.created_at;
       if (typeof u === "string" && (!cursor || u > cursor)) cursor = u;
     }
-    return { repo, stream, written: written.n, cursor };
+    return { repo, stream, written: written.n, ...(skipped > 0 ? { skipped } : {}), cursor };
   }
 
   if (stream === "issue_comments" || stream === "review_comments") {
@@ -94,7 +101,12 @@ async function reconcileStream(
     const collection = stream === "issue_comments" ? "issues/comments" : "pulls/comments";
     const rows = await listResource<Record<string, any>>(auth, `repos/${repo}/${collection}?per_page=100`, fetchFn);
     let cursor: string | null = null;
+    let skipped = 0;
     for (const c of rows) {
+      if (!isPlainObject(c)) {
+        skipped++;
+        continue;
+      }
       // The API comment objects carry the containing issue/PR only via URL;
       // derive the repo-qualified ref from it.
       const ref = commentRef(repo, c);
@@ -123,7 +135,7 @@ async function reconcileStream(
       const u = c.updated_at ?? c.created_at;
       if (typeof u === "string" && (!cursor || u > cursor)) cursor = u;
     }
-    return { repo, stream, written: written.n, cursor };
+    return { repo, stream, written: written.n, ...(skipped > 0 ? { skipped } : {}), cursor };
   }
 
   if (stream === "reviews") {
@@ -136,8 +148,13 @@ async function reconcileStream(
     // unfiltered each time, so no PR is skipped permanently.
     const prs = await listResource<Record<string, any>>(auth, `repos/${repo}/pulls?per_page=100&state=all`, fetchFn);
     let cursor: string | null = null;
+    let skipped = 0;
     const errors: { pr: number; error: string }[] = [];
     for (const pr of prs) {
+      if (!isProjectableItem(pr)) {
+        skipped++;
+        continue;
+      }
       try {
         const reviews = await listResource<Record<string, any>>(
           auth,
@@ -145,6 +162,10 @@ async function reconcileStream(
           fetchFn,
         );
         for (const r of reviews) {
+          if (!isPlainObject(r)) {
+            skipped++;
+            continue;
+          }
           const ref = `${repo}#${pr.number}`;
           const createdAt = r.submitted_at ?? r.created_at ?? null;
           if (!createdAt) continue;
@@ -174,7 +195,14 @@ async function reconcileStream(
         errors.push({ pr: pr.number, error: String((e as Error).message) });
       }
     }
-    return { repo, stream, written: written.n, cursor, ...(errors.length > 0 ? { errors } : {}) };
+    return {
+      repo,
+      stream,
+      written: written.n,
+      ...(skipped > 0 ? { skipped } : {}),
+      cursor,
+      ...(errors.length > 0 ? { errors } : {}),
+    };
   }
 
   return { repo, stream, written: 0, cursor: null };

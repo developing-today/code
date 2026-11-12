@@ -214,6 +214,73 @@ export function crawlArchiveKey(nowMs: number, unique: string): string {
   return `crawls/${nowMs}-${unique}.json`;
 }
 
+// --- Container crawl result validation (#7018) ------------------------------
+// The container crawler is a separate service with its own release cadence
+// (CrawlerContainerV2 exists because the original container application
+// broke), so its 200 response is a cross-service boundary, not a trusted
+// internal value. crawlWithContainer used to return res.json() under a
+// type cast, and the route archived and bound the result unvalidated: a
+// JSON null body 500'd on the first field read (after the R2 archive was
+// already written), a JSON string was archived spread by character index
+// and stored as an all-null crawls row, and wrong-typed fields bound
+// as-is. A malformed result must instead read as a container failure, so
+// the route's existing catch falls back to the Worker crawler.
+
+export interface CrawlResult {
+  title?: string;
+  excerpt?: string;
+  links?: number;
+  status_code?: number;
+  text?: string;
+}
+
+const CRAWL_RESULT_STRING_FIELDS = ["title", "excerpt", "text"] as const;
+const CRAWL_RESULT_NUMBER_FIELDS = ["links", "status_code"] as const;
+
+export function parseCrawlResult(value: unknown): Validated<CrawlResult> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: "crawl result must be a JSON object" };
+  }
+  const body = value as Record<string, unknown>;
+  for (const field of CRAWL_RESULT_STRING_FIELDS) {
+    if (body[field] !== undefined && typeof body[field] !== "string") {
+      return { ok: false, error: `crawl result field ${field} must be a string` };
+    }
+  }
+  for (const field of CRAWL_RESULT_NUMBER_FIELDS) {
+    if (body[field] !== undefined && (typeof body[field] !== "number" || !Number.isFinite(body[field]))) {
+      return { ok: false, error: `crawl result field ${field} must be a number` };
+    }
+  }
+  return { ok: true, values: body as CrawlResult };
+}
+
+// --- Workers AI summary result validation (#7037) ---------------------------
+// The Workers AI result is a cross-service response with its own release
+// cadence, so it is validated before use like the container crawl result
+// above (#7018). The summarize route used to consume it under a bare cast
+// (`as { response?: string }`) and trim whatever it found: a result with
+// no usable response ({} or a bare string) silently stored an EMPTY
+// summary and reported success, erasing any previous summary, and a null
+// result or a non-string response crashed the route with a raw TypeError.
+// A malformed result must read as an upstream failure instead, so the
+// route can answer 502 and write nothing.
+
+export function parseAiSummaryResult(value: unknown): Validated<{ summary: string }> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: "AI summary result must be a JSON object" };
+  }
+  const response = (value as Record<string, unknown>).response;
+  if (typeof response !== "string") {
+    return { ok: false, error: "AI summary result field response must be a string" };
+  }
+  const summary = response.trim();
+  if (summary === "") {
+    return { ok: false, error: "AI summary result field response must not be empty" };
+  }
+  return { ok: true, values: { summary } };
+}
+
 export type ManualFetcher = (url: string) => Promise<Response>;
 
 // Keep this policy in sync with container/app.py's _ValidatingRedirectHandler:
@@ -410,6 +477,58 @@ export async function parseJsonObjectBody(req: Request): Promise<JsonObjectBody>
   return { ok: true, body: parsed as Record<string, unknown> };
 }
 
+// --- Multipart file-upload body validation (#7087) ------------------------
+// POST /api/files is the one POST route #2480's JSON helpers could not
+// cover: it consumes multipart form data, and it consumed it unguarded —
+// req.formData() threw a raw TypeError for any non-multipart body (a JSON
+// or plain-text body, an empty body), and form.get("file") returns a
+// string for a text field, which the route's bare `as File` cast hid until
+// file.arrayBuffer() crashed on it. Both escaped as a 500 carrying the
+// runtime's internal error text. These helpers give the route the same
+// 400 vocabulary as the JSON routes: an unparseable form body and a
+// missing or non-file 'file' field are client errors, named as such,
+// before any R2/D1/Queue side effect.
+
+export type FormDataBody = { ok: true; form: FormData } | { ok: false; error: string };
+
+export async function parseFormDataBody(req: Request): Promise<FormDataBody> {
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return { ok: false, error: "multipart form body required" };
+  }
+  return { ok: true, form };
+}
+
+export interface UploadFileLike {
+  name: string;
+  type: string;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+export function parseUploadFile(value: unknown): Validated<UploadFileLike> {
+  if (value === null || value === undefined) {
+    return { ok: false, error: "multipart field 'file' required" };
+  }
+  if (
+    typeof value !== "object" ||
+    typeof (value as { name?: unknown }).name !== "string" ||
+    typeof (value as { arrayBuffer?: unknown }).arrayBuffer !== "function"
+  ) {
+    return { ok: false, error: "multipart field 'file' must be a file upload" };
+  }
+  const file = value as { name: string; type?: unknown; arrayBuffer(): Promise<ArrayBuffer> };
+  return {
+    ok: true,
+    values: {
+      name: file.name,
+      type: typeof file.type === "string" ? file.type : "",
+      arrayBuffer: () => file.arrayBuffer(),
+    },
+  };
+}
+
 export type RequiredString = { ok: true; value: string } | { ok: false; error: string };
 
 // A required field is satisfied only by a string with non-whitespace
@@ -423,10 +542,75 @@ export function requireNonBlankString(body: Record<string, unknown>, field: stri
 
 export type Validated<T> = { ok: true; values: T } | { ok: false; error: string };
 
-export function validateMachineBody(body: Record<string, unknown>): Validated<{ name: string }> {
+type OptionalField<T> = { ok: true; value: T } | { ok: false; error: string };
+
+function optionalStringField(body: Record<string, unknown>, field: string, fallback: string): OptionalField<string>;
+function optionalStringField(
+  body: Record<string, unknown>,
+  field: string,
+  fallback: null,
+): OptionalField<string | null>;
+function optionalStringField(
+  body: Record<string, unknown>,
+  field: string,
+  fallback: string | null,
+): OptionalField<string | null> {
+  const value = body[field];
+  if (value === undefined || value === null) return { ok: true, value: fallback };
+  if (typeof value !== "string") return { ok: false, error: `${field} must be a string` };
+  return { ok: true, value };
+}
+
+function optionalIntegerField(body: Record<string, unknown>, field: string): OptionalField<number | null> {
+  const value = body[field];
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return { ok: false, error: `${field} must be an integer` };
+  }
+  return { ok: true, value };
+}
+
+export function validateMachineBody(body: Record<string, unknown>): Validated<{
+  name: string;
+  role: string;
+  cpu: string | null;
+  ram_gb: number | null;
+  storage: string | null;
+  gpu: string | null;
+  status: string;
+  notes: string | null;
+}> {
   const name = requireNonBlankString(body, "name");
   if (!name.ok) return name;
-  return { ok: true, values: { name: name.value } };
+
+  const role = optionalStringField(body, "role", "compute");
+  if (!role.ok) return role;
+  const cpu = optionalStringField(body, "cpu", null);
+  if (!cpu.ok) return cpu;
+  const ram_gb = optionalIntegerField(body, "ram_gb");
+  if (!ram_gb.ok) return ram_gb;
+  const storage = optionalStringField(body, "storage", null);
+  if (!storage.ok) return storage;
+  const gpu = optionalStringField(body, "gpu", null);
+  if (!gpu.ok) return gpu;
+  const status = optionalStringField(body, "status", "planned");
+  if (!status.ok) return status;
+  const notes = optionalStringField(body, "notes", null);
+  if (!notes.ok) return notes;
+
+  return {
+    ok: true,
+    values: {
+      name: name.value,
+      role: role.value,
+      cpu: cpu.value,
+      ram_gb: ram_gb.value,
+      storage: storage.value,
+      gpu: gpu.value,
+      status: status.value,
+      notes: notes.value,
+    },
+  };
 }
 
 // True only for the machines.name UNIQUE violation (#2631). D1 surfaces
@@ -443,18 +627,28 @@ export function isMachineNameConflict(error: unknown): boolean {
 
 // Notes check title before body, matching the order the fields are named
 // in the route's contract (and the triage note for #2480).
-export function validateNoteBody(body: Record<string, unknown>): Validated<{ title: string; text: string }> {
+export function validateNoteBody(
+  body: Record<string, unknown>,
+): Validated<{ title: string; text: string; tags: string }> {
   const title = requireNonBlankString(body, "title");
   if (!title.ok) return title;
   const text = requireNonBlankString(body, "body");
   if (!text.ok) return text;
-  return { ok: true, values: { title: title.value, text: text.value } };
+  const tags = optionalStringField(body, "tags", "");
+  if (!tags.ok) return tags;
+  return { ok: true, values: { title: title.value, text: text.value, tags: tags.value } };
 }
 
-export function validateTaskBody(body: Record<string, unknown>): Validated<{ title: string }> {
+export function validateTaskBody(
+  body: Record<string, unknown>,
+): Validated<{ title: string; machine_id: number | null; due: string | null }> {
   const title = requireNonBlankString(body, "title");
   if (!title.ok) return title;
-  return { ok: true, values: { title: title.value } };
+  const machine_id = optionalIntegerField(body, "machine_id");
+  if (!machine_id.ok) return machine_id;
+  const due = optionalStringField(body, "due", null);
+  if (!due.ok) return due;
+  return { ok: true, values: { title: title.value, machine_id: machine_id.value, due: due.value } };
 }
 
 // --- Upload R2 keys ---------------------------------------------------------

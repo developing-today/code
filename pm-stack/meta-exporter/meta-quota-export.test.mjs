@@ -1,13 +1,17 @@
 // Tests for the pure parsing core of meta-quota-export.mjs.
-// Run: node --test pm-stack/meta-exporter/
+// Run: node --test pm-stack/meta-exporter/meta-quota-export.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, symlink } from "node:fs/promises";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ExportError,
   attemptBoundedRestart,
   failureDocument,
   PAGE_NOT_READY_EXIT,
@@ -35,6 +39,21 @@ const QUOTA = {
   },
 };
 
+// A not-yet-started short window (#1301): zero usage, no window reset.
+const QUOTA_INACTIVE_SHORT = {
+  subscription_quota: {
+    tier_id: "27681527378179523",
+    tier: "Muse Code High Usage",
+    as_of: 1793328541,
+    window_weighted_limit: "100000000000",
+    window_duration_secs: 18000,
+    weekly_weighted_limit: "300000000000",
+    weekly_resets_at: 1793577600,
+    window_weighted_used: "0",
+    weekly_weighted_used: "70873201100",
+  },
+};
+
 test("parseSubscriptionQuota: percentages and resets match the console", () => {
   const parsed = parseSubscriptionQuota(QUOTA);
   assert.equal(parsed.tier, "Muse Code High Usage");
@@ -57,6 +76,14 @@ test("parseBillingBanner: minor units to USD, currency checked", () => {
   assert.equal(parseBillingBanner({ kind: "free_partial", remaining_minor_units: 14857, currency: "USD" }), 148.57);
   assert.throws(() => parseBillingBanner({ remaining_minor_units: 100, currency: "EUR" }), /currency/);
   assert.throws(() => parseBillingBanner({}));
+  // Fractional minor units are shape drift: fail closed, never export a fractional dollar amount (#2510).
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: 1050.5, currency: "USD" }), /missing\/invalid/);
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: 0.1, currency: "USD" }), /missing\/invalid/);
+  assert.equal(parseBillingBanner({ remaining_minor_units: 0, currency: "USD" }), 0);
+  // Unsafe integers and negatives reject; MAX_SAFE_INTEGER itself is the
+  // representation limit, not a business cap.
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: Number.MAX_SAFE_INTEGER + 1, currency: "USD" }), /missing\/invalid/);
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: -100, currency: "USD" }), /missing\/invalid/);
 });
 
 test("parsePaygBalance: reads the iframe text, absence stays null", () => {
@@ -242,4 +269,153 @@ test("documents: page-not-ready is a distinct status/exit and recovery is record
   assert.equal("windows" in bad, false);
   const plain = failureDocument({ attemptedAt: "2026-11-05T12:00:00.000Z", status: "session-expired", detail: "HTTP 401" });
   assert.equal("recovery" in plain, false);
+});
+
+// ---------- Entry-point guard (issue #6343) ----------
+// Regression: the re-homed exporter guarded main() with the raw-path
+// comparison `import.meta.url === pathToFileURL(process.argv[1]).href`,
+// so any symlinked invocation silently skipped main() and exited 0 —
+// the #2350 bug, restored by the #6333 re-home. The guard now resolves
+// symlinks on both sides (realpathSync, mirroring
+// supabase-quota-export.mjs / cloudflare-quota-export.mjs). Oracle: a run
+// against an unreachable CDP port must produce the cdp-unavailable
+// failure document with exit 4, identically for direct and symlinked
+// invocation; a silent exit 0 is the counterexample.
+
+const execFileAsync = promisify(execFile);
+const EXPORTER_PATH = fileURLToPath(new URL("./meta-quota-export.mjs", import.meta.url));
+
+async function runExporter(entryPath, outDir) {
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      [entryPath, "--cdp-port", "1", "--out-dir", outDir],
+      { timeout: 30000 },
+    );
+    return { code: 0, stdout, stderr };
+  } catch (err) {
+    return { code: err.code, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
+  }
+}
+
+async function assertCdpUnavailableRun(entryPath, label) {
+  const base = await mkdtemp(join(tmpdir(), `meta-exporter-entry-${label}-`));
+  const outDir = join(base, "out");
+  const r = await runExporter(entryPath, outDir);
+  assert.equal(r.code, 4, `${label} invocation must exit 4, got ${r.code} (stderr: ${r.stderr})`);
+  assert.match(r.stderr, /cdp-unavailable/);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "cdp-unavailable");
+  const history = await readFile(join(outDir, "history.jsonl"), "utf8");
+  assert.equal(JSON.parse(history.trim()).status, "cdp-unavailable");
+}
+
+test("entry-point guard: direct invocation runs main (cdp-unavailable, exit 4)", async () => {
+  await assertCdpUnavailableRun(EXPORTER_PATH, "direct");
+});
+
+test("entry-point guard: symlinked invocation runs main, matching direct (#6343)", async () => {
+  const base = await mkdtemp(join(tmpdir(), "meta-exporter-entry-link-"));
+  const linkPath = join(base, "meta-quota-export-link.mjs");
+  await symlink(EXPORTER_PATH, linkPath);
+  await assertCdpUnavailableRun(linkPath, "symlink");
+});
+// #2789: num() used to be a bare Number() coercion, so drifted
+// spellings became real measurements ("" -> 0% window, "0x10" -> 16,
+// "1e2" -> 100). Only plain decimal spellings are accepted now.
+test("parseSubscriptionQuota: non-decimal numeric spellings fail closed", () => {
+  for (const bad of ["", "   ", "0x10", "0b101", "0o17", "1e2", "1E2", "abc", "12,000", " 123", "123 ", "1023570000n"]) {
+    for (const field of ["window_weighted_used", "window_weighted_limit", "window_duration_secs"]) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = bad;
+      assert.throws(() => parseSubscriptionQuota(payload), /not a finite|window_duration_secs/);
+    }
+  }
+  // The same spellings are rejected on the weekly fields too.
+  for (const bad of ["", "0x10", "1e2"]) {
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.weekly_weighted_used = bad;
+    assert.throws(() => parseSubscriptionQuota(payload), /weeklyUsed/);
+  }
+});
+
+test("parseSubscriptionQuota: empty-string reset on a used window fails closed", () => {
+  for (const bad of ["", "   "]) {
+    const shortUsed = structuredClone(QUOTA);
+    shortUsed.subscription_quota.window_resets_at = bad;
+    assert.throws(() => parseSubscriptionQuota(shortUsed), /windowReset/);
+    const weeklyUsed = structuredClone(QUOTA);
+    weeklyUsed.subscription_quota.weekly_resets_at = bad;
+    assert.throws(() => parseSubscriptionQuota(weeklyUsed), /weeklyReset/);
+  }
+});
+
+test("parseSubscriptionQuota: empty-string reset on a zero-usage window is tolerated like absent", () => {
+  const payload = structuredClone(QUOTA_INACTIVE_SHORT);
+  payload.subscription_quota.window_resets_at = "";
+  assert.equal(parseSubscriptionQuota(payload).windows[0].resetAt, null);
+});
+
+test("parseSubscriptionQuota: decimal spellings still parse, including fractions", () => {
+  const frac = structuredClone(QUOTA);
+  frac.subscription_quota.window_weighted_used = "1023570000.5";
+  assert.equal(parseSubscriptionQuota(frac).windows[0].usedPct, 1.02);
+});
+
+test("parseSubscriptionQuota: empty as_of stays null; non-decimal as_of fails closed", () => {
+  const empty = structuredClone(QUOTA);
+  empty.subscription_quota.as_of = "";
+  assert.equal(parseSubscriptionQuota(empty).consoleAsOf, null);
+  const blank = structuredClone(QUOTA);
+  delete blank.subscription_quota.as_of;
+  assert.equal(parseSubscriptionQuota(blank).consoleAsOf, null);
+  for (const bad of ["0x10", "1e2", "soon"]) {
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.as_of = bad;
+    assert.throws(() => parseSubscriptionQuota(payload), /unparseable|finite/);
+  }
+});
+
+test("parseSubscriptionQuota: epoch fields reject values outside the pinned seconds window", () => {
+  const firstAllowed = 1_577_836_800; // 2020-01-01T00:00:00Z
+  const lastAllowed = 4_102_444_800; // 2100-01-01T00:00:00Z
+  const cases = [
+    ["window_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
+    ["weekly_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
+    ["as_of", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_000_000_000, 1e300]],
+  ];
+  for (const [field, values] of cases) {
+    for (const value of values) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = value;
+      assert.throws(
+        () => parseSubscriptionQuota(payload),
+        (error) => {
+          assert.ok(error instanceof ExportError);
+          assert.equal(error.status, "unparseable");
+          assert.equal(error.exitCode, 6);
+          return true;
+        },
+        `${field}=${value} should fail as unparseable`,
+      );
+    }
+  }
+});
+
+test("parseSubscriptionQuota: epoch window endpoints are inclusive", () => {
+  const endpoints = [
+    [1_577_836_800, "2020-01-01T00:00:00.000Z"],
+    [4_102_444_800, "2100-01-01T00:00:00.000Z"],
+  ];
+  for (const [epoch, expected] of endpoints) {
+    for (const field of ["window_resets_at", "weekly_resets_at"]) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = epoch;
+      const parsed = parseSubscriptionQuota(payload);
+      assert.equal(parsed.windows[field === "window_resets_at" ? 0 : 1].resetAt, expected);
+    }
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.as_of = epoch;
+    assert.equal(parseSubscriptionQuota(payload).consoleAsOf, expected);
+  }
 });

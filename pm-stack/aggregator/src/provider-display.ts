@@ -1,5 +1,11 @@
 // Provider display names for dashboard markup (#6125, Drew 2026-11-05).
 //
+// Rule 0 (#1823, Drew 2026-11-07): a leading underscore is a
+// config/source-level ownership marker (fleet-built providers carry
+// it: _claude, _antigravity, ...). Display surfaces strip it unless
+// that would collide with another provider in the rendered set — the
+// canonical id keeps it everywhere else.
+//
 // Rule (dashboard only, markup only): a provider whose name ends in
 // "-direct" is displayed WITHOUT that suffix — but only when no
 // non-direct provider with the same base name exists in the same
@@ -30,20 +36,29 @@ function providerHead(name: string): string {
  * same set.
  */
 export function providerDisplayNames(names: Iterable<string>): Map<string, string> {
-  const list = [...names];
+  const originals = [...names];
+  const originalSet = new Set(originals);
+  const list = originals.map((name) => {
+    const head = providerHead(name);
+    if (!head.startsWith("_")) return name;
+    const stripped = head.slice(1) + name.slice(head.length);
+    return originalSet.has(stripped) ? name : stripped;
+  });
   const heads = new Set(list.map(providerHead));
   const out = new Map<string, string>();
-  for (const name of list) {
-    if (out.has(name)) continue;
+  for (let i = 0; i < list.length; i++) {
+    const name = list[i];
+    const original = originals[i];
+    if (out.has(original)) continue;
     const head = providerHead(name);
     if (head.endsWith(DIRECT_SUFFIX)) {
       const base = head.slice(0, -DIRECT_SUFFIX.length);
       if (base.length > 0 && !heads.has(base)) {
-        out.set(name, base + name.slice(head.length));
+        out.set(original, base + name.slice(head.length));
         continue;
       }
     }
-    out.set(name, name);
+    out.set(original, name);
   }
   return out;
 }

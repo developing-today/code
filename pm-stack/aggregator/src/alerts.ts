@@ -23,6 +23,19 @@
 import type { Config } from "./config.ts";
 import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
+import {
+  buildNotificationCandidates,
+  classTestObjectRef,
+  decideNotification,
+  nextNotificationDigestAt,
+  notificationTestLanding,
+  NOTIFICATION_CLASS_DEFAULTS,
+  type NotificationHistoryEntry,
+  type NotificationSnapshot,
+} from "./notifications.ts";
+import { JsonlNotificationHistory, type NotificationHistoryStore } from "./notification-history.ts";
+import { getNeedsDrew } from "./needs-drew.ts";
+import { getDecisionSet } from "./decisions.ts";
 
 // --- Shapes ----------------------------------------------------------------
 
@@ -127,15 +140,40 @@ export function toPublicSubscription(sub: PushSubscriptionRow): PublicPushSubscr
 // --- Pure helpers (unit-tested) ---------------------------------------------
 
 /** Design §1: the incident class defaults ON for new subscriptions. */
-export const DEFAULT_CLASSES: Record<string, boolean> = { incident: true };
+export const DEFAULT_CLASSES: Record<string, boolean> = NOTIFICATION_CLASS_DEFAULTS;
 /** Design §2: default quiet window 23:00–07:00 America/Chicago. */
 export const DEFAULT_QUIET: QuietPrefs = { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true };
 
+/** #4981: how many client-supplied class keys one subscription may carry
+ * beyond {@link DEFAULT_CLASSES}. The class registry that would validate
+ * names and give the set its real shape arrives with #3317; until then a
+ * fixed cap keeps a client from growing the stored `classes` object
+ * without bound. Keys past the cap are dropped, not stored. */
+export const MAX_CLASS_KEYS = 16;
+/** #4981: longest accepted class key. Real class names are short slugs
+ * ("quota-wall"); anything longer is not a class this build knows. */
+export const MAX_CLASS_KEY_LENGTH = 64;
+
 export function mergeClasses(input: unknown): Record<string, boolean> {
   const out = { ...DEFAULT_CLASSES };
+  let clientKeys = 0;
+  const seenClient: Record<string, true> = {};
   if (input && typeof input === "object") {
     for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
-      if (typeof v === "boolean") out[k] = v;
+      // #4981: bound growth — a key must be a plausible class name, and a
+      // subscription may carry only MAX_CLASS_KEYS client-supplied keys.
+      // Over-limit input is dropped rather than extending the stored
+      // object. Object.hasOwn (not `in`) so prototype names like
+      // "toString" count against the cap like any other client key.
+      if (k.length === 0 || k.length > MAX_CLASS_KEY_LENGTH) continue;
+      if (typeof v !== "boolean") continue;
+      const isClientKey = !Object.hasOwn(DEFAULT_CLASSES, k) && !Object.hasOwn(seenClient, k);
+      if (isClientKey && clientKeys >= MAX_CLASS_KEYS) continue;
+      if (isClientKey) {
+        clientKeys += 1;
+        seenClient[k] = true;
+      }
+      out[k] = v;
     }
   }
   return out;
@@ -172,24 +210,40 @@ export function mergeQuiet(input: unknown): QuietPrefs {
   return out;
 }
 
-/** A class is on unless the subscription explicitly turned it off. */
+/** Preserve existing subscription choices when new classes are added:
+ * only the original incident class defaults on for old rows; new rows
+ * receive the reviewed defaults from mergeClasses at creation. */
 export function classEnabled(sub: { classes: Record<string, boolean> }, cls: string): boolean {
-  return sub.classes?.[cls] !== false;
+  return sub.classes?.[cls] ?? cls === "incident";
 }
 
 /** Is `now` inside the quiet window (evaluated in the prefs' timezone)?
  * The incident class never consults this (breakthrough class, #3676);
  * it exists for the dashboard classes of #3317. */
+// ⚡ Bolt: inQuietHours is evaluated per subscription on every digest /
+// alert pass, and Intl.DateTimeFormat construction dominates it (~29µs).
+// The formatter depends only on the timezone, so cache one per tz; the
+// map is bounded by the set of tz names users actually store (a handful).
+const QUIET_HOURS_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+function quietHoursFormatter(tz: string): Intl.DateTimeFormat {
+  let fmt = QUIET_HOURS_FORMATTERS.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    QUIET_HOURS_FORMATTERS.set(tz, fmt);
+  }
+  return fmt;
+}
+
 export function inQuietHours(quiet: QuietPrefs, now: Date): boolean {
   if (quiet.enabled === false) return false; // quiet hours off — no time-of-day limit
   let mins: number;
   try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: quiet.tz,
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(now);
+    const parts = quietHoursFormatter(quiet.tz).formatToParts(now);
     const h = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
     const m = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
     mins = h * 60 + m;
@@ -217,6 +271,10 @@ export interface PushPayload {
   title: string;
   body: string;
   escalation?: boolean;
+  items?: Array<{ class: string; objectRef: string; title: string; url: string }>;
+  /** #8568: tappable answers for a needs-Drew question push; `url` is
+   * the absolute answer-page URL including the per-question token. */
+  answer?: { ledgerId: string; options: Array<{ id: string; label: string }>; url: string };
 }
 
 export function buildIncidentPayload(incident: Incident, origin: string, escalation: boolean): PushPayload {
@@ -280,6 +338,12 @@ export interface NewSubscription {
   p256dh: string;
   auth: string;
   classes: Record<string, boolean>;
+  /** The class keys the caller explicitly sent (#7193 Codex): on an
+   * upsert of an existing endpoint only these keys change; the stored
+   * choices for every other class survive (the dashboard Alerts form
+   * submits only classes.incident, and mergeClasses would otherwise
+   * silently re-enable every other class from the defaults). */
+  providedClasses?: Record<string, boolean>;
   quiet: QuietPrefs;
   userAgent?: string;
 }
@@ -296,6 +360,12 @@ export function validateNewSubscription(
   if (!endpoint || !/^https:\/\//.test(endpoint)) return { ok: false, error: "endpoint must be an https URL" };
   if (!p256dh) return { ok: false, error: "keys.p256dh required" };
   if (!auth) return { ok: false, error: "keys.auth required" };
+  const providedClasses: Record<string, boolean> = {};
+  if (b.classes && typeof b.classes === "object") {
+    for (const [k, v] of Object.entries(b.classes as Record<string, unknown>)) {
+      if (typeof v === "boolean") providedClasses[k] = v;
+    }
+  }
   return {
     ok: true,
     value: {
@@ -303,6 +373,7 @@ export function validateNewSubscription(
       p256dh,
       auth,
       classes: mergeClasses(b.classes),
+      providedClasses,
       quiet: mergeQuiet(b.quiet),
       userAgent: typeof b.userAgent === "string" ? b.userAgent : undefined,
     },
@@ -373,7 +444,8 @@ export class AlertsStore {
          sub.userAgent ? sqlStr(sub.userAgent) : "null"
        })
        on conflict (endpoint) do update set
-         p256dh = excluded.p256dh, auth = excluded.auth, classes = excluded.classes,
+         p256dh = excluded.p256dh, auth = excluded.auth,
+         classes = push_subscriptions.classes || ${sqlJson(sub.providedClasses ?? {})},
          quiet = excluded.quiet, user_agent = excluded.user_agent,
          last_seen_at = now(), gone_count = 0
        returning *`,
@@ -488,6 +560,21 @@ export class AlertsStore {
     return { incident: await this.getIncident(id), transitioned: false };
   }
 
+  /** #8568: close the open incident for a (source, key) pair — the
+   * sentinel's "up" transition resolves the incident its "down" post
+   * opened. Reuses closeIncident for the transition + event. */
+  async closeOpenIncidentByKey(
+    source: string,
+    key: string,
+  ): Promise<{ incident: Incident | null; transitioned: boolean }> {
+    const rows = await this.db.query<Incident>(
+      `select * from alerts.incidents where source = ${sqlStr(source)} and incident_key = ${sqlStr(key)} and status <> 'closed' order by first_seen_at limit 1`,
+    );
+    const open = rows[0];
+    if (!open) return { incident: null, transitioned: false };
+    return this.closeIncident(open.id);
+  }
+
   async closeIncident(id: string): Promise<{ incident: Incident | null; transitioned: boolean }> {
     const rows = await this.db.query<Incident>(
       `update alerts.incidents set status = 'closed', closed_at = now()
@@ -558,6 +645,84 @@ export class AlertsStore {
   }
 }
 
+/** Per-class test sends (#3318): the preferences page's send-test
+ * button per class. The payload carries the class under test and
+ * lands per the design §3 deep-link contract
+ * (notificationTestLanding): a real candidate's own triage-capable
+ * URL when one is supplied, otherwise the test item's class view —
+ * never the origin root, and the digest test is the only
+ * list-shaped landing (attention filtered to its refs). */
+export function buildClassTestPayload(
+  cls: string,
+  origin: string,
+  candidate?: { objectRef: string; title: string; url: string } | null,
+): PushPayload {
+  return {
+    class: cls,
+    objectRef: candidate?.objectRef ?? classTestObjectRef(cls),
+    url: notificationTestLanding(cls, origin, candidate),
+    title: `Test ${cls} — PM Stack`,
+    body: candidate
+      ? `Test ${cls} notification for ${candidate.title}. If you can read this, ${cls} delivery and its deep link work on this device.`
+      : `Test ${cls} notification (test item ${classTestObjectRef(cls)}). If you can read this, ${cls} delivery and its deep link work on this device.`,
+  };
+}
+
+export interface ClassTestPushSummary extends TestPushSummary {
+  cls: string;
+  /** Subscriptions the class toggle let through (all of them for
+   * the digest test, which is a delivery shape, not a class). */
+  eligible: number;
+  /** The deep-link landing the test notification opens. */
+  url: string;
+}
+
+/**
+ * Send the per-class test push. Unlike the generic test, this one
+ * honours the stored preference: a subscription whose class toggle
+ * is off receives nothing — the same classEnabled check the engine
+ * applies, so the test proves the toggle's effect. One sends-ledger
+ * row per attempted subscription, under the tested class with the
+ * test object ref. The sender is injectable, like sendTestPush.
+ */
+export async function sendClassTestPush(
+  store: Pick<AlertsStore, "listSubscriptions" | "logSend" | "noteSubscriptionGone" | "noteSubscriptionAlive">,
+  origin: string,
+  cls: string,
+  send: typeof sendPush = sendPush,
+  candidate?: { objectRef: string; title: string; url: string } | null,
+): Promise<ClassTestPushSummary> {
+  const payload = buildClassTestPayload(cls, origin, candidate);
+  const subs = await store.listSubscriptions();
+  const targets = cls === "digest" ? subs : subs.filter((sub) => classEnabled(sub, cls));
+  const summary: ClassTestPushSummary = {
+    subscriptions: subs.length,
+    eligible: targets.length,
+    sent: 0,
+    gone: 0,
+    errors: 0,
+    cls,
+    url: payload.url,
+  };
+  for (const sub of targets) {
+    const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
+    const outcome = await send(target, payload);
+    if (outcome.ok) {
+      summary.sent += 1;
+      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "sent" });
+      await store.noteSubscriptionAlive(sub.endpoint);
+    } else if (outcome.gone) {
+      summary.gone += 1;
+      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "gone" });
+      await store.noteSubscriptionGone(sub.endpoint);
+    } else {
+      summary.errors += 1;
+      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "error" });
+    }
+  }
+  return summary;
+}
+
 /** The test alert (#3676 follow-up, Drew 2026-11-01): the /alerts
  * page's "Send a test alert" button. Clearly a test in title + body;
  * objectRef is a stable non-incident ref so the sends ledger keeps
@@ -617,6 +782,7 @@ export async function sendTestPush(
 /**
  * Create the shared store resolver. Keep the in-flight attempt and successful
  * store cached, but clear null/rejected attempts so a later call can recover.
+ * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
  */
 export function createAlertsStoreGetter(
   getClient: typeof getSupabaseClient = getSupabaseClient,
@@ -637,7 +803,7 @@ export function createAlertsStoreGetter(
       );
     }
     return storePromise;
-  }
+  };
 }
 
 /** The shared store; null when the Supabase path is unavailable. */
@@ -706,7 +872,303 @@ async function deliverToAll(
  * incident stays undelivered (and unescalated) until someone
  * subscribes — a later subscription still gets the push.
  */
-export async function runAlertTick(cfg: Config, store: AlertsStore, push: PushSender = sendPush): Promise<void> {
+export interface AlertTickOptions {
+  dashboardSnapshot?: () => Promise<NotificationSnapshot>;
+  notificationHistory?: NotificationHistoryStore;
+  now?: number;
+}
+
+async function runDashboardNotificationTick(
+  cfg: Config,
+  store: AlertsStore,
+  subscriptions: PushSubscriptionRow[],
+  push: PushSender,
+  options: AlertTickOptions,
+): Promise<void> {
+  if (!options.dashboardSnapshot || subscriptions.length === 0) return;
+  const now = options.now ?? Date.now();
+  const historyStore = options.notificationHistory ?? new JsonlNotificationHistory(cfg.notificationsFile);
+  const [snapshot, history] = await Promise.all([options.dashboardSnapshot(), historyStore.read()]);
+  const candidates = buildNotificationCandidates(snapshot, now);
+
+  const keyOf = (
+    entry: Pick<NotificationHistoryEntry, "class" | "objectRef" | "stateFingerprint" | "subscriptionId">,
+  ) => `${entry.subscriptionId ?? ""}\u0000${entry.class}\u0000${entry.objectRef}\u0000${entry.stateFingerprint}`;
+  const pendingFor = (subId: string): Map<string, NotificationHistoryEntry> => {
+    const pending = new Map<string, NotificationHistoryEntry>();
+    for (const entry of history) {
+      if (entry.subscriptionId !== subId) continue;
+      const key = keyOf(entry);
+      if (entry.outcome === "queued") pending.set(key, entry);
+      else if (entry.outcome === "queue-cancelled" || entry.outcome === "sent" || entry.outcome === "gone")
+        pending.delete(key);
+    }
+    return pending;
+  };
+  const append = async (entry: NotificationHistoryEntry) => {
+    await historyStore.append(entry);
+    history.push(entry);
+  };
+
+  for (const sub of subscriptions) {
+    const enabledCandidates = candidates.filter((candidate) => classEnabled(sub, candidate.class));
+    const currentKeys = new Set(enabledCandidates.map((candidate) => keyOf({ ...candidate, subscriptionId: sub.id })));
+    const pending = pendingFor(sub.id);
+    const subHistory = history.filter((entry) => entry.subscriptionId === sub.id);
+
+    // A disappeared state or a muted class cancels its pending digest entry.
+    for (const [key, queued] of pending) {
+      if (currentKeys.has(key)) continue;
+      await append({
+        at: new Date(now).toISOString(),
+        class: queued.class,
+        objectRef: queued.objectRef,
+        stateFingerprint: queued.stateFingerprint,
+        outcome: "queue-cancelled",
+        subscriptionId: sub.id,
+      });
+      pending.delete(key);
+    }
+
+    // Recovery markers: a previously recorded candidate state that is no
+    // longer among this subscription's current candidates has ended its
+    // episode. decideNotification dedupes only against sends recorded
+    // after the latest recovery, so a recurrence notifies again.
+    const latestByKey = new Map<string, NotificationHistoryEntry>();
+    for (const entry of subHistory) {
+      const key = keyOf(entry);
+      const prev = latestByKey.get(key);
+      if (!prev || Date.parse(entry.at) >= Date.parse(prev.at)) latestByKey.set(key, entry);
+    }
+    for (const [key, latest] of latestByKey) {
+      if (currentKeys.has(key) || latest.outcome === "recovered") continue;
+      const marker: NotificationHistoryEntry = {
+        at: new Date(now).toISOString(),
+        class: latest.class,
+        objectRef: latest.objectRef,
+        stateFingerprint: latest.stateFingerprint,
+        outcome: "recovered",
+        subscriptionId: sub.id,
+      };
+      await append(marker);
+      subHistory.push(marker);
+    }
+
+    for (const candidate of enabledCandidates) {
+      const key = keyOf({ ...candidate, subscriptionId: sub.id });
+      const decision = decideNotification(candidate, subHistory, now, inQuietHours(sub.quiet, new Date(now)));
+      const suppressedOutcome: NotificationHistoryEntry["outcome"] =
+        decision === "digest"
+          ? "suppressed-quiet"
+          : decision === "suppress-dedupe"
+            ? "suppressed-dedupe"
+            : decision === "suppress-cooldown"
+              ? "suppressed-cooldown"
+              : "sent";
+      if (decision === "digest") {
+        if (
+          !subHistory.some(
+            (entry) =>
+              entry.class === candidate.class &&
+              entry.objectRef === candidate.objectRef &&
+              entry.stateFingerprint === candidate.stateFingerprint &&
+              entry.outcome === suppressedOutcome,
+          )
+        ) {
+          const suppressed: NotificationHistoryEntry = {
+            at: new Date(now).toISOString(),
+            class: candidate.class,
+            objectRef: candidate.objectRef,
+            stateFingerprint: candidate.stateFingerprint,
+            outcome: "suppressed-quiet",
+            subscriptionId: sub.id,
+          };
+          await append(suppressed);
+          subHistory.push(suppressed);
+        }
+        if (!pending.has(key)) {
+          const queued: NotificationHistoryEntry = {
+            at: new Date(now).toISOString(),
+            class: candidate.class,
+            objectRef: candidate.objectRef,
+            stateFingerprint: candidate.stateFingerprint,
+            outcome: "queued",
+            subscriptionId: sub.id,
+            candidate,
+            dueAt: new Date(nextNotificationDigestAt(now, sub.quiet)).toISOString(),
+          };
+          await append(queued);
+          pending.set(key, queued);
+        }
+        continue;
+      }
+      if (decision !== "send") {
+        if (
+          !subHistory.some(
+            (entry) =>
+              entry.class === candidate.class &&
+              entry.objectRef === candidate.objectRef &&
+              entry.stateFingerprint === candidate.stateFingerprint &&
+              entry.outcome === suppressedOutcome,
+          )
+        ) {
+          const suppressed: NotificationHistoryEntry = {
+            at: new Date(now).toISOString(),
+            class: candidate.class,
+            objectRef: candidate.objectRef,
+            stateFingerprint: candidate.stateFingerprint,
+            outcome: suppressedOutcome,
+            subscriptionId: sub.id,
+          };
+          await append(suppressed);
+          subHistory.push(suppressed);
+        }
+        continue;
+      }
+      if (pending.has(key)) continue; // due entries are sent together below
+      const url = /^https?:\/\//.test(candidate.url) ? candidate.url : `${cfg.publicOrigin}${candidate.url}`;
+      const payload: PushPayload = {
+        class: candidate.class,
+        objectRef: candidate.objectRef,
+        url,
+        title: candidate.title,
+        body: candidate.body,
+        ...(candidate.escalationStep ? { escalation: true } : {}),
+      };
+      // #8568: a needs-Drew candidate pushes with tappable answers —
+      // the payload url becomes the token-carrying answer page.
+      if (candidate.needsDrew) {
+        try {
+          const item = await getNeedsDrew(cfg.needsDrewFile, candidate.needsDrew.ledgerId);
+          if (item) {
+            const answerUrl = `${cfg.publicOrigin}/answer/${encodeURIComponent(item.ledgerId)}?t=${item.token}`;
+            payload.answer = { ledgerId: item.ledgerId, options: item.options, url: answerUrl };
+            payload.url = answerUrl;
+          }
+        } catch (err) {
+          console.error(
+            `alerts engine: needs-drew answer payload lookup failed (${err instanceof Error ? err.message : "error"})`,
+          );
+        }
+      }
+      // #8766: a decision-set candidate pushes with the set page as
+      // its URL — the per-set token rides the URL; the page itself is
+      // the answer surface, so no `answer` payload is attached.
+      if (candidate.decisionSet) {
+        try {
+          const set = await getDecisionSet(cfg.decisionsFile, candidate.decisionSet.setId);
+          if (set) {
+            payload.url = `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
+          }
+        } catch (err) {
+          console.error(
+            `alerts engine: decision-set payload lookup failed (${err instanceof Error ? err.message : "error"})`,
+          );
+        }
+      }
+      const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
+      const result = await push(target, payload);
+      const outcome = result.ok ? "sent" : result.gone ? "gone" : "error";
+      const entry: NotificationHistoryEntry = {
+        at: new Date(now).toISOString(),
+        class: candidate.class,
+        objectRef: candidate.objectRef,
+        stateFingerprint: candidate.stateFingerprint,
+        outcome,
+        subscriptionId: sub.id,
+      };
+      await append(entry);
+      subHistory.push(entry);
+      await store.logSend({ class: candidate.class, objectRef: candidate.objectRef, outcome });
+      if (result.ok) await store.noteSubscriptionAlive(sub.endpoint);
+      else if (result.gone) await store.noteSubscriptionGone(sub.endpoint);
+    }
+
+    const due = [...pending.entries()].filter(([, entry]) => Date.parse(entry.dueAt ?? "") <= now);
+    const digestCandidates = due
+      .map(([, entry]) => entry.candidate)
+      .filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
+    if (digestCandidates.length === 0) continue;
+    // #7193 Codex: revalidate the CURRENT quiet window before draining —
+    // the persisted dueAt was computed under an earlier window (or the
+    // server was offline past it into a new quiet period). Defer to the
+    // next allowed boundary instead of sending inside quiet hours.
+    if (inQuietHours(sub.quiet, new Date(now))) {
+      for (const [key, queued] of due) {
+        const retry: NotificationHistoryEntry = {
+          ...queued,
+          at: new Date(now).toISOString(),
+          dueAt: new Date(nextNotificationDigestAt(now + 60_000, sub.quiet)).toISOString(),
+        };
+        await append(retry);
+        pending.set(key, retry);
+      }
+      continue;
+    }
+    const refs = digestCandidates.map((candidate) => candidate.objectRef);
+    const items = digestCandidates.map((candidate) => ({
+      class: candidate.class,
+      objectRef: candidate.objectRef,
+      title: candidate.title,
+      url: /^https?:\/\//.test(candidate.url) ? candidate.url : `${cfg.publicOrigin}${candidate.url}`,
+    }));
+    const payload: PushPayload = {
+      class: "digest",
+      objectRef: `digest:${new Date(now).toISOString().slice(0, 10)}`,
+      url: `${cfg.publicOrigin}/attention?refs=${encodeURIComponent(refs.join(","))}`,
+      title: `${digestCandidates.length} dashboard update${digestCandidates.length === 1 ? "" : "s"}`,
+      body: digestCandidates.map((candidate) => candidate.title).join(" · "),
+      items,
+    };
+    const result = await push({ endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth }, payload);
+    const isGone = "gone" in result && result.gone;
+    const outcome = result.ok ? "sent" : isGone ? "gone" : "error";
+    for (const [key, queued] of due) {
+      const candidate = queued.candidate;
+      if (candidate) {
+        await append({
+          at: new Date(now).toISOString(),
+          class: candidate.class,
+          objectRef: candidate.objectRef,
+          stateFingerprint: candidate.stateFingerprint,
+          outcome,
+          subscriptionId: sub.id,
+        });
+      }
+      if (!result.ok && !isGone && candidate) {
+        const retry: NotificationHistoryEntry = {
+          ...queued,
+          at: new Date(now).toISOString(),
+          dueAt: new Date(nextNotificationDigestAt(now + 60_000, sub.quiet)).toISOString(),
+        };
+        await append(retry);
+        pending.set(key, retry);
+      } else {
+        if (isGone && candidate) {
+          await append({
+            at: new Date(now).toISOString(),
+            class: candidate.class,
+            objectRef: candidate.objectRef,
+            stateFingerprint: candidate.stateFingerprint,
+            outcome: "queue-cancelled",
+            subscriptionId: sub.id,
+          });
+        }
+        pending.delete(key);
+      }
+    }
+    await store.logSend({ class: "digest", objectRef: payload.objectRef, outcome });
+    if (result.ok) await store.noteSubscriptionAlive(sub.endpoint);
+    else if (isGone) await store.noteSubscriptionGone(sub.endpoint);
+  }
+}
+
+export async function runAlertTick(
+  cfg: Config,
+  store: AlertsStore,
+  push: PushSender = sendPush,
+  options: AlertTickOptions = {},
+): Promise<void> {
   const subs = await store.listSubscriptions();
   const targets = subs.filter((s) => classEnabled(s, "incident"));
   if (targets.length > 0) {
@@ -731,12 +1193,25 @@ export async function runAlertTick(cfg: Config, store: AlertsStore, push: PushSe
       }
     }
   }
+  await runDashboardNotificationTick(cfg, store, subs, push, options);
 }
 
 let engineStarted = false;
+let alertTickHook: (() => void) | null = null;
+
+/** #8568: ask the running engine to tick promptly (e.g. a needs-Drew
+ * question or a stack-health transition just landed at the intake).
+ * The engine's own in-flight guard dedupes; no-op when not started. */
+export function requestAlertTick(): void {
+  try {
+    alertTickHook?.();
+  } catch {
+    // A prompt tick is best-effort; the 60s loop remains the backstop.
+  }
+}
 
 /** Start the ~60s engine loop (live mode only; fail-soft per tick). */
-export function startAlertEngine(cfg: Config): void {
+export function startAlertEngine(cfg: Config, dashboardSnapshot?: () => Promise<NotificationSnapshot>): void {
   if (engineStarted || cfg.source !== "live") return;
   engineStarted = true;
   let ticking = false;
@@ -745,12 +1220,15 @@ export function startAlertEngine(cfg: Config): void {
     ticking = true;
     try {
       const store = await getAlertsStore();
-      if (store) await runAlertTick(cfg, store);
+      if (store) await runAlertTick(cfg, store, sendPush, { dashboardSnapshot });
     } catch (err) {
       console.error(`alerts engine: tick failed (${err instanceof Error ? err.message : "error"})`);
     } finally {
       ticking = false;
     }
+  };
+  alertTickHook = () => {
+    void tick();
   };
   setTimeout(tick, 10_000);
   setInterval(tick, cfg.alerts.tickMs);

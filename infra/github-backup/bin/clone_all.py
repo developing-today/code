@@ -12,7 +12,17 @@ import json, os, shutil, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, mirror_path, valid_mirror, disk_kb
+from ghb_common import (
+    load_config,
+    backup_root,
+    mirror_path,
+    valid_mirror,
+    disk_kb,
+    load_plan,
+    report_problems,
+    clone_status_record,
+    is_skeleton_mirror,
+)
 
 PAR = 4
 TIMEOUT = 5400
@@ -58,14 +68,22 @@ def dest_is_confirmed_partial(dest):
     worse than the wedge this fixes (Codex P1 on the #3233 PR). So:
 
     - a non-directory at the mirror path is a stray file — partial;
+    - a bare skeleton (bare, HEAD unresolvable, zero refs — #3238)
+      is partial: it is the state `clone --mirror` creates before
+      transport, holds no refs and no reachable objects by
+      construction, so clearing it loses nothing (design #3282
+      rule 2's skeleton disposition);
     - git answering at all (rc 0) means a real repository lives there
-      — never partial, whatever valid_mirror made of it;
+      — never partial, whatever valid_mirror made of it (a bare repo
+      WITH refs reaches this branch and is preserved);
     - git saying 'not a git repository' is the killed-clone / junk
       shape — partial;
     - any other git failure is an inspection/policy error — NOT
       confirmed partial, and the caller preserves the destination.
     """
     if not os.path.isdir(dest):
+        return True
+    if is_skeleton_mirror(dest):
         return True
     r = subprocess.run(
         ["git", "-C", dest, "rev-parse", "--is-bare-repository"],
@@ -80,7 +98,8 @@ def dest_is_confirmed_partial(dest):
 def main():
     cfg = load_config()
     root = backup_root(cfg)
-    plan = json.load(open(os.path.join(root, "plan.json")))
+    plan, problems = load_plan(root)
+    report_problems(problems)
     status_path = os.path.join(root, "clone-status.jsonl")
 
     def log_status(rec):
@@ -91,12 +110,16 @@ def main():
     ok_prev = set()
     if os.path.exists(status_path):
         for line in open(status_path):
-            try:
-                r = json.loads(line)
-                if r.get("status") == "ok":
-                    ok_prev.add(r["repo"])
-            except Exception:
-                pass
+            # Shared line contract: ghb_common.clone_status_record
+            # (#6606) — non-record lines are ignored, never crash.
+            r = clone_status_record(line)
+            if (
+                r is not None
+                and r.get("status") == "ok"
+                and isinstance(r.get("repo"), str)
+                and r["repo"]
+            ):
+                ok_prev.add(r["repo"])
 
     def clone_one(item, ref_ok):
         repo = item["repo"]

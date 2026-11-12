@@ -14,6 +14,10 @@ drift this file exists to prevent:
 - The #598 exit-code contract is pinned for BOTH .py copies: exit 1
   after the summaries when any input update failed, 0 when all
   succeed / are already up-to-date.
+- The #6941 unmatched-ref contract is pinned for BOTH .py copies: a
+  requested ref matching no inputs exits 1 (typo-only, --help, and
+  mixed valid+unmatched runs), the unmatched refs stay named in the
+  output, and the no-argument zero-input run also exits 1.
 - The wrapper contract is pinned for BOTH .sh copies: fall back to
   python3 only when the script cannot be executed at all (126/127),
   propagate the exit status, and never re-run after a genuine failure
@@ -30,6 +34,7 @@ Run: python3 -m unittest discover -s scripts/tests -p 'test_update_nixpkgs_input
 
 import json
 import os
+import random
 import runpy
 import shutil
 import subprocess
@@ -220,7 +225,11 @@ class ScriptTree:
     """
 
     def __init__(
-        self, src_dir: Path, nix_status: int, interpreter_missing: bool = False
+        self,
+        src_dir: Path,
+        nix_status: int,
+        interpreter_missing: bool = False,
+        lock_data=None,
     ):
         self._tmp = tempfile.TemporaryDirectory()
         base = Path(self._tmp.name)
@@ -229,7 +238,9 @@ class ScriptTree:
         scripts.mkdir(parents=True)
         shutil.copy2(src_dir / "update-nixpkgs-inputs.py", scripts)
         shutil.copy2(src_dir / "update-nixpkgs-inputs.sh", scripts)
-        (self.repo_dir / "flake.lock").write_text(json.dumps(FLAKE_LOCK))
+        (self.repo_dir / "flake.lock").write_text(
+            json.dumps(FLAKE_LOCK if lock_data is None else lock_data)
+        )
         self.bin = base / "bin"
         self.bin.mkdir()
         self.counter = base / "nix-calls"
@@ -275,11 +286,12 @@ class ScriptTree:
             return 0
         return len(self.counter.read_text().splitlines())
 
-    def run_py(self) -> subprocess.CompletedProcess:
+    def run_py(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             [
                 sys.executable,
                 str(self.repo_dir / "scripts" / "update-nixpkgs-inputs.py"),
+                *args,
             ],
             env=self.env,
             capture_output=True,
@@ -314,6 +326,62 @@ class TestExitCodeContract(unittest.TestCase):
                 r = tree.run_py()
                 self.assertIn("Failed:  0", r.stdout)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            finally:
+                tree.cleanup()
+
+    def test_root_copy(self):
+        self._check_copy("root", COPIES["root"])
+
+    def test_pkgs_id_copy(self):
+        self._check_copy("pkgs/id", COPIES["pkgs/id"])
+
+
+class TestUnmatchedRefExitCodes(unittest.TestCase):
+    """#6941: a requested ref matching no inputs must exit non-zero."""
+
+    ZERO_INPUT_LOCK = {
+        "nodes": {"root": {"inputs": {}}},
+        "root": "root",
+        "version": 7,
+    }
+
+    def _check_copy(self, label: str, src_dir: Path):
+        with self.subTest(copy=label, case="typo-only ref exits 1, names the ref"):
+            tree = ScriptTree(src_dir, nix_status=0)
+            try:
+                r = tree.run_py("nixos-unstabl")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("No inputs found for:", r.stdout)
+                self.assertIn("nixos-unstabl", r.stdout)
+                self.assertEqual(tree.nix_calls(), 0)
+            finally:
+                tree.cleanup()
+        with self.subTest(copy=label, case="--help is an unmatched ref, exits 1"):
+            tree = ScriptTree(src_dir, nix_status=0)
+            try:
+                r = tree.run_py("--help")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("No inputs found for:", r.stdout)
+                self.assertIn("--help", r.stdout)
+                self.assertEqual(tree.nix_calls(), 0)
+            finally:
+                tree.cleanup()
+        with self.subTest(copy=label, case="mixed valid + unmatched exits 1"):
+            tree = ScriptTree(src_dir, nix_status=0)
+            try:
+                r = tree.run_py("master", "nixos-unstabl")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("No inputs found for:", r.stdout)
+                self.assertIn("nixos-unstabl", r.stdout)
+                self.assertEqual(tree.nix_calls(), 1)
+            finally:
+                tree.cleanup()
+        with self.subTest(copy=label, case="no-arg zero-input run exits 1"):
+            tree = ScriptTree(src_dir, nix_status=0, lock_data=self.ZERO_INPUT_LOCK)
+            try:
+                r = tree.run_py()
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("No inputs found for:", r.stdout)
             finally:
                 tree.cleanup()
 
@@ -681,6 +749,316 @@ class TestHttpsContext(unittest.TestCase):
                 ctx = mod["https_context"]()
                 self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
                 self.assertTrue(ctx.check_hostname)
+
+
+UNKNOWN = ("unknown", "unknown", "unknown")
+
+
+class TestLockReadersWrongShapes(unittest.TestCase):
+    """#6847: every flake.lock reader is total over wrong shapes.
+
+    A non-object node, a null/non-object original/locked, a
+    non-string type/ref/rev, and a missing node/root are treated the
+    way discover_inputs has always treated a missing node — the input
+    is skipped / reported unknown — never a raw AttributeError /
+    TypeError / KeyError. The mid-run case matters most: locked.rev
+    as a number passes discovery (which never reads it) and used to
+    crash get_input_info inside the execution loop, after earlier
+    inputs had already been updated.
+    """
+
+    def _module(self, script_dir: Path):
+        return runpy.run_path(str(script_dir / "update-nixpkgs-inputs.py"))
+
+    def _lock(self, node, root_inputs=None, nodes_extra=None):
+        nodes = {"root": {"inputs": root_inputs or {"nixpkgs": "nixpkgs-node"}}}
+        if node is not _MISSING:
+            nodes["nixpkgs-node"] = node
+        if nodes_extra:
+            nodes.update(nodes_extra)
+        return {"nodes": nodes, "root": "root", "version": 7}
+
+    def _readers(self, mod):
+        return (
+            mod["discover_inputs"],
+            mod["get_input_info"],
+            mod["get_input_ref"],
+            mod["get_locked_rev"],
+        )
+
+    def test_well_formed_lock_unchanged_in_both_copies(self):
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                discover, info, ref, locked_rev = self._readers(
+                    self._module(script_dir)
+                )
+                self.assertEqual(discover(FLAKE_LOCK, None), ["nixpkgs"])
+                self.assertEqual(
+                    info(FLAKE_LOCK, "nixpkgs"),
+                    ("0123456789ab", "github:NixOS/nixpkgs", "(default)"),
+                )
+                self.assertIsNone(ref(FLAKE_LOCK, "nixpkgs"))
+                self.assertEqual(
+                    locked_rev(FLAKE_LOCK, "nixpkgs"),
+                    "0123456789abcdef0123456789abcdef01234567",
+                )
+
+    def test_wrong_shape_nodes_are_skipped_in_both_copies(self):
+        good_original = {"type": "github", "owner": "NixOS", "repo": "nixpkgs"}
+        good_locked = {"type": "github", "rev": "a" * 40}
+        # (node, discover, info, ref, locked_rev)
+        cases = {
+            "node is a string": ("nixpkgs-node", [], UNKNOWN, None, None),
+            "node is null": (None, [], UNKNOWN, None, None),
+            "node is a list": (["nixpkgs"], [], UNKNOWN, None, None),
+            "node missing from nodes": (_MISSING, [], UNKNOWN, None, None),
+            # original unusable: discovery cannot match, but the
+            # locked entry still reports (the readers' original ->
+            # locked fallback chains), with owner/repo unknown.
+            "original is null": (
+                {"original": None, "locked": good_locked},
+                [],
+                ("aaaaaaaaaaaa", "github:?/?", "(default)"),
+                None,
+                "a" * 40,
+            ),
+            "original is a string": (
+                {"original": "github", "locked": good_locked},
+                [],
+                ("aaaaaaaaaaaa", "github:?/?", "(default)"),
+                None,
+                "a" * 40,
+            ),
+            "original.type is a number": (
+                {"original": {**good_original, "type": 7}, "locked": good_locked},
+                [],
+                ("aaaaaaaaaaaa", "github:NixOS/nixpkgs", "(default)"),
+                None,
+                "a" * 40,
+            ),
+            # locked unusable: discovery matches on original; the rev
+            # readers report unknown/None instead of crashing.
+            "locked is null": (
+                {"original": good_original, "locked": None},
+                ["nixpkgs"],
+                ("unknown", "github:NixOS/nixpkgs", "(default)"),
+                None,
+                None,
+            ),
+        }
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                discover, info, ref, locked_rev = self._readers(
+                    self._module(script_dir)
+                )
+                for name, (
+                    node,
+                    want_discover,
+                    want_info,
+                    want_ref,
+                    want_rev,
+                ) in cases.items():
+                    with self.subTest(shape=name):
+                        lock = self._lock(node)
+                        self.assertEqual(discover(lock, None), want_discover)
+                        self.assertEqual(info(lock, "nixpkgs"), want_info)
+                        self.assertEqual(ref(lock, "nixpkgs"), want_ref)
+                        self.assertEqual(locked_rev(lock, "nixpkgs"), want_rev)
+
+    def test_non_string_rev_never_crashes_the_execution_loop_readers(self):
+        # The dangerous shape: discovery passes it (rev is not read
+        # there), so get_input_info/get_locked_rev must not crash
+        # when the execution loop reaches this input.
+        node = {
+            "original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs"},
+            "locked": {"type": "github", "rev": 123},
+        }
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                discover, info, ref, locked_rev = self._readers(
+                    self._module(script_dir)
+                )
+                lock = self._lock(node)
+                self.assertEqual(discover(lock, None), ["nixpkgs"])
+                self.assertIsNone(locked_rev(lock, "nixpkgs"))
+                rev, url, _ = info(lock, "nixpkgs")
+                self.assertEqual(rev, "unknown")
+                self.assertEqual(url, "github:NixOS/nixpkgs")
+
+    def test_non_string_ref_is_unclassifiable_in_both_copies(self):
+        node = {
+            "original": {
+                "type": "github",
+                "owner": "NixOS",
+                "repo": "nixpkgs",
+                "ref": 7,
+            },
+            "locked": {"type": "github", "rev": "a" * 40},
+        }
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                discover, info, ref, locked_rev = self._readers(
+                    self._module(script_dir)
+                )
+                lock = self._lock(node)
+                self.assertEqual(discover(lock, None), [])
+                self.assertEqual(discover(lock, "master"), [])
+                self.assertIsNone(ref(lock, "nixpkgs"))
+
+    def test_missing_root_and_missing_nodes_in_both_copies(self):
+        locks = (
+            {"nodes": {"nixpkgs-node": {"original": {}}}},
+            {"root": "root", "version": 7},
+            {"nodes": None},
+            {"nodes": {"root": None}},
+            {"nodes": {"root": {"inputs": None}}},
+            ["not", "an", "object"],
+        )
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                discover, info, ref, locked_rev = self._readers(
+                    self._module(script_dir)
+                )
+                for lock in locks:
+                    self.assertEqual(discover(lock, None), [])
+                    self.assertEqual(
+                        info(lock, "nixpkgs"), ("unknown", "unknown", "unknown")
+                    )
+                    self.assertIsNone(ref(lock, "nixpkgs"))
+                    self.assertIsNone(locked_rev(lock, "nixpkgs"))
+
+    def test_pin_input_refuses_a_wrong_shape_node_in_both_copies(self):
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                mod = self._module(script_dir)
+                tree = Path(tempfile.mkdtemp(prefix="uni-shape-pin-"))
+                (tree / "flake.lock").write_text(json.dumps(self._lock("nixpkgs-node")))
+                self.assertFalse(mod["pin_input"]("nixpkgs", tree, {"rev": "a" * 40}))
+
+
+class _Missing:
+    pass
+
+
+_MISSING = _Missing()
+
+
+def _random_json(rng, depth):
+    """A random JSON-shaped value: scalars, lists, and objects with
+    keys drawn from the flake.lock vocabulary, so mutations land in
+    positions the readers actually consult."""
+    kind = rng.randrange(6 if depth < 3 else 3)
+    if kind == 0:
+        return None
+    if kind == 1:
+        return rng.choice([True, False, 0, 1, 7, 123, -1, 2.5])
+    if kind == 2:
+        return rng.choice(
+            [
+                "",
+                "nixpkgs",
+                "github",
+                "NixOS",
+                "master",
+                "root",
+                "a" * 40,
+                "nixos-unstable",
+            ]
+        )
+    if kind == 3:
+        return [_random_json(rng, depth + 1) for _ in range(rng.randrange(3))]
+    keys = [
+        "nodes",
+        "root",
+        "inputs",
+        "original",
+        "locked",
+        "type",
+        "owner",
+        "repo",
+        "ref",
+        "rev",
+        "nixpkgs",
+        "nixpkgs-node",
+    ]
+    return {
+        rng.choice(keys): _random_json(rng, depth + 1) for _ in range(rng.randrange(4))
+    }
+
+
+def _mutate(rng, value, depth=0):
+    """Return `value` with one random subtree replaced by a random
+    JSON value (or the whole value replaced at the top)."""
+    if depth > 3 or rng.random() < 0.35:
+        return _random_json(rng, 1)
+    if isinstance(value, dict) and value:
+        key = rng.choice(list(value))
+        clone = dict(value)
+        clone[key] = _mutate(rng, value[key], depth + 1)
+        return clone
+    if isinstance(value, list) and value:
+        idx = rng.randrange(len(value))
+        clone = list(value)
+        clone[idx] = _mutate(rng, value[idx], depth + 1)
+        return clone
+    return _random_json(rng, 1)
+
+
+class TestLockReaderTotalityProperty(unittest.TestCase):
+    """Property coverage for the #6847 totality invariant.
+
+    Oracle: for ANY JSON value in any flake.lock position, every
+    reader returns a value of its documented type and never raises —
+    discover_inputs -> list[str] drawn from the root input names;
+    get_input_info -> a 3-tuple of strings; get_input_ref /
+    get_locked_rev -> str or None; get_input_node -> dict or None.
+    Deterministic seeds keep failures reproducible.
+    """
+
+    def test_readers_are_total_over_generated_shapes_in_both_copies(self):
+        rng = random.Random(0x6847)
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                mod = runpy.run_path(str(script_dir / "update-nixpkgs-inputs.py"))
+                discover = mod["discover_inputs"]
+                info = mod["get_input_info"]
+                get_ref = mod["get_input_ref"]
+                locked_rev = mod["get_locked_rev"]
+                get_node = mod["get_input_node"]
+                for i in range(400):
+                    if i % 2:
+                        lock = _mutate(rng, FLAKE_LOCK)
+                    else:
+                        lock = _random_json(rng, 0)
+                    names = set()
+                    if isinstance(lock, dict):
+                        nodes = lock.get("nodes")
+                        if isinstance(nodes, dict):
+                            root = nodes.get("root")
+                            if isinstance(root, dict):
+                                inputs = root.get("inputs")
+                                if isinstance(inputs, dict):
+                                    names = set(inputs)
+                    found = discover(lock, None)
+                    self.assertIsInstance(found, list)
+                    self.assertLessEqual(set(found), names | {"nixpkgs"})
+                    for name in ("nixpkgs", "candidate", ""):
+                        rev_info = info(lock, name)
+                        self.assertEqual(len(rev_info), 3)
+                        self.assertTrue(
+                            all(isinstance(part, str) for part in rev_info),
+                            f"info({name!r}) = {rev_info!r} for lock {lock!r}",
+                        )
+                        self.assertTrue(
+                            get_ref(lock, name) is None
+                            or isinstance(get_ref(lock, name), str)
+                        )
+                        self.assertTrue(
+                            locked_rev(lock, name) is None
+                            or isinstance(locked_rev(lock, name), str)
+                        )
+                        node = get_node(lock, name)
+                        self.assertTrue(node is None or isinstance(node, dict))
 
 
 if __name__ == "__main__":

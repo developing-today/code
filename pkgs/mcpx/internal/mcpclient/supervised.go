@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/homeutil"
 	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 )
 
@@ -95,7 +96,7 @@ func (w *connWriter) flushLocked(reply supervisorReply, buffered []byte) error {
 }
 
 // Close closes the underlying connection.
-func (w *connWriter) Close() { w.conn.Close() }
+func (w *connWriter) Close() { _ = w.conn.Close() }
 
 // closeAfterFlush closes the connection only after any in-flight
 // initial flush completes (Codex P2 on PR #2861). handleAttach holds
@@ -110,7 +111,7 @@ func (w *connWriter) Close() { w.conn.Close() }
 // wait on. No connection write happens under s.mu.
 func (w *connWriter) closeAfterFlush() {
 	w.mu.Lock()
-	w.mu.Unlock()
+	defer w.mu.Unlock()
 	w.Close()
 }
 
@@ -154,8 +155,11 @@ func StateDir() string {
 	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
 		return filepath.Join(v, "mcpx")
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "mcpx")
+	// Home-resolution contract (issues #5762 / #5763): reached only
+	// when neither MCPX_STATE_DIR nor XDG_STATE_HOME names a
+	// directory, so a non-empty HOME must - MustHome panics with the
+	// named error rather than returning a CWD-relative substitute.
+	return filepath.Join(homeutil.MustHome(), ".local", "state", "mcpx")
 }
 
 // tailBuffer is the bounded unattached-output buffer: it keeps the tail
@@ -262,8 +266,8 @@ func RunSupervisor(opts SupervisorOptions) error {
 	if err != nil {
 		return fmt.Errorf("supervise: listen %s: %w", opts.SocketPath, err)
 	}
-	defer ln.Close()
-	defer os.Remove(opts.SocketPath)
+	defer func() { _ = ln.Close() }()
+	defer func() { _ = os.Remove(opts.SocketPath) }()
 	if err := os.Chmod(opts.SocketPath, os.FileMode(defaults.PrivateMode)); err != nil {
 		return fmt.Errorf("supervise: chmod socket: %w", err)
 	}
@@ -338,34 +342,34 @@ func (s *supervisor) spawnChild() error {
 	}
 	outR, outW, err := os.Pipe()
 	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
 		return err
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
-		outR.Close()
-		outW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = outW.Close()
 		return err
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdinR, outW, errW
 	startErr := cmd.Start()
-	stdinR.Close()
-	outW.Close()
-	errW.Close()
+	_ = stdinR.Close()
+	_ = outW.Close()
+	_ = errW.Close()
 	if startErr != nil {
-		stdinW.Close()
-		outR.Close()
-		errR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = errR.Close()
 		return fmt.Errorf("start %s: %w", opts.Command, startErr)
 	}
 	s.child = cmd
 	s.stdin = stdinW
 	go func() {
 		_, _ = io.Copy(s.stderr, errR)
-		errR.Close()
+		_ = errR.Close()
 	}()
 	// The stdout pump reads outR; keep it on the supervisor.
 	s.stdoutR = outR
@@ -467,29 +471,29 @@ func (s *supervisor) handleAttach(conn net.Conn) {
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	line, err := r.ReadBytes('\n')
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 	var hs supervisorHandshake
 	if err := json.Unmarshal(line, &hs); err != nil {
-		writeReply(conn, supervisorReply{Error: "bad handshake: " + err.Error()})
-		conn.Close()
+		_ = writeReply(conn, supervisorReply{Error: "bad handshake: " + err.Error()})
+		_ = conn.Close()
 		return
 	}
 	if hs.Version != SupervisorProtocolVersion {
-		writeReply(conn, supervisorReply{Error: fmt.Sprintf(
+		_ = writeReply(conn, supervisorReply{Error: fmt.Sprintf(
 			"supervisor protocol version mismatch: daemon sent %d, supervisor speaks %d",
 			hs.Version, SupervisorProtocolVersion)})
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
 	s.mu.Lock()
 	if s.attached != nil {
 		s.mu.Unlock()
-		writeReply(conn, supervisorReply{Error: "already attached"})
-		conn.Close()
+		_ = writeReply(conn, supervisorReply{Error: "already attached"})
+		_ = conn.Close()
 		return
 	}
 	reply := supervisorReply{
@@ -625,7 +629,7 @@ func (s *supervisor) finishWhenDone() {
 				attached.closeAfterFlush()
 			}
 			if s.ln != nil {
-				s.ln.Close()
+				_ = s.ln.Close()
 			}
 			return
 		}
@@ -633,7 +637,7 @@ func (s *supervisor) finishWhenDone() {
 	// Closing the listener wakes Accept in RunSupervisor, which then
 	// returns.
 	if s.ln != nil {
-		s.ln.Close()
+		_ = s.ln.Close()
 	}
 }
 
@@ -777,27 +781,27 @@ func attachSupervisor(sock string, opts SupervisedOptions) (*SupervisedTransport
 	r := bufio.NewReaderSize(conn, 1<<20)
 	hs, _ := json.Marshal(supervisorHandshake{Version: SupervisorProtocolVersion})
 	if _, err := conn.Write(append(hs, '\n')); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	line, err := r.ReadBytes('\n')
 	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("supervisor handshake: %w", err)
 	}
 	var reply supervisorReply
 	if err := json.Unmarshal(line, &reply); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("supervisor handshake: %w", err)
 	}
 	if reply.Error != "" {
-		conn.Close()
+		_ = conn.Close()
 		return nil, &supervisorRefusal{msg: reply.Error}
 	}
 	if reply.Version != SupervisorProtocolVersion {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("supervisor protocol version mismatch: supervisor sent %d, daemon speaks %d",
 			reply.Version, SupervisorProtocolVersion)
 	}
@@ -846,12 +850,12 @@ func spawnSupervisorProcess(sock string, opts SupervisedOptions) error {
 	if lf, lerr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, os.FileMode(defaults.PrivateMode)); lerr == nil {
 		cmd.Stdout = lf
 		cmd.Stderr = lf
-		defer lf.Close()
+		defer func() { _ = lf.Close() }()
 	}
 	devnull, derr := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
 	if derr == nil {
 		cmd.Stdin = devnull
-		defer devnull.Close()
+		defer func() { _ = devnull.Close() }()
 	}
 	if err := cmd.Start(); err != nil {
 		return err

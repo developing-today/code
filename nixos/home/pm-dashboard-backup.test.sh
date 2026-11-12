@@ -36,7 +36,9 @@ fail() {
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 if [[ "${1:-} ${2:-}" == "secret list" ]]; then
   printf '%s\n' '[{"key":"cloudflare.r2-backups-access-key-id","value":"fake-access-key-id"},{"key":"cloudflare.r2-backups-secret-access-key","value":"fake-secret-access-key"},{"key":"cloudflare.r2-endpoint","value":"https://example.invalid"}]'
   exit 0
@@ -46,13 +48,17 @@ exit 1
 STUB
 } >"$BIN/bws"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 echo "stub journal line"
 exit 0
 STUB
 } >"$BIN/journalctl"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 store="${RCLONE_STUB_DIR:?RCLONE_STUB_DIR unset}"
 mkdir -p "$store"
 key() { printf '%s' "$1" | tr '/:' '__'; }
@@ -105,7 +111,11 @@ run_scenario() {
   printf '{}\n' >"$home/.local/state/pm-aggregator/actions.json"
   # Full required set (#1025): a missing required member now fails
   # the run at verify, so the fixture carries every required file.
-  for f in comments.json fleet-feed.json quota-current.json registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do printf '{}\n' >"$home/.local/state/pm-aggregator/$f"; done
+  for f in actions.json comments.json fleet-feed.json quota-current.json registry.json \
+    quota-gatherer-state.json quota-gatherer-heartbeat.json events.json \
+    coverage-snapshot.json aa-last-good.json; do
+    printf '{}\n' >"$home/.local/state/pm-aggregator/$f"
+  done
   printf '{}\n' >"$home/atlas/meta-quota-export/latest.json"
   printf '{}\n' >"$home/atlas/meta-quota-export/history.jsonl"
   echo "$PRESET" >"$home/backups/dashboard/.last-run-epoch"
@@ -118,12 +128,12 @@ run_scenario() {
 }
 
 expect_marker_unchanged() {
-  if [[ "$RC" -ne 0 ]]; then
+  if [[ $RC -ne 0 ]]; then
     echo "ok: $1: script exited non-zero ($RC)"
   else
     fail "$1: expected non-zero exit, got 0"
   fi
-  if [[ "$MARKER_AFTER" == "$PRESET" ]]; then
+  if [[ $MARKER_AFTER == "$PRESET" ]]; then
     echo "ok: $1: marker unchanged at $PRESET"
   else
     fail "$1: marker advanced on a failed run — was $PRESET, now $MARKER_AFTER"
@@ -147,7 +157,9 @@ run_scenario happy ""
 # FAILED marker with tar's exit code, and no staging dir left behind.
 TARBIN="$TMP_ROOT/tar-fail-bin"
 mkdir -p "$TARBIN"
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 echo "stub tar: forced failure" >&2
 exit 3
 STUB
@@ -160,7 +172,11 @@ mkdir -p "$tf_home/backups/dashboard" "$tf_home/.local/state/pm-aggregator" \
 printf '{}\n' >"$tf_home/.local/state/pm-aggregator/actions.json"
 # Full required set (#1025): a missing required member now fails
 # the run at verify, so the fixture carries every required file.
-for f in comments.json fleet-feed.json quota-current.json registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do printf '{}\n' >"$tf_home/.local/state/pm-aggregator/$f"; done
+for f in actions.json comments.json fleet-feed.json quota-current.json registry.json \
+  quota-gatherer-state.json quota-gatherer-heartbeat.json events.json \
+  coverage-snapshot.json aa-last-good.json; do
+  printf '{}\n' >"$tf_home/.local/state/pm-aggregator/$f"
+done
 printf '{}\n' >"$tf_home/atlas/meta-quota-export/latest.json"
 printf '{}\n' >"$tf_home/atlas/meta-quota-export/history.jsonl"
 HOME="$tf_home" PATH="$TARBIN:$BIN:$PATH" BWS_ACCESS_TOKEN="<redacted>" \
@@ -169,7 +185,7 @@ HOME="$tf_home" PATH="$TARBIN:$BIN:$PATH" BWS_ACCESS_TOKEN="<redacted>" \
   TMPDIR="$tf_home/tmp" \
   bash -e "$SCRIPT" 2026-10-28 >"$TMP_ROOT/tar-fail.log" 2>&1
 tf_rc=$?
-if [[ "$tf_rc" -eq 3 ]]; then
+if [[ $tf_rc -eq 3 ]]; then
   echo "ok: tar-fail: script exited with tar's code (3)"
 else
   fail "tar-fail: expected exit 3, got $tf_rc; log: $(cat "$TMP_ROOT/tar-fail.log")"
@@ -184,18 +200,18 @@ if [[ -z "$(ls -A "$tf_home/tmp")" ]]; then
 else
   fail "tar-fail: staging dir left behind in TMPDIR: $(ls -A "$tf_home/tmp")"
 fi
-if [[ "$RC" -eq 0 ]]; then
+if [[ $RC -eq 0 ]]; then
   echo "ok: happy: script exited 0"
 else
   fail "happy: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/happy.log")"
 fi
-if [[ "$MARKER_AFTER" =~ ^[0-9]+$ ]] && [[ "$MARKER_AFTER" -gt "$PRESET" ]]; then
+if [[ $MARKER_AFTER =~ ^[0-9]+$ ]] && [[ $MARKER_AFTER -gt $PRESET ]]; then
   echo "ok: happy: marker advanced past $PRESET (now $MARKER_AFTER)"
 else
   fail "happy: marker did not advance on a fully successful run — was $PRESET, now $MARKER_AFTER"
 fi
 
-if (( failures > 0 )); then
+if ((failures > 0)); then
   echo "pm-dashboard-backup tests: $failures failure(s)" >&2
   exit 1
 fi

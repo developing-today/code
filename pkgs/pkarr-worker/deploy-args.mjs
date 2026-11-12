@@ -6,7 +6,7 @@
 
 export const USAGE = [
   "usage: deploy.mjs [--dry-run]",
-  "       deploy.mjs --deploy-version <id>",
+  "       deploy.mjs --deploy-version <id> [--dry-run]",
 ].join("\n");
 
 /**

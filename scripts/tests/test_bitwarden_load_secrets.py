@@ -69,7 +69,10 @@ class TestBitwardenLoadSecrets(unittest.TestCase):
     def run_script(self, *args):
         return subprocess.run(
             ["bash", str(SCRIPT), *args],
-            env=self.env, capture_output=True, text=True, check=True,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
 
     def eval_format(self, fmt, source_args):
@@ -86,8 +89,11 @@ class TestBitwardenLoadSecrets(unittest.TestCase):
                 'printf "%s\\x00%s" "$TLS_CERT" "$PLAIN"'
             )
         out = subprocess.run(
-            ["bash", "-c", cmd], env=self.env,
-            capture_output=True, text=True, check=True,
+            ["bash", "-c", cmd],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         cert, plain = out.split("\x00")
         self.assertEqual(cert, MULTILINE)
@@ -104,15 +110,66 @@ class TestBitwardenLoadSecrets(unittest.TestCase):
         self.eval_format("source", "--bws")
 
     def test_bws_single_secret_json(self):
-        data = json.loads(
-            self.run_script("--bws", "--secret", "x", "--format", "json"))
+        data = json.loads(self.run_script("--bws", "--secret", "x", "--format", "json"))
         self.assertEqual(data, {"TLS_CERT": MULTILINE})
 
     def test_vault_fields_json_and_source(self):
-        data = json.loads(
-            self.run_script("--item", "Item", "--format", "json"))
+        data = json.loads(self.run_script("--item", "Item", "--format", "json"))
         self.assertEqual(data, {"TLS_CERT": MULTILINE, "PLAIN": CONTROL})
         self.eval_format("source", "--item Item")
+
+    def run_raw(self, *args, timeout=10):
+        # check=False + a hard timeout: the pre-fix script loops forever
+        # on a trailing value-option, so a hang must fail the test, not
+        # block the suite.
+        return subprocess.run(
+            ["bash", str(SCRIPT), *args],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    def test_trailing_value_option_fails_fast(self):
+        # #6932: --item/--field/--secret/--project/--prefix/--format with
+        # no following argument hung the parse loop (shift 2 cannot
+        # advance past the last argument).
+        for args in (
+            ("--item",),
+            ("--item", "Item", "--format"),
+            ("--bws", "--secret"),
+            ("--item", "Item", "--prefix"),
+        ):
+            with self.subTest(args=args):
+                proc = self.run_raw(*args)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("requires a value", proc.stderr)
+
+    def test_flag_as_value_rejected(self):
+        # #6932: --item --bws swallowed --bws as the item name and ran in
+        # vault mode; a flag-like value is a usage error naming the option.
+        proc = self.run_raw("--item", "--bws")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--item", proc.stderr)
+        self.assertIn("requires a value", proc.stderr)
+
+    def test_empty_value_rejected(self):
+        proc = self.run_raw("--item", "")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("requires a value", proc.stderr)
+
+    def test_sourced_trailing_option_aborts_source(self):
+        # Sourced mode is the primary documented use: the guard must
+        # abort the source with a non-zero status, never hang the shell.
+        proc = subprocess.run(
+            ["bash", "-c", f'source "{SCRIPT}" --item'],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("requires a value", proc.stderr)
 
 
 if __name__ == "__main__":

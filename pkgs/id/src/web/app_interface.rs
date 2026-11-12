@@ -119,6 +119,8 @@ pub(crate) const HOST_RESERVED_ROUTES: &[&str] = &[
     "/files",
     "/settings",
     "/peers",
+    "/blocks",
+    "/groups",
     "/edit/{*name}",
     "/hash/{hash}",
     "/view/{*name}",
@@ -126,6 +128,8 @@ pub(crate) const HOST_RESERVED_ROUTES: &[&str] = &[
     "/api/files",
     "/api/home/feed",
     "/api/peers",
+    "/api/blocks",
+    "/api/blocks/remove",
     "/api/save",
     "/api/new",
     "/api/rename",
@@ -442,6 +446,7 @@ pub fn web_interface_from_app_toml(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -520,7 +525,7 @@ socket = "/ws/arena"
     fn host_page_routes_are_reserved() {
         // Packet cases 2-3: `route = "/"` and `route = "/files"` parsed
         // Ok and panicked on the duplicate host route (routes.rs:322).
-        for reserved in ["/", "/files", "/settings", "/peers"] {
+        for reserved in ["/", "/files", "/settings", "/peers", "/groups"] {
             let source = format!("[interfaces.web]\nroute = {reserved:?}\n");
             assert!(
                 matches!(

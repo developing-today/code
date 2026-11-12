@@ -1,4 +1,8 @@
 //! The `--text` renderer: a line-for-line port of the Python's
+//! Source of the verbatim copy in pkgs/fleet's fleet-search crate,
+//! ported in fleet step 5 (#5433): the output-parity contract lives
+//! in these writers, so mirror every change there. Drift guard:
+//! .github/scripts/check-fleet-search-parity.sh (#5920).
 //! `render_text` / `snippet`. Values render the way CPython's
 //! f-strings render them (floats via repr, None as "None",
 //! `rank_sources` as a Python dict repr).

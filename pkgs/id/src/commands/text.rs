@@ -228,6 +228,24 @@ mod tests {
             serde_json::from_str::<String>(&with_tab).unwrap(),
             "a\u{202e}\tb"
         );
+
+        // Join controls are part of the same Cf set: escape them in both the
+        // Cf-only and already-quoted paths without losing the stored value.
+        let joiner_alone = plain_field("\u{200d}");
+        assert_eq!(joiner_alone, r#""\u200d""#);
+        assert!(!joiner_alone.contains('\u{200d}'));
+        assert_eq!(
+            serde_json::from_str::<String>(&joiner_alone).unwrap(),
+            "\u{200d}"
+        );
+
+        let joiner_with_tab = plain_field("a\u{200d}\tb");
+        assert_eq!(joiner_with_tab, r#""a\u200d\tb""#);
+        assert!(!joiner_with_tab.contains('\u{200d}'));
+        assert_eq!(
+            serde_json::from_str::<String>(&joiner_with_tab).unwrap(),
+            "a\u{200d}\tb"
+        );
     }
 
     #[test]
@@ -274,7 +292,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn list_tsv_row_shows_origin_and_upload_time() {
         assert_eq!(
             list_tsv_row("hash", "a.txt", Some("node-a"), Some(1_700_000_000)),
@@ -290,6 +307,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn tsv_row_keeps_control_characters_inside_the_name_field() {
         let row = tsv_row("hash", "x\nforged\tcolumn");
         assert_eq!(row, format!("hash\t{}", r#""x\nforged\tcolumn""#));

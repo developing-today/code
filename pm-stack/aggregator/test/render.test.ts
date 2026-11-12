@@ -93,8 +93,8 @@ describe("execution strip", () => {
     expect(strip.merged.map((i) => i.ref)).toContain("developing-today/code#752");
     expect(strip.review.map((i) => i.ref)).toContain("developing-today/code#763");
     expect(strip.implementing.map((i) => i.ref)).toContain("developing-today/code#900");
-    // #762 is labelled ready-for-agent, so it counts as implementing.
-    expect(strip.implementing.map((i) => i.ref)).toContain("developing-today/code#762");
+    // The label alone is not evidence that the harness picked the issue up.
+    expect(strip.queued.map((i) => i.ref)).toContain("developing-today/code#762");
   });
   test("records unresolved refs", () => {
     const strip = executionStrip([{ ref: "nowhere/repo#9999", relation: "tracks" }], items);
@@ -264,7 +264,7 @@ describe("fixture source", () => {
     expect(board.length).toBeGreaterThan(0);
     expect(rows.length).toBe(23); // the real Grist seed (grew 16 → 23 with the cluster/id rows)
     const crossRepo = board.find((b) => b.id.includes("aggregator"));
-    expect(crossRepo?.links.some((l) => l.ref.startsWith("developing-today/openchamber"))).toBe(true);
+    expect(crossRepo?.links.some((l) => l.ref.startsWith("developing-today-forks/openchamber"))).toBe(true);
   });
 });
 
@@ -300,9 +300,28 @@ describe("render smoke (fixtures)", () => {
     );
     expect(html).toContain("Linked issues / PRs");
     expect(html).toContain("Activity stream");
-    expect(html).toContain("developing-today/openchamber#210");
+    expect(html).toContain("developing-today-forks/openchamber#210");
     expect(html).not.toContain("Planning notes");
     expect(html).not.toContain("PM-stack design & phase plan");
+  });
+  test("item page shows explicit harness dispatch state with provenance", () => {
+    const item = FIXTURE_BOARD[0];
+    const html = renderItem(item.title, item.id, item.links, items, [], fixtureSource().provenance(), {
+      dashComments: [],
+      formRef: item.id,
+      formOpts: { identities: [] },
+      sessions: [],
+      dispatchStates: [
+        {
+          ref: "developing-today/code#762",
+          state: "not picked up",
+          provenance: { source: "ready-for-agent fixture state", observedAt: "2026-11-04T00:00:00Z" },
+        },
+      ],
+    });
+    expect(html).toContain("ready-for-agent dispatch");
+    expect(html).toContain("not picked up");
+    expect(html).toContain("ready-for-agent fixture state checked 2026-11-04T00:00:00Z");
   });
   test("item activity reuses shared events and discloses unknown freshness and partial coverage", async () => {
     const src = fixtureSource();
@@ -455,7 +474,9 @@ describe("freshness chips (#1138)", () => {
     expect(html).toContain("Ship the dashboard");
     expect(html).toContain("today horizon pick");
     expect(html).toContain("developing-today/code#42");
-    expect(html).toContain('class="badge stale" title="Queue inputs are stale or unavailable; see /health">stale inputs</span>');
+    expect(html).toContain(
+      'class="badge stale" title="Queue inputs are stale or unavailable; see /health">stale inputs</span>',
+    );
 
     const fresh = renderTodayBody(today, attention, quota, coverage, null, false, queue, false);
     expect(fresh).not.toContain("stale inputs");

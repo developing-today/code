@@ -17,6 +17,18 @@
   # settings toggle and this declaration manage one and the same service
   # instead of fighting. WantedBy plasma-workspace.target means it starts
   # with the Plasma session and simply never runs in a non-Plasma one.
+  # Put KWallet in the user's profile as well so its D-Bus activation
+  # service is visible to the session and KRDP's first wallet request can
+  # start kwalletd6 without a competing hand-launched daemon.
+  #
+  # Hyprland is deliberately NOT a start target for now (re-scope of the
+  # original change, task 14995 / issue #8734): KRDP's PortalSession
+  # requires the org.freedesktop.impl.portal.RemoteDesktop portal
+  # interface, and the pinned xdg-desktop-portal-hyprland does not
+  # implement it, so a krdpserver started in the Hyprland session could
+  # never serve a desktop. Add "hyprland-session.target" back to
+  # WantedBy below only once a RemoteDesktop-capable portal backend
+  # exists for the Hyprland session.
   #
   # No secrets in this repo, by design:
   # - RDP usernames/passwords are NOT passed on the command line (they
@@ -38,7 +50,10 @@
   # Until step 2 is done the service runs but has no user that can log
   # in, which is the safe default.
   home-manager.users.user = {
-    home.packages = [ pkgs.kdePackages.krdp ];
+    home.packages = [
+      pkgs.kdePackages.krdp
+      pkgs.kdePackages.kwallet
+    ];
 
     systemd.user.services."app-org.kde.krdpserver" = {
       Unit = {
@@ -46,6 +61,7 @@
         After = [
           "plasma-xdg-desktop-portal-kde.service"
           "plasma-core.target"
+          "xdg-desktop-portal.service"
         ];
       };
       Service = {

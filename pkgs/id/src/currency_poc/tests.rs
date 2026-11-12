@@ -12,8 +12,8 @@
 use super::executor::{ConversionExecutor, ConversionRequest, RateQuote};
 use super::intent::{FileIntentStore, InMemoryIntentStore, IntentRecord, IntentState, IntentStore};
 use super::ledger::{
-    Account, AccountError, AccountFlags, AccountId, InMemoryLedger, LedgerBackend, Transfer,
-    TransferError,
+    Account, AccountBalance, AccountError, AccountFlags, AccountId, InMemoryLedger, LedgerBackend,
+    Transfer, TransferError, TransferId,
 };
 use super::recovery::{ReconcileOutcome, RecoveryPolicy, reconcile};
 
@@ -201,6 +201,82 @@ fn atomic_failure_moves_nothing() {
 }
 
 #[test]
+fn in_memory_failed_conversion_recovery_reports_resubmission_rejected() {
+    // #6629: the in-memory counterpart of
+    // live_failed_conversion_recovery_reports_resubmission_rejected
+    // (whose oracle is the live binding's id_already_failed mapping).
+    // The in-memory failed-ID lookup in validate_and_stage must refuse
+    // the resubmission even after the original blocker has cleared --
+    // the existing in-memory reconcile tests reject via fresh balance
+    // validation during reconcile itself, not via a recorded failed ID.
+    let mut executor = executor();
+    let mut record = executor.prepare(&request()).expect("intent prepared");
+
+    // Fail the conversion for insufficient liquidity, exactly as in
+    // atomic_failure_moves_nothing: draining the LP destination makes
+    // the destination leg fail, its ID lands in failed_transfers, no
+    // leg posts, and the intent stays Submitted.
+    let drain = funding_transfer(900, LP_DST, USER_DST, 49_000, DST);
+    assert!(executor.backend.create_transfers(&[drain])[0].is_ok());
+    assert!(executor.submit(&mut record).is_err());
+    assert_eq!(record.state, IntentState::Submitted);
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+
+    // Restore liquidity: the blocker that caused the failure is gone,
+    // so a resubmission rejected now can only be refused by the
+    // recorded failed ID, never by balance validation.
+    let refill = funding_transfer(901, ISSUER_DST, LP_DST, 50_000, DST);
+    assert!(executor.backend.create_transfers(&[refill])[0].is_ok());
+    assert!(
+        executor
+            .backend
+            .account_balance(LP_DST)
+            .unwrap()
+            .spendable()
+            >= 2_000,
+        "liquidity restored: the destination leg would validate now"
+    );
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("reconcile");
+    assert_eq!(
+        outcomes,
+        vec![(777, ReconcileOutcome::ResubmissionRejected)]
+    );
+    let stored = executor
+        .store
+        .get(777)
+        .expect("read intent")
+        .expect("intent still stored");
+    assert_eq!(stored.state, IntentState::Submitted);
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty(),
+        "no leg of the rejected resubmission may post"
+    );
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_DST)
+            .unwrap()
+            .credits_posted,
+        49_000,
+        "only the drain posted; the rejected resubmission moved nothing"
+    );
+}
+
+#[test]
 fn linked_chain_failure_marks_other_legs_linked_event_failed() {
     let mut ledger = funded_ledger();
     let chain = vec![
@@ -229,6 +305,171 @@ fn linked_chain_failure_marks_other_legs_linked_event_failed() {
     assert_eq!(results[0], Err(TransferError::LinkedEventFailed));
     assert_eq!(results[1], Err(TransferError::DebitsMustNotExceedCredits));
     assert!(ledger.transfers_with_user_data_128(42).is_empty());
+}
+
+#[test]
+fn failed_chain_records_only_the_failing_leg() {
+    // #6627 (oracle: the failing leg's own error is the only outcome
+    // the chain may cache): when a linked chain fails on one leg,
+    // only that leg's ID is recorded as failed -- a valid sibling
+    // leg remains submittable afterwards.
+    let mut ledger = funded_ledger();
+    let sibling = Transfer {
+        linked: true,
+        ..funding_transfer(700, USER_SRC, LP_SRC, 100, SRC)
+    };
+    let failing = funding_transfer(701, LP_DST, USER_DST, 999_999, DST);
+    let results = ledger.create_transfers(&[sibling.clone(), failing]);
+    assert_eq!(results[0], Err(TransferError::LinkedEventFailed));
+    assert_eq!(results[1], Err(TransferError::DebitsMustNotExceedCredits));
+    // The sibling leg was never itself invalid: resubmitted on its
+    // own (unlinked) it posts.
+    let retry = Transfer {
+        linked: false,
+        ..sibling
+    };
+    assert_eq!(ledger.create_transfers(&[retry]), vec![Ok(())]);
+    assert!(ledger.lookup_transfer(700).is_some());
+}
+
+#[test]
+fn exists_break_leaves_later_failing_leg_submittable() {
+    // Codex P2 on PR #6367 (oracle: TigerBeetle breaks a linked
+    // chain at the first non-`Created` leg -- here the earlier
+    // `Exists` leg -- and never attempts the legs after the break):
+    // a later leg whose validation would fail must NOT be recorded
+    // in `failed_transfers`, because it was never attempted; once
+    // its blocker clears it remains submittable.
+    let mut ledger = funded_ledger();
+    // Post leg 700 as the head of a two-leg chain, so the identical
+    // resubmission below (same `linked: true`) is a byte-identical
+    // `Exists`, not an `ExistsWithDifferentFields`.
+    let posted = Transfer {
+        linked: true,
+        ..funding_transfer(700, USER_SRC, LP_SRC, 100, SRC)
+    };
+    let chain_tail = funding_transfer(702, LP_SRC, FEE, 100, SRC);
+    assert_eq!(
+        ledger.create_transfers(&[posted.clone(), chain_tail]),
+        vec![Ok(()), Ok(())]
+    );
+    // Chain: the posted leg byte-identical (an `Exists` break at
+    // offset 0), then a leg debiting an account that does not exist
+    // yet (a hard validation failure at offset 1).
+    let exists_leg = posted;
+    let blocked_leg = funding_transfer(701, 3001, LP_SRC, 100, SRC);
+    let results = ledger.create_transfers(&[exists_leg, blocked_leg.clone()]);
+    assert_eq!(
+        results,
+        vec![
+            Err(TransferError::Exists),
+            Err(TransferError::LinkedEventFailed),
+        ]
+    );
+    // Clear the blocker: create and fund the debit account.
+    let results = ledger.create_accounts(&[account(3001, SRC, false)]);
+    assert!(results.iter().all(|result| result.is_ok()));
+    assert_eq!(
+        ledger.create_transfers(&[funding_transfer(703, ISSUER_SRC, 3001, 1_000, SRC)]),
+        vec![Ok(())]
+    );
+    // The blocked leg now posts on its own -- it was never cached
+    // as failed (a cached failure would return `IdAlreadyFailed`).
+    assert_eq!(ledger.create_transfers(&[blocked_leg]), vec![Ok(())]);
+    assert!(ledger.lookup_transfer(701).is_some());
+}
+
+#[test]
+fn conflicting_submission_does_not_poison_a_posted_transfer() {
+    // #6627 (oracle: a posted transfer's byte-identical retry always
+    // returns `Exists`): a submission reusing a posted ID with
+    // different fields is rejected with `ExistsWithDifferentFields`,
+    // and that rejection must not be cached against the posted ID.
+    let mut ledger = funded_ledger();
+    let posted = funding_transfer(700, USER_SRC, LP_SRC, 100, SRC);
+    assert_eq!(ledger.create_transfers(&[posted.clone()]), vec![Ok(())]);
+    let conflicting = funding_transfer(700, USER_SRC, LP_SRC, 200, SRC);
+    assert_eq!(
+        ledger.create_transfers(&[conflicting]),
+        vec![Err(TransferError::ExistsWithDifferentFields)]
+    );
+    assert_eq!(
+        ledger.create_transfers(&[posted]),
+        vec![Err(TransferError::Exists)]
+    );
+}
+
+#[test]
+fn resubmitted_failed_transfer_returns_id_already_failed_after_cause_fixed() {
+    // #6628 (oracle: the `IdAlreadyFailed` variant's doc comment and
+    // the live binding's `Status::IdAlreadyFailed` mapping in
+    // tb_ledger.rs): a transfer that failed is remembered by ID, and
+    // resubmitting that ID returns `IdAlreadyFailed` -- even after
+    // the original failure's cause has been fixed, it must not
+    // return the stale stored error (here `DebitAccountNotFound`).
+    let mut ledger = InMemoryLedger::new();
+    let transfer = funding_transfer(700, USER_SRC, LP_SRC, 100, SRC);
+    // Neither account exists yet: the transfer fails and its ID is
+    // recorded as failed.
+    assert_eq!(
+        ledger.create_transfers(&[transfer.clone()]),
+        vec![Err(TransferError::DebitAccountNotFound)]
+    );
+    // Fix the cause: create both accounts and fund the debit side,
+    // so the same transfer would now post if it were a fresh ID.
+    let results = ledger.create_accounts(&[
+        account(ISSUER_SRC, SRC, false),
+        account(USER_SRC, SRC, false),
+        account(LP_SRC, SRC, false),
+    ]);
+    assert!(results.iter().all(|result| result.is_ok()));
+    assert_eq!(
+        ledger.create_transfers(&[funding_transfer(701, ISSUER_SRC, USER_SRC, 1_000, SRC)]),
+        vec![Ok(())]
+    );
+    // Resubmission of the failed ID is still refused, with
+    // `IdAlreadyFailed`, and nothing posts.
+    assert_eq!(
+        ledger.create_transfers(&[transfer]),
+        vec![Err(TransferError::IdAlreadyFailed)]
+    );
+    assert!(ledger.lookup_transfer(700).is_none());
+}
+
+/// Parity (#6108): the in-memory backend refuses the reserved ID
+/// shapes with the same typed errors the TigerBeetle binding maps,
+/// so a scenario means the same thing on both backends. A retry of
+/// a reserved-ID transfer returns the ID error again — not
+/// `IdAlreadyFailed` — because TigerBeetle validates reserved IDs
+/// ahead of its failed-transfer lookup (Codex P2 on #8670).
+#[test]
+fn in_memory_rejects_the_reserved_id_shapes_like_tigerbeetle() {
+    let mut ledger = funded_ledger();
+    let results = ledger.create_accounts(&[account(0, SRC, false)]);
+    assert_eq!(results, vec![Err(AccountError::IdMustNotBeZero)]);
+    let results = ledger.create_accounts(&[account(u128::MAX, SRC, false)]);
+    assert_eq!(results, vec![Err(AccountError::IdMustNotBeIntMax)]);
+
+    for (id, error) in [
+        (0, TransferError::IdMustNotBeZero),
+        (u128::MAX, TransferError::IdMustNotBeIntMax),
+    ] {
+        let results = ledger.create_transfers(&[funding_transfer(id, USER_SRC, LP_SRC, 10, SRC)]);
+        assert_eq!(results, vec![Err(error)]);
+        let results = ledger.create_transfers(&[funding_transfer(id, USER_SRC, LP_SRC, 10, SRC)]);
+        assert_eq!(results, vec![Err(error)], "retry of reserved ID {id}");
+    }
+
+    // Reserved debit/credit account IDs are refused with the typed
+    // errors, not misreported as "not found".
+    let results = ledger.create_transfers(&[funding_transfer(777_001, 0, LP_SRC, 10, SRC)]);
+    assert_eq!(results, vec![Err(TransferError::DebitAccountIdMustNotBeZero)]);
+    let results =
+        ledger.create_transfers(&[funding_transfer(777_002, USER_SRC, u128::MAX, 10, SRC)]);
+    assert_eq!(
+        results,
+        vec![Err(TransferError::CreditAccountIdMustNotBeIntMax)]
+    );
 }
 
 #[test]
@@ -583,6 +824,47 @@ fn duplicate_t1_and_t3_transfer_ids_fail_preflight_before_persisting_intent() {
             .transfers_with_user_data_128(777)
             .is_empty()
     );
+}
+
+#[test]
+fn reserved_transfer_ids_fail_preflight_before_persisting_intent() {
+    // Oracle: #6194 — real TigerBeetle refuses transfer IDs 0 and
+    // u128::MAX outright, so preflight must reject them in every leg
+    // position (T1, fee, T3), naming the offending ID, before any
+    // intent is persisted or anything is submitted. Pre-fix, the
+    // creator probe executed all of these Ok Posted.
+    for position in 0..3 {
+        for reserved in [0, u128::MAX] {
+            let mut executor = executor();
+            let mut bad = request();
+            bad.transfer_ids[position] = reserved;
+
+            let error = executor
+                .prepare(&bad)
+                .expect_err("a reserved transfer ID must fail preflight");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("transfer ID {reserved} is reserved")),
+                "the error must name the reserved ID, got: {error}"
+            );
+            assert!(executor.store.get(777).unwrap().is_none());
+            assert!(
+                executor
+                    .backend
+                    .transfers_with_user_data_128(777)
+                    .is_empty()
+            );
+        }
+    }
+
+    // The sane-ID control (the probe's 601/602/603) still executes
+    // identically: the rejection did not widen to ordinary IDs.
+    let mut executor = executor();
+    let record = executor
+        .execute(&request())
+        .expect("sane transfer IDs must still post");
+    assert_eq!(record.state, IntentState::Posted);
 }
 
 #[test]
@@ -1851,4 +2133,107 @@ fn execute_retry_on_posted_record_fails_explicitly() {
         IntentState::Posted,
         "the persisted record stays Posted after the retry"
     );
+}
+
+/// A backend violating the `create_transfers` result contract
+/// (#4669): it reports `keep` `Ok` results and posts nothing, no
+/// matter how many transfers were submitted. Everything else
+/// delegates to a funded in-memory ledger, so lookups honestly
+/// report that no legs are present.
+struct ShortResultBackend {
+    inner: InMemoryLedger,
+    keep: usize,
+}
+
+impl LedgerBackend for ShortResultBackend {
+    fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>> {
+        self.inner.create_accounts(accounts)
+    }
+
+    fn create_transfers(&mut self, _batch: &[Transfer]) -> Vec<Result<(), TransferError>> {
+        (0..self.keep).map(|_| Ok(())).collect()
+    }
+
+    fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>> {
+        self.inner.try_lookup_transfer(id)
+    }
+
+    fn try_lookup_account(&self, id: AccountId) -> anyhow::Result<Option<Account>> {
+        self.inner.try_lookup_account(id)
+    }
+
+    fn try_account_balance(&self, id: AccountId) -> anyhow::Result<Option<AccountBalance>> {
+        self.inner.try_account_balance(id)
+    }
+
+    fn try_transfers_with_user_data_128(&self, value: u128) -> anyhow::Result<Vec<Transfer>> {
+        self.inner.try_transfers_with_user_data_128(value)
+    }
+}
+
+fn short_result_executor(
+    keep: usize,
+) -> ConversionExecutor<ShortResultBackend, InMemoryIntentStore> {
+    ConversionExecutor::new(
+        ShortResultBackend {
+            inner: funded_ledger(),
+            keep,
+        },
+        InMemoryIntentStore::new(),
+    )
+}
+
+#[test]
+fn a_short_create_transfers_result_never_marks_posted() {
+    // #4669: zip() stops at the shorter side, so a backend returning
+    // fewer results than legs used to sail through to Posted with
+    // nothing (or only part) in the ledger. Any length but one result
+    // per leg is a backend failure: submit errors and the record
+    // stays Submitted for the recovery scanner.
+    for keep in [0, 1, 2] {
+        let mut executor = short_result_executor(keep);
+        let error = executor
+            .execute(&request())
+            .expect_err("a short result vector must fail the submission");
+        assert!(
+            error.to_string().contains("results for 3 legs"),
+            "the error should name the short result vector: {error:#}"
+        );
+        assert_eq!(
+            executor.store.get(777).unwrap().unwrap().state,
+            IntentState::Submitted,
+            "keep={keep}: the record must not advance to Posted"
+        );
+    }
+}
+
+#[test]
+fn recovery_resubmit_rejects_a_short_create_transfers_result() {
+    // #4669: the Resubmit path scanned the result vector for a
+    // failure entry, so an empty (or short) vector read as vacuous
+    // success and the record was persisted Posted. A short vector is
+    // a rejected resubmission: the record stays unresolved for a
+    // later scan.
+    for keep in [0, 2] {
+        let mut executor = short_result_executor(keep);
+        let record = executor.prepare(&request()).expect("intent prepared");
+        assert_eq!(record.state, IntentState::Recorded);
+
+        let outcomes = reconcile(
+            &mut executor.backend,
+            &mut executor.store,
+            RecoveryPolicy::Resubmit,
+        )
+        .expect("reconcile");
+        assert_eq!(
+            outcomes,
+            vec![(777, ReconcileOutcome::ResubmissionRejected)],
+            "keep={keep}"
+        );
+        assert_eq!(
+            executor.store.get(777).unwrap().unwrap().state,
+            IntentState::Recorded,
+            "keep={keep}: the record must stay unresolved, not Posted"
+        );
+    }
 }

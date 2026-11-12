@@ -13,15 +13,67 @@
 # binary must stay <= 2 MiB (target <= 1.5 MiB) so it can be
 # dropped onto any host. The gate is enforced in postFixup below,
 # against the final, stripped artifact.
+#
+# Dependency compilation is split from the package build when a
+# craneLib is supplied (the root flake's make-fleet passes one):
+# crane's buildDepsOnly compiles every registry dependency as its
+# OWN derivation keyed on the workspace manifests + Cargo.lock, so
+# a fleet source change rebuilds just the workspace crates instead
+# of the whole dependency tree — previously every variant below
+# recompiled the same dependency set from scratch on any change
+# (code#8392). Callers that do not pass craneLib keep the
+# monolithic buildRustPackage build. The two musl static variants
+# stay monolithic too: under pkgsStatic, crane's cargo environment
+# applies crt-static to host build scripts as well (a libc build
+# script fails to link against glibc's dynamic objects) — the
+# statics need crane's cross-toolchain treatment (build-platform
+# toolchain with a musl target plus per-target CC wiring for the
+# -sys crates) before they can split. fleet-brokers stays on
+# buildRustPackage either way: it is the queue pilot's rollback
+# inventory under historical names (it retires at the epic's
+# close), and its build/test flag split (--bins to build, lib
+# tests to check) does not map onto crane's single cargoExtraArgs
+# without changing which tests run.
 {
   lib,
   rustPlatform,
   pkgsStatic,
   binutils,
+  callPackage,
+  craneLib ? null,
   sourceRev ? "unknown",
+  # The derived per-app version (#8566), computed by the release
+  # tooling where the git history exists (the nix build source has
+  # no .git). A release build passes the clean tag version here
+  # (e.g. "0.1.0" at fleet/v0.1.0); left null, the package derives
+  # an honest prerelease from sourceRev below.
+  derivedVersion ? null,
 }:
 
 let
+  # ONNX Runtime, pinned to the latest upstream release through the
+  # atlas-search package's vendored copy (../atlas-search/onnxruntime):
+  # the search serve role's baked library must be the release the
+  # corpus and the Gate A fixtures are certified under (code#6765).
+  onnxruntime = callPackage ../atlas-search/onnxruntime { };
+
+  # The search serve role (#5604) consumes atlas-core / atlas-embed /
+  # atlas-proto by relative path (../atlas-search/crates/*, untouched),
+  # so the build source is the pkgs/ tree holding both workspaces and
+  # cargo runs from pkgs/fleet inside it. The fleet Cargo.lock covers
+  # the atlas crates' external dependencies.
+  fleetSrc = lib.fileset.toSource {
+    root = ./..;
+    fileset = lib.fileset.unions [
+      ./.
+      ../atlas-search/Cargo.toml
+      ../atlas-search/crates
+      # atlas-core include_str!s the stage DDL from schema/ (stage.rs);
+      # without it the fleet build fails on the missing .sql files.
+      ../atlas-search/schema
+    ];
+  };
+
   # D7 hard gate for the runs-anywhere connect binary.
   connectMaxBytes = 2 * 1024 * 1024; # 2097152
 
@@ -32,14 +84,10 @@ let
       alias ? null,
       sizeGate ? false,
       platform ? rustPlatform,
+      static ? false,
     }:
-    platform.buildRustPackage {
-      inherit pname;
-      version = "0.1.0";
-      src = ./.;
-      cargoLock.lockFile = ./Cargo.lock;
-
-      cargoBuildFlags = [
+    let
+      cargoFlags = [
         "-p"
         "fleet"
       ]
@@ -49,7 +97,33 @@ let
         (lib.concatStringsSep "," features)
       ];
 
-      env.FLEET_SOURCE_REV = sourceRev;
+      # ONNX Runtime is dynamically loaded (atlas-embed's ort
+      # load-dynamic) and never downloaded; the search serve role
+      # resolves it from this closure path (the atlas-search package's
+      # own ATLAS_SEARCH_ORT_LIB_DEFAULT mechanism, ported). Compiled
+      # in only where search-serve is. Not set for the connect
+      # variants (no search-serve) nor the musl static ones (a glibc
+      # libonnxruntime cannot be dlopen'd from a static binary; the
+      # role there needs ATLAS_ORT_LIB).
+      envAttrs = {
+        FLEET_SOURCE_REV = sourceRev;
+        # #8566: the binary's Derived version channel. An explicit
+        # derivedVersion wins; otherwise a real sourceRev yields a
+        # unique prerelease form (0.1.0-dev+g<rev7>) instead of the
+        # colliding bare 0.1.0-dev every packaged build would
+        # otherwise report. "unknown"/"dirty" pass nothing and the
+        # build script's own fallback applies.
+        FLEET_DERIVED_VERSION =
+          if derivedVersion != null then
+            derivedVersion
+          else if sourceRev != "unknown" && sourceRev != "dirty" then
+            "0.1.0-dev+g${lib.substring 0 7 sourceRev}"
+          else
+            "0.1.0-dev";
+      }
+      // lib.optionalAttrs (features != [ ] && !static) {
+        ATLAS_SEARCH_ORT_LIB_DEFAULT = "${onnxruntime}/lib/libonnxruntime.so";
+      };
 
       # Side-by-side installs (NixOS) keep the hyphenated name as a
       # link to the same binary; argv0 narrows the surface.
@@ -74,7 +148,7 @@ let
         fi
       '';
 
-      meta = {
+      metaAttrs = {
         description = "Fleet multicall binary (${pname} variant): one binary for the queue, proxy, secrets, search and dispatch domains";
         license = with lib.licenses; [
           mit
@@ -82,7 +156,69 @@ let
         ];
         mainProgram = "fleet";
       };
-    };
+
+      craneLibFor = if static then null else craneLib;
+    in
+    if craneLibFor != null then
+      let
+        commonArgs = {
+          inherit pname;
+          version = "0.1.0";
+          src = fleetSrc;
+          sourceRoot = "${fleetSrc.name}/fleet";
+          # The workspace root is the fleet/ subdir of the source,
+          # and so is its lockfile; crane vendors from the lockfile
+          # path it is given, not from the source root.
+          cargoLock = ./Cargo.lock;
+          strictDeps = true;
+          cargoExtraArgs = "--locked " + lib.concatStringsSep " " cargoFlags;
+          env = envAttrs;
+        };
+
+        # The dependency layer for this variant's feature set.
+        # (crane's dummy source keeps the real source's name, so
+        # both layers unpack under the same sourceRoot.)
+        cargoArtifacts = craneLibFor.buildDepsOnly commonArgs;
+      in
+      craneLibFor.buildPackage (
+        commonArgs
+        // {
+          inherit cargoArtifacts;
+
+          # Preserve the buildRustPackage behaviour: the workspace
+          # test suite runs in the check phase (it did under
+          # buildRustPackage — the store's build logs show a
+          # checkPhase with passing test results). The old check
+          # phase ran flagless (the whole workspace, default
+          # features), while crane's default check appends
+          # cargoExtraArgs — which here carries "-p fleet" and
+          # would narrow the run to the fleet crate's 27 tests.
+          # Override the check command to keep the workspace-wide
+          # run; the build keeps the -p fleet scope via
+          # cargoExtraArgs.
+          doCheck = true;
+          checkPhaseCargoCommand = "cargoWithProfile test --locked";
+
+          inherit postInstall postFixup;
+          meta = metaAttrs;
+        }
+      )
+    else
+      platform.buildRustPackage {
+        inherit pname;
+        version = "0.1.0";
+        src = fleetSrc;
+        sourceRoot = "${fleetSrc.name}/fleet";
+        cargoLock.lockFile = ./Cargo.lock;
+
+        cargoBuildFlags = cargoFlags;
+
+        env = envAttrs;
+
+        inherit postInstall postFixup;
+
+        meta = metaAttrs;
+      };
 in
 {
   # Full profile: every domain compiled in.
@@ -115,7 +251,8 @@ in
   fleet-brokers = rustPlatform.buildRustPackage {
     pname = "fleet-brokers";
     version = "0.1.0";
-    src = ./.;
+    src = fleetSrc;
+    sourceRoot = "${fleetSrc.name}/fleet";
     cargoLock.lockFile = ./Cargo.lock;
 
     cargoBuildFlags = [
@@ -157,6 +294,7 @@ in
     pname = "fleet-static";
     features = null; # workspace default features = full profile
     platform = pkgsStatic.rustPlatform;
+    static = true;
   };
 
   # Connect profile, musl static: runs anywhere, no libc coupling.
@@ -166,5 +304,6 @@ in
     alias = "fleet-connect";
     sizeGate = true;
     platform = pkgsStatic.rustPlatform;
+    static = true;
   };
 }

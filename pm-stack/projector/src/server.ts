@@ -60,6 +60,8 @@ function libsqlStore(db: Client): ProjectorStore {
     upsertItem: (i) => store.upsertItem(db, i),
     upsertComment: (c) => store.upsertComment(db, c),
     markCommentDeleted: (c) => store.markCommentDeleted(db, c),
+    deleteItem: (ref, sourceUpdatedAt) => store.deleteItem(db, ref, sourceUpdatedAt),
+    itemDeletion: (ref) => store.getItemDeletion(db, ref),
     recordPush: (p) => store.recordPush(db, p),
     appendHotEvents: (events) => store.appendHotEvents(db, events),
   };
@@ -252,12 +254,7 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
         return jsonResponse(400, { error: "invalid_json" });
       }
       const { subject, ref, relation = "relates", note, createdBy } = body ?? {};
-      if (
-        typeof subject !== "string" ||
-        subject.length === 0 ||
-        typeof ref !== "string" ||
-        !isStorableLinkRef(ref)
-      ) {
+      if (typeof subject !== "string" || subject.length === 0 || typeof ref !== "string" || !isStorableLinkRef(ref)) {
         return jsonResponse(400, { error: "subject (non-empty string) and ref (owner/repo#N) required" });
       }
       // Validate the whole body before any store call (#2974): relation is

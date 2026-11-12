@@ -17,11 +17,16 @@ source in the fleet next to Muse (Archer) and Aster (Dot). It is installed
 - **Workspace/knowledge pack:** `workspace/*.md` here, materialized into
   `~/.openclaw/workspace/` (AGENTS/SOUL/TOOLS/IDENTITY/USER/HEARTBEAT are
   the bootstrap files; FLEET/QUOTAS/CHANNELS are reference files).
-- **Models:** local plan proxies only — primary DeepSeek V4 Flash via the
-  CommandCode proxy (:18748), fallbacks on the Design (:18746) and
-  Antigravity (:18743) plans. The Codex/OpenAI proxy (:18744) is the final
-  reserve and is deliberately not an automatic fallback. See
-  `workspace/QUOTAS.md`.
+- **Models:** the OpenCode server facade (127.0.0.1:13420) is this
+  gateway's only model route: the default is the opencode-route
+  workhorse pool, with the specialist and speed pools as fallbacks.
+  The local plan proxies this gateway once fronted directly are
+  retired — CommandCode (:18748) and Claude Code (:18749) in the
+  2026-11-06 proxy-infra decommission (both providers are native in
+  the fork since 2026-11-05), Design (:18746) on 2026-11-03 and
+  Antigravity (:18743) on 2026-10-30 and Codex (:18744) on
+  2026-11-06 (replaced by the fork's native openai provider).
+  See `workspace/QUOTAS.md`.
 - **Coding:** ACP via the acpx plugin. The default ACP agent is
   `opencode` (spawn with cwd `~/code`) — the same OpenCode
   build/config/auth OpenChamber drives; `~/.acpx/config.json` (managed in
@@ -40,7 +45,7 @@ source in the fleet next to Muse (Archer) and Aster (Dot). It is installed
   sag, camsnap, discrawl, wacrawl, qmd) and runtime
   plugins (acpx, slack, discord, whatsapp, matrix, signal, codex,
   copilot, opencode, deepseek, meta, brave, tavily, exa, firecrawl,
-  perplexity, duckduckgo, tokenjuice) are packaged by Nix. Chat channels
+  perplexity, duckduckgo, tokenjuice, memory-lancedb, memory-wiki) are packaged by Nix. Chat channels
   stay inert until their one-time external setup — see
   `workspace/CHANNELS.md`.
 
@@ -63,3 +68,35 @@ openclaw status
 openclaw doctor
 openclaw agent --message "Who are you, who do you work with, and what is your default model?"
 ```
+
+### Verify tool plugins (bundled + custom) — NOT `openclaw plugins list`
+
+`openclaw plugins list` shows **runtime plugins only** (channels, harnesses,
+providers, search). Tool plugins — the bundled ones (gogcli, goplaces, qmd,
+sag, camsnap, discrawl, wacrawl) and custom ones (the vendored summarize
+plugin) — never appear in that list, in either the enabled or the disabled
+section. Their absence there is expected, not a registration failure
+(this cost a diagnosis cycle once: issue #6347).
+
+A tool plugin is registered when both of these hold in the **deployed**
+system:
+
+1. Its package is on the gateway's PATH — the `openclaw-gateway-default`
+   wrapper script run by the `openclaw-gateway` unit exports a PATH with
+   one store path per tool package (e.g. `...-summarize-0.21.14/bin`).
+2. Its skill is in the rendered config's skill load paths:
+   `~/.openclaw/openclaw.json` lists
+   `~/.local/share/nix-openclaw/skills/default/<name>`, and that directory
+   contains the plugin's `SKILL.md`.
+
+Then smoke-test the binary from its store path, e.g. for summarize:
+`<store-path>/bin/summarize --version` and
+`<store-path>/bin/summarize --extract https://example.com`.
+Two gotchas: the binaries are on the gateway's PATH only, not the login
+shell's (`which summarize` fails interactively — that is normal); and the
+first-ever `--extract` is slow (a minute or more) because the
+HTML-to-Markdown step shells out to `uvx --from markitdown[all]`, which
+downloads its packages on a cold cache before falling back to readability
+extraction — later runs take seconds. A full LLM summarize additionally
+needs a provider API key in the gateway's environment; `--extract` does
+not.

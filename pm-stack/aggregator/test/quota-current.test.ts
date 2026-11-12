@@ -30,7 +30,7 @@ function baseView(): QuotaView {
       pool("meta", [{ name: "weekly", unit: "other", limit: 100, used: 100, percent: 100, resetsAt: null }], "walled"),
       pool("deepseek", []),
       pool("cline-pass", [{ name: "monthly", unit: "other", limit: 100, used: 69, percent: 69, resetsAt: null }]),
-      pool("commandcode", [{ name: "monthly credits", unit: "usd", limit: 10, used: 6.57, resetsAt: null }]),
+      pool("_commandcode", [{ name: "monthly credits", unit: "usd", limit: 10, used: 6.57, resetsAt: null }]),
     ],
     burn: [],
     choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: ["meta"] },
@@ -254,7 +254,7 @@ describe("quota-current overlay", () => {
 
   test("pools with no gatherer entry are untouched and carry no freshness", () => {
     const out = overlayQuotaCurrent(baseView(), file([entry({ serviceId: "meta", windows: [] })]), NOW);
-    const cc = out.pools.find((p) => p.id === "commandcode")!;
+    const cc = out.pools.find((p) => p.id === "_commandcode")!;
     expect(cc.freshness).toBeUndefined();
     expect(cc.windows[0].used).toBe(6.57);
     expect(cc.state).toBe("healthy");
@@ -349,6 +349,47 @@ describe("quota-current overlay", () => {
     expect(pool.freshness?.state).toBe("error");
     expect(pool.windows.map((w) => w.percent)).toEqual([11]);
   });
+
+  test("a lapsed entry survives ingest as a terminal lapse, not an error and without stale percentages", () => {
+    const at = iso(5 * 60_000);
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({
+            serviceId: "opencode-go",
+            providerId: "opencode-go",
+            state: "lapsed",
+            measuredAt: at,
+            error: "No active OpenCode Go subscription on the selected Console account",
+            windows: [{ ...win("monthly", 62, at), state: "lapsed" }],
+          }),
+        ]),
+      ),
+    );
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.providers[0].state).toBe("lapsed");
+    const view = baseView();
+    view.pools.push(
+      pool("opencode-go", [{ name: "monthly", unit: "other", limit: 100, used: 62, percent: 62, resetsAt: null }]),
+    );
+    view.choices = {
+      hasHeadroom: ["opencode-go"],
+      burnBeforeReset: ["opencode-go"],
+      doNotStart: ["opencode-go"],
+    };
+    const out = overlayQuotaCurrent(view, parsed!, NOW);
+    const go = out.pools.find((p) => p.id === "opencode-go")!;
+    expect(go.state).toBe("lapsed");
+    expect(go.freshness?.state).toBe("lapsed");
+    expect(go.freshness?.error).toContain("No active OpenCode Go subscription");
+    // The dated percentage is not presented as a current reading.
+    expect(go.windows).toEqual([]);
+    // Guidance must not continue recommending a cancelled workspace.
+    expect(out.choices.hasHeadroom).not.toContain("opencode-go");
+    expect(out.choices.burnBeforeReset).not.toContain("opencode-go");
+    expect(out.choices.doNotStart).not.toContain("opencode-go");
+    expect(out.gatherer?.providers.find((p) => p.serviceId === "opencode-go")?.state).toBe("lapsed");
+  });
 });
 
 describe("parseQuotaCurrent", () => {
@@ -418,6 +459,24 @@ describe("overlayTursoUsage (#1049)", () => {
       ["storage", 1.053323, "gb", 21.066],
     ]);
   });
+  test("prototype-spelling Turso windows are ignored like unknown names", () => {
+    const at = iso(5 * 60_000);
+    const names = ["databases", "constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "unknown-window"];
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          measuredAt: at,
+          windows: names.map((name) => tursoWin(name, 3, 3, at)),
+        }),
+      ]),
+      NOW,
+    );
+    expect(out[0].metrics.map((metric) => metric.id)).toEqual(["databases"]);
+  });
   test("an error entry keeps the dated card and adds a dated conflict flag", () => {
     const at = iso(5 * 60_000);
     const out = overlayTursoUsage(
@@ -447,7 +506,14 @@ describe("overlayTursoUsage (#1049)", () => {
     svc.metrics = [
       { id: "databases", label: "Databases", used: 40, limit: 100, unit: "count", percent: 40, highlight: true },
       { id: "storage", label: "Storage", used: 7.358009, limit: 5, unit: "gb", highlight: true },
-      { id: "rows-read", label: "Rows read / month", used: 821_437_321, limit: 500_000_000, unit: "rows", highlight: true },
+      {
+        id: "rows-read",
+        label: "Rows read / month",
+        used: 821_437_321,
+        limit: 500_000_000,
+        unit: "rows",
+        highlight: true,
+      },
     ];
     const at = iso(5 * 60_000);
     const out = overlayTursoUsage(
@@ -458,7 +524,11 @@ describe("overlayTursoUsage (#1049)", () => {
           providerId: "turso",
           source: "opencode-quota",
           measuredAt: at,
-          windows: [tursoWin("databases", 44, 44, at), tursoWin("rows-written", 1_672_071, 16.721, at), tursoWin("sync", 0, 0, at)],
+          windows: [
+            tursoWin("databases", 44, 44, at),
+            tursoWin("rows-written", 1_672_071, 16.721, at),
+            tursoWin("sync", 0, 0, at),
+          ],
         }),
       ]),
       NOW,
@@ -709,23 +779,23 @@ describe("stale-path newest pick is finite-gated (#2253)", () => {
   });
 });
 
-describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
+describe("overlay: alternate ChatGPT pool (_openai.alt)", () => {
   test("gatherer windows land on the alternate pool, never on the main pool", () => {
     const view = baseView();
-    view.pools.push(pool("openai.alternate", []));
+    view.pools.push(pool("_openai.alt", []));
     const out = overlayQuotaCurrent(
       view,
       file([
         entry({
-          providerId: "openai.alternate",
-          serviceId: "openai.alternate",
+          providerId: "_openai.alt",
+          serviceId: "_openai.alt",
           credentialLabel: "OpenAI Alternate (Student - popesdrew)",
           windows: [win("5h", 100, iso(5 * 60_000)), win("weekly", 42, iso(5 * 60_000))],
         }),
       ]),
       NOW,
     );
-    const alt = out.pools.find((p) => p.id === "openai.alternate")!;
+    const alt = out.pools.find((p) => p.id === "_openai.alt")!;
     expect(alt.windows.map((w) => [w.name, w.percent])).toEqual([
       ["5-hour", 100],
       ["weekly", 42],
@@ -742,8 +812,8 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
     view.pools.push(
       pool("opencode-go.drewrypope", []),
       pool("opencode-go.popesdrew", []),
-      pool("antigravity-direct.gemini", []),
-      pool("antigravity-direct.claude-gpt", []),
+      pool("_antigravity.gemini", []),
+      pool("_antigravity.claude-gpt", []),
     );
     const out = overlayQuotaCurrent(
       view,
@@ -764,12 +834,12 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
         }),
         entry({
           providerId: "antigravity",
-          serviceId: "antigravity-direct.gemini",
+          serviceId: "_antigravity.gemini",
           windows: [win("weekly", 40, iso(5 * 60_000))],
         }),
         entry({
           providerId: "antigravity",
-          serviceId: "antigravity-direct.claude-gpt",
+          serviceId: "_antigravity.claude-gpt",
           windows: [win("weekly", 90, iso(5 * 60_000))],
         }),
       ]),
@@ -778,15 +848,13 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
     const byId = new Map(out.pools.map((p) => [p.id, p]));
     expect(byId.get("opencode-go.drewrypope")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
     expect(byId.get("opencode-go.popesdrew")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
-    expect(byId.get("antigravity-direct.gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
-    expect(byId.get("antigravity-direct.claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([
-      ["weekly", 90],
-    ]);
+    expect(byId.get("_antigravity.gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
+    expect(byId.get("_antigravity.claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 90]]);
     for (const id of [
       "opencode-go.drewrypope",
       "opencode-go.popesdrew",
-      "antigravity-direct.gemini",
-      "antigravity-direct.claude-gpt",
+      "_antigravity.gemini",
+      "_antigravity.claude-gpt",
     ]) {
       expect(byId.get(id)!.freshness).toEqual({
         measuredAt: iso(5 * 60_000),
@@ -1042,5 +1110,181 @@ describe("parseQuotaCurrent measuredAt gates (#4987)", () => {
     expect(parsed?.sanitized).toEqual({ droppedProviders: 0, droppedWindows: 0 });
     expect(parsed?.providers).toHaveLength(1);
     expect(parsed?.providers[0].windows).toHaveLength(1);
+  });
+});
+
+describe("shell-pool stale/retained path (#6942)", () => {
+  const SHELL_NOTE =
+    "No dated read. Live windows arrive through the quota gatherer (the OpenCode opendesign credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent.";
+  const LEG_ERROR = "Open Design usage API returned HTTP 503";
+
+  function shellView(): QuotaView {
+    const view = baseView();
+    view.pools.push({
+      id: "opendesign",
+      provider: "Open Design",
+      plan: "Go",
+      state: "healthy",
+      windows: [],
+      note: SHELL_NOTE,
+    });
+    return view;
+  }
+
+  function legErrorFile(providers: QuotaCurrentEntry[]): QuotaCurrentFile {
+    const f = file(providers);
+    f.heartbeat = {
+      tickAt: iso(4 * 60_000),
+      ok: true,
+      durationMs: 900,
+      perProvider: { opendesign: { state: "error", ms: 12, rows: 1, error: LEG_ERROR } },
+    };
+    return f;
+  }
+
+  const retainedEntry = () =>
+    entry({
+      serviceId: "opendesign",
+      source: "opencode-quota",
+      measuredAt: iso(45 * 60_000),
+      retainedFromFailedTick: iso(4 * 60_000),
+      windows: [win("5h", 0, iso(45 * 60_000)), win("7d", 0, iso(45 * 60_000))],
+    });
+
+  test("a retained entry whose leg errored renders the leg error as freshness, entry windows standing", () => {
+    const out = overlayQuotaCurrent(shellView(), legErrorFile([retainedEntry()]), NOW);
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("error");
+    expect(od.freshness).toEqual({
+      measuredAt: iso(45 * 60_000),
+      source: "opencode-quota",
+      state: "error",
+      error: LEG_ERROR,
+    });
+    // The read's dated fallback windows stand, percentages identical.
+    expect(od.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 0],
+      ["7d", 0],
+    ]);
+    // The read carries a dated read, so the shell note must not stand.
+    expect(od.note).toBeUndefined();
+  });
+
+  test("a retained entry with no leg error stays stale, but its windows still stand and the shell note is suppressed", () => {
+    const out = overlayQuotaCurrent(shellView(), file([retainedEntry()]), NOW);
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("stale");
+    expect(od.freshness).toEqual({ measuredAt: iso(45 * 60_000), source: "opencode-quota", state: "stale" });
+    expect(od.windows.map((w) => w.percent)).toEqual([0, 0]);
+    expect(od.note).toBeUndefined();
+  });
+
+  test("an aged ok entry for a shell pool surfaces stale with the entry's windows standing", () => {
+    const at = iso(QUOTA_CURRENT_FRESH_MS + 10 * 60_000);
+    const out = overlayQuotaCurrent(
+      shellView(),
+      file([
+        entry({ serviceId: "opendesign", source: "opencode-quota", measuredAt: at, windows: [win("5h", 12, at)] }),
+      ]),
+      NOW,
+    );
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("stale");
+    expect(od.windows.map((w) => [w.name, w.percent])).toEqual([["5-hour", 12]]);
+    expect(od.note).toBeUndefined();
+  });
+
+  test("an errored shell pool with adopted windows is excluded from model-choice guidance", () => {
+    const out = overlayQuotaCurrent(
+      shellView(),
+      legErrorFile([retainedEntry(), entry({ serviceId: "meta", windows: [win("5h", 1.33, iso(5 * 60_000))] })]),
+      NOW,
+    );
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.windows.length).toBeGreaterThan(0); // windows stand for display
+    expect(out.choices.hasHeadroom).toContain("meta"); // the fresh read still guides
+    expect(out.choices.hasHeadroom).not.toContain("opendesign");
+    expect(out.choices.burnBeforeReset).not.toContain("opendesign");
+    expect(out.choices.doNotStart).not.toContain("opendesign");
+  });
+
+  test("a spec pool with a leg error keeps the #1268 stale classification and its base dated windows", () => {
+    const f = legErrorFile([
+      entry({
+        serviceId: "cline-pass",
+        measuredAt: iso(5 * 60_000),
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [win("monthly", 71, iso(5 * 60_000))],
+      }),
+    ]);
+    f.heartbeat.perProvider = { "cline-pass": { state: "error", ms: 9, rows: 1, error: "leg boom" } };
+    const out = overlayQuotaCurrent(baseView(), f, NOW);
+    const cline = out.pools.find((p) => p.id === "cline-pass")!;
+    expect(cline.state).toBe("stale");
+    expect(cline.freshness).toEqual({ measuredAt: iso(5 * 60_000), source: "openchamber-quota", state: "stale" });
+    expect(cline.windows[0].percent).toBe(69); // dated read, not the retained gatherer value
+  });
+});
+
+describe("spec-pool retained path with dead base windows (#7033)", () => {
+  const LEG_ERROR = "Rate limited. Retrying soon.";
+  const VIEW_NOTE = "Freshest dated read in the stewardship quota view; Claude exposes no host-side meter.";
+
+  function claudeView(resetsAt: string | null): QuotaView {
+    const view = baseView();
+    const claude = view.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    claude.windows = [{ name: "weekly", unit: "other", limit: 100, used: 68, percent: 68, resetsAt }];
+    claude.note = VIEW_NOTE;
+    return view;
+  }
+
+  function claudeFile(): QuotaCurrentFile {
+    const f = file([
+      entry({
+        providerId: "claude",
+        serviceId: "anthropic:claude-pro",
+        source: "opencode-quota",
+        measuredAt: iso(45 * 60_000),
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [
+          win("5h", 33, iso(45 * 60_000)),
+          win("7d", 61, iso(45 * 60_000)),
+          win("Fable:7d", 0, iso(45 * 60_000)),
+        ],
+      }),
+    ]);
+    f.heartbeat.perProvider = { claude: { state: "error", ms: 12, rows: 1, error: LEG_ERROR } };
+    return f;
+  }
+
+  test("a retained entry whose leg errored supersedes base windows that already reset before the read", () => {
+    // The base row is the quota-view transcription whose weekly reset
+    // (2026-10-26 in fixture time) predates the retained read — a dead
+    // window. The read's dated fallback windows stand instead.
+    const out = overlayQuotaCurrent(claudeView("2026-10-26T19:00:00.000Z"), claudeFile(), NOW);
+    const claude = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(claude.state).toBe("error");
+    expect(claude.freshness).toEqual({
+      measuredAt: iso(45 * 60_000),
+      source: "opencode-quota",
+      state: "error",
+      error: LEG_ERROR,
+    });
+    expect(claude.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 33],
+      ["7d", 61],
+      ["Fable:7d", 0],
+    ]);
+    // The note describes the substituted quota-view row; it must not stand.
+    expect(claude.note).toBeUndefined();
+  });
+
+  test("the same retained entry keeps the #1268 pin when a base window is still live", () => {
+    const out = overlayQuotaCurrent(claudeView("2026-11-02T19:00:00.000Z"), claudeFile(), NOW);
+    const claude = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(claude.state).toBe("stale");
+    expect(claude.freshness).toEqual({ measuredAt: iso(45 * 60_000), source: "opencode-quota", state: "stale" });
+    expect(claude.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 68]]);
+    expect(claude.note).toBe(VIEW_NOTE);
   });
 });

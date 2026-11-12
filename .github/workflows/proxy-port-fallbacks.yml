@@ -1,8 +1,7 @@
 name: proxy port fallbacks
 
 on:
-  merge_group:
-    types: [checks_requested]
+  pull_request:
 
 permissions:
   contents: read

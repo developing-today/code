@@ -16,7 +16,7 @@
 // Secrets (set by the operator, never committed): REHYDRATOR_API_KEY,
 // GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN.
 
-import { decompressFrame } from "./decoder.js";
+import { decompressFrame, ExpansionLimitError } from "./decoder.js";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files";
@@ -139,7 +139,16 @@ export class BundleFlight {
 
   async accessToken() {
     const cached = await this.state.storage.get("google_token");
-    if (cached && cached.expires_at_ms > Date.now() + 60_000) {
+    // A cached entry is trusted only with a usable token (#6989): an
+    // entry poisoned before this validation existed (or written by
+    // anything else) is treated as absent, so it self-heals by
+    // re-exchanging instead of serving the bogus token until expiry.
+    if (
+      cached &&
+      typeof cached.token === "string" &&
+      cached.token !== "" &&
+      cached.expires_at_ms > Date.now() + 60_000
+    ) {
       return cached.token;
     }
     const form = new URLSearchParams({
@@ -156,10 +165,44 @@ export class BundleFlight {
     if (!resp.ok) {
       throw new HttpError(502, `google token exchange failed (HTTP ${resp.status})`);
     }
-    const payload = await resp.json();
+    // Validate the 200 body BEFORE caching it (#6989): the parsed
+    // result is written to Durable Object storage and trusted by the
+    // early return above, so one wrong-shape 200 (proxy error-page
+    // JSON, a Google-side shape change) would otherwise poison every
+    // rehydration on this bundle DO until the bogus expiry passed.
+    // A rejected response writes nothing, so the next call
+    // re-exchanges. The Python sibling shaped this same boundary in
+    // #6846.
+    let payload;
+    try {
+      payload = await resp.json();
+    } catch {
+      throw new HttpError(
+        502,
+        "google token exchange failed (response body was not JSON)",
+      );
+    }
+    if (
+      typeof payload !== "object" ||
+      payload === null ||
+      Array.isArray(payload) ||
+      typeof payload.access_token !== "string" ||
+      payload.access_token === ""
+    ) {
+      throw new HttpError(
+        502,
+        "google token exchange failed (response did not contain an access_token)",
+      );
+    }
+    const expiresIn =
+      typeof payload.expires_in === "number" &&
+      Number.isFinite(payload.expires_in) &&
+      payload.expires_in > 0
+        ? payload.expires_in
+        : 3600;
     const entry = {
       token: payload.access_token,
-      expires_at_ms: Date.now() + (payload.expires_in ?? 3600) * 1000,
+      expires_at_ms: Date.now() + expiresIn * 1000,
     };
     await this.state.storage.put("google_token", entry);
     return entry.token;
@@ -167,6 +210,18 @@ export class BundleFlight {
 
   async rehydrate(job) {
     const { drive_file_id, offset, frame_length, sha256, bundle_id } = job;
+    // The manifest's expected plaintext size (selected as o.size by the
+    // entry point) bounds decompression (#6590). A job without a usable
+    // size fails closed here, before any fetch: falling back to an
+    // unbounded decompress is exactly the failure being fixed.
+    const expectedSize =
+      typeof job.size === "string" && job.size.trim() !== "" ? Number(job.size) : job.size;
+    if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) {
+      throw new HttpError(
+        502,
+        "manifest entry has no usable expected size — refusing unbounded decompression",
+      );
+    }
     const token = await this.accessToken();
     const range = `bytes=${offset}-${offset + frame_length - 1}`;
     const resp = await fetch(`${DRIVE_FILES_URL}/${drive_file_id}?alt=media`, {
@@ -193,8 +248,13 @@ export class BundleFlight {
     }
     let plain;
     try {
-      plain = decompressFrame(frame);
-    } catch {
+      plain = decompressFrame(frame, expectedSize);
+    } catch (err) {
+      if (err instanceof ExpansionLimitError) {
+        // The decoder's message names the exact bound that fired
+        // (declared content size, declared window, produced output).
+        throw new HttpError(502, err.message);
+      }
       throw new HttpError(502, "zstd frame decompression failed");
     }
     const digest = await sha256Hex(plain);

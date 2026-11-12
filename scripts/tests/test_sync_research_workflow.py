@@ -124,6 +124,54 @@ class SyncWorkflowTest(unittest.TestCase):
                         "research-workflow.json: workflow_docs must be a string",
                     )
 
+    def test_workflow_docs_must_not_name_the_repository_root(self):
+        for directory in (self.source, self.target):
+            path = directory / ".agents/research-workflow.json"
+            for value in ("", ".", "./"):
+                with self.subTest(directory=directory.name, value=value):
+                    self.assert_clean_failure(
+                        path,
+                        {"workflow_docs": value},
+                        "research-workflow.json: workflow_docs must name a "
+                        "directory inside the repository",
+                    )
+
+    def test_workflow_docs_must_not_resolve_to_the_repository_root(self):
+        for directory in (self.source, self.target):
+            path = directory / ".agents/research-workflow.json"
+            for value in ("docs/..", "docs/../", "./docs/..", "a/b/../.."):
+                with self.subTest(directory=directory.name, value=value):
+                    self.assert_clean_failure(
+                        path,
+                        {"workflow_docs": value},
+                        "research-workflow.json: workflow_docs must name a "
+                        "directory inside the repository",
+                    )
+
+    def test_workflow_docs_symlink_to_repository_root_is_rejected(self):
+        for directory in (self.source, self.target):
+            path = directory / ".agents/research-workflow.json"
+            link = directory / "rootlink"
+            link.symlink_to(directory, target_is_directory=True)
+            with self.subTest(directory=directory.name):
+                self.assert_clean_failure(
+                    path,
+                    {"workflow_docs": "rootlink"},
+                    "research-workflow.json: workflow_docs must name a "
+                    "directory inside the repository",
+                )
+
+    def test_lifecycle_skills_entries_must_be_directory_names(self):
+        path = self.source / ".agents/research-workflow.json"
+        for value in ([""], ["."], [".."], ["a/b"]):
+            with self.subTest(value=value):
+                self.assert_clean_failure(
+                    path,
+                    {"workflow_docs": "docs/workflow", "lifecycle_skills": value},
+                    "research-workflow.json: lifecycle_skills entries must be "
+                    "directory names",
+                )
+
     def test_lifecycle_skills_must_be_a_list_of_strings(self):
         path = self.source / ".agents/research-workflow.json"
         for value in ("research-workflow", [123], None):

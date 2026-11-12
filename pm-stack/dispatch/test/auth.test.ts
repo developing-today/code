@@ -7,6 +7,9 @@ import {
   parseJwt,
   timingSafeStringEqual,
   verifyOidcToken,
+  parseJwks,
+  fetchGithubJwks,
+  resetJwksCacheForTests,
   GITHUB_JWKS_URL,
   type Jwks,
 } from "../src/auth.ts";
@@ -131,6 +134,8 @@ describe("OIDC verification", () => {
   });
 
   test("rejects a repo outside the allowlist", async () => {
+    // The pre-rename spelling is exactly such a repo now (#6940):
+    // only the canonical dezren39/darwin-nix is allowlisted.
     const token = signJwt({ ...baseClaims, repository: "dezren39/nix" });
     await expect(verifyOidcToken(token, oidcOpts)).rejects.toThrow(/allowlist/);
   });
@@ -141,7 +146,7 @@ describe("cross-repo grants (assertCallerRepo)", () => {
     "developing-today/code",
     "developing-today/opencode",
     "developing-today/openchamber",
-    "dezren39/nix",
+    "dezren39/darwin-nix",
     "developing-today/zettel",
     "dezren39/dezren39",
   ];
@@ -155,10 +160,10 @@ describe("cross-repo grants (assertCallerRepo)", () => {
     expect(() => assertCallerRepo(openchamberCaller, "developing-today/opencode", allowlist)).not.toThrow();
   });
 
-  test("cross-repo allowed: a zettel token may target dezren39/dezren39 and dezren39/nix", () => {
+  test("cross-repo allowed: a zettel token may target dezren39/dezren39 and dezren39/darwin-nix", () => {
     const zettelCaller = { type: "oidc" as const, repository: "developing-today/zettel", actor: "dezren39" };
     expect(() => assertCallerRepo(zettelCaller, "dezren39/dezren39", allowlist)).not.toThrow();
-    expect(() => assertCallerRepo(zettelCaller, "dezren39/nix", allowlist)).not.toThrow();
+    expect(() => assertCallerRepo(zettelCaller, "dezren39/darwin-nix", allowlist)).not.toThrow();
   });
 
   test("same-repo still allowed", () => {
@@ -176,7 +181,7 @@ describe("cross-repo grants (assertCallerRepo)", () => {
 
   test("bearer callers are unaffected by caller/target repo pairing: an allowlisted target passes", () => {
     expect(() => assertCallerRepo({ type: "bearer" }, "developing-today/opencode", allowlist)).not.toThrow();
-    expect(() => assertCallerRepo({ type: "bearer" }, "dezren39/nix", allowlist)).not.toThrow();
+    expect(() => assertCallerRepo({ type: "bearer" }, "dezren39/darwin-nix", allowlist)).not.toThrow();
   });
 
   test("bearer callers are rejected for a non-allowlisted target", () => {
@@ -191,5 +196,68 @@ describe("GitHub JWKS URL (code#4886)", () => {
   // document (/.well-known/openid-configuration on the issuer).
   test("matches the discovery document jwks_uri (no .json suffix)", () => {
     expect(GITHUB_JWKS_URL).toBe("https://token.actions.githubusercontent.com/.well-known/jwks");
+  });
+});
+
+describe("JWKS body shape (#7565)", () => {
+  const malformed: Array<[string, unknown]> = [
+    ["null body", null],
+    ["empty object", {}],
+    ["string body", "x"],
+    ["keys is a string", { keys: "x" }],
+    ["keys is a number", { keys: 42 }],
+    ["keys contains null", { keys: [null] }],
+    ["keys contains a number", { keys: [42] }],
+  ];
+
+  for (const [name, value] of malformed) {
+    test(`verifyOidcToken rejects a malformed JWKS (${name}) as AuthError, not a raw TypeError`, async () => {
+      const token = signJwt(baseClaims);
+      const badSource = async () => value as Jwks;
+      await expect(verifyOidcToken(token, { ...oidcOpts, jwksSource: badSource })).rejects.toBeInstanceOf(AuthError);
+    });
+    test(`parseJwks rejects ${name}`, () => {
+      expect(() => parseJwks(value)).toThrow(AuthError);
+    });
+  }
+
+  test("parseJwks accepts a well-formed JWKS", () => {
+    expect(parseJwks(jwks)).toEqual(jwks);
+  });
+
+  test("fetchGithubJwks rejects a non-JSON 200 body as AuthError and does not cache it", async () => {
+    resetJwksCacheForTests();
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return {
+        ok: true,
+        json: async () => {
+          throw new SyntaxError("Unexpected token < in JSON");
+        },
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    try {
+      await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
+      await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
+      expect(calls).toBe(2); // a failed fetch is never cached: each call re-fetches
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetJwksCacheForTests();
+    }
+  });
+
+  test("fetchGithubJwks rejects a wrong-shape 200 body as AuthError", async () => {
+    resetJwksCacheForTests();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      ({ ok: true, json: async () => ({}) }) as unknown as Response) as unknown as typeof fetch;
+    try {
+      await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetJwksCacheForTests();
+    }
   });
 });

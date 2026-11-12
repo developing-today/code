@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/homeutil"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/plugin/opencode/skills"
 	"io"
@@ -69,6 +70,11 @@ type App struct {
 	// Used by the MCP server, which must return what a script produced
 	// rather than write it to a stream the host is parsing as protocol.
 	stdoutOverride interface{ Write([]byte) (int, error) }
+	// environ is the environment Run was invoked with, recorded at the
+	// entrypoint for stage 2 of #1980 (threading it through ResolvePaths,
+	// settings.Environ and the plumbing source). Nil when the App was
+	// built directly; Environ() then falls back to os.Environ().
+	environ Env
 	settingsState
 }
 
@@ -148,7 +154,7 @@ func (a *App) CmdLs(ctx context.Context, args []string) error {
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAMESPACE\tTOOLS\tSHARING\tSCOPE\tLIVE\tSTATE\tDESCRIPTION")
+	_, _ = fmt.Fprintln(tw, "NAMESPACE\tTOOLS\tSHARING\tSCOPE\tLIVE\tSTATE\tDESCRIPTION")
 	broken := 0
 	for _, n := range nss {
 		state := "ready"
@@ -165,10 +171,10 @@ func (a *App) CmdLs(ctx context.Context, args []string) error {
 		if n.Error != "" {
 			desc = truncate(oneLine(n.Error), 60)
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%s\t%s\n",
 			n.Namespace, n.Tools, n.Sharing, n.Scope, n.Live, state, desc)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	if *verbose {
 		fmt.Println()
@@ -360,7 +366,7 @@ func (a *App) CmdSearch(ctx context.Context, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "CALL\tNATIVE\tDESCRIPTION")
+	_, _ = fmt.Fprintln(tw, "CALL\tNATIVE\tDESCRIPTION")
 	for _, h := range hits {
 		call, native := h.Call, h.Native
 		if call == "" {
@@ -369,18 +375,18 @@ func (a *App) CmdSearch(ctx context.Context, args []string) error {
 			call = "tools." + h.Function + "(args)"
 			native = strings.Replace(h.Function, ".", "_", 1)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", call, native, truncate(oneLine(h.Description), 90))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", call, native, truncate(oneLine(h.Description), 90))
 		if *explain {
 			for _, ts := range h.Explain {
 				field := ts.Field
 				if field == "" {
 					field = "no match"
 				}
-				fmt.Fprintf(tw, "  \t%s\t%s +%d\n", ts.Term, field, ts.Points)
+				_, _ = fmt.Fprintf(tw, "  \t%s\t%s +%d\n", ts.Term, field, ts.Points)
 			}
 		}
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 
@@ -682,6 +688,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	// enum with three values is not two booleans.
 	remote := fs.Bool("remote", false, "run the script on the daemon rather than here")
 	local := fs.Bool("local", false, "run the script in this process (the default when the daemon is local)")
+	remoteFile := fs.Bool("remote-file", false,
+		"with --remote, send the script's name and let the daemon resolve it on its own script search path (#2168), instead of sending the file's text")
 	// parseFlags binds everything the registry declares for this command that
 	// the hand-written flags above have not already claimed, then folds what
 	// was given into the resolved settings.
@@ -802,6 +810,12 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if werr != nil {
 		return werr
 	}
+	if *remoteFile && inline {
+		return errors.New("--remote-file names a script for the daemon to resolve; inline source has no name to resolve")
+	}
+	if *remoteFile && !elsewhere {
+		return errors.New("--remote-file asks the daemon to resolve the script name, so it only applies to a remote run; drop it, or add --remote")
+	}
 	// One identifier for this execution, used by the artifact index to group
 	// what the script produced and by a stream consumer to name the run.
 	runID := execsvc.NewRunID()
@@ -850,7 +864,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if elsewhere {
 		return a.execOnDaemon(ctx, c, fs, inline, ns, sessionKey, eo,
 			execRemoteFlags{timeout: *timeout, runtime: *rt, permissions: *perms,
-				export: *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag})
+				export: *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag,
+				remoteFile: *remoteFile})
 	}
 	// This process is about to start the script, so it checks first. The
 	// daemon would refuse a script it was asked to run; this one is not asked.
@@ -949,7 +964,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		filepath.Join(a.Paths.State, "logs")); dir != "" && set.Bool("logging.file") {
 		if sink, serr := logging.NewFileSink(fileOptions(set, dir)); serr == nil {
 			writer = writer.WithFile(sink, slog.LevelDebug)
-			defer sink.Close()
+			defer func() { _ = sink.Close() }()
 		}
 	}
 
@@ -965,7 +980,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if !a.JSON && eo.Output == execsvc.OutputText {
 		stdout := io.Writer(os.Stdout)
 		onResult = func(v logging.Streamed) {
-			fmt.Fprintln(stdout, string(v.Value))
+			_, _ = fmt.Fprintln(stdout, string(v.Value))
 		}
 	}
 
@@ -1061,6 +1076,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		opts.Env["MCPX_TRANSPORT_BEARER_TOKEN"] = tok
 	}
 	opts.TypeCheck = shape.typecheck
+	opts.TypeCheckOnError = shape.checkOnError
+	opts.TypeCheckOnUnsupported = shape.checkOnUnsupported
 	opts.Imports = shape.imports
 	opts.ImportsOnDynamic = shape.importsOnDynamic
 	opts.ImportsOnMissing = shape.importsOnMissing
@@ -1106,7 +1123,6 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 				fmt.Fprintln(os.Stderr, "mcpx: script had fatal diagnostics; automatically repaired and verified with model provider")
 				opts.Source = diagRes.Repaired
 				opts.File = ""
-				diagSource = opts.Source
 			} else {
 				return derr
 			}
@@ -1141,7 +1157,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	var store *artifacts.Store
 	if st, serr := a.localStore(); serr == nil {
 		store = st
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 	} else if eo.ArtifactsDir != "" {
 		// Only worth failing for when the caller actually asked for files.
 		return serr
@@ -1188,7 +1204,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 			return err
 		}
 		if res.ExitCode != 0 {
-			os.Exit(res.ExitCode)
+			return &exitStatusError{code: res.ExitCode}
 		}
 		return nil
 	}
@@ -1228,7 +1244,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		a.reportArtifacts(res)
 	}
 	if res.ExitCode != 0 {
-		os.Exit(res.ExitCode)
+		return &exitStatusError{code: res.ExitCode}
 	}
 	return nil
 }
@@ -1456,13 +1472,13 @@ func (a *App) CmdStatus(ctx context.Context, args []string) error {
 	_ = json.Unmarshal(b, &servers)
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAMESPACE\tSHARING\tSCOPE\tLIVE/MAX\tTOOLS\tSCHEMA\tERROR")
+	_, _ = fmt.Fprintln(tw, "NAMESPACE\tSHARING\tSCOPE\tLIVE/MAX\tTOOLS\tSCHEMA\tERROR")
 	for _, s := range servers {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d/%d\t%d\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d/%d\t%d\t%s\t%s\n",
 			s.Namespace, s.Sharing, s.Scope, s.Live, s.Max, s.Tools, s.SchemaAge,
 			truncate(oneLine(s.LastError), 50))
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	any := false
 	for _, s := range servers {
@@ -1473,14 +1489,14 @@ func (a *App) CmdStatus(ctx context.Context, args []string) error {
 	if any {
 		fmt.Println()
 		tw = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "INSTANCE\tPID\tHOLDERS\tCALLS\tUPTIME\tIDLE\tKEY")
+		_, _ = fmt.Fprintln(tw, "INSTANCE\tPID\tHOLDERS\tCALLS\tUPTIME\tIDLE\tKEY")
 		for _, s := range servers {
 			for _, in := range s.Instances {
-				fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%ds\t%ds\t%s\n",
+				_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%ds\t%ds\t%s\n",
 					in.ID, in.PID, in.Holders, in.Calls, in.UptimeSec, in.IdleSec, truncate(in.Key, 28))
 			}
 		}
-		tw.Flush()
+		_ = tw.Flush()
 	}
 	return nil
 }
@@ -1760,11 +1776,11 @@ func (a *App) CmdDaemons(ctx context.Context, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PID\tRUNNING\tSTARTED\tCONFIG")
+	_, _ = fmt.Fprintln(tw, "PID\tRUNNING\tSTARTED\tCONFIG")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%d\t%v\t%s\t%s\n", r.PID, r.Running, r.Started, r.Config)
+		_, _ = fmt.Fprintf(tw, "%d\t%v\t%s\t%s\n", r.PID, r.Running, r.Started, r.Config)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 
@@ -1780,7 +1796,10 @@ func (a *App) CmdInit(ctx context.Context, args []string) error {
 	}
 	path := ".mcpx.json"
 	if *global {
-		home, _ := os.UserHomeDir()
+		home, err := homeutil.Home()
+		if err != nil {
+			return err
+		}
 		path = filepath.Join(home, ".config", "mcpx", "config.json")
 	}
 	if _, err := os.Stat(path); err == nil && !*force {
@@ -1888,15 +1907,15 @@ func (a *App) CmdScripts(ctx context.Context, args []string) error {
 		return a.out(entries)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tDESCRIPTION\tPATH")
+	_, _ = fmt.Fprintln(tw, "NAME\tDESCRIPTION\tPATH")
 	for _, e := range entries {
 		name := e.Name
 		if e.Shadowed {
 			name += " (shadowed)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", name, truncate(oneLine(e.Summary), 54), e.Path)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", name, truncate(oneLine(e.Summary), 54), e.Path)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	fmt.Println("\nRun one with: mcpx run <name>")
 	return nil
 }
@@ -1975,36 +1994,55 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 			return a.out(available)
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "SKILL\tDESCRIPTION")
+		_, _ = fmt.Fprintln(tw, "SKILL\tDESCRIPTION")
 		for _, s := range available {
-			fmt.Fprintf(tw, "%s\t%s\n", s.Name, truncate(oneLine(s.Description), 60))
+			_, _ = fmt.Fprintf(tw, "%s\t%s\n", s.Name, truncate(oneLine(s.Description), 60))
 		}
-		tw.Flush()
+		_ = tw.Flush()
 		fmt.Println("\nInstall with: mcpx skills install [--agent opencode|claude|codex|agy] [--to <dir>]")
 		return nil
 	}
 
 	if subcmd == "install" {
 		dest := toDir
+		globalDest := func(parts ...string) (string, error) {
+			home, err := homeutil.Home()
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(append([]string{home}, parts...)...), nil
+		}
 		if dest == "" {
 			switch agent {
 			case "claude":
 				if st, err := os.Stat(".claude"); err == nil && st.IsDir() {
 					dest = ".claude/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".claude", "skills")
+					gd, err := globalDest(".claude", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			case "codex":
 				if st, err := os.Stat(".codex"); err == nil && st.IsDir() {
 					dest = ".codex/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".codex", "skills")
+					gd, err := globalDest(".codex", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			case "agy":
 				if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
 					dest = ".agents/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".gemini", "antigravity", "skills")
+					gd, err := globalDest(".gemini", "antigravity", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			default:
 				if st, err := os.Stat(".opencode"); err == nil && st.IsDir() {
@@ -2012,7 +2050,11 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 				} else if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
 					dest = ".agents/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".config", "opencode", "skills")
+					gd, err := globalDest(".config", "opencode", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			}
 		}
@@ -2310,18 +2352,18 @@ type scriptFlags struct {
 type scriptShape struct {
 	// hooks carries the autonomy gate so the caller can report which
 	// configured phases were withheld, and why.
-	hooks                      *hookGate
-	env                        map[string]string
-	typecheck                  string
-	imports, importsOnDynamic  string
-	importsOnMissing           string
-	importsCrossProject        string
-	importsNetwork             string
-	launcher, launcherName     string
-	allowRepeat                []string
-	captureConsole             bool
-	prefix, suffix             []string
-	before, onSuccess, onError []string
+	hooks                                       *hookGate
+	env                                         map[string]string
+	typecheck, checkOnError, checkOnUnsupported string
+	imports, importsOnDynamic                   string
+	importsOnMissing                            string
+	importsCrossProject                         string
+	importsNetwork                              string
+	launcher, launcherName                      string
+	allowRepeat                                 []string
+	captureConsole                              bool
+	prefix, suffix                              []string
+	before, onSuccess, onError                  []string
 }
 
 // inlineSource splices prefix and suffix lines around a snippet. A snippet is
@@ -2425,6 +2467,8 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	// Read the canonical setting after resolution so legacy path, variable,
 	// and flag spellings all pass through the same value normalization.
 	sh.typecheck = a.Settings().String("script.check")
+	sh.checkOnError = a.Settings().String("script.checkOnError")
+	sh.checkOnUnsupported = a.Settings().String("script.checkOnUnsupported")
 
 	// No short flag spelling: the registry value is the whole story, from
 	// the generated --script-imports flag, a variable, or the config file.

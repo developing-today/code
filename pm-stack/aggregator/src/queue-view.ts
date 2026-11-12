@@ -3,7 +3,7 @@
 // It owns no persistence or new feed contract.
 import { DONE_BOARD_WINDOW_MS, isRetiredDoneTableTitle } from "./board-policy.ts";
 import type { BoardItem, GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
-import { refUrl } from "./model.ts";
+import { isValidRef, refUrl } from "./model.ts";
 import { FEED_STALE_MS } from "./feed.ts";
 import type { HealthView } from "./health.ts";
 
@@ -14,7 +14,7 @@ export interface QueueRow {
   url?: string;
   repo: string;
   area?: string;
-  epic?: { ref: RefKey; title: string; url: string };
+  epic?: { ref: RefKey; title: string; url?: string };
   status: string;
   updatedAt?: string;
   ageDays?: number;
@@ -77,8 +77,6 @@ const HORIZON_ORDER: Record<string, number> = {
   quarter: 4,
   incoming: 5,
 };
-const PRIORITY_ORDER: Record<string, number> = { urgent: 0, critical: 0, high: 1, normal: 2, medium: 2, low: 3 };
-
 function norm(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase().replace(/[ _]+/g, "-");
 }
@@ -110,7 +108,8 @@ export function buildQueueView(input: QueueViewInput): QueueView {
     const ref = poolItem?.epicRef;
     if (!ref) return undefined;
     const parent = poolByRef.get(ref);
-    return { ref, title: parent?.title ?? ref, url: parent?.issueUrl ?? parent?.url ?? refUrl(ref) };
+    const url = parent?.issueUrl ?? parent?.url ?? (isValidRef(ref) ? refUrl(ref) : undefined);
+    return { ref, title: parent?.title ?? ref, ...(url ? { url } : {}) };
   };
   const row = (args: {
     ref?: RefKey;
@@ -136,7 +135,11 @@ export function buildQueueView(input: QueueViewInput): QueueView {
       id: args.id ?? (args.ref ? `gh:${args.ref}` : `${repo}:${args.title}`),
       title: args.title,
       ...(args.ref ? { ref: args.ref } : {}),
-      url: projectItem?.issueUrl ?? ghItem?.url ?? args.url ?? (args.ref ? refUrl(args.ref, ghItem?.kind) : undefined),
+      url:
+        projectItem?.issueUrl ??
+        ghItem?.url ??
+        args.url ??
+        (args.ref && isValidRef(args.ref) ? refUrl(args.ref, ghItem?.kind) : undefined),
       repo,
       ...(projectItem?.area ? { area: projectItem.area } : {}),
       ...(parent ? { epic: parent } : {}),
@@ -319,14 +322,13 @@ export function buildQueueView(input: QueueViewInput): QueueView {
       ),
   ]);
 
-  const nextCandidates: { row: QueueRow; horizonRank: number; priorityRank: number; sequence: number }[] = [];
+  const nextCandidates: { row: QueueRow; horizonRank: number; sequence: number }[] = [];
   let sequence = 0;
-  const addNext = (args: Parameters<typeof row>[0], horizon?: string, priority?: string) => {
+  const addNext = (args: Parameters<typeof row>[0], horizon?: string) => {
     const normalizedHorizon = norm(horizon);
     nextCandidates.push({
       row: row({ ...args, horizon: horizon ?? args.horizon }),
       horizonRank: HORIZON_ORDER[normalizedHorizon] ?? 5,
-      priorityRank: PRIORITY_ORDER[norm(priority)] ?? 2,
       sequence: sequence++,
     });
   };
@@ -387,7 +389,7 @@ export function buildQueueView(input: QueueViewInput): QueueView {
   }
   const nextUp = unique(
     nextCandidates
-      .sort((a, b) => a.horizonRank - b.horizonRank || a.priorityRank - b.priorityRank || a.sequence - b.sequence)
+      .sort((a, b) => a.horizonRank - b.horizonRank || a.sequence - b.sequence)
       .map((candidate) => candidate.row),
   );
 
