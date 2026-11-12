@@ -1,6 +1,12 @@
 //! fleet-dispatch-test — the dispatch-test domain of the fleet
 //! multicall binary (design: developing-today/code#6580).
 //!
+//! Pagination contract (#6622): the paged reads in this crate are
+//! complete, bounded, or say so — the cursor is validated where
+//! read, the volume is bounded with an error naming the listing,
+//! and truncation is never silent. Closing inventory:
+//! doc/pagination-contract-inventory-2026-11-12.md (#6623).
+//!
 //! An explicit-dispatch CI test surface over GitHub Actions:
 //!
 //!   fleet dispatch-test scan    count active Actions jobs in each

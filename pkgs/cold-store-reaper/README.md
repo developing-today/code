@@ -367,3 +367,13 @@ CI runs these suites — plus the worker local proof (`npm test` in
 `worker/`) — on every pull request and push to `main` that touches
 `pkgs/cold-store-reaper/**`, via `.github/workflows/cold-store-reaper.yml`
 (#1427). The command above remains the way to run them locally.
+
+## Pagination contract (#6622)
+
+Paged reads in this system follow the fleet pagination contract — a
+paged read is **complete, bounded, or says so**: (1) the cursor is
+validated where read (type first, then progress); (2) the volume is
+bounded, and breaching the bound is an error naming the listing;
+(3) truncation is never silent — the read completes, fails closed,
+or marks the truncation in its output. Closing inventory:
+ (#6623).

@@ -9,6 +9,17 @@
 //! grants anything: the join capability inside the session is the only
 //! authority over a world.
 //!
+//! ## Pagination contract (#6622)
+//!
+//! The paged reads in this module follow the fleet pagination
+//! contract — a paged read is complete, bounded, or says so:
+//! (1) the cursor is validated where read (type first, then
+//! progress); (2) the volume is bounded, and breaching the bound is
+//! an error naming the listing; (3) truncation is never silent — the
+//! read completes, fails closed, or marks the truncation in its
+//! output. Closing inventory:
+//! doc/pagination-contract-inventory-2026-11-12.md (#6623).
+//!
 //! ## The validated-reply contract (#6669)
 //!
 //! Every `WorldClient` reply extraction in this module follows one
