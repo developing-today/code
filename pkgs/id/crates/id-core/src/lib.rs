@@ -24,6 +24,7 @@ pub mod abuse;
 pub mod access;
 pub mod block_list;
 pub mod boundary;
+pub mod boundary_surfaces;
 pub mod connectivity;
 pub mod discovery;
 pub mod frames;
