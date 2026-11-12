@@ -506,6 +506,7 @@ dependencies = [
  "fleet-secrets",
  "libc",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]
