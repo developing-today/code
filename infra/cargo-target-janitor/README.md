@@ -63,6 +63,25 @@ numeric `~/git/fleet/target-<task-id>` ad-hoc targets.
   violating the safety exclusions. A maximum of 20 exact target paths is
   handled per run, so subsequent hourly runs continue eligible cleanup.
 
+## Pagination contract (design #6622, closing inventory #6623)
+
+A paged read is complete, bounded, or says so (design #6622, closing
+inventory #6623):
+1. The cursor is validated where read — its type first (where the
+   protocol's terminator is null, a present-but-non-string cursor is
+   malformed, never end-of-pages) and its progress second (the
+   cursor must advance under the protocol's rule).
+2. The volume is bounded — every page loop carries a page, result,
+   or byte bound whose breach is an error naming the listing.
+3. Truncation is never silent — a read that stops short either
+   paginates to completion (or counts via the source's own total),
+   fails closed, or marks the truncation explicitly in its output.
+
+This tool's liveness reads carry the fail-closed form: the
+claimed-task and open-PR-branch reads paginate to completion and
+raise on a full page at the cap (`MAX_PR_PAGES`) rather than
+presenting a page as the set (#6618).
+
 ## Run and schedule
 
 From the laptop:

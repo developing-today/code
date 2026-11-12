@@ -1,6 +1,25 @@
 //! fleet-dispatch-test — the dispatch-test domain of the fleet
 //! multicall binary (design: developing-today/code#6580).
 //!
+//! ## Pagination contract (#6622)
+//!
+//! A paged read is complete, bounded, or says so (design #6622, closing
+//! inventory #6623):
+//! 1. The cursor is validated where read — its type first (where the
+//!    protocol's terminator is null, a present-but-non-string cursor is
+//!    malformed, never end-of-pages) and its progress second (the
+//!    cursor must advance under the protocol's rule).
+//! 2. The volume is bounded — every page loop carries a page, result,
+//!    or byte bound whose breach is an error naming the listing.
+//! 3. Truncation is never silent — a read that stops short either
+//!    paginates to completion (or counts via the source's own total),
+//!    fails closed, or marks the truncation explicitly in its output.
+//!
+//! The scan carries it as: `fetch_all_pages` reads each list to
+//! completion under `MAX_PAGES`, past which the read errors instead
+//! of presenting a page-bound count as exact; the queued-runs term
+//! counts via the source's `total_count` (#6605).
+//!
 //! An explicit-dispatch CI test surface over GitHub Actions:
 //!
 //!   fleet dispatch-test scan    count active Actions jobs in each
