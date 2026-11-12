@@ -608,3 +608,109 @@ test("an uninstalled lib checkout dependency is installed and the OpenDesign kee
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a folded OpenAI answer under the pre-rename 'codex' spelling keys its heartbeat leg '_openai'", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gather-quota-openai-hb-"));
+
+  try {
+    const currentPath = join(dir, "quota-current.json");
+    const heartbeatPath = join(dir, "quota-gatherer-heartbeat.json");
+    const statePath = join(dir, "quota-gatherer-state.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const outboxPath = join(dir, "snapshots.outbox.jsonl");
+    const subcommandPath = join(dir, "quota-subcommand.mjs");
+    const win = (usedPercent: number, windowSeconds: number) => ({
+      usedPercent,
+      remainingPercent: 100 - usedPercent,
+      windowSeconds,
+      resetAt: 1794364348000,
+    });
+    const fetchedAt = Date.parse("2026-11-12T06:30:00.000Z");
+    // The deployed fork's shape today: the folded door answers both
+    // OpenAI credentials under the pre-rename providerId "codex", and
+    // the same two credentials again under their own door ids.
+    const results = [
+      {
+        providerId: "codex",
+        providerName: "OpenAI Alternate (Student - popesdrew)",
+        ok: true,
+        configured: true,
+        fetchedAt,
+        credentialId: "cred_alt",
+        credentialLabel: "OpenAI Alternate (Student - popesdrew)",
+        usage: { windows: { "5h": win(42, 18_000), weekly: win(65, 604_800) } },
+      },
+      {
+        providerId: "codex",
+        providerName: "OpenAI Main (drewrypope)",
+        ok: true,
+        configured: true,
+        fetchedAt,
+        credentialId: "cred_main",
+        credentialLabel: "OpenAI Main (drewrypope)",
+        usage: { windows: { weekly: win(17, 604_800) } },
+      },
+      {
+        providerId: "_openai.alt",
+        providerName: "OpenAI Self-Contained Alt (popesdrew, no Codex)",
+        ok: true,
+        configured: true,
+        fetchedAt,
+        credentialId: "cred_alt",
+        credentialLabel: "OpenAI Alternate (Student - popesdrew)",
+        usage: { windows: { "5h": win(42, 18_000), weekly: win(65, 604_800) } },
+      },
+      {
+        providerId: "_openai.main",
+        providerName: "OpenAI Self-Contained (drewrypope, no Codex)",
+        ok: true,
+        configured: true,
+        fetchedAt,
+        credentialId: "cred_main",
+        credentialLabel: "OpenAI Main (drewrypope)",
+        usage: { windows: { weekly: win(17, 604_800) } },
+      },
+    ];
+    await writeFile(subcommandPath, `console.log(${JSON.stringify(JSON.stringify(results))});\n`, "utf8");
+
+    const result = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        QUOTA_CURRENT_PATH: currentPath,
+        QUOTA_HEARTBEAT_PATH: heartbeatPath,
+        QUOTA_GATHERER_STATE_PATH: statePath,
+        QUOTA_SNAPSHOTS_DIR: snapshotsDir,
+        USAGE_SNAPSHOT_OUTBOX_PATH: outboxPath,
+        QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+        QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+        OPENDESIGN_RENEWAL_DISABLED: "1",
+        META_RENEWAL_DISABLED: "1",
+        SUPABASE_QUOTA_SINK: "0",
+        OPENCHAMBER_LIB_DIR: join(dir, "fake-openchamber-lib"),
+      },
+    });
+
+    if (result.error || result.status !== 0) {
+      throw new Error(`gatherer failed: ${result.error?.message ?? result.stderr}\n${result.stdout}`);
+    }
+
+    const output = JSON.parse(await readFile(currentPath, "utf8"));
+    // The folded pool's heartbeat leg reads under the canonical door
+    // id — the id its entries carry and consumers look up — and the
+    // pre-rename spelling is gone from the heartbeat. The per-door
+    // legs keep their own keys: the rename touches nothing else.
+    expect(output.heartbeat.perProvider._openai).toMatchObject({ state: "ok", rows: 2 });
+    expect(output.heartbeat.perProvider.codex).toBeUndefined();
+    expect(output.heartbeat.perProvider["_openai.main"]).toMatchObject({ state: "ok", rows: 1 });
+    expect(output.heartbeat.perProvider["_openai.alt"]).toMatchObject({ state: "ok", rows: 1 });
+    // The folded entries themselves file under the two doors, as before.
+    const folded = output.providers.filter((e: { providerId: string }) => e.providerId === "_openai");
+    expect(folded.map((e: { serviceId: string }) => e.serviceId).sort()).toEqual(["_openai.alt", "_openai.main"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
