@@ -79,3 +79,42 @@ func TestMissingSocketIsReported(t *testing.T) {
 		t.Fatal("expected an error for a socket nobody listens on")
 	}
 }
+
+// TestSendFailsFastWhenTheSocketIsNotDrained is the #5428 regression:
+// a bound-but-never-read notify socket must not make Send block until
+// the caller's own timeout (1800s in the fleet-build container, where
+// a fresh sender's write to a full abstract-socket queue blocks). On
+// kernels where a fresh sender's datagram is delivered despite the
+// full queue, the blocking path cannot be exercised and the test
+// skips with that reason.
+func TestSendFailsFastWhenTheSocketIsNotDrained(t *testing.T) {
+	name := fmt.Sprintf("@mcpx-sdnotify-full-%d-%d", os.Getpid(), time.Now().UnixNano())
+	listen(t, name)
+	t.Setenv("NOTIFY_SOCKET", name)
+
+	// Fill the listener's receive queue: datagrams nobody reads.
+	spam, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: name, Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = spam.Close() }()
+	payload := make([]byte, 8192)
+	for i := 0; i < 8192; i++ {
+		_ = spam.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+		if _, err := spam.Write(payload); err != nil {
+			break // queue full
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- Ready() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Skip("kernel delivered a fresh sender's datagram despite the full queue; the blocking path is not exercisable here")
+		}
+		// An error is the pass: Send failed fast instead of hanging.
+	case <-time.After(20 * time.Second):
+		t.Fatal("Send blocked on an undrained socket past its deadline (#5428)")
+	}
+}
