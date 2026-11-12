@@ -13,6 +13,7 @@
   libnotify,
   libstartup_notification,
   libwnck3,
+  libxcursor,
   libxml2,
   libxslt,
   makeWrapper,
