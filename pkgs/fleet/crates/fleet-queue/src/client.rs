@@ -3898,8 +3898,30 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                 }
             }
             crate::merge_intent::ReplayAction::Push => {
-                if let Err(e) = replay_run(&dir, "git", &replay_args(&["push", "origin", &branch]))
-                {
+                // Already-published branches (Codex P2, PR #8849,
+                // comment 4546983376): a rebase earlier in this
+                // replay can rewrite commits already on the remote,
+                // and a plain push then rejects the non-fast-forward
+                // update on every retry, forever. Publish those with
+                // --force-with-lease (refuses if the remote moved
+                // since our fetch); unpublished branches keep the
+                // plain push.
+                let published = replay_run(
+                    &dir,
+                    "git",
+                    &replay_args(&["ls-remote", "--exit-code", "--heads", "origin", &branch]),
+                )
+                .is_ok();
+                let push = if published {
+                    replay_run(
+                        &dir,
+                        "git",
+                        &replay_args(&["push", "--force-with-lease", "origin", &branch]),
+                    )
+                } else {
+                    replay_run(&dir, "git", &replay_args(&["push", "origin", &branch]))
+                };
+                if let Err(e) = push {
                     return transient_exit(step, e, &landed);
                 }
             }
@@ -3972,18 +3994,50 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                 // states, and an already-MERGED PR here is success,
                 // not a merge to re-attempt (re-attempting fails and
                 // would block the rest of the stack forever).
-                let pr_state = replay_run(
+                let pr_view = replay_run(
                     &dir,
                     "gh",
-                    &replay_args(&["pr", "view", &pr_s, "--repo", &repo, "--json", "state"]),
+                    &replay_args(&[
+                        "pr",
+                        "view",
+                        &pr_s,
+                        "--repo",
+                        &repo,
+                        "--json",
+                        "state,baseRefName",
+                    ]),
                 )
                 .ok()
-                .and_then(|out| serde_json::from_str::<Value>(&out).ok())
-                .and_then(|v| {
-                    v.get("state")
-                        .and_then(|s| s.as_str())
-                        .map(|s| s.to_string())
-                });
+                .and_then(|out| serde_json::from_str::<Value>(&out).ok());
+                let pr_field = |name: &str| {
+                    pr_view
+                        .as_ref()
+                        .and_then(|v| v.get(name))
+                        .and_then(|f| f.as_str())
+                        .map(|f| f.to_string())
+                };
+                let pr_state = pr_field("state");
+                // Base validation (Codex P1, PR #8849, comment
+                // 4546983383): a reused PR recorded from the stack
+                // may still target its parent branch; merging it
+                // would land the changes into that branch, not
+                // main, while Land records success. Retarget to
+                // main before merging.
+                if pr_state.as_deref() != Some("MERGED")
+                    && pr_field("baseRefName").as_deref() != Some("main")
+                {
+                    if let Err(e) = replay_run(
+                        &dir,
+                        "gh",
+                        &replay_args(&["pr", "edit", &pr_s, "--repo", &repo, "--base", "main"]),
+                    ) {
+                        return transient_exit(
+                            step,
+                            format!("retargeting reused PR #{pr} to base main failed: {e}"),
+                            &landed,
+                        );
+                    }
+                }
                 if pr_state.as_deref() == Some("MERGED") {
                     // Fall through to Land: the merge already
                     // happened; recording it is the remaining step.
@@ -4022,6 +4076,26 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                         );
                     }
                     return transient_exit(step, e, &landed);
+                }
+                // Refresh main after each merge (Codex P2, PR
+                // #8849, comment 4546983362): the next intent
+                // rebases onto origin/main, which must already
+                // contain this just-landed parent — rebasing onto
+                // the pre-replay tip replays the parent's commits
+                // and can conflict falsely. A fetch failure here is
+                // resumable: the PR is merged, the intent is still
+                // replaying, and the Merge arm's already-MERGED
+                // reconciliation lands it on the next pass.
+                if let Err(e) =
+                    replay_run(&dir, "git", &replay_args(&["fetch", "origin", "main"]))
+                {
+                    return transient_exit(
+                        step,
+                        format!(
+                            "PR #{pr} merged but refreshing origin/main before the next intent failed: {e}"
+                        ),
+                        &landed,
+                    );
                 }
             }
             crate::merge_intent::ReplayAction::Land => {
