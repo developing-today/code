@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
+import { advanceHostViewCursor, HOST_VIEW_MAX_PAGES, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
 
 // Oracle: the server contracts in pkgs/id/src/web/world_ws.rs —
 // HostViewResponse (all fields always present; snapshot/view/surface/
@@ -92,5 +92,30 @@ describe("parseWorldInviteResponse", () => {
       capability: "cap-abc-123",
       display_name: null,
     });
+  });
+});
+
+describe("advanceHostViewCursor (#9043)", () => {
+  it("ends paging on a null cursor (control)", () => {
+    expect(advanceHostViewCursor({ previous: null, next: null, page: 1 })).toBeNull();
+    expect(advanceHostViewCursor({ previous: "a", next: null, page: 2 })).toBeNull();
+  });
+
+  it("passes an advancing cursor through (control)", () => {
+    expect(advanceHostViewCursor({ previous: null, next: "a", page: 1 })).toBe("a");
+    expect(advanceHostViewCursor({ previous: "a", next: "b", page: 2 })).toBe("b");
+  });
+
+  it("refuses a cursor that repeats the one just requested", () => {
+    expect(() => advanceHostViewCursor({ previous: "a", next: "a", page: 2 })).toThrow(
+      /^Host view unavailable: records cursor did not advance/,
+    );
+  });
+
+  it("refuses to page past the named bound even with advancing cursors", () => {
+    expect(() =>
+      advanceHostViewCursor({ previous: "a", next: "b", page: HOST_VIEW_MAX_PAGES }),
+    ).toThrow(/^Host view unavailable: records paging exceeded/);
+    expect(advanceHostViewCursor({ previous: "a", next: "b", page: HOST_VIEW_MAX_PAGES - 1 })).toBe("b");
   });
 });
