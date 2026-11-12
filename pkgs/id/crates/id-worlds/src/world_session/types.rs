@@ -245,6 +245,15 @@ pub(crate) enum ClientFrame {
     Chat {
         text: String,
     },
+    /// Submit an answer from a trusted form presenter on this joined session.
+    /// The actor checks session authority, the pending form id, and its
+    /// host-generated presentation token before accepting the values.
+    FormResult {
+        form_id: String,
+        presentation_token: String,
+        action: String,
+        values: serde_json::Map<String, serde_json::Value>,
+    },
     /// Joined: mint a capability with a subset of this session's scopes. A
     /// delegation carries no use count.
     Attenuate {
@@ -322,6 +331,18 @@ pub(crate) enum ServerFrame<'a> {
     },
     Event {
         event: &'a WorldEvent,
+    },
+    /// Acknowledges a deferred form answer; on field validation failure the
+    /// fresh token lets the trusted presenter show the pending form again.
+    FormResultStatus {
+        form_id: &'a str,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        presentation_token: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<&'a str>,
     },
     /// Host-rendered presentation for the participant's adapter.
     View {

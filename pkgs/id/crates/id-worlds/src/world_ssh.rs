@@ -83,6 +83,8 @@ const ALT_SCREEN_ENTER: &str = "\x1b[?1049h";
 const ALT_SCREEN_LEAVE: &str = "\x1b[?1049l";
 /// Input bytes dropped before the session tells the viewer about it.
 const INPUT_DROP_NOTICE_BYTES: usize = 1024;
+/// Largest line the terminal presenter will accept for one form response.
+const MAX_FORM_RESPONSE_BYTES: usize = crate::world_caps::MAX_EVENT_BYTES;
 /// ALPN for SSH-over-iroh tunnels (F13.3): each bidirectional stream is one
 /// raw SSH connection forwarded to the host's own SSH server. The tunnel
 /// carries bytes only; SSH authentication happens inside it, unchanged.
@@ -555,6 +557,15 @@ impl Handler for SshClient {
             previous_screen: None,
             probe_tty,
             probe: None,
+            active_form: None,
+            form_line: Vec::new(),
+            form_backlog: VecDeque::new(),
+            form_after_cr: false,
+            form_echo_pending: Vec::new(),
+            discarding_form_line: false,
+            closed_form: None,
+            retry_form_token: None,
+            pending_form_answer: None,
         };
         let hub = self.hub.clone();
         tokio::spawn(async move {
@@ -762,6 +773,24 @@ struct SshIo {
     probe_tty: bool,
     /// Bounded startup probe state while the reply window is open.
     probe: Option<SshProbe>,
+    /// Form view the terminal is currently collecting a response for.
+    active_form: Option<crate::world_presentation::FormSurface>,
+    /// Bounded line being entered for the active form.
+    form_line: Vec<u8>,
+    /// Bytes following the current form line in already-received SSH packets.
+    form_backlog: VecDeque<u8>,
+    /// Whether a CR terminator was consumed, so a following LF is swallowed.
+    form_after_cr: bool,
+    /// At most the incomplete UTF-8 scalar currently waiting to be echoed.
+    form_echo_pending: Vec<u8>,
+    /// Ignore the remainder of an invalid or oversized answer through its terminator.
+    discarding_form_line: bool,
+    /// Last closed form presentation and all token aliases; stale redraws must not reactivate it.
+    closed_form: Option<(String, Vec<String>)>,
+    /// A retry token issued by the host, paired with the token on the stale view.
+    retry_form_token: Option<(String, String, String)>,
+    /// Encoded answer retained across cancellation of `recv` while echoing input.
+    pending_form_answer: Option<String>,
 }
 
 /// The one startup probe window of a raw SSH session.
@@ -813,7 +842,158 @@ fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Opt
     Some(bytes)
 }
 
+mod form_io;
+use form_io::{
+    FormBytes, FormInputProgress, consume_form_input, discard_form_input_line,
+    discard_form_lf_after_cr, form_closed_aliases, form_retry_alias, form_view_is_unchanged,
+    recv_bytes_through_probe, take_pending_form_answer,
+};
+
 impl SshIo {
+    /// Remember every token that may still appear in a guest's stale view.
+    fn remember_closed_form(&mut self) {
+        let Some((form_id, current_token)) = self.active_form.as_ref().and_then(|form| {
+            form.presentation_token
+                .as_ref()
+                .map(|token| (form.form_id.clone(), token.clone()))
+        }) else {
+            return;
+        };
+        let aliases = form_closed_aliases(&form_id, &current_token, self.retry_form_token.as_ref());
+        self.closed_form = Some((form_id, aliases));
+    }
+
+    /// Discard an invalid form-line suffix without turning it into a new answer.
+    async fn discard_invalid_form_suffix(&mut self) -> Option<Inbound> {
+        loop {
+            if discard_form_input_line(&mut self.form_backlog, &mut self.form_after_cr) {
+                self.discarding_form_line = false;
+                return None;
+            }
+            match recv_bytes_through_probe(&mut self.frames, &mut self.probe).await {
+                FormBytes::Bytes(bytes) => self.form_backlog.extend(bytes),
+                FormBytes::Resize(resize) => {
+                    self.previous_screen = None;
+                    return Some(Inbound::Text(raw_frame(&resize)));
+                }
+                FormBytes::Closed => return Some(Inbound::Closed),
+            }
+        }
+    }
+
+    /// Swallow a CR's optional LF before routing post-form bytes as world input.
+    async fn clear_pending_form_lf(&mut self) -> Option<Inbound> {
+        loop {
+            if discard_form_lf_after_cr(&mut self.form_backlog, &mut self.form_after_cr) {
+                return None;
+            }
+            match recv_bytes_through_probe(&mut self.frames, &mut self.probe).await {
+                FormBytes::Bytes(bytes) => self.form_backlog.extend(bytes),
+                FormBytes::Resize(resize) => {
+                    self.previous_screen = None;
+                    return Some(Inbound::Text(raw_frame(&resize)));
+                }
+                FormBytes::Closed => return Some(Inbound::Closed),
+            }
+        }
+    }
+
+    /// Encode one complete form answer; malformed JSON stays local to the SSH prompt.
+    fn form_answer_frame(&self, line: &str) -> Result<String, String> {
+        let form = self
+            .active_form
+            .as_ref()
+            .ok_or_else(|| "no form is active".to_owned())?;
+        terminal_form_answer_frame(form, line)
+    }
+
+    /// Collect one bounded UTF-8 answer, echo edits, and retain packet bytes after its newline.
+    async fn recv_form_answer(&mut self) -> Inbound {
+        loop {
+            if self.discarding_form_line {
+                if let Some(inbound) = self.discard_invalid_form_suffix().await {
+                    return inbound;
+                }
+                continue;
+            }
+            if self.form_backlog.is_empty() {
+                match recv_bytes_through_probe(&mut self.frames, &mut self.probe).await {
+                    FormBytes::Bytes(bytes) => self.form_backlog.extend(bytes),
+                    FormBytes::Resize(resize) => {
+                        self.previous_screen = None;
+                        return Inbound::Text(raw_frame(&resize));
+                    }
+                    FormBytes::Closed => return Inbound::Closed,
+                }
+            }
+            let progress = consume_form_input(
+                &mut self.form_backlog,
+                &mut self.form_line,
+                &mut self.form_after_cr,
+                &mut self.form_echo_pending,
+            );
+            let (answer, invalid, echo) = match progress {
+                FormInputProgress::Pending { echo } => (None, None, echo),
+                FormInputProgress::Complete { line, echo } => (Some(line), None, echo),
+                FormInputProgress::Invalid { message, echo } => (None, Some(message), echo),
+            };
+            if invalid.is_some() {
+                self.discarding_form_line = true;
+            }
+            let mut answer_error = None;
+            if let Some(answer) = answer {
+                match String::from_utf8(answer)
+                    .map_err(|_| "form response must be UTF-8".to_owned())
+                    .and_then(|line| self.form_answer_frame(&line))
+                {
+                    Ok(frame) => self.pending_form_answer = Some(frame),
+                    Err(message) => answer_error = Some(message),
+                }
+            }
+            if !echo.is_empty() && self.handle.data(self.channel, echo).await.is_err() {
+                return Inbound::Closed;
+            }
+            if let Some(frame) = self.pending_form_answer.take() {
+                return Inbound::Text(frame);
+            }
+            if let Some(message) = invalid {
+                let prompt = self
+                    .active_form
+                    .as_ref()
+                    .map_or_else(String::new, terminal_form_prompt);
+                if self
+                    .handle
+                    .data(
+                        self.channel,
+                        terminal_text(&format!("\r\n{message}\r\n{prompt}")),
+                    )
+                    .await
+                    .is_err()
+                {
+                    return Inbound::Closed;
+                }
+                continue;
+            }
+            if let Some(message) = answer_error {
+                let prompt = self
+                    .active_form
+                    .as_ref()
+                    .map_or_else(String::new, terminal_form_prompt);
+                if self
+                    .handle
+                    .data(
+                        self.channel,
+                        terminal_text(&format!("\r\n{message}\r\n{prompt}")),
+                    )
+                    .await
+                    .is_err()
+                {
+                    return Inbound::Closed;
+                }
+            }
+        }
+    }
+
     /// Enter the alternate screen before the first session frame, so a raw
     /// session's repaints never land in the viewer's scrollback.
     async fn enter_alt_screen(&mut self) {
@@ -887,6 +1067,29 @@ impl SessionIo for SshIo {
         if let Some((width, height)) = self.first_resize.take() {
             self.previous_screen = None;
             return Inbound::Text(raw_frame(&SshInputFrame::Resize(width, height)));
+        }
+        if let Some(inbound) = take_pending_form_answer(&mut self.pending_form_answer) {
+            return inbound;
+        }
+        if self.discarding_form_line
+            && let Some(inbound) = self.discard_invalid_form_suffix().await
+        {
+            return inbound;
+        }
+        if self.active_form.is_none()
+            && let Some(inbound) = self.clear_pending_form_lf().await
+        {
+            return inbound;
+        }
+        if self.active_form.is_none() && !self.form_backlog.is_empty() {
+            let bytes: Vec<_> = self.form_backlog.drain(..).collect();
+            match self.mode {
+                ShellMode::Raw => return Inbound::Text(raw_frame(&SshInputFrame::Bytes(bytes))),
+                ShellMode::Command => self.commands.extend(self.lines.push(&bytes)),
+            }
+        }
+        if self.active_form.is_some() {
+            return self.recv_form_answer().await;
         }
         match self.mode {
             ShellMode::Raw => loop {
@@ -1040,6 +1243,122 @@ impl SessionIo for SshIo {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) else {
             return true;
         };
+        if value["type"] == "form_result_status" {
+            let form_id = value["form_id"].as_str().unwrap_or_default();
+            if self
+                .active_form
+                .as_ref()
+                .is_some_and(|form| form.form_id == form_id)
+            {
+                if value["ok"].as_bool() == Some(true) {
+                    self.remember_closed_form();
+                    self.active_form = None;
+                    self.form_line.clear();
+                    self.retry_form_token = None;
+                    let message = if matches!(self.mode, ShellMode::Command) {
+                        "\r\nForm submitted.\r\nworld> ".to_owned()
+                    } else {
+                        "\r\nForm submitted.\r\n".to_owned()
+                    };
+                    return self.handle.data(self.channel, message).await.is_ok();
+                }
+                if let Some(token) = value["presentation_token"].as_str()
+                    && let Some(form) = &mut self.active_form
+                {
+                    if let Some(previous_token) = form.presentation_token.clone() {
+                        self.retry_form_token = Some(form_retry_alias(
+                            self.retry_form_token.as_ref(),
+                            &form.form_id,
+                            &previous_token,
+                            token,
+                        ));
+                    }
+                    form.presentation_token = Some(token.to_owned());
+                    self.form_line.clear();
+                    let message = terminal_text(&format!(
+                        "\r\nThat answer was not accepted; review the fields and try again.\r\n{}",
+                        terminal_form_prompt(form)
+                    ));
+                    return self.handle.data(self.channel, message).await.is_ok();
+                }
+                let error = value["error"].as_str().unwrap_or("form_unavailable");
+                let reason = value["reason"].as_str().unwrap_or("unknown");
+                self.remember_closed_form();
+                self.active_form = None;
+                self.form_line.clear();
+                self.retry_form_token = None;
+                let message = terminal_text(&format!(
+                    "\r\nForm closed ({error}: {reason}). Returning to world input.\r\n"
+                ));
+                return self.handle.data(self.channel, message).await.is_ok();
+            }
+            let message = terminal_text("\r\nForm response is no longer active.\r\n");
+            return self.handle.data(self.channel, message).await.is_ok();
+        }
+        if value["type"] == "view"
+            && let Some(surface) = value.get("surface")
+            && let Ok(crate::world_presentation::WorldSurface::Form(mut form)) =
+                serde_json::from_value(surface.clone())
+        {
+            self.previous_screen = None;
+            if let Some((closed_id, closed_tokens)) = &self.closed_form
+                && closed_id == &form.form_id
+                && form
+                    .presentation_token
+                    .as_ref()
+                    .is_some_and(|token| closed_tokens.contains(token))
+            {
+                return true;
+            }
+            if let Some((retry_id, old_token, new_token)) = &self.retry_form_token
+                && retry_id == &form.form_id
+                && form.presentation_token.as_ref() == Some(old_token)
+            {
+                // A redraw may still carry the program's old token after a
+                // rejected answer. Keep the host-issued retry token active.
+                form.presentation_token = Some(new_token.clone());
+            } else if self
+                .retry_form_token
+                .as_ref()
+                .is_some_and(|(id, _, _)| id == &form.form_id)
+            {
+                self.retry_form_token = None;
+            }
+            if form_view_is_unchanged(self.active_form.as_ref(), &form) {
+                return true;
+            }
+            let input = terminal_form_input_manifest();
+            let message = if form.presentation_token.is_some()
+                && form.validate_device_input(&input).is_ok()
+            {
+                let prompt = terminal_form_prompt(&form);
+                let changed = self.active_form.as_ref().is_none_or(|active| {
+                    active.form_id != form.form_id
+                        || active.presentation_token != form.presentation_token
+                });
+                if changed {
+                    self.form_line.clear();
+                }
+                self.closed_form = None;
+                self.active_form = Some(form);
+                format!("\x1b[H\x1b[2J{}", terminal_text(&prompt))
+            } else {
+                self.active_form = None;
+                self.form_line.clear();
+                self.retry_form_token = None;
+                format!(
+                    "\r\nThis terminal cannot safely present the current form.\r\n{}",
+                    terminal_text(&form.text_projection())
+                )
+            };
+            return self.handle.data(self.channel, message).await.is_ok();
+        }
+        if value["type"] == "program_changed" || value["type"] == "view" {
+            self.active_form = None;
+            self.form_line.clear();
+            self.closed_form = None;
+            self.retry_form_token = None;
+        }
         let mut next_screen = None;
         let text = match value["type"].as_str() {
             Some("snapshot") => {
@@ -2003,6 +2322,180 @@ fn terminal_text(data: &str) -> String {
         .filter(|ch| (!ch.is_control() || matches!(ch, '\n' | '\t')) && !crate::is_format_char(*ch))
         .collect::<String>()
         .replace('\n', "\r\n")
+}
+
+/// Local input affordances of the SSH terminal presenter. This is deliberately
+/// distinct from the headless server's `device.info` manifest.
+fn terminal_form_input_manifest() -> serde_json::Value {
+    json!({
+        "keys": 128,
+        "encoder": false,
+        "pointer": false,
+        "text_entry": "keyboard",
+    })
+}
+
+/// Safe, line-oriented prompt for the SSH presenter. The user's response is
+/// parsed as JSON data and sent in a typed session frame; it is never shell or
+/// markup input.
+fn terminal_form_prompt(form: &crate::world_presentation::FormSurface) -> String {
+    use crate::world_presentation::FormActionKind;
+    use crate::world_presentation::FormField;
+
+    let actions = form
+        .actions
+        .iter()
+        .map(|action| {
+            let kind = match action.kind {
+                FormActionKind::Submit => "submit",
+                FormActionKind::Cancel => "cancel",
+            };
+            format!("{} — {} ({kind})", action.id, action.label)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let fields = form
+        .fields
+        .iter()
+        .map(|field| {
+            let (id, label, details) = match field {
+                FormField::Text {
+                    id,
+                    label,
+                    required,
+                    max_length,
+                } => (
+                    id,
+                    label,
+                    format!("text; required={required}; max_length={max_length}"),
+                ),
+                FormField::Choice {
+                    id,
+                    label,
+                    required,
+                    options,
+                } => {
+                    let options = options
+                        .iter()
+                        .map(|option| terminal_json_string(option))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    (
+                        id,
+                        label,
+                        format!("choice; required={required}; options=[{options}]"),
+                    )
+                }
+                FormField::Number {
+                    id,
+                    label,
+                    required,
+                    min,
+                    max,
+                } => (
+                    id,
+                    label,
+                    format!("number; required={required}; min={min}; max={max}"),
+                ),
+                FormField::Date {
+                    id,
+                    label,
+                    required,
+                    min,
+                    max,
+                } => (
+                    id,
+                    label,
+                    format!("date; required={required}; min={min:?}; max={max:?}"),
+                ),
+                FormField::Confirm {
+                    id,
+                    label,
+                    required,
+                } => (id, label, format!("confirm; required={required}")),
+            };
+            format!(
+                "{} — {} [{}]",
+                terminal_text(label),
+                terminal_text(id),
+                terminal_text(&details)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{}\nFields (values are keyed by field ID):\n{}\nActions:\n{}\nEnter {{\"action\":\"<id>\",\"values\":{{...}}}} or /cancel.\nform> ",
+        terminal_text(&form.title),
+        fields,
+        actions
+    )
+}
+
+/// JSON-quote an option while escaping terminal-invisible format characters,
+/// so the displayed value remains copyable and compares exactly on submit.
+fn terminal_json_string(value: &str) -> String {
+    let quoted = serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned());
+    let mut escaped = String::with_capacity(quoted.len());
+    for ch in quoted.chars() {
+        if crate::is_format_char(ch) {
+            let mut units = [0; 2];
+            for unit in ch.encode_utf16(&mut units).iter() {
+                use std::fmt::Write as _;
+                let _ = write!(escaped, "\\u{unit:04x}");
+            }
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped
+}
+
+/// Validate one complete JSON response line and encode it as a typed session frame.
+fn terminal_form_answer_frame(
+    form: &crate::world_presentation::FormSurface,
+    line: &str,
+) -> Result<String, String> {
+    let (action, values) = if line.trim() == "/cancel" {
+        let action = form
+            .actions
+            .iter()
+            .find(|action| action.kind == crate::world_presentation::FormActionKind::Cancel)
+            .ok_or_else(|| "this form has no cancel action".to_owned())?;
+        (action.id.clone(), serde_json::Map::new())
+    } else {
+        let value: serde_json::Value = serde_json::from_str(line)
+            .map_err(|_| "enter a JSON object with action and values".to_owned())?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| "form response must be a JSON object".to_owned())?;
+        if object.len() != 2 || !object.contains_key("action") || !object.contains_key("values") {
+            return Err("form response requires exactly action and values".to_owned());
+        }
+        let action = object["action"]
+            .as_str()
+            .ok_or_else(|| "form response action must be a string".to_owned())?;
+        let values = object["values"]
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "form response values must be an object".to_owned())?;
+        (action.to_owned(), values)
+    };
+    let token = form
+        .presentation_token
+        .as_deref()
+        .ok_or_else(|| "form has no active presentation token".to_owned())?;
+    let frame = serde_json::json!({
+        "type": "form_result",
+        "form_id": form.form_id,
+        "presentation_token": token,
+        "action": action,
+        "values": values,
+    })
+    .to_string();
+    if frame.len() > crate::frames::MAX_FRAME_BYTES {
+        return Err("form response exceeds the frame size limit".to_owned());
+    }
+    Ok(frame)
 }
 
 #[cfg(test)]
@@ -3337,11 +3830,41 @@ mod tests {
             after: "k".to_owned(),
         };
         sent.push(check(&command_frame(&more, "cap").unwrap(), Phase::Joined));
+        sent.push(check(
+            &serde_json::json!({
+                "type": "form_result",
+                "form_id": "form-1",
+                "presentation_token": "0123456789abcdef0123456789abcdef",
+                "action": "submit",
+                "values": {"name": "Ada"}
+            })
+            .to_string(),
+            Phase::Joined,
+        ));
         assert_eq!(
             sent,
             [
-                "chat", "input", "records", "records", "info", "caps", "records"
+                "chat",
+                "input",
+                "records",
+                "records",
+                "info",
+                "caps",
+                "records",
+                "form_result"
             ]
+        );
+        let status = serde_json::json!({
+            "type": "form_result_status",
+            "form_id": "form-1",
+            "ok": false,
+            "presentation_token": "fedcba9876543210fedcba9876543210",
+            "error": "bad_args",
+            "reason": "field_invalid",
+        });
+        assert_eq!(
+            contract.check_server_frame(&status).unwrap(),
+            "form_result_status"
         );
     }
 
@@ -3366,6 +3889,276 @@ mod tests {
         assert_eq!(terminal_text("a\nb\tc"), "a\r\nb\tc");
         // Ordinary text, including non-joiner emoji bases, is byte-identical.
         assert_eq!(terminal_text("naïve-✦サーバー"), "naïve-✦サーバー");
+    }
+
+    #[test]
+    fn test_form_retry_alias_preserves_the_original_view_token_across_retries() {
+        let first = form_retry_alias(None, "form-1", "T0", "T1");
+        assert_eq!(
+            first,
+            ("form-1".to_owned(), "T0".to_owned(), "T1".to_owned())
+        );
+        // The guest still renders T0; a second rejection advances the
+        // current token but must keep T0 as the view alias.
+        let second = form_retry_alias(Some(&first), "form-1", "T1", "T2");
+        assert_eq!(
+            second,
+            ("form-1".to_owned(), "T0".to_owned(), "T2".to_owned())
+        );
+        // A different form, or a rejected token that is not the current
+        // retry token, starts a fresh alias from the rejected token.
+        let other = form_retry_alias(Some(&second), "form-2", "T9", "T10");
+        assert_eq!(
+            other,
+            ("form-2".to_owned(), "T9".to_owned(), "T10".to_owned())
+        );
+        let stale = form_retry_alias(Some(&second), "form-1", "T7", "T8");
+        assert_eq!(
+            stale,
+            ("form-1".to_owned(), "T7".to_owned(), "T8".to_owned())
+        );
+    }
+
+    #[test]
+    fn test_unchanged_form_view_does_not_repaint_away_echoed_partial_answer() {
+        let mut form = crate::world_presentation::FormSurface {
+            version: 1,
+            form_id: "form-1".to_owned(),
+            presentation_token: Some("T0".to_owned()),
+            title: "Profile".to_owned(),
+            fields: vec![],
+            actions: vec![],
+        };
+        assert!(!form_view_is_unchanged(None, &form));
+        assert!(form_view_is_unchanged(Some(&form), &form));
+        form.presentation_token = Some("T1".to_owned());
+        assert!(!form_view_is_unchanged(
+            Some(&crate::world_presentation::FormSurface {
+                version: 1,
+                form_id: "form-1".to_owned(),
+                presentation_token: Some("T0".to_owned()),
+                title: "Profile".to_owned(),
+                fields: vec![],
+                actions: vec![],
+            }),
+            &form
+        ));
+    }
+
+    #[test]
+    fn test_closed_retried_form_suppresses_original_view_token() {
+        let first = form_retry_alias(None, "form-1", "T0", "T1");
+        let retry = form_retry_alias(Some(&first), "form-1", "T1", "T2");
+        let closed = form_closed_aliases("form-1", "T2", Some(&retry));
+
+        assert!(closed.contains(&"T0".to_owned()));
+        assert!(closed.contains(&"T2".to_owned()));
+        assert!(!form_closed_aliases("form-2", "T2", Some(&retry)).contains(&"T0".to_owned()));
+    }
+
+    #[test]
+    fn test_form_answer_frame_survives_recv_cancellation() {
+        let mut pending = Some("encoded-form-result".to_owned());
+
+        let inbound = take_pending_form_answer(&mut pending);
+
+        assert!(
+            matches!(inbound, Some(Inbound::Text(ref frame)) if frame == "encoded-form-result")
+        );
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn test_form_crlf_suppression_handles_split_packet_and_preserves_next_input() {
+        let mut backlog = VecDeque::new();
+        let mut after_cr = true;
+        assert!(!discard_form_lf_after_cr(&mut backlog, &mut after_cr));
+        assert!(after_cr);
+
+        backlog.extend([b'\n', b'/']);
+        assert!(discard_form_lf_after_cr(&mut backlog, &mut after_cr));
+        assert!(!after_cr);
+        assert_eq!(backlog, VecDeque::from([b'/']));
+
+        let mut backlog = VecDeque::from([b'x']);
+        let mut after_cr = true;
+        assert!(discard_form_lf_after_cr(&mut backlog, &mut after_cr));
+        assert!(!after_cr);
+        assert_eq!(backlog, VecDeque::from([b'x']));
+    }
+
+    #[test]
+    fn test_invalid_form_line_discards_suffix_before_next_answer() {
+        let mut backlog: VecDeque<u8> = b"\x1b/can".iter().copied().collect();
+        let mut line = Vec::new();
+        let mut after_cr = false;
+        let mut echo_pending = Vec::new();
+        assert!(matches!(
+            consume_form_input(&mut backlog, &mut line, &mut after_cr, &mut echo_pending),
+            FormInputProgress::Invalid { .. }
+        ));
+        assert!(!discard_form_input_line(&mut backlog, &mut after_cr));
+        backlog.extend(b"cel\n/help\n".iter().copied());
+        assert!(discard_form_input_line(&mut backlog, &mut after_cr));
+        assert_eq!(backlog, b"/help\n".iter().copied().collect::<VecDeque<_>>());
+        let FormInputProgress::Complete { line, .. } =
+            consume_form_input(&mut backlog, &mut line, &mut after_cr, &mut echo_pending)
+        else {
+            panic!("the next line should remain available")
+        };
+        assert_eq!(line, b"/help");
+    }
+
+    #[tokio::test]
+    async fn form_input_fetch_filters_startup_probe_replies() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut probe = Some(SshProbe {
+            demux: ProbeDemux::new(),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+        });
+        // A cursor-position reply arrives first, then the user's answer.
+        tx.send(SshInputFrame::Bytes(b"\x1b[1;1R".to_vec()))
+            .await
+            .unwrap();
+        tx.send(SshInputFrame::Bytes(b"{\"action\":\"submit\"}\n".to_vec()))
+            .await
+            .unwrap();
+        match recv_bytes_through_probe(&mut rx, &mut probe).await {
+            FormBytes::Bytes(bytes) => {
+                assert_eq!(bytes, b"{\"action\":\"submit\"}\n".to_vec())
+            }
+            _ => panic!("expected the filtered user bytes"),
+        }
+        assert!(
+            probe.is_some(),
+            "probe window stays open until its deadline"
+        );
+
+        // At the deadline the window closes and held partial-prefix
+        // bytes are returned as input.
+        let (tx2, mut rx2) = mpsc::channel(4);
+        let mut probe2 = Some(SshProbe {
+            demux: ProbeDemux::new(),
+            deadline: tokio::time::Instant::now(),
+        });
+        tx2.send(SshInputFrame::Bytes(b"\x1b[".to_vec()))
+            .await
+            .unwrap();
+        match recv_bytes_through_probe(&mut rx2, &mut probe2).await {
+            FormBytes::Bytes(bytes) => assert_eq!(bytes, b"\x1b[".to_vec()),
+            _ => panic!("expected held bytes at probe expiry"),
+        }
+        assert!(probe2.is_none());
+    }
+
+    #[test]
+    fn test_terminal_form_presenter_renders_and_encodes_submit_and_cancel() {
+        use crate::world_presentation::{FormAction, FormActionKind, FormField, FormSurface};
+
+        let form = FormSurface {
+            version: 1,
+            form_id: "ssh-form".to_owned(),
+            presentation_token: Some("0123456789abcdef0123456789abcdef".to_owned()),
+            title: "Profile".to_owned(),
+            fields: vec![
+                FormField::Text {
+                    id: "user_name".to_owned(),
+                    label: "Name".to_owned(),
+                    required: true,
+                    max_length: 30,
+                },
+                FormField::Choice {
+                    id: "tool".to_owned(),
+                    label: "Tool".to_owned(),
+                    required: true,
+                    options: vec!["👩‍💻".to_owned()],
+                },
+            ],
+            actions: vec![
+                FormAction {
+                    id: "submit".to_owned(),
+                    label: "Save".to_owned(),
+                    kind: FormActionKind::Submit,
+                },
+                FormAction {
+                    id: "cancel".to_owned(),
+                    label: "Cancel".to_owned(),
+                    kind: FormActionKind::Cancel,
+                },
+            ],
+        };
+        let prompt = terminal_text(&terminal_form_prompt(&form));
+        assert!(prompt.contains("Name — user_name [text; required=true; max_length=30]"));
+        assert!(prompt.contains("\\u200d"));
+        assert!(prompt.contains("cancel — Cancel (cancel)"));
+        assert!(!prompt.contains('\u{001b}'));
+
+        let submit = terminal_form_answer_frame(
+            &form,
+            r#"{"action":"submit","values":{"user_name":"Ada","tool":"👩‍💻"}}"#,
+        )
+        .unwrap();
+        let submit: serde_json::Value = serde_json::from_str(&submit).unwrap();
+        assert_eq!(submit["type"], "form_result");
+        assert_eq!(submit["form_id"], "ssh-form");
+        assert_eq!(
+            submit["presentation_token"],
+            "0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(submit["action"], "submit");
+        assert_eq!(submit["values"]["user_name"], "Ada");
+        assert_eq!(submit["values"]["tool"], "👩‍💻");
+
+        let cancel = terminal_form_answer_frame(&form, "/cancel").unwrap();
+        let cancel: serde_json::Value = serde_json::from_str(&cancel).unwrap();
+        assert_eq!(cancel["action"], "cancel");
+        assert_eq!(cancel["values"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_form_input_preserves_packet_remainder_and_edits_utf8_characters() {
+        let mut backlog: VecDeque<u8> = b"/cancel\n/help\n".iter().copied().collect();
+        let mut line = Vec::new();
+        let mut after_cr = false;
+        let mut echo_pending = Vec::new();
+        let FormInputProgress::Complete { line: first, .. } =
+            consume_form_input(&mut backlog, &mut line, &mut after_cr, &mut echo_pending)
+        else {
+            panic!("first complete line should be returned")
+        };
+        assert_eq!(first, b"/cancel");
+        let FormInputProgress::Complete { line: second, .. } =
+            consume_form_input(&mut backlog, &mut line, &mut after_cr, &mut echo_pending)
+        else {
+            panic!("the packet remainder should stay available")
+        };
+        assert_eq!(second, b"/help");
+
+        let mut backlog: VecDeque<u8> = "é\u{8}x\n".as_bytes().iter().copied().collect();
+        let mut after_cr = false;
+        let FormInputProgress::Complete { line, echo } = consume_form_input(
+            &mut backlog,
+            &mut Vec::new(),
+            &mut after_cr,
+            &mut echo_pending,
+        ) else {
+            panic!("edited UTF-8 line should be complete")
+        };
+        assert_eq!(line, b"x");
+        assert_eq!(echo, "é\x08 \x08x\r\n".as_bytes());
+
+        let mut backlog: VecDeque<u8> = b"a\xe2\x08\n".iter().copied().collect();
+        let mut after_cr = false;
+        let mut echo_pending = Vec::new();
+        let FormInputProgress::Complete { line, .. } = consume_form_input(
+            &mut backlog,
+            &mut Vec::new(),
+            &mut after_cr,
+            &mut echo_pending,
+        ) else {
+            panic!("backspace should remove only the incomplete UTF-8 scalar")
+        };
+        assert_eq!(line, b"a");
     }
 
     #[test]

@@ -49,6 +49,10 @@ pub const MAX_SCREEN_STYLE_SPANS: usize = 4096;
 pub const DEFAULT_TEXT_WIDTH: usize = 80;
 /// Maximum lines accepted from one world text document, after wrapping.
 pub const MAX_TEXT_LINES: usize = 1000;
+/// Maximum serialized form document size, matching the capability args budget.
+pub const MAX_FORM_BYTES: usize = 8 * 1024;
+/// Maximum fields, options, or actions in one form.
+pub const MAX_FORM_ITEMS: usize = 64;
 
 /// A validated view understood by more than one transport presenter.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -58,6 +62,8 @@ pub enum WorldSurface {
     Screen(ScreenSurface),
     /// Plain UTF-8 lines (`text/1`): the main mode for agents and scripts.
     Text(TextSurface),
+    /// Structured input rendered by trusted adapters.
+    Form(FormSurface),
 }
 
 impl WorldSurface {
@@ -70,8 +76,466 @@ impl WorldSurface {
         match self {
             Self::Screen(screen) => screen.text_projection(),
             Self::Text(text) => text.render_text(),
+            Self::Form(form) => form.text_projection(),
         }
     }
+}
+
+/// A versioned form document. Guest input is data only: there are no HTML,
+/// CSS, or executable-validation fields.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormSurface {
+    pub version: u8,
+    pub form_id: String,
+    /// Opaque host-generated token identifying one presentation of this form.
+    /// Programs copy it from the `form.present` result into their view; hosts
+    /// require it on deferred submissions to reject stale widget callbacks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_token: Option<String>,
+    pub title: String,
+    pub fields: Vec<FormField>,
+    pub actions: Vec<FormAction>,
+}
+
+/// Closed set of supported form input fields.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FormField {
+    /// Free text; requires a device manifest with `input.text_entry` other
+    /// than `"none"`.
+    Text {
+        id: String,
+        label: String,
+        required: bool,
+        max_length: u16,
+    },
+    /// A closed list of labels; requires at least one trusted selectable
+    /// control (keys, encoder, or pointer).
+    Choice {
+        id: String,
+        label: String,
+        required: bool,
+        options: Vec<String>,
+    },
+    /// An integer range; requires text entry or a trusted selectable control.
+    Number {
+        id: String,
+        label: String,
+        required: bool,
+        min: i64,
+        max: i64,
+    },
+    /// An ISO-8601 calendar date; requires text entry in this v1 surface.
+    Date {
+        id: String,
+        label: String,
+        required: bool,
+        min: Option<String>,
+        max: Option<String>,
+    },
+    /// A yes/no confirmation; requires a trusted selectable control.
+    Confirm {
+        id: String,
+        label: String,
+        required: bool,
+    },
+}
+
+/// A submit or cancel action offered by a form.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormAction {
+    pub id: String,
+    pub label: String,
+    /// What submitting this action means. Missing values default to `submit`.
+    #[serde(default)]
+    pub kind: FormActionKind,
+}
+
+/// Whether an action submits field values or abandons the form.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormActionKind {
+    /// Validate all required fields and deliver their values.
+    #[default]
+    Submit,
+    /// Abandon the form without requiring any field values.
+    Cancel,
+}
+
+/// A deferred answer to a presented form. The host correlates this value by
+/// `form_id`; it is delivered independently of the request that presented it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormResult {
+    pub form_id: String,
+    /// Host-generated token returned by the matching `form.present` request.
+    pub presentation_token: String,
+    pub action: String,
+    pub values: serde_json::Map<String, Value>,
+}
+
+impl FormSurface {
+    /// Validate the closed field/action model, identifiers, safe text and size.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, empty or oversized field/action sets,
+    /// duplicate ids, control characters, inverted ranges and oversize forms.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world form version {}",
+            self.version
+        );
+        ensure!(
+            safe_form_id(&self.form_id) && safe_form_text(&self.title),
+            "invalid form id or title"
+        );
+        ensure!(
+            !self.fields.is_empty() && self.fields.len() <= MAX_FORM_ITEMS,
+            "invalid form field count"
+        );
+        ensure!(
+            !self.actions.is_empty() && self.actions.len() <= MAX_FORM_ITEMS,
+            "invalid form action count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for field in &self.fields {
+            let (id, label) = match field {
+                FormField::Text {
+                    id,
+                    label,
+                    max_length,
+                    ..
+                } => {
+                    ensure!(*max_length > 0, "text field max_length must be positive");
+                    (id, label)
+                }
+                FormField::Choice {
+                    id, label, options, ..
+                } => {
+                    ensure!(
+                        !options.is_empty() && options.len() <= MAX_FORM_ITEMS,
+                        "invalid choice option count"
+                    );
+                    ensure!(
+                        options.iter().all(|value| safe_form_text(value)),
+                        "invalid choice option"
+                    );
+                    (id, label)
+                }
+                FormField::Number {
+                    id,
+                    label,
+                    min,
+                    max,
+                    ..
+                } => {
+                    ensure!(min <= max, "number field min exceeds max");
+                    (id, label)
+                }
+                FormField::Date {
+                    id,
+                    label,
+                    min,
+                    max,
+                    ..
+                } => {
+                    ensure!(
+                        min.as_deref().is_none_or(valid_form_date)
+                            && max.as_deref().is_none_or(valid_form_date),
+                        "invalid date bound"
+                    );
+                    ensure!(
+                        min.as_deref()
+                            .zip(max.as_deref())
+                            .is_none_or(|(min, max)| min <= max),
+                        "date field min exceeds max"
+                    );
+                    (id, label)
+                }
+                FormField::Confirm { id, label, .. } => (id, label),
+            };
+            ensure!(
+                safe_form_id(id) && safe_form_text(label),
+                "invalid form field id or label"
+            );
+            ensure!(ids.insert(id.as_str()), "duplicate form id");
+        }
+        for action in &self.actions {
+            ensure!(
+                safe_form_id(&action.id) && safe_form_text(&action.label),
+                "invalid form action id or label"
+            );
+            ensure!(ids.insert(action.id.as_str()), "duplicate form id");
+        }
+        ensure!(
+            self.presentation_token
+                .as_deref()
+                .is_none_or(safe_form_token),
+            "invalid form presentation token"
+        );
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_FORM_BYTES,
+            "form exceeds {MAX_FORM_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Check that one trusted presenter can collect all fields in this form.
+    /// The caller passes that presenter's `DeviceManifest.input` object, not
+    /// the hosting server's manifest: a headless server may serve browser or
+    /// terminal presenters that have different input affordances.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the input object cannot satisfy any field's
+    /// minimum requirements.
+    pub fn validate_device_input(&self, input: &Value) -> Result<()> {
+        self.validate()?;
+        let can_enter_text = input
+            .get("text_entry")
+            .and_then(Value::as_str)
+            .is_some_and(|mode| mode != "none");
+        let has_discrete_control = input
+            .get("keys")
+            .and_then(Value::as_u64)
+            .is_some_and(|count| count > 0)
+            || input
+                .get("encoder")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            || input
+                .get("pointer")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        for field in &self.fields {
+            match field {
+                FormField::Text { .. } | FormField::Date { .. } => ensure!(
+                    can_enter_text,
+                    "text entry unavailable for form field {:?}",
+                    field.id()
+                ),
+                FormField::Choice { .. } | FormField::Confirm { .. } => ensure!(
+                    has_discrete_control,
+                    "selectable input unavailable for form field {:?}",
+                    field.id()
+                ),
+                FormField::Number { .. } => ensure!(
+                    can_enter_text || has_discrete_control,
+                    "numeric input unavailable for form field {:?}",
+                    field.id()
+                ),
+            }
+        }
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title, numbered fields,
+    /// then numbered actions.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone()];
+        for (index, field) in self.fields.iter().enumerate() {
+            let (label, detail) = match field {
+                FormField::Text {
+                    label, max_length, ..
+                } => (label, format!("text, max {max_length}")),
+                FormField::Choice { label, options, .. } => {
+                    (label, format!("choice: {}", options.join(", ")))
+                }
+                FormField::Number {
+                    label, min, max, ..
+                } => (label, format!("number: {min}..{max}")),
+                FormField::Date {
+                    label, min, max, ..
+                } => (
+                    label,
+                    format!(
+                        "date: {}..{}",
+                        min.as_deref().unwrap_or("*"),
+                        max.as_deref().unwrap_or("*")
+                    ),
+                ),
+                FormField::Confirm { label, .. } => (label, "confirm".to_owned()),
+            };
+            lines.push(format!("{}. {} ({detail})", index + 1, label));
+        }
+        lines.extend(
+            self.actions
+                .iter()
+                .enumerate()
+                .map(|(index, action)| format!("{}. {}", index + 1, action.label)),
+        );
+        lines.join("\n")
+    }
+
+    /// Validate a submitted result against this form's closed field model.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unknown action or field, missing required value, or value
+    /// whose JSON type or declared bounds do not match the field.
+    pub fn validate_result(&self, result: &FormResult) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            safe_form_id(&result.form_id) && result.form_id == self.form_id,
+            "form result id does not match the presented form"
+        );
+        ensure!(
+            safe_form_token(&result.presentation_token),
+            "invalid form result presentation token"
+        );
+        ensure!(
+            self.presentation_token
+                .as_deref()
+                .is_none_or(|token| token == result.presentation_token),
+            "form result is for a stale presentation"
+        );
+        let action = self
+            .actions
+            .iter()
+            .find(|action| action.id == result.action)
+            .context("form result action is not declared")?;
+        if action.kind == FormActionKind::Cancel {
+            ensure!(
+                result.values.is_empty(),
+                "cancel action must not include values"
+            );
+            return Ok(());
+        }
+        for key in result.values.keys() {
+            ensure!(
+                self.fields.iter().any(|field| field.id() == key),
+                "form result contains an unknown field"
+            );
+        }
+        for field in &self.fields {
+            let Some(value) = result.values.get(field.id()) else {
+                ensure!(!field.required(), "required form value is missing");
+                continue;
+            };
+            ensure!(!value.is_null(), "form value must not be null");
+            match field {
+                FormField::Text { max_length, .. } => {
+                    let text = value.as_str().context("text form value must be a string")?;
+                    ensure!(
+                        !field.required() || !text.trim().is_empty(),
+                        "required text form value is empty"
+                    );
+                    ensure!(
+                        text.graphemes(true).count() <= usize::from(*max_length),
+                        "text form value exceeds max_length"
+                    );
+                }
+                FormField::Choice { options, .. } => {
+                    let choice = value
+                        .as_str()
+                        .context("choice form value must be a string")?;
+                    ensure!(
+                        options.iter().any(|option| option == choice),
+                        "invalid choice value"
+                    );
+                }
+                FormField::Number { min, max, .. } => {
+                    let number = value
+                        .as_i64()
+                        .context("number form value must be an integer")?;
+                    ensure!(
+                        (*min..=*max).contains(&number),
+                        "number form value is out of range"
+                    );
+                }
+                FormField::Date { min, max, .. } => {
+                    let date = value.as_str().context("date form value must be a string")?;
+                    ensure!(valid_form_date(date), "date form value must be YYYY-MM-DD");
+                    ensure!(
+                        min.as_deref().is_none_or(|bound| date >= bound)
+                            && max.as_deref().is_none_or(|bound| date <= bound),
+                        "date form value is out of range"
+                    );
+                }
+                FormField::Confirm { .. } => {
+                    value
+                        .as_bool()
+                        .context("confirm form value must be a boolean")?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl FormField {
+    fn id(&self) -> &str {
+        match self {
+            Self::Text { id, .. }
+            | Self::Choice { id, .. }
+            | Self::Number { id, .. }
+            | Self::Date { id, .. }
+            | Self::Confirm { id, .. } => id,
+        }
+    }
+
+    fn required(&self) -> bool {
+        match self {
+            Self::Text { required, .. }
+            | Self::Choice { required, .. }
+            | Self::Number { required, .. }
+            | Self::Date { required, .. }
+            | Self::Confirm { required, .. } => *required,
+        }
+    }
+}
+
+fn safe_form_text(value: &str) -> bool {
+    !value.trim().is_empty() && !value.chars().any(char::is_control)
+}
+
+fn safe_form_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+fn safe_form_token(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_form_date(value: &str) -> bool {
+    let Some((year, rest)) = value.split_once('-') else {
+        return false;
+    };
+    let Some((month, day)) = rest.split_once('-') else {
+        return false;
+    };
+    if year.len() != 4
+        || month.len() != 2
+        || day.len() != 2
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'-')
+    {
+        return false;
+    }
+    let (Ok(year), Ok(month), Ok(day)) =
+        (year.parse::<u16>(), month.parse::<u8>(), day.parse::<u8>())
+    else {
+        return false;
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
 }
 
 /// A validated `text/1` document: UTF-8 lines, wrapped to `width` columns
@@ -561,7 +1025,9 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     .as_ref()
                     .and_then(|value| value.get("kind"))
                     .and_then(Value::as_str);
-                if matches!(kind, Some("screen" | "text")) || top_level_kind_is_duplicated(data) {
+                if matches!(kind, Some("screen" | "text" | "form"))
+                    || top_level_kind_is_duplicated(data)
+                {
                     return Err(err).context("duplicate JSON object key in world presentation");
                 }
             }
@@ -570,6 +1036,16 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
     };
     match value.get("kind").and_then(Value::as_str) {
         Some("screen") => {}
+        Some("form") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let form: FormSurface =
+                serde_json::from_value(value).context("decode world form presentation")?;
+            form.validate()?;
+            return Ok(Some(WorldSurface::Form(form)));
+        }
         Some("text") => {
             let payload: TextPayload =
                 serde_json::from_value(value).context("decode world text presentation")?;
@@ -626,7 +1102,8 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
     );
     ensure!(
         payload.styles.iter().map(Vec::len).sum::<usize>()
-            + payload.tokens.iter().map(Vec::len).sum::<usize>() <= MAX_SCREEN_STYLE_SPANS,
+            + payload.tokens.iter().map(Vec::len).sum::<usize>()
+            <= MAX_SCREEN_STYLE_SPANS,
         "world screen has too many style spans"
     );
 
@@ -726,10 +1203,22 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
             let mut previous_end = 0;
             for span in spans {
                 ensure!(span.length > 0, "world screen token span must not be empty");
-                let end = span.x.checked_add(span.length).context("world screen token span overflows")?;
-                ensure!(end <= payload.width, "world screen token span exceeds its row");
-                ensure!(span.x >= previous_end, "world screen token spans overlap or are unsorted");
-                ensure!(boundaries[span.x] && boundaries[end], "world screen token span splits a wide glyph");
+                let end = span
+                    .x
+                    .checked_add(span.length)
+                    .context("world screen token span overflows")?;
+                ensure!(
+                    end <= payload.width,
+                    "world screen token span exceeds its row"
+                );
+                ensure!(
+                    span.x >= previous_end,
+                    "world screen token spans overlap or are unsorted"
+                );
+                ensure!(
+                    boundaries[span.x] && boundaries[end],
+                    "world screen token span splits a wide glyph"
+                );
                 let (fg, bold) = span.token.ansi_style();
                 for cell in &mut cells[row_start + span.x..row_start + end] {
                     cell.token = Some(span.token);
@@ -965,7 +1454,10 @@ mod tests {
             "rows":["x"], "tokens":[[{"x":0,"length":1,"token":"warning"}]]});
         let screen = parsed_screen(doc.clone());
         assert_eq!(screen.cells[0].token, Some(StyleToken::Warning));
-        assert_eq!(screen.render_ansi().unwrap(), "\x1b[H\x1b[2J\x1b[0;1;38;5;11mx\x1b[0m");
+        assert_eq!(
+            screen.render_ansi().unwrap(),
+            "\x1b[H\x1b[2J\x1b[0;1;38;5;11mx\x1b[0m"
+        );
         assert_eq!(screen.text_projection(), "x");
         doc["tokens"][0][0]["token"] = json!("<script>");
         assert!(parse_surface(&doc.to_string()).is_err());
@@ -1370,6 +1862,194 @@ mod tests {
         assert!(parse_surface(&tab.to_string()).is_err());
         let unsupported = json!({"kind": "text", "version": 2, "lines": ["x"]});
         assert!(parse_surface(&unsupported.to_string()).is_err());
+    }
+
+    #[test]
+    fn form_surface_parses_projects_and_rejects_unsafe_or_oversize_documents() {
+        let document = serde_json::json!({
+            "kind": "form", "version": 1, "form_id": "join-1", "title": "Join",
+            "fields": [
+                {"kind": "text", "id": "name", "label": "Name", "required": true, "max_length": 40},
+                {"kind": "choice", "id": "role", "label": "Role", "required": true, "options": ["Builder", "Guide"]},
+                {"kind": "number", "id": "age", "label": "Age", "required": true, "min": 0, "max": 120},
+                {"kind": "date", "id": "start", "label": "Start date", "required": true, "min": "2026-01-01", "max": "2027-12-31"},
+                {"kind": "confirm", "id": "accept", "label": "Accept?", "required": true}
+            ],
+            "actions": [{"id": "submit", "label": "Continue"}]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        let WorldSurface::Form(form) = parsed else {
+            panic!("expected form surface")
+        };
+        assert_eq!(
+            form.text_projection(),
+            "Join\n1. Name (text, max 40)\n2. Role (choice: Builder, Guide)\n3. Age (number: 0..120)\n4. Start date (date: 2026-01-01..2027-12-31)\n5. Accept? (confirm)\n1. Continue"
+        );
+        let valid_result = FormResult {
+            form_id: "join-1".into(),
+            presentation_token: "0123456789abcdef0123456789abcdef".into(),
+            action: "submit".into(),
+            values: serde_json::json!({
+                "name": "Ada", "role": "Guide", "age": 42,
+                "start": "2026-05-12", "accept": true
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        };
+        assert!(form.validate_result(&valid_result).is_ok());
+        let invalid_result = FormResult {
+            values: serde_json::json!({"name": "Ada", "role": "Admin", "age": 42, "start": "2026-05-12", "accept": true})
+                .as_object()
+                .unwrap()
+                .clone(),
+            ..valid_result.clone()
+        };
+        assert!(form.validate_result(&invalid_result).is_err());
+        let with_html = serde_json::json!({
+            "kind": "form", "version": 1, "form_id": "join-2", "title": "Join",
+            "html": "<b>unsafe</b>", "css": ".unsafe{}", "validation": "eval('x')",
+            "fields": [{"kind": "confirm", "id": "yes", "label": "Proceed?", "required": true}],
+            "actions": [{"id": "ok", "label": "OK"}]
+        });
+        assert!(parse_surface(&with_html.to_string()).is_err());
+        let escape = serde_json::json!({
+            "kind": "form", "version": 1, "form_id": "join-3", "title": "Join\u{001b}[2J",
+            "fields": [{"kind": "confirm", "id": "yes", "label": "Proceed?", "required": true}],
+            "actions": [{"id": "ok", "label": "OK"}]
+        });
+        assert!(parse_surface(&escape.to_string()).is_err());
+        let oversized = FormSurface {
+            version: 1,
+            form_id: "join-4".into(),
+            presentation_token: None,
+            title: "Join".into(),
+            fields: vec![FormField::Text {
+                id: "name".into(),
+                label: "x".repeat(MAX_FORM_BYTES),
+                required: false,
+                max_length: 1,
+            }],
+            actions: vec![FormAction {
+                id: "cancel".into(),
+                label: "Cancel".into(),
+                kind: FormActionKind::Cancel,
+            }],
+        };
+        assert!(oversized.validate().is_err());
+    }
+
+    #[test]
+    fn form_date_bounds_are_canonical_and_cancel_skips_required_fields() {
+        let invalid_bound = serde_json::json!({
+            "kind": "form", "version": 1, "form_id": "date-1", "title": "Date",
+            "fields": [{"kind": "date", "id": "date", "label": "Date", "required": true, "min": "zzz", "max": null}],
+            "actions": [{"id": "submit", "label": "Submit"}]
+        });
+        assert!(parse_surface(&invalid_bound.to_string()).is_err());
+        let inverted_range = serde_json::json!({
+            "kind": "form", "version": 1, "form_id": "date-2", "title": "Date",
+            "fields": [{"kind": "date", "id": "date", "label": "Date", "required": true, "min": "2027-01-01", "max": "2026-12-31"}],
+            "actions": [{"id": "submit", "label": "Submit"}]
+        });
+        assert!(parse_surface(&inverted_range.to_string()).is_err());
+
+        let form = FormSurface {
+            version: 1,
+            form_id: "cancel-form".into(),
+            presentation_token: None,
+            title: "Required form".into(),
+            fields: vec![FormField::Text {
+                id: "name".into(),
+                label: "Name".into(),
+                required: true,
+                max_length: 30,
+            }],
+            actions: vec![
+                FormAction {
+                    id: "submit".into(),
+                    label: "Submit".into(),
+                    kind: FormActionKind::Submit,
+                },
+                FormAction {
+                    id: "cancel".into(),
+                    label: "Cancel".into(),
+                    kind: FormActionKind::Cancel,
+                },
+            ],
+        };
+        let cancel = FormResult {
+            form_id: "cancel-form".into(),
+            presentation_token: "fedcba9876543210fedcba9876543210".into(),
+            action: "cancel".into(),
+            values: serde_json::Map::new(),
+        };
+        assert!(form.validate_result(&cancel).is_ok());
+        let malformed_date = FormSurface {
+            fields: vec![FormField::Date {
+                id: "date".into(),
+                label: "Date".into(),
+                required: true,
+                min: None,
+                max: None,
+            }],
+            ..form
+        };
+        let invalid_date = FormResult {
+            form_id: "cancel-form".into(),
+            presentation_token: cancel.presentation_token,
+            action: "submit".into(),
+            values: serde_json::json!({"date": "2026-+1-01"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert!(malformed_date.validate_result(&invalid_date).is_err());
+    }
+
+    #[test]
+    fn form_device_gating_uses_the_presenting_device_input_manifest() {
+        let encoder_form = FormSurface {
+            version: 1,
+            form_id: "encoder-form".into(),
+            presentation_token: None,
+            title: "Choose".into(),
+            fields: vec![FormField::Choice {
+                id: "mode".into(),
+                label: "Mode".into(),
+                required: true,
+                options: vec!["quiet".into(), "loud".into()],
+            }],
+            actions: vec![FormAction {
+                id: "submit".into(),
+                label: "Submit".into(),
+                kind: FormActionKind::Submit,
+            }],
+        };
+        let headless_input = serde_json::json!({
+            "keys": 0, "encoder": false, "pointer": false, "text_entry": "none"
+        });
+        assert!(encoder_form.validate_device_input(&headless_input).is_err());
+        let rotary_input = serde_json::json!({
+            "keys": 0, "encoder": true, "pointer": false, "text_entry": "none"
+        });
+        assert!(encoder_form.validate_device_input(&rotary_input).is_ok());
+
+        let text_form = FormSurface {
+            fields: vec![FormField::Text {
+                id: "name".into(),
+                label: "Name".into(),
+                required: true,
+                max_length: 24,
+            }],
+            ..encoder_form
+        };
+        assert!(text_form.validate_device_input(&rotary_input).is_err());
+        assert!(
+            text_form
+                .validate_device_input(&serde_json::json!({"text_entry": "keyboard"}))
+                .is_ok()
+        );
     }
 
     #[test]

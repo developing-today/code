@@ -398,6 +398,28 @@ pub struct WorldEvent {
     pub kind: WorldEventKind,
 }
 
+/// Outcome of submitting a deferred result to a pending form.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FormSubmissionStatus {
+    /// The result matched the pending form and was delivered to the program.
+    Accepted,
+    /// The result was rejected with `bad_args` / `field_invalid`. The form
+    /// stays pending under a fresh host token; the presenter re-presents it
+    /// with that token and the server never retries on its own.
+    Rejected {
+        /// Token the presenter must echo in its next submission.
+        presentation_token: String,
+    },
+    /// The pending form or its authority is no longer valid; the presenter
+    /// should exit form mode rather than retrying the same response.
+    Unavailable {
+        /// Stable wire error code.
+        error: &'static str,
+        /// Stable reason explaining why the form cannot accept input.
+        reason: &'static str,
+    },
+}
+
 /// Participant-originated event data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]

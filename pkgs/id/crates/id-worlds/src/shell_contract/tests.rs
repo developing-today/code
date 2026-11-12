@@ -29,6 +29,7 @@ fn server_frame_type(frame: &ServerFrame<'_>) -> &'static str {
     match frame {
         ServerFrame::Snapshot { .. } => "snapshot",
         ServerFrame::Event { .. } => "event",
+        ServerFrame::FormResultStatus { .. } => "form_result_status",
         ServerFrame::View { .. } => "view",
         ServerFrame::ModuleInfo { .. } => "module_info",
         ServerFrame::Metrics { .. } => "metrics",
@@ -61,6 +62,7 @@ fn server_frame_type(frame: &ServerFrame<'_>) -> &'static str {
 const SERVER_FRAME_TYPES: &[&str] = &[
     "snapshot",
     "event",
+    "form_result_status",
     "view",
     "module_info",
     "metrics",
@@ -150,6 +152,13 @@ fn every_server_frame_variant_is_in_the_contract_and_nothing_else_is() {
         kind: crate::world::WorldEventKind::Chat("x".to_owned()),
     };
     for frame in [
+        ServerFrame::FormResultStatus {
+            form_id: "form-1",
+            ok: false,
+            presentation_token: Some("0123456789abcdef0123456789abcdef"),
+            error: Some("bad_args"),
+            reason: Some("field_invalid"),
+        },
         ServerFrame::View {
             sequence: 1,
             data: "x",
