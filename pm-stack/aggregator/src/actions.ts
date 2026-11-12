@@ -333,7 +333,7 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   const payload: DashActionPayload = {};
   const until = cleanText(rawPayload.until, 64);
   if (until !== undefined) {
-    if (parseIsoDate(until) === null) return { ok: false, error: "payload.until must be an ISO date/time" };
+    if (Number.isNaN(Date.parse(until))) return { ok: false, error: "payload.until must be an ISO date/time" };
     payload.until = until;
   }
   if (rawPayload.tier !== undefined) {
@@ -407,7 +407,7 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   if (proposalRunId !== undefined) payload.proposalRunId = proposalRunId;
   const proposalUpdatedAt = cleanText(rawPayload.proposalUpdatedAt, 64);
   if (proposalUpdatedAt !== undefined) {
-    if (parseIsoDate(proposalUpdatedAt) === null) {
+    if (Number.isNaN(Date.parse(proposalUpdatedAt))) {
       return { ok: false, error: "payload.proposalUpdatedAt must be an ISO date/time" };
     }
     payload.proposalUpdatedAt = proposalUpdatedAt;
