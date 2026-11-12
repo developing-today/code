@@ -19,8 +19,10 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
 	"github.com/developing-today/code/pkgs/mcpx/internal/model"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // execOptions is what the exec and run commands resolved from their flags,
@@ -173,7 +175,7 @@ func (a *App) localStore() (*artifacts.Store, error) {
 // has launchers, phases and a typecheck mode that the wire Options
 // deliberately do not mirror. Everything after the process starts is the
 // shared implementation.
-func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Service {
+func (a *App) localService(store *artifacts.Store, socket string, cfg *config.Config) *execsvc.Service {
 	set := a.Settings()
 	lim := execsvc.DefaultLimits()
 	lim.Interpreter = set.String("script.interpreter")
@@ -214,6 +216,21 @@ func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Servi
 	// bounded by model.budget), so a local run's prompt hooks run
 	// under the operator's ceiling too (Codex review, PR #9021).
 	svc.ModelMaxTokens = execsvc.ModelTokenCap(set.Int("prompt.maxTokens"), set.Int("model.budget"))
+	// The configured default model, for a prompt hook that names
+	// none of its own (see execsvc.Service.ModelDefault).
+	svc.ModelDefault = set.String("model.default")
+	// Config-declared hooks apply to local runs exactly as they do
+	// to daemon runs: without this the service's Hooks stayed empty
+	// and a prompt (or script) entry in script.hooks was silently
+	// ignored on the default local path, provider or not (Codex
+	// review, PR #9021). Configured code is gated by hooks.autonomy
+	// exactly as the daemon gates it and as hookGate gates the
+	// legacy phases: below `run` it does not execute.
+	if cfg != nil && settings.AutonomyAtLeast(set.String("hooks.autonomy"), "run") {
+		for _, h := range cfg.ScriptHooks() {
+			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Prompt: h.Prompt, Effect: h.Effect, Model: h.Model, Name: h.Name})
+		}
+	}
 	return svc
 }
 

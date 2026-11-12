@@ -46,6 +46,9 @@ func TestModelLayerForExecStampsCapAndProvider(t *testing.T) {
 	if svc.ModelMaxTokens != 40 {
 		t.Fatalf("ModelMaxTokens = %d, want 40", svc.ModelMaxTokens)
 	}
+	if svc.ModelDefault != "openai/test-model" {
+		t.Fatalf("ModelDefault = %q, want the policy's model.default", svc.ModelDefault)
+	}
 }
 
 func TestModelLayerForExecUnbuildableLayerNamesItself(t *testing.T) {

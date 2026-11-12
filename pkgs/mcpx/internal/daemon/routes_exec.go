@@ -291,6 +291,7 @@ func (s *Server) ExecService() *execsvc.Service {
 func (s *Server) modelLayerForExec(ctx context.Context, svc *execsvc.Service, session string) {
 	pol := s.policyFor(ctx)
 	svc.ModelMaxTokens = modelMaxTokens(pol.PromptMaxTokens, pol.ModelBudget)
+	svc.ModelDefault = pol.ModelDefault
 	// (nil, nil) — no layer configured — leaves ModelProvider nil,
 	// and a prompt hook reports its advice unavailable in its frame;
 	// a build error is kept on the service so the frame can name it

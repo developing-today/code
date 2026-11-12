@@ -154,8 +154,18 @@ func (s *Service) runPromptHook(ctx context.Context, phase string, h Hook, hctx 
 	rendered := renderPromptTemplate(h.Prompt, promptValues(hctx, ropts, res))
 	callCtx, cancel := context.WithTimeout(ctx, hookTimeout)
 	defer cancel()
+	// An empty hook model takes the configured default
+	// (model.default), the promise Hook.Model documents: the
+	// sampling and plugin providers forward the request as given,
+	// so leaving it empty lost the operator's default on those
+	// paths (Codex review, PR #9021). An explicit per-hook model
+	// always wins.
+	reqModel := h.Model
+	if reqModel == "" {
+		reqModel = s.ModelDefault
+	}
 	resp, err := prov.Generate(callCtx, model.Request{
-		Model: h.Model,
+		Model: reqModel,
 		Messages: []model.Message{
 			{Role: "system", Content: promptHookSystem},
 			{Role: "user", Content: rendered},
@@ -181,7 +191,7 @@ func (s *Service) runPromptHook(ctx context.Context, phase string, h Hook, hctx 
 	out.Frame.Advice = advice
 	out.Frame.Model = resp.Model
 	if out.Frame.Model == "" {
-		out.Frame.Model = model.ModelID(h.Model)
+		out.Frame.Model = model.ModelID(reqModel)
 	}
 	out.Frame.Provider = resp.Provider
 	if out.Frame.Provider == "" {

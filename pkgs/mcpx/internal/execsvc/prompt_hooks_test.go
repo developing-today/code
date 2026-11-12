@@ -212,6 +212,37 @@ func TestRunPromptHookAppliesTokenCap(t *testing.T) {
 	}
 }
 
+// Codex P2 (PR #9021): a hook that names no model runs under the
+// configured default (model.default), which the sampling and
+// plugin providers would otherwise never see; an explicit
+// per-hook model always wins over the default.
+func TestRunPromptHookAppliesDefaultModel(t *testing.T) {
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+	res := &Result{RunID: "r1", Result: "ok"}
+
+	fake := &fakeProvider{text: "advice"}
+	s := &Service{ModelProvider: fake, ModelDefault: "cfg/default-1"}
+	run := s.runPromptHook(context.Background(), HookOnSuccess,
+		Hook{Phase: HookOnSuccess, Prompt: "advise"}, hctx, runner.Options{}, res)
+	if run.Failed {
+		t.Fatalf("run failed: %s", run.Frame.Error)
+	}
+	if fake.last.Model != "cfg/default-1" {
+		t.Fatalf("provider request Model = %q, want the configured default", fake.last.Model)
+	}
+
+	fake2 := &fakeProvider{text: "advice"}
+	s2 := &Service{ModelProvider: fake2, ModelDefault: "cfg/default-1"}
+	run = s2.runPromptHook(context.Background(), HookOnSuccess,
+		Hook{Phase: HookOnSuccess, Prompt: "advise", Model: "hook/chosen-2"}, hctx, runner.Options{}, res)
+	if run.Failed {
+		t.Fatalf("run failed: %s", run.Frame.Error)
+	}
+	if fake2.last.Model != "hook/chosen-2" {
+		t.Fatalf("provider request Model = %q, want the hook's explicit model", fake2.last.Model)
+	}
+}
+
 // The cap rule itself, against the same cases the daemon's
 // modelMaxTokens is tested with: a nonpositive ask is unset, and a
 // positive budget binds whenever it is the smaller bound.

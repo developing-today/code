@@ -1166,7 +1166,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if derr != nil {
 		return derr
 	}
-	svc := a.localService(store, c.Socket())
+	svc := a.localService(store, c.Socket(), cfg)
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,

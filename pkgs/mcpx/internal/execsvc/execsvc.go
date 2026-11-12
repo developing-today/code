@@ -645,6 +645,16 @@ type Service struct {
 	// PR #9021): the daemon and the CLI both resolve it whenever
 	// they resolve the provider.
 	ModelMaxTokens int
+	// ModelDefault is the configured default model (model.default) a
+	// prompt hook's generation uses when the hook names no model of
+	// its own. The OpenAI provider and the profile router already
+	// fall back to their configured default, but the sampling and
+	// plugin providers forward the request as given, so an empty
+	// hook model reached them empty and the configured default was
+	// lost (Codex review, PR #9021). Whoever resolves the provider
+	// (daemon policy, CLI settings) stamps it here, the same way
+	// ModelMaxTokens is stamped.
+	ModelDefault string
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)
