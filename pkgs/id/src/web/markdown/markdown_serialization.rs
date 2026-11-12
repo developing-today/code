@@ -1096,6 +1096,31 @@ fn strip_leading_blank_quote_lines(output: &str) -> String {
 /// so no separate definition path exists in this codec.
 pub(crate) fn substitute_spaced_destinations<'a>(root: &'a AstNode<'a>) -> Vec<(String, String)> {
     let mut substitutions: Vec<(String, String)> = Vec::new();
+    // #1348: restoration after rendering is a global string replace over
+    // the whole document, so a placeholder token that already occurs in
+    // the document would rewrite the document's own text into the spaced
+    // destination. Gather everything that can reach the rendered output
+    // (text/code/html literals and every link/image url and title) and
+    // choose tokens absent from it -- the same collision-safe discipline
+    // `protect_newline_destinations` uses on the parse side.
+    let mut corpus = String::new();
+    let mut scan: Vec<&AstNode<'a>> = vec![root];
+    while let Some(node) = scan.pop() {
+        scan.extend(node.children());
+        let data = node.data.borrow();
+        match &data.value {
+            NodeValue::Text(literal) => corpus.push_str(&literal.to_string()),
+            NodeValue::Code(code) => corpus.push_str(&code.literal),
+            NodeValue::CodeBlock(block) => corpus.push_str(&block.literal),
+            NodeValue::HtmlBlock(block) => corpus.push_str(&block.literal),
+            NodeValue::HtmlInline(html) => corpus.push_str(html),
+            NodeValue::Link(link) | NodeValue::Image(link) => {
+                corpus.push_str(&link.url);
+                corpus.push_str(&link.title);
+            }
+            _ => {}
+        }
+    }
     let mut stack: Vec<&AstNode<'a>> = vec![root];
     while let Some(node) = stack.pop() {
         stack.extend(node.children());
@@ -1113,10 +1138,16 @@ pub(crate) fn substitute_spaced_destinations<'a>(root: &'a AstNode<'a>) -> Vec<(
         {
             *url = substitutions[index].0.clone();
         } else {
-            let placeholder = format!(
+            let mut placeholder = format!(
                 "idweb-spaced-destination-{}-placeholder",
                 substitutions.len()
             );
+            // #1348: extend the token until it is absent from the
+            // document corpus, so the global restore replace can only
+            // ever match the destination this substitution planted.
+            while corpus.contains(&placeholder) {
+                placeholder.push('x');
+            }
             let raw = std::mem::take(url);
             *url = placeholder.clone();
             substitutions.push((placeholder, raw));

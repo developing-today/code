@@ -3156,6 +3156,21 @@ mod tests {
     }
 
     #[test]
+    fn test_spaced_destination_placeholder_token_in_document_text_survives() {
+        // #1348: the document's own prose contains the literal
+        // placeholder token for the first substitution. The save
+        // direction must not rewrite that prose into the spaced
+        // destination: the token is chosen absent from the document,
+        // the literal text round-trips unchanged, and the destination
+        // still lands in <...> angle form.
+        let original =
+            "the token idweb-spaced-destination-0-placeholder is prose\n\n[notes](<my notes.md>)\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, original, "literal token text unchanged");
+        assert_eq!(first, second, "fixpoint");
+    }
+
+    #[test]
     fn test_spaced_image_destination_roundtrips_in_angle_form() {
         // #1019: same preservation for image src.
         let original = "![a](<my pic.png>)\n";
