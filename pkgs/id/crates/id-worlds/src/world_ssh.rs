@@ -845,8 +845,8 @@ fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Opt
 mod form_io;
 use form_io::{
     FormBytes, FormInputProgress, consume_form_input, discard_form_input_line,
-    discard_form_lf_after_cr, form_closed_aliases, form_retry_alias, recv_bytes_through_probe,
-    take_pending_form_answer,
+    discard_form_lf_after_cr, form_closed_aliases, form_retry_alias, form_view_is_unchanged,
+    recv_bytes_through_probe, take_pending_form_answer,
 };
 
 impl SshIo {
@@ -1323,6 +1323,9 @@ impl SessionIo for SshIo {
                 .is_some_and(|(id, _, _)| id == &form.form_id)
             {
                 self.retry_form_token = None;
+            }
+            if form_view_is_unchanged(self.active_form.as_ref(), &form) {
+                return true;
             }
             let input = terminal_form_input_manifest();
             let message = if form.presentation_token.is_some()
@@ -3914,6 +3917,32 @@ mod tests {
             stale,
             ("form-1".to_owned(), "T7".to_owned(), "T8".to_owned())
         );
+    }
+
+    #[test]
+    fn test_unchanged_form_view_does_not_repaint_away_echoed_partial_answer() {
+        let mut form = crate::world_presentation::FormSurface {
+            version: 1,
+            form_id: "form-1".to_owned(),
+            presentation_token: Some("T0".to_owned()),
+            title: "Profile".to_owned(),
+            fields: vec![],
+            actions: vec![],
+        };
+        assert!(!form_view_is_unchanged(None, &form));
+        assert!(form_view_is_unchanged(Some(&form), &form));
+        form.presentation_token = Some("T1".to_owned());
+        assert!(!form_view_is_unchanged(
+            Some(&crate::world_presentation::FormSurface {
+                version: 1,
+                form_id: "form-1".to_owned(),
+                presentation_token: Some("T0".to_owned()),
+                title: "Profile".to_owned(),
+                fields: vec![],
+                actions: vec![],
+            }),
+            &form
+        ));
     }
 
     #[test]

@@ -7,6 +7,8 @@ use std::collections::VecDeque;
 
 use tokio::sync::mpsc;
 
+use crate::world_presentation::FormSurface;
+
 use super::{Inbound, MAX_FORM_RESPONSE_BYTES, SshInputFrame, SshProbe, terminal_text};
 
 /// The retry alias recorded for a rejected form answer:
@@ -55,6 +57,12 @@ pub(super) fn form_closed_aliases(
         }
     }
     tokens
+}
+
+/// An exactly unchanged form needs no repaint: preserving the terminal's
+/// existing prompt keeps already-echoed partial input visible.
+pub(super) fn form_view_is_unchanged(active: Option<&FormSurface>, incoming: &FormSurface) -> bool {
+    active == Some(incoming)
 }
 
 /// When a form answer ended with CR, swallow its LF before resuming normal
