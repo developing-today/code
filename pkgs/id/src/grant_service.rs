@@ -263,14 +263,25 @@ impl GrantStore {
 
     /// Advance a grant through the §7 state machine (checked
     /// transition — an unlisted move is a programming error and is
-    /// refused, leaving the record unchanged).
+    /// refused, leaving the record unchanged). An unknown grant id
+    /// (stale or mistyped) is reported as
+    /// [`TransitionError::UnknownGrant`], never a panic, and touches
+    /// nothing in the store.
     pub fn transition(
         &mut self,
         grant_id: &str,
         to: GrantState,
-    ) -> Result<GrantState, (GrantState, GrantState)> {
-        let grant = self.grants.get_mut(grant_id).expect("grant exists");
-        let next = grant.state.transition(to)?;
+    ) -> Result<GrantState, TransitionError> {
+        let grant = self
+            .grants
+            .get_mut(grant_id)
+            .ok_or_else(|| TransitionError::UnknownGrant {
+                grant_id: grant_id.to_string(),
+            })?;
+        let next = grant
+            .state
+            .transition(to)
+            .map_err(|(from, to)| TransitionError::Refused { from, to })?;
         grant.state = next;
         Ok(next)
     }
@@ -373,6 +384,16 @@ pub enum InsertPresentedError {
     /// any registry or ledger effect, so a duplicate intent is a
     /// clean refusal, never a silent replacement.
     DuplicateGrantId { grant_id: String },
+}
+
+/// Why a [`GrantStore::transition`] did not happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransitionError {
+    /// No grant record has this id (stale, mistyped, or absent).
+    UnknownGrant { grant_id: String },
+    /// The grant exists but the §7 table does not list `from -> to`;
+    /// the record is unchanged.
+    Refused { from: GrantState, to: GrantState },
 }
 
 /// Deterministic ledger transfer id for a grant (§2.5 step 1):
@@ -1303,6 +1324,73 @@ mod tests {
             .ledger()
             .account_balance(account_id_for("grantee-1", LEDGER_ID))
             .is_none());
+    }
+
+    #[test]
+    fn transition_of_unknown_grant_id_returns_error_and_leaves_store_unchanged() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.register(&request("grant-1", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        let before = svc.store().snapshot().grants;
+
+        let err = svc
+            .store
+            .transition("no-such-grant", GrantState::PendingHold)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TransitionError::UnknownGrant {
+                grant_id: "no-such-grant".to_string()
+            }
+        );
+        assert_eq!(svc.store().grant_count(), 1);
+        assert!(svc.store().grant("no-such-grant").is_none());
+        assert_eq!(svc.store().snapshot().grants, before);
+
+        let mut empty = GrantStore::new();
+        assert_eq!(
+            empty.transition("", GrantState::Active),
+            Err(TransitionError::UnknownGrant {
+                grant_id: String::new()
+            })
+        );
+        assert_eq!(empty.grant_count(), 0);
+    }
+
+    #[test]
+    fn invalid_transition_of_existing_grant_is_refused_and_record_unchanged() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.register(&request("grant-1", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        let before = svc.store().snapshot().grants;
+
+        // PendingHold -> Spent is not in the §7 table.
+        let err = svc
+            .store
+            .transition("grant-1", GrantState::Spent)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TransitionError::Refused {
+                from: GrantState::PendingHold,
+                to: GrantState::Spent
+            }
+        );
+        assert_eq!(svc.store().snapshot().grants, before);
+
+        // A listed move on the same grant still works.
+        assert_eq!(
+            svc.store.transition("grant-1", GrantState::Active),
+            Ok(GrantState::Active)
+        );
+        assert_eq!(
+            svc.store().grant("grant-1").unwrap().state,
+            GrantState::Active
+        );
     }
 
     #[test]
