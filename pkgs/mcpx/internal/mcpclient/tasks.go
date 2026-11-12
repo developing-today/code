@@ -202,13 +202,14 @@ type legacyTask struct {
 // way: task-augmented tools/call, tasks/get polls, tasks/result for the
 // terminal payload. Faults surface through tasks/result, whose error is
 // the server's own rpcError -- the client's existing error shape.
-func (c *Client) callToolAsLegacyTask(ctx context.Context, name string, args any) (json.RawMessage, error) {
+func (c *Client) callToolAsLegacyTask(ctx context.Context, name string, args any, requestState string) (json.RawMessage, error) {
 	params, err := json.Marshal(map[string]any{
 		"name": name, "arguments": args, "task": map[string]any{},
 	})
 	if err != nil {
 		return nil, err
 	}
+	params = withRequestState(params, requestState)
 	// The relay a downstream caller attached rides this call exactly as
 	// it rides the plain path: beginRelay merges its _meta (progress
 	// token, trace) into the request and keeps its callbacks registered

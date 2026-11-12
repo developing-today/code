@@ -108,8 +108,15 @@ func resumeOf(params json.RawMessage) (state string, answers map[string]json.Raw
 	var p struct {
 		RequestState   string                     `json:"requestState"`
 		InputResponses map[string]json.RawMessage `json:"inputResponses"`
+		Meta           map[string]json.RawMessage `json:"_meta"`
 	}
-	if json.Unmarshal(params, &p) != nil || p.RequestState == "" {
+	if json.Unmarshal(params, &p) != nil {
+		return "", nil, false
+	}
+	if p.RequestState == "" {
+		_ = json.Unmarshal(p.Meta["mcpx/requestState"], &p.RequestState)
+	}
+	if p.RequestState == "" {
 		return "", nil, false
 	}
 	return p.RequestState, p.InputResponses, true
@@ -202,7 +209,11 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 		// completes them out of band and retries, mirroring the client
 		// flow of #2079.
 		if senderFrom(ctx) == nil && !c.canPush() {
-			if resp := urlRequiredResponse(req, peer, out.Questions); resp != nil {
+			state, err := s.states().mint(callID, requestBinding(req))
+			if err != nil {
+				return fail(codeInternal, err.Error())
+			}
+			if resp := urlRequiredResponse(req, peer, out.Questions, state); resp != nil {
 				return resp
 			}
 		}
@@ -305,7 +316,11 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 			// elicitation.url. Answer -32042 with this call's pending
 			// URL questions instead of waiting out the timeout and
 			// failing generically; the broker keeps the questions.
-			if resp := urlRequiredResponse(req, peer, sendable); resp != nil {
+			state, err := s.states().mint(callID, requestBinding(req))
+			if err != nil {
+				return fail(codeInternal, err.Error())
+			}
+			if resp := urlRequiredResponse(req, peer, sendable, state); resp != nil {
 				if len(answers) > 0 {
 					_ = s.Ask.Reply(ctx, callID, answers)
 				}

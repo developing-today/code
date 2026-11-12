@@ -708,6 +708,53 @@ func (c *Client) SetSessionSettledHook(fn func()) {
 	c.mu.Unlock()
 }
 
+// requestStateOf returns the requestState a -32042 error's data carries,
+// the server's handle for the still-suspended call (#2897), or "".
+func requestStateOf(err error) string {
+	var re *rpcError
+	if !errors.As(err, &re) {
+		return ""
+	}
+	var d struct {
+		RequestState string `json:"requestState"`
+	}
+	if json.Unmarshal(re.Data, &d) != nil {
+		return ""
+	}
+	return d.RequestState
+}
+
+// withRequestState adds the server-specific correlation handle in _meta,
+// which legacy request schemas allow extensions to use. A server that sent
+// none (or params that are not an object) is left as is.
+func withRequestState(params json.RawMessage, state string) json.RawMessage {
+	if state == "" {
+		return params
+	}
+	m := map[string]json.RawMessage{}
+	if json.Unmarshal(params, &m) != nil {
+		return params
+	}
+	b, err := json.Marshal(state)
+	if err != nil {
+		return params
+	}
+	meta := map[string]json.RawMessage{}
+	if raw := m["_meta"]; len(raw) > 0 {
+		_ = json.Unmarshal(raw, &meta)
+	}
+	meta["mcpx/requestState"] = b
+	m["_meta"], err = json.Marshal(meta)
+	if err != nil {
+		return params
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return params
+	}
+	return out
+}
+
 // parseURLElicitations reads a -32042 error's data. ok is false for any
 // malformed shape: unparseable data, an empty list, a non-url entry, or
 // an entry with no elicitationId. In every such case the caller returns
@@ -1707,14 +1754,14 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	// task answer is polled to its terminal result before returning.
 	support := c.resolveTaskSupport(name)
 	if support == taskSupportRequired && c.modernEra() == EraLegacy {
-		raw, err := c.callToolAsLegacyTask(ctx, name, args)
+		raw, err := c.callToolAsLegacyTask(ctx, name, args, "")
 		if err != nil {
 			// A -32042 can surface from the task-augmented call itself
 			// or from tasks/result at the end of the poll; it gets the
 			// same one-shot URL-elicitation recovery as the plain path
 			// below (#1556 Codex review).
 			if retry, rerr := c.urlElicitationRetry(ctx, name, err); retry {
-				raw, err = c.callToolAsLegacyTask(ctx, name, args)
+				raw, err = c.callToolAsLegacyTask(ctx, name, args, requestStateOf(err))
 			} else {
 				err = rerr
 			}
@@ -1757,6 +1804,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 			retry, rerr := c.urlElicitationRetry(ctx, name, err)
 			if retry {
 				retried32042 = true
+				params = withRequestState(params, requestStateOf(err))
 				continue
 			}
 			err = rerr

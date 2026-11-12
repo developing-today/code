@@ -53,8 +53,12 @@ func urlQuestionsOf(qs []Question) []Question {
 // the required elicitationId ("mcpx-<id>") where the upstream sent
 // none. The caller returns the response WITHOUT abandoning the call:
 // the broker keeps the questions, the host completes them out of
-// band and retries, mirroring the client-side flow of #2079.
-func urlRequiredResponse(req request, p Peer, qs []Question) *response {
+// band and retries, mirroring the client-side flow of #2079. The host must
+// echo the token as _meta["mcpx/requestState"] on that retry (or as the
+// protocol requestState field) so it resumes this call rather than starting a
+// second upstream operation. A retry before completion remains on this call
+// and receives -32042 again; it never silently begins duplicate work.
+func urlRequiredResponse(req request, p Peer, qs []Question, requestState string) *response {
 	urls := urlQuestionsOf(qs)
 	if !p.eligibleURLElicitationRequired() || len(urls) == 0 {
 		return nil
@@ -67,7 +71,7 @@ func urlRequiredResponse(req request, p Peer, qs []Question) *response {
 		}
 		els = append(els, params)
 	}
-	data, err := json.Marshal(map[string]any{"elicitations": els})
+	data, err := json.Marshal(map[string]any{"elicitations": els, "requestState": requestState})
 	if err != nil {
 		return nil
 	}
