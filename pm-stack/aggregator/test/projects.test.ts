@@ -192,6 +192,25 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     expect(isProjectPoolItem(pool[0])).toBe(true);
   });
 
+  test("the pool gate refuses impossible updatedAt stamps (#5202)", () => {
+    const item = parseProjectItems(GQL)[0];
+    // Control: the collector's own stamp passes, and the missing-stamp
+    // forms (absent field, '') stay valid.
+    expect(isProjectPoolItem(item)).toBe(true);
+    expect(isProjectPoolItem({ ...item, updatedAt: "" })).toBe(true);
+    const { updatedAt: _dropped, ...withoutStamp } = item;
+    expect(isProjectPoolItem(withoutStamp)).toBe(true);
+    // Impossible calendar days and non-ISO strings are refused: before
+    // the gate they rolled over in Date.parse and fabricated this-week
+    // activity in derive.ts momentum math.
+    for (const bad of ["2026-02-29", "2026-02-30", "2026-04-31", "March 2, 2026", "not-a-date"]) {
+      expect(isProjectPoolItem({ ...item, updatedAt: bad })).toBe(false);
+    }
+    // A real leap day and a full ISO datetime still pass.
+    expect(isProjectPoolItem({ ...item, updatedAt: "2024-02-29" })).toBe(true);
+    expect(isProjectPoolItem({ ...item, updatedAt: "2026-03-01T12:00:00Z" })).toBe(true);
+  });
+
   test("derived state + disagreement", () => {
     const pool = parseProjectItems(GQL);
     // Open, no orchestration presence -> Todo, which disagrees with In Progress.
