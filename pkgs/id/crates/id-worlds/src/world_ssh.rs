@@ -563,6 +563,7 @@ impl Handler for SshClient {
             form_after_cr: false,
             closed_form: None,
             retry_form_token: None,
+            pending_form_answer: None,
         };
         let hub = self.hub.clone();
         tokio::spawn(async move {
@@ -782,6 +783,8 @@ struct SshIo {
     closed_form: Option<(String, Vec<String>)>,
     /// A retry token issued by the host, paired with the token on the stale view.
     retry_form_token: Option<(String, String, String)>,
+    /// Encoded answer retained across cancellation of `recv` while echoing input.
+    pending_form_answer: Option<String>,
 }
 
 /// The one startup probe window of a raw SSH session.
@@ -912,9 +915,29 @@ fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Opt
 }
 
 mod form_io;
-use form_io::{FormBytes, form_closed_aliases, form_retry_alias, recv_bytes_through_probe};
+use form_io::{
+    FormBytes, discard_form_lf_after_cr, form_closed_aliases, form_retry_alias,
+    recv_bytes_through_probe, take_pending_form_answer,
+};
 
 impl SshIo {
+    /// Swallow a CR's optional LF before routing post-form bytes as world input.
+    async fn clear_pending_form_lf(&mut self) -> Option<Inbound> {
+        loop {
+            if discard_form_lf_after_cr(&mut self.form_backlog, &mut self.form_after_cr) {
+                return None;
+            }
+            match recv_bytes_through_probe(&mut self.frames, &mut self.probe).await {
+                FormBytes::Bytes(bytes) => self.form_backlog.extend(bytes),
+                FormBytes::Resize(resize) => {
+                    self.previous_screen = None;
+                    return Some(Inbound::Text(raw_frame(&resize)));
+                }
+                FormBytes::Closed => return Some(Inbound::Closed),
+            }
+        }
+    }
+
     /// Encode one complete form answer; malformed JSON stays local to the SSH prompt.
     fn form_answer_frame(&self, line: &str) -> Result<String, String> {
         let form = self
@@ -947,8 +970,21 @@ impl SshIo {
                 FormInputProgress::Complete { line, echo } => (Some(line), None, echo),
                 FormInputProgress::Invalid { message, echo } => (None, Some(message), echo),
             };
+            let mut answer_error = None;
+            if let Some(answer) = answer {
+                match String::from_utf8(answer)
+                    .map_err(|_| "form response must be UTF-8".to_owned())
+                    .and_then(|line| self.form_answer_frame(&line))
+                {
+                    Ok(frame) => self.pending_form_answer = Some(frame),
+                    Err(message) => answer_error = Some(message),
+                }
+            }
             if !echo.is_empty() && self.handle.data(self.channel, echo).await.is_err() {
                 return Inbound::Closed;
+            }
+            if let Some(frame) = self.pending_form_answer.take() {
+                return Inbound::Text(frame);
             }
             if let Some(message) = invalid {
                 let prompt = self
@@ -968,29 +1004,21 @@ impl SshIo {
                 }
                 continue;
             }
-            if let Some(answer) = answer {
-                match String::from_utf8(answer)
-                    .map_err(|_| "form response must be UTF-8".to_owned())
-                    .and_then(|line| self.form_answer_frame(&line))
+            if let Some(message) = answer_error {
+                let prompt = self
+                    .active_form
+                    .as_ref()
+                    .map_or_else(String::new, terminal_form_prompt);
+                if self
+                    .handle
+                    .data(
+                        self.channel,
+                        terminal_text(&format!("\r\n{message}\r\n{prompt}")),
+                    )
+                    .await
+                    .is_err()
                 {
-                    Ok(frame) => return Inbound::Text(frame),
-                    Err(message) => {
-                        let prompt = self
-                            .active_form
-                            .as_ref()
-                            .map_or_else(String::new, terminal_form_prompt);
-                        if self
-                            .handle
-                            .data(
-                                self.channel,
-                                terminal_text(&format!("\r\n{message}\r\n{prompt}")),
-                            )
-                            .await
-                            .is_err()
-                        {
-                            return Inbound::Closed;
-                        }
-                    }
+                    return Inbound::Closed;
                 }
             }
         }
@@ -1069,6 +1097,14 @@ impl SessionIo for SshIo {
         if let Some((width, height)) = self.first_resize.take() {
             self.previous_screen = None;
             return Inbound::Text(raw_frame(&SshInputFrame::Resize(width, height)));
+        }
+        if let Some(inbound) = take_pending_form_answer(&mut self.pending_form_answer) {
+            return inbound;
+        }
+        if self.active_form.is_none()
+            && let Some(inbound) = self.clear_pending_form_lf().await
+        {
+            return inbound;
         }
         if self.active_form.is_none() && !self.form_backlog.is_empty() {
             let bytes: Vec<_> = self.form_backlog.drain(..).collect();
@@ -3922,6 +3958,37 @@ mod tests {
         assert!(closed.contains(&"T0".to_owned()));
         assert!(closed.contains(&"T2".to_owned()));
         assert!(!form_closed_aliases("form-2", "T2", Some(&retry)).contains(&"T0".to_owned()));
+    }
+
+    #[test]
+    fn test_form_answer_frame_survives_recv_cancellation() {
+        let mut pending = Some("encoded-form-result".to_owned());
+
+        let inbound = take_pending_form_answer(&mut pending);
+
+        assert!(
+            matches!(inbound, Some(Inbound::Text(ref frame)) if frame == "encoded-form-result")
+        );
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn test_form_crlf_suppression_handles_split_packet_and_preserves_next_input() {
+        let mut backlog = VecDeque::new();
+        let mut after_cr = true;
+        assert!(!discard_form_lf_after_cr(&mut backlog, &mut after_cr));
+        assert!(after_cr);
+
+        backlog.extend([b'\n', b'/']);
+        assert!(discard_form_lf_after_cr(&mut backlog, &mut after_cr));
+        assert!(!after_cr);
+        assert_eq!(backlog, VecDeque::from([b'/']));
+
+        let mut backlog = VecDeque::from([b'x']);
+        let mut after_cr = true;
+        assert!(discard_form_lf_after_cr(&mut backlog, &mut after_cr));
+        assert!(!after_cr);
+        assert_eq!(backlog, VecDeque::from([b'x']));
     }
 
     #[tokio::test]

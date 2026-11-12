@@ -5,7 +5,7 @@
 
 use tokio::sync::mpsc;
 
-use super::{SshInputFrame, SshProbe};
+use super::{Inbound, SshInputFrame, SshProbe};
 
 /// The retry alias recorded for a rejected form answer:
 /// `(form_id, view_token, current_token)`.
@@ -53,6 +53,32 @@ pub(super) fn form_closed_aliases(
         }
     }
     tokens
+}
+
+/// When a form answer ended with CR, swallow its LF before resuming normal
+/// input. Returns false only when the LF may still arrive in a later packet.
+pub(super) fn discard_form_lf_after_cr(
+    backlog: &mut std::collections::VecDeque<u8>,
+    after_cr: &mut bool,
+) -> bool {
+    if !*after_cr {
+        return true;
+    }
+    match backlog.front() {
+        Some(b'\n') => {
+            backlog.pop_front();
+        }
+        Some(_) => {}
+        None => return false,
+    }
+    *after_cr = false;
+    true
+}
+
+/// Take an encoded form answer that was persisted before an await, making the
+/// next `recv` return it even if the previous receive future was cancelled.
+pub(super) fn take_pending_form_answer(pending: &mut Option<String>) -> Option<Inbound> {
+    pending.take().map(Inbound::Text)
 }
 
 /// One fetched input unit for the form collector.
