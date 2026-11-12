@@ -406,7 +406,6 @@ in
             Type = "oneshot";
             WorkingDirectory = "${repo}/pm-stack/aggregator";
             Environment = [
-              "SUPABASE_PROJECT_REF=keihfchslgjetkmnmzra"
               "BWS_BIN=/run/current-system/sw/bin/bws"
               "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
               "FLEET_FEED_OUT=${aggState}/fleet-feed.json"
