@@ -51,6 +51,57 @@
 //! - [`repl`] - Interactive REPL with shell-like features
 //! - [`helpers`] - Utility functions for parsing and formatting
 //!
+//! ## Signing contract — sign only what receipt would accept
+//!
+//! Every public signing entry point in this crate family (`sign_*`,
+//! `Signed*::sign`, and any public method whose purpose is producing a
+//! signed object) follows one contract, recorded as design #6487 and
+//! inventoried in the closing audit on issue #6488:
+//!
+//! > **Sign only what receipt would accept.** Mirror at sign time every
+//! > receipt rule that is decidable from the signer's own inputs — the
+//! > key, the object being signed, and the function's existing
+//! > arguments. Receipt means whichever side consumes the object: a
+//! > fold, a viewer, a verifier, or an accept function. A rule receipt
+//! > enforces unconditionally, and the signer can decide, must not be
+//! > signable-around: a signer that produces an object no consumer will
+//! > ever count has reported success for a failure the caller discovers
+//! > far from the signing call, if at all.
+//!
+//! The decidability line is part of the contract, in four classes:
+//!
+//! - **(a) intrinsic** — decidable from the object alone: a field's
+//!   domain, a version, a roster's shape, an envelope's internal
+//!   agreement.
+//! - **(b) signer-relative** — decidable from the key plus the object:
+//!   the author the key implies versus the object's issuer, players,
+//!   roster, successor, source, or named sender.
+//! - **(c) seam-extended** — decidable only if the seam takes one more
+//!   input it already conceptually has (the agreement for a claim). The
+//!   public seam changes — a checked sibling or an extra parameter —
+//!   it never silently skips the check.
+//! - **(d) receiver-state** — not decidable at the seam: the
+//!   receiver's cursor, a per-world limit, a store's current epoch, the
+//!   key being replaced in a recovery the inputs do not name, an
+//!   assembled log's context. These rules stay receipt-only, and the
+//!   closing inventory on issue #6488 names each one with its reason,
+//!   so the line is auditable rather than implied.
+//!
+//! Two corollaries bind a new signer before it lands:
+//!
+//! - Refusal speaks the module's own vocabulary — the receipt error
+//!   itself, or a typed sign error naming the rule — never a generic
+//!   failure, and never a silently repaired object. Wire formats and
+//!   receipt verdicts do not change under this contract.
+//! - A bypass, where tests need one, is crate-private (or gated to
+//!   tests) and named `*_unchecked` — the artifact pattern
+//!   (`SignedArtifact::sign_unchecked`). There is never a second
+//!   *public* unchecked signer.
+//!
+//! Adding a `sign_*` function without dispositioning it against this
+//! contract — enforced for the decidable classes, or deliberately
+//! receipt-only with the class-(d) reason named — is incomplete work.
+//!
 //! ## Quick Start
 //!
 //! ### As a Library
