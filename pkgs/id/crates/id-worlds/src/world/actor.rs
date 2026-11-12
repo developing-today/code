@@ -449,7 +449,7 @@ pub(crate) struct WorldActor {
     pub(crate) handled_requests: BTreeSet<String>,
     /// Forms registered by `form.present`; actor-lifetime only, so a restart
     /// invalidates outstanding UI submissions instead of replaying stale input.
-    pub(crate) pending_forms: BTreeMap<String, id_core::world_presentation::FormSurface>,
+    pub(crate) pending_forms: BTreeMap<String, PendingForm>,
     /// Subscription specs already reported as refused.
     pub(crate) denied_subs: BTreeSet<String>,
     /// Armed tick intervals to their next fire time.
@@ -497,6 +497,13 @@ pub(crate) struct WorldActor {
     /// The connection whose input is being processed. Ephemeral actor context;
     /// it is deliberately absent from `WorldEvent` and the journal.
     pub(crate) acting_session: Option<SessionId>,
+}
+
+/// One actor-local form presentation and its host-generated generation token.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingForm {
+    pub(crate) surface: id_core::world_presentation::FormSurface,
+    pub(crate) presentation_token: String,
 }
 
 impl WorldActor {
@@ -1557,6 +1564,11 @@ impl WorldActor {
         {
             object.remove("kind");
         }
+        if let Some(object) = raw_form.as_object_mut() {
+            // A form view may carry a token copied from an earlier
+            // presentation; only this host boundary may mint a new one.
+            object.remove("presentation_token");
+        }
         let form: FormSurface = serde_json::from_value(raw_form)
             .map_err(|_| CapError::bad_args_with("field_invalid"))?;
         form.validate()
@@ -1602,16 +1614,40 @@ impl WorldActor {
             }
         }
         if let Some(existing) = self.pending_forms.get(form_id) {
-            if existing != &form {
+            if existing.surface != form {
                 return Err(CapError::bad_args_with("field_invalid"));
             }
-            return Ok(serde_json::json!({"form_id": form_id, "presented": true}));
+            return Ok(serde_json::json!({
+                "form_id": form_id,
+                "presentation_token": existing.presentation_token,
+                "presented": true
+            }));
         }
         if self.pending_forms.len() >= crate::world_caps::MAX_PENDING_FORMS {
             return Err(CapError::failed_with("too_many_pending_forms"));
         }
-        self.pending_forms.insert(form_id.to_owned(), form);
-        Ok(serde_json::json!({"form_id": form_id, "presented": true}))
+        let presentation_token = loop {
+            let candidate = format!("{:032x}", rand::rng().random::<u128>());
+            if !self
+                .pending_forms
+                .values()
+                .any(|pending| pending.presentation_token == candidate)
+            {
+                break candidate;
+            }
+        };
+        self.pending_forms.insert(
+            form_id.to_owned(),
+            PendingForm {
+                surface: form,
+                presentation_token: presentation_token.clone(),
+            },
+        );
+        Ok(serde_json::json!({
+            "form_id": form_id,
+            "presentation_token": presentation_token,
+            "presented": true
+        }))
     }
 
     fn execute_form_cancel(
@@ -1639,11 +1675,19 @@ impl WorldActor {
         &mut self,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
-        let form = self
+        ensure!(
+            self.core.ledger.is_granted("form.result"),
+            "form.result capability is not granted or is outside the current ceiling"
+        );
+        let pending = self
             .pending_forms
             .get(&result.form_id)
             .ok_or_else(|| anyhow::anyhow!("unknown or cancelled form id"))?;
-        let valid = form.validate_result(&result).is_ok();
+        ensure!(
+            result.presentation_token == pending.presentation_token,
+            "stale form presentation token"
+        );
+        let valid = pending.surface.validate_result(&result).is_ok();
         let event = if valid {
             serde_json::json!({
                 "cap": "form.result",
@@ -2810,6 +2854,7 @@ impl WorldActor {
                         self.compaction_off = false;
                         // A new program starts with a clean slate.
                         self.handled_requests.clear();
+                        self.pending_forms.clear();
                         self.denied_subs.clear();
                         self.active_subs.clear();
                         self.ticks.clear();
@@ -4296,7 +4341,9 @@ mod device_info_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod form_tests {
     use super::*;
-    use id_core::world_presentation::{FormAction, FormField, FormResult, FormSurface};
+    use id_core::world_presentation::{
+        FormAction, FormActionKind, FormField, FormResult, FormSurface,
+    };
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone)]
@@ -4315,16 +4362,19 @@ mod form_tests {
         FormSurface {
             version: 1,
             form_id: "form-1".to_owned(),
+            presentation_token: None,
             title: "Profile".to_owned(),
             fields,
             actions: vec![
                 FormAction {
                     id: "submit".to_owned(),
                     label: "Save".to_owned(),
+                    kind: FormActionKind::Submit,
                 },
                 FormAction {
                     id: "cancel".to_owned(),
                     label: "Cancel".to_owned(),
+                    kind: FormActionKind::Cancel,
                 },
             ],
         }
@@ -4403,10 +4453,12 @@ mod form_tests {
             required: true,
             options: vec!["quiet".to_owned(), "loud".to_owned()],
         }]);
-        present(&mut actor, &form).unwrap();
+        let presented = present(&mut actor, &form).unwrap();
+        let presentation_token = presented["presentation_token"].as_str().unwrap().to_owned();
 
         let invalid = FormResult {
             form_id: "form-1".to_owned(),
+            presentation_token: presentation_token.clone(),
             action: "submit".to_owned(),
             values: serde_json::json!({"mode": "unsafe"})
                 .as_object()
@@ -4432,6 +4484,7 @@ mod form_tests {
 
         let valid = FormResult {
             form_id: "form-1".to_owned(),
+            presentation_token,
             action: "submit".to_owned(),
             values: serde_json::json!({"mode": "quiet"})
                 .as_object()
@@ -4481,9 +4534,11 @@ mod form_tests {
                 max_length: u16::MAX,
             },
         ]);
-        present(&mut actor, &form).unwrap();
+        let presented = present(&mut actor, &form).unwrap();
+        let presentation_token = presented["presentation_token"].as_str().unwrap().to_owned();
         let result = FormResult {
             form_id: "form-1".to_owned(),
+            presentation_token,
             action: "submit".to_owned(),
             values: serde_json::json!({
                 "first": "a".repeat(33_000),
@@ -4500,13 +4555,17 @@ mod form_tests {
 
     #[tokio::test]
     async fn form_cancel_is_idempotent_and_prevents_late_results() {
-        let (mut actor, _) = form_actor();
+        let (mut actor, events) = form_actor();
         let form = form(vec![FormField::Confirm {
             id: "confirm".to_owned(),
             label: "Continue?".to_owned(),
             required: true,
         }]);
-        present(&mut actor, &form).unwrap();
+        let first_presentation = present(&mut actor, &form).unwrap();
+        let first_token = first_presentation["presentation_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let cancel = Request {
             id: "cancel-request".to_owned(),
             cap: "form.cancel".to_owned(),
@@ -4514,8 +4573,15 @@ mod form_tests {
         };
         assert_eq!(actor.execute(&cancel).unwrap()["cancelled"], true);
         assert_eq!(actor.execute(&cancel).unwrap()["cancelled"], false);
+        let second_presentation = present(&mut actor, &form).unwrap();
+        let second_token = second_presentation["presentation_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(first_token, second_token);
         let late_result = FormResult {
             form_id: "form-1".to_owned(),
+            presentation_token: first_token,
             action: "submit".to_owned(),
             values: serde_json::json!({"confirm": true})
                 .as_object()
@@ -4523,6 +4589,49 @@ mod form_tests {
                 .clone(),
         };
         assert!(actor.submit_form_result(late_result).await.is_err());
+        assert!(actor.pending_forms.contains_key("form-1"));
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn form_result_requires_current_grant_and_ceiling_authority() {
+        for remove_from in ["grant", "ceiling"] {
+            let (mut actor, events) = form_actor();
+            let form = form(vec![FormField::Choice {
+                id: "mode".to_owned(),
+                label: "Mode".to_owned(),
+                required: true,
+                options: vec!["quiet".to_owned()],
+            }]);
+            let presented = present(&mut actor, &form).unwrap();
+            let token = presented["presentation_token"].as_str().unwrap().to_owned();
+            if remove_from == "grant" {
+                actor.core.ledger.set_granted(BTreeSet::from([
+                    "form.present".to_owned(),
+                    "form.cancel".to_owned(),
+                ]));
+            } else {
+                let allowed = actor
+                    .core
+                    .ledger
+                    .allowed()
+                    .difference(&BTreeSet::from(["form.result".to_owned()]))
+                    .cloned()
+                    .collect();
+                actor.core.ledger.set_allowed(allowed);
+            }
+            let result = FormResult {
+                form_id: "form-1".to_owned(),
+                presentation_token: token,
+                action: "submit".to_owned(),
+                values: serde_json::json!({"mode": "quiet"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            };
+            assert!(actor.submit_form_result(result).await.is_err());
+            assert!(events.lock().unwrap().is_empty());
+        }
     }
 }
 
