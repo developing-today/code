@@ -920,10 +920,14 @@ in
       Environment = [
         "OPENCODE_CONFIG_PATH=%h/.local/state/opencode/opencode-runtime.jsonc"
       ];
+      # #883: run sync-models from the checkout ($HOME/code/bin), not via
+      # a ${../../bin} store copy — the home layer is sourced from the
+      # flake source snapshot (lib.from-root -> inputs.self.outPath), so a
+      # store copy silently bakes whatever bin/ tree that snapshot held.
       ExecStart = toString (
         pkgs.writeShellScript "sync-models-run" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs}
+          exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs"
         ''
       );
     };
@@ -1789,11 +1793,11 @@ in
         # native openai provider replaced the CLI bridge).
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
+          exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" "$@"
         '')
         (pkgs.writeShellScriptBin "update-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
+          exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" "$@"
         '')
         # No standalone "opencode" script in this list: the CLI is
         # services.opencode.package -- the cascade build with the
