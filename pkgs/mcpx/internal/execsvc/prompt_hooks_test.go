@@ -185,4 +185,48 @@ func TestRunHooksEmitsPromptFrameBeforeOutcome(t *testing.T) {
 	if res.Result != "done" {
 		t.Fatalf("result changed: %v", res.Result)
 	}
+	// Codex P2 (PR #9021): the frame is also retained on the result,
+	// so a structured caller (nil sink, the /v1/exec default) still
+	// receives the advice the run paid to generate.
+	if len(res.Hooks) != 1 || res.Hooks[0].Advice != "ship it" {
+		t.Fatalf("retained hooks = %+v", res.Hooks)
+	}
+}
+
+// Codex P2 (PR #9021): a prompt hook's generation carries the
+// service's resolved token cap, so a configured model.budget is a
+// hard ceiling for hook advice too, not only for intent generation.
+func TestRunPromptHookAppliesTokenCap(t *testing.T) {
+	fake := &fakeProvider{text: "advice"}
+	s := &Service{ModelProvider: fake, ModelMaxTokens: 123}
+	res := &Result{RunID: "r1", Result: "ok"}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+	h := Hook{Phase: HookOnSuccess, Prompt: "advise"}
+
+	run := s.runPromptHook(context.Background(), HookOnSuccess, h, hctx, runner.Options{}, res)
+	if run.Failed {
+		t.Fatalf("run failed: %s", run.Frame.Error)
+	}
+	if fake.last.MaxTokens != 123 {
+		t.Fatalf("provider request MaxTokens = %d, want the service cap 123", fake.last.MaxTokens)
+	}
+}
+
+// The cap rule itself, against the same cases the daemon's
+// modelMaxTokens is tested with: a nonpositive ask is unset, and a
+// positive budget binds whenever it is the smaller bound.
+func TestModelTokenCap(t *testing.T) {
+	for _, tc := range []struct{ perCall, budget, want int }{
+		{0, 0, 0},
+		{100, 0, 100},
+		{0, 40, 40},
+		{100, 40, 40},
+		{30, 40, 30},
+		{-5, 40, 40},
+		{-5, 0, 0},
+	} {
+		if got := ModelTokenCap(tc.perCall, tc.budget); got != tc.want {
+			t.Errorf("ModelTokenCap(%d, %d) = %d, want %d", tc.perCall, tc.budget, got, tc.want)
+		}
+	}
 }

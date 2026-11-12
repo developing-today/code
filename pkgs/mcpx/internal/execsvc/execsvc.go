@@ -514,6 +514,14 @@ type Result struct {
 	// call was intercepted and answered synthetically, so nothing
 	// the script "did" happened.
 	DryRun bool `json:"dryRun,omitempty"`
+	// Hooks retains every hook frame the run produced, in run order.
+	// The frames are also streamed to the sink as they happen, but a
+	// caller that asked for the structured result (the /v1/exec
+	// default, with a nil sink) had nowhere for them to land: a
+	// prompt hook's advice — its entire output — was generated and
+	// then discarded (Codex review, PR #9021). Retaining them here
+	// changes neither the script's result nor its error.
+	Hooks []HookFrame `json:"hooks,omitempty"`
 }
 
 // Source supplies the generated client the script is run against.
@@ -627,6 +635,16 @@ type Service struct {
 	// be built; a prompt hook's unavailable message names it, so a
 	// misconfigured provider is distinguishable from none configured.
 	ModelProviderErr error
+	// ModelMaxTokens is the resolved token cap a prompt hook's
+	// generation runs under: the per-call ask (prompt.maxTokens)
+	// capped by the global budget (model.budget), resolved by whoever
+	// built this service (execsvc.ModelTokenCap) because the policy
+	// lives on their side of the boundary. Zero means no cap was
+	// resolved, and the provider's own limit applies — which must
+	// never be how a CONFIGURED budget ends up (Codex review,
+	// PR #9021): the daemon and the CLI both resolve it whenever
+	// they resolve the provider.
+	ModelMaxTokens int
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)

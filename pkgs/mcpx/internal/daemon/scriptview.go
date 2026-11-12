@@ -340,7 +340,12 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 		cleanup = cf
 	}
 	defer cleanup()
-	res, runErr := s.ExecService().Run(ctx, req, nil)
+	// Script-backed tools run config-declared hooks too: resolve
+	// the model layer onto the service, or their prompt hooks
+	// report no provider configured (Codex review, PR #9021).
+	svc := s.ExecService()
+	s.modelLayerForExec(ctx, svc, opts.Session)
+	res, runErr := svc.Run(ctx, req, nil)
 	if runErr != nil && res == nil {
 		return nil, fmt.Errorf("tool %q: %w", tool, runErr)
 	}

@@ -210,6 +210,10 @@ func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Servi
 	} else {
 		svc.ModelProvider = prov
 	}
+	// The same token cap the daemon resolves (prompt.maxTokens
+	// bounded by model.budget), so a local run's prompt hooks run
+	// under the operator's ceiling too (Codex review, PR #9021).
+	svc.ModelMaxTokens = execsvc.ModelTokenCap(set.Int("prompt.maxTokens"), set.Int("model.budget"))
 	return svc
 }
 

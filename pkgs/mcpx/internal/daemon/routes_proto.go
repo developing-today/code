@@ -576,7 +576,13 @@ func (s *Server) runAsk(ctx context.Context, id string, cc config.CallContext, r
 	s.reg.asks.beginRun(id, run, opts.Session)
 	defer s.reg.endAsk(id)
 	start := time.Now()
-	res, err := s.ExecService().Run(ctx, execsvc.Request{Source: req.Source, Opts: opts, RunID: run, CallSettings: callSettingsHeaderValue(callSettingsFrom(ctx))}, nil)
+	// An ask with kind: exec runs the same hooks /v1/exec runs,
+	// config-declared prompt hooks included: resolve the model
+	// layer onto the service or they report no provider here
+	// (Codex review, PR #9021).
+	svc := s.ExecService()
+	s.modelLayerForExec(ctx, svc, opts.Session)
+	res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, Opts: opts, RunID: run, CallSettings: callSettingsHeaderValue(callSettingsFrom(ctx))}, nil)
 	if err != nil && res == nil {
 		return nil, &tasks.Fault{Code: http.StatusBadRequest, Message: err.Error()}
 	}

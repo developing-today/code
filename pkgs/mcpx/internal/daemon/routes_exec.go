@@ -276,6 +276,32 @@ func (s *Server) ExecService() *execsvc.Service {
 	return svc
 }
 
+// modelLayerForExec resolves this request's model layer onto an
+// exec service: the provider a prompt hook asks, the build error
+// when one was configured but could not be built, and the token cap
+// prompt generation runs under (the request policy's
+// prompt.maxTokens bounded by model.budget).
+//
+// Every entry point that can run config-declared prompt hooks goes
+// through it. /v1/exec did from the start; /v1/ask with kind: exec
+// (routes_proto.go runAsk) and script-backed tools (scriptview.go)
+// built their service bare, so a prompt hook on those routes always
+// reported no provider configured even with valid model.* settings
+// (Codex review, PR #9021).
+func (s *Server) modelLayerForExec(ctx context.Context, svc *execsvc.Service, session string) {
+	pol := s.policyFor(ctx)
+	svc.ModelMaxTokens = modelMaxTokens(pol.PromptMaxTokens, pol.ModelBudget)
+	// (nil, nil) — no layer configured — leaves ModelProvider nil,
+	// and a prompt hook reports its advice unavailable in its frame;
+	// a build error is kept on the service so the frame can name it
+	// instead of looking like no provider was configured.
+	if prov, merr := s.modelLayer(ctx, session); merr != nil {
+		svc.ModelProviderErr = merr
+	} else {
+		svc.ModelProvider = prov
+	}
+}
+
 // ---- POST /v1/exec ----
 
 type execReq struct {
@@ -308,15 +334,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	// the request-resolved value to the service this request runs through.
 	svc.Limits.StdoutLimit = s.callSettings(r).Bytes("exec.maxOutputBytes")
 	// Prompt hooks (#5276) resolve through this request's model layer.
-	// (nil, nil) — no layer configured — leaves ModelProvider nil, and a
-	// prompt hook reports its advice unavailable in its frame; a build
-	// error is kept on the service so the frame can name it instead of
-	// looking like no provider was configured.
-	if prov, merr := s.modelLayer(r.Context(), req.Options.Session); merr != nil {
-		svc.ModelProviderErr = merr
-	} else {
-		svc.ModelProvider = prov
-	}
+	s.modelLayerForExec(r.Context(), svc, req.Options.Session)
 
 	// A task is a handle now and the result later, which is the right shape
 	// for a script that takes minutes: holding a request open that long

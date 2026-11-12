@@ -248,6 +248,10 @@ func (s *Service) runHooks(ctx context.Context, phase string, hooks []Hook, hctx
 		}
 		f := run.Frame
 		emit(Frame{Type: FrameHook, RunID: res.RunID, Hook: &f})
+		// The frame is also retained on the result: a structured
+		// caller (nil sink) receives no stream, and a prompt hook's
+		// advice lives only in its frame (Codex review, PR #9021).
+		res.Hooks = append(res.Hooks, f)
 		runs = append(runs, run)
 	}
 	return runs
