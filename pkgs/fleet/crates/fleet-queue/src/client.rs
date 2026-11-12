@@ -3775,6 +3775,10 @@ fn stack_intent_from_row(row: &Value) -> Option<crate::merge_intent::MergeIntent
             .get("head_sha")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        base_head_sha: row
+            .get("base_head_sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         issue_number: row.get("issue_number").and_then(|v| v.as_i64()),
         pr_number: row.get("pr_number").and_then(|v| v.as_i64()),
         owner_lane: row.get("owner_lane")?.as_str()?.to_string(),
@@ -4050,6 +4054,47 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                         let _ = std::fs::write(path, serde_json::to_string(&saved).unwrap_or_default());
                     }
                 }
+                // Merge-bearing histories are refused, never
+                // flattened (Codex P1, PR #8849, comment
+                // 4549335625): a plain rebase skips merge commits,
+                // so a merge commit carrying merge-only changes (a
+                // fixup or new file added while merging the base)
+                // would be silently discarded and the altered tree
+                // published as success. If the range replay would
+                // rebase contains any merge commit, route it to
+                // the authoring lane as a conflict: the author
+                // restacks preserving the merges (or merges main
+                // in) and replay resumes afterwards.
+                match replay_run(
+                    &dir,
+                    "git",
+                    &replay_args(&[
+                        "rev-list",
+                        "--merges",
+                        &format!("origin/main..{branch}"),
+                    ]),
+                ) {
+                    Ok(list) if !list.is_empty() => {
+                        return conflict_exit(
+                            step.position,
+                            format!(
+                                "branch {branch} contains merge commits ({}) in the range replay would rebase onto main; a plain rebase would discard their merge-only changes, so replay refuses to flatten this history -- the authoring lane restacks it preserving the merges and re-runs replay",
+                                list.lines().take(5).collect::<Vec<_>>().join(", ")
+                            ),
+                            &landed,
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        return transient_exit(
+                            step,
+                            format!(
+                                "checking {branch} for merge commits before its rebase failed: {e}"
+                            ),
+                            &landed,
+                        );
+                    }
+                }
                 if let Err(e) = replay_run(
                     &dir,
                     "git",
@@ -4283,6 +4328,66 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                             &landed,
                         );
                     }
+                }
+                // Abandon coordination (Codex P1, PR #8849,
+                // comment 4549335594): the plan executes a stack
+                // snapshot taken at pass start, but an author may
+                // withdraw this intent (replaying -> abandoned is a
+                // legal transition) while the pass works. Merging
+                // on the stale snapshot would land withdrawn
+                // changes on main; the Land transition afterwards
+                // would refuse, but only after the irreversible
+                // step. So re-read the intent's live state
+                // immediately before merging and honor a
+                // withdrawal: stop the pass without merging. Any
+                // state other than replaying, or a state that
+                // cannot be read at all, also stops the pass --
+                // never merge blind.
+                let mut abandon_stop: Option<String> = None;
+                if pr_state.as_deref() != Some("MERGED") {
+                    let resp = call("/stack-list", &json!({"stack_id": stack_id}));
+                    if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+                        abandon_stop = Some(
+                            "could not re-read the stack state before merging; refusing to merge on a stale snapshot".to_string(),
+                        );
+                    } else {
+                        let fresh_rows = resp
+                            .get("row")
+                            .and_then(|r| r.get("intents"))
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let fresh_state = fresh_rows
+                            .iter()
+                            .filter_map(stack_intent_from_row)
+                            .find(|i| i.position == step.position)
+                            .map(|i| i.state);
+                        match fresh_state {
+                            Some(crate::merge_intent::IntentState::Replaying) => {}
+                            Some(crate::merge_intent::IntentState::Abandoned) => {
+                                abandon_stop = Some(format!(
+                                    "intent at position {} was abandoned by its author during this replay pass; PR #{pr} was NOT merged",
+                                    step.position
+                                ));
+                            }
+                            Some(other) => {
+                                abandon_stop = Some(format!(
+                                    "intent at position {} is {} in the live stack state, not replaying; refusing to merge on a stale snapshot",
+                                    step.position,
+                                    other.as_str()
+                                ));
+                            }
+                            None => {
+                                abandon_stop = Some(format!(
+                                    "intent at position {} is missing from the live stack state; refusing to merge on a stale snapshot",
+                                    step.position
+                                ));
+                            }
+                        }
+                    }
+                }
+                if let Some(stop) = abandon_stop {
+                    return transient_exit(step, stop, &landed);
                 }
                 if pr_state.as_deref() == Some("MERGED") {
                     // Fall through to Land: the merge already

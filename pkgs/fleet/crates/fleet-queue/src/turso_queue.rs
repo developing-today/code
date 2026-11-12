@@ -831,6 +831,28 @@ impl TursoBackend {
                 &[],
             )?;
         }
+        // #8582: the merge_intents base-tip linkage column
+        // (base_head_sha -- the recorded head of an intent's base
+        // at stack/restack time) lands the same additive way for
+        // merge_intents tables created before it. No backfill:
+        // existing rows read NULL (no linkage recorded), which the
+        // taint derivation reads as unverified only inside stacks
+        // that hold an abandoned intent.
+        let micols = self.query_objs(
+            "SELECT name FROM pragma_table_info('merge_intents')",
+            &[],
+            &[],
+        )?;
+        if !micols.is_empty()
+            && !micols
+                .iter()
+                .any(|c| c.get("name").and_then(|v| v.as_str()) == Some("base_head_sha"))
+        {
+            self.exec(
+                "ALTER TABLE merge_intents ADD COLUMN base_head_sha TEXT",
+                &[],
+            )?;
+        }
         // #8210: the ledger's platform-limitation columns (a
         // task may be limited to one platform family, but only
         // with a good reason recorded beside it) land the same
@@ -6443,7 +6465,7 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
 // ---------------------------------------------------------------------------
 
 const MERGE_INTENT_COLS: &str = "id, stack_id, position, repo, branch, base_branch, \
-    head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
+    head_sha, base_head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
     state, conflict_detail, created_at, updated_at";
 
 fn merge_intent_core(row: &Value) -> Option<crate::merge_intent::MergeIntent> {
@@ -6455,6 +6477,10 @@ fn merge_intent_core(row: &Value) -> Option<crate::merge_intent::MergeIntent> {
         base_branch: row.get("base_branch")?.as_str()?.to_string(),
         head_sha: row
             .get("head_sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        base_head_sha: row
+            .get("base_head_sha")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
         issue_number: row.get("issue_number").and_then(|v| v.as_i64()),
@@ -6596,8 +6622,8 @@ fn verb_stack_record(t: &TursoBackend, req: &Value) -> Value {
             let now = now_iso();
             let res = t.exec(
                 "INSERT INTO merge_intents (stack_id, position, repo, branch, base_branch, \
-                 head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
-                 state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 head_sha, base_head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
+                 state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 &[
                     Arg::Text(planned.stack_id.clone()),
                     Arg::Int(planned.position),
@@ -6605,6 +6631,7 @@ fn verb_stack_record(t: &TursoBackend, req: &Value) -> Value {
                     Arg::Text(planned.branch.clone()),
                     Arg::Text(planned.base_branch.clone()),
                     arg_str(planned.head_sha.as_deref()),
+                    arg_str(planned.base_head_sha.as_deref()),
                     planned.issue_number.map(Arg::Int).unwrap_or(Arg::Null),
                     planned.pr_number.map(Arg::Int).unwrap_or(Arg::Null),
                     Arg::Text(planned.owner_lane.clone()),
@@ -6819,24 +6846,32 @@ fn verb_stack_restack(t: &TursoBackend, req: &Value) -> Value {
         Ok(pl) => pl,
         Err(e) => return fail(2, e),
     };
-    // plan_restack found the intent; its validated base is the CAS
-    // predicate for the write below.
-    let current_base = core
+    // plan_restack found the intent; its validated base AND its
+    // validated lifecycle state are the CAS predicates for the
+    // write below. The state predicate matters (Codex P2, PR
+    // #8849, comment 4549335606): transitions do not change
+    // base_branch, so a base-only predicate would let a restack
+    // acknowledgement rewrite the recorded base/head of an intent
+    // that a concurrent transition just landed or abandoned --
+    // terminal records are sealed.
+    let (current_base, current_state) = core
         .iter()
         .find(|i| i.position == position)
-        .map(|i| i.base_branch.clone())
+        .map(|i| (i.base_branch.clone(), i.state.as_str().to_string()))
         .unwrap_or_default();
     let now = now_iso();
     let upd = match t.exec(
-        "UPDATE merge_intents SET base_branch = ?, head_sha = ?, updated_at = ? \
-         WHERE stack_id = ? AND position = ? AND base_branch = ?",
+        "UPDATE merge_intents SET base_branch = ?, head_sha = ?, base_head_sha = ?, updated_at = ? \
+         WHERE stack_id = ? AND position = ? AND base_branch = ? AND state = ?",
         &[
             Arg::Text(planned.base_branch.clone()),
             arg_str(planned.head_sha.as_deref()),
+            arg_str(planned.base_head_sha.as_deref()),
             Arg::Text(now),
             Arg::Text(stack_id.clone()),
             Arg::Int(position),
             Arg::Text(current_base),
+            Arg::Text(current_state),
         ],
     ) {
         Ok(r) => r,
@@ -6847,8 +6882,8 @@ fn verb_stack_restack(t: &TursoBackend, req: &Value) -> Value {
             2,
             format!(
                 "stack_restack: intent at stack {stack_id} position {position} changed \
-                 concurrently (validated base is no longer current); re-read the stack \
-                 and retry"
+                 concurrently (validated base or lifecycle state is no longer current); \
+                 re-read the stack and retry"
             ),
         );
     }

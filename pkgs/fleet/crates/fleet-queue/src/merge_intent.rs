@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS merge_intents (
   branch TEXT NOT NULL,
   base_branch TEXT NOT NULL,
   head_sha TEXT,
+  base_head_sha TEXT,
   issue_number INTEGER,
   pr_number INTEGER,
   owner_lane TEXT NOT NULL,
@@ -118,6 +119,16 @@ pub struct MergeIntent {
     pub branch: String,
     pub base_branch: String,
     pub head_sha: Option<String>,
+    /// The recorded head of the base branch's intent at the moment
+    /// this branch was stacked (or last restacked) onto it: the
+    /// base-tip linkage. None when the base is main or no head was
+    /// recorded for the base. If the base intent's head later moves
+    /// (a restack rebuilds it), this intent's linkage goes stale
+    /// and the intent stays taint-blocked until it is itself
+    /// restacked -- refreshing the base alone cannot establish that
+    /// an unchanged descendant is clean (Codex P1, PR #8849,
+    /// comment 4548246107).
+    pub base_head_sha: Option<String>,
     pub issue_number: Option<i64>,
     pub pr_number: Option<i64>,
     pub owner_lane: String,
@@ -255,16 +266,25 @@ pub fn validate_append_against_stack(
 /// branch was built on a different base passes that real base
 /// explicitly (see [`AppendRequest::base_branch`]).
 pub fn plan_append(existing: &[MergeIntent], req: &AppendRequest) -> MergeIntent {
+    let base_branch = req
+        .base_branch
+        .clone()
+        .unwrap_or_else(|| next_base_branch(existing, &req.stack_id));
+    // Base-tip linkage: record the base intent's head as of this
+    // append, so a later rebuild of the base is detectable from
+    // the recorded stack alone.
+    let base_head_sha = existing
+        .iter()
+        .find(|i| i.stack_id == req.stack_id && i.branch == base_branch)
+        .and_then(|base| base.head_sha.clone());
     MergeIntent {
         stack_id: req.stack_id.clone(),
         position: next_position(existing, &req.stack_id),
         repo: req.repo.clone(),
         branch: req.branch.clone(),
-        base_branch: req
-            .base_branch
-            .clone()
-            .unwrap_or_else(|| next_base_branch(existing, &req.stack_id)),
+        base_branch,
         head_sha: req.head_sha.clone(),
+        base_head_sha,
         issue_number: req.issue_number,
         pr_number: req.pr_number,
         owner_lane: req.owner_lane.clone(),
@@ -307,10 +327,13 @@ pub struct RestackRequest {
 ///   would keep the withdrawn commits in the ancestry);
 /// - an intent cannot be based on its own branch.
 ///
-/// Taint is derived from the recorded chain on every walk, so this
-/// one refresh unblocks the restacked intent AND its descendants:
-/// their bases name this branch, which is no longer tainted once
-/// its own base is clean.
+/// Taint is derived from the recorded chain on every walk. This
+/// refresh unblocks the restacked intent only: its descendants
+/// keep the base-tip linkage they recorded when they were stacked
+/// on this branch's OLD head, so they stay blocked until each is
+/// itself restacked onto the new tip (Codex P1, PR #8849, comment
+/// 4548246107). The refresh also re-records this intent's own
+/// linkage to its new base's current head.
 pub fn plan_restack(
     intents: &[MergeIntent],
     req: &RestackRequest,
@@ -383,6 +406,14 @@ pub fn plan_restack(
     if let Some(sha) = &req.new_head_sha {
         updated.head_sha = Some(sha.clone());
     }
+    updated.base_head_sha = if req.new_base_branch == "main" {
+        None
+    } else {
+        intents
+            .iter()
+            .find(|i| i.stack_id == req.stack_id && i.branch == req.new_base_branch)
+            .and_then(|base| base.head_sha.clone())
+    };
     Ok(updated)
 }
 
@@ -395,14 +426,25 @@ pub fn plan_restack(
 /// `replaying` intent blocks everything stacked above it — so only
 /// the intended prefix is returned.
 /// Branches in `stack_id` that still carry an abandoned intent's
-/// changes: the abandoned intents' own branches, plus — transitively —
-/// every branch stacked on one of them (its `base_branch` names a
-/// tainted branch). An `abandoned` intent is its author withdrawing
+/// changes: the abandoned intents' own branches, plus -- transitively --
+/// every branch stacked on one of them (its base_branch names a
+/// tainted branch). An abandoned intent is its author withdrawing
 /// the change; a descendant replayed without restacking would merge
 /// the withdrawn commits along with its own (Codex P1, PR #8849), so
 /// both walks stop before the first tainted intent: replay refuses
 /// descendants that still contain abandoned changes until their
 /// author restacks them off the withdrawn branch.
+///
+/// A restack acknowledgement for one intent does NOT clear its
+/// descendants (Codex P1, PR #8849, comment 4548246107): rebuilding
+/// branch B on main says nothing about branch C stacked on B's old
+/// tip -- C's history still contains the original commits. So when
+/// the stack holds an abandoned intent, an intent whose recorded
+/// base-tip linkage (base_head_sha) no longer matches its base
+/// intent's current head is tainted as well, until that intent is
+/// itself restacked (which re-records its linkage). Stacks with
+/// no abandoned intent are unaffected: a stale linkage there has
+/// no withdrawn changes to launder.
 fn abandoned_tainted_branches<'a>(
     intents: &'a [MergeIntent],
     stack_id: &str,
@@ -412,12 +454,32 @@ fn abandoned_tainted_branches<'a>(
         .filter(|i| i.stack_id == stack_id && i.state == IntentState::Abandoned)
         .map(|i| i.branch.as_str())
         .collect();
+    let has_abandoned = !tainted.is_empty();
     loop {
         let mut grew = false;
         for i in intents.iter().filter(|i| i.stack_id == stack_id) {
-            if !tainted.contains(i.branch.as_str()) && tainted.contains(i.base_branch.as_str()) {
+            if tainted.contains(i.branch.as_str()) {
+                continue;
+            }
+            if tainted.contains(i.base_branch.as_str()) {
                 tainted.insert(i.branch.as_str());
                 grew = true;
+                continue;
+            }
+            // Stale base-tip linkage: this intent was stacked on a
+            // tip of its base that the base no longer records --
+            // the base was rebuilt (restacked) and this intent was
+            // not. Its ancestry is unverified against the new base.
+            if has_abandoned {
+                if let Some(base) = intents
+                    .iter()
+                    .find(|b| b.stack_id == stack_id && b.branch == i.base_branch)
+                {
+                    if i.base_head_sha != base.head_sha {
+                        tainted.insert(i.branch.as_str());
+                        grew = true;
+                    }
+                }
             }
         }
         if !grew {
@@ -586,6 +648,7 @@ mod tests {
             branch: branch.to_string(),
             base_branch: "main".to_string(),
             head_sha: None,
+            base_head_sha: None,
             issue_number: Some(8582),
             pr_number: None,
             owner_lane: "any-b".to_string(),
@@ -1172,11 +1235,46 @@ mod tests {
             .into_iter()
             .map(|i| if i.position == 1 { updated.clone() } else { i })
             .collect();
+        // Only the restacked intent unblocks (Codex P1, PR #8849,
+        // comment 4548246107): queue/c was stacked on queue/b's old
+        // tip and was NOT rebuilt, so its recorded base-tip linkage
+        // (None) no longer matches queue/b's new head (deadbeef) --
+        // its history still contains the original queue/a commits
+        // and it stays blocked until its own author restacks it.
         let walk: Vec<&str> = replay_prefix(&stack, "s1")
             .iter()
             .map(|i| i.branch.as_str())
             .collect();
-        assert_eq!(walk, vec!["queue/b", "queue/c"], "descendants unblock transitively");
+        assert_eq!(walk, vec!["queue/b"], "unchanged descendants stay blocked");
+        // Restacking queue/c onto the rebuilt queue/b re-records
+        // its linkage to the new tip and unblocks it.
+        let c_req = RestackRequest {
+            stack_id: "s1".to_string(),
+            position: 2,
+            new_base_branch: "queue/b".to_string(),
+            new_head_sha: Some("cafef00d".to_string()),
+        };
+        let c_updated = plan_restack(&stack, &c_req).expect("restack onto rebuilt base is legal");
+        assert_eq!(c_updated.base_head_sha.as_deref(), Some("deadbeef"));
+        let stack: Vec<MergeIntent> = stack
+            .into_iter()
+            .map(|i| {
+                if i.position == 2 {
+                    c_updated.clone()
+                } else {
+                    i
+                }
+            })
+            .collect();
+        let walk: Vec<&str> = replay_prefix(&stack, "s1")
+            .iter()
+            .map(|i| i.branch.as_str())
+            .collect();
+        assert_eq!(
+            walk,
+            vec!["queue/b", "queue/c"],
+            "restacked descendant unblocks"
+        );
         // Terminal intents are sealed against a refresh.
         let sealed = RestackRequest {
             stack_id: "s1".to_string(),
