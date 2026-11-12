@@ -57,6 +57,8 @@ use crate::key_envelope;
 /// Total v1 envelope length: 60-byte header + 32-byte wrapped key +
 /// 16-byte AEAD tag, matching `key_envelope`'s layout.
 pub const BACKUP_ENVELOPE_LEN: usize = 108;
+/// Minimum passphrase length accepted by every backup creation path.
+pub const MIN_BACKUP_PASSPHRASE_BYTES: usize = 8;
 /// Envelope magic, mirroring `key_envelope`'s `IDKEY` header.
 const ENVELOPE_MAGIC: &[u8; 5] = b"IDKEY";
 /// Envelope version byte offset and expected v1 value.
@@ -837,6 +839,10 @@ pub fn passphrase_warning(passphrase: &[u8]) -> Option<&'static str> {
 /// `key_envelope::encrypt` exactly — no second format — and report
 /// the weak-passphrase warning alongside.
 pub fn create_backup(passphrase: &[u8], identity_key: &[u8; 32]) -> anyhow::Result<CreatedBackup> {
+    anyhow::ensure!(
+        passphrase.len() >= MIN_BACKUP_PASSPHRASE_BYTES,
+        "passphrase must be at least {MIN_BACKUP_PASSPHRASE_BYTES} bytes"
+    );
     Ok(CreatedBackup {
         envelope: key_envelope::encrypt(passphrase, identity_key)?,
         passphrase_warning: passphrase_warning(passphrase),
@@ -1227,9 +1233,23 @@ mod tests {
     }
 
     #[test]
+    fn passphrase_floor_rejects_short_input_and_accepts_the_exact_boundary() {
+        assert!(create_backup(b"", &[1; 32]).is_err());
+        assert!(create_backup(b"1234567", &[1; 32]).is_err());
+
+        let created = create_backup(b"12345678", &[1; 32]).unwrap();
+        assert_eq!(created.envelope.len(), BACKUP_ENVELOPE_LEN);
+        assert_eq!(
+            restore_identity_key(b"12345678", &created.envelope).unwrap(),
+            [1; 32]
+        );
+        assert_eq!(created.passphrase_warning, Some(WEAK_PASSPHRASE_WARNING));
+    }
+
+    #[test]
     fn weak_passphrases_are_warned_at_creation() {
         assert_eq!(
-            create_backup(b"short", &[1; 32])
+            create_backup(b"shorter!", &[1; 32])
                 .unwrap()
                 .passphrase_warning,
             Some(WEAK_PASSPHRASE_WARNING)
