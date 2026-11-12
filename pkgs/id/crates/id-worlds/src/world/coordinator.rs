@@ -824,6 +824,8 @@ impl Coordinator {
                 payload_digest,
                 new_owner_epoch,
                 new_region_map_epoch,
+                program_module_hash,
+                payload_schema,
                 ..
             } => {
                 let active = self.replay_active(handoff_id)?;
@@ -831,6 +833,8 @@ impl Coordinator {
                     || active.entity_ref != *entity_ref
                     || active.source_region != *source_region
                     || active.target_region != *target_region
+                    || active.program_module_hash != *program_module_hash
+                    || active.payload_schema != *payload_schema
                     || active.payload_digest.as_deref() != Some(payload_digest.as_str())
                     || *new_owner_epoch != active.expected_owner_epoch + 1
                     || *new_region_map_epoch != self.region_map_epoch + 1
@@ -1318,6 +1322,34 @@ mod tests {
             ),
             Err(CoordinatorError::Integrity(_))
         ));
+    }
+
+    #[test]
+    fn replay_rejects_completion_with_mismatched_module_or_schema() {
+        // A recovered HandoffCompleted whose module hash or payload
+        // schema differs from its journaled start is an integrity
+        // error: the live complete() path could never produce it.
+        for (module, schema) in [
+            ("other-module", "schema-v1"),
+            ("module-hash", "other-schema"),
+        ] {
+            let mut journal = imported().journal().to_vec();
+            journal.push(CoordinatorJournalEntry::HandoffCompleted {
+                handoff_id: HANDOFF.to_string(),
+                entity_ref: ENTITY.to_string(),
+                source_region: "region-a".to_string(),
+                target_region: "region-b".to_string(),
+                payload_digest: DIGEST.to_string(),
+                new_owner_epoch: 4,
+                new_region_map_epoch: 8,
+                program_module_hash: module.to_string(),
+                payload_schema: schema.to_string(),
+            });
+            assert!(matches!(
+                Coordinator::recover(journal, 7, [seed_owner()]),
+                Err(CoordinatorError::Integrity(_))
+            ));
+        }
     }
 
     #[test]
