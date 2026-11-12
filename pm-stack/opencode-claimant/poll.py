@@ -244,8 +244,9 @@ def is_root_session(s):
 
 def _active_root_state(s, now_ms, active_ids=None):
     """True (proven active), False (proven inactive), or None (the
-    entry's timing cannot be read, so its activity is UNKNOWN — see
-    _session_timing; #6868)."""
+    entry has neither an authoritative active-set membership nor a
+    readable timestamp/terminal marker, so its activity is UNKNOWN —
+    see _session_timing; #6868)."""
     if not is_root_session(s):
         return False
     # The server's active set is authoritative: a RESUMED session keeps
@@ -255,12 +256,16 @@ def _active_root_state(s, now_ms, active_ids=None):
     # counts the root no matter what its stored markers say.
     if active_ids is not None and s.get("id") in active_ids:
         return True
+    # A terminal marker proves inactivity without a usable activity
+    # timestamp. Check it first so malformed updated/created values do
+    # not turn a known-finished root into UNKNOWN and block cap room.
+    t = s.get("time")
+    if (isinstance(t, dict) and t.get("idle")) or s.get("outcome"):
+        return False
     timing = _session_timing(s)
     if timing is None:
         return None
-    idle, updated = timing
-    if idle or s.get("outcome"):
-        return False
+    _, updated = timing
     return now_ms - updated < ACTIVE_WINDOW_MS
 
 

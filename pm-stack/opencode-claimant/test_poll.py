@@ -153,6 +153,16 @@ class TestWrongShapeTime(unittest.TestCase):
         self.assertIsNone(active)
         self.assertIsNone(room)
 
+    def test_terminal_marker_makes_malformed_timestamp_inactive(self):
+        finished = {"id": "ses_bad", "time": {"idle": 123, "updated": "bad"}}
+        live, active, room = poll.summarize_cap([finished], set(), NOW)
+        self.assertEqual((live, active, room), (1, 0, poll.CAP))
+
+    def test_outcome_makes_malformed_timestamp_inactive(self):
+        finished = {"id": "ses_bad", "time": {"updated": "bad"},
+                    "outcome": "failed"}
+        self.assertFalse(poll.is_active_root(finished, NOW, set()))
+
     def test_is_stuck_bound_never_raises_and_never_stuck(self):
         row = TestIsStuckBound().row()
         for bad in self.BAD_TIMES:
