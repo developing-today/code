@@ -31,9 +31,12 @@
 //!
 //! Scope of this first pass: plain [`WorldEventKind::Input`] moves only,
 //! with the binding and the accepted-move records held by
-//! [`WorldCore`](super::WorldCore) at runtime. Journal persistence of the
-//! binding and the move frontiers (so signed play survives a restart
-//! without re-anchoring) is a follow-up; entity-addressed input
+//! [`WorldCore`](super::WorldCore) at runtime. Since #4346 the binding
+//! and the accepted records are journaled (`JournalEntry::AuthorKeyBound`
+//! / `JournalEntry::SignedMoveAccepted`) and restored by journal replay
+//! with chain re-verification, so signed play survives a restart without
+//! re-anchoring; the accepted bytes reach the event store through
+//! `WorldCore::ingest_signed_moves`. Entity-addressed input
 //! (`WorldEventKind::EntityInput`, #3870) is out of scope here.
 //!
 //! [`WorldEventKind::Input`]: super::WorldEventKind::Input
@@ -206,6 +209,54 @@ impl MoveChain {
         ensure!(
             event.header.payload_hash == Some(Hash::digest(input)),
             "signed move does not commit to the submitted input bytes"
+        );
+        Ok(event)
+    }
+
+    /// Verify `bytes` as `author`'s next signed move during journal
+    /// replay (#4346): every [`MoveChain::verify`] check except the
+    /// payload commitment, which replay cannot recompute when the
+    /// committed input event has aged out of the journal's retained
+    /// window under compaction. The signature, kind, world group,
+    /// author, sequence, and backlink are all still verified, and the
+    /// caller cross-references the committed input event whenever it
+    /// is retained. The payload commitment itself was verified at
+    /// acceptance time, before the move was journaled.
+    ///
+    /// # Errors
+    ///
+    /// As [`MoveChain::verify`], minus the payload-commitment refusal.
+    pub fn verify_journaled(
+        &self,
+        bytes: &[u8],
+        world_id: &str,
+        author: &[u8; 32],
+    ) -> Result<Event> {
+        ensure!(!world_id.trim().is_empty(), "world ID must not be empty");
+        let event = chain::decode(bytes)
+            .map_err(|err| anyhow::anyhow!("signed move does not decode: {err}"))?;
+        ensure!(
+            event.header.extensions.kind == MOVE_KIND,
+            "signed move has kind {:?}, not {MOVE_KIND:?}",
+            event.header.extensions.kind
+        );
+        ensure!(
+            event.header.extensions.group == Some(world_group(world_id)),
+            "signed move names another world"
+        );
+        ensure!(
+            event.header.verifying_key.as_bytes() == author,
+            "signed move author is not the participant's bound key"
+        );
+        ensure!(
+            event.header.seq_num == self.next_seq,
+            "signed move sequence {} is not the expected {}",
+            event.header.seq_num,
+            self.next_seq
+        );
+        ensure!(
+            event.header.backlink == self.frontier,
+            "signed move backlink does not name the author's current frontier"
         );
         Ok(event)
     }
