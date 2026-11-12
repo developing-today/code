@@ -8722,7 +8722,14 @@ mod tests {
         // Routes, sweep ride, audit kinds, health bucket.
         assert!(impl_src.contains("\"/dep-recheck\" => verb_dep_recheck"));
         assert!(impl_src.contains("\"/unblock\" => verb_unblock"));
-        assert!(impl_src.contains("run_dep_rechecks(t, req_i64(req, \"dep_limit\")"));
+        // The sweep ride calls run_dep_rechecks with the sweep's own
+        // "dep_limit" key; rustfmt splits that call across lines, so
+        // the oracle matches on whitespace-flattened source. The
+        // /dep-recheck verb's own call (client sends "limit") is
+        // asserted separately below.
+        let impl_flat = impl_src.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(impl_flat.contains("run_dep_rechecks( t, req_i64(req, \"dep_limit\")"));
+        assert!(impl_src.contains("run_dep_rechecks(t, req_i64(req, \"limit\")"));
         assert!(impl_src.contains("\"dep_ttl_expired\""));
         assert!(impl_src.contains("\"dep_unblocked\""));
         assert!(impl_src.contains("\"dep_unblock_override\""));
