@@ -191,6 +191,13 @@ describe("batch summaries", () => {
     expect(out.every((b) => b.fingerprint === null)).toBe(true);
   });
 
+  test("cache entries may carry a numeric sql revision (#8817)", () => {
+    const base = { batch: B1, configFingerprint: "c", fingerprint: "f", builtAt: "t", section: {} };
+    expect(isAaBatchCacheEntry(base)).toBe(true);
+    expect(isAaBatchCacheEntry({ ...base, sqlRevision: 1 })).toBe(true);
+    expect(isAaBatchCacheEntry({ ...base, sqlRevision: "1" })).toBe(false);
+  });
+
   test("cache names are uuid-only and label is human-readable", () => {
     expect(aaCacheFileName(B1)).toBe(`aa-batch-${B1}.json`);
     expect(() => aaCacheFileName("../escape")).toThrow();

@@ -34,6 +34,12 @@ export interface AaBatchCacheEntry {
    * before the overlay was validity-keyed; such entries are
    * treated as stale and rebuilt. */
   pricesFingerprint?: string | null;
+  /** aaPayloadSql revision the section was built with
+   * (AA_PAYLOAD_SQL_REVISION in aa-batch-sql.ts). Absent on entries
+   * written before the revision was stamped; the collector reads those
+   * as revision 0 and rebuilds them when the SQL semantics have moved
+   * on (#8817). */
+  sqlRevision?: number;
   builtAt: string;
   section: AaSection;
 }
@@ -214,6 +220,7 @@ export function isAaBatchCacheEntry(v: unknown): v is AaBatchCacheEntry {
     (e.pricesFingerprint === undefined ||
       e.pricesFingerprint === null ||
       typeof e.pricesFingerprint === "string") &&
+    (e.sqlRevision === undefined || typeof e.sqlRevision === "number") &&
     typeof e.builtAt === "string" &&
     typeof e.section === "object" &&
     e.section !== null

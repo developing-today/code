@@ -570,6 +570,13 @@ select coalesce((
  * under the historical UUID; a batch older than every event batch gets
  * empty sections rather than another batch's data.
  */
+/** Revision of the aaPayloadSql semantics. The collector validity-keys
+ * every cached batch payload with this number: entries built under older
+ * SQL carry no revision (read as 0) and are rebuilt, never served as
+ * current, once the payload semantics move. Bump when a change alters
+ * what a cached payload means. (#8817: configs/cai scoping.) */
+export const AA_PAYLOAD_SQL_REVISION = 1;
+
 export function aaPayloadSql(batch: string | null): string {
   const b = batchExpression(batch);
   const rankings = RANKINGS_BODY.replace("{{BATCH}}", b);
