@@ -49,7 +49,7 @@ Major improvements to Atlas; follow-on work never ends, so the program structure
 - Epic home: dezren39/hatch-personal Atlas issues (#35–#45 family).
 - Milestone: "Atlas program" in hatch-personal (exists; rolling — its description states follow-on work lands there indefinitely).
 - Labels: `design` + `epic/atlas-program`.
-- Board: Project #4 view "Designs — Atlas" exists (fills once the personal-repo token gap closes; sibling lane is on the scope fix).
+- Board: Project #4 view "Designs — Atlas" exists but stays empty of the hatch-personal items — see the Drew ruling below; Atlas's tracking home is labels + milestones + the register.
 
 ### P3 — Fleet (band 20)
 Major improvements to the fleet binaries and orchestration.
@@ -113,6 +113,14 @@ Application per issue (org repos + personal repos alike, within credential limit
 - `census-opencode.md`, `census-openchamber.md`, `census-darwin-nix.md`, `census-nix-cache.md`, `census-hatch-personal.md`, `census-hatch.md` — the other repos.
 - Row shape: issue · title (short) · current labels/milestone · classification · epic/design assignment · target band · applied (labels/milestone/task/board) · notes.
 
+## Drew ruling — personal-repo board placement is settled (2026-11-12 ~01:22 CST)
+
+**Never auth into Vertex.** The laptop-token project-scope grant is CANCELLED: it requires fresh sign-in through Drew's employer (Vertex) Microsoft SSO, and the fleet must never trigger or require that authentication. Consequences, recorded so future passes do not re-raise this:
+
+- Personal-repo (dezren39/*) issues CANNOT be placed on org Project #4. That is a settled constraint, not a blocker and not a gap awaiting a fix.
+- Their tracking home is labels + milestones + the register — which this program has fully applied to them.
+- Do not schedule, suggest, or retry any token scope refresh for this purpose.
+
 ## Canonical names as they exist on the wire (reconciled 2026-11-12)
 
 The lanes adopted pre-existing sibling names instead of creating duplicates; these are canonical now:
@@ -153,6 +161,7 @@ Other repos — 188 rows (one census file per repo): opencode 62 (P3 47 · SMALL
 
 - 2026-11-12 ~01:00 CST — scheme published (this file). Census + designs fan-out begins.
 - 2026-11-12 ~01:05–01:18 CST — designs lane complete (PR #8868 merged, issues #8869–#8873). Census lanes complete: code A (518), code B (521), other repos (188). Program views + commit of this record in the wrap-up step.
+- 2026-11-12 ~01:22 CST — Drew ruling recorded: never auth into Vertex; laptop-token scope grant cancelled; personal-repo board placement is a settled constraint (see the ruling section above).
 - 2026-11-12 ~01:20 CST — wrap-up (phase 5): six program board views created on org Project #4 and verified by read-back (views 16–21, table below; P3 kept on the comma-OR label filter — the AND form matches 0 board items, the OR form returns a sane 66). This record committed to developing-today/code as `pm-stack/design-reprioritization-2026-11-12.md` and the program summary posted on #8805 in the same wrap-up step. The queue re-band gap above remains the program's one open item, owned by the queue lane.
 
 ## Program views (phase 5)
