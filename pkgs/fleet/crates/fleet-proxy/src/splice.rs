@@ -35,6 +35,7 @@
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fleet_config::Config;
 use fleet_proxy_proto::{
@@ -111,6 +112,28 @@ pub fn relay_bidirectional(a: TcpStream, b: TcpStream) -> u64 {
     up + down
 }
 
+/// One live splice, counted. The broker's keepalive loop must not
+/// idle-exit while any splice is active: a splice bypasses
+/// `Broker::do_request` (the only path that refreshes `last_used`),
+/// so without this counter a desktop session with no unrelated HTTP
+/// traffic would be killed at `idle_exit_secs` even while bytes are
+/// flowing — and even while it is merely established and idle, which
+/// is a normal state for a desktop session (code#6221, Codex P1).
+pub struct SpliceGuard<'a>(&'a AtomicUsize);
+
+impl<'a> SpliceGuard<'a> {
+    pub fn begin(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for SpliceGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// The broker half: serve one splice on an already-negotiated client
 /// connection.
 ///
@@ -126,6 +149,7 @@ pub fn serve_splice(
     egress: Option<&crate::tunnel::Egress>,
     mut client: UnixStream,
     request: &serde_json::Value,
+    active_splices: &AtomicUsize,
 ) {
     let req: SpliceRequest = match unwrap_splice(request) {
         Ok(r) => r,
@@ -142,6 +166,19 @@ pub fn serve_splice(
                 "port {} is not in this broker's routing table",
                 req.port
             )),
+        );
+        return;
+    }
+    // `egress == None` is ambiguous: it means explicit direct mode
+    // OR a missing/invalid HTTPS_PROXY at broker startup (serve::run
+    // stores None for both). Only the first may dial directly — the
+    // HTTP path (Broker::open_conn_raw) refuses the second with this
+    // same message, and a splice must not silently bypass the
+    // configured proxy route (code#6221, Codex P2).
+    if egress.is_none() && !config.proxy_direct() {
+        let _ = write_frame(
+            &mut client,
+            &splice_refused_frame("HTTPS_PROXY must be set (runtime proxy env)"),
         );
         return;
     }
@@ -180,6 +217,9 @@ pub fn serve_splice(
     if write_frame(&mut client, &splice_reply_frame(&ok)).is_err() {
         return;
     }
+    // Counted from handshake to relay end: while this guard lives the
+    // broker's keepalive loop will not idle-exit (see SpliceGuard).
+    let _active = SpliceGuard::begin(active_splices);
     // From here the connection is a byte stream in both directions.
     // A UnixStream is not a TcpStream, so the relay runs over the
     // generic pump with the client on the helper thread.
@@ -475,6 +515,44 @@ mod tests {
         let (server, _) = listener.accept().unwrap();
         let client = connector.join().unwrap();
         (server, client)
+    }
+
+    #[test]
+    fn splice_guard_counts_live_splices() {
+        let counter = AtomicUsize::new(0);
+        {
+            let _a = SpliceGuard::begin(&counter);
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+            {
+                let _b = SpliceGuard::begin(&counter);
+                assert_eq!(counter.load(Ordering::SeqCst), 2);
+            }
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn serve_splice_refuses_missing_egress_when_not_direct() {
+        // Config::default(): proxy_direct() is false and the built-in
+        // routing table includes the RustDesk port, so the request
+        // passes the routing-table check and reaches the egress gate.
+        // With egress None (missing HTTPS_PROXY at startup) the splice
+        // must be refused with the HTTP path's message, never dialled
+        // directly.
+        let config = Config::default();
+        let (broker_side, mut client_side) = UnixStream::pair().unwrap();
+        let counter = AtomicUsize::new(0);
+        let request = serde_json::json!({ "splice": { "port": 21118 } });
+        serve_splice(&config, None, broker_side, &request, &counter);
+        let frame = read_frame(&mut client_side).unwrap();
+        assert_eq!(frame["splice"]["status"], 502);
+        let error = frame["splice"]["error"].as_str().unwrap_or("");
+        assert!(
+            error.contains("HTTPS_PROXY must be set"),
+            "unexpected refusal: {error}"
+        );
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 
     #[test]

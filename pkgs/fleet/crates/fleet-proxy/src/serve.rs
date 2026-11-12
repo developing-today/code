@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -440,6 +440,11 @@ struct Broker {
     /// Last client-request time (unix secs). Keepalive health
     /// checks deliberately never write this.
     last_used: AtomicU64,
+    /// Live splices (code#6221). A splice never passes through
+    /// `do_request`, so it never refreshes `last_used`; the keepalive
+    /// loop consults this count and does not idle-exit while any
+    /// splice is active.
+    active_splices: AtomicUsize,
 }
 
 impl Broker {
@@ -759,6 +764,7 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
                         broker.egress.as_ref(),
                         stream,
                         &frame,
+                        &broker.active_splices,
                     );
                     return;
                 }
@@ -771,6 +777,14 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
             Err(_) => return,
         }
     }
+}
+
+/// The idle-exit decision, pure for tests: exit only once the
+/// broker has been idle past `idle` AND no splice is active. An
+/// established desktop splice may sit idle for hours; it is live
+/// use, not idleness (code#6221).
+fn idle_exit_due(last_used: u64, now: u64, idle: u64, active_splices: usize) -> bool {
+    active_splices == 0 && now.saturating_sub(last_used) > idle
 }
 
 fn keepalive_loop(broker: Arc<Broker>) {
@@ -786,7 +800,12 @@ fn keepalive_loop(broker: Arc<Broker>) {
     loop {
         std::thread::sleep(Duration::from_secs(IDLE_TICK_S));
         let now = now_secs();
-        if now.saturating_sub(broker.last_used.load(Ordering::Relaxed)) > idle {
+        if idle_exit_due(
+            broker.last_used.load(Ordering::Relaxed),
+            now,
+            idle,
+            broker.active_splices.load(Ordering::Relaxed),
+        ) {
             // The Python exits via os._exit from its keepalive
             // loop; the same abruptness is fine — the broker holds
             // nothing that needs draining.
@@ -859,6 +878,7 @@ pub fn run(config: &Config) -> i32 {
         pool: TunnelPool::new(size),
         recovery: RecoveryGate::new(),
         last_used: AtomicU64::new(now_secs()),
+        active_splices: AtomicUsize::new(0),
     });
     // Preconnect: warm the laptop-agent pool through the same
     // checkout accounting as requests, best effort (the Python
@@ -910,6 +930,18 @@ mod tests {
     use std::io::Read as _;
     use std::net::TcpListener;
     use std::sync::mpsc;
+
+    #[test]
+    fn idle_exit_waits_for_active_splices() {
+        // Idle past the limit with nothing spliced: exit is due.
+        assert!(idle_exit_due(100, 100 + 3601, 3600, 0));
+        // Not yet past the limit: not due.
+        assert!(!idle_exit_due(100, 100 + 3599, 3600, 0));
+        // Past the limit but a splice is active: never due — the
+        // splice is live use that bypasses last_used (code#6221).
+        assert!(!idle_exit_due(100, 100 + 86_400, 3600, 1));
+        assert!(!idle_exit_due(100, 100 + 86_400, 3600, 3));
+    }
 
     /// An HttpConn over a loopback pair. The pool does no I/O
     /// with the conns it holds in these tests; they are opaque
