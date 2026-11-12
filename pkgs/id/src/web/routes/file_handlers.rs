@@ -944,14 +944,31 @@ pub(super) async fn restore_handler(
         return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
     }
 
-    // Remove the "deleted" tag (all values for this key)
-    if let Err(err) = state
+    // Verify the file exists, distinguishing an absent file from a lookup error.
+    match state.store.tags().get(&req.name).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
+        Err(err) => {
+            tracing::error!("[routes] Failed to look up tag: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to look up file").into_response();
+        }
+    }
+
+    // Remove the "deleted" tag (all values for this key).
+    let removed = match state
         .tag_store
         .del_by_key(&state.tag_store.global, req.name.as_bytes(), b"deleted")
         .await
     {
-        tracing::error!("[routes] Failed to remove deleted tag: {}", err);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to restore file").into_response();
+        Ok(removed) => removed,
+        Err(err) => {
+            tracing::error!("[routes] Failed to remove deleted tag: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to restore file").into_response();
+        }
+    };
+
+    if removed == 0 {
+        return (StatusCode::CONFLICT, "File is not deleted").into_response();
     }
 
     tracing::info!("[routes] File restored: name={}", req.name);
