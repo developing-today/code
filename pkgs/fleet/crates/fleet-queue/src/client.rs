@@ -3641,6 +3641,34 @@ fn stack_transition(
     require_row(&resp, "stack_transition")
 }
 
+/// The replay executor's transition helper: like
+/// [`stack_transition`] but it returns the broker's verdict instead
+/// of exiting on it (CodeRabbit finding, PR #8849, comment
+/// 4547592887). The broker's store/transport failures carry exit 4,
+/// which inside `stack replay` is reserved for a conflict routed to
+/// its authoring lane — a helper that dies with the envelope's code
+/// makes a store failure indistinguishable from a routed conflict,
+/// and prints no replay JSON at all. Replay maps an Err onto its
+/// transient path (exit 3, intent left `replaying`, resumable).
+fn stack_transition_result(
+    stack_id: &str,
+    position: i64,
+    to_state: &str,
+    pr_number: Option<i64>,
+    conflict_detail: Option<&str>,
+) -> Result<Value, String> {
+    let body = stack_transition_body(stack_id, position, to_state, pr_number, conflict_detail)?;
+    let resp = call("/stack-transition", &body);
+    if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+        let msg = resp
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("queue-broker error");
+        return Err(format!("stack transition to {to_state} failed: {msg}"));
+    }
+    Ok(resp.get("row").cloned().unwrap_or(Value::Null))
+}
+
 fn cmd_stack_transition(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
@@ -3897,7 +3925,22 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
     // `replaying` by then — Begin precedes every other step in the
     // plan), name the route to its authoring lane, and stop.
     let conflict_exit = |position: i64, detail: String, landed: &[i64]| -> i32 {
-        stack_transition(&stack_id, position, "conflicted", None, Some(&detail));
+        // Exit 4 is earned only once the conflicted transition is
+        // recorded (CodeRabbit, PR #8849): if the store refuses it,
+        // the conflict is not routed yet — report a resumable stop
+        // (exit 3) with the conflict named, never a bare 4.
+        if let Err(e) =
+            stack_transition_result(&stack_id, position, "conflicted", None, Some(&detail))
+        {
+            print_json(&json!({
+                "stack_id": stack_id,
+                "landed": landed,
+                "stopped_at": {"position": position, "step": "conflict_transition", "error": e},
+                "conflict": {"position": position, "detail": detail},
+                "note": "the conflict could not be recorded; the intent is left replaying and a later pass resumes it",
+            }));
+            return 3;
+        }
         let route = crate::merge_intent::route_replay_conflict(&intents, &stack_id, position);
         print_json(&json!({
             "stack_id": stack_id,
@@ -3941,7 +3984,15 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
         match step.action {
             crate::merge_intent::ReplayAction::Begin => {
                 if intent.state != crate::merge_intent::IntentState::Replaying {
-                    stack_transition(&stack_id, step.position, "replaying", None, None);
+                    if let Err(e) = stack_transition_result(
+                        &stack_id,
+                        step.position,
+                        "replaying",
+                        None,
+                        None,
+                    ) {
+                        return transient_exit(step, e, &landed);
+                    }
                 }
             }
             crate::merge_intent::ReplayAction::RebaseOntoMain => {
@@ -4251,7 +4302,16 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
             }
             crate::merge_intent::ReplayAction::Land => {
                 let pr = pr_numbers.get(&step.position).copied().flatten();
-                stack_transition(&stack_id, step.position, "landed", pr, None);
+                // A refused landing is a resumable stop, not a
+                // landed intent: the PR is merged, the intent stays
+                // `replaying`, and the Merge arm's already-MERGED
+                // reconciliation records the landing on the next
+                // pass (CodeRabbit, PR #8849).
+                if let Err(e) =
+                    stack_transition_result(&stack_id, step.position, "landed", pr, None)
+                {
+                    return transient_exit(step, e, &landed);
+                }
                 landed.push(step.position);
                 // The outcome note replays in the same pass: the
                 // intent's issue hears that its branch landed, in
