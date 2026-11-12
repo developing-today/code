@@ -86,6 +86,10 @@ export interface Config {
   /** The quota gatherer's latest-state file (#1151), written into the
    * aggregator's own data dir by scripts/gather-quota.ts. */
   quotaCurrentFile: string;
+  /** The deployed OpenCode config (.opencode/opencode.jsonc of the
+   * code repo): the section-risk join (#8882) reads its model_routes
+   * leaf sets from here. */
+  opencodeConfigFile: string;
   coverageSnapshotFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
@@ -214,6 +218,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
     ),
     quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
+    opencodeConfigFile: s(
+      env.PM_AGG_OPENCODE_CONFIG_FILE,
+      join(homedir(), "git", "code", ".opencode", "opencode.jsonc"),
+    ),
     itemHistoryFile: s(
       env.PM_AGG_ITEM_HISTORY_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "item-history.jsonl"),
