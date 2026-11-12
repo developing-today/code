@@ -844,6 +844,80 @@ if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-anchor_unknown_alias.ou
 fi
 echo "pass: an unresolvable push alias is never certified as targeting main"
 
+# A resolved mapping anchor with only non-branch filters is still a
+# recognized push mapping; it has no main-excluding filter, so the
+# main-tier leg agrees just like a bare push.
+build_tree "$TMP/filter-anchor_paths_only"
+wf_raw "$TMP/filter-anchor_paths_only" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch: &paths_only
+    paths: [docs/**]
+  push: *paths_only
+EOF
+if bash "$SCRIPT" "$TMP/filter-anchor_paths_only" >"$TMP/filter-anchor_paths_only.out" 2>&1; then
+  echo "FAIL: a resolved paths-only anchor was not treated as a push mapping" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-anchor_paths_only.out"
+echo "pass: resolved paths-only block anchor is not mistaken for an unknown alias"
+
+build_tree "$TMP/filter-inline_quoted_key_spaced_colon"
+wf_raw "$TMP/filter-inline_quoted_key_spaced_colon" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {"branches-ignore"       : [main]}
+EOF
+bash "$SCRIPT" "$TMP/filter-inline_quoted_key_spaced_colon" >"$TMP/filter-inline_quoted_key_spaced_colon.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-inline_quoted_key_spaced_colon.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-inline_quoted_key_spaced_colon.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-inline_quoted_key_spaced_colon.out"; then
+  echo "FAIL: quoted inline branches-ignore key with spaced colon was missed" >&2
+  exit 1
+fi
+echo "pass: quoted inline branches-ignore key with arbitrary colon spacing is recognized"
+
+build_tree "$TMP/filter-inline_quoted_fake_key"
+wf_raw "$TMP/filter-inline_quoted_fake_key" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {paths: ["{branches: [main]} {tags: [v*]}"]}
+EOF
+if bash "$SCRIPT" "$TMP/filter-inline_quoted_fake_key" >"$TMP/filter-inline_quoted_fake_key.out" 2>&1; then
+  echo "FAIL: key-like text inside a quoted path scalar was treated as filters" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-inline_quoted_fake_key.out"
+echo "pass: branch/tag-like text inside a quoted path scalar is ignored"
+
+build_tree "$TMP/filter-sequence_alias"
+wf_raw "$TMP/filter-sequence_alias" opencode-config-guard.yml <<'EOF'
+  pull_request:
+    branches: &release_branches [release]
+EOF
+wf_raw "$TMP/filter-sequence_alias" mcpx-nixbuild.yml <<'EOF'
+  push:
+    branches: *release_branches
+EOF
+bash "$SCRIPT" "$TMP/filter-sequence_alias" >"$TMP/filter-sequence_alias.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-sequence_alias.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-sequence_alias.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-sequence_alias.out"; then
+  echo "FAIL: a sequence alias was not expanded before branch matching" >&2
+  exit 1
+fi
+echo "pass: branch sequence aliases contribute their resolved patterns"
+
+build_tree "$TMP/filter-sequence_alias_unknown"
+wf_raw "$TMP/filter-sequence_alias_unknown" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore: *not_defined
+EOF
+bash "$SCRIPT" "$TMP/filter-sequence_alias_unknown" >"$TMP/filter-sequence_alias_unknown.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-sequence_alias_unknown.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-sequence_alias_unknown.out"; then
+  echo "FAIL: an unresolved filter alias was treated as a pattern or unfiltered push" >&2
+  exit 1
+fi
+echo "pass: unresolved filter aliases fail closed"
+
 # Round-14 (Codex P2): a comment that ends the first physical line
 # of a split inline mapping must not swallow the closing bracket
 # on the continuation line — the comment ends at the newline, so
@@ -1053,7 +1127,7 @@ def verdict(branches=None, ignore=None, tags=False):
     return 'no' if tags else 'yes'
 
 def q(p):
-    if any(ch in p for ch in ',#[] ') or p.startswith('!'):
+    if any(ch in p for ch in ',#[] ') or p.startswith(('!', '*')):
         return "'" + p + "'"
     return p
 

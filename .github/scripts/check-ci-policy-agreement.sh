@@ -321,51 +321,103 @@ push_targets_main() {
       }
       return 0
     }
-    function flow_span(str, key,   i, start, seg, from, prev) {
-      from = 1
-      while ((i = index(substr(str, from), key)) > 0) {
-        i = from + i - 1
+    function flow_key_colon(str, key,   i, j, c, q, prev, word) {
+      q = ""
+      for (i = 1; i <= length(str); i++) {
+        c = substr(str, i, 1)
+        if (q == "\"") {
+          if (c == "\\") i++
+          else if (c == "\"") q = ""
+          continue
+        }
+        if (q == "\047") {
+          if (c == "\047" && substr(str, i + 1, 1) == "\047") i++
+          else if (c == "\047") q = ""
+          continue
+        }
+        if (c == "#" && (i == 1 || substr(str, i - 1, 1) ~ /[[:space:]]/)) return 0
+        if (c == "\"" || c == "\047") {
+          q = c
+          j = i + 1
+          word = ""
+          while (j <= length(str)) {
+            c = substr(str, j, 1)
+            if (q == "\"" && c == "\\") { j++; word = word substr(str, j, 1); j++; continue }
+            if (c == q) {
+              if (q == "\047" && substr(str, j + 1, 1) == q) { word = word q; j += 2; continue }
+              break
+            }
+            word = word c
+            j++
+          }
+          if (word == key && j <= length(str)) {
+            j++
+            while (substr(str, j, 1) ~ /[[:space:]]/) j++
+            if (substr(str, j, 1) == ":") return j
+          }
+          i = j
+          q = ""
+          continue
+        }
         prev = (i == 1) ? "" : substr(str, i - 1, 1)
-        if (prev == "" || prev == "{" || prev == "," || prev == " ") break
-        from = i + length(key)
-        i = 0
+        if ((prev == "" || prev == "{" || prev == "," || prev ~ /[[:space:]]/) && substr(str, i, length(key)) == key) {
+          j = i + length(key)
+          while (substr(str, j, 1) ~ /[[:space:]]/) j++
+          if (substr(str, j, 1) == ":") return j
+        }
       }
-      if (i == 0) return ""
-      start = index(substr(str, i), "[")
-      if (start == 0) return ""
-      start = i + start - 1
+      return 0
+    }
+    function flow_span(str, key,   colon, start, seg, i) {
+      colon = flow_key_colon(str, key)
+      if (colon == 0) return ""
+      start = colon + 1
+      while (substr(str, start, 1) ~ /[[:space:]]/) start++
+      if (substr(str, start, 1) != "[") return ""
       seg = substr(str, start)
       i = unquoted_close(seg)
       if (i == 0) return ""
       return substr(seg, 1, i)
     }
-    function apply_inline_filters(str,   seg) {
-      seg = flow_span(str, "branches-ignore:")
-      if (seg == "") seg = flow_span(str, "branches-ignore :")
+    function resolve_sequence_value(val,   name) {
+      sub(/^[[:space:]]+/, "", val)
+      sub(/[[:space:]]+$/, "", val)
+      if (val !~ /^\*[A-Za-z0-9_-]+$/) return val
+      name = substr(val, 2)
+      if (name in sequence_anchor) return sequence_anchor[name]
+      alias_unknown = 1
+      return ""
+    }
+    function apply_inline_filters(str,   seg, colon) {
+      seg = flow_span(str, "branches-ignore")
+      if (seg == "") {
+        colon = flow_key_colon(str, "branches-ignore")
+        if (colon) seg = resolve_sequence_value(substr(str, colon + 1))
+      }
       if (seg != "") {
         seen_branch_filter = 1
         ignore_list = ignore_list add_tokens(seg)
       }
-      seg = flow_span(str, "branches:")
-      if (seg == "") seg = flow_span(str, "branches :")
+      seg = flow_span(str, "branches")
+      if (seg == "") {
+        colon = flow_key_colon(str, "branches")
+        if (colon) seg = resolve_sequence_value(substr(str, colon + 1))
+      }
       if (seg != "") {
         seen_branches = 1
         seen_branch_filter = 1
         branches_list = branches_list add_tokens(seg)
       }
-      if (str ~ /(^|[{,][[:space:]]*)["\047]?tags-ignore["\047]?[[:space:]]*:/) seen_tags = 1
-      if (str ~ /(^|[{,][[:space:]]*)["\047]?tags["\047]?[[:space:]]*:/) seen_tags = 1
+      if (flow_key_colon(str, "tags-ignore") || flow_key_colon(str, "tags")) seen_tags = 1
     }
-    function resolve_push_alias(name,   before) {
+    function resolve_push_alias(name) {
       # An aliased push inherits the anchored mapping filters
       # (Codex P2, PR #8513 round 13). An alias that resolves to
       # no recorded filter is unsupported syntax: mark it so the
       # verdict never certifies it as an unfiltered push.
       if (name in anchor_body) {
-        before = seen_branches seen_branch_filter seen_tags
         apply_inline_filters(anchor_body[name])
-        if ((seen_branches seen_branch_filter seen_tags) == before) alias_unknown = 1
-      } else if ((name in anchor_seen_branches) || (name in anchor_seen_ignore) || (name in anchor_seen_tags)) {
+      } else if ((name in anchor_mapping_seen) || (name in anchor_seen_branches) || (name in anchor_seen_ignore) || (name in anchor_seen_tags)) {
         if (name in anchor_seen_ignore) {
           seen_branch_filter = 1
           ignore_list = ignore_list anchor_ignore[name]
@@ -490,6 +542,38 @@ push_targets_main() {
       subkey = ""
       next
     }
+    inblock && !inpush && cur_anchor == "" && /^ +["\047]?[a-z_-]+["\047]?[[:space:]]*:/ {
+      line = $0
+      match(line, /^ +/)
+      sequence_key_indent = RLENGTH
+      keyval = substr(line, sequence_key_indent + 1)
+      sub(/:.*/, "", keyval)
+      gsub(/["\047]/, "", keyval)
+      val = substr(line, sequence_key_indent + 1)
+      sub(/^[^:]*:[[:space:]]*/, "", val)
+      sequence_anchor_pending = ""
+      if (val ~ /^&[A-Za-z0-9_-]+([[:space:]]|$)/) {
+        sequence_anchor_pending = val
+        sub(/^&/, "", sequence_anchor_pending)
+        sub(/[[:space:]].*/, "", sequence_anchor_pending)
+        sub(/^&[A-Za-z0-9_-]+[[:space:]]*/, "", val)
+        if (val ~ /^\[/) {
+          sequence_anchor[sequence_anchor_pending] = add_tokens(val)
+          sequence_anchor_pending = ""
+        }
+      }
+      next
+    }
+    inblock && !inpush && cur_anchor == "" && sequence_anchor_pending != "" && /^ +-[[:space:]]/ {
+      item = $0
+      match(item, /^ +/)
+      if (RLENGTH > sequence_key_indent) {
+        sub(/^ +-[[:space:]]*/, "", item)
+        sequence_anchor[sequence_anchor_pending] = sequence_anchor[sequence_anchor_pending] " " clean(item)
+        next
+      }
+      sequence_anchor_pending = ""
+    }
     inblock && /^[^[:space:]#]/ { inblock = 0; inpush = 0; child_indent = 0; cur_anchor = "" }
     inline_collect {
       if ($0 ~ /^[^[:space:]#]/) {
@@ -520,6 +604,7 @@ push_targets_main() {
       sub(/:.*/, "", subkey_a)
       gsub(/["\047]/, "", subkey_a)
       sub(/[[:space:]]+$/, "", subkey_a)
+      anchor_mapping_seen[cur_anchor] = 1
       val = substr(line, ind + 1)
       sub(/^[^:]*:[[:space:]]*/, "", val)
       if (subkey_a == "branches" || subkey_a == "branches-ignore" || subkey_a == "tags" || subkey_a == "tags-ignore") val = strip_comment(val)
@@ -588,6 +673,7 @@ push_targets_main() {
       sub(/^[^:]*:[[:space:]]*/, "", val)
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") val = strip_comment(val)
       if ((subkey == "branches" || subkey == "branches-ignore") && flow_unclosed(val)) flow_key = subkey
+      if (subkey == "branches" || subkey == "branches-ignore") val = resolve_sequence_value(val)
       if (subkey == "branches") {
         seen_branches = 1
         seen_branch_filter = 1
