@@ -160,6 +160,23 @@ describe("atlas-search worker", () => {
     expect(meta.has_embedding ?? false).toBe(false);
   });
 
+  it("returns the 400 envelope for a JSON null body, not a thrown TypeError (#6879)", async () => {
+    const e0 = counts.embed;
+    const s0 = counts.search;
+    // `null` is valid JSON, so req.json() resolves to null and the
+    // query check must not dereference it. Oracle: the route's own
+    // error envelope plus untouched upstream counters.
+    const resp = await search(null);
+    expect(resp.status).toBe(400);
+    const body = (await resp.json()) as {
+      error?: { code?: string; message?: string };
+    };
+    expect(body.error?.code).toBe("bad_request");
+    expect(body.error?.message).toBe("body must be a JSON object");
+    expect(counts.embed).toBe(e0);
+    expect(counts.search).toBe(s0);
+  });
+
   it("reports a null search-service response as a 502, not a raw TypeError (#6982)", async () => {
     const resp = await search({ query: "nullsearch query" });
     expect(resp.status).toBe(502);
