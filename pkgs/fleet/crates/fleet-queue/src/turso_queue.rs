@@ -6434,7 +6434,8 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
 // Merge-intent stack storage (#8582 increment 2) — broker endpoints
 // over the merge_intents table (DDL of record:
 // crate::merge_intent::MERGE_INTENT_DDL, applied via SCHEMA above).
-// Record/list only: the replay executor is a later increment. The
+// Record/list came first; the transition verb (increment 4) moves
+// intents through the core's lifecycle for the replay executor. The
 // append rules themselves (position, base tip) are the pure core's
 // (plan_append), so storage cannot drift from replay semantics, and
 // a stack's full state — branches, order, owners — reads back from
@@ -6656,6 +6657,110 @@ fn verb_stack_list(t: &TursoBackend, req: &Value) -> Value {
         Ok(v) => ok(json!({"row": v})),
         Err(e) => terr(e),
     }
+}
+
+
+/// Move one recorded intent through its lifecycle (#8582
+/// increment 4): the storage half of the replay executor. The
+/// transition rules are the pure core's (`IntentState::
+/// can_transition`) — this verb only reads the current row,
+/// refuses an illegal move, and writes the new state (plus the PR
+/// number a landing records, and the conflict detail a conflict
+/// routing carries). It performs no GitHub work: the client
+/// executor drives git/gh and reports each state change here, so
+/// the stack state stays fully visible from the database alone
+/// even mid-replay.
+fn verb_stack_transition(t: &TursoBackend, req: &Value) -> Value {
+    let Some(stack_id) = req_str(req, "stack_id") else {
+        return fail(2, "stack_id is required".to_string());
+    };
+    let stack_id = stack_id.to_string();
+    let Some(position) = req_i64(req, "position") else {
+        return fail(2, "position is required".to_string());
+    };
+    let Some(to) = req_str(req, "to_state").and_then(crate::merge_intent::IntentState::parse)
+    else {
+        return fail(
+            2,
+            format!(
+                "stack_transition: unknown to_state {:?}",
+                req_str(req, "to_state")
+            ),
+        );
+    };
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let Some(row) = rows
+        .iter()
+        .find(|r| r.get("position").and_then(|v| v.as_i64()) == Some(position))
+    else {
+        return fail(
+            2,
+            format!("stack_transition: no intent at stack {stack_id} position {position}"),
+        );
+    };
+    let Some(current) = merge_intent_core(row) else {
+        return fail(
+            2,
+            "stack_transition: stored intent row is unparseable".to_string(),
+        );
+    };
+    if !current.state.can_transition(to) {
+        return fail(
+            2,
+            format!(
+                "stack_transition: illegal move {} -> {} for stack {} position {}",
+                current.state.as_str(),
+                to.as_str(),
+                stack_id,
+                position
+            ),
+        );
+    }
+    // A landing records the PR that landed it; an explicit number
+    // wins, otherwise the recorded one (if any) is kept.
+    let pr_number = req_i64(req, "pr_number").or(current.pr_number);
+    // The conflict detail lives only while the intent is
+    // conflicted: a fresh detail replaces it, a move out of
+    // conflicted clears it.
+    let conflict_detail: Option<String> = if to == crate::merge_intent::IntentState::Conflicted {
+        req_str(req, "conflict_detail")
+            .map(|s| s.to_string())
+            .or_else(|| {
+                row.get("conflict_detail")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+    } else {
+        None
+    };
+    let now = now_iso();
+    if let Err(e) = t.exec(
+        "UPDATE merge_intents SET state = ?, pr_number = ?, conflict_detail = ?, \
+         updated_at = ? WHERE stack_id = ? AND position = ?",
+        &[
+            Arg::Text(to.as_str().to_string()),
+            pr_number.map(Arg::Int).unwrap_or(Arg::Null),
+            arg_str(conflict_detail.as_deref()),
+            Arg::Text(now),
+            Arg::Text(stack_id.clone()),
+            Arg::Int(position),
+        ],
+    ) {
+        return terr(e);
+    }
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let updated = rows
+        .iter()
+        .find(|r| r.get("position").and_then(|v| v.as_i64()) == Some(position))
+        .cloned()
+        .unwrap_or(Value::Null);
+    ok(json!({"row": {"intent": updated, "stack": stack_state(&stack_id, &rows)}}))
 }
 
 fn verb_signal_count(t: &TursoBackend, req: &Value) -> Value {
@@ -7249,6 +7354,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/signal-count" => verb_signal_count(t, req),
         "/stack-record" => verb_stack_record(t, req),
         "/stack-list" => verb_stack_list(t, req),
+        "/stack-transition" => verb_stack_transition(t, req),
         "/events-append" => verb_events_append(t, req),
         "/events-seen" => verb_events_seen(t, req),
         "/events-count" => verb_events_count(t, req),
@@ -7308,6 +7414,39 @@ mod tests {
         );
         let list = seg8217(src, "fn verb_stack_list(", "\nfn verb_signal_count(");
         assert!(list.contains("stack_state("), "list answers the derived stack state");
+    }
+
+
+    #[test]
+    fn stack_transition_wiring_8582() {
+        // Source oracle for increment 4 of #8582: dispatch routes
+        // the transition verb, and the verb decides legality in the
+        // pure core's transition table (never in SQL), recording
+        // the landing PR number and the conflict detail.
+        let src = include_str!("turso_queue.rs");
+        let dispatch_seg = seg8217(src, "pub fn dispatch(", "\n#[cfg(test)]");
+        assert!(
+            dispatch_seg.contains("\"/stack-transition\" => verb_stack_transition(t, req)"),
+            "dispatch routes /stack-transition"
+        );
+        let seg = seg8217(src, "fn verb_stack_transition(", "\nfn verb_signal_count(");
+        assert!(
+            seg.contains("can_transition("),
+            "transition legality comes from the core table"
+        );
+        assert!(
+            seg.contains("illegal move"),
+            "an illegal move is a refusal, not a write"
+        );
+        assert!(seg.contains("pr_number"), "a landing records its PR number");
+        assert!(
+            seg.contains("conflict_detail"),
+            "a conflict records its routing detail"
+        );
+        assert!(
+            seg.contains("stack_state("),
+            "transition answers the derived stack state"
+        );
     }
 
     #[test]

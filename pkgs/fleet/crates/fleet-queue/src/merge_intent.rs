@@ -298,6 +298,132 @@ pub fn replay_prefix<'a>(intents: &'a [MergeIntent], stack_id: &str) -> Vec<&'a 
         .collect()
 }
 
+
+/// One step of a replay pass, planned by [`replay_plan`] from the
+/// recorded stack state alone (#8582 increment 4). The executor
+/// (client `stack replay`) performs the steps in plan order; the
+/// plan itself is pure, so a `--dry-run` prints exactly what a live
+/// pass would do, and the drill (increment 5) can assert on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayAction {
+    /// Mark the intent `replaying` (intended -> replaying). An
+    /// intent a previous interrupted pass already left `replaying`
+    /// is resumed: the executor skips the transition for it.
+    Begin,
+    /// Rebase the intent's branch onto the current main tip. Every
+    /// intent above the walk's bottom was stacked on the previous
+    /// branch; once that branch lands, this one is rebased onto the
+    /// new main before it is pushed. The step is planned under the
+    /// REBASED intent's own position: a conflict here belongs to
+    /// that intent's author, never to the landed intent below it.
+    RebaseOntoMain,
+    /// Push the branch (its first push, after the outage).
+    Push,
+    /// Open the PR against `main`, or reuse the recorded PR number.
+    OpenPr,
+    /// Merge the PR, in recorded order.
+    Merge,
+    /// Mark the intent `landed` (recording the PR number) and post
+    /// its outcome note in the same pass.
+    Land,
+}
+
+impl ReplayAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReplayAction::Begin => "begin",
+            ReplayAction::RebaseOntoMain => "rebase_onto_main",
+            ReplayAction::Push => "push",
+            ReplayAction::OpenPr => "open_pr",
+            ReplayAction::Merge => "merge",
+            ReplayAction::Land => "land",
+        }
+    }
+}
+
+/// One planned replay step: the intent it serves (by stack
+/// position), that intent's branch, and the action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedStep {
+    pub position: i64,
+    pub branch: String,
+    pub action: ReplayAction,
+}
+
+/// The replay plan for a walk (see [`replay_prefix`]): each intent,
+/// bottom first, is begun, rebased onto main when it is not the
+/// walk's bottom, pushed, PR-opened, merged, and landed — then the
+/// next intent up the stack. Order is the contract: a step for a
+/// higher position never precedes the `Land` step below it.
+pub fn plan_for_walk(walk: &[&MergeIntent]) -> Vec<PlannedStep> {
+    let mut steps = Vec::new();
+    for (idx, intent) in walk.iter().enumerate() {
+        let mut step = |action| {
+            steps.push(PlannedStep {
+                position: intent.position,
+                branch: intent.branch.clone(),
+                action,
+            })
+        };
+        step(ReplayAction::Begin);
+        if idx > 0 {
+            step(ReplayAction::RebaseOntoMain);
+        }
+        step(ReplayAction::Push);
+        step(ReplayAction::OpenPr);
+        step(ReplayAction::Merge);
+        step(ReplayAction::Land);
+    }
+    steps
+}
+
+/// The replay plan for a stack's recorded state: the plan for its
+/// [`replay_prefix`] walk.
+pub fn replay_plan(intents: &[MergeIntent], stack_id: &str) -> Vec<PlannedStep> {
+    plan_for_walk(&replay_prefix(intents, stack_id))
+}
+
+/// The walk a resumed replay pass serves: like [`replay_prefix`],
+/// except a head intent left `replaying` by an interrupted pass is
+/// resumed (included, with the intended intents above it) instead
+/// of blocking its own resume. A `conflicted` head still blocks:
+/// only its authoring lane clears it, by resolving the conflict
+/// and moving it back to `replaying`.
+pub fn resumable_walk<'a>(intents: &'a [MergeIntent], stack_id: &str) -> Vec<&'a MergeIntent> {
+    let mut ordered: Vec<&MergeIntent> = intents
+        .iter()
+        .filter(|i| {
+            i.stack_id == stack_id
+                && i.state != IntentState::Abandoned
+                && i.state != IntentState::Landed
+        })
+        .collect();
+    ordered.sort_by_key(|i| i.position);
+    let mut out = Vec::new();
+    for (idx, i) in ordered.iter().enumerate() {
+        match i.state {
+            IntentState::Intended => out.push(*i),
+            IntentState::Replaying if idx == 0 => out.push(*i),
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Route a replay conflict at `position` in `stack_id` to the
+/// authoring lane recorded on that intent — never to the lane
+/// running the replay (#8582). `None` when no such intent exists.
+pub fn route_replay_conflict(
+    intents: &[MergeIntent],
+    stack_id: &str,
+    position: i64,
+) -> Option<ConflictRoute> {
+    intents
+        .iter()
+        .find(|i| i.stack_id == stack_id && i.position == position)
+        .map(|i| i.conflict_route())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,6 +738,174 @@ mod tests {
         let err = validate_append_against_stack(&existing, &foreign)
             .expect_err("cross-repo append must be rejected");
         assert!(err.contains("already records repo"), "{err}");
+    }
+
+
+    #[test]
+    fn replay_plan_walks_bottom_up_with_rebase_only_above_the_bottom() {
+        // Oracle: the module doc's replay walk — push, PR, merge,
+        // rebase the next branch onto the new main — stated as a
+        // per-intent step order (begin/land are the state marks at
+        // the ends of each intent's turn).
+        let stack = vec![
+            intent("s1", 1, "queue/b", IntentState::Intended),
+            intent("s1", 0, "queue/a", IntentState::Intended),
+            intent("s1", 2, "queue/c", IntentState::Intended),
+        ];
+        let plan: Vec<(i64, ReplayAction)> = replay_plan(&stack, "s1")
+            .iter()
+            .map(|s| (s.position, s.action))
+            .collect();
+        use ReplayAction::*;
+        assert_eq!(
+            plan,
+            vec![
+                (0, Begin),
+                (0, Push),
+                (0, OpenPr),
+                (0, Merge),
+                (0, Land),
+                (1, Begin),
+                (1, RebaseOntoMain),
+                (1, Push),
+                (1, OpenPr),
+                (1, Merge),
+                (1, Land),
+                (2, Begin),
+                (2, RebaseOntoMain),
+                (2, Push),
+                (2, OpenPr),
+                (2, Merge),
+                (2, Land),
+            ]
+        );
+    }
+
+    #[test]
+    fn replay_plan_stops_at_the_conflicted_prefix_boundary() {
+        let stack = vec![
+            intent("s1", 0, "queue/a", IntentState::Intended),
+            intent("s1", 1, "queue/b", IntentState::Conflicted),
+            intent("s1", 2, "queue/c", IntentState::Intended),
+        ];
+        let plan = replay_plan(&stack, "s1");
+        assert!(plan.iter().all(|s| s.position == 0), "{plan:?}");
+        assert_eq!(plan.len(), 5);
+        // A conflicted head means no plan at all.
+        let stack = vec![
+            intent("s1", 0, "queue/a", IntentState::Conflicted),
+            intent("s1", 1, "queue/b", IntentState::Intended),
+        ];
+        assert!(replay_plan(&stack, "s1").is_empty());
+        assert!(replay_plan(&stack, "unknown-stack").is_empty());
+    }
+
+    #[test]
+    fn resumable_walk_resumes_a_replaying_head_only() {
+        // An interrupted pass left the head replaying: resume serves
+        // it and the intended intents above it.
+        let stack = vec![
+            intent("s1", 0, "queue/a", IntentState::Replaying),
+            intent("s1", 1, "queue/b", IntentState::Intended),
+        ];
+        let walk: Vec<&str> = resumable_walk(&stack, "s1")
+            .iter()
+            .map(|i| i.branch.as_str())
+            .collect();
+        assert_eq!(walk, vec!["queue/a", "queue/b"]);
+        // A replaying intent that is NOT the head still blocks the
+        // intended intent below it is served, nothing above moves.
+        let stack = vec![
+            intent("s1", 0, "queue/a", IntentState::Intended),
+            intent("s1", 1, "queue/b", IntentState::Replaying),
+            intent("s1", 2, "queue/c", IntentState::Intended),
+        ];
+        let walk: Vec<&str> = resumable_walk(&stack, "s1")
+            .iter()
+            .map(|i| i.branch.as_str())
+            .collect();
+        assert_eq!(walk, vec!["queue/a"]);
+        // A conflicted head blocks its own resume too.
+        let stack = vec![
+            intent("s1", 0, "queue/a", IntentState::Conflicted),
+            intent("s1", 1, "queue/b", IntentState::Intended),
+        ];
+        assert!(resumable_walk(&stack, "s1").is_empty());
+    }
+
+    #[test]
+    fn replay_conflict_routes_to_the_recording_author() {
+        // The intent() fixture records owner any-b / repo-worker-code
+        // / ses_test: the route names that author, at the position
+        // the conflict surfaced, with the branch context to resolve.
+        let stack = vec![
+            intent("s1", 0, "queue/a", IntentState::Landed),
+            intent("s1", 1, "queue/b", IntentState::Conflicted),
+        ];
+        let route = route_replay_conflict(&stack, "s1", 1).expect("intent exists");
+        assert_eq!(route.owner_lane, "any-b");
+        assert_eq!(route.owner_worker, "repo-worker-code");
+        assert_eq!(route.branch, "queue/b");
+        assert_eq!(route.issue_number, Some(8582));
+        assert!(route_replay_conflict(&stack, "s1", 9).is_none());
+        assert!(route_replay_conflict(&stack, "other", 1).is_none());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// Model-based property (oracle: the #8582 replay semantics,
+        /// stated independently of the planner): for ANY mix of
+        /// lifecycle states, the plan serves exactly the walk the
+        /// model derives (skip finished, collect intended, stop at
+        /// the first live non-intended), and each served intent's
+        /// steps are begin, [rebase if not the walk's bottom], push,
+        /// open-pr, merge, land, in that order, grouped by ascending
+        /// position with no interleaving.
+        #[test]
+        fn replay_plan_matches_the_model_for_any_state_mix(
+            states in prop::collection::vec(0u8..5, 0..6),
+        ) {
+            let to_state = |c: u8| match c {
+                0 => IntentState::Intended,
+                1 => IntentState::Replaying,
+                2 => IntentState::Landed,
+                3 => IntentState::Conflicted,
+                _ => IntentState::Abandoned,
+            };
+            let stack: Vec<MergeIntent> = states
+                .iter()
+                .enumerate()
+                .map(|(idx, c)| {
+                    intent("s1", idx as i64, &format!("queue/{idx}"), to_state(*c))
+                })
+                .collect();
+            // The model walk, from the semantics.
+            let mut walk_positions: Vec<i64> = Vec::new();
+            for i in &stack {
+                match i.state {
+                    IntentState::Landed | IntentState::Abandoned => continue,
+                    IntentState::Intended => walk_positions.push(i.position),
+                    IntentState::Replaying | IntentState::Conflicted => break,
+                }
+            }
+            let mut expected: Vec<(i64, ReplayAction)> = Vec::new();
+            for (idx, pos) in walk_positions.iter().enumerate() {
+                expected.push((*pos, ReplayAction::Begin));
+                if idx > 0 {
+                    expected.push((*pos, ReplayAction::RebaseOntoMain));
+                }
+                expected.push((*pos, ReplayAction::Push));
+                expected.push((*pos, ReplayAction::OpenPr));
+                expected.push((*pos, ReplayAction::Merge));
+                expected.push((*pos, ReplayAction::Land));
+            }
+            let plan: Vec<(i64, ReplayAction)> = replay_plan(&stack, "s1")
+                .iter()
+                .map(|s| (s.position, s.action))
+                .collect();
+            prop_assert_eq!(plan, expected);
+        }
     }
 
     #[test]
