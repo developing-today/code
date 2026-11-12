@@ -48,6 +48,11 @@ impl Petnames {
 
     /// Open the store at `path`, replaying every line already there.
     ///
+    /// Replayed names are validated against the normalization, fold-uniqueness,
+    /// and skeleton-uniqueness invariants enforced by [`Self::set`]. The alleged
+    /// name check is intentionally exempt at load time: this API has no directory
+    /// state, so only conflicts among this owner's stored petnames can be checked.
+    ///
     /// A torn final line — a record left by a crash mid-append, parseable
     /// or not, without its terminating newline — is dropped and truncated away,
     /// mirroring `Outbox::open` and the world journal; any other
@@ -55,7 +60,8 @@ impl Petnames {
     ///
     /// # Errors
     ///
-    /// Fails if the file cannot be read, or a complete line is malformed.
+    /// Fails if the file cannot be read, a complete line is malformed, or a
+    /// complete `Set` record violates a petname invariant.
     pub fn open(path: &Path) -> Result<Self> {
         let mut store = Self {
             names: BTreeMap::new(),
@@ -79,7 +85,9 @@ impl Petnames {
             }
             match serde_json::from_str::<Record>(text.trim_end()) {
                 Ok(record) => {
-                    store.apply(record);
+                    store.apply(record, Some(number + 1)).with_context(|| {
+                        format!("petname journal line {} is invalid", number + 1)
+                    })?;
                     kept += line.len();
                 }
                 Err(error) => {
@@ -193,19 +201,54 @@ impl Petnames {
         })
     }
 
-    fn apply(&mut self, record: Record) {
+    fn apply(&mut self, record: Record, line: Option<usize>) -> Result<()> {
         match record {
             Record::Set {
                 owner,
                 account,
                 name,
             } => {
-                self.names.insert((owner, account), name);
+                let normalized = normalize_name(&name).with_context(|| {
+                    line.map_or_else(
+                        || "invalid petname".to_owned(),
+                        |number| {
+                            format!("petname journal line {number} violates name normalization")
+                        },
+                    )
+                })?;
+                ensure!(
+                    normalized == name,
+                    "{}petname is not stored in normalized form",
+                    line.map_or_else(String::new, |number| {
+                        format!("petname journal line {number} violates name normalization: ")
+                    })
+                );
+                for ((other_owner, other_account), other_name) in &self.names {
+                    if other_owner != &owner || other_account == &account {
+                        continue;
+                    }
+                    ensure!(
+                        fold(other_name) != fold(&normalized),
+                        "{}petname duplicates another contact by folded spelling",
+                        line.map_or_else(String::new, |number| {
+                            format!("petname journal line {number} violates fold uniqueness: ")
+                        })
+                    );
+                    ensure!(
+                        skeleton(other_name) != skeleton(&normalized),
+                        "{}petname is confusable with another contact's petname",
+                        line.map_or_else(String::new, |number| {
+                            format!("petname journal line {number} violates skeleton uniqueness: ")
+                        })
+                    );
+                }
+                self.names.insert((owner, account), normalized);
             }
             Record::Remove { owner, account } => {
                 self.names.remove(&(owner, account));
             }
         }
+        Ok(())
     }
 
     fn commit(&mut self, record: Record) -> Result<()> {
@@ -219,7 +262,7 @@ impl Petnames {
             file.write_all(&line)?;
             file.sync_data()?;
         }
-        self.apply(record);
+        self.apply(record, None)?;
         Ok(())
     }
 }
@@ -602,6 +645,73 @@ mod tests {
         let good = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, format!("{good}not json\n{good}")).unwrap();
         assert!(Petnames::open(&path).is_err());
+    }
+
+    fn assert_invalid_journal_name(name: &str, expected: &str) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("petnames.jsonl");
+        let records = [
+            Record::Set {
+                owner: OWNER.to_owned(),
+                account: ALICE.to_owned(),
+                name: "PayPal".to_owned(),
+            },
+            Record::Set {
+                owner: OWNER.to_owned(),
+                account: BOB.to_owned(),
+                name: name.to_owned(),
+            },
+        ];
+        let journal = records
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&path, journal).unwrap();
+
+        let error = Petnames::open(&path)
+            .err()
+            .expect("invalid journal should fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("line 2"), "{message}");
+        assert!(message.contains(expected), "{message}");
+    }
+
+    #[test]
+    fn journal_rejects_fold_duplicate_petnames() {
+        assert_invalid_journal_name("paypal", "fold uniqueness");
+    }
+
+    #[test]
+    fn journal_rejects_format_characters_in_petnames() {
+        assert_invalid_journal_name("Pay\u{200b}Pal", "name normalization");
+    }
+
+    #[test]
+    fn journal_rejects_overlong_petnames() {
+        assert_invalid_journal_name(&"x".repeat(65), "name normalization");
+    }
+
+    #[test]
+    fn journal_rejects_skeleton_duplicate_petnames() {
+        assert_invalid_journal_name("PayPa1", "skeleton uniqueness");
+    }
+
+    #[test]
+    fn a_journal_written_by_set_reopens_unchanged() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("petnames.jsonl");
+        {
+            let mut store = Petnames::open(&path).unwrap();
+            store.set(OWNER, ALICE, "PayPal", []).unwrap();
+            store.set(OWNER, BOB, "Dana", []).unwrap();
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        let store = Petnames::open(&path).unwrap();
+        assert_eq!(store.get(OWNER, ALICE), Some("PayPal"));
+        assert_eq!(store.get(OWNER, BOB), Some("Dana"));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
 
     #[test]
