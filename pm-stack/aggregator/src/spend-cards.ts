@@ -49,6 +49,11 @@ export interface SpendCardData {
   windowStart: string;
   windowEnd: string;
   coverage: RollupCoverage;
+  /** Attribution version the selected records were computed under.
+   * selectRollups picks one consistent version per window; printing
+   * it on the view makes a restatement distinguishable from changed
+   * consumption (design section 3, doc/spend-rollups-design-1259.md). */
+  attributionVersion: string;
   /** Earliest retained source history, from the records. */
   coverageStart: string;
   measures: SpendMeasure[];
@@ -118,6 +123,7 @@ function cardFor(
     windowStart: first.windowStart,
     windowEnd: first.windowEnd,
     coverage: records.some((r) => r.coverage === "partial") ? "partial" : "complete",
+    attributionVersion: first.attributionVersion,
     coverageStart: records.map((r) => r.coverageStart).sort()[0],
     measures,
     forecast: forecasts?.get(scopeId) ?? null,
@@ -181,9 +187,10 @@ function windowText(card: SpendCardData): string {
     card.windowKind === "month"
       ? monthLabel(card.windowStart)
       : `week of ${card.windowStart.slice(0, 10)}`;
+  const labelled = `${span} · attribution ${esc(card.attributionVersion)}`;
   return card.coverage === "partial"
-    ? `${span} · partial window (source coverage starts ${esc(card.coverageStart.slice(0, 10))})`
-    : span;
+    ? `${labelled} · partial window (source coverage starts ${esc(card.coverageStart.slice(0, 10))})`
+    : labelled;
 }
 
 function measuresHtml(card: SpendCardData): string {

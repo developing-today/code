@@ -100,6 +100,47 @@ describe("buildSpendCards (#4824)", () => {
     expect(html).toContain("no-binding: 77 tokens");
   });
 
+  test("selected attribution version is preserved on the card and displayed beside the window label (#8854)", () => {
+    // Oracle: the version string is the literal the records were built
+    // under (buildSpendRollups stamps it), not a value re-derived from
+    // the card under test.
+    const view = buildSpendCards(
+      rollups([{ ts: NOV, projectId: null, epicRef: EPIC, tokensByPool: { main: 5 }, paygUsd: 2 }]),
+    );
+    const card = view.byScope.get(EPIC);
+    expect(card?.attributionVersion).toBe("v1");
+    const html = spendCardHtml(card as NonNullable<typeof card>);
+    expect(html).toContain("attribution v1");
+    const unattr = buildSpendCards(
+      rollups([{ ts: NOV, projectId: null, epicRef: null, tokensByPool: { main: 7 } }]),
+    );
+    expect(unattr.unattributed?.attributionVersion).toBe("v1");
+    expect(unattributedSpendHtml(unattr.unattributed as NonNullable<typeof unattr.unattributed>)).toContain(
+      "attribution v1",
+    );
+  });
+
+  test("a restatement displays the newer selected version, not the superseded one (#8854)", () => {
+    const events: SpendRollupEvent[] = [
+      { ts: NOV, projectId: null, epicRef: EPIC, tokensByPool: { main: 5 }, paygUsd: 2 },
+    ];
+    const v1 = buildSpendRollups(events, {
+      attributionVersion: "v1",
+      coverageStart: "2026-09-01",
+      coverage: FULL_MONTH,
+    });
+    const v2 = buildSpendRollups(events, {
+      attributionVersion: "v2",
+      coverageStart: "2026-09-01",
+      coverage: FULL_MONTH,
+    });
+    const card = buildSpendCards([...v1, ...v2]).byScope.get(EPIC);
+    expect(card?.attributionVersion).toBe("v2");
+    const html = spendCardHtml(card as NonNullable<typeof card>);
+    expect(html).toContain("attribution v2");
+    expect(html).not.toContain("attribution v1");
+  });
+
   test("an empty store yields no cards at all", () => {
     const view = buildSpendCards([]);
     expect(view.windowKind).toBeNull();
