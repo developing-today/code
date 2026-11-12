@@ -11,7 +11,7 @@
 // the live source so the wire shape is parsed exactly once.
 import type { GhItem, OrchestrationSection, ProjectAudit, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef, refKey } from "./model.ts";
-import { isRecord, isTimestampNotFuture } from "./validate.ts";
+import { isIsoDate, isRecord, isTimestampNotFuture } from "./validate.ts";
 import { workItemRefSet } from "./work-items.ts";
 
 export const PROJECT_ID = "PVT_kwDOAZNvF84Bouay";
@@ -468,7 +468,12 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     (p.draft === undefined || typeof p.draft === "boolean") &&
     (p.labels === undefined || (Array.isArray(p.labels) && p.labels.every((x) => typeof x === "string"))) &&
     (p.author === undefined || typeof p.author === "string") &&
-    (p.updatedAt === undefined || typeof p.updatedAt === "string") &&
+    // updatedAt feeds Date.parse momentum/recency math downstream, so
+    // a present non-empty stamp must be a real ISO date: an impossible
+    // day (2026-02-30) would otherwise roll forward into fabricated
+    // recent activity (#5202). The collector spellings for a missing
+    // stamp - absent, or "" from updatedAt ?? "" - still pass.
+    (p.updatedAt === undefined || p.updatedAt === "" || isIsoDate(p.updatedAt)) &&
     (p.closedAt === undefined || typeof p.closedAt === "string") &&
     (p.mergedAt === undefined || typeof p.mergedAt === "string") &&
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
