@@ -349,3 +349,164 @@ roadmap-item issue — so the sentence completes to the top on real data.
 - `project-reconcile.sh` remains the boards' single writer.
 - Grist remains the roadmap mirror until the row→issue migration slice
   completes; drift is reported, never silently resolved.
+
+
+## 11. Link semantics (amendment, Drew 2026-11-12 16:45 CST)
+
+An item has **exactly one direct parent at a time**, but it keeps
+**historical links**. When work splits (an item sat under epic 123, part of
+it moves under epic 345), the item keeps both links: 345 as the direct
+parent, 123 as a **historical** link. A link that was simply **wrong**
+(bad classification) is a different operation: it is reclassified and the
+invalid link is **removed** — not retained as history.
+
+Every link is therefore a record, not a bare pointer, carrying a
+`relation` (parent, spawned-by, blocks, relates, board-parent, …), a
+`status`, and provenance:
+
+- `status: active` — the current direct parent (exactly one per item), or
+  a current non-parent relation.
+- `status: historical` — a former direct parent, retained on a split/move,
+  with `until` + `reason` (e.g. `split`, `carryover`, `reparent-on-close`).
+- `status: removed` — a wrong link, deleted from GitHub (native parent
+  re-pointed / label removed) and recorded in Metadata with
+  `reason: misclassification`, so the *removal* is auditable without the
+  link itself surviving. Historical-retention and wrong-link removal are
+  distinct operations and the data must never blur them (§7's
+  re-parent-on-close produces `historical`, never `removed`).
+
+Links are **level-agnostic**: items at any level can parent or link items
+at the same level (epic↔epic, design↔design) or any other level. Board→
+board links follow the same rule — usually a higher-level board links to a
+more granular board, but there is **no structural limitation** on link
+direction or level; the board registry (§1) stores board links as link
+records with the same relation/status shape. The genealogy walker (§6)
+follows only the direct parent (+ historical chain when rendering
+"formerly part of …"); other relations feed graph views.
+
+## 12. The Metadata section — every issue and PR (amendment)
+
+Every issue and PR body carries a **Metadata section**, delimited by
+HTML-comment markers so it is invisible in rendered views but trivially
+locatable in the raw body:
+
+```
+<!-- pm-metadata:start -->
+```json
+{
+  "pm_meta": 1,
+  "direct_parent": {"repo": "developing-today/code", "number": 3447, "kind": "epic"},
+  "links": [
+    {"target": {"repo": "developing-today/code", "number": 123},
+     "relation": "parent", "status": "historical",
+     "since": "2026-11-02", "until": "2026-11-12", "reason": "split"}
+  ],
+  "lineage": {"design": null, "roadmap_item": null, "priority": null},
+  "provenance": {"queue_id": null, "session_id": null, "lane": null,
+                 "host": null, "worktree": null, "picked_up_at": null,
+                 "work_started_at": null, "created_at": null,
+                 "model": null, "lane_start_issues": []}
+}
+```
+<!-- pm-metadata:end -->
+```
+
+Format decision: **JSON**, not YAML or a bespoke dictionary syntax.
+Strict parse with zero indentation ambiguity; both consumers (fleet in
+Rust/`serde_json`, the collector in TypeScript) parse it natively; keys
+are arbitrary and values nest freely, as required. The block is
+human-inspectable in the raw body and diff-friendly in edits.
+
+Relationship to §3: GitHub-native marks (native parent, `primary-parent/*`
+label) remain the GitHub-side representation; **the Metadata block is the
+canonical record** — the collector and the fleet database (§14) trust it,
+and `project-reconcile.sh` keeps the native marks, the label, and the
+block in agreement, reporting divergence as a finding instead of letting
+two truths drift. §3's `## PM lineage` mirror is superseded by this
+block (same fields, machine-canonical form).
+
+## 13. fleet gh as a superset of gh (amendment; extends #9016)
+
+`fleet gh` (rotation shipped today, #8887) grows a Metadata-aware layer —
+this is the implementation home for §11/§12, and it extends the step-2
+scope filed as #9016 (cross-linked, not duplicated):
+
+- **Create path** (`fleet gh issue create`, PR create): the caller's
+  description may already contain a Metadata block. Fleet parses it, then
+  **stamps** the fields it knows: queue ID, scheduled start, current time,
+  pwd, worktree, host, the time the queue item was picked up, the time
+  work started, the set of issues worked on by the same lane start,
+  session id (§14), and model. It ensures required fields are present —
+  injecting defaults/what it knows when absent — then pushes the issue/PR
+  and **inserts the full record, including the full Metadata, into the
+  fleet database itself** (§15). A failed DB insert never loses the
+  GitHub item: the ingestion layer (§16) heals it.
+- **Query path**: fleet offers Metadata queries — list/filter issues and
+  PRs **by Metadata fields** (e.g. by direct parent, by session, by lane,
+  by provenance host) — served from the database (§15), with GitHub as
+  fallback for fields the DB has not yet ingested.
+
+## 14. Session state (amendment)
+
+Each fleet start assigns a **session id**. It is stored (a) in the
+environment of everything fleet launches, and (b) in a **pwd-file at the
+repo root of every worktree it operates in**, so any later fleet
+invocation in that context recovers the provenance without being told.
+Resolution order: explicit argument > environment > pwd-file. The session
+id is what the create-path stamp (§13) writes into `provenance.session_id`,
+which is what makes "which session/lane start produced this item"
+answerable from the item itself.
+
+## 15. The metadata database (amendment)
+
+A fleet database tracks **every issue and PR in scope** (all repos the
+fleet works in), storing the **full Metadata as JSON** plus extracted key
+fields (direct parent, session id, lane, host, queue id, relation/status
+pairs) indexed for filtering. The DB is a **first-class query surface
+alongside GitHub**: the collector reads genealogy inputs from it, the
+dashboard can serve from it, and `fleet` Metadata queries (§13) run
+against it. GitHub remains the system of record for the items themselves;
+the DB is the system of record for Metadata *queries* — divergence
+between a body block and its DB row is a healing target (§16), reported,
+never silently overwritten in the wrong direction (body wins on content,
+DB wins on nothing — DB rows are rebuilt from bodies + fleet stamps).
+
+## 16. Dual ingestion / self-healing (amendment)
+
+Fleet does not create every item — plain `gh`, the web UI, and other
+actors do — and its own DB insert can fail. Two independent watchers keep
+the database complete:
+
+1. **Webhook listener**: issue/PR events (opened, edited, closed,
+   reopened, labeled) trigger a Metadata check: parse the block + labels/
+   title/status; insert or refresh the DB record; enqueue a queue item
+   when the event warrants work.
+2. **Interval sweeper**: periodically re-scans in-scope repos for
+   new/changed items the listener missed (downtime, delivery failures),
+   performing the same check.
+
+For items **lacking** a Metadata block, the watcher ascertains what it
+can (native parent, labels, milestone, timestamps, actor), generates a
+block, stores it in the DB, and writes it back to the body where the
+fleet has write access. When the ascertained Metadata is **insufficient**
+(no resolvable parent, ambiguous program), the item is **forwarded for
+full triage** instead of being left half-described. PRs that merge
+quickly may be detailed **retroactively**: the sweeper path explicitly
+supports completing Metadata after merge, for record keeping — a merged
+PR is a valid ingestion target, not a miss.
+
+## Amendment slice map
+
+New implementation slices under #9060 (in addition to §9):
+9. **fleet gh Metadata superset** — create-path parsing/stamping/required
+   fields + DB insert (extends #9016).
+10. **Metadata database + fleet query surface** — schema, extracted keys,
+    list/filter by Metadata fields.
+11. **Session state** — session id assignment, env + worktree pwd-file,
+    resolution order, stamp integration.
+12. **Dual ingestion** — webhook listener + interval sweeper, Metadata
+    generation/backfill, triage forwarding, retroactive completion for
+    merged PRs.
+And §9 slice 3 (primary parent) now also carries §11's historical-link
+semantics in the collector (link records with status, historical chain
+rendering, removed-link audit).
