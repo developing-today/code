@@ -254,6 +254,9 @@ in
 
     # OpenClaw runtime plugins (channels, harnesses, providers, search),
     # packaged immutably by nix-openclaw from the pinned upstream catalog.
+    # memory-wiki is not in the pinned 2026.10.7 catalog; add it only after
+    # the OpenClaw/nix-openclaw pin provides its generated runtime package.
+    # See #6167 for the favorable evaluation and deferred enablement.
     runtimePlugins = [
       "acpx" # ACP backend: opencode / claude / codex / gemini / copilot harnesses
       "slack" # Slack channel (channel inert until app tokens are wired; see CHANNELS.md)
@@ -285,7 +288,6 @@ in
       "diffs" # diff rendering for code review in chat
       "tokenjuice" # context compression
       "memory-lancedb" # LanceDB long-term memory; owns plugins.slots.memory (#1300 phase 1)
-      "memory-wiki" # Wiki-backed memory search; favorable evaluation recorded on #6167
     ];
 
     # Instance-local skills that encode how this fleet works.
@@ -591,7 +593,6 @@ in
               autoCapture = true;
             };
           };
-          "memory-wiki".enabled = true;
         };
       };
 
