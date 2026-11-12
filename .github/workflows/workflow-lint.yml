@@ -57,6 +57,8 @@ jobs:
             || echo "PyYAML unavailable; check-workflows.sh uses its structural fallback"
       - name: Contract tests for the workflow validator (#5743)
         run: bash .github/scripts/check-workflows.test.sh
+      - name: Contract tests for pm-dispatch retry safety (#8950)
+        run: bash .github/scripts/pm-dispatch-queue-post.test.sh
       - name: Validate workflows and composite actions
         run: bash .github/scripts/check-workflows.sh
       - name: Contract tests for the ci-policy agreement checker (#7089)
