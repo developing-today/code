@@ -12,16 +12,17 @@
 // chart or a fake zero.
 
 import type { ProjectPoolItem, RefKey } from "./model.ts";
+import { isValidRef } from "./model.ts";
 import { effortWeight, modeOf } from "./weights.ts";
 
-/** True when any pool item carries at least one graph edge. */
+/** True when any pool item carries at least one valid graph edge. */
 export function hasGraphEdges(items: readonly ProjectPoolItem[]): boolean {
   return items.some(
     (p) =>
-      p.parentRef !== undefined ||
-      p.epicRef !== undefined ||
-      (p.blockedBy?.length ?? 0) > 0 ||
-      (p.blocks?.length ?? 0) > 0,
+      isValidRef(p.parentRef) ||
+      isValidRef(p.epicRef) ||
+      (p.blockedBy ?? []).some(isValidRef) ||
+      (p.blocks ?? []).some(isValidRef),
   );
 }
 
@@ -83,7 +84,7 @@ export function blockedSummary(items: readonly ProjectPoolItem[]): BlockedSummar
     const item = byRef.get(ref);
     let best: RefKey[] = [ref];
     for (const blocker of item?.blockedBy ?? []) {
-      if (!blockerUnresolved(blocker, byRef)) continue;
+      if (!isValidRef(blocker) || !blockerUnresolved(blocker, byRef)) continue;
       const rest = chainFrom(blocker, visiting);
       if (rest.length + 1 > best.length) best = [ref, ...rest];
     }
@@ -94,7 +95,7 @@ export function blockedSummary(items: readonly ProjectPoolItem[]): BlockedSummar
 
   for (const item of items) {
     if (item.state !== "open") continue;
-    const blocked = (item.blockedBy ?? []).some((b) => blockerUnresolved(b, byRef));
+    const blocked = (item.blockedBy ?? []).some((b) => isValidRef(b) && blockerUnresolved(b, byRef));
     if (!blocked) continue;
     out.blockedCount += 1;
     const w = effortWeight(item.labels);

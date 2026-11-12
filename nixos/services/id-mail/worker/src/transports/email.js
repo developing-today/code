@@ -7,6 +7,16 @@ const PLACEHOLDER = "{code}";
 // Grant: { mode: "template" | "free", from: [addresses], maxRecipients: n }.
 export default {
   check(body, grant, config) {
+    // Grants are validated at the config boundary (#6970); refuse
+    // rather than throw if one still arrives wrong-shaped.
+    if (
+      !grant ||
+      !Array.isArray(grant.from) ||
+      typeof grant.maxRecipients !== "number" ||
+      !Array.isArray(config.templates)
+    ) {
+      return refuse(500, "caller grant is misconfigured");
+    }
     const { subject, text } = body;
     const from = body.from ?? grant.from[0];
     const recipients = recipientList(body);
@@ -59,7 +69,11 @@ function recipientList({ to }) {
   return null;
 }
 
-function matchesTemplate({ subject, body }, actualSubject, actualText) {
+function matchesTemplate(template, actualSubject, actualText) {
+  if (!template || typeof template.subject !== "string" || typeof template.body !== "string") {
+    return false;
+  }
+  const { subject, body } = template;
   if (subject !== actualSubject) {
     return false;
   }

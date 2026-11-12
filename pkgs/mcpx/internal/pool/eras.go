@@ -128,21 +128,21 @@ func (f *EraFile) Put(key string, rec EraRecord) error {
 	}
 	name := tmp.Name()
 	if err := tmp.Chmod(defaults.PrivateMode); err != nil {
-		tmp.Close()
-		os.Remove(name)
+		_ = tmp.Close()
+		_ = os.Remove(name)
 		return err
 	}
 	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(name)
+		_ = tmp.Close()
+		_ = os.Remove(name)
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(name)
+		_ = os.Remove(name)
 		return err
 	}
 	if err := os.Rename(name, f.path); err != nil {
-		os.Remove(name)
+		_ = os.Remove(name)
 		return err
 	}
 	return nil

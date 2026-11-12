@@ -29,14 +29,25 @@ const valid = rec({
   lastSeenAt: "2026-11-01T00:00:00Z",
 });
 
-describe("isSessionRecord taskRefs hygiene (#2408)", () => {
-  test("accepts absent, empty, and string-array taskRefs", () => {
-    expect(isSessionRecord({ id: "a", source: "s", label: "l" })).toBe(true);
+describe("isSessionRecord taskRefs hygiene (#2408, #4284)", () => {
+  test("accepts empty and string-array taskRefs, rejects absent taskRefs", () => {
+    expect(isSessionRecord({ id: "a", source: "s", label: "l" })).toBe(false);
+    expect(
+      isSessionRecord({
+        id: "a",
+        source: "s",
+        label: "l",
+        status: "succeeded",
+        agentId: "claude-code",
+        agentLabel: "Muse",
+        taskRefs: [],
+      }),
+    ).toBe(true);
     expect(isSessionRecord({ ...valid, taskRefs: [] })).toBe(true);
     expect(isSessionRecord(valid)).toBe(true);
-    expect(
-      isSessionRecord({ ...valid, taskRefs: ["developing-today/code#123", "developing-today/code#2408"] }),
-    ).toBe(true);
+    expect(isSessionRecord({ ...valid, taskRefs: ["developing-today/code#123", "developing-today/code#2408"] })).toBe(
+      true,
+    );
   });
 
   test("rejects non-array taskRefs (number, string, object)", () => {
@@ -80,7 +91,7 @@ describe("poisoned taskRefs cannot reach the mergeRecords spread (#2408)", () =>
     ]);
   });
 
-  test("missing taskRefs stays valid and coalesces to the other side", () => {
+  test("mergeRecords still coalesces when one side lacks taskRefs (the #4284 gate now rejects such records before they reach the merge)", () => {
     const prev = rec({ id: "ses_b", taskRefs: ["developing-today/code#7"] });
     const incoming = rec({ id: "ses_b" });
     const merged = mergeRecords([prev], [incoming]);

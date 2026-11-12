@@ -142,8 +142,18 @@ func (p *Pool) checkInstanceExec(in *Instance) {
 	}
 	p.mu.Unlock()
 
-	cwd, _ := SpawnCwd(p.cfg.Cwd, in.root)
-	st, found := p.cfg.ExecStampAt(cwd)
+	// Monitor the executable the instance actually runs: its effective
+	// (substituted) definition, not the stored one — a config cwd of
+	// "${mcpx.root}" is a literal directory that does not exist, so
+	// stamping the raw definition reports the executable missing and
+	// never notices an update (Codex review, PR #5135).
+	eff, err := p.cfg.Effective(in.root, in.cwd)
+	if err != nil {
+		p.markInstanceExecMissing(in, p.cfg.Command)
+		return
+	}
+	cwd, _ := SpawnCwd(eff.Cwd, in.root)
+	st, found := eff.ExecStampAt(cwd)
 	if !found {
 		p.markInstanceExecMissing(in, p.cfg.Command)
 		return
@@ -285,7 +295,7 @@ func (p *Pool) replaceChild(in *Instance) {
 		p.mu.Unlock()
 		return
 	}
-	repl, err := p.startLane(context.Background(), in.legacyLane, config.ResolvedScope{Key: in.key, Root: in.root})
+	repl, err := p.startLane(context.Background(), in.legacyLane, config.ResolvedScope{Key: in.key, Root: in.root, Cwd: in.cwd})
 
 	p.mu.Lock()
 	p.releaseSlotLocked(in)
@@ -343,7 +353,7 @@ func (p *Pool) replaceable(in *Instance) bool {
 	if strings.HasPrefix(in.key, "call:") {
 		return false
 	}
-	return !(p.cfg.Scope.WatchesPID() && !keyPIDAlive(in.key))
+	return !p.cfg.Scope.WatchesPID() || keyPIDAlive(in.key)
 }
 
 // drain waits until the calls running on in have finished, or d has passed,

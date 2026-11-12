@@ -28,7 +28,6 @@
 package artifacts
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -98,8 +97,8 @@ func (m *Meta) refreshTTLRemaining(now time.Time) {
 // deadline is the effective expiry under the touch-on-read convention:
 // the earlier of the idle deadline (lastTouched + idleTtl) and the
 // absolute ceiling (created + maxAge).
-func deadline(created, lastTouched time.Time, idleTtl, maxAge time.Duration) time.Time {
-	d := lastTouched.Add(idleTtl)
+func deadline(created, lastTouched time.Time, idleTTL, maxAge time.Duration) time.Time {
+	d := lastTouched.Add(idleTTL)
 	if ceiling := created.Add(maxAge); ceiling.Before(d) {
 		d = ceiling
 	}
@@ -174,11 +173,11 @@ func Open(opts Options) (*Store, error) {
 		return nil, err
 	}
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("artifacts schema: %w", err)
 	}
 	if err := ensureLastTouched(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("artifacts schema: %w", err)
 	}
 	if opts.IdleTTL > 0 && opts.MaxAge <= 0 {
@@ -224,7 +223,7 @@ func hasLastTouchedColumn(db *sql.DB) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var cid, notNull, pk int
 		var name, typ string
@@ -291,7 +290,7 @@ func (s *Store) blobPath(hash string) string {
 // anything that can reach the daemon.
 func NewID() string {
 	b := make([]byte, defaults.ArtifactIDBytes)
-	_, _ = rand.Read(b)
+	_, _ = RandSource.Read(b)
 	return "art-" + hex.EncodeToString(b)
 }
 
@@ -309,10 +308,10 @@ func (s *Store) Put(r io.Reader, p PutOptions) (Meta, error) {
 	tmpName := tmp.Name()
 	// Removed unconditionally: on the success path the file has already been
 	// renamed away and this is a no-op.
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
 	h := sha256.New()
-	var reader io.Reader = io.TeeReader(r, h)
+	var reader = io.TeeReader(r, h)
 	if s.opts.MaxBytes > 0 {
 		// One byte past the limit, so exceeding it is detectable rather than
 		// silently truncating -- a truncated screenshot is worse than a
@@ -350,7 +349,7 @@ func (s *Store) PutFile(path string, p PutOptions) (Meta, error) {
 	if err != nil {
 		return Meta{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil {
 		return Meta{}, err
@@ -396,9 +395,9 @@ func copyInto(dest string, r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err := io.Copy(tmp, r); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -531,7 +530,7 @@ func (s *Store) List(f Filter) ([]Meta, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []Meta{}
 	for rows.Next() {
 		m, err := scan(rows)
@@ -679,7 +678,7 @@ func (s *Store) Bytes(id string) ([]byte, Meta, error) {
 	if err != nil {
 		return nil, Meta{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	b, err := io.ReadAll(f)
 	return b, m, err
 }
@@ -722,12 +721,12 @@ func (s *Store) GC(now time.Time) (int, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		ids = append(ids, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
@@ -788,22 +787,22 @@ func (s *Store) Export(m Meta, dir string) (string, error) {
 	src := s.blobPath(m.SHA256)
 	f, err := os.Open(src)
 	if err != nil {
-		claim.Close()
-		os.Remove(dest)
+		_ = claim.Close()
+		_ = os.Remove(dest)
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	// The claim is the write target (#4253): the name stays taken for the
 	// whole copy, so nothing that appears in the meantime can be silently
 	// replaced, and a failed copy removes the claimed name rather than
 	// leaving a partial file that looks delivered.
 	if _, err := io.Copy(claim, f); err != nil {
-		claim.Close()
-		os.Remove(dest)
+		_ = claim.Close()
+		_ = os.Remove(dest)
 		return "", err
 	}
 	if err := claim.Close(); err != nil {
-		os.Remove(dest)
+		_ = os.Remove(dest)
 		return "", err
 	}
 	return dest, nil

@@ -65,6 +65,7 @@ review() {
       extra=""
       if [ "$name" = ".openclaw" ]; then
         case "$f" in
+        codedb.snapshot) extra=" — NOT covered by openclaw-backup (excluded file)" ;;
         tmp/* | cache/*) extra=" — NOT covered by openclaw-backup (excluded dir)" ;;
         *) extra=" — covered by openclaw-backup" ;;
         esac

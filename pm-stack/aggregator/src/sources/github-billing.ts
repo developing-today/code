@@ -72,7 +72,14 @@ function emptyDay(date: string): BillingDayAggregate {
 function codespacesCoreMultiplier(sku: unknown): number {
   if (typeof sku !== "string") return 1;
   const m = /(\d+)\s*-core/i.exec(sku);
-  return m ? Number(m[1]) : 1;
+  if (!m) return 1;
+  // The parsed count is a multiplier, not data (#3739): accept only a
+  // plausible Codespaces machine size (1-64 cores). A 0-core SKU would
+  // erase real hours and an unbounded digit string would store an
+  // absurd value (2e+30); both fall back to face value (x1), like an
+  // unparseable SKU.
+  const n = Number(m[1]);
+  return Number.isInteger(n) && n >= 1 && n <= 64 ? n : 1;
 }
 
 /** A numeric endpoint field contributes only when it is a finite,
@@ -88,6 +95,10 @@ function usageNumber(v: unknown): number {
 export function aggregateBillingUsage(items: BillingUsageItem[]): BillingDayAggregate[] {
   const byDate = new Map<string, BillingDayAggregate>();
   for (const item of items) {
+    // The endpoint payload is untrusted JSON (#3739): a null or
+    // otherwise non-object element must be skipped, not dereferenced —
+    // one bad element must not lose the whole month's collection.
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
     if (typeof item.date !== "string" || item.date.length < 10) continue;
     const date = item.date.slice(0, 10);
     // The bucket date must be a real calendar date (#2493): an

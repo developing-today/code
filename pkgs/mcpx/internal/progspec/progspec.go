@@ -32,13 +32,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // DefaultTimeout bounds one nix resolution. A first build of a large
 // flake can legitimately take minutes; a hanging one must not hang the
 // launch forever.
-const DefaultTimeout = 3 * time.Minute
+var DefaultTimeout = defaults.ExecResolveTimeout
 
 // Spec is a parsed program specification.
 type Spec struct {
@@ -274,7 +275,7 @@ func resolveNix(ctx context.Context, spec Spec, dir string) (Resolved, error) {
 	// A timed-out build's children can hold the output pipes open after
 	// the kill; WaitDelay bounds how long Run waits for them to close,
 	// so the timeout the caller set is the timeout they get.
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = defaults.ExecResolveWaitDelay
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

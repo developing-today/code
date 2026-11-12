@@ -14,7 +14,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::{future::IntoFuture, sync::Arc, time::Duration};
+use std::sync::Arc;
+
+mod common;
+
+use common::within;
 
 use id::{
     access::AccessPolicy,
@@ -36,9 +40,6 @@ use iroh_blobs::{
     BlobsProtocol, Hash as BlobHash, api::Store, get::request::get_blob, store::mem::MemStore,
 };
 use p2panda_core::{Hash, SeqNum, SigningKey};
-
-/// Every network step must finish within this, so a stuck request fails the test.
-const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// iroh-blobs' reset code for a refused request (`AbortReason::Permission`).
 const DENIED: u64 = 1;
@@ -106,6 +107,10 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         document: Some(doc.clone()),
         removes: None,
         note: None,
+        link: None,
+        checkpoint: None,
+        rotation: None,
+        chat: None,
     }
 }
 
@@ -122,6 +127,10 @@ fn tag_ext(op: TagOp, after: Vec<Hash>) -> ChainExt {
         document: None,
         removes: None,
         note: None,
+        link: None,
+        checkpoint: None,
+        rotation: None,
+        chat: None,
     }
 }
 
@@ -184,13 +193,6 @@ async fn provider(store: &Store, graph: Graph) -> (Router, EndpointAddr) {
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(store, Some(events)))
         .spawn();
     (router, addr)
-}
-
-/// Waits for `fut`, failing the test if it takes longer than [`TIMEOUT`].
-async fn within<T>(fut: impl IntoFuture<Output = T>) -> T {
-    tokio::time::timeout(TIMEOUT, fut.into_future())
-        .await
-        .expect("the request must finish within the timeout")
 }
 
 /// Fetches `hash` from `server`: the bytes, or the error text.
@@ -380,6 +382,10 @@ fn test_a_document_event_that_does_not_fit_its_kind_is_not_signed() {
         document: None,
         removes: None,
         note: None,
+        link: None,
+        checkpoint: None,
+        rotation: None,
+        chat: None,
     };
     assert!(sign(&key, 0, None, None, missing).is_err());
     let with_tag = ChainExt {

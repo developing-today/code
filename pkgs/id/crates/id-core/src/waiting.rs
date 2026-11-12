@@ -14,7 +14,10 @@
 //! use a fake clock. The event store holds one pool and mirrors it into the
 //! `waiting` table (P1.11). [`WaitingPool::restore`] rebuilds the pool from those
 //! rows on open. The pool keeps its own set of arrived keys, for the filter in
-//! [`WaitingPool::insert`].
+//! [`WaitingPool::insert`]. The store does not feed that set: it releases
+//! waiters through [`WaitingPool::release`], which records nothing, and its
+//! own applied table is its duplicate and replay record — so the set cannot
+//! grow with every event the store ever applies (#1730).
 //!
 //! The caller's loop:
 //!
@@ -164,16 +167,36 @@ pub struct WaitingPool<K, E> {
     /// entry.
     held: HashMap<AuthorKey, BTreeSet<u64>>,
     /// Keys that have arrived, and stay arrived. A dependency in this set is already satisfied.
-    /// The store calls this present: it is applied, voided by a fork, or a fork proof header.
+    /// Only the standalone [`insert`](Self::insert)/[`park`](Self::park) protocol
+    /// records here, through [`arrived`](Self::arrived). The event store never
+    /// does: it releases through [`release`](Self::release) and tracks applied
+    /// keys in its own table, so this set stays empty on the store path (#1730).
     arrived: HashSet<K>,
-    /// Events whose dependencies had all arrived when they were inserted.
-    ready: Vec<E>,
+    /// Events whose dependencies had all arrived when they were inserted,
+    /// paired with their key so an arrival can drop the copy (#4730).
+    ready: Vec<(K, E)>,
     /// The keys of the events in `ready`. The ready queue is the one
     /// state a key can be in that is neither held (`by_key`) nor
     /// arrived, and without this index the duplicate guard in
     /// `insert`/`park` could not see it: the same key inserted twice
     /// before `take_ready` was handed out twice (#2001).
     ready_keys: HashSet<K>,
+    /// The keys of the events handed out by [`take_ready`](Self::take_ready)
+    /// or returned by [`release`](Self::release)/[`arrived`](Self::arrived)
+    /// that have not yet arrived. A handed-out key is in no other index --
+    /// not held, not ready, not arrived -- so without this set the
+    /// duplicate guard in [`insert`](Self::insert) could not see it: the
+    /// same key inserted again in the window between hand-out and
+    /// `arrived` was accepted and handed out a second time (#7724). The
+    /// mark is cleared when the key arrives (through `release`, which
+    /// `arrived` calls), and consumed when the pool's owner re-holds the
+    /// event through [`restore`](Self::restore)/[`park`](Self::park) --
+    /// the event store settles a handed-out event by holding it again,
+    /// which is a decision about the in-flight copy, not a new arrival.
+    /// The set is bounded by the events in flight between hand-out and
+    /// arrival, never by history: unlike the arrived set on the store
+    /// path (#1730), every mark has a named clearing event.
+    handed_out: HashSet<K>,
     /// Events dropped by the age cap, for `expire` to return.
     expired: Vec<(AuthorKey, E)>,
 }
@@ -195,6 +218,7 @@ where
             arrived: HashSet::new(),
             ready: Vec::new(),
             ready_keys: HashSet::new(),
+            handed_out: HashSet::new(),
             expired: Vec::new(),
         }
     }
@@ -220,8 +244,9 @@ where
     /// dependency that has already arrived is not waited for. If every dependency
     /// has arrived, the event is not held: it is returned by
     /// [`take_ready`](Self::take_ready), and it takes no slot under the cap. An
-    /// event whose key is already held, has arrived, or is ready is a duplicate,
-    /// and it is ignored.
+    /// event whose key is already held, has arrived, is ready, or has been
+    /// handed out and not yet arrived (#7724) is a duplicate, and it is
+    /// ignored.
     ///
     /// Events due at `now_ms` expire before the insert, so a refusal changes
     /// nothing except that expiry.
@@ -243,6 +268,7 @@ where
         if self.arrived.contains(&key)
             || self.by_key.contains_key(&key)
             || self.ready_keys.contains(&key)
+            || self.handed_out.contains(&key)
         {
             return Ok(());
         }
@@ -251,8 +277,8 @@ where
             .filter(|dep| !self.arrived.contains(dep))
             .collect();
         if missing.is_empty() {
-            self.ready_keys.insert(key);
-            self.ready.push(event);
+            self.ready_keys.insert(key.clone());
+            self.ready.push((key, event));
             return Ok(());
         }
         self.hold(author, key, missing, event, now_ms)
@@ -284,6 +310,10 @@ where
         {
             return Ok(());
         }
+        // Parking a handed-out key re-holds the in-flight copy (the
+        // store's proof path parks a header it has just released):
+        // consume its handed-out mark (#7724).
+        self.handed_out.remove(&key);
         self.hold(author, key, HashSet::new(), event, now_ms)
     }
 
@@ -299,7 +329,11 @@ where
     /// Unlike [`insert`](Self::insert) and [`park`](Self::park), nothing expires first, and an
     /// empty `missing` does not release the event: it is held for good, as a parked event is.
     /// The caller holds the events in the order they arrived, so they are released in that
-    /// order. An event whose key is already held is ignored.
+    /// order. An event whose key is already held, has arrived, or is ready is ignored, as for
+    /// [`insert`](Self::insert): restoring an already-applied or ready key must not hold a
+    /// second copy that a later arrival would hand out again (#3911). A proof header that
+    /// must stay held after it is marked arrived does not take this path: it takes
+    /// [`restore_held_for_good`](Self::restore_held_for_good).
     ///
     /// # Errors
     ///
@@ -317,11 +351,53 @@ where
         event: E,
         arrived_at: u64,
     ) -> Result<(), WaitRefusal> {
+        if self.arrived.contains(&key)
+            || self.by_key.contains_key(&key)
+            || self.ready_keys.contains(&key)
+        {
+            return Ok(());
+        }
+        // Restoring a handed-out key is the owner settling the
+        // in-flight copy by holding it again (the event store's drain
+        // does exactly this), not a duplicate arrival: consume its
+        // handed-out mark (#7724). A fresh duplicate `insert` of the
+        // same key stays ignored -- that distinction is the fix.
+        self.handed_out.remove(&key);
+        let missing: HashSet<K> = missing.into_iter().collect();
+        self.hold(author, key, missing, event, arrived_at)
+    }
+
+    /// Holds an event for good even though its key has arrived: the explicit
+    /// held-for-good route for fork proof headers (#3911, design #4000 decision 3).
+    /// A proof header is marked arrived when its fork is decided, so the
+    /// ordinary [`restore`](Self::restore) would ignore it; this route holds it
+    /// anyway, waiting for nothing, so no arrival releases it and only the age
+    /// cap drops it. The caller is the store's proof park, which keeps the
+    /// row's first arrival time and its conflicts seen.
+    ///
+    /// An event whose key is already held is ignored, as for
+    /// [`restore`](Self::restore). The arrived and ready guards do not apply:
+    /// bypassing them is the point of the route.
+    ///
+    /// # Errors
+    ///
+    /// [`WaitRefusal::AuthorFull`] when the author already holds the per-author
+    /// cap, or [`WaitRefusal::PoolFull`] when the pool already holds the total
+    /// cap across all authors.
+    pub fn restore_held_for_good(
+        &mut self,
+        author: AuthorKey,
+        key: K,
+        event: E,
+        arrived_at: u64,
+    ) -> Result<(), WaitRefusal> {
         if self.by_key.contains_key(&key) {
             return Ok(());
         }
-        let missing: HashSet<K> = missing.into_iter().collect();
-        self.hold(author, key, missing, event, arrived_at)
+        // Re-holding a handed-out key consumes its mark, as in
+        // [`restore`](Self::restore) (#7724).
+        self.handed_out.remove(&key);
+        self.hold(author, key, HashSet::new(), event, arrived_at)
     }
 
     /// The held events of `author`, in sequence order of arrival. Parked events are
@@ -381,11 +457,39 @@ where
     /// dependencies but has not arrived itself: apply it, then call `arrived` with
     /// its key, which can release more events. Events due at `now_ms` expire first,
     /// so an expired event is never returned. If `key` was itself held, that copy
-    /// is dropped without being returned, because the caller now holds the event.
+    /// is dropped without being returned, because the caller now holds the event;
+    /// a copy still in the ready queue is dropped the same way (#4730).
     pub fn arrived(&mut self, key: K, now_ms: u64) -> Vec<E> {
+        let released = self.release(key.clone(), now_ms);
+        self.arrived.insert(key);
+        released
+    }
+
+    /// Release the events that were waiting only for `key`, exactly as
+    /// [`arrived`](Self::arrived) does — the held copy of `key` is dropped and
+    /// events due at `now_ms` expire first — but record nothing: `key` is not
+    /// added to the arrived set, so a later [`insert`](Self::insert) does not
+    /// treat it as a satisfied dependency or as a duplicate.
+    ///
+    /// This is the event store's path (#1730). The store calls it for every
+    /// applied event and every fork proof, and its own applied table already
+    /// recognises duplicates and replays; recording each key here as well
+    /// grew this pool by one set entry per event ever applied, in a pool no
+    /// store caller ever read back.
+    pub fn release(&mut self, key: K, now_ms: u64) -> Vec<E> {
         self.expire_due(now_ms);
+        // The released key has been applied or decided: its handed-out
+        // window, if it was in one, closes here (#7724). `arrived`
+        // records the key itself right after this call; `release`
+        // records nothing else about it.
+        self.handed_out.remove(&key);
         if let Some(seq) = self.by_key.get(&key).copied() {
             self.remove(seq);
+        }
+        if self.ready_keys.remove(&key) {
+            if let Some(position) = self.ready.iter().position(|(ready, _)| *ready == key) {
+                self.ready.remove(position);
+            }
         }
         let waiters = self.by_dep.remove(&key).unwrap_or_default();
         let mut released = Vec::new();
@@ -398,10 +502,13 @@ where
                 continue;
             }
             if let Some(done) = self.remove(seq) {
+                // A released waiter is handed out by this return,
+                // exactly as a `take_ready` event is: mark its key
+                // until it arrives (#7724).
+                self.handed_out.insert(done.key.clone());
                 released.push(done.event);
             }
         }
-        self.arrived.insert(key);
         released
     }
 
@@ -418,9 +525,33 @@ where
 
     /// The events whose dependencies had all arrived when they were inserted, in
     /// insert order. Take them right after each `insert`, before the next call.
+    ///
+    /// Taking an event hands it out: its key stays visible to the
+    /// duplicate guard (the `handed_out` set) until the caller records
+    /// its arrival with [`arrived`](Self::arrived), so a second
+    /// `insert` of the same key in that window is ignored instead of
+    /// handing the event out twice (#7724).
     pub fn take_ready(&mut self) -> Vec<E> {
-        self.ready_keys.clear();
-        std::mem::take(&mut self.ready)
+        let ready = std::mem::take(&mut self.ready);
+        self.handed_out.extend(self.ready_keys.drain());
+        ready.into_iter().map(|(_, event)| event).collect()
+    }
+
+    /// Forget a handed-out key without recording an arrival: the
+    /// pool's owner has permanently dropped the event (refused it,
+    /// found it a duplicate in its own record, deleted its row), so
+    /// it will never arrive and its handed-out mark must not linger
+    /// (#7724, Codex review on PR #8439). The event store calls this
+    /// on its drop path (`Mirror::drop_row`): a released event that
+    /// is decided against there reaches neither
+    /// [`release`](Self::release) nor [`restore`](Self::restore),
+    /// and without this call each such event leaked one set entry
+    /// for the life of the pool, outside every cap. Forgetting a key
+    /// that is not handed out is a no-op. This records nothing else:
+    /// a later [`insert`](Self::insert) of the key is judged on the
+    /// other indexes exactly as before.
+    pub fn forget(&mut self, key: &K) {
+        self.handed_out.remove(key);
     }
 
     /// Move the events that have reached the age cap at `now_ms` into `expired`.
@@ -688,6 +819,39 @@ mod tests {
     }
 
     #[test]
+    fn test_arrival_of_a_ready_event_drops_the_ready_copy_without_handing_it_out() {
+        // Both insert forms reach the ready queue: deps that already arrived,
+        // and no deps at all. In each, applying the event through another path
+        // must not hand the same event out again (#4730).
+        let mut pool = pool();
+        pool.insert(author(1), 1, [10], "ready-after-dep", 0)
+            .unwrap();
+        assert!(pool.arrived(1, 0).is_empty());
+        assert!(
+            pool.take_ready().is_empty(),
+            "a ready copy the pool has applied is not handed out again"
+        );
+
+        pool.insert(author(1), 2, [], "ready-at-once", 0).unwrap();
+        assert!(pool.arrived(2, 0).is_empty());
+        assert!(pool.take_ready().is_empty());
+    }
+
+    #[test]
+    fn test_arrival_of_one_ready_event_leaves_the_others_in_insert_order() {
+        let mut pool = pool();
+        pool.insert(author(1), 1, [], "a", 0).unwrap();
+        pool.insert(author(1), 2, [], "b", 0).unwrap();
+        pool.insert(author(1), 3, [], "c", 0).unwrap();
+        assert!(pool.arrived(2, 0).is_empty());
+        assert_eq!(
+            pool.take_ready(),
+            vec!["a", "c"],
+            "only the applied key is dropped, and the rest keep insert order"
+        );
+    }
+
+    #[test]
     fn test_counts_stay_exact_across_insert_release_and_expiry() {
         let mut pool = pool();
         pool.insert(author(1), 1, [10], "a", 0).unwrap();
@@ -810,5 +974,131 @@ mod tests {
         );
         assert_eq!(pool.len(), 2);
         assert!(pool.contains(&1) && pool.contains(&2) && !pool.contains(&3));
+    }
+
+    #[test]
+    fn test_restore_ignores_a_key_that_has_arrived() {
+        // #3911: an already-applied key restored again must not be held a
+        // second time: no held copy, no release when its dependency arrives,
+        // and nothing for take_ready.
+        let mut pool = pool();
+        pool.arrived(1, 0);
+        pool.restore(author(1), 1, [10], "stale", 0).unwrap();
+        assert!(!pool.contains(&1));
+        assert!(pool.is_empty());
+        assert!(pool.arrived(10, 0).is_empty());
+        assert!(pool.take_ready().is_empty());
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn test_restore_ignores_a_key_in_the_ready_queue() {
+        // #3911: a key sitting in the ready queue is not held, so restoring it
+        // must not create a held copy alongside the ready original: the ready
+        // event is handed out once, and no dependency arrival releases more.
+        let mut pool = pool();
+        pool.arrived(10, 0);
+        pool.insert(author(1), 1, [10], "ready", 0).unwrap();
+        pool.restore(author(1), 1, [10], "copy", 0).unwrap();
+        assert!(!pool.contains(&1));
+        assert_eq!(pool.take_ready(), vec!["ready"]);
+        assert!(
+            pool.take_ready().is_empty(),
+            "the ready event is taken once"
+        );
+        assert!(pool.arrived(10, 0).is_empty());
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn test_restore_held_for_good_holds_an_arrived_proof_key() {
+        // The explicit held-for-good route bypasses the arrived guard on
+        // purpose: a proof header marked arrived stays parked, counted under
+        // the caps, until the age cap drops it.
+        let mut pool = pool();
+        pool.arrived(7, 0);
+        pool.restore_held_for_good(author(1), 7, "proof", 0)
+            .unwrap();
+        assert!(pool.contains(&7));
+        assert_eq!(pool.waiting_count(author(1)), 1);
+        assert!(pool.take_ready().is_empty());
+        assert!(pool.arrived(9, 0).is_empty());
+        assert!(
+            pool.contains(&7),
+            "no arrival releases a held-for-good copy"
+        );
+        // A second park of the same key is a duplicate, not a second copy.
+        pool.restore_held_for_good(author(1), 7, "proof", 0)
+            .unwrap();
+        assert_eq!(pool.waiting_count(author(1)), 1);
+    }
+
+    #[test]
+    fn test_release_releases_waiters_without_recording_the_key() {
+        let mut pool: WaitingPool<u32, &str> = WaitingPool::new(WaitingLimits::default());
+        let author = [7u8; 32];
+        pool.insert(author, 10, [20], "a", 0).unwrap();
+        // release frees the waiter exactly as arrived does...
+        assert_eq!(pool.release(20, 0), vec!["a"]);
+        // ...but the key was not recorded: an event depending on it still
+        // waits, and the key itself is not treated as a duplicate (#1730).
+        pool.insert(author, 11, [20], "b", 0).unwrap();
+        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.len(), 1);
+        pool.insert(author, 20, [], "c", 0).unwrap();
+        assert_eq!(pool.take_ready(), vec!["c"]);
+    }
+
+    #[test]
+    fn test_release_drops_the_held_copy_like_arrived() {
+        let mut pool: WaitingPool<u32, &str> = WaitingPool::new(WaitingLimits::default());
+        let author = [7u8; 32];
+        pool.insert(author, 10, [20], "a", 0).unwrap();
+        assert!(pool.release(10, 0).is_empty());
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn test_handed_out_key_is_a_duplicate_until_it_arrives() {
+        // #7724: a key taken by take_ready is handed out, not yet
+        // arrived. Re-inserting it in that window must be ignored as
+        // a duplicate -- before the fix, take_ready cleared the only
+        // index that could see the key, so the re-insert was accepted
+        // and the event handed out a second time.
+        let mut pool = pool();
+        pool.insert(author(1), 7, [], "a", 0).unwrap();
+        assert_eq!(pool.take_ready(), vec!["a"]);
+        // The handed-out window: same key, deps satisfied or not --
+        // both re-inserts are duplicates.
+        pool.insert(author(1), 7, [], "a-again", 0).unwrap();
+        pool.insert(author(1), 7, [9], "a-held", 0).unwrap();
+        assert!(pool.take_ready().is_empty());
+        assert!(pool.is_empty(), "no second copy is held either");
+        // Arrival closes the window; the arrived guard takes over.
+        assert!(pool.arrived(7, 0).is_empty());
+        pool.insert(author(1), 7, [], "a-third", 0).unwrap();
+        assert!(pool.take_ready().is_empty());
+        // A released waiter's key is handed out the same way.
+        pool.insert(author(1), 10, [20], "waiter", 0).unwrap();
+        assert_eq!(pool.arrived(20, 0), vec!["waiter"]);
+        pool.insert(author(1), 10, [], "waiter-again", 0).unwrap();
+        assert!(pool.take_ready().is_empty());
+        // But the owner re-holding a handed-out event through
+        // restore (the event store's settle path) is a decision
+        // about the in-flight copy, not a duplicate arrival.
+        pool.restore(author(1), 10, [30], "waiter", 0).unwrap();
+        assert!(pool.contains(&10));
+        // And an owner that permanently drops a handed-out event
+        // finalizes it with forget: the mark clears, so a later
+        // insert of the key is a fresh arrival again (the store's
+        // drop_row path -- a refused released event must not leak
+        // its mark for the life of the pool).
+        pool.insert(author(1), 11, [], "dropped", 0).unwrap();
+        assert_eq!(pool.take_ready(), vec!["dropped"]);
+        pool.insert(author(1), 11, [], "dropped-again", 0).unwrap();
+        assert!(pool.take_ready().is_empty());
+        pool.forget(&11);
+        pool.insert(author(1), 11, [], "dropped-again", 0).unwrap();
+        assert_eq!(pool.take_ready(), vec!["dropped-again"]);
     }
 }

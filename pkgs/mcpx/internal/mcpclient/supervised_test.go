@@ -185,7 +185,7 @@ func TestSupervisedPumpDetachReattach(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	defer tr2.Close()
+	defer func() { _ = tr2.Close() }()
 	if tr2.PID() != pid {
 		t.Fatalf("child pid changed across detach: %d -> %d", pid, tr2.PID())
 	}
@@ -207,7 +207,7 @@ func TestSupervisedSingleAttachRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach 1: %v", err)
 	}
-	defer tr1.Close()
+	defer func() { _ = tr1.Close() }()
 	defer killChild(t, tr1)
 
 	if _, err := mcpclient.NewSupervised(opts); err == nil ||
@@ -252,7 +252,7 @@ func TestSupervisedBufferOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 	defer killChild(t, tr)
 	if tr.DroppedBytes() <= 0 {
 		t.Fatalf("droppedBytes = %d, want > 0 after overflow", tr.DroppedBytes())
@@ -291,7 +291,8 @@ func TestSupervisedBufferOverflow(t *testing.T) {
 	}
 	killChild(t, tr)
 	select {
-	case <-done:
+	case recvErr := <-done:
+		_ = recvErr
 	case <-time.After(10 * time.Second):
 		t.Fatal("supervisor did not exit after child exit")
 	}
@@ -309,7 +310,7 @@ func TestSupervisedChildExitSurfaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 	line, err := tr.Recv()
 	if err != nil || string(line) != `{"ready":true}` {
 		t.Fatalf("first frame: %q, %v", line, err)
@@ -342,7 +343,7 @@ func rawAttach(t *testing.T, sock string) net.Conn {
 		conn, err := net.DialTimeout("unix", sock, 2*time.Second)
 		if err == nil {
 			if _, err := conn.Write([]byte("{\"version\":1}\n")); err != nil {
-				conn.Close()
+				_ = conn.Close()
 				t.Fatalf("write handshake: %v", err)
 			}
 			return conn
@@ -380,7 +381,7 @@ func TestSupervisedStalledReaderAttachDropped(t *testing.T) {
 
 	// Attach and never read: the stalled daemon.
 	conn := rawAttach(t, sock)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	select {
 	case err := <-done:
@@ -428,7 +429,7 @@ func TestSupervisedAttachFlushOrdering(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	conn := rawAttach(t, sock)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	r := bufio.NewReader(conn)
 
@@ -474,10 +475,11 @@ func TestSupervisedAttachFlushOrdering(t *testing.T) {
 		t.Fatalf("live frame = %q, want the echo after the buffered burst", line)
 	}
 
-	conn.Close()
+	_ = conn.Close()
 	_ = syscall.Kill(reply.PID, syscall.SIGKILL)
 	select {
-	case <-done:
+	case recvErr := <-done:
+		_ = recvErr
 	case <-time.After(10 * time.Second):
 		t.Fatal("supervisor did not exit after child exit")
 	}

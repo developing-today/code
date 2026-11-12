@@ -290,6 +290,74 @@ func TestSanitizeNamespace(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsInvalidExplicitNamespaceIdentifiers(t *testing.T) {
+	for _, namespace := range []string{"bad-name", "9lives", "has space", "foo.bar", "café"} {
+		t.Run(namespace, func(t *testing.T) {
+			c := &config.Config{MCPServers: map[string]*config.Server{
+				"server-name": {
+					Name:    "server-name",
+					Command: "x",
+					Mcpx:    &config.Extras{Namespace: namespace},
+				},
+			}}
+
+			_, err := c.Resolve("server-name")
+			if err == nil {
+				t.Fatalf("Resolve accepted invalid explicit namespace %q", namespace)
+			}
+			for _, want := range []string{`server "server-name"`, `namespace "` + namespace + `"`} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q should include %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveAcceptsValidExplicitNamespaceIdentifiers(t *testing.T) {
+	for _, namespace := range []string{"aa", "good_ns1", "$valid", "_valid"} {
+		t.Run(namespace, func(t *testing.T) {
+			c := &config.Config{MCPServers: map[string]*config.Server{
+				"server-name": {
+					Name:    "server-name",
+					Command: "x",
+					Mcpx:    &config.Extras{Namespace: namespace},
+				},
+			}}
+
+			r, err := c.Resolve("server-name")
+			if err != nil {
+				t.Fatalf("Resolve rejected valid explicit namespace %q: %v", namespace, err)
+			}
+			if r.Namespace != namespace {
+				t.Fatalf("Resolve namespace = %q, want %q", r.Namespace, namespace)
+			}
+		})
+	}
+}
+
+func TestResolveKeepsDerivedNamespaceSanitization(t *testing.T) {
+	for serverName, want := range map[string]string{
+		"fff-nix": "fff_nix",
+		"7up":     "_7up",
+		"log":     "log_",
+	} {
+		t.Run(serverName, func(t *testing.T) {
+			c := &config.Config{MCPServers: map[string]*config.Server{
+				serverName: {Name: serverName, Command: "x"},
+			}}
+
+			r, err := c.Resolve(serverName)
+			if err != nil {
+				t.Fatalf("Resolve(%q): %v", serverName, err)
+			}
+			if r.Namespace != want {
+				t.Fatalf("Resolve(%q).Namespace = %q, want %q", serverName, r.Namespace, want)
+			}
+		})
+	}
+}
+
 func TestSearchPathPrefersProjectThenUser(t *testing.T) {
 	t.Setenv("MCPX_CONFIG", "")
 	paths := config.SearchPath()
@@ -595,5 +663,57 @@ func TestResolveCarriesTags(t *testing.T) {
 	}
 	if got := r.ToolTags["snap"]; len(got) != 1 || got[0] != "a11y" {
 		t.Fatalf("resolved toolTags = %v", r.ToolTags)
+	}
+}
+
+// #6116: readOnlyTools in a server's mcpx block resolves onto the
+// view, by exact name: a listed tool is declared read-only, an
+// unlisted one is not, and a server with no declaration declares
+// nothing.
+func TestResolveCarriesReadOnlyTools(t *testing.T) {
+	c := &config.Config{MCPServers: map[string]*config.Server{
+		"a": {Name: "a", Command: "x", Mcpx: &config.Extras{
+			ReadOnlyTools: []string{"find_files", "grep"},
+		}},
+		"b": {Name: "b", Command: "x"},
+	}}
+	r, err := c.Resolve("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.DeclaresReadOnly("find_files") || !r.DeclaresReadOnly("grep") {
+		t.Fatalf("resolved readOnlyTools = %v, want find_files and grep declared", r.ReadOnlyTools)
+	}
+	if r.DeclaresReadOnly("wipe") {
+		t.Fatal("an unlisted tool must not be declared read-only")
+	}
+	rb, err := c.Resolve("b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rb.DeclaresReadOnly("find_files") {
+		t.Fatal("a server with no readOnlyTools declared a tool read-only")
+	}
+}
+
+// The declaration survives the JSON wire form, which is how an
+// operator actually writes it.
+func TestReadOnlyToolsFromJSONConfig(t *testing.T) {
+	dir := t.TempDir()
+	p := write(t, dir, "c.json", `{
+	  "mcpServers": {
+	    "fff": { "command": "fff-mcp", "mcpx": { "readOnlyTools": ["find_files"] } }
+	  }
+	}`)
+	c, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := c.Resolve("fff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.DeclaresReadOnly("find_files") {
+		t.Fatalf("readOnlyTools from JSON did not resolve: %v", r.ReadOnlyTools)
 	}
 }

@@ -39,7 +39,9 @@ fail() {
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 if [[ "${1:-} ${2:-}" == "secret list" ]]; then
   printf '%s\n' '[{"key":"cloudflare.r2-backups-access-key-id","value":"fake-access-key-id"},{"key":"cloudflare.r2-backups-secret-access-key","value":"fake-secret-access-key"},{"key":"cloudflare.r2-endpoint","value":"https://example.invalid"}]'
   exit 0
@@ -49,13 +51,17 @@ exit 1
 STUB
 } >"$BIN/bws"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 echo "stub journal line"
 exit 0
 STUB
 } >"$BIN/journalctl"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 store="${RCLONE_STUB_DIR:?RCLONE_STUB_DIR unset}"
 mkdir -p "$store"
 key() { printf '%s' "$1" | tr '/:' '__'; }
@@ -90,7 +96,11 @@ run_scenario() {
   printf '{}\n' >"$home/.local/state/pm-aggregator/actions.json"
   # Full required set (#1025): a missing required member now fails
   # the run at verify, so the fixture carries every required file.
-  for f in comments.json fleet-feed.json quota-current.json registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do printf '{}\n' >"$home/.local/state/pm-aggregator/$f"; done
+  for f in actions.json comments.json fleet-feed.json quota-current.json registry.json \
+    quota-gatherer-state.json quota-gatherer-heartbeat.json events.json \
+    coverage-snapshot.json aa-last-good.json; do
+    printf '{}\n' >"$home/.local/state/pm-aggregator/$f"
+  done
   printf '{}\n' >"$home/atlas/meta-quota-export/latest.json"
   printf '{}\n' >"$home/atlas/meta-quota-export/history.jsonl"
   HOME="$home" PATH="$BIN:$PATH" BWS_ACCESS_TOKEN="<redacted>" \
@@ -105,7 +115,7 @@ run_scenario() {
 
 expect_rejected() {
   local name="$1" value="$2"
-  if [[ "$RC" -ne 0 ]]; then
+  if [[ $RC -ne 0 ]]; then
     echo "ok: $name: script exited non-zero ($RC)"
   else
     fail "$name: expected non-zero exit for DATE '$value', got 0"
@@ -125,7 +135,7 @@ expect_rejected() {
   else
     fail "$name: an 'escaped' directory was created outside the backup root"
   fi
-  if [[ ! -d "$SCEN_STORE" ]] || [[ -z "$(ls -A "$SCEN_STORE" 2>/dev/null)" ]]; then
+  if [[ ! -d $SCEN_STORE ]] || [[ -z "$(ls -A "$SCEN_STORE" 2>/dev/null)" ]]; then
     echo "ok: $name: nothing uploaded"
   else
     fail "$name: stub remote store is not empty after rejection"
@@ -149,7 +159,7 @@ expect_rejected ragged 2026-2-3
 # would delete the archive before the upload assertions run.
 TODAY="$(date +%F)"
 run_scenario valid "$TODAY"
-if [[ "$RC" -eq 0 ]]; then
+if [[ $RC -eq 0 ]]; then
   echo "ok: valid: script exited 0"
 else
   fail "valid: expected exit 0, got $RC; log: $(cat "$LOG")"
@@ -165,7 +175,7 @@ else
   fail "valid: archive missing from the stub remotes"
 fi
 
-if (( failures > 0 )); then
+if ((failures > 0)); then
   echo "pm-dashboard-backup DATE tests: $failures failure(s)" >&2
   exit 1
 fi

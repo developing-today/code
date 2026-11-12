@@ -6,15 +6,44 @@
 // its result companion) on the same pattern. Everything underneath
 // (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
 // apply actions; the dashboard only records them.
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
-import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
-import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
-import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
+import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
+import {
+  checkActionAgainstItem,
+  effectiveNeedsOrder,
+  effectiveStandingAuto,
+  findTierItem,
+  questionIdForOption,
+} from "./tier-items.ts";
+import {
+  authorizeCommentAuthor,
+  commentKindCounts,
+  CommentsStore,
+  queuedComments,
+  validateNewComment,
+} from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
+import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
+import { EventsStore, emitEvent, pageEvents } from "./events.ts";
+import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
+import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
+import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
+import {
+  IngestionStore,
+  WatchdogEpisodeStabilizer,
+  ingestActivity,
+  createWatchdogGapSyncQueue,
+  watchdogDeliveries,
+  activityCoverageHtml,
+  gapsHtml,
+  ACTIVITY_SOURCE_COVERAGE,
+} from "./activity.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
+import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -25,6 +54,42 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
+import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
+import {
+  getNeedsDrew,
+  listOpenNeedsDrew,
+  raiseNeedsDrew,
+  recordAnswer,
+  shouldFetchNeedsDrewCensus,
+  validateNeedsDrew,
+  type NeedsDrewCensus,
+  type NeedsDrewQuestion,
+} from "./needs-drew.ts";
+import {
+  decisionSetOpenState,
+  decisionSetProgress,
+  deferWithSubmissions,
+  getDecisionDrafts,
+  getDecisionSet,
+  isDeferLean,
+  decisionSetSummary,
+  decisionSetsForView,
+  isDecisionSetView,
+  listDecisionSets,
+  listOpenDecisionSets,
+  raiseDecisionSet,
+  recordResolutions,
+  requestInfoOpenQuestions,
+  upsertDecisionDrafts,
+  validateDecisionDraftUpsert,
+  validateDecisionSet,
+  type DecisionItem,
+  type DecisionSet,
+  type DecisionSetView,
+  type DecisionSubmission,
+  decisionsDraftScript,
+} from "./decisions.ts";
+import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -34,8 +99,18 @@ import {
   type ItemsCoverage,
 } from "./health.ts";
 import { manifestRouteFor } from "./pages.ts";
+import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
+import {
+  allRefs,
+  buildAttention,
+  buildQuotaActions,
+  deriveToday,
+  filterAttentionViewByRefs,
+  projectPace,
+  quotaActionTierItems,
+  type RoadmapGrain,
+} from "./derive.ts";
 import {
   reconcileRoadmap,
   roadmapDriftReport,
@@ -43,7 +118,10 @@ import {
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
 import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
+import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
+import { SpendRollupStore } from "./spend-rollups.ts";
+import { buildSpendCards, type SpendCardsView } from "./spend-cards.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
   PROJECT_CONFIGS,
@@ -64,6 +142,7 @@ import {
   renderBoardBody,
   renderDiscuss,
   renderDns,
+  renderConflicts,
   renderHealth,
   renderItem,
   deriveOverview,
@@ -75,38 +154,140 @@ import {
   renderProgram,
   renderProgramProject,
   renderQuota,
+  renderQueue,
+  renderQueueBody,
+  renderQueueShell,
   buildRoadmapDrill,
   renderRoadmap,
+  renderSearch,
   renderServiceDetail,
   renderSessions,
   renderToday,
   renderTodayBody,
   renderTodayShell,
   type CommentFormOpts,
+  eventTableHtml,
 } from "./render.ts";
 import { buildBriefs } from "./brief.ts";
+import { buildDigest, listDigestArchives, readDigestArchive, type Digest, type DigestKind } from "./digest.ts";
 import { timingSafeEqual } from "node:crypto";
 import {
   getAlertsStore,
+  requestAlertTick,
+  sendClassTestPush,
   sendTestPush,
   startAlertEngine,
+  toPublicSubscription,
   validateNewIncident,
   validateNewSubscription,
 } from "./alerts.ts";
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
-import { resolveBwsSecret } from "./secrets.ts";
+import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
-import { renderAlerts } from "./render.ts";
+import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
+import {
+  deriveSoleDoorPoolIds,
+  isNotificationTestClass,
+  NOTIFICATION_CLASS_DEFAULTS,
+  NOTIFICATION_CLASSES,
+  rollupNotificationSends,
+  type NotificationSnapshot,
+} from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
+import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
+import { buildQueueView, queueInputsStale } from "./queue-view.ts";
+import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
+import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
+import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
+import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
+import { ItemHistoryStore } from "./item-history.ts";
+import { computeFlowAnalytics } from "./flow-analytics.ts";
+import {
+  FORECAST_CONTRACT_VERSION,
+  quotaForecastContract,
+  subjectForecastContracts,
+  type ForecastContract,
+} from "./forecast-contract.ts";
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
+// astral character straddling the cap is dropped whole, so a persisted
+// event field can never end in a lone high surrogate.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
+const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
+const spendRollupStore = new SpendRollupStore(cfg.snapshotsDir);
+/** #4824: the Projects/Roadmap spend-beside-progress view over the
+ * #4823 rollup store. A failed read renders no spend block (the
+ * store's absence is already the honest state — ingestion is a
+ * separate slice); it never fabricates zeroed cards. */
+const loadSpendCards = async (): Promise<SpendCardsView | null> => {
+  try {
+    return buildSpendCards(await spendRollupStore.readAll());
+  } catch {
+    return null;
+  }
+};
+
+async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
+  const targets = [...items.values()].filter(
+    (item) => item.labels.some((label) => label.toLowerCase() === "ready-for-agent") && /#\d+$/.test(item.ref),
+  );
+  if (!targets.length) return [];
+  const observedAt = new Date().toISOString();
+  if (cfg.source !== "live") {
+    // #4969 (Codex on PR #5283): fixtures mode must never read the live
+    // harness — deterministic fixture dispatch data, mirroring the
+    // health.ts fixtures boundary. The canned set has no picked-up
+    // work item, so every labelled fixture item is honestly
+    // "not picked up".
+    return targets.map((item) => ({
+      ref: item.ref,
+      state: RFA_NOT_PICKED_UP,
+      provenance: { source: "ready-for-agent", observedAt, repository: item.ref.split("#")[0], mode: "fixtures" },
+    }));
+  }
+  try {
+    const state = await fetchRfaState(cfg.readyForAgent.baseUrl);
+    return targets
+      .map((item) => {
+        const match = /^(.*)#(\d+)$/.exec(item.ref);
+        if (!match) return null;
+        return {
+          ref: item.ref,
+          state: dispatchStateFor(state, match[1], Number(match[2])) || RFA_NOT_PICKED_UP,
+          provenance: { source: "ready-for-agent", observedAt, repository: match[1] },
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  } catch {
+    return targets.map((item) => ({
+      ref: item.ref,
+      state: "unavailable",
+      provenance: {
+        source: "ready-for-agent",
+        observedAt,
+        repository: item.ref.split("#")[0],
+        error: "harness read failed",
+      },
+    }));
+  }
+}
 
 /** #1220: the coverage snapshot behind the /projects panel — computed
  * from the feed's items + the Project pool, rotated weekly by
@@ -134,6 +315,74 @@ async function coverageSnapshot(
 }
 const actionsStore = new ActionsStore(cfg.actionsFile);
 const viewsStore = new ViewsStore(cfg.viewsFile);
+const eventsStore = new EventsStore(cfg.eventsFile);
+const freshnessStore = new FreshnessStore(cfg.freshnessFile);
+const activityStore = new IngestionStore(cfg.activityFile);
+
+/** #1739: the event log's fire-and-forget sink for source-side
+ *  writers (orchestration publishes, registry merges). Never awaited,
+ *  never throws: a failed event write loses the event, nothing else. */
+function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
+  void emitEvent(eventsStore, event);
+}
+
+/** #3321: the activity-ingestion sink for the source-side writers
+ *  (watchdog episodes, Kaneo board changes). Dedupe + checkpoints
+ *  live in the store. The returned promise resolves true only when
+ *  every delivery is durable (ingested or already seen): the live
+ *  source awaits it as the acknowledgment that lets it discard its
+ *  Kaneo baseline (Codex P2, PR #5141) — failed deliveries retain
+ *  their cards' baseline entries so the next poll retries the same
+ *  stable delivery ids, while acknowledged cards advance. */
+async function recordActivity(
+  deliveries: Parameters<typeof ingestActivity>[2],
+): Promise<{ failed: number; failedIds: string[] }> {
+  const result = await ingestActivity(activityStore, eventsStore, deliveries);
+  return { failed: result.failed, failedIds: result.failedIds };
+}
+
+/** #3977: source freshness notices are not #1739 activity records.
+ *  This store is owned by the aggregator process; the projector and
+ *  collector reach it only through the loopback publisher listener. */
+async function recordFreshness(input: FreshnessInput): Promise<void> {
+  await freshnessStore.publish(input);
+}
+
+/** #3321: the source-gap sink for the live source's polling gaps
+ *  (Codex P2, PR #5141): a non-null `to` records (or extends) the
+ *  open gap for the source; a null `to` is recovery — the open gap
+ *  resolves as backfilled, since polling has resumed and the next
+ *  diff lands against the preserved baseline. Never throws into the
+ *  source's read path. */
+async function recordSourceGap(source: string, from: string, to: string | null): Promise<void> {
+  try {
+    if (to !== null) {
+      await activityStore.recordGap(source, from, to);
+      return;
+    }
+    for (const gap of await activityStore.gaps()) {
+      if (gap.source === source && gap.status === "open") {
+        // Recovery happened now, not at the last failed poll: extend
+        // the gap window to the recovery moment as it resolves
+        // (Codex P2, PR #5141).
+        await activityStore.resolveGap(gap.id, "backfilled", new Date().toISOString());
+      }
+    }
+  } catch (err) {
+    console.error(
+      `[activity] WARNING: source gap record failed for ${source}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/** #3321: pins watchdog episodes to their first-observed `since`
+ *  (Codex P2, PR #5141) — watchdogTierItems assigns `now` for
+ *  several breach kinds, so without this the stream would gain a
+ *  new "episode" on every attention render of one outage. */
+const watchdogEpisodes = new WatchdogEpisodeStabilizer();
+async function hasStreamEvent(kind: string, ref: string): Promise<boolean> {
+  return eventsStore.has(kind, ref);
+}
 
 function pickSource(): Source {
   // #1290: the live source reads the standing delegation default from
@@ -142,11 +391,21 @@ function pickSource(): Source {
   return cfg.source === "live"
     ? liveSource(cfg, {
         standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
+        onEvent: recordStreamEvent,
+        hasEvent: hasStreamEvent,
+        onActivity: recordActivity,
+        onFreshness: recordFreshness,
+        onSourceGap: recordSourceGap,
+        seenActivityIds: (source) => activityStore.seenIds(source),
       })
     : fixtureSource();
 }
 
 const source = pickSource();
+
+/** Lazy quota refresh (#1171): stale page/API loads ask the deployed
+ *  gatherer unit to run again; single-flight + cooldown live in the module. */
+const quotaRefresher = createQuotaRefresher({ trigger: systemdTrigger() });
 
 // #1279: prefer the latest-comment-per-ref read so a busy batch cannot
 // truncate an item's most recent activity out of its brief.
@@ -200,6 +459,20 @@ async function ensureProvenancePrimed(): Promise<void> {
 }
 
 /**
+ * The source-conflict inbox (#1282 slice 1), assembled from the same facets
+ * the rest of the dashboard reads. Read-only: detection collects what the
+ * facets already report, and no render changes because of it.
+ */
+async function assembleConflicts(): Promise<ConflictInbox> {
+  const [pool, orchestration, usage] = await Promise.all([
+    source.projects().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.usage().catch(() => emptyUsageView()),
+  ]);
+  return conflictInbox({ pool, orchestration, services: usage.services });
+}
+
+/**
  * The one health assembly behind both /health and /api/health
  * (#1147): primed provenance first (so facet truth never depends on
  * request order, #1267), then the feed snapshot the section ages and
@@ -231,6 +504,7 @@ async function healthContext(prime = true): Promise<HealthView> {
     detail: source.provenanceDetail?.(),
     itemsCoverage: lastItemsCoverage,
     comments: await commentsStore.pendingCounts().catch(() => undefined),
+    conflicts: await assembleConflicts().catch(() => null),
   });
 }
 
@@ -279,6 +553,16 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+/** Same response shape as {@link json} without the 2-space pretty-print:
+ *  the board JSON legitimately carries seconds of data and the pretty
+ *  form adds ~10% bytes for nothing a machine consumer reads (#5082). */
+function jsonCompact(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
 function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
@@ -312,6 +596,482 @@ async function alertsIntakeAuthorized(req: Request): Promise<boolean> {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// --- Needs-Drew questions (#8568) ------------------------------------------
+
+/** The token-carrying answer-page URL for a raised question. */
+function needsDrewAnswerUrl(item: NeedsDrewQuestion): string {
+  return `${cfg.publicOrigin}/answer/${encodeURIComponent(item.ledgerId)}?t=${item.token}`;
+}
+
+const ANSWER_PAGE_STYLE = `<style>
+  body { font-family: system-ui, sans-serif; background: #0e1117; color: #e6edf3; margin: 0; padding: 2rem 1rem; }
+  main { max-width: 40rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; line-height: 1.35; }
+  .context { color: #9da7b1; white-space: pre-wrap; }
+  .links a { color: #58a6ff; display: block; margin: 0.35rem 0; overflow-wrap: anywhere; }
+  .options { display: grid; gap: 0.6rem; margin: 1.2rem 0; }
+  button.option { text-align: left; padding: 0.8rem 1rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; }
+  button.option:hover { border-color: #58a6ff; }
+  textarea { width: 100%; min-height: 4.5rem; box-sizing: border-box; background: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 0.5rem; padding: 0.6rem; }
+  button.submit { margin-top: 0.6rem; padding: 0.7rem 1.2rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 0; background: #1f6feb; color: #fff; cursor: pointer; }
+  .confirm { border: 1px solid #238636; border-radius: 0.5rem; padding: 1rem; }
+</style>`;
+
+/** Render GET /answer/<ledgerId>. The caller has already verified the
+ * token; the 403 shape renders nothing about the question. */
+function renderAnswerPage(item: NeedsDrewQuestion): string {
+  const links = item.links
+    .filter((l) => /^https?:\/\//.test(l))
+    .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
+    .join("");
+  if (item.answer) {
+    const chosen = item.answer.optionId
+      ? (item.options.find((o) => o.id === item.answer?.optionId)?.label ?? item.answer.optionId)
+      : null;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+<div class="confirm"><p>Answered${chosen ? `: <strong>${esc(chosen)}</strong>` : ""}.</p>
+${item.answer.freeText ? `<p>${esc(item.answer.freeText)}</p>` : ""}
+<p class="context">Recorded at ${esc(item.answer.at)} — the fleet worker has been unblocked.</p></div>
+</main></body></html>`;
+  }
+  const buttons = item.options
+    .map((o) => `<button class="option" type="button" data-option="${esc(o.id)}">${esc(o.label)}</button>`)
+    .join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Needs Drew — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+${item.context ? `<p class="context">${esc(item.context)}</p>` : ""}
+${links ? `<div class="links">${links}</div>` : ""}
+<div class="options">${buttons}</div>
+<label>Or answer in your own words (optional, sent with a tapped option or on its own):
+<textarea id="freeText" placeholder="Free-text answer"></textarea></label>
+<button class="submit" type="button" id="sendText">Send free-text answer</button>
+<p id="status" class="context"></p>
+<script>
+const token = ${JSON.stringify(item.token)};
+const endpoint = ${JSON.stringify(`/api/needs-drew/${encodeURIComponent(item.ledgerId)}/answer`)};
+async function answer(payload) {
+  const status = document.getElementById('status');
+  status.textContent = 'Sending…';
+  try {
+    const res = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, ...payload }) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    status.textContent = 'Answer recorded — thank you. The fleet worker has been unblocked.';
+    document.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  } catch { status.textContent = 'Sending failed — please try again.'; }
+}
+document.querySelectorAll('button.option').forEach((b) => {
+  b.addEventListener('click', () => {
+    const freeText = document.getElementById('freeText').value.trim();
+    answer({ optionId: b.dataset.option, ...(freeText ? { freeText } : {}) });
+  });
+});
+document.getElementById('sendText').addEventListener('click', () => {
+  const freeText = document.getElementById('freeText').value.trim();
+  if (!freeText) { document.getElementById('status').textContent = 'Write an answer first, or tap an option above.'; return; }
+  answer({ freeText });
+});
+</script>
+</main></body></html>`;
+}
+
+function renderAnswerForbidden(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>Answer link not available</h1>
+<p class="context">This answer link is unknown or its token does not match. Nothing about the question is shown without the correct link.</p>
+</main></body></html>`;
+}
+
+// --- Decision sets (#8766) -------------------------------------------------
+
+/** The token-carrying decisions-page URL for a raised set. */
+function decisionsPageUrl(set: DecisionSet): string {
+  return `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
+}
+
+/** Parse a decisions submissions array — shared by /submit and by
+ * /defer's filled-answers-win payload (#8766). */
+function parseDecisionSubmissions(
+  raw: unknown,
+): { ok: true; value: DecisionSubmission[] } | { ok: false; error: string } {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 256) {
+    return { ok: false, error: "submissions must be an array of 1-256 entries" };
+  }
+  const submissions: DecisionSubmission[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return { ok: false, error: "submissions entries must be objects" };
+    }
+    const s = entry as Record<string, unknown>;
+    const ledgerId = typeof s.ledgerId === "string" ? s.ledgerId : "";
+    const qid = typeof s.qid === "string" ? s.qid : "";
+    const kind = s.kind;
+    if (!ledgerId || !qid || (kind !== "answered" && kind !== "deferred" && kind !== "request-info")) {
+      return { ok: false, error: "submissions entries require ledgerId, qid and kind answered|deferred|request-info" };
+    }
+    if (kind === "deferred" && !isDeferLean(s.lean)) {
+      return { ok: false, error: "deferred submissions require a lean of none|skeptical|approve" };
+    }
+    submissions.push({
+      ledgerId,
+      qid,
+      kind,
+      ...(typeof s.optionId === "string" ? { optionId: s.optionId } : {}),
+      ...(typeof s.freeText === "string" ? { freeText: s.freeText } : {}),
+      ...(isDeferLean(s.lean) ? { lean: s.lean } : {}),
+      ...(typeof s.note === "string" ? { note: s.note } : {}),
+      ...(typeof s.comment === "string" ? { comment: s.comment } : {}),
+    });
+  }
+  return { ok: true, value: submissions };
+}
+
+const DECISIONS_PAGE_STYLE = `${ANSWER_PAGE_STYLE}<style>
+  .group { color: #9da7b1; text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.85rem; margin: 1.6rem 0 0.4rem; }
+  .item { border: 1px solid #30363d; border-radius: 0.6rem; padding: 1rem; margin: 0.8rem 0; background: #11161d; }
+  .item h2 { font-size: 1.1rem; margin: 0 0 0.3rem; line-height: 1.35; }
+  .q { border-top: 1px solid #21262d; padding: 0.8rem 0 0.2rem; margin-top: 0.8rem; }
+  .q p.qq { font-weight: 600; margin: 0 0 0.3rem; }
+  .opt { display: block; padding: 0.45rem 0; cursor: pointer; }
+  .opt input { margin-right: 0.5rem; }
+  select.defer { width: 100%; box-sizing: border-box; margin-top: 0.5rem; padding: 0.55rem; background: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 0.5rem; }
+  .done { color: #3fb950; font-size: 0.92rem; padding: 0.35rem 0; }
+  .bar { border: 1px solid #30363d; border-radius: 0.6rem; padding: 1rem; margin: 1.2rem 0; background: #11161d; }
+  .bar button { margin: 0.3rem 0.4rem 0.3rem 0; }
+  button.sendback { background: #6e3feb; }
+  .provided { border: 1px solid #1f6feb; border-radius: 0.5rem; padding: 0.6rem 0.8rem; margin: 0.5rem 0; background: #0d1b2e; }
+  .provided .ph { color: #58a6ff; font-weight: 600; margin: 0 0 0.3rem; }
+  .provided p { margin: 0; white-space: pre-wrap; }
+  button.reqinfo { background: #8250df; margin-top: 0.4rem; }
+  .bulkchk { font-size: 0.92rem; color: #9da7b1; }
+  #status { min-height: 1.2em; }
+</style>`;
+
+/** Render GET /decisions/<setId>. The caller has already verified the
+ * token; the 403 shape renders nothing about the set. Only open
+ * questions are interactive; resolved ones show as a compact recorded
+ * line, and an item whose questions are all resolved is not rendered
+ * at all — it has gone away, per the spec. */
+function renderDecisionsPage(set: DecisionSet): string {
+  const progress = decisionSetProgress(set);
+  const groups: string[] = [];
+  for (const item of set.items) if (!groups.includes(item.group)) groups.push(item.group);
+  const itemCard = (item: DecisionItem): string => {
+    const open = item.questions.filter((q) => !q.resolution);
+    if (open.length === 0) return "";
+    const links = item.links
+      .filter((l) => /^https?:\/\//.test(l))
+      .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
+      .join("");
+    const resolvedLines = item.questions
+      .filter((q) => q.resolution)
+      .map((q) => {
+        const r = q.resolution!;
+        const what =
+          r.kind === "deferred"
+            ? `deferred to the orchestrator${r.lean && r.lean !== "none" ? ` (lean: ${esc(r.lean)})` : ""}${r.optionLabel ? ` — your tentative pick: ${esc(r.optionLabel)}` : ""}${r.comment ? ` — comment: ${esc(r.comment)}` : ""}`
+            : r.kind === "request-info"
+              ? `more information requested${r.note ? ` — you said: ${esc(r.note)}` : ""}`
+              : `answered${r.optionLabel ? `: ${esc(r.optionLabel)}` : r.freeText ? `: ${esc(r.freeText)}` : ""}`;
+        return `<div class="done">✓ ${esc(q.question)} — ${what}</div>`;
+      })
+      .join("");
+    const questionBlocks = open
+      .map((q) => {
+        const radios = q.options
+          .map(
+            (o) =>
+              `<label class="opt"><input type="radio" name="opt-${esc(q.qid)}" value="${esc(o.id)}">${esc(o.label)}</label>`,
+          )
+          .join("");
+        return `<div class="q" data-ledger="${esc(item.ledgerId)}" data-qid="${esc(q.qid)}">
+<p class="qq">${esc(q.question)}</p>
+${q.infoProvided ? `<div class="provided"><p class="ph">Information you requested</p><p>${esc(q.infoProvided)}</p></div>` : ""}
+${q.context ? `<p class="context">${esc(q.context)}</p>` : ""}
+${radios}
+<textarea class="ft" placeholder="Answer in your own words, or a comment (sent back with any action on this question)"></textarea>
+<select class="defer">
+<option value="">I'll answer this one</option>
+<option value="none">Defer</option>
+<option value="skeptical">Defer — leaning no</option>
+<option value="approve">Defer — leaning yes</option>
+</select>
+<textarea class="infonote" placeholder="Need more information first? Say what's missing (optional)"></textarea>
+<button class="reqinfo" type="button" data-reqinfo>Request more information</button>
+</div>`;
+      })
+      .join("");
+    return `<section class="item" data-ledger="${esc(item.ledgerId)}">
+<label class="bulkchk"><input type="checkbox" class="bulk"> select this item for a bulk action below (defer or request info)</label>
+<h2>${esc(item.title)}</h2>
+${links ? `<div class="links">${links}</div>` : ""}
+${resolvedLines}
+${questionBlocks}
+<button class="submit" type="button" data-submit-item="${esc(item.ledgerId)}">Submit this item</button>
+</section>`;
+  };
+  const body = groups
+    .map((g) => {
+      const cards = set.items
+        .filter((i) => i.group === g)
+        .map(itemCard)
+        .join("");
+      return cards ? `<div class="group">${esc(g)}</div>${cards}` : "";
+    })
+    .join("");
+  const caughtUp = progress.openQuestions === 0;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Decisions — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
+<body><main><h1>${esc(set.title)}</h1>
+<p class="context">${progress.openQuestions} question${progress.openQuestions === 1 ? "" : "s"} open across ${progress.openItems} item${progress.openItems === 1 ? "" : "s"} · ${progress.answered} answered · ${progress.deferred} deferred · ${progress.infoRequested} sent back for more information so far. Fill in what you want — you can submit a partially-filled item; what you filled in is recorded and the rest stays here.</p>
+${caughtUp ? `<div class="confirm"><p>All caught up — every question in this set has been answered or sent back. Nothing left on this page.</p></div>` : body}
+<div class="bar">
+<p class="context">Bulk actions</p>
+<button class="submit" type="button" id="submitAll">Submit everything I've filled in</button>
+<p class="context">Defer checked items to the orchestrator instead of answering — they leave this page and become the orchestrator's job. Precedence per question: (1) the question's own defer setting wins, with its tentative pick and comment riding along as guidance; (2) a filled-in answer submits as an answer; (3) only a question nobody touched uses the default flavor picked here:</p>
+<select class="defer" id="bulkLean">
+<option value="none">Defer</option>
+<option value="skeptical">Defer — leaning no</option>
+<option value="approve">Defer — leaning yes</option>
+</select>
+<button class="submit sendback" type="button" id="deferChecked">Defer checked to orchestrator</button>
+<button class="submit sendback" type="button" id="deferAll">Defer ALL remaining</button>
+<p class="context">Or request more information for the checked items — they leave this page and come back in a later set once the information has been gathered:</p>
+<textarea class="infonote" id="bulkInfoNote" placeholder="Comment for the bulk actions — rides back with the checked items (for request-info: say what's missing)"></textarea>
+<button class="submit reqinfo" type="button" id="reqinfoChecked">Request more info for checked items</button>
+</div>
+<p id="status" class="context"></p>
+<script>
+var TOKEN = ${JSON.stringify(set.token)};
+var SET_ID = ${JSON.stringify(set.setId)};
+function status(msg) { document.getElementById('status').textContent = msg; }
+function collect(scopeLedger) {
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var ledger = block.getAttribute('data-ledger');
+    if (scopeLedger && ledger !== scopeLedger) return;
+    var qid = block.getAttribute('data-qid');
+    var lean = block.querySelector('select.defer').value;
+    if (lean) {
+      var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: lean };
+      var dpick = block.querySelector('input[type=radio]:checked');
+      if (dpick) dsub.optionId = dpick.value;
+      var dtext = block.querySelector('textarea.ft').value.trim();
+      if (dtext) dsub.comment = dtext;
+      subs.push(dsub); return;
+    }
+    var picked = block.querySelector('input[type=radio]:checked');
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (picked || text) {
+      var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
+      if (picked) sub.optionId = picked.value;
+      if (text) sub.freeText = text;
+      subs.push(sub);
+    }
+  });
+  return subs;
+}
+function applyOpenState(state) {
+  var openByItem = {};
+  state.items.forEach(function (i) { openByItem[i.ledgerId] = i.openQids; });
+  document.querySelectorAll('.q').forEach(function (block) {
+    var open = openByItem[block.getAttribute('data-ledger')] || [];
+    if (open.indexOf(block.getAttribute('data-qid')) === -1) block.remove();
+  });
+  document.querySelectorAll('section.item').forEach(function (card) {
+    if (!card.querySelector('.q')) card.remove();
+  });
+  if (!document.querySelector('section.item')) {
+    status('All caught up — every question in this set is recorded. You can close this page.');
+  }
+}
+async function post(path, payload) {
+  var res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(Object.assign({ token: TOKEN }, payload)) });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+async function submit(scopeLedger) {
+  var subs = collect(scopeLedger);
+  if (subs.length === 0) { status('Nothing filled in yet — pick an option, write an answer, or choose a defer.'); return; }
+  status('Sending…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: subs });
+    applyOpenState(out);
+    var applied = out.outcomes.filter(function (o) { return o.applied; }).length;
+    status('Recorded ' + applied + ' — ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+async function sendBack(all) {
+  // The flavor picked here is only the DEFAULT for questions nobody
+  // touched: the gather below sends each question's own defer setting
+  // and each filled answer as submissions, the server records those
+  // first, and this payload lean reaches only what is still open.
+  var lean = document.getElementById('bulkLean').value;
+  var payload;
+  var scopeIds = null;
+  if (all) { payload = { lean: lean, allRemaining: true }; }
+  else {
+    var ids = [];
+    document.querySelectorAll('section.item').forEach(function (card) {
+      if (card.querySelector('input.bulk').checked) ids.push(card.getAttribute('data-ledger'));
+    });
+    if (ids.length === 0) { status('Check at least one item first, or use ALL remaining.'); return; }
+    payload = { lean: lean, ledgerIds: ids };
+    scopeIds = ids;
+  }
+  // Filled answers win over the bulk defer: everything already filled
+  // in inside the scope rides along as submissions — the server records
+  // them first (answers stay rulings, per-question defers keep their
+  // own lean and comment) and defers only what is still unanswered.
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var ledger = block.getAttribute('data-ledger');
+    if (scopeIds && scopeIds.indexOf(ledger) === -1) return;
+    var qid = block.getAttribute('data-qid');
+    var qlean = block.querySelector('select.defer').value;
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (qlean) {
+      var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: qlean };
+      var dpick = block.querySelector('input[type=radio]:checked');
+      if (dpick) dsub.optionId = dpick.value;
+      if (text) dsub.comment = text;
+      subs.push(dsub); return;
+    }
+    var picked = block.querySelector('input[type=radio]:checked');
+    if (picked || text) {
+      var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
+      if (picked) sub.optionId = picked.value;
+      if (text) sub.freeText = text;
+      subs.push(sub);
+    }
+  });
+  if (subs.length) payload.submissions = subs;
+  var bulkComment = document.getElementById('bulkInfoNote').value.trim();
+  if (bulkComment) payload.comment = bulkComment;
+  status('Sending back…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/defer', payload);
+    applyOpenState(out);
+    var recorded = (out.outcomes || []).filter(function (o) { return o.applied; }).length;
+    var msg = 'Deferred ' + out.deferredCount + ' question(s) to the orchestrator';
+    if (recorded) msg = 'Recorded ' + recorded + ' filled-in answer(s) first; deferred the rest — ' + out.deferredCount + ' question(s) deferred to the orchestrator';
+    status(msg + ' — ' + out.remainingOpenQuestions + ' still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+document.querySelectorAll('[data-submit-item]').forEach(function (b) {
+  b.addEventListener('click', function () { submit(b.getAttribute('data-submit-item')); });
+});
+document.getElementById('submitAll').addEventListener('click', function () { submit(null); });
+document.getElementById('deferChecked').addEventListener('click', function () { sendBack(false); });
+document.getElementById('deferAll').addEventListener('click', function () { sendBack(true); });
+async function requestInfoOne(block) {
+  var note = block.querySelector('textarea.infonote').value.trim();
+  var sub = { ledgerId: block.getAttribute('data-ledger'), qid: block.getAttribute('data-qid'), kind: 'request-info' };
+  if (note) sub.note = note;
+  status('Requesting more information…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: [sub] });
+    applyOpenState(out);
+    status('Recorded — that question will come back in a later set with the information added. ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+async function requestInfoChecked() {
+  var ids = [];
+  document.querySelectorAll('section.item').forEach(function (card) {
+    if (card.querySelector('input.bulk').checked) ids.push(card.getAttribute('data-ledger'));
+  });
+  if (ids.length === 0) { status('Check at least one item first.'); return; }
+  var note = document.getElementById('bulkInfoNote').value.trim();
+  var payload = { ledgerIds: ids };
+  if (note) payload.note = note;
+  status('Requesting more information…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/request-info', payload);
+    applyOpenState(out);
+    status('Recorded ' + out.requestedCount + ' question(s) to come back with more information — ' + out.remainingOpenQuestions + ' still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+document.querySelectorAll('[data-reqinfo]').forEach(function (b) {
+  b.addEventListener('click', function () { requestInfoOne(b.closest('.q')); });
+});
+document.getElementById('reqinfoChecked').addEventListener('click', requestInfoChecked);
+${decisionsDraftScript(set.setId)}
+</script>
+</main></body></html>`;
+}
+
+/** Render GET /decisions — the decision-sets index (#8867). Lists every
+ * set in the store with counts live from decisionSetSummary (the same
+ * numbers the set page itself reports), in today / this-week / all
+ * views with an open-only toggle, newest first. Each row links to the
+ * set's own token-carrying page; the index carries no token of its own
+ * and sits behind the same access as every other aggregator page
+ * (tailnet origin / Cloudflare Access on pm.security.cab) — no new
+ * public surface, and the per-set token model is untouched. */
+const CHICAGO_STAMP = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, openOnly: boolean): string {
+  const inView = decisionSetsForView(allSets, view);
+  const visible = openOnly ? inView.filter((s) => decisionSetSummary(s).openQuestions > 0) : inView;
+  const totalOpen = inView.reduce((n, s) => n + decisionSetSummary(s).openQuestions, 0);
+  const viewTab = (v: DecisionSetView, label: string): string =>
+    v === view
+      ? `<strong>${label}</strong>`
+      : `<a href="/decisions?view=${v}${openOnly ? "&open=1" : ""}">${label}</a>`;
+  const toggle = openOnly
+    ? `<strong>Open only</strong> · <a href="/decisions?view=${view}">Show all</a>`
+    : `<a href="/decisions?view=${view}&open=1">Open only</a>`;
+  const rows = visible
+    .map((set) => {
+      const s = decisionSetSummary(set);
+      const stamp = Number.isFinite(Date.parse(s.createdAt))
+        ? CHICAGO_STAMP.format(new Date(s.createdAt))
+        : s.createdAt;
+      const breakdown = `${s.answered} answered · ${s.deferred} deferred · ${s.infoRequested} sent back for more info`;
+      const state = s.fullyResolved ? `all settled — ${breakdown}` : `${s.openQuestions} open · ${breakdown}`;
+      return `<div class="item"><h2><a href="${esc(decisionsPageUrl(set))}">${esc(s.title)}</a></h2>
+<p class="context">Raised ${esc(stamp)} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · ${state}</p>
+<p class="context">Set <code>${esc(s.setId)}</code></p></div>`;
+    })
+    .join("");
+  const empty =
+    allSets.length === 0
+      ? `<p class="context">No decision sets have been raised yet.</p>`
+      : `<p class="context">No sets in this view${openOnly ? " with open questions" : ""}.</p>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Decision sets — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
+<body><main><h1>Decision sets</h1>
+<p class="context">${inView.length} set${inView.length === 1 ? "" : "s"} · ${totalOpen} question${totalOpen === 1 ? "" : "s"} open. Newest first. Each set opens its own page — the same link its push notification carried.</p>
+<p class="context">${viewTab("today", "New today")} · ${viewTab("week", "This week")} · ${viewTab("all", "All")} &nbsp;|&nbsp; ${toggle}</p>
+${visible.length ? rows : empty}
+</main></body></html>`;
+}
+
+function renderDecisionsForbidden(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>Decisions link not available</h1>
+<p class="context">This decisions link is unknown or its token does not match. Nothing about the set is shown without the correct link.</p>
+</main></body></html>`;
+}
+
 /** The PWA manifest (#3315 slice a, landed with #3676): start_url is
  * the attention view per the design; icons incl. maskable + iOS. */
 const PWA_MANIFEST = {
@@ -338,14 +1098,120 @@ function emptyQuotaView(): QuotaView {
   return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
 }
 function emptyUsageView(): UsageView {
-  return { services: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
+  return {
+    services: [],
+    uninstrumentedServices: [],
+    payg: [],
+    charges: [],
+    attention: [],
+    domains: null,
+    subscriptions: [],
+    history: {},
+  };
 }
 
-async function boardContext() {
+async function loadBoardContext() {
   const board = await source.board().catch(() => []);
   const refs = allRefs(board);
   const items = await source.items(refs).catch(() => new Map());
   return { board, items };
+}
+
+// #5082: the board assembly is the stack's most expensive read — a
+// Kaneo login + poll with per-project task pagination, one projector
+// /links call per card, and the items() closure over every ref — and
+// every board-family request used to pay it in full. Under ordinary
+// fleet load the assembly outlives the 10 s dashboard deadline
+// (assembly-deadline.ts), so /board, /api/board.json, and the overview
+// (which embeds the board) 503'd even with every upstream healthy;
+// concurrent cold loads each started their own assembly and multiplied
+// the damage (measured 2026-11-08: 3 concurrent -> 3 assemblies, all
+// 503). The assembly now gets the /today contract (#1179): a short TTL
+// serves warm hits from the last successful read, and concurrent cold
+// requests share one in-flight load.
+//
+// The cache sits BELOW the variant split, which is what makes it safe
+// for every consumer: ?done=all, saved-view filters, and the HTML/JSON
+// renderers are all derived per request from this one context
+// (boardJsonBody / boardJsonViewBody / renderBoard), so no variant can
+// ever be served another variant's body. Provenance stays truthful the
+// same way it does for /today: prov()/provDetail() are still read live
+// per request at the call sites. Fail-soft fallbacks (an empty board
+// when Kaneo is down) are the honest degraded state of the read and
+// are cached as-is until expiry, exactly as #1179 documents; a
+// throwing load is never cached.
+const boardContextCache = new TodayCache<Awaited<ReturnType<typeof loadBoardContext>>>(TODAY_CACHE_TTL_MS);
+async function boardContext(): Promise<Awaited<ReturnType<typeof loadBoardContext>>> {
+  return boardContextCache.get(loadBoardContext);
+}
+
+/** All shared forecast contracts (#3984): epic-completion + stall-risk
+ * per epic subject from the stored item history (#3981), and one
+ * quota-exhaustion contract per quota pool. The rate for a pool is
+ * only usable when the gatherer measured a token burn for a token
+ * window with ok freshness — anything else stays the contract's
+ * first-class quota_rate_unavailable state, never an invented date. */
+async function allForecastContracts(
+  pool: ProjectPoolItem[],
+): Promise<{ byRef: Map<RefKey, ForecastContract[]>; contracts: ForecastContract[] }> {
+  const byRef = new Map<RefKey, ForecastContract[]>();
+  const contracts: ForecastContract[] = [];
+  const add = (c: ForecastContract) => {
+    contracts.push(c);
+    byRef.set(c.subjectRef, [...(byRef.get(c.subjectRef) ?? []), c]);
+  };
+  const cutoffs = await itemHistoryStore.readAll().catch(() => []);
+  if (cutoffs.length) {
+    const poolByRef = new Map(pool.map((it) => [it.ref, it]));
+    const subjects = new Set<RefKey>();
+    for (const cutoff of cutoffs) {
+      for (const item of cutoff.items) {
+        if (item.parentRef) subjects.add(item.parentRef);
+      }
+    }
+    for (const subjectRef of subjects) {
+      const poolItem = poolByRef.get(subjectRef);
+      const statusDisagreement =
+        poolItem &&
+        poolItem.status &&
+        ((poolItem.state === "closed" && poolItem.status !== "Done") ||
+          (poolItem.state === "open" && poolItem.status === "Done"))
+          ? `GitHub state ${poolItem.state} disagrees with Project Status ${poolItem.status}; both are shown, neither is preferred`
+          : null;
+      for (const c of subjectForecastContracts(cutoffs, subjectRef, {
+        updatedAt: poolItem?.updatedAt ?? null,
+        statusDisagreement,
+        scope: `direct native children of ${subjectRef} in the Project #4 pool item history (curated pool scope, not a repo-wide backlog)`,
+      })) {
+        add(c);
+      }
+    }
+  }
+  const quota = await source.quota().catch(() => emptyQuotaView());
+  const asOf = new Date().toISOString();
+  for (const qpool of quota.pools) {
+    const window = qpool.windows
+      .filter((w) => w.limit !== null && w.limit > 0)
+      .sort((a, b) => (b.percent ?? 0) - (a.percent ?? 0))[0];
+    const rate =
+      window && window.unit === "tokens" && qpool.burnTokensPerMin != null && qpool.freshness?.state === "ok"
+        ? { amountPerHour: qpool.burnTokensPerMin * 60, observedAt: qpool.freshness.measuredAt }
+        : null;
+    add(
+      quotaForecastContract({
+        poolId: qpool.id,
+        provider: qpool.provider,
+        asOf,
+        unit: window?.unit ?? "tokens",
+        remainingAmount: window ? window.limit! - window.used : null,
+        limitAmount: window?.limit ?? null,
+        nextReset: window?.resetsAt ?? null,
+        rate,
+        scope: `quota pool ${qpool.id} (${qpool.provider}/${qpool.plan})`,
+      }),
+    );
+  }
+  return { byRef, contracts };
 }
 
 async function roadmapContext() {
@@ -389,6 +1255,38 @@ async function roadmapContext() {
   return { rows, items, pool: poolResult.pool, reconciliation, drill };
 }
 
+async function searchContext(query: string) {
+  // #1212 slice 2: registry, DNS, services, and tier items join the
+  // board/roadmap subjects. Each extra source fails soft (empty on
+  // error) so one broken source never takes search down with it.
+  const [board, rows, registry, dns, usage, orchestration] = await Promise.all([
+    source.board(),
+    source.roadmap(),
+    source.registry().catch(() => []),
+    source.dns().catch(() => null),
+    source.usage().catch(() => null),
+    source.orchestration().catch(() => null),
+  ]);
+  const tierItems = orchestration ? [...orchestration.tiers.needsDrew, ...orchestration.tiers.needsOrchestrator] : [];
+  // Codex P2 on PR #7331: refs carried only by the slice-2 sources
+  // (registry taskRefs, tier-item refs) join the resolution set, or
+  // their search badges always render unresolved even when the live
+  // pool/projector could resolve them.
+  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(
+    isValidRef,
+  );
+  const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
+  const items = await source.items(refs);
+  const extras = { registry, dns, services: usage?.services ?? [], tierItems };
+  return { query, results: searchWork(board, rows, items, query, extras), items };
+}
+
+// #3321: watchdog gap-sync passes run whole and in observation
+// order through this queue (Codex P2, PR #5141 round 5) — see
+// createWatchdogGapSyncQueue in activity.ts for why the bare
+// fire-and-forget sync interleaved.
+const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
+
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
 // current diagnoses (feed age + probes via the health assembly —
 // its probe cache keeps this cheap — plus the orchestration
@@ -400,12 +1298,16 @@ async function roadmapContext() {
 // registry age from the source's already-loaded feed.
 async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
   if (cfg.source !== "live") return [];
-  const health = await healthContext(false);
-  return watchdogTierItems({
+  const [health, projectAudit] = await Promise.all([
+    healthContext(false),
+    source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
+  ]);
+  const items = watchdogTierItems({
     now: Date.now(),
     feedAgeMs: health.feed.ageMs,
     feedGeneratedAt: health.feed.generatedAt,
     ...(diagnosis ? { orchestration: diagnosis } : {}),
+    projectAudit,
     ...(source.provenanceDetail ? { registryAgeMs: source.provenanceDetail().registry.ageMs } : {}),
     probes: health.services
       .filter((s) => WATCHDOG_PROBE_SERVICE_IDS.includes(s.def.id))
@@ -417,23 +1319,57 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
         ...(s.probedAt ? { probedAt: s.probedAt } : {}),
       })),
   });
+  // #3321: every derivation is also an ingestion pass — the current
+  // breach episodes go to the stream (dedupe makes re-derivation a
+  // no-op) and the gap records sync with the breach set. Episodes
+  // are stabilized first (first-observed `since` wins until the
+  // breach clears), so one continuous outage is one delivery.
+  const stableItems = watchdogEpisodes.stabilize(items);
+  void recordActivity(watchdogDeliveries(stableItems));
+  void enqueueWatchdogGapSync(activityStore, stableItems).catch((err) => {
+    console.error(`[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  return items;
 }
 
-async function attentionContext() {
-  const [feed, summary, coverage] = await Promise.all([
+async function attentionContext(opts: { census?: boolean } = {}) {
+  // #1226/#3970: the Needs-Drew census costs up to eight sequential
+  // GitHub search calls (up to ~64 s when the API is unreachable). Only
+  // the attention page render consumes it, so it opts in; the overview,
+  // Today, /api/attention.json and /api/coverage.json must not inherit
+  // that external dependency (Codex P2 on PR #3970).
+  const wantsCensus = shouldFetchNeedsDrewCensus(opts);
+  const [feed, summary, coverage, census] = await Promise.all([
     source.attention().catch(() => []),
     source.orchestration().catch(() => null),
     source.coverage().catch(() => []),
+    // A source without the census (or a failed sweep) yields null and
+    // the view renders it as unavailable, never as an empty queue.
+    wantsCensus
+      ? ((source.needsDrew?.() ?? Promise.resolve(null)).catch(() => null) as Promise<NeedsDrewCensus | null>)
+      : Promise.resolve<NeedsDrewCensus | null>(null),
   ]);
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
   const watchdog = await deriveWatchdogItems(diagnosis);
+  const quota = await source.quota().catch(() => null);
+  const view = buildAttention(feed, summary, Date.now(), diagnosis, watchdog);
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /today, as orchestrator-tier task items — derived once here from
+  // the same pure function, so entries clear on every surface the
+  // moment their source condition no longer holds.
+  const quotaItems = quota ? quotaActionTierItems(buildQuotaActions(quota, AA_PLAN_FACTS)) : [];
+  if (quota) {
+    view.orchestratorExtra = [...view.orchestratorExtra, ...quotaItems];
+  }
   return {
-    view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog),
+    view,
+    quotaItems,
     coverage,
     orchestration: summary,
     diagnosis,
+    census,
   };
 }
 
@@ -486,7 +1422,7 @@ async function boardRender() {
  *  the view, the action/comment stores grouped by object, and the
  *  effective Needs-you order preference (#1456). */
 async function attentionRender() {
-  const { view, coverage, orchestration, diagnosis } = await attentionContext();
+  const { view, coverage, orchestration, diagnosis, census } = await attentionContext({ census: true });
   const [pool, formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
     source.projects().catch(() => []),
     commentFormOpts(),
@@ -509,36 +1445,120 @@ async function attentionRender() {
     needsOrder: order.order,
     needsOrderPending: order.pending,
   };
-  return { view, coverage, counts, act, briefs };
+  return { view, coverage, counts, act, briefs, census };
 }
 
-async function todayContext() {
-  const [{ board, items }, { rows }, { view, coverage }, quota, summary] = await Promise.all([
+async function loadTodaySignals() {
+  const [health, quotaResult] = await Promise.all([
+    healthContext(false).catch(() => null),
+    source
+      .quota()
+      .then((quota) => ({ quota, unavailable: false }))
+      .catch(() => ({ quota: emptyQuotaView(), unavailable: true })),
+  ]);
+  return { health, quota: quotaResult.quota, quotaUnavailable: quotaResult.unavailable };
+}
+
+// #1179: the shell (/today) and the fragment (/frag/today) both need
+// the health+quota strip, seconds apart on every page view. Bound the
+// repeated live reads with a short TTL; concurrent cold requests share
+// the in-flight load. Provenance stays truthful: prov()/provDetail()
+// are still read live per request at the call sites below.
+const todaySignalsCache = new TodayCache<Awaited<ReturnType<typeof loadTodaySignals>>>(TODAY_CACHE_TTL_MS);
+async function todaySignals(): Promise<Awaited<ReturnType<typeof loadTodaySignals>>> {
+  return todaySignalsCache.get(loadTodaySignals);
+}
+
+async function loadTodayContext() {
+  const [{ board, items }, { rows, pool }, { view, coverage, orchestration }, signals] = await Promise.all([
     boardContext(),
     roadmapContext(),
     attentionContext(),
-    source.quota().catch(() => emptyQuotaView()),
-    source.orchestration().catch(() => null),
+    todaySignals(),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
-  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
+  const queue = buildQueueView({ board, pool, items, orchestration });
+  return {
+    today: deriveToday(board, rows, items, orchestration, new Date(), diagnosis, pool),
+    view,
+    coverage,
+    ...signals,
+    queue,
+    queueStale: queueInputsStale(signals.health),
+  };
+}
+
+// #1179: /today?full=1, /frag/today, and /api/today.json all render
+// from this one assembly. Same short-TTL + coalescing contract as the
+// signals cache above; a throwing load is never cached (the fetch
+// error boundary still 500s) and expiry triggers a fresh read.
+const todayContextCache = new TodayCache<Awaited<ReturnType<typeof loadTodayContext>>>(TODAY_CACHE_TTL_MS);
+async function todayContext(): Promise<Awaited<ReturnType<typeof loadTodayContext>>> {
+  return todayContextCache.get(loadTodayContext);
+}
+
+async function queueContext() {
+  const [{ board, items }, pool, orchestration] = await Promise.all([
+    boardContext(),
+    source.projects().catch(() => [] as ProjectPoolItem[]),
+    source.orchestration().catch(() => null),
+  ]);
+  return buildQueueView({ board, pool, items, orchestration });
 }
 
 /** The render inputs the overview (front door, #1134) assembles:
  *  the attention view, the Project pool, quota, the health view, and
  *  the board — the same contexts the dedicated pages render from. */
-async function overviewContext() {
-  const [{ view }, pool, quota, health, { board }, actionsByObject] = await Promise.all([
+async function loadOverviewContext() {
+  const [{ view }, pool, quota, health, { board, items }, orchestration, actionsByObject] = await Promise.all([
     attentionContext(),
     source.projects().catch(() => [] as ProjectPoolItem[]),
     source.quota().catch(() => emptyQuotaView()),
     healthContext(),
     boardContext(),
+    source.orchestration().catch(() => null),
     actionsStore.byObject().catch(() => new Map()),
   ]);
-  return { attention: view, pool, quota, health, board, actionsByObject };
+  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
 }
 
+// #5082: same contract as the board assembly above — the overview
+// fan-out (attention + pool + quota + health + board + orchestration)
+// was re-run live on every /, /frag/overview, and /api/overview.json
+// request and tripped the same 10 s deadline. The per-request
+// derivations (deriveOverview / renderOverview) and the provenance
+// reads stay live; only the assembly is cached. The board leg inside
+// rides the boardContext cache, so a cold overview and a cold board
+// share one board assembly.
+const overviewContextCache = new TodayCache<Awaited<ReturnType<typeof loadOverviewContext>>>(TODAY_CACHE_TTL_MS);
+async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverviewContext>>> {
+  return overviewContextCache.get(loadOverviewContext);
+}
+
+/** The live-source half of the /program assembly (#1046 + #1121): the
+ *  items closure for the program refs, the Project pool, the roadmap,
+ *  orchestration, and the coverage census inputs. Everything
+ *  view-dependent (saved-view filtering, briefs, forecasts, the
+ *  render) is derived per request from this bundle in the handler. */
+async function loadProgramSources() {
+  const [items, pool, rows, orchestration, census, poolAvailable] = await Promise.all([
+    source.items(programRefs()).catch(() => new Map()),
+    source.projects().catch(() => []),
+    source.roadmap().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+  ]);
+  return { items, pool, rows, orchestration, census, poolAvailable };
+}
+
+// #5082: /program is a bounded dashboard route with the same failure
+// shape — its source fan-out ran live on every request. Same TTL +
+// single-flight contract as the board/overview assemblies above.
+const programSourcesCache = new TodayCache<Awaited<ReturnType<typeof loadProgramSources>>>(TODAY_CACHE_TTL_MS);
+async function programSources(): Promise<Awaited<ReturnType<typeof loadProgramSources>>> {
+  return programSourcesCache.get(loadProgramSources);
+}
 
 // -- Saved views (#1276) -------------------------------------------------
 // A request names a view three ways, in precedence order: explicit
@@ -572,18 +1592,6 @@ async function resolveView(url: URL): Promise<ResolvedView | null> {
   return null;
 }
 
-function ghItemLike(item: GhItem, pool?: ProjectPoolItem | null): ViewItemLike {
-  return {
-    ref: item.ref,
-    repo: item.ref.replace(/#\d+$/, ""),
-    area: item.projectArea ?? pool?.area ?? null,
-    horizon: item.projectHorizon ?? pool?.horizon ?? null,
-    owner: item.author,
-    state: item.state,
-    epic: pool?.epicRef ?? null,
-  };
-}
-
 function poolItemLike(item: ProjectPoolItem): ViewItemLike {
   return {
     ref: item.ref,
@@ -596,21 +1604,31 @@ function poolItemLike(item: ProjectPoolItem): ViewItemLike {
   };
 }
 
-/** A board card / roadmap row matches when its own fields match, or
- *  when any canonical item it links to matches. */
-function linkedLike(
-  own: ViewItemLike,
-  links: readonly { ref: RefKey }[],
-  items: Map<RefKey, GhItem>,
-  poolByRef: Map<RefKey, ProjectPoolItem>,
-  filters: ViewFilters,
-): boolean {
-  if (itemMatchesView(own, filters)) return true;
-  for (const l of links) {
-    const item = items.get(l.ref);
-    if (item && itemMatchesView(ghItemLike(item, poolByRef.get(l.ref)), filters)) return true;
+function eventContextByRef(pool: readonly ProjectPoolItem[]): Map<string, { project: string; epic: string | null }> {
+  const context = new Map<string, { project: string; epic: string | null }>();
+  for (const item of pool) {
+    const ref = item.ref.replace(/^gh:/i, "").toLowerCase();
+    context.set(ref, {
+      project: item.projectUrl,
+      epic: item.epicRef ?? (item.kind?.toLowerCase() === "epic" ? item.ref : null),
+    });
   }
-  return false;
+  return context;
+}
+
+function eventFilterFromUrl(
+  url: URL,
+  itemContext: ReadonlyMap<string, { project?: string | null; epic?: string | null }>,
+) {
+  return {
+    kind: url.searchParams.get("kind") ?? undefined,
+    refs: url.searchParams.getAll("ref"),
+    actor: url.searchParams.get("actor") ?? undefined,
+    project: url.searchParams.get("project") ?? undefined,
+    epic: url.searchParams.get("epic") ?? undefined,
+    search: url.searchParams.get("q") ?? undefined,
+    itemContext,
+  };
 }
 
 /** Apply a preference view verb to the views store (#1276). Returns a
@@ -648,6 +1666,31 @@ async function applyViewAction(action: DashAction): Promise<string> {
   }
 }
 
+/** The digest (#1278): built live from the same Source as every page;
+ * the archived form is the JSON the generator script wrote. */
+async function digestContext(kind: DigestKind): Promise<Digest> {
+  // Prime the items facet first (#1267 pattern): items() is the call
+  // that records the pool's feed freshness into provenance — without
+  // it the digest's pool sections would read an unprimed facet.
+  await source.items([]).catch(() => null);
+  const [pool, needsDrew, quota, poolAvailable] = await Promise.all([
+    source.projects(),
+    source.needsDrew ? source.needsDrew().catch(() => null) : Promise.resolve(null),
+    source.quota().catch(() => null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => undefined) : Promise.resolve(undefined),
+  ]);
+  return buildDigest({
+    pool,
+    needsDrew,
+    quota,
+    provenanceDetail: source.provenanceDetail?.() ?? null,
+    poolAvailable,
+    sourceKind: cfg.source,
+    now: new Date(),
+    kind,
+  });
+}
+
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
 
 async function handler(req: Request): Promise<Response> {
@@ -655,6 +1698,15 @@ async function handler(req: Request): Promise<Response> {
   const path = url.pathname;
   const prov = () => source.provenance();
   const provDetail = () => source.provenanceDetail?.();
+
+  // --- #3978: freshness delivery for browsers ------------------------------
+  // GET /freshness/stream (SSE) and GET /api/freshness-events.json read the
+  // #3977 journal only. Scope is server-derived from the page name; a caller
+  // cannot widen it, and no notice carries source payload or a secret.
+  if (req.method === "GET" && (path === "/freshness/stream" || path === "/api/freshness-events.json")) {
+    const delivery = await freshnessDeliveryResponse(req, url, { reader: freshnessStore });
+    if (delivery !== null) return delivery;
+  }
 
   // --- Author identities for the on-demand picker (#1179) ------------------
   // List pages render author pickers with the standing identities only;
@@ -669,6 +1721,11 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewRoadmapAnnotation(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const annotationAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!annotationAccess.ok) return json({ error: annotationAccess.error }, annotationAccess.status);
+      parsed.value.author = annotationAccess.author;
       const rows = await source.roadmap().catch(() => []);
       if (!rows.some((row) => row.subject === parsed.value.objectRef)) {
         return json({ error: "objectRef is not a current roadmap row" }, 404);
@@ -707,11 +1764,27 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const commentAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!commentAccess.ok) return json({ error: commentAccess.error }, commentAccess.status);
+      parsed.value.author = commentAccess.author;
+      // #941: a privileged author additionally requires the operator
+      // token when one is configured (fail closed on a secret-store
+      // outage); with no secret configured the write stays unverified.
+      // Runs on the Access-derived author above, so the two gates
+      // compose: identity first, privilege second.
+      const authorization = authorizeCommentAuthor(
+        parsed.value.author,
+        req.headers.get("authorization"),
+        await resolveBwsSecretLookup("pm-aggregator.comments-operator-token"),
+      );
+      if (!authorization.ok) return json({ error: authorization.error }, authorization.status);
       // #1509: a persistence failure is a server error, not bad input -
       // only the validation/body-parse path above earns a 400.
       let comment;
       try {
-        comment = await commentsStore.add(parsed.value);
+        comment = await commentsStore.add(parsed.value, { authorVerified: authorization.authorVerified });
       } catch (err) {
         return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
@@ -744,13 +1817,18 @@ async function handler(req: Request): Promise<Response> {
   }
   // --- Dashboard action writes (#1152/#1154/#1156) -----------------------
   // The triage write path: forms POST DashActions here; the fleet
-  // consumers (orchestration pass, Jules keeper) poll state=new and
+  // consumers (orchestration pass) poll state=new and
   // report outcomes to /api/actions/result. The dashboard itself never
   // writes GitHub, the Project, or a session server.
   if (req.method === "POST" && path === "/api/actions") {
     try {
       const parsed = validateNewAction(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: gate every action write, including non-triage and
+      // preference actions, on the configured Access identity.
+      const actionAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!actionAccess.ok) return json({ error: actionAccess.error }, actionAccess.status);
+      parsed.value.author = actionAccess.author;
       // #1291/#1293: checks that need the currently published item —
       // option/survey membership, required-question coverage, proposal
       // identity, the access/policy auto ban. Enforced only when the
@@ -759,13 +1837,14 @@ async function handler(req: Request): Promise<Response> {
       // consumer rejects what it cannot apply.
       if (parsed.value.kind === "triage") {
         const section = await source.orchestration().catch(() => null);
+        let item: ReturnType<typeof findTierItem>;
         if (section) {
-          const problem = checkActionAgainstItem(
-            parsed.value,
-            findTierItem(section, parsed.value.objectRef),
-            Date.now(),
-          );
+          item = findTierItem(section, parsed.value.objectRef);
+          const problem = checkActionAgainstItem(parsed.value, item, Date.now());
           if (problem) return json({ error: problem }, 400);
+        }
+        if (parsed.value.verb === "answer" && parsed.value.payload.optionId) {
+          parsed.value.payload.questionId = questionIdForOption(item, parsed.value.payload.optionId) ?? "$options";
         }
       }
       // #1509: persistence failure -> 5xx (see /api/comments above).
@@ -776,6 +1855,29 @@ async function handler(req: Request): Promise<Response> {
         return json({ error: `action persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
       const { action, created } = added;
+      if (added.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${added.duplicateOf}`,
+            action,
+            duplicateOf: added.duplicateOf,
+          },
+          409,
+        );
+      }
+      // A client-token replay of an already-persisted duplicate attempt
+      // keeps the rejected semantics instead of reading as a fresh
+      // "sent · pending" success (Codex P2 on PR #4024).
+      if (!created && action.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${action.duplicateOf}`,
+            action,
+            duplicateOf: action.duplicateOf,
+          },
+          409,
+        );
+      }
       // #1276: saved-view preference verbs are applied by the
       // aggregator itself to the views store and marked applied (or
       // rejected, with the reason) in the same request — the action
@@ -839,6 +1941,9 @@ async function handler(req: Request): Promise<Response> {
         deduped?: boolean;
         error?: string;
       }[] = [];
+      // One enforcer for the whole batch: the request's JWT is
+      // verified once, not once per action (see access-identity.ts).
+      const enforceBatchAuthor = createAccessAuthorEnforcer(req);
       for (const [index, raw] of entries.entries()) {
         const objectRef =
           typeof raw === "object" && raw !== null && typeof (raw as { objectRef?: unknown }).objectRef === "string"
@@ -849,8 +1954,18 @@ async function handler(req: Request): Promise<Response> {
           results.push({ index, objectRef, ok: false, error: parsed.error });
           continue;
         }
+        const batchAccess = await enforceBatchAuthor(parsed.value.author);
+        if (!batchAccess.ok) {
+          results.push({ index, objectRef, ok: false, error: batchAccess.error });
+          continue;
+        }
+        parsed.value.author = batchAccess.author;
         if (parsed.value.kind === "triage" && section) {
-          const problem = checkActionAgainstItem(parsed.value, findTierItem(section, parsed.value.objectRef), Date.now());
+          const problem = checkActionAgainstItem(
+            parsed.value,
+            findTierItem(section, parsed.value.objectRef),
+            Date.now(),
+          );
           if (problem) {
             results.push({ index, objectRef, ok: false, error: problem });
             continue;
@@ -882,15 +1997,135 @@ async function handler(req: Request): Promise<Response> {
         return json({ error: 'outcome must be "applied" | "rejected"' }, 400);
       }
       if (typeof body.byRun !== "string" || body.byRun.trim() === "") return json({ error: "byRun required" }, 400);
-      const updated = await actionsStore.markResult(body.id, {
+      const result = await actionsStore.markResultTransition(body.id, {
         outcome: body.outcome,
         byRun: body.byRun,
         note: typeof body.note === "string" ? body.note : undefined,
       });
+      if (result?.transitioned) {
+        const updated = result.action;
+        // #1739: the action-result route is one of the event log's
+        // writers — the outcome lands in the cross-stack stream.
+        // Fire-and-forget: the response never waits on, and is never
+        // failed by, the event append.
+        recordStreamEvent({
+          actor: updated.appliedByRun ?? capUnits(body.byRun, 200),
+          kind: body.outcome === "applied" ? "action-applied" : "action-rejected",
+          ref: updated.objectRef,
+          summary: capUnits(
+            `${updated.kind}/${updated.verb} ${body.outcome} by ${body.byRun}` +
+              (typeof body.note === "string" && body.note ? ` — ${body.note}` : ""),
+            500,
+          ),
+        });
+      }
+      const updated = result?.action;
       return updated ? json({ action: updated }) : json({ error: "no such action" }, 404);
     } catch (err) {
       return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
     }
+  }
+  if (path === "/api/events.json") {
+    // #1739/#3323: the same source-native stream and filters as /events.
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const filtered = await eventsStore.list(eventFilterFromUrl(url, eventContextByRef(pool)));
+    const page = pageEvents(filtered, {
+      cursor: url.searchParams.get("cursor"),
+      limit: Number(url.searchParams.get("limit") ?? 50),
+    });
+    // #3322 slice A: the audit health surface rides along — pending
+    // retry-outbox count + hash-chain integrity verdict.
+    const [health, checkpoints, gaps] = await Promise.all([
+      eventsStore.health(),
+      activityStore.checkpoints(),
+      activityStore.gaps(),
+    ]);
+    return json({
+      events: page.events,
+      health,
+      pagination: { total: filtered.length, snapshotAt: page.snapshotAt, nextCursor: page.nextCursor },
+      activity: {
+        checkpoints,
+        gaps,
+        coverage: ACTIVITY_SOURCE_COVERAGE,
+        freshness: {
+          status: "unknown",
+          reason: "ingestion checkpoints record deliveries, not successful source polls",
+        },
+      },
+    });
+  }
+  if (path === "/events") {
+    // Machine and human surfaces share filters, ordering, and a stable
+    // ingestion snapshot for cursor pagination.
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const filtered = await eventsStore.list(eventFilterFromUrl(url, eventContextByRef(pool)));
+    const page = pageEvents(filtered, {
+      cursor: url.searchParams.get("cursor"),
+      limit: Number(url.searchParams.get("limit") ?? 50),
+    });
+    const projects = [...new Set(pool.map((item) => item.projectUrl))].sort();
+    const epics = new Map<string, string>();
+    for (const item of pool) {
+      if (item.kind?.toLowerCase() === "epic") epics.set(item.ref, item.title);
+      if (item.epicRef)
+        epics.set(item.epicRef, pool.find((candidate) => candidate.ref === item.epicRef)?.title ?? item.epicRef);
+    }
+    const refs = url.searchParams.getAll("ref");
+    const option = (value: string, label: string, selected: string) =>
+      `<option value="${esc(value)}"${value === selected ? " selected" : ""}>${esc(label)}</option>`;
+    const projectOptions = [...new Set([url.searchParams.get("project") ?? "", ...projects].filter(Boolean))]
+      .map((value) => option(value, value, url.searchParams.get("project") ?? ""))
+      .join("");
+    const selectedEpic = url.searchParams.get("epic") ?? "";
+    if (selectedEpic && !epics.has(selectedEpic)) epics.set(selectedEpic, selectedEpic);
+    const epicOptions = [...epics.entries()]
+      .map(([value, label]) => option(value, label, url.searchParams.get("epic") ?? ""))
+      .join("");
+    // Every ref filter is a visible, editable input: hidden preserved
+    // refs could not be removed, so clearing the visible Ref field
+    // still restricted results to the item's linked refs (Codex P2,
+    // PR #5266). A cleared input submits ref="", which filterEvents
+    // ignores, so clearing an input is removing that ref.
+    const refInputs = (refs.length ? refs : [""])
+      .map((ref, index) => `<label>Ref${index ? ` ${index + 1}` : ""} <input name="ref" value="${esc(ref)}"></label>`)
+      .join("");
+    const nextUrl = page.nextCursor ? new URL(url) : null;
+    if (nextUrl && page.nextCursor) nextUrl.searchParams.set("cursor", page.nextCursor);
+    const apiUrl = new URL(url);
+    apiUrl.pathname = "/api/events.json";
+    apiUrl.hash = "";
+    return html(
+      `<!doctype html><html><head><meta charset="utf-8"><title>Events — pm-stack</title>` +
+        `<style>body{margin:1rem;font:16px system-ui,sans-serif}form{display:flex;flex-wrap:wrap;align-items:end;gap:.75rem}form label{display:grid;gap:.25rem}.tblwrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}table{border-collapse:collapse;min-width:36rem}th,td{border:1px solid #888;padding:.4rem .55rem;text-align:left;vertical-align:top}.muted{color:#666}</style></head><body>` +
+        `<h1>Events</h1><p>Showing ${page.events.length} of ${filtered.length} matching events from a fixed snapshot, newest first. ` +
+        `Machine twin: <a href="${esc(apiUrl.pathname + apiUrl.search)}">/api/events.json</a>.</p>` +
+        `<p class="muted"><strong>Freshness: unknown.</strong> Ingestion checkpoints record deliveries, not successful source polls.</p>` +
+        `<form method="get" action="/events" aria-label="Filter activity events">` +
+        `<label>Project <select name="project"><option value="">All projects</option>${projectOptions}</select></label>` +
+        `<label>Epic <select name="epic"><option value="">All epics</option>${epicOptions}</select></label>` +
+        `<label>Kind <input name="kind" value="${esc(url.searchParams.get("kind") ?? "")}"></label>` +
+        `<label>Actor <input name="actor" value="${esc(url.searchParams.get("actor") ?? "")}"></label>` +
+        refInputs +
+        `<label>Search <input name="q" value="${esc(url.searchParams.get("q") ?? "")}"></label>` +
+        `<label>Page size <select name="limit">${[25, 50, 100].map((n) => option(String(n), String(n), url.searchParams.get("limit") ?? "50")).join("")}</select></label>` +
+        `<button type="submit">Filter</button></form>` +
+        eventTableHtml(page.events) +
+        (nextUrl ? `<p><a rel="next" href="${esc(nextUrl.pathname + nextUrl.search)}">Next page →</a></p>` : "") +
+        `<h2>Activity gaps</h2><div class="tblwrap">` +
+        gapsHtml(await activityStore.gaps()) +
+        `</div><h2>Activity source coverage</h2><div class="tblwrap">` +
+        activityCoverageHtml() +
+        `</div>` +
+        `</body></html>`,
+    );
+  }
+  if (path === "/api/activity.json") {
+    // #3321: activity-ingestion state — per-source checkpoints, gap
+    // records, and the documented source coverage. The machine twin
+    // of the sections the /events page renders below its table.
+    const [checkpoints, gaps] = await Promise.all([activityStore.checkpoints(), activityStore.gaps()]);
+    return json({ checkpoints, gaps, coverage: ACTIVITY_SOURCE_COVERAGE });
   }
   if (path === "/api/views.json") {
     // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.
@@ -902,10 +2137,19 @@ async function handler(req: Request): Promise<Response> {
     const object = url.searchParams.get("object");
     const kind = url.searchParams.get("kind");
     const state = url.searchParams.get("state");
+    // #4620: state=all is the explicit all-history read (audit and
+    // retrospective consumers). It must not fall through to the literal
+    // state filter, which silently returned an empty list while the
+    // store held applied/rejected history — a false zero. Any other
+    // value that is not a real action state is a 400, never an empty
+    // list, so a mistyped filter cannot masquerade as "no history".
+    if (state && state !== "all" && !ACTION_STATES.has(state)) {
+      return json({ error: `state must be one of: all, ${[...ACTION_STATES].join(", ")}` }, 400);
+    }
     let list = await actionsStore.all();
     if (object) list = list.filter((a) => a.objectRef === object);
     if (kind) list = list.filter((a) => a.kind === kind);
-    if (state) list = list.filter((a) => a.state === state);
+    if (state && state !== "all") list = list.filter((a) => a.state === state);
     return json({ actions: list, pending: await actionsStore.pendingCounts() });
   }
 
@@ -945,34 +2189,72 @@ async function handler(req: Request): Promise<Response> {
     const { board, items, counts, act } = await boardRender();
     const resolved = await resolveView(url);
     if (!resolved) {
-      return html(renderBoard(board, items, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
+      return html(
+        renderBoard(board, items, prov(), counts, provDetail(), act, {
+          showAllDone: url.searchParams.get("done") === "all",
+        }),
+      );
     }
-    const poolByRef = act.poolByRef;
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+    const { board: keptBoard, items: keptItems } = filterBoardForView(board, items, act.poolByRef, resolved.filters);
+    return html(
+      renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, {
+        showAllDone: url.searchParams.get("done") === "all",
+      }),
     );
-    const keptRefs = new Set<string>();
-    for (const b of keptBoard) for (const l of b.links) keptRefs.add(l.ref);
-    const keptItems = new Map([...items].filter(([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters)));
-    return html(renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
-    const wrapped = `<div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')">${renderBoardBody(board, items, counts, act)}</div>`;
+    // #8521: the fragment twin applies the same saved view as /board
+    // (PR #4013 missed it), and its refresh URLs re-name the view so
+    // a reload does not silently drop the filter. #7937: the same
+    // treatment for ?done=all — the fragment renders the full Done
+    // strip when the flag is present (PR #3855 wired it only into
+    // /board), and fragBoardUrl carries it across refreshes.
+    const fragUrl = fragBoardUrl(url.searchParams);
+    const resolved = await resolveView(url);
+    const view = resolved ? filterBoardForView(board, items, act.poolByRef, resolved.filters) : { board, items };
+    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on-dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
     return sseResponse(ssePatch("#board-main", wrapped));
   }
 
   if (path === "/today") {
     if (url.searchParams.get("full") !== "1") {
-      return html(renderTodayShell(prov(), provDetail()));
+      const signals = await todaySignals();
+      return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
     }
-    const { today, view, coverage, quota } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov(), provDetail()));
+    const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
+    return html(
+      renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale),
+    );
   }
   if (path === "/frag/today") {
-    const { today, view, coverage, quota } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage)}</div>`;
+    const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
+    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
+  }
+
+  if (path === "/digest") {
+    const kind = url.searchParams.get("kind") === "weekly" ? "weekly" : "daily";
+    const date = url.searchParams.get("date");
+    const archives = await listDigestArchives(cfg.digestsDir);
+    // The dated archive URL (#1278): renders the stored digest verbatim.
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const archived =
+        (await readDigestArchive(cfg.digestsDir, date, kind)) ??
+        (kind === "daily" ? null : await readDigestArchive(cfg.digestsDir, date, "daily"));
+      if (archived) return html(renderDigest(archived, archives, prov(), provDetail()));
+      return html(renderDigest(await digestContext("daily"), archives, prov(), provDetail()), 404);
+    }
+    return html(renderDigest(await digestContext(kind), archives, prov(), provDetail()));
+  }
+  if (path === "/queue") {
+    if (url.searchParams.get("full") !== "1") return html(renderQueueShell(prov(), provDetail()));
+    return html(renderQueue(await queueContext(), prov(), provDetail()));
+  }
+  if (path === "/frag/queue") {
+    const view = await queueContext();
+    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
+    return sseResponse(ssePatch("#queue-main", wrapped));
   }
 
   if (path === "/roadmap") {
@@ -980,14 +2262,17 @@ async function handler(req: Request): Promise<Response> {
     const orchestration = await source.orchestration().catch(() => null);
     const orchestrationStatus = source.diagnostics?.().orchestration.state;
     const poolRefs = new Set(pool.map((item) => item.ref));
-    const briefRefs = [
-      ...new Set(rows.flatMap((row) => allRefs([row]).filter((ref) => poolRefs.has(ref)))),
-    ];
+    const briefRefs = [...new Set(rows.flatMap((row) => allRefs([row]).filter((ref) => poolRefs.has(ref))))];
     const briefs = buildBriefs(pool, {
       comments: briefRefs.length ? await briefCommentsFor(briefRefs) : [],
       orchestration,
       orchestrationStatus,
     });
+    const forecasts = (await allForecastContracts(pool)).byRef;
+    // #4830: the same twin /api/flow-analytics.json serves, computed
+    // the same way — the Roadmap charts render exactly this object.
+    const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
+    const spendCards = await loadSpendCards();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -1000,30 +2285,79 @@ async function handler(req: Request): Promise<Response> {
     const viewQuery = viewParams.toString();
     const annotationsFor = async (rs: typeof rows) =>
       new Map(
-        await Promise.all(rs.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const)),
+        await Promise.all(
+          rs.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const),
+        ),
       );
     if (!resolved) {
       return html(
-        renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(rows), viewQuery, briefs),
+        renderRoadmap(
+          rows,
+          items,
+          prov(),
+          grain,
+          await commentsStore.countsDetailed(),
+          provDetail(),
+          reconciliation,
+          drill,
+          await annotationsFor(rows),
+          viewQuery,
+          briefs,
+          forecasts,
+          flowAnalytics,
+          spendCards,
+        ),
       );
     }
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike({ ref: r.subject, area: r.area, horizon: r.horizon, state: r.status }, r.links, items, poolByRef, resolved.filters),
-    );
     // Codex P2, PR #4013: items linked from a KEPT row keep their
     // metadata (links/badges in roadmapCard) even when they fail the
     // item filter themselves — same rule the board handler applies.
-    const keptRefs = new Set<string>();
-    for (const r of keptRows) for (const l of r.links) keptRefs.add(l.ref);
-    const keptItems = new Map(
-      [...items].filter(
-        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
+    // Shared with /api/roadmap.json via filterRoadmapForView (#8723).
+    const { rows: keptRows, items: keptItems } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
+    return html(
+      renderRoadmap(
+        keptRows,
+        keptItems,
+        prov(),
+        grain,
+        await commentsStore.countsDetailed(),
+        provDetail(),
+        reconciliation,
+        drill,
+        await annotationsFor(keptRows),
+        viewQuery,
+        briefs,
+        forecasts,
+        flowAnalytics,
+        spendCards,
       ),
     );
-    return html(
-      renderRoadmap(keptRows, keptItems, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(keptRows), viewQuery, briefs),
-    );
+  }
+
+  if (path === "/api/flow-analytics.json") {
+    // #4829 (step 2 of #1281): the flow-analytics JSON twin — the
+    // exact numbers the step-3 charts (#4830) will render, computed
+    // from the #3981 item-history store. Every group carries its
+    // computation window and gap signal via the shared window block.
+    const cutoffs = await itemHistoryStore.readAll().catch(() => []);
+    return json({
+      generatedAt: new Date().toISOString(),
+      ...computeFlowAnalytics(cutoffs),
+    });
+  }
+
+  if (path === "/api/forecasts.json") {
+    // #3984: the shared forecast contract — the identical objects the
+    // Roadmap and Projects pages render as one-line summaries.
+    const pool = await source.projects().catch(() => []);
+    const { contracts } = await allForecastContracts(pool);
+    const subject = url.searchParams.get("subject");
+    return json({
+      contractVersion: FORECAST_CONTRACT_VERSION,
+      generatedAt: new Date().toISOString(),
+      contracts: subject ? contracts.filter((c) => c.subjectRef === subject) : contracts,
+    });
   }
 
   if (path === "/quota") {
@@ -1031,7 +2365,16 @@ async function handler(req: Request): Promise<Response> {
       source.quota().catch(() => emptyQuotaView()),
       source.usage().catch(() => emptyUsageView()),
     ]);
-    return html(renderQuota(quota, prov(), usage, provDetail()));
+    // Never block on providers (#1171): decide from the stored measurement,
+    // ask the gatherer to run in the background, render what we have.
+    const refresh = quotaRefresher.request(quota);
+    return html(renderQuota(quota, prov(), usage, provDetail(), refresh));
+  }
+
+  if (req.method === "POST" && path === "/quota/refresh") {
+    const quota = await source.quota().catch(() => emptyQuotaView());
+    quotaRefresher.manual(quota);
+    return new Response(null, { status: 303, headers: { Location: "/quota" } });
   }
 
   const serviceMatch = /^\/quota\/service\/([\w-]+)$/.exec(path);
@@ -1040,7 +2383,7 @@ async function handler(req: Request): Promise<Response> {
     const svc = usage.services.find((s) => s.id === serviceMatch[1]);
     if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov(), provDetail()));
     return html(
-      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${serviceMatch[1]}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
+      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${esc(serviceMatch[1])}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
       404,
     );
   }
@@ -1048,23 +2391,81 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/attention") {
     // #1444: shell first; header/queues/sessions stream in as
     // fragments. ?full=1 keeps the full server render (no-JS path).
+    // ?refs=<objectRefs> is the digest landing filter (#7193 Codex):
+    // only the named entries render, and the refs ride the fragment
+    // URLs so the streamed sections stay filtered.
+    const refsParam = url.searchParams.get("refs");
+    const refs = refsParam
+      ? refsParam
+          .split(",")
+          .map((ref) => ref.trim())
+          .filter(Boolean)
+      : [];
     if (url.searchParams.get("full") !== "1") {
-      return html(renderAttentionShell(prov(), provDetail()));
+      return html(renderAttentionShell(prov(), provDetail(), refsParam ?? undefined));
     }
-    const { view, coverage, counts, act, briefs } = await attentionRender();
-    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs));
+    const rendered = await attentionRender();
+    const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
+    return html(
+      renderAttention(
+        view,
+        rendered.coverage,
+        prov(),
+        rendered.counts,
+        provDetail(),
+        rendered.act,
+        rendered.briefs,
+        rendered.census,
+      ),
+    );
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
-    const { view, coverage, counts, act, briefs } = await attentionRender();
-    const sections = attentionSections(view, coverage, counts, act, briefs);
-    return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
+    const refsParam = url.searchParams.get("refs");
+    const refs = refsParam
+      ? refsParam
+          .split(",")
+          .map((ref) => ref.trim())
+          .filter(Boolean)
+      : [];
+    const rendered = await attentionRender();
+    const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
+    const sections = attentionSections(
+      view,
+      rendered.coverage,
+      rendered.counts,
+      rendered.act,
+      rendered.briefs,
+      rendered.census,
+    );
+    return sseResponse(
+      ssePatch(`#attn-${section}`, attentionFragment(section, sections[section], refsParam ?? undefined)),
+    );
+  }
+  if (path === "/assets/app.css") {
+    // The committed Tailwind + DaisyUI build (Phase C): source is
+    // src/ui.css, rebuilt with `bun run build:css`; never generated at
+    // request time, so a plain pull deploys it like the other assets.
+    const file = Bun.file(new URL("./assets/app.css", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
   }
   if (path === "/assets/datastar.js") {
     // The vendored Datastar bundle (#1444) — a static asset, never a
     // service worker; /sw.js keeps serving the kill switch.
     const file = Bun.file(new URL("./assets/datastar.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/assets/aa-explorer-computations.js") {
+    // Shared with Bun tests so the browser and regression suite exercise the
+    // same Cost Explorer calculations.
+    const file = Bun.file(new URL("./assets/aa-explorer-computations.js", import.meta.url));
     if (!(await file.exists())) return json({ error: "asset missing" }, 404);
     return new Response(file, {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
@@ -1080,10 +2481,10 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/aa") {
-    return html(renderAa(await source.aa(), prov()));
+    return html(renderAa(await source.aa(url.searchParams.get("batch")), prov(), provDetail()));
   }
   if (path === "/api/aa.json") {
-    const section = await source.aa();
+    const section = await source.aa(url.searchParams.get("batch"));
     return json(section ?? { status: "absent", reason: "no AA explorer section in the fleet feed yet" });
   }
 
@@ -1103,6 +2504,14 @@ async function handler(req: Request): Promise<Response> {
         view,
       ),
     );
+  }
+  if (path === "/search") {
+    const { query, results, items } = await searchContext(url.searchParams.get("q") ?? "");
+    return html(renderSearch(query, results, items, prov(), provDetail()));
+  }
+  if (path === "/api/search.json") {
+    const { query, results } = await searchContext(url.searchParams.get("q") ?? "");
+    return json({ query: query.trim(), total: results.length, results });
   }
   if (path === "/api/registry.json") {
     const records = await source.registry();
@@ -1139,11 +2548,21 @@ async function handler(req: Request): Promise<Response> {
   // #1279: briefs need the latest comment per item, guaranteed per ref —
   // the bulk comments() read can truncate an item's latest comment away
   // in a busy batch, so prefer the source's per-ref latest read.
+  // #1282 slice 1: one read-only inbox over every disagreement the facets
+  // report. The page and its JSON twin are the same projection, assembled
+  // once per request — they cannot disagree about what disagrees.
+  if (path === "/conflicts" || path === "/api/conflicts.json") {
+    const inbox = await assembleConflicts();
+    if (path === "/api/conflicts.json") return json(inbox);
+    return html(renderConflicts(inbox, prov(), provDetail()));
+  }
+
   if (path === "/api/projects.json") {
-    const [pool, census, poolAvailable] = await Promise.all([
+    const [pool, census, poolAvailable, audit] = await Promise.all([
       source.projects().catch(() => []),
       source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+      source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
     ]);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
     // #1279: the JSON twin of the brief panels on the pool cards — the
@@ -1163,6 +2582,7 @@ async function handler(req: Request): Promise<Response> {
       // Build with the full pool so a filtered-out blocker can still have
       // its state resolved, but only expose briefs for the visible items.
       briefs: Object.fromEntries([...briefs].filter(([ref]) => outRefs.has(ref))),
+      audit,
       coverage: coverage.current,
       coverageBaseline: coverage.baseline,
     });
@@ -1174,15 +2594,13 @@ async function handler(req: Request): Promise<Response> {
     // registry in src/project-config.ts; the live half derived from
     // the same Source the other views read (items / projects /
     // roadmap / orchestration), each facet failing soft on its own.
-    const [items, pool, rows, orchestration, formOpts, actionsByObject, census, poolAvailable] = await Promise.all([
-      source.items(programRefs()).catch(() => new Map()),
-      source.projects().catch(() => []),
-      source.roadmap().catch(() => []),
-      source.orchestration().catch(() => null),
+    // #5082: the live-source fan-out rides the programSources cache
+    // (TTL + single-flight); the local-store reads and everything
+    // view-dependent below stay per-request.
+    const [{ items, pool, rows, orchestration, census, poolAvailable }, formOpts, actionsByObject] = await Promise.all([
+      programSources(),
       commentFormOpts(),
       actionsStore.byObject(),
-      source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
-      source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
     // #1276 (Codex P2, PR #4013): /projects redirects here with the
     // view parameters preserved, but this handler never resolved the
@@ -1214,6 +2632,13 @@ async function handler(req: Request): Promise<Response> {
         actionsByObject,
         identities: formOpts.identities,
         briefs,
+        forecasts: (await allForecastContracts(viewPool)).byRef,
+        // #4830: the Projects page (merged into /program, #1497)
+        // renders the #4829 twin as charts, computed as the endpoint
+        // computes it.
+        flowAnalytics: computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => [])),
+        // #4824: spend beside progress on the pool cards.
+        spend: await loadSpendCards(),
       }),
     );
   }
@@ -1223,7 +2648,7 @@ async function handler(req: Request): Promise<Response> {
     const config = projectConfigById(programProjectMatch[1]);
     if (!config) {
       return html(
-        `<h1>Not found</h1><p class="muted">no project with id <code>${programProjectMatch[1]}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
+        `<h1>Not found</h1><p class="muted">no project with id <code>${esc(programProjectMatch[1])}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
         404,
       );
     }
@@ -1282,15 +2707,24 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/board.json") {
     const { board, items } = await boardContext();
+    const showAllDone = url.searchParams.get("done") === "all";
     const resolved = await resolveView(url);
-    if (!resolved) return json({ board, items: [...items.values()] });
+    if (!resolved) return jsonCompact(boardJsonBody(board, items, { showAllDone }));
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+    // Filter the policy-eligible board against the full item lookup
+    // BEFORE the done-strip limit (#8058): limiting first dropped a
+    // view's matching done cards outside the global newest 100.
+    // boardJsonViewBody then applies the limit and restricts the
+    // shipped items to the selected cards, so the response stays
+    // bounded as #5082 requires — the full closure is only a lookup.
+    const bounded = boardJsonViewBody(
+      board,
+      items,
+      (b) => linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+      { showAllDone },
     );
-    const keptItems = [...items.values()].filter((it) => itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters));
-    return json({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
+    return jsonCompact({ board: bounded.board, items: bounded.items, view: resolved.view?.id ?? null });
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
@@ -1308,10 +2742,10 @@ async function handler(req: Request): Promise<Response> {
     }
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike({ ref: r.subject, area: r.area, horizon: r.horizon, state: r.status }, r.links, items, poolByRef, resolved.filters),
-    );
-    const keptItems = [...items.values()].filter((it) => itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters));
+    // #8723: the same rule as the HTML twin -- items linked from a
+    // kept row ship even when they fail the view themselves.
+    const { rows: keptRows, items: keptItemMap } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
+    const keptItems = [...keptItemMap.values()];
     const annotatedKeptRows = await Promise.all(
       keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
     );
@@ -1329,15 +2763,27 @@ async function handler(req: Request): Promise<Response> {
     // hub sections ride as additional top-level keys. Snapshot history
     // stays out of this twin — it is per-service, on the service twin.
     const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
+    // #1171: a stale read returns immediately with refresh state instead of
+    // waiting on provider calls; the gatherer runs in the background.
+    const refresh = quotaRefresher.request(quota);
     return json({
       ...quota,
+      refresh,
       saas: usage.services,
       payg: usage.payg,
       charges: usage.charges,
       attention: usage.attention,
       domains: usage.domains,
       subscriptions: usage.subscriptions,
+      uninstrumentedServices: usage.uninstrumentedServices,
     });
+  }
+  if (req.method === "POST" && path === "/api/quota/refresh") {
+    const quota = await source.quota().catch(() => emptyQuotaView());
+    const refresh = quotaRefresher.manual(quota);
+    // generatedAt is the client's poll baseline (#6125): the manual
+    // refresh is only done when quota-current.json advances past it.
+    return json({ requested: refresh.triggered, refresh, generatedAt: quota.gatherer?.generatedAt ?? null });
   }
   if (path === "/api/quota/service.json") {
     const id = url.searchParams.get("id") ?? "";
@@ -1350,6 +2796,15 @@ async function handler(req: Request): Promise<Response> {
       .filter((p) => p.pace);
     return json({ service: svc, history, paces });
   }
+  if (path === "/api/needs-drew.json") {
+    // #1226: the Needs-Drew label census as data — open user/review +
+    // user/escalated items across the four repos with per-source
+    // status and freshness. 503 when this source cannot census, so a
+    // consumer never mistakes "unavailable" for "nothing waiting".
+    const census = (await source.needsDrew?.().catch(() => null)) ?? null;
+    if (!census) return json({ error: "needs-drew census unavailable from this source" }, 503);
+    return json(census);
+  }
   if (path === "/api/attention.json") {
     // Slice 2: the flat array shape stays; entries are now current-only
     // (expired dropped) and tier-annotated (tier/drewReason/
@@ -1357,9 +2812,19 @@ async function handler(req: Request): Promise<Response> {
     // tier items are appended in their TierItem shape (tier-annotated
     // needs-orchestrator) so machine consumers see the same queue the
     // HTML renders — the array shape itself is unchanged (Codex P2
-    // on PR #2431).
-    const { view } = await attentionContext();
-    return json([...view.all, ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const }))]);
+    // on PR #2431). #3317: include non-session needs-drew items too,
+    // matching the full queue rendered by the attention page.
+    const { view, quotaItems } = await attentionContext();
+    return json([
+      ...view.all,
+      ...view.drewExtra.map((i) => ({ ...i, tier: "needs-drew" as const })),
+      ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
+      // #1174 (Codex P2, PR #4695): the synthesized quota tasks ride along
+      // in the same TierItem shape — this endpoint is the machine-first
+      // interface the attention page advertises, so the quota tasks must
+      // be discoverable here, not only in the HTML orchestrator tier.
+      ...quotaItems.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
+    ]);
   }
   if (path === "/api/coverage.json") {
     const { view, coverage } = await attentionContext();
@@ -1368,6 +2833,27 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/today.json") {
     const { today } = await todayContext();
     return json(today);
+  }
+  if (path === "/api/digest.json") {
+    const kind = url.searchParams.get("kind") === "weekly" ? "weekly" : "daily";
+    const date = url.searchParams.get("date");
+    // Share the /digest handler's archive resolution (#5279 Codex): a
+    // dated request returns the stored digest verbatim, so the machine
+    // twin of a weekly or historical page is the digest it displays.
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const archived =
+        (await readDigestArchive(cfg.digestsDir, date, kind)) ??
+        (kind === "daily" ? null : await readDigestArchive(cfg.digestsDir, date, "daily"));
+      if (archived) return json(archived);
+      return json({ error: `no ${kind} digest archived for ${date}` }, 404);
+    }
+    return json(await digestContext(kind));
+  }
+  if (path === "/api/digests.json") {
+    return json({ archives: await listDigestArchives(cfg.digestsDir) });
+  }
+  if (path === "/api/queue.json") {
+    return json(await queueContext());
   }
   if (path === "/api/orchestration.json") {
     // #899: the orchestration job's tiers + goal measurements. Absent
@@ -1425,12 +2911,13 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/push/subscriptions") {
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
-    if (req.method === "GET") return json({ subscriptions: await store.listSubscriptions() });
+    if (req.method === "GET")
+      return json({ subscriptions: (await store.listSubscriptions()).map(toPublicSubscription) });
     if (req.method === "POST") {
       try {
         const parsed = validateNewSubscription(await readJsonBody(req));
         if (!parsed.ok) return json({ error: parsed.error }, 400);
-        return json({ subscription: await store.upsertSubscription(parsed.value) }, 201);
+        return json({ subscription: toPublicSubscription(await store.upsertSubscription(parsed.value)) }, 201);
       } catch (err) {
         return json({ error: `invalid subscription: ${err instanceof Error ? err.message : err}` }, 400);
       }
@@ -1456,19 +2943,311 @@ async function handler(req: Request): Promise<Response> {
     return json(summary);
   }
 
+  // Per-class test sends (#3318): one test per preference class,
+  // honouring the stored class toggles, landing per design §3.
+  if (path === "/api/push/test-class") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+    let cls: unknown;
+    try {
+      cls = ((await readJsonBody(req)) as { class?: unknown })?.class;
+    } catch {
+      return json({ error: "invalid test-class body" }, 400);
+    }
+    if (!isNotificationTestClass(cls)) return json({ error: "unknown notification class" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const summary = await sendClassTestPush(store, cfg.publicOrigin, cls);
+    return json(summary);
+  }
+
   // --- Alert throat (#3676): incident intake + ack/close --------------
   if (req.method === "POST" && path === "/api/alerts") {
     if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
     try {
-      const parsed = validateNewIncident(await readJsonBody(req));
+      const rawBody: unknown = await readJsonBody(req);
+      const parsed = validateNewIncident(rawBody);
       if (!parsed.ok) return json({ error: parsed.error }, 400);
       const { incident, created } = await store.postIncident(parsed.value);
-      return json({ incident, created }, created ? 201 : 200);
+      const status = created ? 201 : 200;
+      // #8568/#8766 producer extensions: exactly one of needsDrew /
+      // stackHealth / decisionSet may ride an incident post. The incident insert
+      // above is unchanged; a VALIDATION failure of an extension is a
+      // 400 (the poster's bug should be loud at the poster), while a
+      // store failure is logged and never fails the incident post.
+      const ext =
+        rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? (rawBody as Record<string, unknown>) : {};
+      const hasNeedsDrew = ext.needsDrew !== undefined;
+      const hasStackHealth = ext.stackHealth !== undefined;
+      const hasDecisionSet = ext.decisionSet !== undefined;
+      if ([hasNeedsDrew, hasStackHealth, hasDecisionSet].filter(Boolean).length > 1) {
+        return json({ error: "needsDrew, stackHealth and decisionSet extensions are mutually exclusive" }, 400);
+      }
+      if (hasNeedsDrew) {
+        const v = validateNeedsDrew(ext.needsDrew);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source);
+          requestAlertTick();
+          return json(
+            { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
+            status,
+          );
+        } catch (err) {
+          console.error(`alerts intake: needsDrew raise failed (${err instanceof Error ? err.message : "error"})`);
+          return json({ incident, created }, status);
+        }
+      }
+      if (hasStackHealth) {
+        const v = validateStackHealth(ext.stackHealth);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          await setStackHealth(cfg.stackHealthFile, v.value);
+          if (v.value.state === "up") {
+            await store.closeOpenIncidentByKey(parsed.value.source, parsed.value.key);
+          }
+          requestAlertTick();
+        } catch (err) {
+          console.error(`alerts intake: stackHealth update failed (${err instanceof Error ? err.message : "error"})`);
+        }
+        return json({ incident, created }, status);
+      }
+      if (hasDecisionSet) {
+        const v = validateDecisionSet(ext.decisionSet);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          const set = await raiseDecisionSet(cfg.decisionsFile, v.value, parsed.value.source);
+          requestAlertTick();
+          return json({ incident, created, decisionSet: { setId: set.setId, pageUrl: decisionsPageUrl(set) } }, status);
+        } catch (err) {
+          console.error(`alerts intake: decisionSet raise failed (${err instanceof Error ? err.message : "error"})`);
+          return json({ incident, created }, status);
+        }
+      }
+      return json({ incident, created }, status);
     } catch (err) {
       return json({ error: `invalid incident: ${err instanceof Error ? err.message : err}` }, 400);
     }
+  }
+  // --- Needs-Drew answers (#8568) --------------------------------------
+  const needsDrewAnswerMatch = /^\/api\/needs-drew\/([^/]+)\/answer$/.exec(path);
+  if (req.method === "POST" && needsDrewAnswerMatch) {
+    const ledgerId = decodePathSegment(needsDrewAnswerMatch[1]);
+    if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);
+    let body: { token?: unknown; optionId?: unknown; freeText?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid answer body" }, 400);
+    }
+    // No bearer: the per-question token is the authority.
+    const item = await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    if (!item || typeof body.token !== "string" || body.token !== item.token) {
+      return json({ error: "unknown question or bad token" }, 403);
+    }
+    const optionId = typeof body.optionId === "string" ? body.optionId : undefined;
+    if (optionId !== undefined && !item.options.some((o) => o.id === optionId)) {
+      return json({ error: "optionId is not one of the question options" }, 400);
+    }
+    const freeText = typeof body.freeText === "string" ? body.freeText : undefined;
+    if (body.freeText !== undefined && freeText === undefined) {
+      return json({ error: "freeText must be a string" }, 400);
+    }
+    if (optionId === undefined && !freeText?.trim()) {
+      return json({ error: "optionId or freeText required" }, 400);
+    }
+    const updated = await recordAnswer(cfg.needsDrewFile, ledgerId, {
+      ...(optionId !== undefined ? { optionId } : {}),
+      ...(freeText !== undefined ? { freeText } : {}),
+      via: "api",
+    });
+    if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
+    return json({
+      ledgerId,
+      answered: true,
+      answer: {
+        ...(updated.answer.optionId !== undefined ? { optionId: updated.answer.optionId } : {}),
+        ...(updated.answer.freeText !== undefined ? { freeText: updated.answer.freeText } : {}),
+        at: updated.answer.at,
+        via: updated.answer.via,
+      },
+    });
+  }
+  const answerPageMatch = /^\/answer\/([^/]+)$/.exec(path);
+  if (req.method === "GET" && answerPageMatch) {
+    const ledgerId = decodePathSegment(answerPageMatch[1]);
+    const token = url.searchParams.get("t") ?? "";
+    const item = ledgerId === null ? null : await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    // Unknown question or token mismatch: 403, and the question is
+    // never rendered — the token is the only authority here.
+    if (!item || !token || token !== item.token) return html(renderAnswerForbidden(), 403);
+    return html(renderAnswerPage(item));
+  }
+  // --- Decision sets (#8766) -------------------------------------------
+  // --- Decision-sets index (#8867) --------------------------------------
+  // GET /decisions: every set in the store, counts computed live at
+  // request time. The index carries no token of its own — it sits behind
+  // the same access as the rest of the aggregator (tailnet origin /
+  // Cloudflare Access), and each row links onward to the set's own
+  // token-carrying page.
+  if (req.method === "GET" && path === "/decisions") {
+    const sets = await listDecisionSets(cfg.decisionsFile).catch(() => [] as DecisionSet[]);
+    const viewParam = url.searchParams.get("view");
+    const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "all";
+    return html(renderDecisionsIndex(sets, view, url.searchParams.get("open") === "1"));
+  }
+  const decisionsPageMatch = /^\/decisions\/([^/]+)$/.exec(path);
+  if (req.method === "GET" && decisionsPageMatch) {
+    const setId = decodePathSegment(decisionsPageMatch[1]);
+    const token = url.searchParams.get("t") ?? "";
+    const set = setId === null ? null : await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    // Unknown set or token mismatch: 403, and the set is never rendered
+    // — the per-set token is the only authority here.
+    if (!set || !token || token !== set.token) return html(renderDecisionsForbidden(), 403);
+    return html(renderDecisionsPage(set));
+  }
+  const decisionsSubmitMatch = /^\/api\/decisions\/([^/]+)\/submit$/.exec(path);
+  if (req.method === "POST" && decisionsSubmitMatch) {
+    const setId = decodePathSegment(decisionsSubmitMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: { token?: unknown; submissions?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid submit body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const parsedSubs = parseDecisionSubmissions(body.submissions);
+    if (!parsedSubs.ok) return json({ error: parsedSubs.error }, 400);
+    const result = await recordResolutions(cfg.decisionsFile, setId, parsedSubs.value);
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({ outcomes: result.outcomes, ...decisionSetOpenState(result.set) });
+  }
+  const decisionsDeferMatch = /^\/api\/decisions\/([^/]+)\/defer$/.exec(path);
+  if (req.method === "POST" && decisionsDeferMatch) {
+    const setId = decodePathSegment(decisionsDeferMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: {
+      token?: unknown;
+      lean?: unknown;
+      ledgerIds?: unknown;
+      allRemaining?: unknown;
+      submissions?: unknown;
+      comment?: unknown;
+    };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid defer body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    if (!isDeferLean(body.lean)) {
+      return json({ error: "lean must be none|skeptical|approve" }, 400);
+    }
+    const all = body.allRemaining === true;
+    const ledgerIds = Array.isArray(body.ledgerIds)
+      ? body.ledgerIds.filter((x): x is string => typeof x === "string")
+      : [];
+    if (!all && ledgerIds.length === 0) {
+      return json({ error: "ledgerIds or allRemaining required" }, 400);
+    }
+    // Filled answers win over the bulk defer (#8766): submissions the
+    // page gathered from filled-in fields are recorded FIRST, and only
+    // the still-unanswered questions in scope are deferred.
+    let submissions: DecisionSubmission[] = [];
+    if (body.submissions !== undefined) {
+      const parsedSubs = parseDecisionSubmissions(body.submissions);
+      if (!parsedSubs.ok) return json({ error: parsedSubs.error }, 400);
+      submissions = parsedSubs.value;
+    }
+    const result = await deferWithSubmissions(
+      cfg.decisionsFile,
+      setId,
+      submissions,
+      all ? { allRemaining: true as const } : { ledgerIds },
+      body.lean,
+      typeof body.comment === "string" ? body.comment : undefined,
+    );
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({
+      outcomes: result.outcomes,
+      deferredCount: result.deferredCount,
+      ...decisionSetOpenState(result.set),
+    });
+  }
+  const decisionsReqInfoMatch = /^\/api\/decisions\/([^/]+)\/request-info$/.exec(path);
+  if (req.method === "POST" && decisionsReqInfoMatch) {
+    const setId = decodePathSegment(decisionsReqInfoMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: { token?: unknown; note?: unknown; ledgerIds?: unknown; allRemaining?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid request-info body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const all = body.allRemaining === true;
+    const ledgerIds = Array.isArray(body.ledgerIds)
+      ? body.ledgerIds.filter((x): x is string => typeof x === "string")
+      : [];
+    if (!all && ledgerIds.length === 0) {
+      return json({ error: "ledgerIds or allRemaining required" }, 400);
+    }
+    const result = await requestInfoOpenQuestions(
+      cfg.decisionsFile,
+      setId,
+      all ? { allRemaining: true as const } : { ledgerIds },
+      typeof body.note === "string" ? body.note : undefined,
+    );
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({ requestedCount: result.requestedCount, ...decisionSetOpenState(result.set) });
+  }
+
+  const decisionsDraftsMatch = /^\/api\/decisions\/([^/]+)\/drafts$/.exec(path);
+  if ((req.method === "GET" || req.method === "POST") && decisionsDraftsMatch) {
+    const setId = decodePathSegment(decisionsDraftsMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (req.method === "GET") {
+      const token = url.searchParams.get("t") ?? "";
+      // Unknown set or token mismatch: 403, nothing about the set's
+      // drafts is shown without the correct link.
+      if (!set || !token || token !== set.token) {
+        return json({ error: "unknown set or bad token" }, 403);
+      }
+      const drafts = await getDecisionDrafts(cfg.decisionsFile, setId).catch(() => null);
+      return json({
+        drafts: drafts ?? { questions: {}, bulk: [], bulkLean: "", bulkNote: "", updatedAt: "" },
+      });
+    }
+    let body: { token?: unknown; drafts?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid drafts body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const parsedDrafts = validateDecisionDraftUpsert(body.drafts);
+    if (!parsedDrafts.ok) return json({ error: parsedDrafts.error }, 400);
+    const result = await upsertDecisionDrafts(cfg.decisionsFile, setId, parsedDrafts.value);
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({ drafts: result.drafts, applied: result.applied, skipped: result.skipped });
   }
   const alertActionMatch = /^\/api\/alerts\/([\w-]+)\/(ack|close)$/.exec(path);
   if (req.method === "POST" && alertActionMatch) {
@@ -1519,6 +3298,54 @@ async function handler(req: Request): Promise<Response> {
         : json({ error: "alerts store unavailable" }, 503);
     }
   }
+  if (path === "/alerts/preferences" || path === "/api/alerts/preferences.json") {
+    // #3318: subscription preferences — per-class toggles, quiet
+    // hours, this-browser state, per-class test sends. Writes go
+    // through the existing /api/push/subscriptions upsert; this
+    // route only reads the stored subscriptions for the form.
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/alerts/preferences"
+        ? html(renderNotificationPreferences({ available: false, subscriptions: [] }, prov(), VAPID_PUBLIC_KEY))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const subscriptions = await store.listSubscriptions();
+      if (path === "/api/alerts/preferences.json")
+        return json({
+          available: true,
+          subscriptions: subscriptions.map(toPublicSubscription),
+          classes: NOTIFICATION_CLASSES,
+          defaults: NOTIFICATION_CLASS_DEFAULTS,
+        });
+      return html(renderNotificationPreferences({ available: true, subscriptions }, prov(), VAPID_PUBLIC_KEY));
+    } catch {
+      return path === "/alerts/preferences"
+        ? html(renderNotificationPreferences({ available: false, subscriptions: [] }, prov(), VAPID_PUBLIC_KEY))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+  }
+  if (path === "/notifications" || path === "/api/notifications.json") {
+    // #3319: the weekly sent-vs-acted roll-up over the send ledger.
+    // Same reachability as every dashboard page (the tailnet origin);
+    // the only alerts write surface stays the bearer-gated intake.
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/notifications"
+        ? html(renderNotifications({ available: false, rollup: null }, prov()))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const sends = await store.listSends();
+      const rollup = rollupNotificationSends(sends, new Date());
+      if (path === "/api/notifications.json") return json(rollup);
+      return html(renderNotifications({ available: true, rollup }, prov()));
+    } catch {
+      return path === "/notifications"
+        ? html(renderNotifications({ available: false, rollup: null }, prov()))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+  }
   if (path === "/api/health") {
     // #1267: prime first — health's answer must not depend on
     // request order. `sections` carries the structured diagnosis
@@ -1545,16 +3372,24 @@ async function handler(req: Request): Promise<Response> {
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
     body.comments = view.comments;
+    body.conflicts = view.conflicts;
+    // #1203: the ready-for-agent harness facet — backend readiness,
+    // repository settings, work-item counts and GraphQL errors reach the
+    // machine surface too, not only the rendered page.
+    body.rfa = view.rfa;
     body.degraded = view.degraded;
     return json(body);
   }
 
+  const itemJsonMatch = /^\/api\/item\/(.+)\.json$/.exec(path);
   const itemMatch = /^\/item\/(.+)$/.exec(path);
-  if (itemMatch) {
+  const matchedItemPath = itemJsonMatch ?? itemMatch;
+  if (matchedItemPath) {
     // #2748: same guard as /discuss — JSON 400 on malformed encoding.
-    const id = decodePathSegment(itemMatch[1]);
+    const encodedId = matchedItemPath[1];
+    const id = decodePathSegment(encodedId);
     if (id === null) {
-      return json({ error: `malformed percent-encoding in path segment: ${itemMatch[1]}` }, 400);
+      return json({ error: `malformed percent-encoding in path segment: ${encodedId}` }, 400);
     }
     const [board, rows] = await Promise.all([source.board().catch(() => []), source.roadmap().catch(() => [])]);
     const roadmapRow = rows.find((r) => r.subject === id);
@@ -1562,18 +3397,25 @@ async function handler(req: Request): Promise<Response> {
     if (subject) {
       const title = subject.title;
       const links = subject.links;
-      const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
-      const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] = await Promise.all([
-        source.items(refs).catch(() => new Map()),
-        source.comments(refs).catch(() => []),
-        commentsStore.all(),
-        source.registry().catch(() => []),
-        source.projects().catch(() => []),
-        source.orchestration().catch(() => null),
-        actionsStore.all(),
-        roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
+      const activityRefs = [...new Set([id, ...refs].map((ref) => ref.replace(/^gh:/i, "")))];
+      const activityQuery = new URLSearchParams();
+      for (const ref of activityRefs) activityQuery.append("ref", ref);
+      const [itemEvents, itemGaps] = await Promise.all([
+        eventsStore.list({ refs: activityRefs }),
+        activityStore.gaps(),
       ]);
+      const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] =
+        await Promise.all([
+          source.items(refs).catch(() => new Map()),
+          source.comments(refs).catch(() => []),
+          commentsStore.all(),
+          source.registry().catch(() => []),
+          source.projects().catch(() => []),
+          source.orchestration().catch(() => null),
+          actionsStore.all(),
+          roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
+        ]);
       const briefRefs = refs.filter((ref) => pool.some((item) => item.ref === ref));
       const briefComments = briefRefs.length ? await briefCommentsFor(briefRefs) : [];
       const briefs = buildBriefs(pool, {
@@ -1590,6 +3432,14 @@ async function handler(req: Request): Promise<Response> {
       // item page carries the status-request control for that pool item.
       const pooled = pool.find((p) => refs.includes(p.ref));
       const epicRollup = pooled?.kind === "Epic" ? buildEpicRollups(pool).get(pooled.ref) : undefined;
+      const dispatchStates = await readyAgentDispatchStates(items);
+      if (itemJsonMatch) {
+        return json({
+          subject,
+          linkedItems: [...items.values()],
+          dispatchStates,
+        });
+      }
       const extras = {
         dashComments,
         ...(roadmapRow ? { roadmapAnnotations } : {}),
@@ -1609,10 +3459,23 @@ async function handler(req: Request): Promise<Response> {
           : {}),
         ...(epicRollup ? { epicRollup } : {}),
         briefs,
+        ...(dispatchStates.length ? { dispatchStates } : {}),
+        activity: {
+          events: itemEvents,
+          globalHref: `/events?${activityQuery.toString()}`,
+          gaps: itemGaps,
+          coverage: ACTIVITY_SOURCE_COVERAGE,
+        },
       };
-      return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
+      return html(renderItem(title, id, links, items, comments, prov(), extras));
     }
-    return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`, 404);
+    // #4969 (Codex on PR #5283): an unresolved /api/item/<id>.json id
+    // gets the structured JSON 404, not the HTML page response.
+    if (itemJsonMatch) return notFoundResponse(path);
+    return html(
+      `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${esc(id)}</code></p>`,
+      404,
+    );
   }
 
   return notFoundResponse(path);
@@ -1634,7 +3497,7 @@ async function fetchHandler(req: Request): Promise<Response> {
   // failure as an unsuccessful render.
   let res: Response;
   try {
-    res = await handler(req);
+    res = await dashboardResponseWithinDeadline(req, () => handler(req));
   } catch (err) {
     console.error(`aggregator: handler failed for ${req.method} ${req.url}:`, err);
     res = errorBoundaryResponse(new URL(req.url).pathname, err);
@@ -1655,6 +3518,10 @@ const servers = cfg.hosts.map((hostname) =>
   Bun.serve({
     hostname,
     port: cfg.port,
+    // Phase B §13.1: slow fragments (overview/board/queue renders) exceed
+    // Bun's 10s default idle timeout and the patch response gets killed
+    // mid-render; 60s gives the heavy contexts room without going unbounded.
+    idleTimeout: 60,
     fetch: fetchHandler,
   }),
 );
@@ -1663,6 +3530,85 @@ for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
 }
 
+// Cross-process publishers get a separate loopback-only listener; never
+// add this port to PM_AGG_HOSTS or expose it through the Cloudflare tunnel.
+const freshnessIpcServer = Bun.serve({
+  hostname: "127.0.0.1",
+  port: cfg.freshnessPort,
+  fetch: createFreshnessIpcHandler(freshnessStore),
+});
+console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
+
+// Collector feeds are replaced on a ~5-minute cadence. Land their
+// snapshot records from a server-owned writer tick rather than from
+// usage() so GET /quota and /quota/service/* never require store writes.
+const SNAPSHOT_INGEST_INTERVAL_MS = 5 * 60_000;
+if (source.ingestSnapshots) {
+  let snapshotIngestRunning = false;
+  const ingestSnapshots = async (): Promise<void> => {
+    if (snapshotIngestRunning) return;
+    snapshotIngestRunning = true;
+    try {
+      await source.ingestSnapshots?.();
+    } catch {
+      // Feed and store failures are retried on the next tick; reads stay up.
+    } finally {
+      snapshotIngestRunning = false;
+    }
+  };
+  void ingestSnapshots(); // recover the latest feed immediately on startup
+  setInterval(() => void ingestSnapshots(), SNAPSHOT_INGEST_INTERVAL_MS);
+}
+
 // The alert throat's engine (#3676): the ~60s delivery/escalation
 // tick (live mode only, fail-soft — see src/alerts.ts).
-startAlertEngine(cfg);
+startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
+  const [
+    attention,
+    quota,
+    health,
+    actions,
+    comments,
+    needsDrewRaised,
+    decisionSets,
+    stackHealthDown,
+    stackHealthStates,
+    opencodeConfigText,
+  ] = await Promise.all([
+    attentionContext(),
+    source.quota().catch(() => emptyQuotaView()),
+    healthContext(false),
+    actionsStore.all().catch(() => []),
+    commentsStore.all().catch(() => []),
+    listOpenNeedsDrew(cfg.needsDrewFile).catch(() => []),
+    listOpenDecisionSets(cfg.decisionsFile).catch(() => []),
+    listStackHealthDown(cfg.stackHealthFile).catch(() => []),
+    readStackHealthStates(cfg.stackHealthFile).catch(() => ({})),
+    // #8882: the section-risk join reads the deployed config's route
+    // leaf sets; a missing/unreadable config yields no membership.
+    readFile(cfg.opencodeConfigFile, "utf8").catch(() => ""),
+  ]);
+  const drewActivity = [
+    ...actions
+      .filter((action) => action.author.kind === "drew")
+      .map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
+    ...comments
+      .filter((comment) => comment.author.kind === "drew")
+      .map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
+  ];
+  return {
+    attention: attention.view,
+    quota,
+    health,
+    drewActivity,
+    soleDoorPoolIds: deriveSoleDoorPoolIds(quota),
+    sectionPools: sectionPoolIdsFromConfig(
+      opencodeConfigText,
+      quota.pools.map((pool) => pool.id),
+    ),
+    needsDrewRaised,
+    decisionSets,
+    stackHealthDown,
+    stackHealthStates,
+  };
+});

@@ -18,6 +18,20 @@
   e2eTestRunner,
   playwrightBrowsers,
 }:
+let
+  # World E2E (#1322): the world-surface spec joins the lobby world, so every
+  # server instance hosts it with the roc-screen fixture program and the same
+  # guest-invite admin token the spec expects by default
+  # (ID_E2E_WORLD_ADMIN_TOKEN, see pkgs/id/e2e/playwright.config.ts).
+  worldModule = ../../examples/roc-screen/roc-screen.wasm;
+  worldExtraArgs = [
+    "--world"
+    "--world-admin-token"
+    "e2e-world-admin-token"
+    "--world-module"
+    "/etc/id-e2e/roc-screen.wasm"
+  ];
+in
 {
   name = "id-playwright-e2e";
 
@@ -26,6 +40,8 @@
     { ... }:
     {
       imports = [ ../id-module.nix ];
+
+      environment.etc."id-e2e/roc-screen.wasm".source = worldModule;
 
       services.id = {
         package = idPackage;
@@ -38,6 +54,7 @@
           noGossip = true;
           noMdns = true;
           openFirewall = true;
+          extraArgs = worldExtraArgs;
         };
         instances.secondary = {
           enable = true;
@@ -48,6 +65,7 @@
           noGossip = true;
           noMdns = true;
           openFirewall = true;
+          extraArgs = worldExtraArgs;
         };
       };
     };
@@ -56,6 +74,8 @@
     { ... }:
     {
       imports = [ ../id-module.nix ];
+
+      environment.etc."id-e2e/roc-screen.wasm".source = worldModule;
 
       services.id = {
         package = idPackage;
@@ -68,6 +88,7 @@
           noGossip = true;
           noMdns = true;
           openFirewall = true;
+          extraArgs = worldExtraArgs;
         };
         instances.secondary = {
           enable = true;
@@ -78,6 +99,7 @@
           noGossip = true;
           noMdns = true;
           openFirewall = true;
+          extraArgs = worldExtraArgs;
         };
       };
     };
@@ -128,10 +150,16 @@
     firefox_server.wait_for_open_port(4176)
 
     # ── Verify all servers reachable from client VMs ───────────────────────
-    chromium_client.succeed("curl -sf http://chromium_server:4173/")
-    chromium_client.succeed("curl -sf http://chromium_server:4175/")
-    firefox_client.succeed("curl -sf http://firefox_server:4174/")
-    firefox_client.succeed("curl -sf http://firefox_server:4176/")
+    # wait_for_open_port above runs on the SERVER VMs (local check); the first
+    # probe runs on the CLIENT VM across the virtual network, so retry the
+    # cross-VM hop here instead of failing on the first connection-refused
+    # (nightly 40457980141: curl exit code 7 ~53s after VM start).
+    # wait_until_succeeds retries until success or its timeout, covering
+    # virtual-network/firewall bring-up skew.
+    chromium_client.wait_until_succeeds("curl -sf http://chromium_server:4173/")
+    chromium_client.wait_until_succeeds("curl -sf http://chromium_server:4175/")
+    firefox_client.wait_until_succeeds("curl -sf http://firefox_server:4174/")
+    firefox_client.wait_until_succeeds("curl -sf http://firefox_server:4176/")
 
     # ── Helper: copy test runner to writable dir and run Playwright ────────
     # The e2eTestRunner is a read-only nix store path; Playwright needs to

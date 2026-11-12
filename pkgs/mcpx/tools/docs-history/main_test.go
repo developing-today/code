@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -235,7 +236,7 @@ func TestCheckDiffNeedsFragment(t *testing.T) {
 		t.Fatalf("fragment in the diff should satisfy the check, got %v", problems)
 	}
 	// Trivial marker also satisfies it (fragment removed again).
-	os.Remove(filepath.Join(dir, "docs/changes/lifetime.md"))
+	_ = os.Remove(filepath.Join(dir, "docs/changes/lifetime.md"))
 	if problems := Check([]string{p}, sampleDiff, true, ""); len(problems) != 0 {
 		t.Fatalf("trivial check should pass, got %v", problems)
 	}
@@ -291,8 +292,8 @@ func TestCheckDiffDeletionOnlyNeedsFragment(t *testing.T) {
 func TestRenderAnchorForRenamedSection(t *testing.T) {
 	src := "## New name\n\n```\ncreated: 2026-09-25T00:00:00-05:00\nid: old-name\nsince: pre-release\nstatus: core\ndescription: d\nchanged:\n  - 0.2.0 (2026-11-02): x\n```\n\nProse.\n\n## Other\n\n```\ncreated: 2026-09-25T00:00:00-05:00\nid: other\nsince: pre-release\nstatus: core\ndescription: d\nchanged:\n  - 0.2.0 (2026-11-02): y\n```\n\nMore.\n"
 	out := Render(ParseDocument("x.md", src), false)
-	if !strings.Contains(out, "<a id=\"old-name\"></a>\n## New name") {
-		t.Error("renamed section should get an explicit anchor for its frozen ID")
+	if !strings.Contains(out, "<a id=\"old-name\"></a>\n\n## New name") {
+		t.Error("renamed section should get an explicit anchor for its frozen ID, separated from the heading by a blank line so CommonMark still renders the heading")
 	}
 }
 
@@ -318,13 +319,26 @@ func TestCheckFragmentUnknownID(t *testing.T) {
 }
 
 func TestMdBookRoundTrip(t *testing.T) {
-	book := `[{"name":"ctx"}, {"sections":[{"Chapter":{"name":"C","content":"# T\n\n## S\n\n<!-- id: s since: 0.1.0 -->\n\nprose\n","sub_items":[],"number":[1],"path":"c.md"}}]}]`
+	book := `[{"name":"ctx"}, {"items":[{"Chapter":{"name":"C","content":"# T\n\n## S\n\n<!-- id: s since: 0.1.0 -->\n<!-- changed: 0.2.0 (2026-11-02): rendered history -->\n\nprose\n","sub_items":[],"number":[1],"path":"c.md"}}]}]`
 	out, err := renderMdBook([]byte(book), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "Since: 0.1.0") || !strings.Contains(string(out), "\"number\":[1]") {
+	if !strings.Contains(string(out), "Since: 0.1.0") ||
+		!strings.Contains(string(out), `\u003cdetails\u003e\u003csummary\u003eHistory -- 1 changes`) ||
+		!strings.Contains(string(out), "\"number\":[1]") {
 		t.Errorf("mdBook render lost content or fields: %s", out)
+	}
+}
+
+func TestMdBookRoundTripLegacySections(t *testing.T) {
+	book := `[{"name":"ctx"}, {"sections":[{"Chapter":{"name":"C","content":"# T\n\n## S\n\n<!-- id: s since: 0.1.0 -->\n\nprose\n","sub_items":[]}}]}]`
+	out, err := renderMdBook([]byte(book), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "Since: 0.1.0") {
+		t.Errorf("legacy mdBook sections were not rendered: %s", out)
 	}
 }
 
@@ -407,5 +421,40 @@ func TestStampCompactMarkerWithExtraWhitespace(t *testing.T) {
 	}
 	if !strings.Contains(got, "since: 0.2.0") {
 		t.Fatalf("stamp did not write the version into the compact marker:\n%s", got)
+	}
+}
+
+func TestTrailingValueFlagsExitWithUsage(t *testing.T) {
+	if args := os.Getenv("DOCS_HISTORY_TEST_ARGS"); args != "" {
+		os.Args = append([]string{"docs-history"}, strings.Fields(args)...)
+		main()
+		return
+	}
+
+	for _, args := range []string{
+		"stamp --version",
+		"stamp --date",
+		"stamp --changes-dir",
+		"check --diff",
+		"check --changes-dir",
+	} {
+		t.Run(args, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestTrailingValueFlagsExitWithUsage$")
+			cmd.Env = append(os.Environ(), "DOCS_HISTORY_TEST_ARGS="+args)
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("command %q succeeded; want exit code 2:\n%s", args, output)
+			}
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != 2 {
+				t.Fatalf("command %q error = %v; want exit code 2:\n%s", args, err, output)
+			}
+			if strings.Contains(string(output), "panic:") {
+				t.Fatalf("command %q panicked:\n%s", args, output)
+			}
+			if !strings.Contains(string(output), "requires a value") || !strings.Contains(string(output), "usage:") {
+				t.Fatalf("command %q did not report the missing value and usage:\n%s", args, output)
+			}
+		})
 	}
 }

@@ -1,0 +1,10 @@
+{
+  "description": "Step-1 fixture for the F13.6 native shell: the client frames a contract-parity session sends (join handled by WorldClient in step 2) and one host view, in the shapes pkgs/id/contract/shell-contract.v1.json declares.",
+  "frames": [
+    { "type": "resize", "width": 80, "height": 24 },
+    { "type": "view", "sequence": 1, "data": "welcome to the world\n", "view_revision": 1 },
+    { "type": "input", "data_hex": "6c6f6f6b0d" },
+    { "type": "paste", "text": "a pasted line" },
+    { "type": "chat", "text": "hello from the native shell" }
+  ]
+}

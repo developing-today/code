@@ -5,7 +5,7 @@ description: "Write the definitive research document for one concept of a workfl
 
 # Concept research (S2)
 
-You own one concept file, `concepts/C001-<slug>.md`, and turn it into the definitive document for that concept: everything a later design, plan or implementation agent needs, every claim traceable to a source, and nothing from earlier stages lost. There is no length limit; later runs add more detail. The stage contract is in [stages.md](/planning/workflow/stages.md), file formats in [records.md](/planning/workflow/records.md), and the concept template in [templates](/planning/workflow/templates/) (`concept.md`).
+You own one concept file, `concepts/C001-<slug>.md`, and turn it into the definitive document for that concept: everything a later design, plan or implementation agent needs, every claim traceable to a source, and nothing from earlier stages lost. There is no length limit; later runs add more detail. The stage contract is in [stages.md](../../../planning/workflow/stages.md), file formats in [records.md](../../../planning/workflow/records.md), and the concept template in [templates](../../../planning/workflow/templates) (`concept.md`).
 
 Commands below are `python3 -I scripts/research_workflow.py <command>`, run from the repository root; `<pkg>` is the package folder `doc/<UTC>_research_<slug>`. Run `<command> --help` for argument names.
 
@@ -27,7 +27,7 @@ Do not load for:
 
 ## Ownership and parallelism
 
-Many concept owners run at once, one per concept, so nothing here waits on another concept. You are the only writer of your concept file, your outgoing notes and your receipts. Facet subagents are read-only: they return evidence and never write in the repository. In `main.md` you touch only your concept's section, and only through your own pull request. Anything for another concept goes in a note; anything else wide goes through a PR. Boot, branch, lease, heartbeat and final-report rules are in [collaboration.md](/planning/workflow/collaboration.md); follow them, do not restate them.
+Many concept owners run at once, one per concept, so nothing here waits on another concept. You are the only writer of your concept file, your outgoing notes and your receipts. Facet subagents are read-only: they return evidence and never write in the repository. In `main.md` you touch only your concept's section, and only through your own pull request. Anything for another concept goes in a note; anything else wide goes through a PR. Boot, branch, lease, heartbeat and final-report rules are in [collaboration.md](../../../planning/workflow/collaboration.md); follow them, do not restate them.
 
 ## Steps
 

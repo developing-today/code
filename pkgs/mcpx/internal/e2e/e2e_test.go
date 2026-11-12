@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 
@@ -57,7 +59,12 @@ func newEnv(t *testing.T, cfgBody string) *env {
 		dir:  dir,
 		mcpx: mcpx,
 		fake: fake,
-		envVars: append(withoutMCPXVars(os.Environ()),
+		// The child environment is built from an allowlist, not inherited:
+		// ChildEnv drops everything the test does not control, so no caller
+		// variable reaches the binary whatever the caller's shell exported
+		// (#1992). What the test does control is listed here and wins,
+		// because os/exec keeps the last value for a duplicated key.
+		envVars: testsupport.ChildEnv(os.Environ(), dir,
 			// Never the real registry. A test that reaches the internet
 			// fails wherever the internet is slow, which is every CI runner
 			// -- `/v1/registry/search` timed out there while passing on a
@@ -96,6 +103,7 @@ func newEnv(t *testing.T, cfgBody string) *env {
 			"MCPX_POLICY_WRITE=allow",
 		),
 	}
+	recordSettingProbes(t)
 	t.Cleanup(func() {
 		// `stop --all` rather than `stop`: plain `stop` dials the socket
 		// path recomputed from the environment, and a long state path moves
@@ -104,7 +112,7 @@ func newEnv(t *testing.T, cfgBody string) *env {
 		// survives. `--all` reads the daemon-<key>.json info files instead,
 		// which record the path the daemon actually bound. Each env has its
 		// own MCPX_STATE_DIR, so `--all` is scoped to this test.
-		if out, err := e.try("stop", "--all"); err != nil {
+		if out, err := e.tryUnrecorded("stop", "--all"); err != nil {
 			// Logged, not fatal: a test that has already passed should not
 			// be failed by its own teardown, but a teardown that silently
 			// fails is how the leak went unnoticed for so long.
@@ -157,13 +165,25 @@ func (e *env) try(args ...string) (string, error) {
 }
 
 func (e *env) tryWith(bin string, args ...string) (string, error) {
+	return e.tryWithCoverage(bin, bin == e.mcpx, args...)
+}
+
+func (e *env) tryUnrecorded(args ...string) (string, error) {
+	return e.tryWithCoverage(e.mcpx, false, args...)
+}
+
+func (e *env) tryWithCoverage(bin string, record bool, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = e.dir
 	cmd.Env = e.envVars
 	out, err := cmd.CombinedOutput()
-	return string(out), harnessTimeout(ctx, err)
+	err = harnessTimeout(ctx, err)
+	if err == nil && record {
+		e.recordCLI(args)
+	}
+	return string(out), err
 }
 
 // harnessTimeout names the harness's own deadline as the killer. Without it
@@ -188,6 +208,7 @@ func (e *env) runStdin(stdin string, args ...string) string {
 	if err != nil {
 		e.t.Fatalf("mcpx %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
+	e.recordCLI(args)
 	return string(out)
 }
 
@@ -203,6 +224,13 @@ func (e *env) run(args ...string) string {
 const oneServer = `{
   "mcpServers": {
     "demo": { "command": "FAKE", "mcpx": { "sharing": "shared", "scope": "global", "description": "a fake server" } }
+  }
+}`
+
+const twoVisibleServers = `{
+  "mcpServers": {
+    "alpha": { "command": "FAKE" },
+    "beta":  { "command": "FAKE" }
   }
 }`
 
@@ -358,7 +386,7 @@ console.log("GOT:" + String(r));
 func TestRunWritesTypedClientBesideTheScript(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "s.ts")
-	os.WriteFile(script, []byte(`console.log("ok");`), 0o644)
+	_ = os.WriteFile(script, []byte(`console.log("ok");`), 0o644)
 	e.run("run", script)
 	client := filepath.Join(e.dir, "mcpx-client.ts")
 	b, err := os.ReadFile(client)
@@ -490,7 +518,7 @@ func TestSchemaCacheSurvivesDaemonRestart(t *testing.T) {
 	if err := os.Rename(e.fake, moved); err != nil {
 		t.Skipf("cannot move fake binary: %v", err)
 	}
-	defer os.Rename(moved, e.fake)
+	defer func() { _ = os.Rename(moved, e.fake) }()
 
 	// Every part of the catalogue, not only tools: the cache held tools and
 	// resources and not prompts, so a restarted daemon served none, and
@@ -964,7 +992,7 @@ func TestNamedExportReceivesSpreadArguments(t *testing.T) {
 	body := `export function join(a: string, b: string) { return a + "+" + b; }
 export default function main() { return "default-was-used"; }
 `
-	os.WriteFile(script, []byte(body), 0o644)
+	_ = os.WriteFile(script, []byte(body), 0o644)
 	out := e.run("run", "--export", "join", script, "x", "y")
 	if !strings.Contains(out, "x+y") {
 		t.Fatalf("--export should call the named function with spread args:\n%s", out)
@@ -977,7 +1005,7 @@ export default function main() { return "default-was-used"; }
 func TestUnknownExportNamesWhatExists(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "named2.ts")
-	os.WriteFile(script, []byte(`export function real() { return 1; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export function real() { return 1; }`), 0o644)
 	out, err := e.try("run", "--export", "missing", script)
 	if err == nil {
 		t.Fatalf("expected failure:\n%s", out)
@@ -990,7 +1018,7 @@ func TestUnknownExportNamesWhatExists(t *testing.T) {
 func TestScriptWithoutDefaultExportStillRunsOnImport(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "toplevel.ts")
-	os.WriteFile(script, []byte(`console.log("ran at import time");`), 0o644)
+	_ = os.WriteFile(script, []byte(`console.log("ran at import time");`), 0o644)
 	out := e.run("run", script)
 	if !strings.Contains(out, "ran at import time") {
 		t.Fatalf("a script with no entry point should still run:\n%s", out)
@@ -1006,7 +1034,7 @@ export default async function main() {
   return { done: true };
 }
 `
-	os.WriteFile(script, []byte(body), 0o644)
+	_ = os.WriteFile(script, []byte(body), 0o644)
 	out := e.run("--json", "run", script)
 
 	var doc struct {
@@ -1045,7 +1073,7 @@ export default async function main() {
 func TestRunJSONReportsAFailure(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "fail.ts")
-	os.WriteFile(script, []byte(`throw new Error("deliberate");`), 0o644)
+	_ = os.WriteFile(script, []byte(`throw new Error("deliberate");`), 0o644)
 	out, err := e.try("--json", "run", script)
 	if err == nil {
 		t.Fatal("a throwing script should exit non-zero")
@@ -1083,7 +1111,7 @@ func TestEmitStreamsResultsToStdout(t *testing.T) {
 func TestEmitAndReturnCoexist(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "both.ts")
-	os.WriteFile(script, []byte(`import { emit } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { emit } from "./mcpx-client.ts";
 export default function main() {
   emit({ partial: 1 });
   emit({ partial: 2 });
@@ -1135,7 +1163,7 @@ func TestLogCapturesAnErrorStructurally(t *testing.T) {
 func TestLogSourceRecordsTheCallSite(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "src.ts")
-	os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
 export default function named() {
   log.info("hello");
 }
@@ -1178,7 +1206,7 @@ func TestLogSourceIsOffByDefault(t *testing.T) {
 func TestAFilteredLogCallNeverTouchesItsArguments(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "cost.ts")
-	os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
 export default function main() {
   let touched = 0;
   const probe = { get i() { touched++; return 1; } };
@@ -1238,7 +1266,7 @@ func TestLogWithBindsAttributes(t *testing.T) {
 			continue
 		}
 		var doc map[string]any
-		json.Unmarshal([]byte(line), &doc)
+		_ = json.Unmarshal([]byte(line), &doc)
 		if doc["msg"] == "bound" && doc["run"] == "r1" {
 			bound = true
 		}
@@ -1300,7 +1328,7 @@ func TestExecPrefixFlagReplacesUnlessInherited(t *testing.T) {
 func TestFileScriptPrefixRunsBeforeTopLevelCode(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "top.ts")
-	os.WriteFile(script, []byte(`console.log("TOP-LEVEL");
+	_ = os.WriteFile(script, []byte(`console.log("TOP-LEVEL");
 export default function main() { return "done"; }
 `), 0o644)
 	// A static import would be hoisted and run the module first whatever the
@@ -1318,7 +1346,7 @@ export default function main() { return "done"; }
 func TestFileScriptPrefixCanPatchGlobals(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "glob.ts")
-	os.WriteFile(script, []byte(`export default function main() {
+	_ = os.WriteFile(script, []byte(`export default function main() {
   return { saw: (globalThis as any).INJECTED ?? "<unset>" };
 }
 `), 0o644)
@@ -1333,7 +1361,7 @@ func TestFileScriptPrefixCannotBindModuleScope(t *testing.T) {
 	// declaration is not visible inside the script.
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "scope.ts")
-	os.WriteFile(script, []byte(`export default function main() {
+	_ = os.WriteFile(script, []byte(`export default function main() {
   return { has: typeof (globalThis as any).FROM_PREFIX_CONST };
 }
 `), 0o644)
@@ -1346,7 +1374,7 @@ func TestFileScriptPrefixCannotBindModuleScope(t *testing.T) {
 func TestFileScriptSuffixSeesTheResult(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "res.ts")
-	os.WriteFile(script, []byte(`export default function main() { return { n: 1 }; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { return { n: 1 }; }`), 0o644)
 	out := e.run("run", "--format", "bare",
 		"--suffix", `log.info("ok={ok}", { ok: result.ok });`, script)
 	if !strings.Contains(out, "ok=true") {
@@ -1357,7 +1385,7 @@ func TestFileScriptSuffixSeesTheResult(t *testing.T) {
 func TestFileScriptSuffixRunsEvenOnFailure(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "fail2.ts")
-	os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
 	out, err := e.try("run", "--format", "bare",
 		"--suffix", `log.warn("cleanup ok={ok}", { ok: result.ok });`, script)
 	if err == nil {
@@ -1371,7 +1399,7 @@ func TestFileScriptSuffixRunsEvenOnFailure(t *testing.T) {
 func TestFileScriptPrefixSeesTheScriptContext(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "ctx.ts")
-	os.WriteFile(script, []byte(`export default function main() { return "x"; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { return "x"; }`), 0o644)
 	out := e.run("run", "--format", "bare",
 		"--prefix", `log.info("{name} got {n}", { name: script.name, n: script.args.length });`,
 		script, "a", "b")
@@ -1425,7 +1453,7 @@ func TestScriptCanUseGlobalsWithoutImporting(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "noimp.ts")
 	// No import statement anywhere.
-	os.WriteFile(script, []byte(`export default async function main() {
+	_ = os.WriteFile(script, []byte(`export default async function main() {
   log("plain call");
   emit({ streamed: 1 });
   const r = await demo.echo({ message: "via global" });
@@ -1452,7 +1480,7 @@ func TestLogIsCallableAsInfo(t *testing.T) {
 func TestImportingStillWorksAlongsideGlobals(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "mixed.ts")
-	os.WriteFile(script, []byte(`import { log as imported } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { log as imported } from "./mcpx-client.ts";
 export default function main() {
   imported.info("via import");
   log.info("via global");
@@ -1499,7 +1527,7 @@ func TestConsoleCaptureCanBeDisabled(t *testing.T) {
 func TestGlobalDeclarationsAreWrittenForEditors(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "decl.ts")
-	os.WriteFile(script, []byte(`export default function main() { return 1; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { return 1; }`), 0o644)
 	e.run("run", script)
 
 	b, err := os.ReadFile(filepath.Join(e.dir, "mcpx-globals.d.ts"))
@@ -1516,7 +1544,7 @@ func TestGlobalDeclarationsAreWrittenForEditors(t *testing.T) {
 func TestLauncherPhasesRunInOrder(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "ph.ts")
-	os.WriteFile(script, []byte(`export default function main() { log("3 body"); return undefined; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { log("3 body"); return undefined; }`), 0o644)
 	out := e.run("run", "--format", "bare",
 		"--before", `log("1 before")`, "--prefix", `log("2 prefix")`,
 		"--on-success", `log("4 success")`, "--suffix", `log("5 suffix")`, script)
@@ -1535,7 +1563,7 @@ func TestLauncherPhasesRunInOrder(t *testing.T) {
 func TestOnErrorRunsAndTheErrorStillPropagates(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "pherr.ts")
-	os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
 	out, err := e.try("run", "--format", "bare",
 		"--on-success", `log("should not run")`,
 		"--on-error", `log.error("onError fired")`,
@@ -2459,7 +2487,7 @@ func seedElicitation(t *testing.T, e *env, id, server, mode, schema string) {
 	if err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	now := time.Now().UnixMilli()
 	if _, err := db.Exec(`INSERT OR REPLACE INTO elicitations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, "cal-x", "", "s1", server, "tool", mode, "which one?", schema, "", "", "", now, now+120000, now, "pending", 1); err != nil {
@@ -2589,7 +2617,7 @@ func TestTheEventStreamDeliversCallsAndResumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("content type %q", ct)
 	}
@@ -2623,9 +2651,12 @@ func (e *env) socketClient(t *testing.T) *http.Client {
 	}
 	return &http.Client{
 		Timeout: 3 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", st.Socket)
-		}},
+		Transport: coverageRoundTripper{
+			test: t.Name(),
+			base: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", st.Socket)
+			}},
+		},
 	}
 }
 
@@ -2643,7 +2674,7 @@ func TestARecordPostedToTheDaemonLandsInTheSameLogAsTheCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -2663,7 +2694,7 @@ func TestARecordPostedToTheDaemonLandsInTheSameLogAsTheCommand(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s: status %d, want 400", body, resp.StatusCode)
 		}
@@ -2783,7 +2814,7 @@ func TestEnvCleanupStopsTheDaemonItStarted(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 		if conn, err := net.Dial("unix", d.socket); err == nil {
-			conn.Close()
+			_ = conn.Close()
 			t.Errorf("daemon %d still listening on %s after cleanup", d.pid, d.socket)
 		}
 		if syscall.Kill(d.pid, 0) == nil {
@@ -2796,7 +2827,7 @@ func TestEnvCleanupStopsTheDaemonItStarted(t *testing.T) {
 // or the process.
 func daemonAlive(socket string, pid int) bool {
 	if conn, err := net.Dial("unix", socket); err == nil {
-		conn.Close()
+		_ = conn.Close()
 		return true
 	}
 	return syscall.Kill(pid, 0) == nil
@@ -2823,7 +2854,7 @@ func TestResolveTellsAPluginWhichDaemonServesADirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -2856,7 +2887,7 @@ func TestResolveTellsAPluginWhichDaemonServesADirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bad.Body.Close()
+	_ = bad.Body.Close()
 	if bad.StatusCode != http.StatusBadRequest {
 		t.Errorf("relative dir: status %d, want 400", bad.StatusCode)
 	}
@@ -2876,8 +2907,8 @@ func TestTypeCheckCatchesAnUnknownNamespaceBeforeAnythingRuns(t *testing.T) {
 	if err == nil {
 		t.Fatalf("an unknown namespace should stop the run:\n%s", out)
 	}
-	if !strings.Contains(out, "totally_made_up") {
-		t.Errorf("the error should name the namespace:\n%s", out)
+	if !strings.Contains(out, "totally_made_up") && !strings.Contains(out, "only available under Deno") {
+		t.Errorf("the error should name the namespace or cite the runtime limitation:\n%s", out)
 	}
 	if strings.Contains(out, `"step"`) {
 		t.Errorf("nothing should have run:\n%s", out)
@@ -2888,9 +2919,13 @@ func TestTypeCheckPassesForAScriptThatUsesTheGlobals(t *testing.T) {
 	// The other half: the ambient declarations must actually load, or a
 	// check that works reports "Cannot find name 'emit'" for every script.
 	e := newEnv(t, oneServer)
-	out := e.run("exec", "--typecheck=on",
+	out, err := e.try("exec", "--typecheck=on",
 		`const r = await demo.echo({message: "hi"}); emit({ok: r != null});`)
-	if !strings.Contains(out, "true") {
+	if err != nil {
+		if !strings.Contains(out, "only available under Deno") {
+			t.Fatalf("a correct script must pass the check and run, or cite the runtime limitation:\n%s", out)
+		}
+	} else if !strings.Contains(out, "true") {
 		t.Fatalf("a correct script must pass the check and run:\n%s", out)
 	}
 }
@@ -3008,6 +3043,9 @@ func TestExecFlagProbeRowsMatchCoverage(t *testing.T) {
 // and must change an observable outcome.
 type execFlagProbeRow struct {
 	flag string
+	// config optionally gives a probe its own fixture; most rows share the
+	// one-server environment, while namespace visibility needs two servers.
+	config string
 	// base is given both with and without the flag, so the comparison
 	// isolates the flag rather than everything around it.
 	base   []string
@@ -3110,25 +3148,52 @@ var execFlagProbeRows = []execFlagProbeRow{
 		source: `emit({ok: 1});`,
 		want:   "valid=true",
 	},
+	{
+		flag:   "--ns",
+		config: twoVisibleServers,
+		args:   []string{"--ns", "alpha"},
+		source: `const g = globalThis as any;
+const hasAlpha = typeof g.alpha?.echo === "function";
+const hasBeta = typeof g.beta?.state === "function";
+if (hasAlpha && !hasBeta) console.log("ALPHA_ONLY");
+if (hasAlpha && hasBeta) console.log("BOTH_NAMESPACES");`,
+		want: "ALPHA_ONLY",
+		gone: "BOTH_NAMESPACES",
+	},
 }
 
 func TestEveryExecFlagChangesSomething(t *testing.T) {
 	e := newEnv(t, oneServer)
-	rows := execFlagProbeRows
+	rows := make([]execFlagProbeRow, len(execFlagProbeRows))
+	copy(rows, execFlagProbeRows)
+	// Deno typechecks, Bun/Node refuse to run: what the --typecheck
+	// probe may legitimately produce depends on the runtime under
+	// test, so probe once and aim the row at what this runtime does.
+	if outDeno, _ := e.try("exec", "--typecheck=on", "emit({ran: 1}); await totally_made_up.x({});"); !strings.Contains(outDeno, "does not type check") {
+		for i := range rows {
+			if rows[i].flag == "--typecheck" {
+				rows[i].want = "only available under Deno"
+			}
+		}
+	}
 	for _, where := range []string{"local", "remote"} {
 		for _, c := range rows {
 			t.Run(where+"/"+c.flag, func(t *testing.T) {
+				probeEnv := e
+				if c.config != "" {
+					probeEnv = newEnv(t, c.config)
+				}
 				lead := []string{"exec"}
 				if where == "remote" {
 					lead = append(lead, "--remote")
 				}
 				lead = append(lead, c.base...)
 				argv := append(append(append([]string{}, lead...), c.args...), c.source)
-				with, werr := e.try(argv...)
+				with, werr := probeEnv.try(argv...)
 				if !c.fails && werr != nil {
 					t.Fatalf("%s: %v\n%s", c.flag, werr, with)
 				}
-				without, _ := e.try(append(append([]string{}, lead...), c.source)...)
+				without, _ := probeEnv.try(append(append([]string{}, lead...), c.source)...)
 				if c.want != "" {
 					if !strings.Contains(with, c.want) {
 						t.Errorf("%s did nothing: wanted %q in\n%s", c.flag, c.want, with)
@@ -3195,25 +3260,102 @@ func TestConcurrentRunsOfOneScriptKeepTheirOwnLauncher(t *testing.T) {
 	}
 }
 
-// withoutMCPXVars drops every MCPX_ variable the developer running the suite
-// happens to have exported.
+// TestMain is the backstop for #1992: the suite must never disturb the
+// caller's real daemons, whatever the caller's shell exported.
 //
-// The harness sets the ones it needs a line below, and last-wins in exec's
-// environment would cover those. It does not cover the ones it deliberately
-// leaves unset: a test that asserts a knob is off reads the default only if
-// nothing in the ambient environment turned it on, and MCPX_TRACE=1 in the
-// shell of somebody debugging mcpx is exactly the case. That fails on one
-// machine and nowhere else, which is the worst kind.
-//
-// PATH and everything else is kept, because the child needs a runtime.
-func withoutMCPXVars(env []string) []string {
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "MCPX_") {
-			continue
+// First it fails fast if the parent carries a caller-daemon pointer
+// (MCPX_DAEMON_ENDPOINT or MCPX_SOCKET) that would reach a test child: with
+// the allowlist builder that cannot happen, so reaching this failure means
+// somebody widened the allowlist and every test after it would run against
+// the user's daemon instead of its own. Then it records the caller's real
+// daemon set, runs the suite, and fails if that set differs at the end --
+// the one assertion that the suite left the machine as it found it, which
+// also catches a regression of the #182 daemon-leak fix.
+func TestMain(m *testing.M) {
+	os.Exit(guardedMain(m))
+}
+
+func guardedMain(m *testing.M) int {
+	before := callerDaemonSet()
+	for _, name := range []string{"MCPX_DAEMON_ENDPOINT", "MCPX_SOCKET"} {
+		if v := os.Getenv(name); v != "" && childWouldInherit(name) {
+			fmt.Fprintf(os.Stderr,
+				"e2e: refusing to run: the parent exports %s=%q and the harness would pass it to test children, "+
+					"pointing the suite at the caller's daemon (#1992). Unset it, or fix the allowlist in internal/testsupport.\n",
+				name, v)
+			return 1
 		}
-		out = append(out, kv)
 	}
+	code := m.Run()
+	after := callerDaemonSet()
+	if !slices.Equal(before, after) {
+		fmt.Fprintf(os.Stderr,
+			"e2e: the suite disturbed the caller's real daemons (#1992): before=[%s] after=[%s]. "+
+				"Each test owns its MCPX_STATE_DIR, so a difference means a child reached the real state dir; "+
+				"a daemon you started or stopped yourself mid-suite reads the same way.\n",
+			strings.Join(before, " "), strings.Join(after, " "))
+		return 1
+	}
+	// The suite-wide process/temp sweep (#1971 remainder item 2): the
+	// builders' temp dirs (mcpx-bin-*/mcpx-fake-*) are removed, and a
+	// process still executing from one of them — a leaked test daemon
+	// or fake server — fails the run. The sweep is scoped to the dirs
+	// this test binary registered, so a neighbouring suite's binaries
+	// on the same machine are never touched.
+	removed, leftover := testsupport.SweepBuildTempDirs()
+	fmt.Printf("e2e sweep: removed %d build temp dirs\n", len(removed))
+	if len(leftover) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"e2e: %d process(es) still executing from the suite's build temp dirs after the suite ran (#1971): %v. "+
+				"Each test owns the children it spawns; a survivor is a leaked daemon or fake server.\n",
+			len(leftover), leftover)
+		return 1
+	}
+	// The feature coverage ledger is written here, at the end of the
+	// one guarded main flow: a test package gets exactly one TestMain,
+	// and this is it (the ledger write used to live in a second
+	// TestMain in feature_coverage_test.go, which broke the build
+	// when the guard landed — #8333).
+	path := featureCoverageLedgerPath()
+	rows := featureCoverageSnapshot()
+	if err := writeFeatureCoverageLedger(path, rows); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Printf("feature coverage ledger: %s (%d rows)\n", path, len(rows))
+	if violations := featureCoverageGuardViolations(code, rows); len(violations) > 0 {
+		for _, violation := range violations {
+			fmt.Fprintln(os.Stderr, "feature coverage guard:", violation)
+		}
+		fmt.Fprintf(os.Stderr, "feature coverage guard: %d violation(s); see docs/testing/feature-inventory.md (#1978)\n", len(violations))
+		return 1
+	}
+	return code
+}
+
+// childWouldInherit reports whether a parent variable would reach a test
+// child through the allowlist builder. The probe carries no harness extras,
+// which can only override more, never less: if the name survives here it
+// survives in every test.
+func childWouldInherit(name string) bool {
+	prefix := name + "="
+	for _, kv := range testsupport.ChildEnv(os.Environ(), "") {
+		if strings.HasPrefix(kv, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// callerDaemonSet snapshots the caller's real daemons: the info records in
+// the state dir resolved from the parent environment, which no test may
+// touch because every test sets its own MCPX_STATE_DIR.
+func callerDaemonSet() []string {
+	var out []string
+	for _, d := range daemon.ResolvePaths().ListDaemons() {
+		out = append(out, d.Socket+" pid="+strconv.Itoa(d.PID))
+	}
+	slices.Sort(out)
 	return out
 }
 

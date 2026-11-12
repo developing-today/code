@@ -89,6 +89,45 @@ describe("commentKindCounts (#1210)", () => {
   });
 });
 
+describe("CommentsStore githubFailedAt (#8586)", () => {
+  test("an error report stamps the failure time; a repeat failure refreshes it; a post clears it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-comments-8586-"));
+    try {
+      const file = join(dir, "comments.json");
+      const store = new CommentsStore(file);
+      const c = await store.add({
+        objectRef: "gh:developing-today/code#8586",
+        kind: "github",
+        author: { ...AUTHOR },
+        body: "post me",
+        githubRef: "developing-today/code#8586",
+      });
+      const failed = await store.markGithubResult(c.id, { error: "first failure" });
+      expect(failed?.githubState).toBe("failed");
+      // The stamp is the failure's time, not the comment's: it parses
+      // and is no earlier than the moment the failure was reported.
+      expect(failed?.githubFailedAt).toBeDefined();
+      expect(Number.isNaN(Date.parse(failed!.githubFailedAt!))).toBe(false);
+      expect(failed!.githubFailedAt! >= c.createdAt).toBe(true);
+      const firstStamp = failed!.githubFailedAt!;
+      const failedAgain = await store.markGithubResult(c.id, { error: "second failure" });
+      expect(failedAgain?.githubError).toBe("second failure");
+      // Refreshed (never moves backwards), and persisted.
+      expect(failedAgain!.githubFailedAt! >= firstStamp).toBe(true);
+      const reloaded = new CommentsStore(file);
+      const stored = (await reloaded.all()).find((x) => x.id === c.id);
+      expect(stored?.githubFailedAt).toBe(failedAgain?.githubFailedAt);
+      const posted = await store.markGithubResult(c.id, {
+        url: "https://github.com/developing-today/code/issues/8586#issuecomment-9",
+      });
+      expect(posted?.githubState).toBe("posted");
+      expect(posted?.githubFailedAt).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("dashCommentHtml failed state (#1210)", () => {
   test("shows age and last error and never promises a retry", () => {
     const html = dashCommentHtml(FAILED_GH);
@@ -101,8 +140,25 @@ describe("dashCommentHtml failed state (#1210)", () => {
     expect(html).toMatch(/posting failed (just now|\d+[mhd] ago)/);
   });
 
+  test("renders the failure's age, not the comment's age (#8586)", () => {
+    // Created 2026-10-30 (FAILED_GH's createdAt), failed just now:
+    // the rendered age must be the failure's, not the comment's.
+    const html = dashCommentHtml({ ...FAILED_GH, githubFailedAt: new Date().toISOString() });
+    expect(html).toContain("posting failed just now");
+    expect(html).not.toMatch(/posting failed \d+d ago/);
+  });
+
+  test("falls back to the creation age for failed records with no failure stamp (#8586)", () => {
+    // FAILED_GH predates the field: no githubFailedAt, so the age
+    // renders from createdAt (2026-10-30) as before.
+    const html = dashCommentHtml(FAILED_GH);
+    expect(html).toMatch(/posting failed \d+d ago/);
+  });
+
   test("a failed comment without a stored error still drops the retry promise", () => {
-    const html = dashCommentHtml(comment({ kind: "github", githubState: "failed", githubRef: "developing-today/code#1210" }));
+    const html = dashCommentHtml(
+      comment({ kind: "github", githubState: "failed", githubRef: "developing-today/code#1210" }),
+    );
     expect(html).toContain("no automatic retry exists");
     expect(html).not.toContain("last error");
     expect(html).not.toContain("will retry");
@@ -159,7 +215,9 @@ describe("CommentsStore githubError persistence (#1210)", () => {
       const reloaded = new CommentsStore(file);
       const stored = (await reloaded.all()).find((x) => x.id === c.id);
       expect(stored?.githubError).toBe("second failure");
-      const posted = await store.markGithubResult(c.id, { url: "https://github.com/developing-today/code/issues/1210#issuecomment-9" });
+      const posted = await store.markGithubResult(c.id, {
+        url: "https://github.com/developing-today/code/issues/1210#issuecomment-9",
+      });
       expect(posted?.githubState).toBe("posted");
       expect(posted?.githubError).toBeUndefined();
       // countsDetailed groups the posted comment as non-actionable.

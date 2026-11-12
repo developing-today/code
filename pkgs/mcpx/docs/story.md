@@ -474,6 +474,31 @@ every name that reaches it.
 Chains are rejected. An alias of an alias is a puzzle, and the error says to
 point at the original.
 
+**Virtual namespaces** assemble one namespace from several servers. A server
+entry with no command, url or  of its own is virtual: its 
+mount tools by qualified name --  -- and the views may draw
+from as many different servers as the namespace needs.
+
+
+
+The rules are the alias rules, widened exactly once. A mount renames, pins and
+hides exactly as an alias view does; the exposed name is the view's key, so
+two servers that both call a tool  collide only if the author gives
+their mounts the same key, which a map cannot hold -- the collision rule is
+that there is none, and the same tool may be mounted twice under two keys. A
+call through a mount is a call to the tool on its home server: the mount's
+pins merge over the caller's arguments first, and the home server's own
+views, policies and process then see the call as if it had been addressed
+there, so history records the home server and the real tool name. The
+mounting namespace's own argument rules, keyed by the qualified name, are
+checked against the merged arguments before the call leaves -- they are
+part of the schema the mount advertises -- and the home server's rules
+apply on the far side as usual. A mount
+target must be a server with a process of its own (an alias of one counts);
+mounting a virtual namespace from another is refused at load, so a call is
+never more than one hop from a real server. Script-backed views may sit
+beside mounts in the same namespace.
+
 2026-09-27T13:00:00-05:00
 
 ## The script contract
@@ -2772,6 +2797,66 @@ carry instead is a description saying so and the MCP annotations
 (`readOnlyHint`, `destructiveHint`) a client can scope on.
 
 2026-09-30T14:30:00-05:00
+
+## Extras on the MCP surface are by design; declared things are already namespaces
+
+```
+id:           serve-extras-by-design
+since:        pre-release
+created:      2026-11-10T16:33:00-06:00
+last-updated: 2026-11-10T16:33:00-06:00
+status:       standard
+tags:         area:mcp, area:parity
+description:  issue #1875's remainder -- adapter, API and recipe tools reach
+              the MCP surface as mcpserver extras. The declarations behind
+              them are first-class namespaces already; the extras are a
+              second, deliberate exposure, not a missing one.
+```
+
+#1875 asks that everything mcpx produces be a first-class namespace. For
+declared adapters, APIs and plugins that is already true, on both assembly
+paths: `augmentConfig` (`internal/cli/plugin.go`) adds every declared
+adapter (`augmentAdapters`, `internal/cli/adapter.go` -- "that is the whole
+of making an adapter first-class"), API (`augmentAPIs`) and plugin to the
+config as a server of its own, and it is wired into the daemon
+(`internal/cli/root.go`) and into the client path a standalone `mcpx serve`
+shims over (`internal/cli/connect.go`). A declared adapter is therefore in
+`mcpx ls`, `types`, `search`, `catalog`, `/v1` and the generated client
+exactly as a configured server is. The premise that serve mode leaves
+declared things visible only in one server's tools/list is stale for those
+three kinds.
+
+What `MCPServer` (`internal/cli/serve.go`) adds as `mcpserver.Extra` --
+adapter tools, API tools, the /v1 operation tools, recipe tools -- is a
+second exposure of the same declarations, and it is by design:
+
+- MCP's tools/list is flat per server. The one server mcpx presents to a
+  host can offer a tool directly, or not at all; there is no namespace
+  level inside a tools/list for the tool to be first-class *at*. A host
+  that wants git as a tool should get git as a tool (the serve.go comment
+  says exactly this); routing the call through a namespace indirection
+  the protocol does not have would be a worse answer.
+- The /v1 extras are mcpx's own daemon API offered back to MCP clients.
+  Making them a namespace would mean mcpx hosting itself as one of its
+  own upstreams -- a recursive server whose pool, lifecycle and error
+  surface would all be fiction. As extras they are what they are: the
+  daemon's operations, one tool apiece.
+- A recipe is a saved script with a typed header, executed on demand; it
+  has no server process to pool, lease or probe. Recipes are first-class
+  on their own surface (`mcpx recipes` to list them, `mcpx recipes run
+  <name>` to execute one -- plain `mcpx run` refuses recipes carrying
+  `@param` holes and directs the caller there), and the recipe
+  extras are the shortest honest path from that surface to an MCP host.
+  A recipe that needs namespace treatment wraps as an adapter
+  declaration, which is first-class by the augment path above.
+
+So the rule, recorded for #1875's reviewer: **extras in serve mode are
+the MCP-surface rendering of declarations that are already namespaces
+where namespaces exist.** Changing this record means changing the code
+that contradicts it in the same pull request, per the decision-records
+rule above.
+
+2026-11-10T16:33:00-06:00
 
 ---
 

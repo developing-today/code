@@ -3,7 +3,8 @@ import { createClient, type Client } from "@libsql/client";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, getItems, getComments, getSyncCursor } from "../src/store";
+import { migrate, getItems, getComments, getSyncCursor, upsertItem } from "../src/store";
+import { fromIssueOrPr } from "../src/projector";
 import { listResource, type GitHubAuth } from "../src/github";
 import { reconcileRepos } from "../src/reconcile";
 
@@ -82,7 +83,7 @@ describe("reconcileRepos against a fake GitHub", () => {
             body: "an issue comment",
             user: { login: "drew" },
             created_at: "2026-10-03T00:00:00Z",
-            updated_at: "2026-10-03T00:00:00Z",
+            updated_at: "2026-10-05T00:00:00Z",
           },
         ]);
       }
@@ -94,7 +95,7 @@ describe("reconcileRepos against a fake GitHub", () => {
             body: "a review comment",
             user: { login: "drew" },
             created_at: "2026-10-04T00:00:00Z",
-            updated_at: "2026-10-04T00:00:00Z",
+            updated_at: "2026-10-06T00:00:00Z",
             path: "src/x.ts",
             line: 3,
           },
@@ -117,12 +118,119 @@ describe("reconcileRepos against a fake GitHub", () => {
     const items = await getItems(db, ["developing-today/code#1", "developing-today/code#2"]);
     expect(items.map((i) => i.number).sort()).toEqual([1, 2]);
     // Both comment collections landed.
-    expect((await getComments(db, ["developing-today/code#1"])).map((c) => c.id)).toEqual(["9001"]);
+    const issueComments = await getComments(db, ["developing-today/code#1"]);
+    expect(issueComments.map((c) => c.id)).toEqual(["9001"]);
+    expect(issueComments[0].source_updated_at).toBe("2026-10-05T00:00:00Z");
+    const reviewComments = await getComments(db, ["developing-today/code#7"]);
+    expect(reviewComments.map((c) => c.id)).toEqual(["9002"]);
+    expect(reviewComments[0].source_updated_at).toBe("2026-10-06T00:00:00Z");
+    const commentStreams = result.streams as { stream: string; cursor: string | null }[];
+    expect(commentStreams.find((s) => s.stream === "issue_comments")?.cursor).toBe("2026-10-05T00:00:00Z");
+    expect(commentStreams.find((s) => s.stream === "review_comments")?.cursor).toBe("2026-10-06T00:00:00Z");
     // The requests used the real collection paths, never the 404 shapes.
     expect(seen.some((u) => u.includes("/issues/comments"))).toBe(true);
     expect(seen.some((u) => u.includes("/pulls/comments"))).toBe(true);
     expect(seen.some((u) => u.includes("/issue_comments"))).toBe(false);
     expect(seen.some((u) => u.includes("api.github.com/https"))).toBe(false);
+  });
+});
+
+describe("reconcileRepos prs stream sources pulls-shaped data (#4528)", () => {
+  // The issues endpoint's PR objects carry no draft/merged/merged_at, so a
+  // prs stream reading them materialized draft=0/merged=0 on first sight
+  // and the #4158 preservation logic pinned those false defaults forever.
+  // The prs stream now reads repos/{repo}/pulls instead.
+  const pullsPr = (repo: string, n: number, over: Record<string, any>) => ({
+    number: n,
+    html_url: `https://github.com/${repo}/pull/${n}`,
+    url: `https://api.github.com/repos/${repo}/pulls/${n}`,
+    title: `pr ${n}`,
+    state: "open",
+    user: { login: "drew" },
+    labels: [],
+    assignees: [],
+    draft: false,
+    merged_at: null,
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: "2026-10-04T00:00:00Z",
+    ...over,
+  });
+
+  const prsFake = (repo: string, pulls: Record<string, any>[]) => {
+    const seen: string[] = [];
+    const fetchFn = (async (url: string) => {
+      seen.push(url);
+      if (url.includes(`/repos/${repo}/pulls?`)) return jsonRes(pulls);
+      // The issues stream still reads the issues endpoint; serve no rows.
+      if (url.includes("/issues?")) return jsonRes([]);
+      if (url.includes("/issues/comments") || url.includes("/pulls/comments")) return jsonRes([]);
+      // Per-PR review enumeration for the reviews stream.
+      if (url.includes("/reviews")) return jsonRes([]);
+      return jsonRes([]);
+    }) as unknown as typeof fetch;
+    return { seen, fetchFn };
+  };
+
+  test("draft-first-sight stores draft=1", async () => {
+    const repo = "developing-today/prs-draft-first-sight";
+    const { seen, fetchFn } = prsFake(repo, [pullsPr(repo, 7, { draft: true })]);
+    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
+    expect(result.ok).toBe(true);
+    const items = await getItems(db, [`${repo}#7`]);
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe("pr");
+    expect(items[0].draft).toBe(1);
+    expect(items[0].merged).toBe(0);
+    expect(items[0].merged_at).toBeNull();
+    // The prs pass read the pulls endpoint, not the issues endpoint.
+    expect(seen.some((u) => u.includes(`/repos/${repo}/pulls?`))).toBe(true);
+  });
+
+  test("merged-first-sight stores merged=1 + merged_at", async () => {
+    const repo = "developing-today/prs-merged-first-sight";
+    const { fetchFn } = prsFake(repo, [pullsPr(repo, 8, { state: "closed", merged_at: "2026-10-03T00:00:00Z" })]);
+    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
+    expect(result.ok).toBe(true);
+    const items = await getItems(db, [`${repo}#8`]);
+    expect(items).toHaveLength(1);
+    expect(items[0].draft).toBe(0);
+    expect(items[0].merged).toBe(1);
+    expect(items[0].merged_at).toBe("2026-10-03T00:00:00Z");
+  });
+
+  test("heal-after-gap: legacy false-default row is corrected on a later pass", async () => {
+    const repo = "developing-today/prs-heal-after-gap";
+    // Seed the row exactly as the old issues-sourced prs stream left it: an
+    // issue-shaped upsert carries no merge fields, so the INSERT
+    // materialized draft=0/merged=0 with no merged_at.
+    await upsertItem(
+      db,
+      fromIssueOrPr(
+        repo,
+        {
+          number: 9,
+          html_url: `https://github.com/${repo}/pull/9`,
+          url: `https://api.github.com/repos/${repo}/issues/9`,
+          title: "pr 9",
+          state: "open",
+          user: { login: "drew" },
+          labels: [],
+          assignees: [],
+          pull_request: { url: `https://api.github.com/repos/${repo}/pulls/9` },
+          created_at: "2026-10-01T00:00:00Z",
+          updated_at: "2026-10-02T00:00:00Z",
+        },
+        "pr",
+      ),
+    );
+    expect((await getItems(db, [`${repo}#9`]))[0].draft).toBe(0);
+    // A later polls pass with pulls truth heals the row.
+    const { fetchFn } = prsFake(repo, [pullsPr(repo, 9, { draft: true })]);
+    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
+    expect(result.ok).toBe(true);
+    const healed = (await getItems(db, [`${repo}#9`]))[0];
+    expect(healed.draft).toBe(1);
+    expect(healed.merged).toBe(0);
   });
 });
 
@@ -157,5 +265,107 @@ describe("reconcileRepos reviews stream per-PR guard (#2745)", () => {
     expect((await getComments(db, [`${repo}#1`])).map((c) => c.id)).toEqual(["101"]);
     expect((await getComments(db, [`${repo}#3`])).map((c) => c.id)).toEqual(["103"]);
     expect(await getSyncCursor(db, repo, "reviews")).toBe("2026-10-06T00:00:00Z");
+  });
+});
+
+describe("wrong-shape list elements (#7009)", () => {
+  test("fromIssueOrPr refuses non-object / bad-number elements with a named error, never a raw TypeError or phantom row", () => {
+    for (const bad of [null, "str", 42, [], {}, { number: 1.5 }, { number: "7" }, { number: undefined }]) {
+      let err: unknown = null;
+      try {
+        fromIssueOrPr("o/r", bad as never, "issue");
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(TypeError);
+      expect((err as Error).message).toContain("refusing to project");
+    }
+  });
+
+  test("reconcile skips bad elements with a count, stores the good ones, and still advances cursors", async () => {
+    const repo = "developing-today/bad-elements";
+    const item = (n: number, at: string) => ({
+      number: n,
+      html_url: `https://github.com/${repo}/issues/${n}`,
+      url: `https://api.github.com/repos/${repo}/issues/${n}`,
+      title: `item ${n}`,
+      state: "open",
+      user: { login: "drew" },
+      labels: [],
+      assignees: [],
+      created_at: "2026-10-01T00:00:00Z",
+      updated_at: at,
+    });
+    const fetchFn = (async (url: string) => {
+      if (url.includes("/issues/comments")) {
+        return jsonRes([
+          null,
+          "junk",
+          {
+            id: 7001,
+            html_url: `https://github.com/${repo}/issues/1#issuecomment-7001`,
+            body: "good comment",
+            user: { login: "drew" },
+            created_at: "2026-10-03T00:00:00Z",
+            updated_at: "2026-10-04T00:00:00Z",
+          },
+        ]);
+      }
+      if (url.includes("/pulls/comments")) return jsonRes([42]);
+      if (url.includes("/pulls/1/reviews")) {
+        return jsonRes([
+          null,
+          {
+            id: 701,
+            body: "ok review",
+            user: { login: "drew" },
+            state: "APPROVED",
+            submitted_at: "2026-10-05T00:00:00Z",
+          },
+        ]);
+      }
+      if (url.includes("/pulls?")) {
+        return jsonRes([item(1, "2026-10-02T00:00:00Z"), null, { title: "no number" }, []]);
+      }
+      if (url.includes("/issues?")) {
+        return jsonRes([item(1, "2026-10-02T00:00:00Z"), "junk", item(2, "2026-10-06T00:00:00Z"), { number: 2.5 }]);
+      }
+      return jsonRes([]);
+    }) as unknown as typeof fetch;
+
+    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
+    expect(result.ok).toBe(true);
+    const streams = result.streams as Record<string, any>[];
+    const byStream = (name: string) => streams.find((s) => s.stream === name)!;
+
+    const issues = byStream("issues");
+    expect(issues.error).toBeUndefined();
+    expect(issues.written).toBe(2);
+    expect(issues.skipped).toBe(2);
+    expect(issues.cursor).toBe("2026-10-06T00:00:00Z");
+    expect((await getItems(db, [`${repo}#1`, `${repo}#2`])).length).toBe(2);
+    expect((await getItems(db, [`${repo}#undefined`])).length).toBe(0);
+
+    const prs = byStream("prs");
+    expect(prs.error).toBeUndefined();
+    expect(prs.written).toBe(1);
+    expect(prs.skipped).toBe(3);
+
+    const issueComments = byStream("issue_comments");
+    expect(issueComments.error).toBeUndefined();
+    expect(issueComments.written).toBe(1);
+    expect(issueComments.skipped).toBe(2);
+    expect((await getComments(db, [`${repo}#1`])).map((c) => c.id)).toContain("7001");
+
+    const reviewComments = byStream("review_comments");
+    expect(reviewComments.error).toBeUndefined();
+    expect(reviewComments.skipped).toBe(1);
+
+    const reviews = byStream("reviews");
+    expect(reviews.error).toBeUndefined();
+    expect(reviews.written).toBe(1);
+    expect(reviews.skipped).toBe(4);
+    expect((await getComments(db, [`${repo}#1`])).map((c) => c.id).sort()).toEqual(["7001", "701"]);
   });
 });

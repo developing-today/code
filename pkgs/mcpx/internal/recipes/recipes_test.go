@@ -2,10 +2,12 @@ package recipes_test
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 )
 
 const stale = `// Close stale issues in a repository.
@@ -156,6 +158,61 @@ func TestMentionsInCommentsAndStringsAreNotPlaceholders(t *testing.T) {
 			}
 			if out != src+"\n" {
 				t.Fatalf("render changed a comment/string mention:\n got %q\nwant %q", out, src+"\n")
+			}
+		})
+	}
+}
+
+func TestRenderValidatesTypedPlaceholderValues(t *testing.T) {
+	tests := []struct {
+		name        string
+		typeOf      recipes.Type
+		value       any
+		want        string
+		wantErrType string
+	}{
+		{name: "number rejects boolean", typeOf: recipes.TypeNumber, value: true, wantErrType: "number"},
+		{name: "number rejects Inf string", typeOf: recipes.TypeNumber, value: "Inf", wantErrType: "number"},
+		{name: "number rejects NaN string", typeOf: recipes.TypeNumber, value: "NaN", wantErrType: "number"},
+		{name: "number rejects hexadecimal float", typeOf: recipes.TypeNumber, value: "0x10p0", wantErrType: "number"},
+		{name: "number rejects separators", typeOf: recipes.TypeNumber, value: "1_000", wantErrType: "number"},
+		{name: "number rejects leading plus", typeOf: recipes.TypeNumber, value: "+3", wantErrType: "number"},
+		{name: "number rejects missing integer", typeOf: recipes.TypeNumber, value: ".5", wantErrType: "number"},
+		{name: "number rejects positive infinity", typeOf: recipes.TypeNumber, value: math.Inf(1), wantErrType: "number"},
+		{name: "number rejects negative infinity", typeOf: recipes.TypeNumber, value: math.Inf(-1), wantErrType: "number"},
+		{name: "number rejects NaN", typeOf: recipes.TypeNumber, value: math.NaN(), wantErrType: "number"},
+		{name: "string rejects number", typeOf: recipes.TypeString, value: 42, wantErrType: "string"},
+		{name: "string rejects boolean", typeOf: recipes.TypeString, value: true, wantErrType: "string"},
+		{name: "string rejects array", typeOf: recipes.TypeString, value: []any{"a"}, wantErrType: "string"},
+		{name: "boolean rejects number", typeOf: recipes.TypeBoolean, value: 1, wantErrType: "boolean"},
+		{name: "integer number control", typeOf: recipes.TypeNumber, value: 3, want: "3"},
+		{name: "float number control", typeOf: recipes.TypeNumber, value: 3.5, want: "3.5"},
+		{name: "JSON integer string control", typeOf: recipes.TypeNumber, value: "3", want: "3"},
+		{name: "JSON decimal string control", typeOf: recipes.TypeNumber, value: "-3.5", want: "-3.5"},
+		{name: "JSON exponent string control", typeOf: recipes.TypeNumber, value: "1e2", want: "1e2"},
+		{name: "string control is quoted", typeOf: recipes.TypeString, value: "hello", want: `"hello"`},
+		{name: "boolean control", typeOf: recipes.TypeBoolean, value: true, want: "true"},
+		{name: "boolean string path stays canonical", typeOf: recipes.TypeBoolean, value: "TRUE", want: "true"},
+		{name: "JSON object control", typeOf: recipes.TypeJSON, value: map[string]any{"ok": true}, want: `{"ok":true}`},
+		{name: "JSON string control stays raw", typeOf: recipes.TypeJSON, value: `{"ok":true}`, want: `{"ok":true}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := "// @param value:" + string(tt.typeOf) + "\nconst result = @value;"
+			r := recipes.Parse("literal", "/tmp/literal.ts", source)
+			out, err := r.Render(map[string]any{"value": tt.value})
+			if tt.wantErrType != "" {
+				if err == nil || !strings.Contains(err.Error(), "value is a "+tt.wantErrType) {
+					t.Fatalf("Render error = %v, want error for %s", err, tt.wantErrType)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			if !strings.Contains(out, "const result = "+tt.want+";") {
+				t.Fatalf("Render output does not contain expected literal %q:\n%s", tt.want, out)
 			}
 		})
 	}
@@ -339,5 +396,216 @@ func TestJSONDefaultsWithBracketsInsideStrings(t *testing.T) {
 		if _, ok := doc.Properties[c.name]["default"]; !ok {
 			t.Errorf("%s default missing from form schema: %v", c.name, doc.Properties[c.name])
 		}
+	}
+}
+
+func TestRenderValidatesAndEncodesDeclaredDefaults(t *testing.T) {
+	cases := []struct {
+		name, typ, def, want string
+		wantErr              bool
+	}{
+		{"invalid number identifier", "number", "banana", "", true},
+		{"unquoted string", "string", "hello", `value: "hello"`, false},
+		{"invalid boolean identifier", "boolean", "yes", "", true},
+		{"number expression", "number", "1+1", "", true},
+		{"number control", "number", "30", "value: 30", false},
+		{"quoted string control", "string", `"hi"`, `value: "hi"`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "// @param value:" + tc.typ + " = " + tc.def + "\nawait demo.run({ value: @value });"
+			r := recipes.Parse("demo", "/tmp/demo.ts", src)
+			out, err := r.Render(nil)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Render accepted invalid %s default %q; output:\n%s", tc.typ, tc.def, out)
+				}
+				if !strings.Contains(err.Error(), "value") || !strings.Contains(err.Error(), tc.typ) {
+					t.Errorf("error %q should name the placeholder and expected type %q", err, tc.typ)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("Render output =\n%s\nwant it to contain %q", out, tc.want)
+			}
+		})
+	}
+}
+
+// Codex review on #2646 (4422039950): a TypeJSON placeholder accepts
+// any JSON value (arrays included), so FormSchema must not declare
+// "object" for it -- with broker-side schema validation (#1954) that
+// declaration refused answers the recipe renders fine.
+func TestFormSchemaJSONPlaceholderAcceptsAnyJSONValue(t *testing.T) {
+	schema := recipes.FormSchema([]recipes.Placeholder{
+		{Name: "items", Type: recipes.TypeJSON, Required: true},
+		{Name: "label", Type: recipes.TypeString, Required: true},
+	})
+	var doc struct {
+		Properties map[string]map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &doc); err != nil {
+		t.Fatalf("FormSchema output does not parse: %v", err)
+	}
+	if _, constrained := doc.Properties["items"]["type"]; constrained {
+		t.Errorf("TypeJSON property carries a type constraint: %v", doc.Properties["items"])
+	}
+	if got := doc.Properties["label"]["type"]; got != "string" {
+		t.Errorf("TypeString property type = %v, want string", got)
+	}
+	compiled, err := schemaval.Compile(schema)
+	if err != nil {
+		t.Fatalf("FormSchema output does not compile: %v", err)
+	}
+	if err := compiled.ValidateJSON([]byte(`{"items": [1, 2], "label": "x"}`)); err != nil {
+		t.Errorf("array answer for a TypeJSON placeholder refused: %v", err)
+	}
+	if err := compiled.ValidateJSON([]byte(`{"items": {"a": 1}, "label": "x"}`)); err != nil {
+		t.Errorf("object answer for a TypeJSON placeholder refused: %v", err)
+	}
+}
+
+// Oracle: the rendered script stays valid in its own language (PR #8317,
+// #1933 slice 2). Render consumes an @param declaration line by keeping
+// it as a comment; a #-style declaration (Python/shell) must keep its #
+// marker -- rewriting it with // produced "//# @param ..." as the first
+// line, which is a syntax error in Python.
+func TestRenderKeepsHashCommentMarkerOnConsumedDeclarations(t *testing.T) {
+	r := recipes.Parse("greet", "/tmp/greet.py", "# @param name:string   who to greet\nprint(\"hello \" + @name)\n")
+	out, err := r.Render(map[string]any{"name": "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, _ := strings.Cut(out, "\n")
+	if !strings.HasPrefix(first, "#") || strings.Contains(first, "//") {
+		t.Errorf("the consumed declaration must stay a # comment, got %q", first)
+	}
+	if !strings.Contains(out, `print("hello " + "world")`) {
+		t.Errorf("the placeholder must be substituted as a JSON literal:\n%s", out)
+	}
+}
+
+// Oracle: shell-safe argument handling (Codex P1 on PR #8317). A
+// shell-backed recipe renders its values as single-quoted shell
+// words, inside which the shell performs no command substitution:
+// a schema-valid $(...) argument stays data, and an embedded single
+// quote cannot break out of the word.
+func TestRenderShellValuesStayData(t *testing.T) {
+	r := recipes.Parse("greet", "/tmp/greet.sh", "#!/bin/sh\n# @param name:string   who to greet\nprintf 'hello %s' @name\n")
+	out, err := r.Render(map[string]any{"name": "$(touch /tmp/pwned)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "printf 'hello %s' '$(touch /tmp/pwned)'") {
+		t.Errorf("shell value must render as one single-quoted word:\n%s", out)
+	}
+	out, err = r.Render(map[string]any{"name": "o'clock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "'o'\\''clock'") {
+		t.Errorf("an embedded quote must be closed, escaped and reopened:\n%s", out)
+	}
+}
+
+// Oracle: Python-compatible literals (Codex P2 on PR #8317). A
+// Python recipe renders booleans and null with Python's own
+// spellings, including inside JSON-typed values, and an omitted
+// optional parameter is None, not the JavaScript undefined the
+// Python runtime would reject with a NameError.
+func TestRenderPythonSpellsPythonLiterals(t *testing.T) {
+	src := "# @param enabled:boolean\n# @param cfg:json\n# @param note:string?\nprint(@enabled, @cfg, @note)\n"
+	r := recipes.Parse("check", "/tmp/check.py", src)
+	out, err := r.Render(map[string]any{
+		"enabled": true,
+		"cfg":     map[string]any{"a": true, "b": nil, "n": []any{false}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "print(True, {\"a\": True, \"b\": None, \"n\": [False]}, None)"
+	if !strings.Contains(out, want) {
+		t.Errorf("rendered = %q, want it to contain %q", out, want)
+	}
+}
+
+// The JavaScript spelling is untouched for a script with no Python
+// or shell evidence: the language-aware rendering must not change
+// what existing TypeScript recipes produce.
+func TestRenderTypeScriptKeepsJSONLiterals(t *testing.T) {
+	r := recipes.Parse("greet", "/tmp/greet.ts", "// @param name:string\nconsole.log(@name)\n")
+	out, err := r.Render(map[string]any{"name": "$(touch /tmp/pwned)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `console.log("$(touch /tmp/pwned)")`) {
+		t.Errorf("a TypeScript recipe keeps its JSON string literal:\n%s", out)
+	}
+}
+
+func TestHashCommentMentionsAreNotPlaceholdersInPythonOrShell(t *testing.T) {
+	// PR #8317 Codex P2: Parse discovered references with the
+	// JavaScript scanner even for the #-comment languages, so a
+	// harmless comment minted a required argument the (already
+	// language-aware) renderer would never substitute.
+	for _, tc := range []struct{ path, src string }{
+		{"/tmp/x.py", "# Contact @alice for details\nprint(@who)\n"},
+		{"/tmp/x.sh", "# Contact @alice for details\necho @who\n"},
+	} {
+		r := recipes.Parse("x", tc.path, tc.src)
+		if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+			t.Errorf("%s: placeholders = %+v, want only the code reference @who", tc.path, r.Placeholders)
+		}
+	}
+}
+
+// Oracle: Python decorators are not placeholders (Codex P2 on
+// PR #8317). An ordinary @dataclass / @staticmethod at the start of
+// a line is language syntax: discovery must not mint it as a
+// required argument, and rendering must not replace it with a
+// literal.
+func TestPythonDecoratorsAreNotPlaceholders(t *testing.T) {
+	src := "# @param who:string\nfrom dataclasses import dataclass\n\n@dataclass\nclass Greeter:\n    @staticmethod\n    def greet():\n        return @who\n"
+	r := recipes.Parse("greeter", "/tmp/greeter.py", src)
+	if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+		t.Fatalf("placeholders = %+v, want only the declared @who", r.Placeholders)
+	}
+	out, err := r.Render(map[string]any{"who": "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"@dataclass", "@staticmethod", `"world"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered output must contain %q:\n%s", want, out)
+		}
+	}
+}
+
+// Oracle: a Python placeholder inside a continued expression is not
+// a decorator (Codex P2 on PR #8317, seventh round). The decorator
+// exemption covers an `@name` at a statement boundary; a leading
+// `@who` inside an unclosed bracket is an argument of the continued
+// call, and leaving it unsubstituted made the rendered script a
+// SyntaxError at execution. The same holds after a trailing
+// backslash. A real decorator in the same body still renders
+// untouched.
+func TestPythonPlaceholderInsideContinuedExpressionIsSubstituted(t *testing.T) {
+	src := "# @param who:string\nfrom dataclasses import dataclass\n\n@dataclass\nclass Greeter:\n    pass\n\nprint(\n    @who\n)\njoined = str(\n    @who)\n"
+	r := recipes.Parse("greeter", "/tmp/greeter.py", src)
+	out, err := r.Render(map[string]any{"who": "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "@who") {
+		t.Errorf("a placeholder inside a continued expression must substitute:\n%s", out)
+	}
+	if !strings.Contains(out, "@dataclass") {
+		t.Errorf("a decorator at a statement boundary must stay untouched:\n%s", out)
+	}
+	if n := strings.Count(out, `"world"`); n != 2 {
+		t.Errorf("both continued placeholders must render the value, found %d:\n%s", n, out)
 	}
 }

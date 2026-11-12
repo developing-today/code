@@ -45,17 +45,47 @@
 #   3. Verify 8484, 7777, and 6056 all answer with the pre-switch
 #      data intact.
 #
-# Differences from compose, deliberately accepted: compose
-# healthchecks have no oci-containers equivalent.
+# Readiness (code#8940): compose healthchecks have no oci-containers
+# equivalent, and docker-level --health-cmd is not used either - the
+# pinned images do not guarantee a probe binary inside the container,
+# and ready-for-agent is not a container at all. Instead the
+# pm-apps-health probe below replaces the compose healthchecks from
+# the host side: a systemd oneshot plus a 1-minute timer curls each
+# app's loopback endpoint (Grist 8484, Pad 7777, ready-for-agent
+# 6056); an app still dark past its 180-second start-period/grace
+# fails the unit, which is the systemd-visible unhealthy surface
+# (the same convention as opencode-watchdog). The probe is
+# report-only - it never restarts anything, so readiness can never
+# destroy in-progress work; process failures are already restarted
+# by the oci-containers units themselves.
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 let
   cfg = config.services.pm-apps;
   home = "/home/${cfg.user}";
   pmDir = "${home}/pm-stack";
+
+  # The readiness probe (code#8940): see the header note and
+  # pm-apps-health.sh for the semantics. The grace is the compose
+  # healthchecks' start-period analogue: an app may be dark this
+  # long after first sighting before the probe calls it unhealthy.
+  healthGraceSeconds = 180;
+  healthApps = "grist=http://127.0.0.1:8484/ pad=http://127.0.0.1:7777/ ready-for-agent=http://127.0.0.1:6056/";
+  pmAppsHealth = pkgs.writeShellScript "pm-apps-health" (
+    lib.replaceStrings
+      [ "@curl@" "@stateDir@" "@graceSeconds@" "@apps@" ]
+      [
+        "${pkgs.curl}/bin/curl"
+        "/var/lib/pm-apps-health"
+        (toString healthGraceSeconds)
+        healthApps
+      ]
+      (builtins.readFile ./pm-apps-health.sh)
+  );
 in
 {
   options.services.pm-apps = {
@@ -70,7 +100,7 @@ in
     tailnetAddress = lib.mkOption {
       type = lib.types.str;
       default = "100.99.113.103";
-      description = "The host's tailnet address; Grist and Pad bind it alongside loopback, as the compose files did.";
+      description = "The host's tailnet address; Grist and Pad bind it alongside loopback, as the compose files did, and the ready-for-agent tailnet socket forwards it to the loopback-only app (#1181).";
     };
   };
 
@@ -113,6 +143,29 @@ in
       };
     };
 
+    systemd.services.pm-apps-health = {
+      description = "PM app readiness probe - fails while any PM app stays dark past its grace (code#8940)";
+      after = [
+        "docker-pm-grist.service"
+        "docker-pm-pad.service"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pmAppsHealth}";
+        StateDirectory = "pm-apps-health";
+      };
+    };
+
+    systemd.timers.pm-apps-health = {
+      description = "Run the PM app readiness probe every minute (code#8940)";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "2min";
+        OnUnitActiveSec = "1min";
+        Unit = "pm-apps-health.service";
+      };
+    };
+
     home-manager.users.${cfg.user} = {
       systemd.user.services.ready-for-agent = {
         Unit = {
@@ -127,14 +180,44 @@ in
           ];
           # The binary is installed by pm-stack/ready-for-agent/install.sh;
           # state (SQLite) lives in ~/.local/share/ready-for-agent/ by
-          # upstream default. Bare --host binds all interfaces — Drew's
-          # 2026-10-25 call (LAN/tailnet fine; no public route exists).
-          ExecStart = "${home}/.local/bin/ready-for-agent start --no-open --host";
+          # upstream default. No --host flag: upstream's default bind is
+          # loopback only. The all-interfaces bind (bare --host) was
+          # retired by #1181 — it also claimed any future WAN-facing
+          # interface, broader than the stack's access model (loopback +
+          # tailnet; public only behind a password). Tailnet access is
+          # restored by the ready-for-agent-tailnet socket below, which
+          # forwards the tailnet address to the loopback listener.
+          ExecStart = "${home}/.local/bin/ready-for-agent start --no-open";
           Restart = "on-failure";
           RestartSec = 10;
         };
 
         Install.WantedBy = [ "default.target" ];
+      };
+
+      # Tailnet entry point for ready-for-agent (#1181): the app itself
+      # binds loopback only (single-address --host upstream), so the
+      # tailnet address is served by a socket-activated systemd proxy
+      # forwarding to 127.0.0.1:6056 — the same loopback + tailnet scope
+      # Grist and Pad get from their dual port publishes.
+      systemd.user.sockets.ready-for-agent-tailnet = {
+        Socket = {
+          ListenStream = "${cfg.tailnetAddress}:6056";
+        };
+
+        Install.WantedBy = [ "sockets.target" ];
+      };
+
+      systemd.user.services.ready-for-agent-tailnet = {
+        Unit = {
+          Description = "ready-for-agent tailnet forward (socket-activated proxy to loopback)";
+          Requires = [ "ready-for-agent.service" ];
+          After = [ "ready-for-agent.service" ];
+        };
+
+        Service = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:6056";
+        };
       };
     };
   };

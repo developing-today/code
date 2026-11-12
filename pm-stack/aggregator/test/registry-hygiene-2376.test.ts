@@ -17,6 +17,10 @@ function rec(partial: Partial<SessionRecord> & { id: string }): SessionRecord {
     agentLabel: "Muse",
     parentId: null,
     status: "succeeded",
+    // #4284: SessionRecord.taskRefs is required, so the shared minimal
+    // fixture carries it (coordinated with the #3525 validator work, which
+    // owns the remaining required fields).
+    taskRefs: [],
     ...partial,
   } as SessionRecord;
 }
@@ -37,7 +41,19 @@ const older = rec({
 describe("isSessionRecord timestamp hygiene (#2376)", () => {
   test("accepts string or absent timestamps", () => {
     expect(isSessionRecord(valid)).toBe(true);
-    expect(isSessionRecord({ id: "a", source: "s", label: "l" })).toBe(true);
+    // #3525: the minimal fixture now carries the required status/agentId/
+    // agentLabel fields — a status-less record is rejected by the gate.
+    expect(
+      isSessionRecord({
+        id: "a",
+        source: "s",
+        label: "l",
+        status: "succeeded",
+        agentId: "claude-code",
+        agentLabel: "Muse",
+        taskRefs: [],
+      }),
+    ).toBe(true);
     expect(isSessionRecord(older)).toBe(true);
   });
 
@@ -63,7 +79,15 @@ describe("poisoned records cannot reach the mergeRecords sort (#2376)", () => {
       { id: "ses_poison_num", source: "claude-code", label: "Poison", lastSeenAt: 1730000000 },
       { id: "ses_poison_bool", source: "claude-code", label: "Poison", lastSeenAt: true },
       older,
-      { id: "ses_no_ts", source: "claude-code", label: "No timestamps" },
+      {
+        id: "ses_no_ts",
+        source: "claude-code",
+        label: "No timestamps",
+        status: "succeeded",
+        agentId: "claude-code",
+        agentLabel: "Muse",
+        taskRefs: [],
+      },
     ];
     const admitted = raw.filter(isSessionRecord);
     expect(admitted.map((r) => r.id)).toEqual(["ses_valid", "ses_older", "ses_no_ts"]);

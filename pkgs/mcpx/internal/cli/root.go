@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -87,11 +86,11 @@ func parseFlags(a *App, fs *flag.FlagSet, args []string) error {
 		fs.Usage = func() {
 			if a != nil {
 				if text, herr := a.helpText(cmd); herr == nil {
-					fmt.Fprint(fs.Output(), text)
+					_, _ = fmt.Fprint(fs.Output(), text)
 					return
 				}
 			}
-			fmt.Fprintf(fs.Output(), "mcpx %s\n\n  run `mcpx help %s` for this command's help\n",
+			_, _ = fmt.Fprintf(fs.Output(), "mcpx %s\n\n  run `mcpx help %s` for this command's help\n",
 				fs.Name(), firstWord(fs.Name()))
 		}
 	}
@@ -268,7 +267,7 @@ var processInstance struct {
 func (a *App) InstanceID() string {
 	processInstance.once.Do(func() {
 		b := make([]byte, 16)
-		if _, err := rand.Read(b); err == nil {
+		if _, err := RandSource.Read(b); err == nil {
 			processInstance.id = hex.EncodeToString(b)
 		} else {
 			processInstance.id = fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())
@@ -349,7 +348,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 			sink = nil
 		} else {
 			writer = writer.WithFile(sink, slog.LevelDebug)
-			defer sink.Close()
+			defer func() { _ = sink.Close() }()
 		}
 	}
 	writer = writer.WithBase(map[string]any{logging.KeyTrace: string(daemonTrace)})
@@ -475,8 +474,16 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 func (a *App) CmdMan(ctx context.Context, args []string) error {
 	fs := newFlagSet("man")
 	install := fs.String("install", "", "write the page into this directory as man1/mcpx.1")
+	format := fs.String("format", "roff", "output format: roff (the man page) or markdown (the generated reference tree)")
+	out := fs.String("o", "", "write the markdown reference tree into this directory (with --format markdown)")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
+	}
+	if *format == "markdown" {
+		return a.writeMarkdownReference(*out)
+	}
+	if *format != "roff" {
+		return fmt.Errorf("unknown --format %q: roff or markdown", *format)
 	}
 	page := ManPage(a.Version)
 	if *install == "" {
@@ -694,22 +701,22 @@ func (a *App) configSources(cfg *config.Config) error {
 	if len(out.Presets) > 0 {
 		fmt.Println()
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "SETTING\tVALUE\tFROM PRESET")
+		_, _ = fmt.Fprintln(tw, "SETTING\tVALUE\tFROM PRESET")
 		for _, r := range out.Presets {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Setting, r.Value, r.From)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Setting, r.Value, r.From)
 		}
-		tw.Flush()
+		_ = tw.Flush()
 	}
 	if len(out.Servers) == 0 {
 		return nil
 	}
 	fmt.Println()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SERVER\tDEFINED IN")
+	_, _ = fmt.Fprintln(tw, "SERVER\tDEFINED IN")
 	for _, r := range out.Servers {
-		fmt.Fprintf(tw, "%s\t%s\n", r.Server, r.From)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\n", r.Server, r.From)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 

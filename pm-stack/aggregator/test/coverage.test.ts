@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,7 +7,11 @@ import {
   CoverageSnapshotStore,
   diffCoverage,
   isRepoCensus,
+  isValidAnchorAt,
   nextCoverageSnapshot,
+  staleIssueSearchQuery,
+  staleIssueState,
+  STALE_ISSUE_CENSUS_STALE_MS,
   type CoverageReport,
   type CoverageSnapshotFile,
   type RepoCensus,
@@ -70,6 +74,114 @@ describe("isRepoCensus", () => {
     }
   });
 
+  test("accepts null counts: the partial-failure row #3992 emits (#8193)", () => {
+    // Oracle: the RepoCensus type itself - each count is a non-negative
+    // integer or null ("unavailable, not zero").
+    expect(isRepoCensus({ repo: "a/b", openIssues: null, gateNow: null, gateNext: null })).toBe(true);
+    expect(isRepoCensus({ repo: "a/b", openIssues: null, gateNow: 3, gateNext: 2 })).toBe(true);
+    expect(isRepoCensus({ repo: "a/b", openIssues: 10, gateNow: null, gateNext: null })).toBe(true);
+    expect(isRepoCensus({ repo: "a/b", openIssues: 10, gateNow: 3, gateNext: null })).toBe(true);
+    // The stale-issue fields already treat a failed query this way.
+    expect(
+      isRepoCensus({
+        repo: "a/b",
+        openIssues: null,
+        gateNow: null,
+        gateNext: null,
+        staleOpenIssues: 4,
+        staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+      }),
+    ).toBe(true);
+  });
+
+  test("still rejects impossible rows when nulls are in play (#8193)", () => {
+    for (const counts of [
+      { openIssues: null, gateNow: -1, gateNext: 0 },
+      { openIssues: null, gateNow: 0, gateNext: 1.5 },
+      { openIssues: -1, gateNow: null, gateNext: null },
+      { openIssues: "10", gateNow: null, gateNext: null },
+      { openIssues: null, gateNow: true, gateNext: null },
+      { openIssues: 5, gateNow: 6, gateNext: null },
+      { openIssues: 5, gateNow: null, gateNext: 6 },
+    ]) {
+      expect(isRepoCensus({ repo: "a/b", ...counts })).toBe(false);
+    }
+  });
+
+  test("agrees with an independent acceptance oracle on generated rows (#8193 Codex P1)", () => {
+    // Oracle: the RepoCensus contract restated here independently of
+    // the implementation - each count is a non-negative integer or
+    // null; the gate-vs-total ordering binds only when both sides are
+    // numbers; the stale fields follow their pre-existing rules.
+    const countOk = (v: unknown) => v === null || (typeof v === "number" && Number.isInteger(v) && v >= 0);
+    const oracle = (row: Record<string, unknown>): boolean => {
+      if (row.repo !== "a/b") return false;
+      if (!countOk(row.openIssues) || !countOk(row.gateNow) || !countOk(row.gateNext)) return false;
+      const le = (gate: unknown, total: unknown) =>
+        gate === null || total === null || (gate as number) <= (total as number);
+      if (!le(row.gateNow, row.openIssues) || !le(row.gateNext, row.openIssues)) return false;
+      const stale = row.staleOpenIssues;
+      if (!(stale === undefined || countOk(stale))) return false;
+      const at = row.staleIssuesCollectedAt;
+      if (!(at === undefined || at === null || (typeof at === "string" && Number.isFinite(Date.parse(at)))))
+        return false;
+      const err = row.staleIssuesError;
+      if (!(err === undefined || err === null || typeof err === "string")) return false;
+      return true;
+    };
+    // Deterministic LCG so the generated cases are reproducible.
+    let seed = 8193;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
+    const pick = <T>(xs: readonly T[]): T => xs[next() % xs.length];
+    const counts: unknown[] = [
+      null,
+      0,
+      1,
+      2,
+      5,
+      10,
+      999,
+      -1,
+      -100,
+      1.5,
+      0.5,
+      "3",
+      "0",
+      "",
+      true,
+      false,
+      undefined,
+      NaN,
+      Infinity,
+      [],
+      {},
+    ];
+    const staleCounts: unknown[] = [undefined, null, 0, 4, 90, -1, 1.5, "4", true];
+    const stamps: unknown[] = [
+      undefined,
+      null,
+      "2026-11-01T11:59:00.000Z",
+      "2025-02-28T00:00:00Z",
+      "not-a-date",
+      7,
+      {},
+    ];
+    const errors: unknown[] = [undefined, null, "search failed", "", 7, false, []];
+    const repos: unknown[] = ["a/b", "a/b", "a/b", "ab", "", "a/", "/b", "a/b/c", 7, null];
+    for (let i = 0; i < 900; i++) {
+      const row: Record<string, unknown> = {
+        repo: pick(repos),
+        openIssues: pick(counts),
+        gateNow: pick(counts),
+        gateNext: pick(counts),
+      };
+      if (next() % 2) row.staleOpenIssues = pick(staleCounts);
+      if (next() % 2) row.staleIssuesCollectedAt = pick(stamps);
+      if (next() % 2) row.staleIssuesError = pick(errors);
+      expect(isRepoCensus(row)).toBe(oracle(row));
+    }
+  });
+
   test("requires exactly one valid owner/name repository ref", () => {
     for (const repo of [
       "",
@@ -96,6 +208,28 @@ describe("coverageFromFeed duplicate census rows", () => {
         ],
       }),
     ).toBeNull();
+  });
+});
+
+describe("coverageFromFeed null census rows (#8193)", () => {
+  test("a null-count row survives the feed gate into the coverage report", () => {
+    const rows = coverageFromFeed({
+      coverage: [
+        { repo: "a/b", openIssues: null, gateNow: null, gateNext: null, staleOpenIssues: 4 },
+        { repo: "c/d", openIssues: 5, gateNow: 1, gateNext: 1 },
+      ],
+    });
+    // The null-count row passes the feed gate with its counts still
+    // null - not silently dropped, not zero-filled.
+    expect(rows?.map((r) => r.repo)).toEqual(["a/b", "c/d"]);
+    expect(rows?.[0]).toMatchObject({ openIssues: null, gateNow: null, gateNext: null, staleOpenIssues: 4 });
+    // And it reaches the coverage report as unavailable counts.
+    const report = computeCoverage(rows ?? [], null, NOW);
+    const ab = report.repos.find((r) => r.repo === "a/b");
+    expect(ab?.openIssues).toBeNull();
+    expect(ab?.gateNow).toBeNull();
+    expect(ab?.gateNext).toBeNull();
+    expect(ab?.staleOpenIssues).toBe(4);
   });
 });
 
@@ -154,6 +288,9 @@ describe("snapshot rotation + delta", () => {
         poolItems: 10,
         poolUnsetStatus: 3,
         poolUnsetArea: 4,
+        staleOpenIssues: 5,
+        staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
+        staleIssuesError: null,
       },
     ],
   });
@@ -186,6 +323,110 @@ describe("snapshot rotation + delta", () => {
   });
 });
 
+describe("snapshot rotation — poisoned anchorAt (#5196)", () => {
+  const mk = (at: string, codeOpen: number | null): CoverageReport => ({
+    generatedAt: at,
+    repos: [
+      {
+        repo: "developing-today/code",
+        openIssues: codeOpen,
+        gateNow: 1,
+        gateNext: 2,
+        poolItems: 10,
+        poolUnsetStatus: 3,
+        poolUnsetArea: 4,
+      },
+    ],
+  });
+
+  test("a garbage anchorAt falls back to current.generatedAt and rotation fires on schedule", () => {
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      current: mk("2026-10-01T00:00:00Z", 90),
+      weekly: mk("2026-10-01T00:00:00Z", 90),
+      anchorAt: "not-a-date",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
+    expect(snap.baseline?.generatedAt).toBe("2026-10-01T00:00:00Z");
+    expect(snap.anchorAt).toBe("2026-11-01T12:00:00.000Z");
+  });
+
+  test("an impossible anchorAt (2026-02-30) is treated like an unparseable one", () => {
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      current: mk("2026-10-01T00:00:00Z", 90),
+      weekly: mk("2026-10-01T00:00:00Z", 90),
+      anchorAt: "2026-02-30T00:00:00Z",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
+    expect(snap.baseline?.generatedAt).toBe("2026-10-01T00:00:00Z");
+    expect(snap.anchorAt).toBe("2026-11-01T12:00:00.000Z");
+  });
+
+  test("the store reads a poisoned-anchor file as absent and a well-formed one as itself", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "coverage-anchor-"));
+    try {
+      const file = join(dir, "coverage-snapshot.json");
+      const store = new CoverageSnapshotStore(file);
+      const good: CoverageSnapshotFile = {
+        baseline: null,
+        current: mk("2026-10-01T00:00:00Z", 90),
+        anchorAt: "2026-10-01T00:00:00Z",
+      };
+      await store.write(good);
+      expect(await store.read()).toEqual(good);
+      await store.write({ ...good, anchorAt: "not-a-date" });
+      expect(await store.read()).toBeNull();
+      await store.write({ ...good, anchorAt: "2026-02-30T00:00:00Z" });
+      expect(await store.read()).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the fallback anchor rotates a week later instead of freezing", () => {
+    // The freeze bug was one week downstream: main kept returning the
+    // poisoned anchor, so no later read could ever cross the week. The
+    // fallback must be a real date that the NEXT read rotates from.
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      current: mk("2026-10-31T00:00:00Z", 90),
+      weekly: mk("2026-10-24T00:00:00Z", 80),
+      anchorAt: "2026-02-30T00:00:00Z",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
+    expect(snap.anchorAt).toBe("2026-10-31T00:00:00Z");
+    expect(snap.baseline).toBeNull();
+    const aWeekLater = new Date("2026-11-08T00:00:00Z");
+    const rotated = nextCoverageSnapshot(snap, mk("2026-11-08T00:00:00Z", 120), aWeekLater);
+    expect(rotated.anchorAt).toBe("2026-11-08T00:00:00.000Z");
+    expect(rotated.baseline?.generatedAt).toBe("2026-10-24T00:00:00Z");
+  });
+
+  test("isValidAnchorAt agrees with an independent calendar oracle on generated dates", () => {
+    // Oracle: plain leap-year + days-in-month arithmetic, written here
+    // independently of the implementation Date round-trip (#5196 Codex
+    // P1: parser invariants get property tests, not picked examples).
+    const isLeap = (y: number) => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+    const daysInMonth = (y: number, m: number) =>
+      [31, isLeap(y) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
+    // Deterministic LCG so the generated cases are reproducible.
+    let seed = 5196;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    for (let i = 0; i < 600; i++) {
+      const year = 1900 + (next() % 400);
+      const month = 1 + (next() % 14); // 13-14: invalid months
+      const day = next() % 34; // 0 and 32-33: invalid days
+      const stamp = year + "-" + pad(month) + "-" + pad(day) + "T00:00:00Z";
+      const expected = month <= 12 && day >= 1 && day <= daysInMonth(year, month);
+      expect(isValidAnchorAt(stamp)).toBe(expected);
+    }
+    // Non-string and unparseable shapes never validate.
+    for (const junk of ["", "not-a-date", null, undefined, 0, {}]) expect(isValidAnchorAt(junk)).toBe(false);
+  });
+});
+
 describe("computeCoverage — pool unavailable (PR #3309 Codex)", () => {
   test("a null pool renders pool fields as null, never fake zeros, while census counts stay real", () => {
     const report = computeCoverage(census, null, NOW);
@@ -207,6 +448,51 @@ describe("computeCoverage — pool unavailable (PR #3309 Codex)", () => {
   });
 });
 
+describe("stale open-issue census", () => {
+  test("query uses a strict 90-day cutoff and excludes pull requests", () => {
+    expect(staleIssueSearchQuery("a/b", new Date("2026-11-01T00:00:00Z"))).toBe(
+      "repo:a/b is:issue is:open updated:<2026-08-03T00:00:00.000Z",
+    );
+  });
+
+  test("freshness turns stale only after seven full days", () => {
+    const repo = {
+      staleOpenIssues: 7,
+      staleIssuesCollectedAt: "2026-10-25T12:00:00.000Z",
+      staleIssuesError: null,
+    };
+    expect(staleIssueState(repo, new Date(Date.parse(repo.staleIssuesCollectedAt) + STALE_ISSUE_CENSUS_STALE_MS))).toBe(
+      "current",
+    );
+    expect(
+      staleIssueState(repo, new Date(Date.parse(repo.staleIssuesCollectedAt) + STALE_ISSUE_CENSUS_STALE_MS + 1)),
+    ).toBe("stale");
+    expect(staleIssueState({ ...repo, staleOpenIssues: null, staleIssuesError: "search failed" }, NOW)).toBe("error");
+    expect(staleIssueState({ ...repo, staleOpenIssues: null, staleIssuesCollectedAt: null }, NOW)).toBe("unavailable");
+  });
+
+  test("census rows carry the count and actual collection timestamp without treating missing values as zero", () => {
+    const row: RepoCensus = {
+      repo: "developing-today/code",
+      openIssues: 100,
+      gateNow: 2,
+      gateNext: 3,
+      staleOpenIssues: 12,
+      staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+    };
+    expect(isRepoCensus(row)).toBe(true);
+    const report = computeCoverage([row], null, NOW);
+    expect(report.repos.find((r) => r.repo === row.repo)).toMatchObject({
+      staleOpenIssues: 12,
+      staleIssuesCollectedAt: row.staleIssuesCollectedAt,
+      staleIssuesError: null,
+    });
+    // Repos with no census row do not appear (union of census + pool, #1220).
+    expect(report.repos.map((r) => r.repo)).toEqual(["developing-today/code"]);
+    expect(isRepoCensus({ ...row, staleOpenIssues: 1.5 })).toBe(false);
+  });
+});
+
 describe("snapshot rotation anchor (PR #3309 Codex)", () => {
   const mk = (at: string, codeOpen: number | null): CoverageReport => ({
     generatedAt: at,
@@ -219,6 +505,9 @@ describe("snapshot rotation anchor (PR #3309 Codex)", () => {
         poolItems: 10,
         poolUnsetStatus: 3,
         poolUnsetArea: 4,
+        staleOpenIssues: 5,
+        staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
+        staleIssuesError: null,
       },
     ],
   });
@@ -304,6 +593,9 @@ describe("CoverageSnapshotStore writes (PR #3309 Codex)", () => {
               poolItems: 10,
               poolUnsetStatus: 3,
               poolUnsetArea: 4,
+              staleOpenIssues: 5,
+              staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
+              staleIssuesError: null,
             },
           ],
         },
@@ -317,5 +609,75 @@ describe("CoverageSnapshotStore writes (PR #3309 Codex)", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+describe("CoverageSnapshotStore reads (#4140)", () => {
+  const row = {
+    repo: "developing-today/code",
+    openIssues: 10,
+    gateNow: 1,
+    gateNext: 2,
+    poolItems: 3,
+    poolUnsetStatus: 1,
+    poolUnsetArea: 0,
+  };
+  const report = { generatedAt: "2026-11-01T00:00:00Z", repos: [row] };
+  const goodFile = { baseline: report, current: report, weekly: report, anchorAt: "2026-11-01T00:00:00Z" };
+
+  async function readRaw(raw: unknown): Promise<CoverageSnapshotFile | null> {
+    const dir = await mkdtemp(join(tmpdir(), "coverage-store-read-"));
+    try {
+      const file = join(dir, "coverage-snapshot.json");
+      await writeFile(file, typeof raw === "string" ? raw : JSON.stringify(raw), "utf8");
+      return await new CoverageSnapshotStore(file).read();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("a well-formed file reads back; pre-weekly/pre-anchor files keep their fallbacks", async () => {
+    expect(await readRaw(goodFile)).toEqual(goodFile);
+    const legacy = { baseline: null, current: report };
+    expect(await readRaw(legacy)).toEqual(legacy);
+  });
+
+  test("a malformed baseline or weekly reads as absent", async () => {
+    expect(await readRaw({ ...goodFile, baseline: "junk" })).toBeNull();
+    expect(await readRaw({ ...goodFile, baseline: { generatedAt: "2026-11-01T00:00:00Z" } })).toBeNull();
+    expect(await readRaw({ ...goodFile, baseline: { generatedAt: "2026-11-01T00:00:00Z", repos: "nope" } })).toBeNull();
+    expect(await readRaw({ ...goodFile, weekly: "junk" })).toBeNull();
+  });
+
+  test("garbage row field types read as absent, in any report slot", async () => {
+    const badRow = { ...row, openIssues: "ten" };
+    const badReport = { generatedAt: "2026-11-01T00:00:00Z", repos: [badRow] };
+    expect(await readRaw({ ...goodFile, current: badReport })).toBeNull();
+    expect(await readRaw({ ...goodFile, baseline: badReport })).toBeNull();
+    expect(await readRaw("{not json")).toBeNull();
+  });
+
+  test("a present-but-unusable anchorAt reads as absent under the whole-file gate; absent stays legacy-valid (#5196)", async () => {
+    // Garbage and impossible dates are corruption, not a silent fallback:
+    // the whole file reads as absent, so the poisoned anchor is never
+    // re-persisted on a panel read and rotation cannot freeze on it.
+    expect(await readRaw({ ...goodFile, anchorAt: "not-a-date" })).toBeNull();
+    expect(await readRaw({ ...goodFile, anchorAt: "2026-02-30T00:00:00Z" })).toBeNull();
+    expect(await readRaw({ ...goodFile, anchorAt: "" })).toBeNull();
+    expect(await readRaw({ ...goodFile, anchorAt: 1234 })).toBeNull();
+    // Files written before anchorAt existed keep their fallback.
+    const preAnchor = { baseline: null, current: report, weekly: report };
+    expect(await readRaw(preAnchor)).toEqual(preAnchor);
+  });
+});
+
+describe("isValidAnchorAt (#5196)", () => {
+  test("real timestamps pass; junk, impossible dates and non-strings fail", () => {
+    expect(isValidAnchorAt("2026-11-01T00:00:00Z")).toBe(true);
+    expect(isValidAnchorAt("2026-11-01")).toBe(true);
+    expect(isValidAnchorAt("")).toBe(false);
+    expect(isValidAnchorAt("not-a-date")).toBe(false);
+    expect(isValidAnchorAt("2026-02-30T00:00:00Z")).toBe(false);
+    expect(isValidAnchorAt(undefined)).toBe(false);
+    expect(isValidAnchorAt(1234)).toBe(false);
   });
 });

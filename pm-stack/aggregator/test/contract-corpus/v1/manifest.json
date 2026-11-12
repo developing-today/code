@@ -1,0 +1,57 @@
+{
+  "contractVersion": 1,
+  "corpus": "publisher -> collector -> aggregator shared contract corpus (#1176)",
+  "capturedAt": "2026-11-03",
+  "notes": [
+    "The section captures were read from a real collector-published fleet-feed.json on 2026-11-03, then scrubbed before check-in; no raw feed is stored.",
+    "- orchestration.json mirrors the orchestration-pass run orch-2026-10-27T03:14:56Z, captured in PR #1244 (#1110: provenance as an OBJECT { sources, runId }); text and refs have been scrubbed.",
+    "- quota.json is a scrubbed QuotaView captured from the real fleet feed; provider/pool names and usage measurements are replaced with deterministic examples.",
+    "- dns.json is a scrubbed DnsSection captured from the real fleet feed; domains and editorial values are replaced, while the real status variants and null semantics remain.",
+    "- registry.json holds scrubbed SessionRecords captured from the real fleet feed; ids, labels, timestamps, model names, and task refs are synthetic.",
+    "- projects.json holds scrubbed ProjectPoolItems captured from the real fleet feed; ids, URLs, refs, titles, labels, author, and timestamps are synthetic. The epic/child relation is retained with example refs.",
+    "- feed.json assembles these versioned captures in the shape scripts/collect-fleet-feed.ts writes.",
+    "The publisher/ subtree contains small synthetic, hermetic producer-input cases for replaying collector adapters; it is not represented as raw publisher capture data.",
+    "Scrubbing: RFC 2606 example domains, synthetic session ids, no tokens/credentials/secret material, no personal data.",
+    "Timestamps are frozen so diagnosis assertions stay deterministic; freshness-sensitive tests pin their own `now`.",
+    "Contract changes require corpus + both sides in one PR (#1176). Run the pre-publish check: bun run contract:check."
+  ],
+  "files": {
+    "orchestration.json": {
+      "section": "orchestration",
+      "validator": "isOrchestrationSection / orchestrationSectionProblem / normalizeOrchestrationSection (src/feed.ts)",
+      "collectorGate": "normalizeOrchestrationSection(parsed) must be non-null (scripts/collect-fleet-feed.ts)"
+    },
+    "quota.json": {
+      "section": "quota (QuotaView)",
+      "validator": "isQuotaPool / isQuotaWindow / isBurnSegment / sanitizeQuotaView (src/feed.ts)",
+      "collectorGate": "extractQuotaPools(publisher/quota-view.md) items pass isQuotaPool (src/quota-extract.ts)"
+    },
+    "dns.json": {
+      "section": "dns",
+      "validator": "isDnsSection (src/dns.ts)",
+      "collectorGate": "dnsSectionFromRegisterJson(publisher/register.json) passes isDnsSection (src/dns.ts)"
+    },
+    "registry.json": {
+      "section": "registry",
+      "validator": "isSessionRecord / sanitizeRegistry (src/registry.ts, src/feed.ts)",
+      "collectorGate": "recordFromSessionEntry(publisher/sessions.json) / parseLaunchRecords(publisher/launches.jsonl) rows pass isSessionRecord (src/registry.ts)"
+    },
+    "projects.json": {
+      "section": "projects",
+      "validator": "isProjectPoolItem / isProjectPoolSection / poolFromFeed (src/projects.ts, src/feed.ts)",
+      "collectorGate": "fetchProjectPool(publisher/projects-graphql.json; stubbed fetch)/parseProjectItems rows pass isProjectPoolItem (src/projects.ts)"
+    },
+    "feed.json": {
+      "section": "whole feed",
+      "validator": "isFleetFeed / loadFeed (src/feed.ts)",
+      "collectorGate": "the assembled feed the collector writes and the live source reads"
+    }
+  },
+  "producerInputs": [
+    "publisher/quota-view.md",
+    "publisher/register.json",
+    "publisher/sessions.json",
+    "publisher/launches.jsonl",
+    "publisher/projects-graphql.json"
+  ]
+}

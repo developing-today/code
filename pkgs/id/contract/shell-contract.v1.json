@@ -1,8 +1,8 @@
 {
   "contract": "id-shell",
   "version": 1,
-  "revision": 4,
-  "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. A new frame kind waits for the journal format work (F11.12, #227).",
+  "revision": 7,
+  "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. Event-producing frames must name their stable world-event contract here.",
   "max_frame_bytes": 1048576,
   "routing_fields": ["world"],
   "transports": {
@@ -87,6 +87,12 @@
       "opens": "closed",
       "fields": { "admin_token": "string", "module_hash": "string" }
     },
+    "event_history_admin": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string" }
+    },
     "caps": {
       "class": "query",
       "phases": ["opening", "joined"],
@@ -114,6 +120,12 @@
           "enum": ["spectator", "observer", "player", "guest", "delegator", "builder", "moderator"]
         }
       }
+    },
+    "directory": {
+      "class": "query",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {}
     },
     "list_worlds": {
       "class": "admin",
@@ -209,15 +221,20 @@
     },
     "install_begin": {
       "class": "admin",
-      "phases": ["opening"],
+      "phases": ["opening", "joined"],
       "opens": "install",
       "fields": {
-        "admin_token": "string",
+        "admin_token": "string?",
         "total_bytes": { "type": "u64", "min": 1, "max": 16777216 },
         "module_hash": "string?",
         "signature": "object?",
         "seed": "u64"
       }
+    },
+    "revoke": {
+      "class": "admin",
+      "phases": ["joined"],
+      "fields": { "participant_id": "u64" }
     },
     "install_chunk": {
       "class": "control",
@@ -233,6 +250,16 @@
       "class": "event",
       "phases": ["joined"],
       "fields": { "text": "string" }
+    },
+    "form_result": {
+      "class": "event",
+      "phases": ["joined"],
+      "fields": {
+        "form_id": { "type": "string", "max_bytes": 64 },
+        "presentation_token": { "type": "hex", "max_bytes": 32 },
+        "action": { "type": "string", "max_bytes": 64 },
+        "values": "object"
+      }
     },
     "input": {
       "class": "event",
@@ -279,6 +306,16 @@
       "class": "durable",
       "fields": { "event": "object" }
     },
+    "form_result_status": {
+      "class": "reply",
+      "fields": {
+        "form_id": "string",
+        "ok": "bool",
+        "presentation_token": "string?",
+        "error": "string?",
+        "reason": "string?"
+      }
+    },
     "view": {
       "class": "ephemeral",
       "fields": {
@@ -310,6 +347,20 @@
     "records": {
       "class": "reply",
       "fields": { "sequence": "u64", "records": "object", "next_after": "string?" }
+    },
+    "event_history_begin": {
+      "class": "reply",
+      "fields": {
+        "world_id": "string",
+        "module_hash": "string?",
+        "current_sequence": "u64",
+        "complete": "bool",
+        "event_count": "u64"
+      }
+    },
+    "event_history_event": {
+      "class": "reply",
+      "fields": { "event": "object" }
     },
     "records_ticket": {
       "class": "reply",
@@ -379,9 +430,13 @@
       "class": "reply",
       "fields": { "module_hash": "string", "sequence": "u64" }
     },
+    "revoked": {
+      "class": "reply",
+      "fields": { "participant_id": "u64", "revoked": "bool" }
+    },
     "error": {
       "class": "reply",
-      "fields": { "message": "string" }
+      "fields": { "message": "string", "code": "string?" }
     }
   },
   "projection": {

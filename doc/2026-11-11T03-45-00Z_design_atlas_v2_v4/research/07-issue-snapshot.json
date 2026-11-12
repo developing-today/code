@@ -1,0 +1,178 @@
+{
+  "retrieved_at": "2026-11-11T03:47:00Z",
+  "method": "gh issue view; issue bodies, not deployment evidence",
+  "baseline": "56cf19199e7cb7ab37860ee1751506dd11c39042",
+  "issues": [
+    {
+      "body": "Parent: [#6018](https://github.com/developing-today/code/issues/6018) (Atlas ingestion program). Statements S39\u2013S40 of the 2026-11-04 brief.\n\n## Mandate (Drew, in substance)\n\nAlongside the smaller per-topic designs, produce **one larger design that expands the depth and scope of Atlas wherever the research takes it, thinking ahead to v2, v3, and v4** \u2014 not a restatement of the brief, but the brief pushed further: what does a personal corpus become when ingestion is automatic, provenance is complete, versions are kept, and every search can be judged by its user?\n\n## Starting threads (research is expected to find more)\n\n- **Feedback-trained retrieval**: thumbs/essay feedback + per-stage score traces (sibling design under [#6018](https://github.com/developing-today/code/issues/6018)) as training signal \u2014 per-user ranking adaptation, query-pattern evolution, and honest evaluation harnesses that distinguish \"the corpus lacks it\" from \"the ranker buried it\".\n- **Provenance-complete resolution**: with [#3125](https://github.com/developing-today/code/issues/3125)'s occurrence registry + version lineage, any chunk resolves to every place it ever lived, at every version \u2014 citation-grade answers (\"this claim came from file X at commit Y, lines 17\u2013241, also present in Z\").\n- **Cross-source lineage graph**: files, embeds, sessions, issues, notes as one graph (ties to the ID graph and the zettel graph designs; writer-set authority per [#5545](https://github.com/developing-today/code/issues/5545)).\n- **Self-curating corpus**: retention driven by measured usefulness (retrieval survival + feedback), not just age \u2014 the corpus proposes its own cold-storage and deletion candidates for human approval.\n- **Classification-aware retrieval**: tier boundaries enforced inside ranking/expansion (a secret-tier chunk never hydrates an internal-tier context), building on the classification manifest line ([#5410](https://github.com/developing-today/code/issues/5410)).\n- **Cost-aware tiering**: hot/warm/cold placement continuously rebalanced against the plan ceiling (Turso/D1/rustfs per the 2026-11-04 storage ruling).\n- **Agent-facing corpus**: Atlas as the memory substrate for agents \u2014 session/chat/report ingestion (operations design, sibling under [#6018](https://github.com/developing-today/code/issues/6018)) makes every agent's past work searchable by every future agent, with provenance spans as the trust mechanism.\n\n## Method\n\nSurvey before designing: personal-knowledge/search systems (Mem, Rewind-style capture, Khoj, Quivr, personal RAG stacks), provenance systems (W3C PROV, git-like content addressing, datalake lineage), and feedback-loop retrieval research. Label dead ends as dead ends. Each v2/v3/v4 claim must name its dependency on the v1 pieces (delta ingestion, versioning, traces) so the horizon stays buildable, not aspirational.\n\n## Done looks like\n\nA design document in code (`doc/`) laying out the v2/v3/v4 arc with per-stage entry criteria, plus a follow-on issue list for anything the research shows is independently buildable sooner. Breadth is the deliverable; premature implementation commitments are explicitly out of scope.\n\n<!-- agent-note:v1 agent=muse state=filed source=main-chat-2026-11-04 -->\n",
+      "labels": [
+        {
+          "id": "LA_kwDOJWP4788AAAAC_PuG_g",
+          "name": "task/small-fix",
+          "description": "Queue packet kind: bounded fix with reproduction and targeted tests",
+          "color": "008672"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_PuS5A",
+          "name": "status/parked",
+          "description": "Deliberately paused with a recorded resume condition",
+          "color": "cfd3d7"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_Pu9hA",
+          "name": "priority/normal",
+          "description": "Ordinary priority (the default)",
+          "color": "ededed"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_PvGuw",
+          "name": "queue/parked",
+          "description": "Queue task is parked (waiting on CI, time, or an event)",
+          "color": "8b5cf6"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_PvcrA",
+          "name": "area/infra",
+          "description": "Infrastructure, deployment, and operations",
+          "color": "ededed"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_QKL4A",
+          "name": "work/assigned",
+          "description": "Queue worker lifecycle state",
+          "color": "1f6feb"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_QMGZw",
+          "name": "effort/l",
+          "description": "Large: multi-day or open-ended; expect staged check-ins",
+          "color": "0284c7"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_iDPTA",
+          "name": "kind/design",
+          "description": "A design proposal (design-architect): multi-step, phased, decision-bearing",
+          "color": "5319e7"
+        }
+      ],
+      "number": 6020,
+      "state": "OPEN",
+      "title": "design(atlas): expansive v2\u2013v4 \u2014 feedback-driven ranking, provenance-complete resolution, self-curating corpus",
+      "url": "https://github.com/developing-today/code/issues/6020"
+    },
+    {
+      "body": "## Program (Drew, 2026-11-04)\n\nA long-term plan for **semi-automating updates to Atlas ingestion**: what gets ingested, how content is versioned, a standard provenance model, delta-only updates, retrieval statistics + result feedback, classification safety, and disk/IO + plan-spend discipline. Statement inventory (S1\u2013S40, auditable, with per-statement dispositions): `~/workspace/scratch/atlas-ingestion-brief-2026-11-04/statement-inventory.md` in the sandbox workspace; this issue is the canonical tracker \u2014 children are linked in a comment below and closed into this issue as they complete.\n\n## Where Atlas stands (2026-11-04, verified)\n\n- Shard restoration complete: 31 TursoDB shards; **internal = 28 shards / 107,001 chunks; secret = exactly 1 shard / 638 chunks** (secret material only in the 2 secret DBs). Production monolith stays libSQL for now; TursoDB for all NEW databases. Cold tiers \u2192 rustfs (2026-11-04 storage ruling). Current spend anchor: **Turso scaler $24.92/mo yearly \u2014 the plan is the ceiling** (see also [#5468](https://github.com/developing-today/code/issues/5468), mirror storage pressure).\n- Search: fan-out over shards [#5755](https://github.com/developing-today/code/issues/5755); query front-end [#5773](https://github.com/developing-today/code/issues/5773); full parameter surface with per-run vector logging [#5774](https://github.com/developing-today/code/issues/5774); Jaccard rescore + ingest dedup \u22650.9 recorded edge [#5733](https://github.com/developing-today/code/issues/5733); staging tier with merge-on-close promotion [#5669](https://github.com/developing-today/code/issues/5669).\n- Provenance registry already designed: [#3125](https://github.com/developing-today/code/issues/3125) (chunk_occurrences, content-addressed extracts, `repo@commit:path` pinning). This program **extends** #3125 (source-system marks, version lineage) rather than replacing it.\n- Scripts migration into code + fleet binary: [#5670](https://github.com/developing-today/code/issues/5670). Untracked Atlas material enumeration: [#5981](https://github.com/developing-today/code/issues/5981) \u2014 ingestion source enumeration overlaps it.\n\n## Topic map (children filed under this tracker)\n\n1. **Ingestion operations design** \u2014 semi-automated updates; automatic source set (reboots/boot records, session logs, chat logs, statistics, reports); usefulness filter; disk + I/O monitoring; plan-spend ceiling.\n2. **Classification revalidation (task)** \u2014 verify nothing sensitive sits at the wrong tier.\n3. **Agent notes placement design** \u2014 zettel vs repo vs publishing directly into the ID graph (ties to [#5545](https://github.com/developing-today/code/issues/5545), [#5686](https://github.com/developing-today/code/issues/5686)).\n4. **GitHub corpus extraction (task)** \u2014 ALL issue/PR comments from ALL our repos; external repos we interact with or rely on (external half gated, see 5).\n5. **External-content licensing gate (research)** \u2014 may we copy external GitHub comments/discussions into Atlas at all? In the [#5977](https://github.com/developing-today/code/issues/5977)/[#5986](https://github.com/developing-today/code/issues/5986) family. **Must be answered before external-repo ingestion is built; design may proceed.**\n6. **First-pass corpus (task)** \u2014 all code repos, all findable docs, dezren39/cairn.\n7. **Content versioning + retention design** \u2014 new versions, rename lineage, newest-resolution (\"take the max\"), cold rollout, deletion triggers (date / superseding increments / never accessed).\n8. **Retrieval statistics + feedback + query trace design** \u2014 top-K shard survival, top-1/2/3/5 after merge+rescore, thumbs up/down minimum, optional comments/essays, result\u2194query trace (per-stage scores, shard, exact embed state, metadata).\n9. **Provenance standard** \u2014 extensions filed as a comment on [#3125](https://github.com/developing-today/code/issues/3125): one standard for when/where; marks of the form `repo@hash:path` AND source-system marks (e.g. `opencode-db @ amd @ <date>`); segment search to associate unlineaged files; unassociated/duplicate as a logged state.\n10. **Existing-embed provenance audit (task)** \u2014 scan all current embeds for correct path/provenance details.\n11. **Delta-only ingestion + offset embeds design** \u2014 the 21 GB rule (20.5 GB already present \u2192 only new files + edits land; no mass retagging); span-anchored embeds (content at file offsets 17\u2013241) with search-time joins that never double merged lines.\n12. **Expansive v2\u2013v4 design** \u2014 the larger design that pushes depth/scope beyond this brief wherever research leads.\n\n## Horizons\n\n- **v1** \u2014 first-pass corpus (own repos incl. GitHub comments, docs, cairn) + delta ingestion + provenance marking standard + embed audit + classification revalidation run.\n- **v2** \u2014 file versioning/retention live (cold rollout + deletion policy) + retrieval statistics (shard survival, top-1/2/3/5).\n- **v3** \u2014 feedback loop live (thumbs/comments/traces) feeding retention + ranking evolution; classification revalidation recurring/automated; offset-embed joins in production search.\n- **v4** \u2014 expansive: feedback-trained ranking, provenance-complete resolution, cross-source lineage graph, ID-graph-native corpus objects, classification-aware retrieval.\n\n## Gates\n\n- External-repo comment ingestion is **build-gated** on topic 5's answer (Drew's sequencing: licensing figured out before the external build, after the design is somewhat done). Our own repos are not gated.\n- Nothing in this program raises spend past the current plan without Drew's explicit call (S3).\n\n<!-- agent-note:v1 agent=muse state=filed source=main-chat-2026-11-04 -->\n",
+      "labels": [
+        {
+          "id": "LA_kwDOJWP4788AAAAC_PuC8A",
+          "name": "task/triage",
+          "description": "Queue packet kind: verify, reproduce, and route this item",
+          "color": "006b75"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_PvcrA",
+          "name": "area/infra",
+          "description": "Infrastructure, deployment, and operations",
+          "color": "ededed"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAADA4Q4Fg",
+          "name": "kind/tracker",
+          "description": "Tracking issue: closed when its children close, never triaged by coverage",
+          "color": "0e8a16"
+        }
+      ],
+      "number": 6018,
+      "state": "OPEN",
+      "title": "atlas ingestion program: semi-automated updates, versioning, provenance, feedback \u2014 long-term design + tasks (2026-11-04 brief)",
+      "url": "https://github.com/developing-today/code/issues/6018"
+    },
+    {
+      "body": "## Direction (Drew, 2026-10-31)\n\nAtlas moves from a single canonical DB + one Turso publish to provenance-first, scalable infrastructure. Design doc: hatch-personal `workspace/turso-atlas/docs/atlas-provenance-and-scale-design-2026-10-31.md`.\n\nRules:\n1. Keep ALL data \u2014 nothing stripped from atlas.db or publishes to save space; only byte-identical dupes are cleaned, backups kept.\n2. Backups AND plain extracts for every corpus.\n3. Every chunk records EVERY place it was found: `chunk_occurrences` (chunk \u2192 array of source locators with spans, observed_at). Today dedup silently drops occurrences (~127K at first ingest); 6,344 canonical sessions own zero chunks for exactly this reason and their occurrences are unrecorded.\n4. Every import is interned content-addressed (laptop extracts CAS / R2, registry maps CA hash \u2192 normal paths) or pinned as `repo@commit:path`. Registry also holds line numbers / dates / spans for extracts.\n5. Retrieval: vector/FTS search across multiple Turso shard DBs (collection \u00d7 month) returns IDs; a catalog/registry resolves an ID to a file, a chunk, or a start\u2013end section \u2014 including a member of a tar in R2 (sidecar index, range fetch) or a local file.\n\nVerified state feeding this (2026-10-31): canonical 18,325 sessions / 122,124 messages / 107,639 chunks; local-only = 6,941 chunks of personal-client TEXT held back from Turso by policy (not missing embeddings); Turso atlas 1.0 GB / 100,698 chunks; laptop ~/atlas 12 GB contains NO consequential byte-identical duplicates (hash-verified) \u2014 it is distinct versions/working sets, so no cleanup windfall exists.\n\n## Phases\n1. Add `chunk_occurrences` + `cas_registry` to canonical atlas.db; ingest writes occurrences from now on (no re-embed, no republish).\n2. Laptop extracts dir + CAS; atlas-backup covers it; backfill extracts for sources still on disk.\n3. Occurrence backfill from CAS extracts; document the local-only publish predicate in the publish script.\n4. Catalog DB + shard layout at next publish growth (or full message-archive ingest); resolution as MCP tools (search \u2192 ids \u2192 resolve \u2192 fetch span).\n\n<!-- agent-note:v1 agent=muse state=filed source=main-chat-2026-10-31 -->\n\n## Acceptance criteria\n\n- A `chunk_occurrences` provenance registry exists: every chunk records every source locator it was found at (with spans and observed_at), including occurrences previously dropped by dedup.\n- Backups AND plain extracts exist for every corpus; imports are interned content-addressed (CAS hash \u2192 path registry) or pinned as `repo@commit:path`, with line numbers / dates / spans recorded for extracts.\n- Retrieval works across multiple Turso shard DBs (collection \u00d7 month): vector/FTS search returns IDs and the catalog/registry resolves an ID to a file, chunk, or start\u2013end section (including a tar member in R2 via sidecar index + range fetch, or a local file).\n- No data is stripped to save space; only byte-identical duplicates are cleaned, with backups kept.\n",
+      "labels": [
+        {
+          "id": "LA_kwDOJWP4788AAAAC_PuC8A",
+          "name": "task/triage",
+          "description": "Queue packet kind: verify, reproduce, and route this item",
+          "color": "006b75"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_Pu10g",
+          "name": "source/human",
+          "description": "Filed directly by a human",
+          "color": "6e7781"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_Pu7iA",
+          "name": "priority/high",
+          "description": "Important and time-sensitive",
+          "color": "d93f0b"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_PvcrA",
+          "name": "area/infra",
+          "description": "Infrastructure, deployment, and operations",
+          "color": "ededed"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_QMGZw",
+          "name": "effort/l",
+          "description": "Large: multi-day or open-ended; expect staged check-ins",
+          "color": "0284c7"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_QMPpQ",
+          "name": "meta/enriched",
+          "description": "Intake review done: acceptance criteria, links, and normalized labels added",
+          "color": "ededed"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_fLfCw",
+          "name": "kind/enhancement",
+          "description": "",
+          "color": "ededed"
+        }
+      ],
+      "number": 3125,
+      "state": "OPEN",
+      "title": "atlas: provenance registry (chunk occurrences), content-addressed extracts, multi-DB vector resolution",
+      "url": "https://github.com/developing-today/code/issues/3125"
+    },
+    {
+      "body": "Follow-on to epic #5350 (Atlas binary + service), to be scheduled AFTER step 6 (cutover). Design only \u2014 no implementation in this issue.\n\n## Where things stand\natlas-core's filter surface is split: the *vocabulary* is data-driven (filters match the labels the classification pass wrote onto chunks \u2014 kinds, topics, projects, clients \u2014 so new labels are filterable immediately), but the *dimensions and semantics* are hand-coded in four places (atlas-core `filters` module + SQL builders, the CLI flag surface, atlas-proto request types, serve-mode validation). Adding a new classification dimension today (e.g. a source-app label) requires a code change in each place. Match semantics are likewise code: exact match today, with LIKE-pattern matching tracked separately in #5375.\n\n## Proposal (for a design note)\nA classification manifest \u2014 carried with the corpus publish metadata \u2014 declares the filterable dimensions and their match semantics (exact / pattern / range), and atlas-core builds its filter surface from that manifest, with the CLI and service inheriting the same surface through atlas-proto. A reclassification pass could then change what searches can slice by without a binary release.\n\n## Hard constraint\nThe sensitivity ladder and ceiling semantics stay CODE-defined, never data-defined. The ceiling is a safety property enforced inside branch SQL (filter-before-rank); a mislabeled or corrupted row must never be able to redefine its own visibility. Only dimension declarations and match semantics for non-sensitivity fields are manifest material.\n\n## Open questions for the design\n- Manifest home: publish-file metadata vs a DB table vs both (local mode vs Turso mode must agree).\n- Versioning + failure mode: manifest unreadable/mismatched \u2192 fall back to the built-in surface, loudly, never silently widen.\n- Interaction with #5375's pattern filters (land exact+pattern semantics once, in the manifest, rather than twice).\n- Dedupe-key impact: serve-mode Computations key on the effective filter tuple \u2014 a manifest change must version into the key.\n\nAcceptance for this issue: a design note under doc/ following the epic's design-note pattern, with a go/no-go recommendation.\n",
+      "labels": [
+        {
+          "id": "LA_kwDOJWP4788AAAAC_PuC8A",
+          "name": "task/triage",
+          "description": "Queue packet kind: verify, reproduce, and route this item",
+          "color": "006b75"
+        }
+      ],
+      "number": 5410,
+      "state": "CLOSED",
+      "title": "design(atlas): schema-driven filter surface from the classification manifest (post-cutover)",
+      "url": "https://github.com/developing-today/code/issues/5410"
+    },
+    {
+      "body": "Implementation of an ID design that has not landed yet (partial implementation as of the 2026-11-04 inventory).\n\nDesign doc: `doc/2026-10-30T13-15-00Z_design_id_writer_set_view_projection/` (in developing-today/code)\n\nAcceptance, in brief: view projection and the discovery query over writer-set objects per the design doc.\nCurrent state: writer-set objects landed (idset.rs); view projection and the discovery query are incomplete.\n\nThe design documents govern. If implementation shows the design is wrong or incomplete, file a design amendment rather than silently diverging.\n\nScope: pkgs/id and its tests. Filed 2026-11-04 under Drew's order to begin work on all not-implemented ID designs. Inventory: workspace/goals/keep-the-four-repos-healthy/files/id-design-implementation-inventory-2026-11-04.md (in the fleet workspace).",
+      "labels": [
+        {
+          "id": "LA_kwDOJWP4788AAAAC_A5Axw",
+          "name": "status:done",
+          "description": "",
+          "color": "10B981"
+        },
+        {
+          "id": "LA_kwDOJWP4788AAAAC_PuNgg",
+          "name": "status/needs-triage",
+          "description": "Not yet triaged; needs a first look",
+          "color": "ededed"
+        }
+      ],
+      "number": 5545,
+      "state": "CLOSED",
+      "title": "id: implement Writer-set view projection - view projection and discovery query (design doc)",
+      "url": "https://github.com/developing-today/code/issues/5545"
+    }
+  ]
+}

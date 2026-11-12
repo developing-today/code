@@ -1,0 +1,480 @@
+# ONNX Runtime, vendored from nixpkgs (0bb2eedc,
+# pkgs/by-name/on/onnxruntime) and pinned to the latest upstream
+# release — see the version line below.
+#
+# Why vendored (code#6765): nixpkgs ships ONNX Runtime 1.27.1 at the
+# fleet's pins and at nixos-unstable head, while the Atlas corpus and
+# the Gate A fixtures are embedded/certified under the latest
+# upstream release. Drew's ruling (2026-11-08): everything runs the
+# latest version; the service aligns UP to the corpus, never the
+# corpus down to nixpkgs. This package is that pin. To move it:
+# bump `version`, refresh both src hashes, and re-check the *-src
+# dependency pins against the new tag's cmake/deps.txt (the onnx pin
+# below already follows deps.txt: v1.22.0 for ORT 1.31.1).
+#
+# Local changes vs the nixpkgs expression:
+# - version 1.27.1 -> 1.31.1; src hash refreshed.
+# - onnx-src v1.21.0 -> v1.22.0 (ORT 1.31.1's cmake/deps.txt pin).
+# - pythonSupport defaults to false: the only consumers are the
+#   atlas-search / fleet binaries, which dlopen the shared library;
+#   the corpus pipeline and Gate A use the atlas venv's wheel.
+# - cpuinfo is supplied from upstream's cmake/deps.txt pin for
+#   1.31.1 (pytorch/cpuinfo 66ee79c) via FETCHCONTENT_SOURCE_DIR:
+#   1.31 links cpuinfo::cpuinfo, a target only cpuinfo's own build
+#   defines — the nixpkgs cpuinfo package does not provide it, so
+#   the 1.27.1 expression's find-package route no longer resolves.
+# - doCheck = false: ORT's own unit-test suite is not the fleet's
+#   certification path — Gate A is (it must pass bit-identically
+#   against this exact library before a search-domain tag, #5604).
+
+{
+  lib,
+  config,
+  stdenv,
+  fetchFromGitHub,
+  abseil-cpp,
+  buildPackages,
+  cmake,
+  cpuinfo,
+  eigen,
+  flatbuffers_23,
+  glibcLocales,
+  gtest,
+  howard-hinnant-date,
+  libpng,
+  nlohmann_json,
+  pkg-config,
+  python3Packages,
+  removeReferencesTo,
+  re2,
+  zlib,
+  protobuf,
+  microsoft-gsl,
+  darwinMinVersionHook,
+  pythonSupport ? false,
+  cudaSupport ? config.cudaSupport,
+  ncclSupport ? cudaSupport && cudaPackages.nccl.meta.available,
+  tensorrtSupport ? cudaSupport && cudaPackages.tensorrt.meta.available,
+  openvinoSupport ? stdenv.hostPlatform.isLinux,
+  rocmSupport ? config.rocmSupport,
+  coremlSupport ? stdenv.hostPlatform.isDarwin,
+  withFullProtobuf ? false,
+  cudaPackages ? { },
+  openvino,
+  rocmPackages,
+}@inputs:
+
+let
+  stdenv = throw "Use effectiveStdenv instead";
+  effectiveStdenv = if cudaSupport then cudaPackages.backendStdenv else inputs.stdenv;
+  inherit (cudaPackages) cuda_nvcc;
+
+  cudaArchitecturesString = cudaPackages.flags.cmakeCudaArchitecturesString;
+
+  # TODO: update the following dependencies according to:
+  # https://github.com/microsoft/onnxruntime/blob/v<VERSION>/cmake/deps.txt
+
+  mp11-src = fetchFromGitHub {
+    name = "mp11-src";
+    owner = "boostorg";
+    repo = "mp11";
+    tag = "boost-1.82.0";
+    hash = "sha256-cLPvjkf2Au+B19PJNrUkTW/VPxybi1MpPxnIl4oo4/o=";
+  };
+
+  safeint-src = fetchFromGitHub {
+    name = "safeint-src";
+    owner = "dcleblanc";
+    repo = "safeint";
+    tag = "3.0.28";
+    hash = "sha256-pjwjrqq6dfiVsXIhbBtbolhiysiFlFTnx5XcX77f+C0=";
+  };
+
+  onnx-src = fetchFromGitHub {
+    name = "onnx-src";
+    owner = "onnx";
+    repo = "onnx";
+    tag = "v1.22.0";
+    hash = "sha256-gc65t/VN3kdvV9tiFoOk6Sw+OZe4Udgm3VcZPP9gzpE=";
+  };
+
+  cutlass-src = fetchFromGitHub {
+    name = "cutlass-src";
+    owner = "NVIDIA";
+    repo = "cutlass";
+    tag = "v4.4.2";
+    hash = "sha256-0q9Ad0Z6E/rO2PdM4uQc8H0E0qs9uKc3reHepiHhjEc=";
+  };
+
+  dlpack-src = fetchFromGitHub {
+    name = "dlpack-src";
+    owner = "dmlc";
+    repo = "dlpack";
+    rev = "5c210da409e7f1e51ddf445134a4376fdbd70d7d";
+    hash = "sha256-YqgzCyNywixebpHGx16tUuczmFS5pjCz5WjR89mv9eI=";
+  };
+
+  cpuinfo-src = fetchFromGitHub {
+    name = "cpuinfo-src";
+    owner = "pytorch";
+    repo = "cpuinfo";
+    rev = "66ee79c038d70dad9f08705b2c9b3e58f6d8f512";
+    hash = "sha256-A+kTj3GthwmO2kKeG3gG/zjvvt45OmuEvAtRLzwfEyM=";
+  };
+
+  coremltools-src = fetchFromGitHub {
+    name = "coremltools-src";
+    owner = "apple";
+    repo = "coremltools";
+    tag = "7.1";
+    hash = "sha256-kajQFHpl+4UK6fp+rM8TP0GiqIFYXPVFc2x1p19rBSw=";
+  };
+
+  fp16-src = fetchFromGitHub {
+    name = "fp16-src";
+    owner = "Maratyszcza";
+    repo = "FP16";
+    rev = "0a92994d729ff76a58f692d3028ca1b64b145d91";
+    hash = "sha256-m2d9bqZoGWzuUPGkd29MsrdscnJRtuIkLIMp3fMmtRY=";
+  };
+
+  psimd-src = fetchFromGitHub {
+    name = "psimd-src";
+    owner = "Maratyszcza";
+    repo = "psimd";
+    rev = "072586a71b55b7f8c584153d223e95687148a900";
+    hash = "sha256-lV+VZi2b4SQlRYrhKx9Dxc6HlDEFz3newvcBjTekupo=";
+  };
+
+  isCudaJetson = cudaSupport && cudaPackages.flags.isJetsonBuild;
+in
+effectiveStdenv.mkDerivation (finalAttrs: {
+  pname = "onnxruntime";
+  version = "1.31.1";
+
+  src = fetchFromGitHub {
+    owner = "microsoft";
+    repo = "onnxruntime";
+    tag = "v${finalAttrs.version}";
+    fetchSubmodules = true;
+    hash = "sha256-wATnI1v3De6+41fGYWS2458TCUWhBECNw2kBnfajKEo=";
+  };
+
+  patches = [
+    # Add missing include which is only needed on musl (is implied in other includes on glibc)
+    # https://github.com/microsoft/onnxruntime/pull/26969
+    ./musl-cstdint.patch
+
+    # Fix build of unit tests with musl libc
+    # https://github.com/microsoft/onnxruntime/issues/9155
+    # Patch adapted from https://gitlab.alpinelinux.org/alpine/aports/-/raw/462dfe0eb4b66948fe48de44545cc22bb64fdf9f/community/onnxruntime/0001-Remove-MATH_NO_EXCEPT-macro.patch
+    ./remove-MATH_NO_EXCEPT-macro.patch
+  ]
+  ++ lib.optionals cudaSupport [
+    # Drop the orphaned ShardedMoE CUDA contrib op, whose ft_moe backend was removed upstream
+    # Fix submitted upstream: https://github.com/microsoft/onnxruntime/pull/31139
+    ./drop-orphaned-sharded-moe.patch
+  ];
+
+  postPatch = ''
+    substituteInPlace cmake/libonnxruntime.pc.cmake.in \
+      --replace-fail '$'{prefix}/@CMAKE_INSTALL_ @CMAKE_INSTALL_
+    echo "find_package(cudnn_frontend REQUIRED)" > cmake/external/cudnn_frontend.cmake
+    substituteInPlace onnxruntime/core/platform/posix/env.cc --replace-fail \
+      "return PathString{};" \
+      "return PathString(\"$out/lib/\");"
+  ''
+  + lib.optionalString effectiveStdenv.hostPlatform.isDarwin ''
+    substituteInPlace cmake/onnxruntime.cmake \
+      --replace-fail "INSTALL_NAME_DIR @rpath" "INSTALL_NAME_DIR $out/lib"
+  ''
+  + lib.optionalString rocmSupport ''
+    patchShebangs tools/ci_build/hipify-perl
+  ''
+  # https://github.com/NixOS/nixpkgs/pull/226734#issuecomment-1663028691
+  + lib.optionalString (effectiveStdenv.hostPlatform.system == "aarch64-linux") ''
+    rm -v onnxruntime/test/optimizer/nhwc_transformer_test.cc
+  '';
+
+  postBuild = lib.optionalString pythonSupport ''
+    ${python3Packages.python.interpreter} ../setup.py bdist_wheel
+  '';
+
+  nativeBuildInputs = [
+    cmake
+    pkg-config
+    python3Packages.python
+  ]
+  ++ lib.optionals pythonSupport (
+    with python3Packages;
+    [
+      pip
+      python
+      pythonOutputDistHook
+      setuptools
+      wheel
+    ]
+  )
+  ++ lib.optionals cudaSupport [
+    cudaPackages.cuda_nvcc
+    removeReferencesTo
+  ]
+  ++ lib.optionals isCudaJetson [
+    cudaPackages.autoAddCudaCompatRunpath
+  ];
+
+  buildInputs = [
+    eigen
+    glibcLocales
+    howard-hinnant-date
+    libpng
+    nlohmann_json
+    microsoft-gsl
+    protobuf
+    zlib
+  ]
+  ++ lib.optionals (lib.meta.availableOn effectiveStdenv.hostPlatform cpuinfo) [
+    cpuinfo
+  ]
+  ++ lib.optionals pythonSupport (
+    with python3Packages;
+    [
+      numpy
+      pybind11
+      packaging
+    ]
+  )
+  ++ lib.optionals cudaSupport (
+    with cudaPackages;
+    [
+      cccl # cub/cub.cuh
+      libcublas # cublas_v2.h
+      libcurand # curand.h
+      libcusparse # cusparse.h
+      libcufft # cufft.h
+      cudnn # cudnn.h
+      cudnn-frontend
+      cuda_cudart
+    ]
+    ++ lib.optionals ncclSupport [ nccl ]
+    ++ lib.optionals tensorrtSupport [ tensorrt ]
+  )
+  ++ lib.optionals rocmSupport [
+    rocmPackages.clr
+    rocmPackages.hipblas
+    rocmPackages.hipblaslt
+    rocmPackages.hipcub
+    rocmPackages.hipfft
+    rocmPackages.hiprand
+    rocmPackages.hipsparse
+    rocmPackages.rocblas
+    rocmPackages.rocprim
+    rocmPackages.rocrand
+    rocmPackages.rocthrust
+    rocmPackages.miopen
+    rocmPackages.migraphx
+    rocmPackages.rccl
+    rocmPackages.rocm-smi
+    rocmPackages.roctracer
+  ]
+  ++ lib.optionals openvinoSupport [
+    openvino
+  ]
+  ++ lib.optionals effectiveStdenv.hostPlatform.isDarwin [
+    (darwinMinVersionHook "13.3")
+  ];
+
+  nativeCheckInputs = lib.optionals pythonSupport (
+    with python3Packages;
+    [
+      onnx
+      pytest
+      sympy
+    ]
+  );
+
+  checkInputs = [
+    gtest
+  ];
+
+  # TODO: build server, and move .so's to lib output
+  # Python's wheel is stored in a separate dist output
+  outputs = [
+    "out"
+    "dev"
+  ]
+  ++ lib.optionals pythonSupport [ "dist" ];
+
+  separateDebugInfo = true;
+
+  enableParallelBuilding = true;
+
+  cmakeDir = "../cmake";
+
+  cmakeFlags = [
+    # Library updates and similar often cause build failures with -Werror.
+    # There is utility in this for upstream, but for Nixpkgs it mostly causes
+    # churn to work around, so we make warnings non-fatal.
+    "--compile-no-warning-as-error"
+    (lib.cmakeBool "ABSL_ENABLE_INSTALL" true)
+    (lib.cmakeBool "FETCHCONTENT_FULLY_DISCONNECTED" true)
+    (lib.cmakeBool "FETCHCONTENT_QUIET" false)
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_ABSEIL_CPP" "${abseil-cpp.src}")
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_DLPACK" "${dlpack-src}")
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_FLATBUFFERS" "${flatbuffers_23.src}")
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_MP11" "${mp11-src}")
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_ONNX" "${onnx-src}")
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_RE2" "${re2.src}")
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_SAFEINT" "${safeint-src}")
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_PYTORCH_CPUINFO" "${cpuinfo-src}")
+    (lib.cmakeFeature "FETCHCONTENT_TRY_FIND_PACKAGE_MODE" "ALWAYS")
+    # fails to find protoc on darwin, so specify it
+    (lib.cmakeFeature "ONNX_CUSTOM_PROTOC_EXECUTABLE" (lib.getExe buildPackages.protobuf))
+    (lib.cmakeBool "onnxruntime_BUILD_SHARED_LIB" true)
+    (lib.cmakeBool "onnxruntime_BUILD_UNIT_TESTS" finalAttrs.finalPackage.doCheck)
+    (lib.cmakeBool "onnxruntime_USE_FULL_PROTOBUF" withFullProtobuf)
+    (lib.cmakeBool "onnxruntime_USE_CUDA" cudaSupport)
+    (lib.cmakeBool "onnxruntime_USE_NCCL" ncclSupport)
+    (lib.cmakeBool "onnxruntime_USE_MIGRAPHX" rocmSupport)
+    (lib.cmakeBool "onnxruntime_USE_COREML" coremlSupport)
+    (lib.cmakeBool "onnxruntime_ENABLE_LTO" (!cudaSupport || cudaPackages.cudaOlder "12.8"))
+    # GCC 16 implemented P0952R2, which changes the output of libstdc++'s
+    # std::generate_canonical. Some of onnxruntime('s tests) rely on this old
+    # behavior, so we restore the old behavior with the provided macro. Based
+    # on a fix suggested by upstream at
+    # https://github.com/microsoft/onnxruntime/pull/31346#issuecomment-5688923246
+    (lib.cmakeFeature "CMAKE_CXX_FLAGS" "-D_GLIBCXX_USE_OLD_GENERATE_CANONICAL")
+  ]
+  ++ lib.optionals openvinoSupport [
+    (lib.cmakeBool "onnxruntime_USE_OPENVINO" true)
+    (lib.cmakeFeature "onnxruntime_USE_OPENVINO_AUTO" (
+      if effectiveStdenv.hostPlatform.system == "x86_64-linux" then "NPU,GPU,CPU" else "GPU"
+    ))
+    (lib.cmakeBool "onnxruntime_USE_OPENVINO_GPU" true)
+    (lib.cmakeBool "onnxruntime_USE_OPENVINO_CPU" (
+      effectiveStdenv.hostPlatform.system == "x86_64-linux"
+    ))
+    (lib.cmakeBool "onnxruntime_USE_OPENVINO_NPU" (
+      effectiveStdenv.hostPlatform.system == "x86_64-linux"
+    ))
+    (lib.cmakeFeature "OpenVINO_DIR" "${lib.getDev openvino}/runtime/cmake")
+    # RTTI is disabled in default non-python builds (https://onnxruntime.ai/docs/build/custom.html#basic),
+    # but disabling it with OpenVINO will fail with `error: cannot use 'typeid' with '-fno-rtti'`
+    (lib.cmakeBool "onnxruntime_DISABLE_RTTI" false)
+  ]
+  ++ lib.optionals pythonSupport [
+    (lib.cmakeBool "onnxruntime_ENABLE_PYTHON" true)
+  ]
+  ++ lib.optionals cudaSupport [
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_CUTLASS" "${cutlass-src}")
+    (lib.cmakeFeature "onnxruntime_CUDNN_HOME" "${cudaPackages.cudnn}")
+    (lib.cmakeFeature "CMAKE_CUDA_ARCHITECTURES" cudaArchitecturesString)
+    (lib.cmakeFeature "onnxruntime_NVCC_THREADS" "1")
+  ]
+  ++ lib.optionals tensorrtSupport [
+    (lib.cmakeBool "onnxruntime_USE_TENSORRT" true)
+    (lib.cmakeBool "onnxruntime_USE_TENSORRT_BUILTIN_PARSER" true)
+    (lib.cmakeFeature "onnxruntime_TENSORRT_HOME" "") # Only used as a find hint
+  ]
+  ++ lib.optionals rocmSupport [
+    (lib.cmakeFeature "CMAKE_HIP_ARCHITECTURES" (
+      builtins.concatStringsSep ";" rocmPackages.clr.localGpuTargets or rocmPackages.clr.gpuTargets
+    ))
+    (lib.cmakeFeature "onnxruntime_ROCM_HOME" "${rocmPackages.clr}")
+    # Incompatible with packaged version, far too slow to build vendored version
+    (lib.cmakeBool "onnxruntime_USE_COMPOSABLE_KERNEL" false)
+    (lib.cmakeBool "onnxruntime_USE_COMPOSABLE_KERNEL_CK_TILE" false)
+  ]
+  ++ lib.optionals coremlSupport [
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_COREMLTOOLS" "${coremltools-src}")
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_FP16" "${fp16-src}")
+    (lib.cmakeFeature "FETCHCONTENT_SOURCE_DIR_PSIMD" "${psimd-src}")
+    (lib.cmakeFeature "CMAKE_POLICY_VERSION_MINIMUM" "3.5") # needed for psimd
+  ];
+
+  env =
+    lib.optionalAttrs effectiveStdenv.hostPlatform.isLinux {
+      NIX_LDFLAGS = "-z,noexecstack";
+    }
+    // lib.optionalAttrs rocmSupport {
+      MIOPEN_PATH = rocmPackages.miopen;
+      # HIP steps fail to find ROCm libs when not in HIPFLAGS, causing
+      # fatal error: 'rocrand/rocrand.h' file not found
+      HIPFLAGS = lib.concatMapStringsSep " " (pkg: "-I${lib.getInclude pkg}/include") [
+        rocmPackages.hipblas
+        rocmPackages.hipcub
+        rocmPackages.hiprand
+        rocmPackages.hipsparse
+        rocmPackages.rocblas
+        rocmPackages.rocprim
+        rocmPackages.rocrand
+        rocmPackages.rocthrust
+      ];
+    }
+    // lib.optionalAttrs effectiveStdenv.hostPlatform.isMusl {
+      NIX_CFLAGS_COMPILE = "-DFLATBUFFERS_LOCALE_INDEPENDENT=0";
+      GTEST_FILTER = "*:-ContribOpTest.StringNormalizer*";
+    };
+
+  doCheck = false;
+
+  requiredSystemFeatures = lib.optionals (cudaSupport || rocmSupport) [ "big-parallel" ];
+
+  hardeningEnable = lib.optionals (effectiveStdenv.hostPlatform.system == "loongarch64-linux") [
+    "nostrictaliasing"
+  ];
+  hardeningDisable = lib.optional effectiveStdenv.hostPlatform.isMusl "fortify";
+
+  # perform parts of `tools/ci_build/github/linux/copy_strip_binary.sh`
+  postInstall = ''
+    install -m644 -Dt $out/include \
+      ../include/onnxruntime/core/framework/provider_options.h \
+      ../include/onnxruntime/core/providers/cpu/cpu_provider_factory.h \
+      ../include/onnxruntime/core/session/onnxruntime_*.h \
+      ../include/onnxruntime/core/providers/coreml/coreml_provider_factory.h
+  '';
+
+  strictDeps = true;
+
+  # See comments in `cudaPackages.nccl`
+  postFixup = lib.optionalString cudaSupport ''
+    remove-references-to -t "${lib.getBin cuda_nvcc}" ''${!outputLib}/lib/libonnxruntime_providers_cuda.so
+  '';
+  disallowedRequisites = lib.optionals cudaSupport [ (lib.getBin cuda_nvcc) ];
+
+  __structuredAttrs = true;
+
+  passthru = {
+    inherit cudaSupport cudaPackages ncclSupport; # for the python module
+    inherit protobuf;
+    tests = lib.optionalAttrs pythonSupport {
+      python = python3Packages.onnxruntime;
+    };
+  };
+
+  meta = {
+    description = "Cross-platform, high performance scoring engine for ML models";
+    longDescription = ''
+      ONNX Runtime is a performance-focused complete scoring engine
+      for Open Neural Network Exchange (ONNX) models, with an open
+      extensible architecture to continually address the latest developments
+      in AI and Deep Learning. ONNX Runtime stays up to date with the ONNX
+      standard with complete implementation of all ONNX operators, and
+      supports all ONNX releases (1.2+) with both future and backwards
+      compatibility.
+    '';
+    homepage = "https://github.com/microsoft/onnxruntime";
+    changelog = "https://github.com/microsoft/onnxruntime/releases/tag/${finalAttrs.src.tag}";
+    # https://github.com/microsoft/onnxruntime/blob/master/BUILD.md#architectures
+    platforms = lib.platforms.unix;
+    license = lib.licenses.mit;
+    maintainers = with lib.maintainers; [
+      puffnfresh
+      ck3d
+    ];
+    #  [libprotobuf ERROR /build/source/src/google/protobuf/descriptor_database.cc:642] File already
+    # exists in database: onnx/onnx-ml.proto
+    # https://github.com/onnx/onnx/issues/6094
+    broken = withFullProtobuf;
+  };
+})

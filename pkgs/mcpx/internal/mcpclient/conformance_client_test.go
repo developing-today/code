@@ -204,7 +204,7 @@ func dialWire(t *testing.T, w *wire, pref mcpclient.Preference, o mcpclient.Opti
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
 

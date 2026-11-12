@@ -16,7 +16,7 @@
 // Secrets (set by the operator, never committed): REHYDRATOR_API_KEY,
 // GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN.
 
-import { decompressFrame } from "./decoder.js";
+import { decompressFrame, ExpansionLimitError } from "./decoder.js";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files";
@@ -45,6 +45,49 @@ async function sha256Hex(bytes) {
   return [...new Uint8Array(digest)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+// Read exactly frameLength bytes starting at offset from a response body
+// that ignored the Range header (HTTP 200, the whole bundle). Bytes before
+// offset are discarded chunk by chunk and the stream is cancelled the
+// moment the frame is complete; only the frame itself is ever retained.
+// A stream that ends early yields a short array, which the caller's
+// exact-length check rejects (fail closed).
+export async function readStreamedFrame(resp, offset, frameLength) {
+  if (!resp.body || typeof resp.body.getReader !== "function") {
+    // No readable stream to bound: fall back to buffering and slicing.
+    const whole = new Uint8Array(await resp.arrayBuffer());
+    return whole.slice(offset, offset + frameLength);
+  }
+  const reader = resp.body.getReader();
+  const parts = [];
+  let skip = offset;
+  let remaining = frameLength;
+  try {
+    while (remaining > 0) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (skip >= value.length) {
+        skip -= value.length;
+        continue;
+      }
+      const take = value.subarray(skip, skip + remaining);
+      parts.push(take);
+      remaining -= take.length;
+      skip = 0;
+    }
+  } finally {
+    // Stop the download here: never pull the rest of the bundle.
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  const frame = new Uint8Array(frameLength - remaining);
+  let pos = 0;
+  for (const part of parts) {
+    frame.set(part, pos);
+    pos += part.length;
+  }
+  return frame;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +139,16 @@ export class BundleFlight {
 
   async accessToken() {
     const cached = await this.state.storage.get("google_token");
-    if (cached && cached.expires_at_ms > Date.now() + 60_000) {
+    // A cached entry is trusted only with a usable token (#6989): an
+    // entry poisoned before this validation existed (or written by
+    // anything else) is treated as absent, so it self-heals by
+    // re-exchanging instead of serving the bogus token until expiry.
+    if (
+      cached &&
+      typeof cached.token === "string" &&
+      cached.token !== "" &&
+      cached.expires_at_ms > Date.now() + 60_000
+    ) {
       return cached.token;
     }
     const form = new URLSearchParams({
@@ -113,10 +165,44 @@ export class BundleFlight {
     if (!resp.ok) {
       throw new HttpError(502, `google token exchange failed (HTTP ${resp.status})`);
     }
-    const payload = await resp.json();
+    // Validate the 200 body BEFORE caching it (#6989): the parsed
+    // result is written to Durable Object storage and trusted by the
+    // early return above, so one wrong-shape 200 (proxy error-page
+    // JSON, a Google-side shape change) would otherwise poison every
+    // rehydration on this bundle DO until the bogus expiry passed.
+    // A rejected response writes nothing, so the next call
+    // re-exchanges. The Python sibling shaped this same boundary in
+    // #6846.
+    let payload;
+    try {
+      payload = await resp.json();
+    } catch {
+      throw new HttpError(
+        502,
+        "google token exchange failed (response body was not JSON)",
+      );
+    }
+    if (
+      typeof payload !== "object" ||
+      payload === null ||
+      Array.isArray(payload) ||
+      typeof payload.access_token !== "string" ||
+      payload.access_token === ""
+    ) {
+      throw new HttpError(
+        502,
+        "google token exchange failed (response did not contain an access_token)",
+      );
+    }
+    const expiresIn =
+      typeof payload.expires_in === "number" &&
+      Number.isFinite(payload.expires_in) &&
+      payload.expires_in > 0
+        ? payload.expires_in
+        : 3600;
     const entry = {
       token: payload.access_token,
-      expires_at_ms: Date.now() + (payload.expires_in ?? 3600) * 1000,
+      expires_at_ms: Date.now() + expiresIn * 1000,
     };
     await this.state.storage.put("google_token", entry);
     return entry.token;
@@ -124,6 +210,18 @@ export class BundleFlight {
 
   async rehydrate(job) {
     const { drive_file_id, offset, frame_length, sha256, bundle_id } = job;
+    // The manifest's expected plaintext size (selected as o.size by the
+    // entry point) bounds decompression (#6590). A job without a usable
+    // size fails closed here, before any fetch: falling back to an
+    // unbounded decompress is exactly the failure being fixed.
+    const expectedSize =
+      typeof job.size === "string" && job.size.trim() !== "" ? Number(job.size) : job.size;
+    if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) {
+      throw new HttpError(
+        502,
+        "manifest entry has no usable expected size — refusing unbounded decompression",
+      );
+    }
     const token = await this.accessToken();
     const range = `bytes=${offset}-${offset + frame_length - 1}`;
     const resp = await fetch(`${DRIVE_FILES_URL}/${drive_file_id}?alt=media`, {
@@ -132,11 +230,15 @@ export class BundleFlight {
     if (resp.status !== 206 && resp.status !== 200) {
       throw new HttpError(502, `drive range download failed (HTTP ${resp.status})`);
     }
-    let frame = new Uint8Array(await resp.arrayBuffer());
+    let frame;
     if (resp.status === 200) {
-      // Drive ignored the Range header and sent the whole bundle: slice out
-      // exactly the member's frame before doing anything with it.
-      frame = frame.slice(offset, offset + frame_length);
+      // Drive ignored the Range header and sent the whole bundle: stream
+      // it, discarding everything before the frame and stopping as soon
+      // as the frame is complete, so peak memory tracks frame_length
+      // rather than the bundle size (issue #6182).
+      frame = await readStreamedFrame(resp, offset, frame_length);
+    } else {
+      frame = new Uint8Array(await resp.arrayBuffer());
     }
     if (frame.length !== frame_length) {
       throw new HttpError(
@@ -146,8 +248,13 @@ export class BundleFlight {
     }
     let plain;
     try {
-      plain = decompressFrame(frame);
-    } catch {
+      plain = decompressFrame(frame, expectedSize);
+    } catch (err) {
+      if (err instanceof ExpansionLimitError) {
+        // The decoder's message names the exact bound that fired
+        // (declared content size, declared window, produced output).
+        throw new HttpError(502, err.message);
+      }
       throw new HttpError(502, "zstd frame decompression failed");
     }
     const digest = await sha256Hex(plain);

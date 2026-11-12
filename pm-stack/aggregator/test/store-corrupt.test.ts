@@ -158,8 +158,14 @@ describe("actions store corruption handling (#1452)", () => {
 
     const store = new ActionsStore(file);
     expect((await store.all()).map((action) => action.id)).toEqual(["good-action", "legacy-no-token"]);
-    expect((await store.forObject("orch:legacy-item")).map((action) => action.id)).toEqual(["good-action", "legacy-no-token"]);
-    expect((await store.byObject()).get("orch:legacy-item")?.map((action) => action.id)).toEqual(["good-action", "legacy-no-token"]);
+    expect((await store.forObject("orch:legacy-item")).map((action) => action.id)).toEqual([
+      "good-action",
+      "legacy-no-token",
+    ]);
+    expect((await store.byObject()).get("orch:legacy-item")?.map((action) => action.id)).toEqual([
+      "good-action",
+      "legacy-no-token",
+    ]);
     expect(await store.pendingCounts()).toEqual({ triage: 2, statusRequests: 0, session: 0, preference: 0 });
 
     const quarantine = quarantinedIn(dir, "actions.json");
@@ -177,10 +183,14 @@ describe("actions store corruption handling (#1452)", () => {
     await store.add(newAction({ objectRef: "orch:legacy-item" }));
     const persisted = JSON.parse(readFileSync(file, "utf8"));
     expect(persisted.extension).toEqual({ source: "older-writer" });
-    expect(persisted.actions.find((action: { id: string }) => action.id === "good-action").historicalExtension).toEqual({
-      retained: true,
-    });
-    expect(persisted.actions.find((action: { id: string }) => action.id === "legacy-no-token").clientToken).toBeUndefined();
+    expect(persisted.actions.find((action: { id: string }) => action.id === "good-action").historicalExtension).toEqual(
+      {
+        retained: true,
+      },
+    );
+    expect(
+      persisted.actions.find((action: { id: string }) => action.id === "legacy-no-token").clientToken,
+    ).toBeUndefined();
     expect(persisted.actions.map((action: { id: string }) => action.id)).not.toContain("missing-created-at");
     // Deliberately retain old verb-specific payload shapes; consumers validate those safely.
     expect(persisted.actions[0].payload).toEqual({ answers: "legacy payload shape" });
@@ -307,8 +317,8 @@ describe("comments store corruption handling (#1452)", () => {
       "good-comment",
       "legacy-message-without-state",
     ]);
-    expect([...((await store.byObject()).keys())]).toEqual(["gh:developing-today/code#2347"]);
-    expect([...((await store.counts()).entries())]).toEqual([["gh:developing-today/code#2347", 2]]);
+    expect([...(await store.byObject()).keys()]).toEqual(["gh:developing-today/code#2347"]);
+    expect([...(await store.counts()).entries()]).toEqual([["gh:developing-today/code#2347", 2]]);
     expect(pendingCommentCounts(await store.all())).toEqual({ pendingMessages: 0, pendingGithub: 0, total: 2 });
 
     const quarantine = quarantinedIn(dir, "comments.json");
@@ -326,10 +336,14 @@ describe("comments store corruption handling (#1452)", () => {
     await store.add({ objectRef: "gh:developing-today/code#2347", kind: "note", author: drew, body: "new note" });
     const persisted = JSON.parse(readFileSync(file, "utf8"));
     expect(persisted.extension).toEqual({ source: "older-writer" });
-    expect(persisted.comments.find((comment: { id: string }) => comment.id === "good-comment").historicalExtension).toEqual({
+    expect(
+      persisted.comments.find((comment: { id: string }) => comment.id === "good-comment").historicalExtension,
+    ).toEqual({
       retained: true,
     });
-    expect(persisted.comments.find((comment: { id: string }) => comment.id === "legacy-message-without-state").triageState).toBeUndefined();
+    expect(
+      persisted.comments.find((comment: { id: string }) => comment.id === "legacy-message-without-state").triageState,
+    ).toBeUndefined();
     expect(persisted.comments.map((comment: { id: string }) => comment.id)).not.toContain("missing-created-at");
     expect(readFileSync(join(dir, quarantine[0]))).toEqual(raw);
   });
@@ -346,9 +360,9 @@ describe("comments store corruption handling (#1452)", () => {
 
     await expect(store.all()).rejects.toThrow("simulated archive failure");
     expect(readFileSync(file)).toEqual(raw);
-    await expect(store.add({ objectRef: "gh:developing-today/code#2347", kind: "note", author: drew, body: "blocked" })).rejects.toThrow(
-      "simulated archive failure",
-    );
+    await expect(
+      store.add({ objectRef: "gh:developing-today/code#2347", kind: "note", author: drew, body: "blocked" }),
+    ).rejects.toThrow("simulated archive failure");
     expect(readFileSync(file)).toEqual(raw);
     expect(quarantinedIn(dir, "comments.json")).toEqual([]);
   });

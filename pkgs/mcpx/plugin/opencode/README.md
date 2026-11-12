@@ -70,8 +70,8 @@ is the way to configure a drop-in installation.
 | file | what it is for |
 | --- | --- |
 | `mcpx-session.ts` | the opencode adapter: hooks, tools, toasts, and the session id. The only file opencode loads as a plugin. |
-| `mcpx/daemon.ts` | the portable core: the daemon HTTP client, the discovery ladder, and the remembered-choice file. Imports nothing from opencode. |
-| `mcpx/daemon.test.ts` | `bun test` over the ladder, against real sockets and real temporary state directories. |
+| `../core/daemon.ts` | the portable core: the daemon HTTP client, the discovery ladder, and the remembered-choice file. Imports nothing from opencode. |
+| `../core/daemon.test.ts` | `bun test` over the ladder, against real sockets and real temporary state directories. |
 | `mcpx/ops.gen.ts` | a typed method for every `/v1` operation, generated from the Go operation table. Do not edit; `go test ./internal/api -run TestPluginOpsAreGenerated -update` rewrites it. |
 | `mcpx/ops.test.ts` | `bun test` over the generated methods, against a fake daemon and -- run from the Go suite -- a real one. |
 | `mcpx-tui.tsx` | optional TUI plugin: a real picker for the daemon. Different realm, different API, installed separately. |
@@ -107,6 +107,7 @@ with `go test ./internal/settings -run TestThePluginReadmeListsEveryOption -upda
 | `annotate` | `MCPX_PLUGIN_ANNOTATE` | `true` | add mcpx's own notes to a tool result. |
 | `headless` | `MCPX_PLUGIN_HEADLESS` | `auto` | suppress toasts, because nobody is looking at a screen. |
 | `daemonTools` | `MCPX_PLUGIN_DAEMON_TOOLS` | `auto` | offer the tools that list and choose between daemons. |
+| `disabledTools` | `MCPX_PLUGIN_DISABLED_TOOLS` | — | model-facing mcpx tools hidden from every session. |
 
 <!-- END GENERATED -->
 
@@ -318,7 +319,7 @@ With no daemon the record is **dropped**, not spawned. A timing is not worth
 
 ## Talking to the daemon directly
 
-`mcpx/daemon.ts` connects over the unix socket instead of spawning. Measured
+`../core/daemon.ts` connects over the unix socket instead of spawning. Measured
 here, same request, mean of thirty:
 
 | | |
@@ -334,7 +335,7 @@ rather than transport. That does not matter for something called once a session.
 It matters a great deal for anything on the path of every tool call.
 
 ```ts
-import { connect } from "./mcpx/daemon.ts"
+import { connect } from "../core/daemon.ts"
 
 const { client, discovery } = await connect({ directory })
 if (client) await client.call("fff", "grep", { query: "x" }, sessionID)
@@ -397,7 +398,7 @@ them at runtime.
 ## Tests
 
 ```sh
-bun test plugin/opencode/mcpx/daemon.test.ts
+bun test plugin/core/daemon.test.ts
 ```
 
 Real unix sockets and real temporary state directories, because every failure

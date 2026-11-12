@@ -49,6 +49,7 @@ import (
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
@@ -57,15 +58,18 @@ import (
 const GrantLog = "log"
 
 const (
-	inputPtrFn     = "mcpx_input_ptr"
-	outputPtrFn    = "mcpx_output_ptr"
-	listFn         = "mcpx_list_tools"
-	callFn         = "mcpx_call_tool"
-	maxMsg         = 1 << 20
-	maxLogBytes    = 1 << 20
-	maxLogLines    = 1024
-	maxLogLineSize = 64 << 10
+	inputPtrFn  = "mcpx_input_ptr"
+	outputPtrFn = "mcpx_output_ptr"
+	listFn      = "mcpx_list_tools"
+	callFn      = "mcpx_call_tool"
+	maxMsg      = 1 << 20
+	maxLogBytes = 1 << 20
+	maxLogLines = 1024
 )
+
+// maxLogLineSize bounds one log line a guest may hand the host; it is
+// declared with the defaults (wasm.logLineSize), not here.
+var maxLogLineSize = int(defaults.WasmLogLineSize)
 
 // Source is one instantiated WASM tool source.
 type Source struct {
@@ -92,8 +96,11 @@ func Load(ctx context.Context, src []byte, grants ...string) (*Source, error) {
 	host := rt.NewHostModuleBuilder("mcpx")
 	if granted[GrantLog] {
 		host.NewFunctionBuilder().WithFunc(func(_ context.Context, m api.Module, ptr, length uint32) {
-			if length > maxLogLineSize {
+			if length > uint32(maxLogLineSize) {
 				s.dropLogLine()
+				return
+			}
+			if _, ok := m.ExportedMemoryDefinitions()["memory"]; !ok {
 				return
 			}
 			b, ok := m.Memory().Read(ptr, length)
@@ -103,19 +110,23 @@ func Load(ctx context.Context, src []byte, grants ...string) (*Source, error) {
 		}).Export("log")
 	}
 	if _, err := host.Instantiate(ctx); err != nil {
-		rt.Close(ctx)
+		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("wasmtools: instantiate host: %w", err)
 	}
 
 	mod, err := rt.Instantiate(ctx, src)
 	if err != nil {
-		rt.Close(ctx)
+		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("wasmtools: instantiate guest (ungranted import?): %w", err)
+	}
+	if _, ok := mod.ExportedMemoryDefinitions()["memory"]; !ok {
+		_ = rt.Close(ctx)
+		return nil, fmt.Errorf("wasmtools: guest does not export memory")
 	}
 	s.mod = mod
 	for _, fn := range []string{inputPtrFn, outputPtrFn, listFn, callFn} {
 		if mod.ExportedFunction(fn) == nil {
-			rt.Close(ctx)
+			_ = rt.Close(ctx)
 			return nil, fmt.Errorf("wasmtools: guest does not export %s", fn)
 		}
 	}

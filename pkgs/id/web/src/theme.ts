@@ -64,7 +64,7 @@ export function initTheme(): void {
 
   // Add keyboard shortcut for theme cycling (Alt+T)
   document.addEventListener("keydown", (event: KeyboardEvent) => {
-    if (event.altKey && event.key === "t") {
+    if (event.altKey && event.code === "KeyT") {
       event.preventDefault();
       cycleTheme();
     }

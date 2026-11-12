@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the external-comms ledger pusher every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=external-comms-pusher.service
+
+[Install]
+WantedBy=timers.target

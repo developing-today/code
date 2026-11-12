@@ -25,7 +25,7 @@ declaration come:
 - the `mcpx_<op>` MCP tool,
 - a generated CLI command, for operations that have one,
 - a typed plugin method on `DaemonClient.ops`
-  (`plugin/opencode/mcpx/ops.gen.ts`, generated the same way),
+  (`plugin/core/ops.gen.ts`, generated the same way),
 - the operation's entry in `/v1/openapi.json` and in the document
   `mcpx openapi` prints — one document now, generated from the table;
   the stale hand-written serve-surface document it replaced is
@@ -140,7 +140,7 @@ JavaScript runtime involved at all. The whole surface is the
 
 ### `DaemonClient` and `connect()` — for harnesses and Bun/TypeScript programs
 
-The opencode plugin's client (`plugin/opencode/mcpx/daemon.ts`)
+The opencode plugin's client (`plugin/core/daemon.ts`)
 talks to the daemon over its unix socket — measured at about
 0.17 ms per call against about 23 ms for spawning the binary. It is
 not published as a package; harness plugins vendor it, and any

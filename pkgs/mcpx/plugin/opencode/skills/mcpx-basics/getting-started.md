@@ -11,9 +11,9 @@ runtime on `PATH`: deno, bun or node (tried in that order). `call`, `ls`,
 
 ```sh
 # with nix
-nix run github:dezren39/nix#mcpx -- --version
+nix run github:dezren39/darwin-nix#mcpx -- --version
 
-# from a checkout of github.com/dezren39/nix
+# from a checkout of github.com/dezren39/darwin-nix
 cd pkgs/mcpx && go build -o ~/.local/bin/mcpx ./cmd/mcpx
 ```
 
@@ -85,12 +85,12 @@ there.
 
 ## 6. When it does not work
 
-| symptom | look at |
-| --- | --- |
-| a namespace shows `error` in `mcpx ls` | `mcpx status`, which has the full start error |
-| a call failed or hung | `mcpx log --since 5m` |
-| `exec` says no runtime | install deno, bun or node; `mcpx doctor` |
-| servers from another project appear | more than one daemon; see the `mcpx-daemon` skill |
+| symptom                                | look at                                           |
+| -------------------------------------- | ------------------------------------------------- |
+| a namespace shows `error` in `mcpx ls` | `mcpx status`, which has the full start error     |
+| a call failed or hung                  | `mcpx log --since 5m`                             |
+| `exec` says no runtime                 | install deno, bun or node; `mcpx doctor`          |
+| servers from another project appear    | more than one daemon; see the `mcpx-daemon` skill |
 
 ## 7. Giving an MCP host mcpx itself
 

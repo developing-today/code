@@ -146,7 +146,7 @@ func Open(logDir string) (*Store, error) {
 		return nil, err
 	}
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 	return &Store{db: db, path: path, dir: logDir}, nil

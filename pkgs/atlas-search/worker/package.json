@@ -1,0 +1,20 @@
+{
+  "description": "Cross-database search Worker: per-query Durable Object embedding + indefinite result cache over the fleet search fan-out (developing-today/code#6788).",
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.9.14",
+    "@cloudflare/workers-types": "^4.20251011.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.2.0",
+    "wrangler": "4.44.0"
+  },
+  "name": "atlas-search-worker",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

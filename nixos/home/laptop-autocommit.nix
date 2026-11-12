@@ -18,9 +18,7 @@
 let
   cfg = config.services.laptop-autocommit;
   home = config.home.homeDirectory;
-  sweepPkg = pkgs.writeShellScriptBin "laptop-autocommit" (
-    builtins.readFile ./laptop-autocommit.sh
-  );
+  sweepPkg = pkgs.writeShellScriptBin "laptop-autocommit" (builtins.readFile ./laptop-autocommit.sh);
   reviewPkg = pkgs.writeShellScriptBin "laptop-untracked-review" (
     builtins.readFile ./laptop-untracked-review.sh
   );
@@ -34,6 +32,7 @@ let
     openclaw = "${home}/.openclaw";
     hatch = "${home}/hatch";
     hatch-personal = "${home}/hatch-personal";
+    cairn = "${home}/git/cairn";
   };
   sweepService = name: path: {
     "laptop-autocommit-${name}" = {

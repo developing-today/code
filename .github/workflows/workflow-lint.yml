@@ -1,0 +1,65 @@
+name: workflow-lint
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Generic basic-tier validation for workflow and composite-action
+# changes (#5743): mcpx.yml's actionlint leg covers only
+# .github/workflows/mcpx*.yml (#1996), so a workflow-only PR could
+# merge with no validator at all. This workflow runs
+# .github/scripts/check-workflows.sh — actionlint over the whole
+# workflow set plus shape validation of .github/actions/*/action.yml
+# — whenever a change touches those paths. Pure bash + one pinned
+# static binary, so this stays a seconds-long basic check.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - ".github/scripts/check-workflows.sh"
+      - ".github/scripts/check-workflows.test.sh"
+      - ".github/ci-policy.md"
+      - ".github/scripts/check-ci-policy-agreement.sh"
+      - ".github/scripts/check-ci-policy-agreement.test.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workflow-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACTIONLINT_VERSION: "1.7.7"
+  ACTIONLINT_SHA256: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+
+jobs:
+  workflow-lint:
+    name: "basic: workflow lint"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install actionlint (pinned, checksum-verified)
+        run: |
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" actionlint
+          echo "ACTIONLINT_BIN=$RUNNER_TEMP/actionlint" >> "$GITHUB_ENV"
+      - name: Ensure PyYAML for action-metadata validation (best effort)
+        run: |
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --break-system-packages --quiet 'pyyaml>=6,<7' \
+            || python3 -m pip install --quiet 'pyyaml>=6,<7' \
+            || echo "PyYAML unavailable; check-workflows.sh uses its structural fallback"
+      - name: Contract tests for the workflow validator (#5743)
+        run: bash .github/scripts/check-workflows.test.sh
+      - name: Validate workflows and composite actions
+        run: bash .github/scripts/check-workflows.sh
+      - name: Contract tests for the ci-policy agreement checker (#7089)
+        run: bash .github/scripts/check-ci-policy-agreement.test.sh
+      - name: CI-policy agreement check (#7089)
+        run: bash .github/scripts/check-ci-policy-agreement.sh

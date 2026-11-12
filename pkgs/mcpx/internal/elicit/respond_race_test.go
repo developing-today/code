@@ -23,12 +23,12 @@ func TestConcurrentAnswersOneWinnerLosersToldSo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 	b, err := elicit.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	r := ask(t, a, elicit.Request{})
 

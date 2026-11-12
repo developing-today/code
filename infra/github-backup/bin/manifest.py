@@ -9,7 +9,18 @@ its state. Together they rebuild the whole tree (see docs/RUNBOOK.md § DR).
 import json, os, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, mirror_path, valid_mirror, disk_kb
+from ghb_common import (
+    load_config,
+    backup_root,
+    mirror_path,
+    valid_mirror,
+    disk_kb,
+    load_plan,
+    load_state,
+    report_problems,
+    atomic_write_text,
+    save_json,
+)
 
 
 def head_sha(path, branch=None):
@@ -32,10 +43,10 @@ def last_fetch(path, state):
 def build(root=None):
     cfg = load_config()
     root = root or backup_root(cfg)
-    plan_path = os.path.join(root, "plan.json")
-    plan = json.load(open(plan_path)) if os.path.exists(plan_path) else []
-    state_path = os.path.join(root, "state.json")
-    state = json.load(open(state_path)) if os.path.exists(state_path) else {}
+    plan, problems = load_plan(root)
+    report_problems(problems)
+    state, problems = load_state(root)
+    report_problems(problems)
     entries = {}
     families = {}
     for item in plan:
@@ -68,8 +79,9 @@ def build(root=None):
             "disk_kb": sum(e["disk_kb"] for e in entries.values()),
         },
     }
-    with open(os.path.join(root, "MANIFEST.json"), "w") as f:
-        json.dump(manifest, f, indent=1, sort_keys=True)
+    # #3240: MANIFEST.json is the DR source of truth — atomic write
+    # via ghb_common, never a truncating open("w").
+    save_json(os.path.join(root, "MANIFEST.json"), manifest, indent=1, sort_keys=True)
     lines = [
         "# Fork families (git alternates pool)",
         "",
@@ -83,8 +95,9 @@ def build(root=None):
         for m in sorted(families[anchor]):
             lines.append(f"- {m}")
         lines.append("")
-    with open(os.path.join(root, "FAMILIES.md"), "w") as f:
-        f.write("\n".join(lines))
+    # FAMILIES.md feeds cold-export decisions, so it gets the same
+    # atomic write as the JSON state (#3240 / #3283 disposition (a)).
+    atomic_write_text(os.path.join(root, "FAMILIES.md"), "\n".join(lines))
     return manifest
 
 

@@ -12,10 +12,10 @@ It is the thinnest roadmap in the repo. The open issues I read (the 30 most rece
 
 ## Now
 
-| Title                              | Status      | Intent                                                    | Links                                                |
-| ---------------------------------- | ----------- | --------------------------------------------------------- | ---------------------------------------------------- |
-| Keep flake inputs current          | in-progress | A daily Jules job updates inputs and audits dependencies. | `.github/workflows/jules-daily-flake-sync.yml`, #287 |
-| mcpx as a package for other flakes | in-progress | The macOS flake needs a way to build mcpx from this repo. | #308, [mcpx roadmap](mcpx.md)                        |
+| Title                              | Status      | Intent                                                            | Links                                          |
+| ---------------------------------- | ----------- | ----------------------------------------------------------------- | ---------------------------------------------- |
+| Keep flake inputs current          | in-progress | A daily pm-dispatch session audits flake config and dependencies. | `.github/workflows/daily-flake-sync.yml`, #287 |
+| mcpx as a package for other flakes | in-progress | The macOS flake needs a way to build mcpx from this repo.         | #308, [mcpx roadmap](mcpx.md)                  |
 
 ## Next
 

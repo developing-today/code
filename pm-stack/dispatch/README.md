@@ -51,7 +51,7 @@ Flow:
    issue, task, or session created (issue #2903).
 1. Create the tracking GitHub issue (`source/dispatch` label; body = the
    prompt + a dispatch footer). Skipped with a `warnings` entry for
-   dezren39/nix, where the pm-stack GitHub App is not installed.
+   developing-today/zettel, where the pm-stack GitHub App is not installed.
 2. Enqueue a repo-task/v1 queue task (`small_fix` with the canonical
    `repo-health:v1:fix:<repo>:issue:<n>` dedupe key when an issue exists,
    else `triage` with a unique `repo-health:v1:triage:<repo>:dispatch:<rand8>`
@@ -92,7 +92,7 @@ failed.
 
 ```jsonc
 {
-  "repo": "developing-today/opencode", // required
+  "repo": "developing-today-forks/opencode", // required
   "title": "investigate the red build", // required
   "prompt": "…", // required ("body" accepted as an alias)
   "kind": "triage", // optional: triage|small_fix|pr_shepherd|ci_investigation
@@ -117,10 +117,29 @@ comment naming the task id plus the `queue/queued` and
 `source/dispatch` labels. The response is `201 {task_id,
 issue_number, issue_url, queue}`, where `issue_url` is
 `https://github.com/<repo>/issues/<issue_number>`. `issue_number`
-takes precedence over `issue` when both are sent. For dezren39/nix,
-where the GitHub App is not installed, the attach is skipped with a
-`warnings` entry; the task is still enqueued and `issue_number` is
-still returned.
+takes precedence over `issue` when both are sent. For
+developing-today/zettel, where the GitHub App is not installed, the
+attach is skipped with a `warnings` entry; the task is still enqueued
+and `issue_number` is still returned.
+
+### `GET /v1/tasks/:id` — task status (issue #5555)
+
+Authenticated read of the queue task row dispatch (or a worker)
+created: `{task_id, queue, title, status, worker_id, lane_id, repo,
+kind, attempts, max_attempts, claimed_at, lease_until, created_at,
+updated_at, completed_at, progress, result, last_error, dedupe_key}`.
+The packet body and payload are NOT returned — this is a status
+surface, not a packet dump; only the payload's `repo`/`kind` are
+surfaced, and a task whose packet names a repo is readable only by
+callers allowed for that repo (the same gate as the write routes).
+Unknown id → `404`; non-numeric id → `400`; unauthenticated → `401`.
+
+### `GET /v1/sessions/:id` — session status (issue #5555)
+
+Authenticated read proxied from the OpenCode server:
+`{session_id, title, directory, time}`. A session the OpenCode
+server does not know → `404`; an OpenCode-side failure (server down,
+auth) → `502`, never conflated with "session gone".
 
 ### Why assignment is a direct PATCH
 
@@ -159,7 +178,18 @@ Every endpoint except `GET /health` requires `Authorization: Bearer …`:
   See `examples/dispatch-workflow.yml`.
 - **Static bearer secret**: `DISPATCH_API_TOKEN` (in the laptop's
   `~/secrets/dispatch.env`), compared in constant time — the shape a
-  repo stores as a GitHub Actions secret.
+  repo stores as a GitHub Actions secret. The vault home for the
+  value by name is Bitwarden **`pm-dispatch.api-token`** (filed
+  under issue #5555, verified byte-identical to the service's by
+  hash): a rotation updates the vault entry and
+  `~/secrets/dispatch.env` together, and then restarts
+  `pm-dispatch.service` — the unit reads the env file only at
+  start, so without a restart the new token is rejected and the
+  old one stays valid. If `~/secrets/dispatch.env` is lost,
+  restore the token from this vault item before running
+  install.sh: a missing file makes the installer generate a fresh
+  token, desyncing the vault copy and every client (401s) until
+  they are updated to match.
 
 The caller identity (`{type:"bearer"}` or `{type:"oidc", repository,
 actor, workflow_ref}`) is recorded in the task payload.
@@ -473,23 +503,26 @@ touching any caller.
 
 ## Configuration (env)
 
-| Name                                              | Default                                     | Notes                                                                 |
-| ------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------- |
-| `DISPATCH_HOSTS`                                  | `127.0.0.1`                                 | install.sh renders loopback + the laptop tailnet IP                   |
-| `DISPATCH_PORT`                                   | `4879`                                      |                                                                       |
-| `DISPATCH_BUILD_VERSION`                          | `dev`                                       | set by install.sh to the deployed commit                              |
-| `DISPATCH_API_TOKEN`                              | —                                           | from `~/secrets/dispatch.env`                                         |
-| `DISPATCH_OIDC_AUDIENCE`                          | `pm-dispatch`                               |                                                                       |
-| `DISPATCH_REPO_ALLOWLIST`                         | the six fleet repos                         |                                                                       |
-| `SUPABASE_URL`                                    | `https://nltgxorqwxhgfzseiirt.supabase.co`  |                                                                       |
-| `SUPABASE_SERVICE_ROLE_KEY`                       | —                                           | from `~/secrets/dispatch.env` (Bitwarden `supabase.service-role-key`) |
-| `OPENCODE_URL`                                    | `http://127.0.0.1:13420`                    | laptop standing server                                                |
-| `OPENCODE_AUTH_FILE`                              | `~/.local/state/opencode/service-prod.json` | password read at runtime, never logged                                |
-| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`            |
+| Name                                              | Default                                     | Notes                                                                                                                                            |
+| ------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DISPATCH_HOSTS`                                  | `127.0.0.1`                                 | install.sh renders loopback + the laptop tailnet IP                                                                                              |
+| `DISPATCH_PORT`                                   | `4879`                                      |                                                                                                                                                  |
+| `DISPATCH_BUILD_VERSION`                          | `dev`                                       | set by install.sh to the deployed commit                                                                                                         |
+| `DISPATCH_API_TOKEN`                              | —                                           | from `~/secrets/dispatch.env`                                                                                                                    |
+| `DISPATCH_OIDC_AUDIENCE`                          | `pm-dispatch`                               |                                                                                                                                                  |
+| `DISPATCH_REPO_ALLOWLIST`                         | the six fleet repos                         |                                                                                                                                                  |
+| `SUPABASE_URL`                                    | — (required, no default)                    | rendered by install.sh from `~/secrets/pm-stack.sops.yaml` (`supabase_url`, muse-dev2)                                                           |
+| `SUPABASE_SERVICE_ROLE_KEY`                       | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml` (`supabase_service_role_key`; Bitwarden source `supabase.muse-dev2.service-role-key`) |
+| `OPENCODE_URL`                                    | `http://127.0.0.1:13420`                    | laptop standing server                                                                                                                           |
+| `OPENCODE_AUTH_FILE`                              | `~/.local/state/opencode/service-prod.json` | password read at runtime, never logged                                                                                                           |
+| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`                                                                                       |
 
-GitHub issue creation uses the pm-stack GitHub App (installed on code,
-opencode, openchamber and dezren39/nix — **not** developing-today/zettel
-or dezren39/dezren39, where issue creation is skipped with a warning).
+GitHub issue creation uses the pm-stack GitHub App (installed on
+developing-today/code and dezren39/darwin-nix — **not** on
+developing-today-forks/opencode, developing-today-forks/openchamber,
+developing-today/zettel or dezren39/dezren39, where issue creation is
+skipped with a warning; APP_INSTALLED_REPOS in src/config.ts is the
+list of record).
 If the app route is unusable, the laptop's
 authenticated `gh` CLI is the fallback; if both fail, the request
 proceeds without an issue and says so in `warnings` (for `/v1/tasks`
@@ -515,7 +548,8 @@ bash pm-stack/dispatch/install.sh
 ```
 
 install.sh copies the tree to `~/pm-stack/dispatch`, renders `.env`
-from the sops file, ensures `~/secrets/dispatch.env` exists (generating
+from the sops file (GitHub App material and the fleet Supabase
+config), ensures `~/secrets/dispatch.env` exists (generating
 `DISPATCH_API_TOKEN` if absent — value never printed), installs
 `pm-stack/systemd/pm-dispatch.service` as a user unit, restarts only on
 change, and fails loudly unless `/health` reports the deployed build

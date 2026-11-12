@@ -5,17 +5,14 @@ After=network-online.target
 [Service]
 Type=oneshot
 TimeoutStartSec=300
-WorkingDirectory=%h/pm-stack/aggregator
-# The gatherer runs from the repo clone on purpose: aggregator
-# package re-deploys replace the deployed scripts/ wholesale, and a
-# not-yet-merged (or simply newer) gatherer must not vanish with
-# them. Its outputs are pinned to the deployed aggregator dir below;
-# the script's own defaults are relative to wherever it runs from.
+WorkingDirectory=%h/git/code/pm-stack/aggregator
+# The gatherer runs from the laptop's code checkout; all outputs are
+# pinned to the stable state directory below, never the checkout.
 # The gatherer imports the OpenChamber quota module from the laptop
 # checkout, reads OpenCode's credential store directly, and ingests
 # laptop file exports (Meta, #1301).
-Environment=QUOTA_CURRENT_PATH=%h/pm-stack/aggregator/quota-current.json
-Environment=QUOTA_HEARTBEAT_PATH=%h/pm-stack/aggregator/quota-gatherer-heartbeat.json
-Environment=QUOTA_GATHERER_STATE_PATH=%h/pm-stack/aggregator/quota-gatherer-state.json
-Environment=QUOTA_SNAPSHOTS_DIR=%h/pm-stack/aggregator/snapshots
+Environment=QUOTA_CURRENT_PATH=%h/.local/state/pm-aggregator/quota-current.json
+Environment=QUOTA_HEARTBEAT_PATH=%h/.local/state/pm-aggregator/quota-gatherer-heartbeat.json
+Environment=QUOTA_GATHERER_STATE_PATH=%h/.local/state/pm-aggregator/quota-gatherer-state.json
+Environment=QUOTA_SNAPSHOTS_DIR=%h/.local/state/pm-aggregator/snapshots
 ExecStart=/run/current-system/sw/bin/bun run %h/git/code/pm-stack/aggregator/scripts/gather-quota.ts

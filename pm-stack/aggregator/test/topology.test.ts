@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { loadConfig } from "../src/config.ts";
 import { buildServices } from "../src/topology.ts";
 
-function ports(env: Record<string, string | undefined> = {}) {
+function ports(env: Record<string, string | undefined> = { PM_AGG_DEV: "1" }) {
   return Object.fromEntries(buildServices(loadConfig(env)).map(({ id, port }) => [id, port]));
 }
 

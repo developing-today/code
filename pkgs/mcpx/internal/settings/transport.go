@@ -7,6 +7,17 @@ import "github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 func transportSettings() []Setting {
 	return []Setting{
 		{
+			Path: "daemon.roots", Scope: ScopeDaemon, Kind: KindPathList, Default: "",
+			Commands: []string{"daemon"},
+			Name:     "Upstream roots",
+			Short:    "filesystem paths exposed to upstream servers through roots/list",
+			Long: "Explicit paths the daemon returns to an upstream server when it asks " +
+				"for roots/list and no calling host's roots can be relayed. Paths are " +
+				"exposed as file:// URIs; no roots are exposed by default. Relative paths " +
+				"are resolved from the daemon's working directory. Set daemon.roots in " +
+				"configuration or use --daemon-roots; use a JSON array for paths with spaces.",
+		},
+		{
 			Path: "transport.bearerToken", Scope: ScopeDaemon, Kind: KindString, Default: "",
 			Commands: []string{"daemon"},
 			Name:     "Bearer token",

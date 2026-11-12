@@ -50,19 +50,66 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
   `config.json` → `app.bitwarden_secret_names`. Values never enter this
   repo, the backup tree, or chat.
 
+## System contract — a mirror is what it can prove (design #3282)
+
+No surface of this system may report coverage, success, or health
+that the underlying mirrors, records, or inventory do not support.
+The seven rules, in operator language:
+
+1. **Validity is resolvability.** A mirror counts as present only
+   when it is bare AND its HEAD resolves to a commit
+   (`ghb_common.valid_mirror`). A bare directory with no refs is a
+   skeleton, not a backup. Planned repos are never legitimately
+   empty (zero-commit repos are excluded from the plan), so there
+   is no emptiness exception.
+2. **Destinations have four states, each with a disposition.**
+   Absent → clone. Valid → skip (never deleted or re-cloned).
+   Skeleton (bare, unresolvable HEAD, zero refs) → remove and
+   clone; removal provably loses nothing. Debris (exists, not a
+   bare skeleton, not valid) → preserved and reported, never
+   silently deleted — it may hold the only copy of transferred
+   objects; `clone_all` fails loudly for that repo instead.
+3. **Every attempt ends in a recorded outcome.** A per-repo fetch
+   never raises out of the run: a timeout, a failure, and a missing
+   mirror are all recorded (`ok` / `fail` / `missing`) in state,
+   `fetch.log`, and the run summary, by the one recorder path the
+   daily loop and the webhook drainer share.
+4. **An event is acked only when its fetch landed.** The drainer
+   acks a planned repo's webhook event only on a recorded `ok`; on
+   `fail` / `missing` the event stays queued for the next drain and
+   the coalescing stamp advances only on `ok`.
+5. **The alarm is a streak of unavailable days.** Failures,
+   timeouts, and missing mirrors all record the day against the
+   repo; a success clears the record. Three consecutive unavailable
+   days make the daily run exit non-zero — that exit code is the
+   alarm systemd watches.
+6. **State is written atomically, loaded tolerantly, only through
+   `ghb_common`.** Generated state (`plan.json`, `state.json`,
+   `MANIFEST.json`, `FAMILIES.md`, reconcile reports) is written
+   via temp-file + fsync + `os.replace` with a last-good copy kept;
+   a torn file loads its last-good copy with a loud warning instead
+   of crashing every reader. The two `state.json` writers (daily
+   fetch, 5-minute drainer) hold the shared `state.lock` flock
+   across their whole read-modify-write cycle.
+7. **A failed owner keeps its plan.** An owner whose inventory
+   fails (null `repositoryOwner`, SAML block, API error) is an
+   error, never an empty owner: reconcile retains that owner's
+   previously planned entries, marks them retained in the report,
+   and still exits non-zero.
+
 ## Components
 
-| Path                   | What                                                   |
-| ---------------------- | ------------------------------------------------------ |
-| `config.json`          | owners, tier rules, exclusions, gaps, App/Worker names |
-| `bin/ghb_common.py`    | shared inventory + plan builder                        |
-| `bin/clone_all.py`     | resumable parallel initial clone (from plan.json)      |
-| `bin/fetch_mirrors.py` | daily fetch / targeted fetch of named repos            |
-| `bin/reconcile.py`     | weekly sweep: inventory → plan → clone new → report    |
-| `bin/manifest.py`      | regenerate MANIFEST.json + FAMILIES.md                 |
-| `bin/drain_queue.py`   | drain Worker queue, fetch pushed repos                 |
-| `bin/app_setup.py`     | App manifest flow, credential storage, install report  |
-| `worker/`              | Cloudflare Worker webhook receiver (wrangler)          |
-| `systemd/`             | laptop user units + timers + installer                 |
-| `docs/RUNBOOK.md`      | copy-paste operations: install, add org, upgrade, DR   |
-| `tests/`               | regression tests (plain python3, no deps)              |
+| Path                   | What                                                                                      |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| `config.json`          | owners, tier rules, exclusions, gaps, App/Worker names                                    |
+| `bin/ghb_common.py`    | shared inventory + plan builder                                                           |
+| `bin/clone_all.py`     | resumable parallel initial clone (from plan.json)                                         |
+| `bin/fetch_mirrors.py` | daily fetch / targeted fetch of named repos                                               |
+| `bin/reconcile.py`     | weekly sweep: inventory → plan → clone new → report                                       |
+| `bin/manifest.py`      | regenerate MANIFEST.json + FAMILIES.md                                                    |
+| `bin/drain_queue.py`   | drain Worker queue, fetch pushed repos                                                    |
+| `bin/app_setup.py`     | App manifest flow, credential storage, install report                                     |
+| `worker/`              | Cloudflare Worker webhook receiver (wrangler)                                             |
+| `systemd/`             | laptop user units + timers + installer                                                    |
+| `docs/RUNBOOK.md`      | copy-paste operations: install, add org, upgrade, DR                                      |
+| `tests/`               | regression tests (plain python3, no deps; run by the github-backup tests workflow, #5937) |

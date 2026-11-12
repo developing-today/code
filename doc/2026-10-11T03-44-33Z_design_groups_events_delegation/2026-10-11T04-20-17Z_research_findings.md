@@ -475,7 +475,7 @@ Failure mode [R]: a mistaken manager removal voids all dependent operations. Re-
 - Telegram [R]: bearer. `expire_date`. `member_limit` from 1 to 99,999. `creates_join_request` gives admin approval. `revokeChatInviteLink`.
 - Keybase invite link [R]: `/i/t/{id}#{ikey}`. The key sits in the URL fragment, so the server sees only the ID. That is a precedent for keeping the secret out of anything the server sees.
 - Verdict [I]: our link shape `id:join?group=…&invite=…&ticket=…` with the secret in the fragment follows the Keybase pattern. Expiry, use limits, per-invite revocation, and optional approval are cheap.
-- Risks [R + I]: bearer links leak when forwarded. Use counts race across replicas unless the chain serialises accepts, which Keybase does at admission.
+- Risks [R + I]: bearer links leak when forwarded. Use counts can race across replicas unless the chain serialises accepts. Follow-up source review (2026-11-01; see `pkgs/id/src/seitan/mod.rs`) confirms Keybase's normal sequential old-style V2 path records completion in team-chain state after a successful membership transaction and repolls before handling; it does not establish atomic exclusion of concurrent or stale handlers, or server-side serialization across replicas.
 
 ---
 

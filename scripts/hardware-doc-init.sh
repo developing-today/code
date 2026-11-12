@@ -25,21 +25,36 @@ REPO_URL="${HARDWARE_DOC_URL:-https://github.com/developing-today/hardware-doc.g
 DIR_NAME="${HARDWARE_DOC_DIR_NAME:-hardware-doc}"
 LINK_REL="doc/hardware"
 
-c_red=$'\033[31m'; c_yel=$'\033[33m'; c_grn=$'\033[32m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
-[ -t 1 ] || { c_red=; c_yel=; c_grn=; c_dim=; c_off=; }
+c_red=$'\033[31m'
+c_yel=$'\033[33m'
+c_grn=$'\033[32m'
+c_dim=$'\033[2m'
+c_off=$'\033[0m'
+[ -t 1 ] || {
+  c_red=
+  c_yel=
+  c_grn=
+  c_dim=
+  c_off=
+}
 info() { printf '%s\n' "$*"; }
-ok()   { printf '%s✓%s %s\n' "$c_grn" "$c_off" "$*"; }
+ok() { printf '%s✓%s %s\n' "$c_grn" "$c_off" "$*"; }
 warn() { printf '%s!%s %s\n' "$c_yel" "$c_off" "$*" >&2; }
-err()  { printf '%sx%s %s\n' "$c_red" "$c_off" "$*" >&2; }
+err() { printf '%sx%s %s\n' "$c_red" "$c_off" "$*" >&2; }
 
-command -v git >/dev/null 2>&1 || { err "git not found in PATH"; exit 1; }
+command -v git >/dev/null 2>&1 || {
+  err "git not found in PATH"
+  exit 1
+}
 
 # --- resolve the REAL repository root -----------------------------------------
 # --git-common-dir, not --show-toplevel: inside a linked worktree the toplevel is the
 # worktree, whose parent is the wrong directory. The common dir always points at the
 # main repository's .git, so its parent is the true repo root.
 COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || {
-  err "not inside a git repository"; exit 1; }
+  err "not inside a git repository"
+  exit 1
+}
 REPO_ROOT="$(dirname "$COMMON_DIR")"
 PARENT="$(dirname "$REPO_ROOT")"
 TARGET="$PARENT/$DIR_NAME"
@@ -54,25 +69,17 @@ info "${c_dim}target    : $TARGET${c_off}"
 
 # --- reuse an existing checkout, or clone -------------------------------------
 # Only clone when there is genuinely nothing there. If a hardware-doc already sits
-# beside this repo we adopt it as-is, whatever its remote or branch - the user may
-# have it checked out on a topic branch, or pointed at a fork.
+# beside this repo we adopt it (whatever its remote) and attempt the safe
+# fast-forward-only update below on its current branch; every unsafe state
+# (detached, dirty, no upstream, fetch failure, unpushed, diverged) warns and
+# leaves the checkout untouched.
 if [ -d "$TARGET/.git" ]; then
   ok "using existing checkout at $TARGET"
   ACTUAL_URL="$(git -C "$TARGET" remote get-url origin 2>/dev/null || true)"
   if [ -n "$ACTUAL_URL" ] && [ "$ACTUAL_URL" != "$REPO_URL" ]; then
     info "${c_dim}  origin: $ACTUAL_URL${c_off}"
   fi
-elif [ ! -e "$TARGET" ]; then
-  info "no $DIR_NAME beside this repo - cloning $REPO_URL"
-  if git clone "$REPO_URL" "$TARGET"; then
-    ok "cloned to $TARGET"
-  else
-    err "clone failed"; exit 1
-  fi
-elif [ ! -d "$TARGET/.git" ]; then
-  err "$TARGET exists but is not a git repository — refusing to touch it"
-  exit 1
-else
+
   # --- update, but never destructively ----------------------------------------
   BRANCH="$(git -C "$TARGET" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 
@@ -107,6 +114,17 @@ else
       fi
     fi
   fi
+elif [ ! -e "$TARGET" ]; then
+  info "no $DIR_NAME beside this repo - cloning $REPO_URL"
+  if git clone "$REPO_URL" "$TARGET"; then
+    ok "cloned to $TARGET"
+  else
+    err "clone failed"
+    exit 1
+  fi
+else
+  err "$TARGET exists but is not a git repository — refusing to touch it"
+  exit 1
 fi
 
 # --- symlink helper -----------------------------------------------------------
@@ -143,8 +161,8 @@ ensure_link() {
   fi
   mkdir -p "$(dirname "$link")"
 
-  _resolves() { [ -L "$link" ] && [ -e "$link" ] && \
-                [ "$(cd "$link" && pwd -P)" = "$(cd "$abstgt" && pwd -P)" ]; }
+  _resolves() { [ -L "$link" ] && [ -e "$link" ] &&
+    [ "$(cd "$link" && pwd -P)" = "$(cd "$abstgt" && pwd -P)" ]; }
 
   local used_absolute=0
   if _resolves; then
@@ -177,8 +195,8 @@ ensure_link() {
     # Compare WORKTREE against INDEX only. Using `status` here would also fire for a
     # merely-staged-but-uncommitted path, which is not a local deviation at all.
     if ! git -C "$wd" diff --quiet -- "$rel" 2>/dev/null; then
-      git -C "$wd" update-index --skip-worktree "$rel" 2>/dev/null \
-        && info "${c_dim}  marked --skip-worktree; undo: git -C $wd update-index --no-skip-worktree $rel${c_off}"
+      git -C "$wd" update-index --skip-worktree "$rel" 2>/dev/null &&
+        info "${c_dim}  marked --skip-worktree; undo: git -C $wd update-index --no-skip-worktree $rel${c_off}"
     fi
   elif git -C "$wd" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
     if ! git -C "$wd" diff --quiet -- "$rel" 2>/dev/null; then
@@ -226,11 +244,11 @@ fi
 #   doc/archive -> hardware/archive     -> (same)
 # Purely ergonomic: they let you write ./archive/... from this repo's root.
 if [ -d "$ARCHIVE_DIR" ]; then
-  ensure_link "$WORKTREE_ROOT" "archive"     "doc/hardware/archive" "$ARCHIVE_DIR"
-  ensure_link "$WORKTREE_ROOT" "doc/archive" "hardware/archive"     "$ARCHIVE_DIR"
+  ensure_link "$WORKTREE_ROOT" "archive" "doc/hardware/archive" "$ARCHIVE_DIR"
+  ensure_link "$WORKTREE_ROOT" "doc/archive" "hardware/archive" "$ARCHIVE_DIR"
   if [ -d "$SCRATCH_DIR" ]; then
-    ensure_link "$WORKTREE_ROOT" "scratch"     "doc/hardware/scratch" "$SCRATCH_DIR"
-    ensure_link "$WORKTREE_ROOT" "doc/scratch" "hardware/scratch"     "$SCRATCH_DIR"
+    ensure_link "$WORKTREE_ROOT" "scratch" "doc/hardware/scratch" "$SCRATCH_DIR"
+    ensure_link "$WORKTREE_ROOT" "doc/scratch" "hardware/scratch" "$SCRATCH_DIR"
   fi
 fi
 
@@ -244,9 +262,10 @@ if [ -d "$ARCHIVE_DIR" ]; then
   if [ -x "$TARGET/tools/link_archived.py" ] && command -v python3 >/dev/null 2>&1; then
     missing="$(cd "$TARGET" && python3 tools/link_archived.py 2>/dev/null | head -1)"
     case "$missing" in
-      "would link 0 "*) : ;;
-      "would link "*)
-        info "${c_dim}  $missing - run: (cd $TARGET && python3 tools/link_archived.py --apply)${c_off}" ;;
+    "would link 0 "*) : ;;
+    "would link "*)
+      info "${c_dim}  $missing - run: (cd $TARGET && python3 tools/link_archived.py --apply)${c_off}"
+      ;;
     esac
   fi
 else

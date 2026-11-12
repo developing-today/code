@@ -17,3 +17,8 @@
 
 **Learning:** `search_store_terms` eager-loaded `store.event_by_id` for every unique subject in live claims up front even when no `Term::SubjectKind` query term was present. In addition to O(subjects) redundant database reads per search, unrelated unreadable or unindexed events aborted pure name/author searches with errors.
 **Action:** Always check whether query terms actually require subject kind resolution before opening store transactions, and lazily resolve and memoize kinds on demand within kind-filtering closures.
+
+## 2026-11-04 - [Per-cell Intl.Segmenter validation dominates the world screen renderer]
+
+**Learning:** `renderWorldSurface` in `pkgs/id/web/src/world-surface.ts` validated every cell of a 120x50 world frame with `Intl.Segmenter.segment()` plus the unicode-width regexes (`\p{Mn}`, `\p{Grapheme_Extend}`) — ~120k segmentations per second at 20 frames/s. On the ASCII path this is pure overhead: a single code unit in U+0020..U+007E is always exactly one grapheme and one column wide. Measured in Bun/JSC, per-frame validation + colour CPU for a full 6000-cell frame fell from 60–169 ms to 2–3 ms (30–55x). Full-render timings in happy-dom are useless for judging this: element creation dominates (hundreds of ms with 4x run-to-run noise) and is unchanged by the fix.
+**Action:** In hot render loops, fingerprint the common value class (ASCII / single code unit) and take a constant-time fast path before calling Intl or unicode-regex machinery; keep the general path for everything else. Benchmark the CPU component with `document.createElement` stubbed, not happy-dom's DOM.

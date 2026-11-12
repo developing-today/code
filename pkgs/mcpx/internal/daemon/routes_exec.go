@@ -19,6 +19,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scriptresolve"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
@@ -159,6 +160,22 @@ func (r registrySource) Globals(_ context.Context, ns []string) (string, error) 
 	return codegen.GlobalDeclarations(nss), nil
 }
 
+// ClientModuleFor renders the generated client for one named script
+// language (#1917 Phase 2): the module installed beside a script of that
+// language and its ambient declarations. Today "python" is the only name a
+// caller asks for; any unknown name is an error, never the default target.
+func (r registrySource) ClientModuleFor(_ context.Context, language string, ns []string) (module, globals string, err error) {
+	lang, ok := codegen.Lookup(language)
+	if !ok {
+		return "", "", fmt.Errorf("unknown script language %q", language)
+	}
+	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
+	if err != nil {
+		return "", "", err
+	}
+	return lang.EmitModule(nss, r.endpoint, ""), lang.EmitGlobals(nss), nil
+}
+
 func (r registrySource) Namespaces(_ context.Context, ns []string) ([]string, error) {
 	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
 	if err != nil {
@@ -186,9 +203,14 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.Setup, lim.SetupErr = runner.ParseSetup(set.String("script.runtimes"),
 		set.List("script.runtimeOrder"), set.String("script.profiles"))
 	lim.CaptureConsole = set.Bool("script.captureConsole")
-	lim.Typecheck = set.String("script.typecheck")
+	lim.Typecheck = set.String("script.check")
+	lim.TypeCheckOnError = set.String("script.checkOnError")
+	lim.TypeCheckOnUnsupported = set.String("script.checkOnUnsupported")
 	lim.Imports = set.String("script.imports")
 	lim.ImportsOnDynamic = set.String("script.importsOnDynamic")
+	lim.ImportsOnMissing = set.String("script.importsOnMissing")
+	lim.ImportsCrossProject = set.String("script.importsCrossProject")
+	lim.ImportsNetwork = set.String("script.importsNetwork")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
@@ -209,13 +231,18 @@ func (s *Server) ExecService() *execsvc.Service {
 	}
 
 	svc := &execsvc.Service{
-		Src:       registrySource{reg: s.reg, endpoint: s.endpoint},
+		Src: registrySource{reg: s.reg, endpoint: s.endpoint},
+		// Daemon-side script resolution (#2168) reads the same
+		// paths.scripts setting the CLI reads, resolved from this
+		// daemon's configuration file and environment — there is no
+		// daemon-specific list (the #1919 scope question, answered on
+		// #2168).
+		Scripts:   s.execFileResolver(""),
 		Store:     store,
 		Endpoint:  s.endpoint,
 		Socket:    s.paths.Socket,
 		ConfigDir: configDir,
-		Calls:     s.callRegistry(),
-		// The script the daemon runs is on the daemon's machine by
+		Calls:     s.callRegistry(), // The script the daemon runs is on the daemon's machine by
 		// definition, so a path it hands to artifact() is a path the store
 		// can link rather than read.
 		Local: true,
@@ -336,6 +363,18 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// execFileResolver is the script resolver for /v1/exec requests, built from
+// this daemon's resolved settings. cwd, when the request names one, roots
+// the search there; otherwise the daemon's own working directory does.
+func (s *Server) execFileResolver(cwd string) scriptresolve.Resolver {
+	set := s.execSettings()
+	return scriptresolve.Resolver{
+		Configured:   scriptresolve.SplitPathList(set.String("paths.scripts")),
+		AllowOverlap: set.Bool("plumbing.allowTsJsOverlap"),
+		Dir:          cwd,
+	}
+}
+
 // refuseUnreadyScript runs the preflight on the script a request names, and
 // returns the refusal when a server it reaches cannot run. A file is read the
 // way the runner will read it, from where the daemon runs, so the check and
@@ -344,7 +383,15 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 func (s *Server) refuseUnreadyScript(req execReq) *SecretRequired {
 	src := req.Source
 	if src == "" && req.File != "" {
-		b, err := os.ReadFile(req.File)
+		// A bare name is resolved the way the run will resolve it (#2168),
+		// so the preflight reads the same text the runner will. An
+		// unresolvable name is left to the run, which reports the
+		// resolution error itself.
+		file := req.File
+		if resolved, rerr := s.execFileResolver(req.Options.Cwd).Resolve(req.File); rerr == nil {
+			file = resolved
+		}
+		b, err := os.ReadFile(file)
 		if err != nil {
 			return nil
 		}
@@ -515,7 +562,7 @@ func (s *Server) handleArtifactGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	w.Header().Set("Content-Type", meta.Mime)
 	// Attachment, and the name quoted: the name came from a script, and a
 	// browser deciding to render somebody else's bytes inline is how a store

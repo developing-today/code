@@ -337,7 +337,7 @@ func (t *inProcessTransport) RoundTrip(req *http.Request) (*http.Response, error
 // Close stops the private server and refuses new connections.
 func (t *inProcessTransport) Close() {
 	_ = t.srv.Close()
-	t.ln.Close()
+	_ = t.ln.Close()
 	t.inner.CloseIdleConnections()
 }
 

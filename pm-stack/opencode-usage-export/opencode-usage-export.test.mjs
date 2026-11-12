@@ -1,0 +1,355 @@
+// Tests for opencode-usage-export.mjs (slice 1 of code#2072).
+// Offline: fixture SQLite stores are built in temp dirs with
+// node:sqlite, in the exact session_v2 / session_message shape the
+// live managed-instance store carries (probed 2026-11-02, task 6610).
+// Run: node --test pm-stack/opencode-usage-export/
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import os, { tmpdir } from "node:os";
+import path, { dirname, join } from "node:path";
+import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { run } from "./opencode-usage-export.mjs";
+
+const NOW = Date.parse("2026-11-02T18:00:00Z");
+const HOUR = 3600000;
+const EXPORTER_PATH = fileURLToPath(new URL("./opencode-usage-export.mjs", import.meta.url));
+
+test("CLI: runs main via direct, file and directory symlinks", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-usage-export-entrypoint-"));
+  const links = path.join(home, "links");
+  fs.mkdirSync(links);
+  const fileLink = path.join(links, "export.mjs");
+  const dirLink = path.join(links, "export-dir");
+  fs.symlinkSync(EXPORTER_PATH, fileLink);
+  fs.symlinkSync(path.dirname(EXPORTER_PATH), dirLink, "dir");
+  const env = { ...process.env, HOME: path.join(home, "empty-home") };
+
+  try {
+    for (const [name, entry] of [
+      ["direct", EXPORTER_PATH],
+      ["file-symlink", fileLink],
+      ["directory-symlink", path.join(dirLink, path.basename(EXPORTER_PATH))],
+    ]) {
+      const outDir = path.join(home, name);
+      const result = spawnSync(process.execPath, [entry, "--out-dir", outDir], {
+        env,
+        encoding: "utf8",
+        timeout: 10000,
+      });
+      assert.equal(result.status, 3, `${name}: ${result.stderr || result.stdout}`);
+      assert.deepEqual(JSON.parse(result.stdout), { status: "store-missing", exitCode: 3 });
+      const doc = JSON.parse(fs.readFileSync(path.join(outDir, "latest.json"), "utf8"));
+      assert.equal(doc.status, "store-missing");
+    }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("importing opencode-usage-export.mjs as a library does not run main", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-usage-export-import-"));
+  try {
+    const result = spawnSync(process.execPath, [
+      "--input-type=module", "-e", `await import(${JSON.stringify(pathToFileURL(EXPORTER_PATH).href)});`,
+    ], {
+      env: { ...process.env, HOME: home },
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+    assert.equal(fs.existsSync(path.join(home, "atlas", "opencode-usage-export")), false);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+function makeStore(path, { sessions = [], messages = [] } = {}) {
+  return (async () => {
+    await mkdir(dirname(path), { recursive: true });
+    const db = new DatabaseSync(path);
+    db.exec(`CREATE TABLE session_v2 (
+      id text PRIMARY KEY, project_id text, parent_id text, slug text,
+      directory text, title text, version text, agent text, model text,
+      cost real DEFAULT 0, tokens_input integer DEFAULT 0,
+      tokens_output integer DEFAULT 0, tokens_reasoning integer DEFAULT 0,
+      tokens_cache_read integer DEFAULT 0, tokens_cache_write integer DEFAULT 0,
+      time_created integer NOT NULL, time_updated integer NOT NULL)`);
+    db.exec(`CREATE TABLE session_message (
+      id text PRIMARY KEY, session_id text NOT NULL, type text,
+      seq integer, time_created integer NOT NULL,
+      time_updated integer NOT NULL, data text NOT NULL)`);
+    const insS = db.prepare(`INSERT INTO session_v2
+      (id, project_id, parent_id, directory, agent, model, cost,
+       tokens_input, tokens_output, tokens_reasoning,
+       tokens_cache_read, tokens_cache_write, time_created, time_updated)
+      VALUES (?, 'proj', ?, '/home/user/git/code', 'build', ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const s of sessions) {
+      insS.run(
+        s.id, s.parentId ?? null,
+        JSON.stringify({ id: s.model ?? "workhorse", providerID: s.provider ?? "opencode-route" }),
+        s.cost ?? 0, s.tokens?.input ?? 0, s.tokens?.output ?? 0,
+        s.tokens?.reasoning ?? 0, s.tokens?.cacheRead ?? 0, s.tokens?.cacheWrite ?? 0,
+        s.created ?? NOW - HOUR, s.updated ?? NOW - 60000,
+      );
+    }
+    const insM = db.prepare(`INSERT INTO session_message
+      (id, session_id, type, seq, time_created, time_updated, data)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    messages.forEach((m, i) => {
+      insM.run(m.id ?? `msg_${i}`, m.sessionId, m.type ?? "assistant", i,
+        NOW - 30000, NOW - 30000, JSON.stringify(m.data));
+    });
+    db.close();
+  })();
+}
+
+const assistantMsg = (sessionId, { model = "workhorse", provider = "opencode-route", cost = 0.5, tokens } = {}) => ({
+  sessionId,
+  type: "assistant",
+  data: {
+    agent: "build",
+    model: { id: model, providerID: provider },
+    cost,
+    finish: "stop",
+    tokens: tokens ?? { input: 100, output: 10, reasoning: 2, cache: { read: 40, write: 3 } },
+    time: { created: NOW - 30000, completed: NOW - 29000 },
+  },
+});
+
+async function fakeHome() {
+  const home = await mkdtemp(join(tmpdir(), "oc-usage-home-"));
+  const outDir = await mkdtemp(join(tmpdir(), "oc-usage-out-"));
+  return { home, outDir };
+}
+const defaultDb = (home) => join(home, ".local/share/opencode/opencode.db");
+const chamberDb = (home) => join(home, ".local/share/openchamber/opencode.db");
+
+test("fresh export covers a known session with model, tokens, cost, parentage", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), {
+    sessions: [
+      { id: "ses_parent", cost: 1.25, tokens: { input: 1000, output: 50, reasoning: 5, cacheRead: 400, cacheWrite: 9 } },
+      { id: "ses_child", parentId: "ses_parent", model: "muse-spark-1.3-contributor", provider: "muse-direct", cost: 0.25, tokens: { input: 200, output: 20, reasoning: 0, cacheRead: 10, cacheWrite: 0 } },
+      { id: "ses_old", updated: NOW - 48 * HOUR }, // outside the 24h window
+    ],
+    messages: [
+      assistantMsg("ses_parent"),
+      assistantMsg("ses_parent", { cost: 0.75 }),
+      { sessionId: "ses_parent", type: "user", data: { role: "user", time: { created: NOW - 31000 } } },
+      assistantMsg("ses_child", { model: "muse-spark-1.3-contributor", provider: "muse-direct", cost: 0.25 }),
+    ],
+  });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir] });
+  assert.equal(exitCode, 0);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.storePath, defaultDb(home));
+  assert.equal(doc.moved, null);
+  assert.equal(doc.sessions.length, 2); // ses_old is outside the window
+  const parent = doc.sessions.find((s) => s.id === "ses_parent");
+  const child = doc.sessions.find((s) => s.id === "ses_child");
+  assert.equal(parent.parentId, null);
+  assert.equal(child.parentId, "ses_parent");
+  assert.deepEqual(parent.model, { id: "workhorse", providerID: "opencode-route" });
+  assert.equal(parent.messages.assistant, 2);
+  assert.equal(parent.messages.total, 3);
+  assert.equal(parent.messages.byModel.length, 1);
+  assert.equal(parent.messages.byModel[0].count, 2);
+  assert.equal(parent.messages.byModel[0].cost, 1.25);
+  assert.deepEqual(parent.messages.byModel[0].tokens, { input: 200, output: 20, reasoning: 4, cacheRead: 80, cacheWrite: 6 });
+  assert.equal(doc.totals.sessions, 2);
+  assert.equal(doc.totals.childSessions, 1);
+  assert.equal(doc.totals.cost, 1.5);
+  assert.equal(doc.totals.tokens.input, 1200);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "ok");
+  const state = JSON.parse(await readFile(join(outDir, "state.json"), "utf8"));
+  assert.equal(state.storePath, defaultDb(home));
+});
+
+test("move detection: stale default store, fresh chamber store wins and the move is surfaced", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), {
+    sessions: [{ id: "ses_stale", updated: NOW - 30 * 24 * HOUR, created: NOW - 31 * 24 * HOUR }],
+  });
+  await makeStore(chamberDb(home), {
+    sessions: [{ id: "ses_live", cost: 2 }],
+    messages: [assistantMsg("ses_live", { cost: 2 })],
+  });
+  // Previous ticks recorded the default path as the store.
+  await writeFile(join(outDir, "state.json"), JSON.stringify({ storePath: defaultDb(home) }));
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir] });
+  assert.equal(exitCode, 0);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.storePath, chamberDb(home));
+  assert.deepEqual(doc.moved, { from: defaultDb(home), to: chamberDb(home) });
+  assert.equal(doc.sessions.length, 1);
+  assert.equal(doc.sessions[0].id, "ses_live");
+});
+
+test("all candidates stale: store-stale failure document, no sessions, exit 4", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), {
+    sessions: [{ id: "ses_stale", updated: NOW - 30 * 24 * HOUR, created: NOW - 31 * 24 * HOUR }],
+  });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir] });
+  assert.equal(exitCode, 4);
+  assert.equal(doc.status, "store-stale");
+  assert.equal(doc.sessions, undefined);
+  assert.match(doc.detail, /may have moved/);
+});
+
+test("no candidate exists: store-missing failure document, exit 3", async () => {
+  const { home, outDir } = await fakeHome();
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir] });
+  assert.equal(exitCode, 3);
+  assert.equal(doc.status, "store-missing");
+  assert.equal(doc.sessions, undefined);
+});
+
+test("junk --window-hours: invalid-argument failure document, no ok document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--window-hours", "banana"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--window-hours/);
+  assert.equal(doc.sessions, undefined);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "invalid-argument");
+});
+
+test("missing --window-hours value: invalid-argument failure document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--window-hours"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--window-hours/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("negative --window-hours: invalid-argument failure document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--window-hours", "-5"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--window-hours/);
+});
+
+test("junk --fresh-hours: invalid-argument (not store-stale) failure document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--fresh-hours", "banana"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--fresh-hours/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("trailing --db: invalid-argument failure document, exit 2, default store not exported (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--db"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--db/);
+  assert.equal(doc.sessions, undefined);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "invalid-argument");
+});
+
+test("empty --db: invalid-argument failure document, exit 2, no env fallback (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({
+    home, now: NOW,
+    env: { OPENCODE_USAGE_DB: defaultDb(home) },
+    argv: ["--out-dir", outDir, "--db", ""],
+  });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--db/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("flag-like --db value: invalid-argument naming --db, exit 2, run() does not throw (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--db", "--out-dir", outDir] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--db/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("trailing --out-dir: invalid-argument failure document, exit 2 (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--out-dir/);
+  assert.equal(doc.sessions, undefined);
+  const latest = JSON.parse(await readFile(join(home, "atlas/opencode-usage-export", "latest.json"), "utf8"));
+  assert.equal(latest.status, "invalid-argument");
+});
+
+test("valid --db / --out-dir behave as before (#6934 control)", async () => {
+  const { home, outDir } = await fakeHome();
+  const dbPath = join(home, "explicit.db");
+  await makeStore(dbPath, { sessions: [{ id: "ses_explicit", updated: NOW - HOUR }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--db", dbPath, "--out-dir", outDir] });
+  assert.equal(exitCode, 0);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.storePath, dbPath);
+  assert.equal(doc.sessions.length, 1);
+  assert.equal(doc.sessions[0].id, "ses_explicit");
+});
+
+test("valid positive --window-hours / --fresh-hours behave as before", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), {
+    sessions: [
+      { id: "ses_recent", updated: NOW - 2 * HOUR },
+      { id: "ses_old", updated: NOW - 48 * HOUR },
+    ],
+  });
+  const { exitCode, doc } = await run({
+    home, now: NOW,
+    argv: ["--out-dir", outDir, "--window-hours", "6", "--fresh-hours", "12"],
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.windowHours, 6);
+  assert.equal(doc.sessions.length, 1);
+  assert.equal(doc.sessions[0].id, "ses_recent");
+});
+test("wrong-shape state.json is treated as no previous state (#6915)", async () => {
+  // Valid JSON of the wrong shape must not wedge the tick (null used to
+  // throw a raw TypeError -> read-failed on every tick) and must not
+  // fabricate a `moved` report (a non-string storePath used to surface
+  // as moved.from). The tick proceeds as a normal ok export and rewrites
+  // state.json in the correct shape, so the state self-heals.
+  for (const content of ["null", "[]", '"just a string"', "5", JSON.stringify({ storePath: 123 }), JSON.stringify({ storePath: "" })]) {
+    const { home, outDir } = await fakeHome();
+    await makeStore(defaultDb(home), {
+      sessions: [{ id: "ses_live", cost: 1 }],
+      messages: [assistantMsg("ses_live", { cost: 1 })],
+    });
+    await writeFile(join(outDir, "state.json"), content);
+    const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir] });
+    assert.equal(exitCode, 0, `state.json=${content}`);
+    assert.equal(doc.status, "ok", `state.json=${content}`);
+    assert.equal(doc.moved, null, `state.json=${content}`);
+    assert.equal(doc.sessions.length, 1, `state.json=${content}`);
+    const state = JSON.parse(await readFile(join(outDir, "state.json"), "utf8"));
+    assert.equal(state.storePath, defaultDb(home), `state.json=${content}`);
+  }
+});

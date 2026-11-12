@@ -1,13 +1,3 @@
-package searchpath
-
-import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-)
-
 // Package searchpath turns a user's list of candidate locations into the
 // ordered set of places to actually look.
 //
@@ -17,6 +7,15 @@ import (
 // file rather than a directory, and refusing that would be arbitrary. And the
 // result has to be inspectable, because "why is it not finding my script" is
 // answered by showing the list that was actually searched.
+package searchpath
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
 
 // Entry is one resolved location.
 type Entry struct {

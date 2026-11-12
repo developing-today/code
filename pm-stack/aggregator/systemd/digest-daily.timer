@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the PM daily digest every morning at 07:00 local (pm-stack, #1278)
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+RandomizedDelaySec=60
+Persistent=true
+Unit=digest-daily.service
+
+[Install]
+WantedBy=timers.target

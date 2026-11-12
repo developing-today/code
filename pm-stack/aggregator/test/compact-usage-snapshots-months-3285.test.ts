@@ -11,19 +11,13 @@ import { join } from "node:path";
 
 const script = join(import.meta.dir, "../scripts/compact-usage-snapshots.ts");
 
-async function runScript(
-  storeDir: string,
-  args: string[],
-): Promise<{ code: number; stderr: string; stdout: string }> {
+async function runScript(storeDir: string, args: string[]): Promise<{ code: number; stderr: string; stdout: string }> {
   const proc = Bun.spawn([process.execPath, script, ...args], {
     env: { ...process.env, PM_AGG_SNAPSHOTS_DIR: storeDir },
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   return { code: await proc.exited, stdout, stderr };
 }
 
@@ -45,7 +39,10 @@ describe("compact-usage-snapshots --months validation (#3285)", () => {
         }) + "\n";
       await writeFile(join(dir, name), raw);
 
-      for (const args of [["--months", "0"], ["--months", "0", "--apply"]]) {
+      for (const args of [
+        ["--months", "0"],
+        ["--months", "0", "--apply"],
+      ]) {
         const { code, stderr } = await runScript(dir, args);
         expect(code).toBe(2);
         expect(stderr).toContain("invalid --months '0'");

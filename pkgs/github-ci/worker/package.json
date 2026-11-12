@@ -1,0 +1,23 @@
+{
+  "name": "github-ci-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "GitHub webhook receiver (#5693): workflow_run -> Turso ci_events only; fleet push/PR/issues -> agent events sink + fleet-queue snapshots/watermarks.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.9.14",
+    "@cloudflare/workers-types": "^4.20251011.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.2.0",
+    "wrangler": "4.44.0"
+  },
+  "overrides": {
+    "undici": "7.30.1"
+  }
+}

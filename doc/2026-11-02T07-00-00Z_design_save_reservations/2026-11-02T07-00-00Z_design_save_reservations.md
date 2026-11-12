@@ -7,7 +7,7 @@ and PR #4193, which implements this design in `pkgs/id/src/web/`.
 
 The web save handler rate-limits saves per filename with a cooldown
 (`SaveRateLimiter::check` / `record`), but the cooldown only sees
-*completed* saves. Two overlapping saves of the same file — two
+_completed_ saves. Two overlapping saves of the same file — two
 collaborators, or one client retrying while its first attempt is still
 running — both passed the check and raced to write the filename tag,
 so the later finisher silently overwrote the earlier one's snapshot

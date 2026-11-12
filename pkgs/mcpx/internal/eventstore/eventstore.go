@@ -108,7 +108,7 @@ func Open(path string) (*Store, error) {
 	// connection.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schemaDDL); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("eventstore: creating schema: %w", err)
 	}
 	return &Store{db: db, schemas: map[string]*schemaval.Schema{}}, nil
@@ -199,7 +199,7 @@ func (s *Store) Kinds() ([]Kind, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Kind
 	for rows.Next() {
 		var k Kind
@@ -263,7 +263,7 @@ func (s *Store) InternIDs(pairs [][]string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	res, err := tx.Exec(`INSERT INTO idset(fingerprint) VALUES (?) ON CONFLICT(fingerprint) DO NOTHING`, fingerprint)
 	if err != nil {
 		return 0, err
@@ -294,7 +294,7 @@ func (s *Store) InternIDs(pairs [][]string) (int64, error) {
 // one (a duration, a token count); IDs, when present, are interned and
 // the event is stamped with their idset.
 type Event struct {
-	TsUnixMs int64
+	TSUnixMs int64
 	Kind     string
 	Source   string
 	Value    *float64
@@ -360,7 +360,7 @@ func (s *Store) Write(ev Event) (int64, error) {
 	}
 	res, err := s.db.Exec(
 		`INSERT INTO event(ts_unix_ms, kind_id, idset_id, source, value, data) VALUES (?, ?, ?, ?, ?, ?)`,
-		ev.TsUnixMs, kindID, idsetID, ev.Source, value, dataText)
+		ev.TSUnixMs, kindID, idsetID, ev.Source, value, dataText)
 	if err != nil {
 		return 0, err
 	}

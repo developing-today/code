@@ -69,6 +69,31 @@ the parameter's absence, change nothing; the switch is read from
 each request's URL, so one connection can be answered raw and the
 next through the gateway.
 
+An opencode v2 user who would rather call mcpx's own gateway tools
+directly — mcpx is itself a code-mode gateway, so wrapping it in
+v2's code mode nests one code mode inside another — opts the
+server out by setting `codemode: false` on it in the v2 `mcp`
+config:
+
+```json
+{
+  "mcp": {
+    "mcpx": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8899/mcp",
+      "codemode": false
+    }
+  }
+}
+```
+
+With `codemode: false` set, v2 leaves mcpx's tools in the model's
+direct tool list and does not append `?codemode=false` to the URL,
+so every connection gets the gateway surface described above. The
+same field exists on a local (stdio) server entry spawned with
+`mcpx serve`; leave it unset (it defaults to `true`) when v2's own
+code mode should orchestrate mcpx's pooled servers instead.
+
 Questions flow backwards over the same connection. When an upstream
 tool asks something mid-call — an elicitation, a sampling request —
 mcpx puts the question to the client that made the call when that

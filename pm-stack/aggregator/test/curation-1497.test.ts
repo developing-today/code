@@ -28,11 +28,13 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   attention: "primary",
   board: "dropdown",
   roadmap: "primary",
+  search: "dropdown",
   quota: "primary",
   dns: "dropdown",
   "aa-explorer": "dropdown",
   sessions: "dropdown",
   program: "primary",
+  queue: "primary",
   health: "primary",
   pages: "dropdown",
   // Post-#1497 addition (#3676, 2026-11-01): Alerts entered at
@@ -44,6 +46,25 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   // enters at dropdown tier — no curation ruling promotes it, and
   // new pages do not take primary slots without one.
   "comments-queue": "dropdown",
+  // Post-#1497 addition (#1739, 2026-11-02): the events page
+  // enters at dropdown tier — no curation ruling promotes it, and
+  // new pages do not take primary slots without one.
+  events: "dropdown",
+  // Post-#1497 addition (#1282, 2026-11-03): the source-conflict inbox
+  // enters at dropdown tier — a triage queue, not a primary surface.
+  conflicts: "dropdown",
+  // Post-#1497 addition (#3319, 2026-11-03): the notifications
+  // measurement page enters at dropdown tier — no curation ruling
+  // promotes it, and new pages do not take primary slots without one.
+  notifications: "dropdown",
+  // Post-#1497 addition (#1278, 2026-11-03): the scheduled-digest
+  // archive page enters at dropdown tier — no curation ruling promotes
+  // it, and new pages do not take primary slots without one.
+  digest: "dropdown",
+  // Post-#1497 addition (#8867, 2026-11-12): the decision-sets index
+  // enters at dropdown tier — no curation ruling promotes it, and
+  // new pages do not take primary slots without one.
+  decisions: "dropdown",
 };
 
 describe("the #1497 decision table is applied to the manifest", () => {

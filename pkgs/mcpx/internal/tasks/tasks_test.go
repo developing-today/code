@@ -2,6 +2,7 @@ package tasks_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
+	_ "modernc.org/sqlite"
 )
 
 func TestAResultIsWaitedForRatherThanPolledFor(t *testing.T) {
@@ -147,7 +149,7 @@ func TestTaskPersistenceAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open reopen failed: %v", err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 
 	// t1 should still exist and be completed with its result
 	snap1, ok := st2.Get(t1.TaskID)
@@ -562,7 +564,7 @@ func TestRetentionAcrossReopenRunsFromCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open reopen failed: %v", err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 	snap, ok := st2.Get(t1.TaskID)
 	if !ok {
 		t.Fatal("t1 was deleted at reopen: its retention was clocked from creation")
@@ -576,6 +578,148 @@ func TestRetentionAcrossReopenRunsFromCompletion(t *testing.T) {
 	}
 	if m, _ := res.(map[string]any); m["data"] != "kept" {
 		t.Errorf("t1 result data = %v", res)
+	}
+}
+
+func completedTask(t *testing.T, st *tasks.Store, ttl int64, runtime time.Duration) tasks.Task {
+	t.Helper()
+	task, err := st.Start(tasks.UnboundRequestor, ttl, func(context.Context) (any, *tasks.Fault) {
+		time.Sleep(runtime)
+		return "done", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+func TestPublicItemReadRenewsTerminalRetentionButInternalReadsDoNot(t *testing.T) {
+	st := tasks.New()
+	task := completedTask(t, st, 500, 0)
+	initial, ok := st.Get(task.TaskID)
+	if !ok || initial.ExpiresAt == nil || initial.LastTouched == nil {
+		t.Fatalf("terminal metadata missing: %+v", initial)
+	}
+	initialExpiry, initialTouch := *initial.ExpiresAt, *initial.LastTouched
+
+	time.Sleep(300 * time.Millisecond)
+	if _, ok := st.Get(task.TaskID); !ok {
+		t.Fatal("internal Get lost a live task")
+	}
+	_ = st.List()
+	if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	still, ok := st.Get(task.TaskID)
+	if !ok || !still.ExpiresAt.Equal(initialExpiry) || !still.LastTouched.Equal(initialTouch) {
+		t.Fatalf("internal reads renewed retention: before=%+v after=%+v", initial, still)
+	}
+
+	read, ok := st.Read(task.TaskID)
+	if !ok || read.ExpiresAt == nil || !read.ExpiresAt.After(initialExpiry) || !read.LastTouched.After(initialTouch) {
+		t.Fatalf("public item read did not renew retention: %+v", read)
+	}
+	time.Sleep(250 * time.Millisecond) // past the original expiry, before the renewed one
+	if _, ok := st.Get(task.TaskID); !ok {
+		t.Fatal("task expired at its pre-touch deadline")
+	}
+}
+
+func TestTaskMaxAgeStartsAtTerminalTransitionAndReadCannotReviveExpiry(t *testing.T) {
+	st := tasks.New()
+	st.Configure(500*time.Millisecond, 250*time.Millisecond)
+	task := completedTask(t, st, 500, 300*time.Millisecond)
+	terminal, ok := st.Get(task.TaskID)
+	if !ok || terminal.ExpiresAt == nil {
+		t.Fatalf("long-running task was not retained at completion: %+v", terminal)
+	}
+	if !terminal.ExpiresAt.After(time.Now()) {
+		t.Fatalf("maxAge was anchored at creation, not terminal transition: %+v", terminal)
+	}
+	if terminal.ExpiresAt.After(terminal.LastUpdatedAt.Add(250 * time.Millisecond)) {
+		t.Fatalf("expiry exceeded terminal-time maxAge ceiling: %+v", terminal)
+	}
+
+	// A separate short-lived result proves that a late public read cannot
+	// bring an already-expired terminal result back into the store.
+	short := tasks.New()
+	shortTask := completedTask(t, short, 100, 0)
+	snap, _ := short.Get(shortTask.TaskID)
+	time.Sleep(time.Until(*snap.ExpiresAt) + 20*time.Millisecond)
+	if _, ok := short.Read(shortTask.TaskID); ok {
+		t.Fatal("a read revived an expired result")
+	}
+	if _, ok := short.Get(shortTask.TaskID); ok {
+		t.Fatal("expired result remains in the store")
+	}
+}
+
+func TestPublicItemReadNeverShortensPromisedRetention(t *testing.T) {
+	st := tasks.New()
+	st.Configure(2*time.Second, 5*time.Second)
+	task := completedTask(t, st, 2_000, 0)
+	initial, ok := st.Get(task.TaskID)
+	if !ok || initial.ExpiresAt == nil {
+		t.Fatalf("terminal task has no expiry: %+v", initial)
+	}
+	promised := *initial.ExpiresAt
+
+	// A live configuration change may lower the maxAge. It must not revoke
+	// an expiry already promised to this task.
+	st.Configure(2*time.Second, 50*time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
+	read, ok := st.Read(task.TaskID)
+	if !ok || read.ExpiresAt == nil || !read.ExpiresAt.Equal(promised) {
+		t.Fatalf("touch shortened the promised expiry: got %+v, want %v", read, promised)
+	}
+}
+
+func TestTaskTouchMetadataPersistsAcrossReopen(t *testing.T) {
+	dbPath := t.TempDir() + "/tasks.db"
+	st1, err := tasks.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The reopen below must land AFTER the original expiry but BEFORE
+	// the touch-renewed one, so both margins have to dwarf scheduling
+	// jitter on a loaded builder. The previous shape (TTL 700ms,
+	// maxAge 1s, two 400ms sleeps) did not: maxAge clamps the renewed
+	// expiry to 1s after the terminal transition, so the reopen had
+	// only ~200ms of slack, and a >200ms stall between the touch and
+	// the reopen -- routine under parallel Nix builds -- expired the
+	// task first and made the test report the touch as lost
+	// (darwin-nix #1815, run 43098524363). The persisted touch
+	// metadata itself was correct. Production defaults (TTL 10m,
+	// maxAge 1h) keep the same proportions at a larger scale; this
+	// shape does too: reopen at ~5s against an original expiry of
+	// 4s (1s margin) and a renewed expiry of 6.5s (1.5s margin).
+	st1.Configure(4*time.Second, time.Minute)
+	task := completedTask(t, st1, 4_000, 0)
+	time.Sleep(2500 * time.Millisecond)
+	touched, ok := st1.Read(task.TaskID)
+	if !ok || touched.ExpiresAt == nil || touched.LastTouched == nil {
+		t.Fatalf("touch failed: %+v", touched)
+	}
+	wantExpiry, wantTouch := *touched.ExpiresAt, *touched.LastTouched
+	if err := st1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2500 * time.Millisecond) // past the original expiry, before the renewed expiry
+
+	st2, err := tasks.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st2.Close() }()
+	got, ok := st2.Get(task.TaskID)
+	if !ok || got.ExpiresAt == nil || got.LastTouched == nil {
+		t.Fatalf("touched task did not survive reopen: %+v", got)
+	}
+	if got.ExpiresAt.UnixMilli() != wantExpiry.UnixMilli() || got.LastTouched.UnixMilli() != wantTouch.UnixMilli() {
+		t.Fatalf("touch metadata changed across reopen: got=%+v want expiry=%v touch=%v", got, wantExpiry, wantTouch)
 	}
 }
 
@@ -690,6 +834,41 @@ func TestCancelGraceExpiryWinsOverLateResult(t *testing.T) {
 	}
 }
 
+func TestCancelGraceExpiryReleasesResultWaiters(t *testing.T) {
+	// Regression for #6897: grace expiry records Cancelled, so Result()
+	// waiters must be released with the cancelled fault even when the
+	// work itself never returns. Before the fix, expireCancellation
+	// never closed done, so this Result call hung until its own
+	// context expired; releasing the work afterwards also exercises
+	// the once-only close (the late worker return must not re-close).
+	st := tasks.New()
+	st.CancelGrace = 15 * time.Millisecond
+	release := make(chan struct{})
+	task, err := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
+		<-release
+		return "late result", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer close(release)
+	if _, ok := st.CancelWithReason(task.TaskID, "grace expiry releases waiters"); !ok {
+		t.Fatal("cancel lost the task")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, fault, err := st.Result(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("grace expiry did not release the Result waiter: %v", err)
+	}
+	if fault == nil || fault.Message != "the task was cancelled" {
+		t.Fatalf("waiter should get the cancelled fault, got %v", fault)
+	}
+	if got, _ := st.Get(task.TaskID); got.Status != tasks.Cancelled {
+		t.Fatalf("status = %q, want cancelled", got.Status)
+	}
+}
+
 func TestFaultWithinCancelGraceKeepsItsFailure(t *testing.T) {
 	st := tasks.New()
 	st.CancelGrace = time.Second
@@ -778,5 +957,138 @@ func TestIsErrorStatusMessageUsesFirstTextAndFallsBack(t *testing.T) {
 				t.Errorf("got status=%q statusMessage=%q, want failed with %q", got.Status, got.StatusMessage, tc.want)
 			}
 		})
+	}
+}
+
+// seedLegacyTaskRow writes a pre-expires_ms terminal row directly, as an
+// older daemon version would have left it: expires_ms is 0, so the load
+// path must derive the deadline from the stored TTL and the store's
+// configured maxAge.
+func seedLegacyTaskRow(t *testing.T, dbPath, id string, completedAt time.Time, ttl time.Duration, result string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("seed open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	ms := completedAt.UnixMilli()
+	_, err = db.Exec(`INSERT INTO tasks (task_id, status, status_message, created_at_ms, updated_at_ms, ttl_ms, last_touched_ms, expires_ms, poll_interval, result_json, fault_json)
+		VALUES (?, 'completed', '', ?, ?, ?, ?, 0, 0, ?, NULL)`,
+		id, ms, ms, ttl.Milliseconds(), ms, result)
+	if err != nil {
+		t.Fatalf("seed insert %s: %v", id, err)
+	}
+}
+
+// Regression for issue #6248: startup migration must not delete a legacy
+// terminal row before its stored TTL-derived deadline under the
+// configured retention. Oracle: with tasks.maxAge=4h, a row completed
+// 2h ago with a stored 4h TTL survives Open and its result stays
+// readable, while a row already expired under that same 4h retention
+// (completed 5h ago, TTL 4h) is still pruned. The control case reopens
+// an identically seeded database with the built-in defaults (plain
+// Open, maxAge 1h) and the 2h-old row is gone — the original loss.
+func TestOpenWithRetentionPreservesLegacyRowUntilStoredTTLDeadline(t *testing.T) {
+	now := time.Now()
+	seed := func(dbPath string) {
+		st, err := tasks.Open(dbPath)
+		if err != nil {
+			t.Fatalf("Open (schema) failed: %v", err)
+		}
+		if err := st.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		seedLegacyTaskRow(t, dbPath, "legacy-keep", now.Add(-2*time.Hour), 4*time.Hour, `{"data":"legacy-result"}`)
+		seedLegacyTaskRow(t, dbPath, "legacy-expired", now.Add(-5*time.Hour), 4*time.Hour, `{"data":"expired-result"}`)
+	}
+
+	dbPath := t.TempDir() + "/tasks.db"
+	seed(dbPath)
+	st, err := tasks.OpenWithRetention(dbPath, 0, 4*time.Hour)
+	if err != nil {
+		t.Fatalf("OpenWithRetention failed: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	snap, ok := st.Get("legacy-keep")
+	if !ok {
+		t.Fatalf("legacy-keep missing after OpenWithRetention with maxAge=4h: startup migration deleted a result inside its configured retention")
+	}
+	if snap.Status != tasks.Completed {
+		t.Errorf("legacy-keep status = %q, want completed", snap.Status)
+	}
+	res, fault, err := st.Result(context.Background(), "legacy-keep")
+	if err != nil || fault != nil {
+		t.Errorf("legacy-keep result err=%v fault=%v", err, fault)
+	}
+	if m, _ := res.(map[string]any); m["data"] != "legacy-result" {
+		t.Errorf("legacy-keep result data = %v", res)
+	}
+	if _, ok := st.Get("legacy-expired"); ok {
+		t.Errorf("legacy-expired survived: rows expired under the effective retention must still be pruned")
+	}
+
+	controlPath := t.TempDir() + "/tasks.db"
+	seed(controlPath)
+	plain, err := tasks.Open(controlPath)
+	if err != nil {
+		t.Fatalf("Open (control) failed: %v", err)
+	}
+	defer func() { _ = plain.Close() }()
+	if _, ok := plain.Get("legacy-keep"); ok {
+		t.Errorf("control: legacy-keep survived plain Open with the built-in 1h maxAge; the seeded row does not reproduce the pre-fix loss")
+	}
+}
+
+// #6249: the maxAge ceiling must not override a deadline task's
+// two-poll-interval retention floor when retention is armed. Oracle:
+// with PollInterval 400ms and maxAge 100ms (the issue's shape --
+// maxAge below one poll interval), a finished backing task's expiry
+// is at least terminal+800ms and its result is still collectable
+// past the 100ms ceiling, while a plain task under the same maxAge
+// keeps the exact 100ms ceiling (maxAge remains a hard bound for
+// ordinary tasks, per TestTaskMaxAgeStartsAtTerminalTransition...).
+func TestAMaxAgeClampCannotOverrideDeadlineRetentionFloor(t *testing.T) {
+	st := tasks.New()
+	st.PollInterval = 400 * time.Millisecond
+	st.Configure(time.Minute, 100*time.Millisecond)
+	task, err := st.StartWithDeadline(tasks.Caller("asker"), 60000, time.Minute, func(ctx context.Context) (any, *tasks.Fault) {
+		return "the answer", nil
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	res, fault, err := st.Result(context.Background(), task.TaskID)
+	if err != nil || fault != nil || res != "the answer" {
+		t.Fatalf("result: %v %v %v", res, fault, err)
+	}
+	snap, ok := st.Get(task.TaskID)
+	if !ok || snap.ExpiresAt == nil {
+		t.Fatalf("finished deadline task missing expiry: %+v", snap)
+	}
+	if floor := snap.LastUpdatedAt.Add(800 * time.Millisecond); snap.ExpiresAt.Before(floor) {
+		t.Fatalf("maxAge clamped a deadline task below its retention floor: expiry %v, floor %v", snap.ExpiresAt, floor)
+	}
+	// Past the 100ms maxAge ceiling, inside the 800ms floor: the
+	// wrapper's next poll still collects the result.
+	time.Sleep(200 * time.Millisecond)
+	if _, ok := st.Get(task.TaskID); !ok {
+		t.Fatal("the finished deadline task expired at the maxAge ceiling inside its collection window")
+	}
+
+	plain, err := st.Start(tasks.Caller("asker"), 60000, func(ctx context.Context) (any, *tasks.Fault) {
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("start plain: %v", err)
+	}
+	if _, _, err := st.Result(context.Background(), plain.TaskID); err != nil {
+		t.Fatalf("plain result: %v", err)
+	}
+	psnap, ok := st.Get(plain.TaskID)
+	if !ok || psnap.ExpiresAt == nil {
+		t.Fatalf("plain task missing expiry: %+v", psnap)
+	}
+	if ceiling := psnap.LastUpdatedAt.Add(100 * time.Millisecond); psnap.ExpiresAt.After(ceiling) {
+		t.Fatalf("a plain task's retention exceeded the maxAge ceiling: expiry %v, ceiling %v", psnap.ExpiresAt, ceiling)
 	}
 }

@@ -188,10 +188,6 @@ func (s *Schema) resolve(ref string) (any, error) {
 	return nil, fmt.Errorf("unresolvable $ref %q", ref)
 }
 
-func (s *Schema) check(schema any, v any, path string) *Error {
-	return s.checkMode(schema, v, path, false, nil)
-}
-
 func (s *Schema) checkMode(schema any, v any, path string, strict bool, inherited map[string]bool) *Error {
 	sch, ok := schema.(map[string]any)
 	if !ok {

@@ -34,6 +34,7 @@ on:
     paths:
       - "pkgs/cold-store-reaper/**"
       - ".github/workflows/cold-store-reaper.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
