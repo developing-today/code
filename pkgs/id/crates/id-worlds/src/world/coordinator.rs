@@ -17,7 +17,7 @@
 //! never reused or replaced; a timeout is stuck/in-transit, never a
 //! completion and never a rollback (design §5).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::CoordinatorJournalEntry;
@@ -285,6 +285,7 @@ pub struct Coordinator {
     journal: Vec<CoordinatorJournalEntry>,
     owners: BTreeMap<String, EntityOwner>,
     active: BTreeMap<String, ActiveHandoff>,
+    used_handoff_ids: BTreeSet<String>,
     region_map_epoch: u64,
 }
 
@@ -299,6 +300,7 @@ impl Coordinator {
             journal: Vec::new(),
             owners: BTreeMap::new(),
             active: BTreeMap::new(),
+            used_handoff_ids: BTreeSet::new(),
             region_map_epoch,
         }
     }
@@ -319,6 +321,7 @@ impl Coordinator {
             journal: Vec::new(),
             owners: owners.into_iter().collect(),
             active: BTreeMap::new(),
+            used_handoff_ids: BTreeSet::new(),
             region_map_epoch,
         };
         for entry in journal {
@@ -400,9 +403,9 @@ impl Coordinator {
                 entity_ref.to_string(),
             ));
         }
-        if self.active_by_id(handoff_id).is_some() {
+        if self.used_handoff_ids.contains(handoff_id) {
             return Err(CoordinatorError::InvalidTransition(
-                "handoff id is already in flight for another entity",
+                "handoff id was already used by an earlier transfer",
             ));
         }
         if owner.region == target_region {
@@ -620,6 +623,16 @@ impl Coordinator {
             .active_by_id(handoff_id)
             .ok_or_else(|| CoordinatorError::UnknownHandoff(handoff_id.to_string()))?
             .stage;
+        if let Some(receipt) = source_receipt {
+            if receipt.handoff_id != handoff_id {
+                return Err(CoordinatorError::ReceiptMismatch("handoff_id"));
+            }
+        }
+        if let Some(receipt) = destination_receipt {
+            if receipt.handoff_id != handoff_id {
+                return Err(CoordinatorError::ReceiptMismatch("handoff_id"));
+            }
+        }
         if stage == HandoffStage::Started
             && source_receipt.is_none()
             && destination_receipt.is_some()
@@ -697,6 +710,7 @@ impl Coordinator {
             requested_at,
         } = entry
         {
+            self.used_handoff_ids.insert(handoff_id.clone());
             self.active.insert(
                 entity_ref.clone(),
                 ActiveHandoff {
@@ -733,10 +747,37 @@ impl Coordinator {
     /// recovery, validating it against the state machine's rules.
     fn replay(&mut self, entry: &CoordinatorJournalEntry) -> Result<(), CoordinatorError> {
         match entry {
-            CoordinatorJournalEntry::HandoffStarted { entity_ref, .. } => {
+            CoordinatorJournalEntry::HandoffStarted {
+                handoff_id,
+                entity_ref,
+                source_region,
+                target_region,
+                expected_owner_epoch,
+                region_map_epoch,
+                ..
+            } => {
                 if self.active.contains_key(entity_ref) {
                     return Err(CoordinatorError::Integrity(format!(
                         "second handoff started for entity {entity_ref}"
+                    )));
+                }
+                if self.used_handoff_ids.contains(handoff_id) {
+                    return Err(CoordinatorError::Integrity(format!(
+                        "handoff id {handoff_id} reused in the journal"
+                    )));
+                }
+                let owner = self.owners.get(entity_ref).ok_or_else(|| {
+                    CoordinatorError::Integrity(format!(
+                        "handoff started for unknown entity {entity_ref}"
+                    ))
+                })?;
+                if owner.region != *source_region
+                    || owner.owner_epoch != *expected_owner_epoch
+                    || *region_map_epoch != self.region_map_epoch
+                    || source_region == target_region
+                {
+                    return Err(CoordinatorError::Integrity(format!(
+                        "handoff start does not match recovered ownership for entity {entity_ref}"
                     )));
                 }
                 self.apply_started(entry);
@@ -778,6 +819,7 @@ impl Coordinator {
             CoordinatorJournalEntry::HandoffCompleted {
                 handoff_id,
                 entity_ref,
+                source_region,
                 target_region,
                 payload_digest,
                 new_owner_epoch,
@@ -787,6 +829,7 @@ impl Coordinator {
                 let active = self.replay_active(handoff_id)?;
                 if active.stage != HandoffStage::ImportObserved
                     || active.entity_ref != *entity_ref
+                    || active.source_region != *source_region
                     || active.target_region != *target_region
                     || active.payload_digest.as_deref() != Some(payload_digest.as_str())
                     || *new_owner_epoch != active.expected_owner_epoch + 1
@@ -1295,5 +1338,551 @@ mod tests {
         let active = c.active_handoff(ENTITY).unwrap();
         assert_eq!(active.expected_owner_epoch, 4);
         assert_eq!(active.source_region, "region-b");
+    }
+
+    #[test]
+    fn handoff_ids_are_single_use_across_terminal_transitions() {
+        // Completed ID cannot name the return crossing: the shard
+        // ledgers dedupe on historical IDs.
+        let mut c = imported();
+        c.complete(HANDOFF).unwrap();
+        assert!(matches!(
+            c.start_handoff(
+                HANDOFF,
+                ENTITY,
+                "region-a",
+                "module-hash",
+                "schema-v1",
+                5_000
+            ),
+            Err(CoordinatorError::InvalidTransition(_))
+        ));
+        // Cancelled IDs are single-use too.
+        let mut c = started();
+        c.cancel(HANDOFF, "operator", false).unwrap();
+        assert!(matches!(
+            c.start_handoff(
+                HANDOFF,
+                ENTITY,
+                "region-b",
+                "module-hash",
+                "schema-v1",
+                5_000
+            ),
+            Err(CoordinatorError::InvalidTransition(_))
+        ));
+        // And recovery preserves the used set: a journal whose second
+        // start reuses an ID is an integrity error.
+        let mut journal = imported().journal().to_vec();
+        journal.push(CoordinatorJournalEntry::HandoffStarted {
+            handoff_id: HANDOFF.to_string(),
+            entity_ref: ENTITY.to_string(),
+            source_region: "region-b".to_string(),
+            target_region: "region-a".to_string(),
+            expected_owner_epoch: 4,
+            region_map_epoch: 8,
+            program_module_hash: "module-hash".to_string(),
+            payload_schema: "schema-v1".to_string(),
+            requested_at: 5_000,
+        });
+        let mut with_completion = imported();
+        with_completion.complete(HANDOFF).unwrap();
+        let mut full = with_completion.journal().to_vec();
+        full.push(journal.pop().unwrap());
+        assert!(matches!(
+            Coordinator::recover(full, 7, [seed_owner()]),
+            Err(CoordinatorError::Integrity(_))
+        ));
+    }
+
+    #[test]
+    fn reconcile_rejects_receipts_for_another_handoff() {
+        let mut c = coordinator();
+        c.register_owner("entity-2", "region-a", 0).unwrap();
+        c.start_handoff(
+            HANDOFF,
+            ENTITY,
+            "region-b",
+            "module-hash",
+            "schema-v1",
+            1_000,
+        )
+        .unwrap();
+        c.start_handoff(
+            "h2",
+            "entity-2",
+            "region-b",
+            "module-hash",
+            "schema-v1",
+            1_000,
+        )
+        .unwrap();
+        let other = ExportReceipt {
+            handoff_id: "h2".to_string(),
+            entity_ref: "entity-2".to_string(),
+            source_region: "region-a".to_string(),
+            target_region: "region-b".to_string(),
+            prior_owner_epoch: 0,
+            program_module_hash: "module-hash".to_string(),
+            payload_schema: "schema-v1".to_string(),
+            payload_digest: DIGEST.to_string(),
+        };
+        assert_eq!(
+            c.reconcile(HANDOFF, Some(&other), None, 2_000),
+            Err(CoordinatorError::ReceiptMismatch("handoff_id"))
+        );
+        // Neither handoff moved.
+        assert_eq!(
+            c.active_handoff(ENTITY).unwrap().stage,
+            HandoffStage::Started
+        );
+        assert_eq!(
+            c.active_handoff("entity-2").unwrap().stage,
+            HandoffStage::Started
+        );
+        assert_eq!(c.journal().len(), 2);
+    }
+
+    #[test]
+    fn replay_rejects_a_start_that_disagrees_with_recovered_ownership() {
+        // A stale/corrupted start claiming epoch 1 against an owner
+        // seeded at epoch 3 must stop recovery, not roll ownership
+        // backward when it completes.
+        let mut journal = started().journal().to_vec();
+        if let CoordinatorJournalEntry::HandoffStarted {
+            expected_owner_epoch,
+            ..
+        } = &mut journal[0]
+        {
+            *expected_owner_epoch = 1;
+        }
+        assert!(matches!(
+            Coordinator::recover(journal, 7, [seed_owner()]),
+            Err(CoordinatorError::Integrity(_))
+        ));
+        // Wrong source region is rejected the same way.
+        let mut journal = started().journal().to_vec();
+        if let CoordinatorJournalEntry::HandoffStarted { source_region, .. } = &mut journal[0] {
+            *source_region = "region-z".to_string();
+        }
+        assert!(matches!(
+            Coordinator::recover(journal, 7, [seed_owner()]),
+            Err(CoordinatorError::Integrity(_))
+        ));
+    }
+
+    fn seed_owner() -> (String, EntityOwner) {
+        (
+            ENTITY.to_string(),
+            EntityOwner {
+                region: "region-a".to_string(),
+                owner_epoch: 3,
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod model_tests {
+    //! Model-based property tests for the coordinator (design #2818
+    //! §7 invariants; AGENTS.md testing doctrine: state machines with
+    //! meaningful invariants get generated sequences checked against a
+    //! reference model, and every crash prefix must replay to the same
+    //! state). The oracle is the miniature model below plus three
+    //! named invariants: replay equivalence, monotonic ownership
+    //! epochs, and handoff-ID uniqueness.
+
+    use super::*;
+    use proptest::prelude::*;
+    use std::collections::BTreeMap;
+
+    const SEED_MAP_EPOCH: u64 = 7;
+    const ENTITIES: [&str; 2] = ["e0", "e1"];
+    const IDS: [&str; 3] = ["h0", "h1", "h2"];
+    const REGIONS: [&str; 3] = ["region-a", "region-b", "region-c"];
+
+    fn seed_owners() -> Vec<(String, EntityOwner)> {
+        vec![
+            (
+                "e0".to_string(),
+                EntityOwner {
+                    region: "region-a".to_string(),
+                    owner_epoch: 3,
+                },
+            ),
+            (
+                "e1".to_string(),
+                EntityOwner {
+                    region: "region-a".to_string(),
+                    owner_epoch: 0,
+                },
+            ),
+        ]
+    }
+
+    fn live_coordinator() -> Coordinator {
+        let mut c = Coordinator::new(SEED_MAP_EPOCH);
+        for (entity, owner) in seed_owners() {
+            c.register_owner(&entity, &owner.region, owner.owner_epoch)
+                .unwrap();
+        }
+        c
+    }
+
+    fn digest_for(id: &str) -> String {
+        format!("digest-{id}")
+    }
+
+    #[derive(Clone, Debug)]
+    struct MActive {
+        id: String,
+        source: String,
+        target: String,
+        epoch: u64,
+        stage: HandoffStage,
+        digest: Option<String>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct Model {
+        owners: BTreeMap<String, (String, u64)>,
+        active: BTreeMap<String, MActive>,
+        used: std::collections::BTreeSet<String>,
+        map_epoch: u64,
+    }
+
+    impl Model {
+        fn new() -> Self {
+            Self {
+                owners: seed_owners()
+                    .into_iter()
+                    .map(|(e, o)| (e, (o.region, o.owner_epoch)))
+                    .collect(),
+                active: BTreeMap::new(),
+                used: std::collections::BTreeSet::new(),
+                map_epoch: SEED_MAP_EPOCH,
+            }
+        }
+
+        fn active_by_id(&self, id: &str) -> Option<(&String, &MActive)> {
+            self.active.iter().find(|(_, a)| a.id == id)
+        }
+    }
+
+    fn export_receipt(active: &MActive, entity: &str, digest: String) -> ExportReceipt {
+        ExportReceipt {
+            handoff_id: active.id.clone(),
+            entity_ref: entity.to_string(),
+            source_region: active.source.clone(),
+            target_region: active.target.clone(),
+            prior_owner_epoch: active.epoch,
+            program_module_hash: "m".to_string(),
+            payload_schema: "s".to_string(),
+            payload_digest: digest,
+        }
+    }
+
+    fn import_receipt(active: &MActive, entity: &str, digest: String) -> ImportReceipt {
+        ImportReceipt {
+            handoff_id: active.id.clone(),
+            entity_ref: entity.to_string(),
+            source_region: active.source.clone(),
+            target_region: active.target.clone(),
+            prior_owner_epoch: active.epoch,
+            new_owner_epoch: active.epoch + 1,
+            program_module_hash: "m".to_string(),
+            payload_schema: "s".to_string(),
+            payload_digest: digest,
+        }
+    }
+
+    fn dummy_export(id: &str) -> ExportReceipt {
+        ExportReceipt {
+            handoff_id: id.to_string(),
+            entity_ref: "e0".to_string(),
+            source_region: "region-a".to_string(),
+            target_region: "region-b".to_string(),
+            prior_owner_epoch: 0,
+            program_module_hash: "m".to_string(),
+            payload_schema: "s".to_string(),
+            payload_digest: digest_for(id),
+        }
+    }
+
+    fn dummy_import(id: &str) -> ImportReceipt {
+        ImportReceipt {
+            handoff_id: id.to_string(),
+            entity_ref: "e0".to_string(),
+            source_region: "region-a".to_string(),
+            target_region: "region-b".to_string(),
+            prior_owner_epoch: 0,
+            new_owner_epoch: 1,
+            program_module_hash: "m".to_string(),
+            payload_schema: "s".to_string(),
+            payload_digest: digest_for(id),
+        }
+    }
+
+    /// Assert the live coordinator and the model agree on everything
+    /// observable: owners, active handoffs (id + stage), map epoch.
+    fn assert_in_sync(c: &Coordinator, m: &Model, ctx: &str) {
+        assert_eq!(
+            c.region_map_epoch(),
+            m.map_epoch,
+            "map epoch diverged: {ctx}"
+        );
+        for entity in ENTITIES {
+            let (region, epoch) = &m.owners[entity];
+            let owner = c.owner_of(entity).expect("model owner missing live");
+            assert_eq!(
+                &owner.region, region,
+                "owner region diverged for {entity}: {ctx}"
+            );
+            assert_eq!(
+                owner.owner_epoch, *epoch,
+                "owner epoch diverged for {entity}: {ctx}"
+            );
+            match (c.active_handoff(entity), m.active.get(entity)) {
+                (None, None) => {}
+                (Some(a), Some(ma)) => {
+                    assert_eq!(
+                        a.handoff_id, ma.id,
+                        "active id diverged for {entity}: {ctx}"
+                    );
+                    assert_eq!(
+                        a.stage, ma.stage,
+                        "active stage diverged for {entity}: {ctx}"
+                    );
+                }
+                (a, b) => assert!(
+                    false,
+                    "active presence diverged for {entity}: live={a:?} model={b:?}: {ctx}"
+                ),
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        #[test]
+        fn coordinator_model_sequences(
+            ops in proptest::collection::vec((0u8..7, 0u8..8, 0u8..8, 0u8..8), 0..48)
+        ) {
+            let mut c = live_coordinator();
+            let mut m = Model::new();
+            let mut prev_map_epoch = m.map_epoch;
+            let mut prev_epochs: BTreeMap<String, u64> =
+                m.owners.iter().map(|(e, (_, ep))| (e.clone(), *ep)).collect();
+            let mut prev_journal_len = 0usize;
+
+            for (step, (kind, x, y, z)) in ops.iter().enumerate() {
+                let t = 1_000 + (step as u64) * 1_000;
+                let ctx = format!("step {step} op ({kind},{x},{y},{z})");
+                match kind {
+                    0 => {
+                        // Start a handoff.
+                        let entity = ENTITIES[(*x as usize) % ENTITIES.len()];
+                        let id = IDS[(*y as usize) % IDS.len()];
+                        let target = REGIONS[(*z as usize) % REGIONS.len()];
+                        let (region, epoch) = m.owners[entity].clone();
+                        let ok = !m.active.contains_key(entity)
+                            && !m.used.contains(id)
+                            && target != region.as_str();
+                        let result = c.start_handoff(id, entity, target, "m", "s", t);
+                        prop_assert_eq!(result.is_ok(), ok, "start outcome: {}", ctx);
+                        if ok {
+                            m.used.insert(id.to_string());
+                            m.active.insert(
+                                entity.to_string(),
+                                MActive {
+                                    id: id.to_string(),
+                                    source: region,
+                                    target: target.to_string(),
+                                    epoch,
+                                    stage: HandoffStage::Started,
+                                    digest: None,
+                                },
+                            );
+                        }
+                    }
+                    1 => {
+                        // Observe an export receipt.
+                        let id = IDS[(*x as usize) % IDS.len()];
+                        let bogus = z % 4 == 0;
+                        match m.active_by_id(id).map(|(e, a)| (e.clone(), a.clone())) {
+                            Some((entity, active)) => {
+                                let digest = if bogus {
+                                    "bogus".to_string()
+                                } else {
+                                    digest_for(id)
+                                };
+                                // At Started any digest is accepted and
+                                // becomes the recorded one; later stages
+                                // must match it exactly.
+                                let ok = match active.stage {
+                                    HandoffStage::Started => true,
+                                    _ => active.digest.as_deref() == Some(digest.as_str()),
+                                };
+                                let result = c.observe_export(
+                                    &export_receipt(&active, &entity, digest.clone()),
+                                    t,
+                                );
+                                prop_assert_eq!(result.is_ok(), ok, "export outcome: {}", ctx);
+                                if ok && active.stage == HandoffStage::Started {
+                                    let a = m.active.get_mut(&entity).unwrap();
+                                    a.stage = HandoffStage::ExportObserved;
+                                    a.digest = Some(digest);
+                                }
+                            }
+                            None => {
+                                let result = c.observe_export(&dummy_export(id), t);
+                                prop_assert!(result.is_err(), "export for unknown id: {}", ctx);
+                            }
+                        }
+                    }
+                    2 => {
+                        // Observe an import receipt.
+                        let id = IDS[(*x as usize) % IDS.len()];
+                        let bogus = z % 4 == 0;
+                        match m.active_by_id(id).map(|(e, a)| (e.clone(), a.clone())) {
+                            Some((entity, active)) => {
+                                let digest = if bogus {
+                                    "bogus".to_string()
+                                } else {
+                                    digest_for(id)
+                                };
+                                let ok = match active.stage {
+                                    HandoffStage::Started => false,
+                                    HandoffStage::ExportObserved => {
+                                        active.digest.as_deref() == Some(digest.as_str())
+                                    }
+                                    HandoffStage::ImportObserved => {
+                                        active.digest.as_deref() == Some(digest.as_str())
+                                    }
+                                };
+                                let result = c.observe_import(
+                                    &import_receipt(&active, &entity, digest),
+                                    t,
+                                );
+                                prop_assert_eq!(result.is_ok(), ok, "import outcome: {}", ctx);
+                                if ok && active.stage == HandoffStage::ExportObserved {
+                                    m.active.get_mut(&entity).unwrap().stage =
+                                        HandoffStage::ImportObserved;
+                                }
+                            }
+                            None => {
+                                let result = c.observe_import(&dummy_import(id), t);
+                                prop_assert!(result.is_err(), "import for unknown id: {}", ctx);
+                            }
+                        }
+                    }
+                    3 => {
+                        // Complete.
+                        let id = IDS[(*x as usize) % IDS.len()];
+                        let found = m
+                            .active_by_id(id)
+                            .map(|(e, a)| (e.clone(), a.clone()));
+                        let ok = matches!(&found, Some((_, a)) if a.stage == HandoffStage::ImportObserved);
+                        let result = c.complete(id);
+                        prop_assert_eq!(result.is_ok(), ok, "complete outcome: {}", ctx);
+                        if ok {
+                            let (entity, active) = found.unwrap();
+                            m.owners.insert(
+                                entity.clone(),
+                                (active.target.clone(), active.epoch + 1),
+                            );
+                            m.map_epoch += 1;
+                            m.active.remove(&entity);
+                        }
+                    }
+                    4 => {
+                        // Cancel; the caller sometimes cannot prove the
+                        // export is absent.
+                        let id = IDS[(*x as usize) % IDS.len()];
+                        let export_exists = z % 2 == 0;
+                        let found = m
+                            .active_by_id(id)
+                            .map(|(e, a)| (e.clone(), a.clone()));
+                        let ok = matches!(&found, Some((_, a)) if a.stage == HandoffStage::Started)
+                            && !export_exists;
+                        let result = c.cancel(id, "prop", export_exists);
+                        prop_assert_eq!(result.is_ok(), ok, "cancel outcome: {}", ctx);
+                        if ok {
+                            let (entity, _) = found.unwrap();
+                            m.active.remove(&entity);
+                        }
+                    }
+                    5 => {
+                        // Crash + recover: replay must reproduce the
+                        // live coordinator exactly.
+                        let recovered = Coordinator::recover(
+                            c.journal().to_vec(),
+                            SEED_MAP_EPOCH,
+                            seed_owners(),
+                        )
+                        .unwrap();
+                        prop_assert_eq!(&recovered, &c, "replay equivalence: {}", ctx);
+                        c = recovered;
+                    }
+                    _ => {
+                        // Correlate garbage: a receipt whose schema
+                        // disagrees with the journaled start is refused
+                        // and changes nothing.
+                        let id = IDS[(*x as usize) % IDS.len()];
+                        if let Some((entity, active)) =
+                            m.active_by_id(id).map(|(e, a)| (e.clone(), a.clone()))
+                        {
+                            let mut receipt = export_receipt(&active, &entity, digest_for(id));
+                            receipt.payload_schema = "other-schema".to_string();
+                            let before = c.journal().len();
+                            let result = c.observe_export(&receipt, t);
+                            prop_assert!(result.is_err(), "schema mismatch refused: {}", ctx);
+                            prop_assert_eq!(c.journal().len(), before, "journal untouched: {}", ctx);
+                        }
+                    }
+                }
+
+                // Invariants after every step.
+                assert_in_sync(&c, &m, &ctx);
+                prop_assert!(
+                    c.region_map_epoch() >= prev_map_epoch,
+                    "map epoch went backward: {}",
+                    ctx
+                );
+                prev_map_epoch = c.region_map_epoch();
+                for entity in ENTITIES {
+                    let epoch = c.owner_of(entity).unwrap().owner_epoch;
+                    prop_assert!(epoch >= prev_epochs[entity], "owner epoch went backward: {}", ctx);
+                    prev_epochs.insert(entity.to_string(), epoch);
+                }
+                prop_assert!(c.journal().len() >= prev_journal_len, "journal shrank: {}", ctx);
+                prev_journal_len = c.journal().len();
+                let started_ids: Vec<&str> = c
+                    .journal()
+                    .iter()
+                    .filter_map(|e| match e {
+                        CoordinatorJournalEntry::HandoffStarted { handoff_id, .. } => {
+                            Some(handoff_id.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let unique: std::collections::BTreeSet<&str> = started_ids.iter().copied().collect();
+                prop_assert_eq!(started_ids.len(), unique.len(), "handoff id reused: {}", ctx);
+            }
+
+            // Every crash prefix of the final journal replays cleanly.
+            let journal = c.journal().to_vec();
+            for prefix in 0..=journal.len() {
+                let recovered =
+                    Coordinator::recover(journal[..prefix].to_vec(), SEED_MAP_EPOCH, seed_owners())
+                        .unwrap();
+                if prefix == journal.len() {
+                    prop_assert_eq!(&recovered, &c, "full-journal replay equivalence");
+                }
+            }
+        }
     }
 }
