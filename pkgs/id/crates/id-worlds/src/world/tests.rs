@@ -1655,7 +1655,7 @@ mod tests {
                 "{entry:?}"
             );
         }
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_WRITE_LEASE);
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_SIGNED_PLAY);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         let mut lease = WriteLease::bootstrap();
@@ -7736,6 +7736,251 @@ mod tests {
             core.input_signed(&token_x, b"cell-6", &rival.bytes)
                 .is_err()
         );
+    }
+
+    /// Play a three-move signed game on a fresh core: x moves twice,
+    /// o once. Returns the core, both tokens, both keys, and the move
+    /// frontier per participant, for the #4346 journal tests.
+    fn signed_game() -> (
+        WorldCore,
+        JoinCapability,
+        JoinCapability,
+        p2panda_core::SigningKey,
+        p2panda_core::SigningKey,
+        std::collections::HashMap<u64, p2panda_core::Hash>,
+    ) {
+        use p2panda_core::{Hash, SigningKey};
+
+        let mut core = WorldCore::new("ttt-journal", WorldLimits::default()).unwrap();
+        let (px, token_x) = core
+            .issue_capability("x", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let (po, token_o) = core
+            .issue_capability("o", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let key_x = SigningKey::from_bytes(Hash::digest(b"x key").as_bytes());
+        let key_o = SigningKey::from_bytes(Hash::digest(b"o key").as_bytes());
+        core.bind_author_key(&token_x, *key_x.verifying_key().as_bytes())
+            .unwrap();
+        core.bind_author_key(&token_o, *key_o.verifying_key().as_bytes())
+            .unwrap();
+        let script: [(&JoinCapability, &SigningKey, u64, u32, &[u8]); 3] = [
+            (&token_x, &key_x, px.id, 0, b"cell-0"),
+            (&token_o, &key_o, po.id, 0, b"cell-4"),
+            (&token_x, &key_x, px.id, 1, b"cell-1"),
+        ];
+        let mut frontier: std::collections::HashMap<u64, Hash> = Default::default();
+        for (token, key, participant, seq, input) in script {
+            let signed = signed::sign_move(
+                key,
+                "ttt-journal",
+                seq,
+                frontier.get(&participant).copied(),
+                input,
+            )
+            .unwrap();
+            core.input_signed(token, input, &signed.bytes).unwrap();
+            frontier.insert(participant, signed.id);
+        }
+        (core, token_x, token_o, key_x, key_o, frontier)
+    }
+
+    /// The journal the actor persists for `core`'s signed game (#4346):
+    /// header, issued entries, bindings, then each committed input
+    /// followed by its accepted-move entry.
+    fn signed_journal(core: &WorldCore) -> Vec<JournalEntry> {
+        let mut entries = vec![JournalEntry::Created {
+            world_id: "ttt-journal".to_owned(),
+            version: JOURNAL_VERSION_SIGNED_PLAY,
+        }];
+        let mut ids: Vec<u64> = core.author_keys.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            entries.extend(core.issued_entry(id));
+            entries.push(JournalEntry::AuthorKeyBound {
+                participant_id: id,
+                author: hex_encode(&core.author_keys[&id]),
+            });
+        }
+        for event in &core.events {
+            entries.push(JournalEntry::Committed {
+                event: event.clone(),
+            });
+            for record in core
+                .signed_moves()
+                .iter()
+                .filter(|record| record.world_sequence == event.sequence)
+            {
+                entries.push(JournalEntry::SignedMoveAccepted {
+                    record: JournalSignedMove::from_record(record),
+                });
+            }
+        }
+        entries
+    }
+
+    #[test]
+    fn signed_play_survives_journal_restore_and_compaction() {
+        let (core, token_x, _token_o, key_x, _key_o, frontier) = signed_game();
+        let x_id = core
+            .author_keys
+            .iter()
+            .find(|(_, key)| **key == *key_x.verifying_key().as_bytes())
+            .map(|(id, _)| *id)
+            .unwrap();
+        let records = core.signed_moves().to_vec();
+        assert_eq!(records.len(), 3);
+
+        // Restart from the journal: bindings, frontiers, and records
+        // are rebuilt, and replay re-verified every move.
+        let restored =
+            WorldCore::restore("ttt-journal", WorldLimits::default(), signed_journal(&core))
+                .unwrap();
+        let mut restored = restored.core;
+        assert_eq!(restored.signed_moves(), records.as_slice());
+        assert_eq!(restored.author_keys, core.author_keys);
+        assert_eq!(restored.move_chains[&x_id].next_seq(), 2);
+        assert_eq!(
+            restored.move_chains[&x_id].frontier(),
+            frontier.get(&x_id).copied()
+        );
+
+        // The chain continues at the restored position without
+        // re-anchoring: x's next move is sequence 2 on the frontier.
+        let next = signed::sign_move(
+            &key_x,
+            "ttt-journal",
+            2,
+            frontier.get(&x_id).copied(),
+            b"cell-2",
+        )
+        .unwrap();
+        restored
+            .input_signed(&token_x, b"cell-2", &next.bytes)
+            .unwrap();
+
+        // And a rival at an already-accepted sequence is still refused
+        // after the restart.
+        let rival = signed::sign_move(
+            &key_x,
+            "ttt-journal",
+            2,
+            frontier.get(&x_id).copied(),
+            b"cell-5",
+        )
+        .unwrap();
+        assert!(
+            restored
+                .input_signed(&token_x, b"cell-5", &rival.bytes)
+                .is_err()
+        );
+
+        // Compaction keeps the whole signed state: checkpoint the
+        // restored core (its four accepted moves now include the
+        // post-restart one) and restore once more.
+        restored.active_module_hash = Some("module-hash".to_owned());
+        let compacted = restored.checkpoint_entries("state".to_owned()).unwrap();
+        let restored2 = WorldCore::restore("ttt-journal", WorldLimits::default(), compacted)
+            .unwrap()
+            .core;
+        assert_eq!(restored2.signed_moves(), restored.signed_moves());
+        assert_eq!(restored2.author_keys, restored.author_keys);
+        assert_eq!(restored2.move_chains[&x_id].next_seq(), 3);
+        assert_eq!(restored2.move_chains[&x_id].frontier(), Some(next.id));
+    }
+
+    #[test]
+    fn journal_restore_refuses_a_tampered_signed_move() {
+        let (core, ..) = signed_game();
+        let mut entries = signed_journal(&core);
+        // Flip a byte inside the last accepted move's signed bytes: the
+        // record no longer matches its bytes, so replay must refuse
+        // the whole journal rather than restore a forged chain.
+        let last = entries
+            .iter_mut()
+            .rev()
+            .find_map(|entry| match entry {
+                JournalEntry::SignedMoveAccepted { record } => Some(record),
+                _ => None,
+            })
+            .unwrap();
+        let mut bytes = last.bytes.clone();
+        bytes.replace_range(0..2, "ff");
+        last.bytes = bytes;
+        assert!(WorldCore::restore("ttt-journal", WorldLimits::default(), entries).is_err());
+    }
+
+    #[test]
+    fn signed_play_entries_require_journal_version_8() {
+        // Issue #4346: signed-play kinds are the first entries a
+        // version-7 binary cannot read, so they pin the header to
+        // version 8 under the #227 bump-on-first-write contract.
+        for entry in [
+            JournalEntry::AuthorKeyBound {
+                participant_id: 1,
+                author: "00".repeat(32),
+            },
+            JournalEntry::SignedMoveAccepted {
+                record: JournalSignedMove {
+                    world_sequence: 1,
+                    participant_id: 1,
+                    author: "00".repeat(32),
+                    author_seq: 0,
+                    event_id: "00".repeat(32),
+                    bytes: String::new(),
+                },
+            },
+        ] {
+            assert_eq!(
+                journal_version_required_by(&entry),
+                JOURNAL_VERSION_SIGNED_PLAY,
+                "{entry:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ingested_signed_moves_yield_a_fork_proof_for_a_rival() {
+        use id_events::event_store::{EventStore, Ingest};
+        use p2panda_core::{Hash, SigningKey};
+
+        let mut core = WorldCore::new("ttt-ingest", WorldLimits::default()).unwrap();
+        let (_, token) = core
+            .issue_capability("x", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let key = SigningKey::from_bytes(Hash::digest(b"ingest x").as_bytes());
+        let author = *key.verifying_key().as_bytes();
+        core.bind_author_key(&token, author).unwrap();
+        let first = signed::sign_move(&key, "ttt-ingest", 0, None, b"cell-0").unwrap();
+        core.input_signed(&token, b"cell-0", &first.bytes).unwrap();
+        let second = signed::sign_move(&key, "ttt-ingest", 1, Some(first.id), b"cell-1").unwrap();
+        core.input_signed(&token, b"cell-1", &second.bytes).unwrap();
+
+        // The hand-off: every accepted move goes into the event store.
+        let dir = tempfile::tempdir().unwrap();
+        let mut store =
+            EventStore::open(dir.path(), id_core::waiting::WaitingLimits::default(), 0).unwrap();
+        let outcomes = core.ingest_signed_moves(&mut store, 0).unwrap();
+        assert_eq!(outcomes.len(), 2);
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| matches!(outcome, Ingest::Accepted { .. })),
+            "{outcomes:?}"
+        );
+        assert!(store.fork_proof(&author).unwrap().is_none());
+
+        // A rival signed move at an already-accepted sequence — valid
+        // chain material the world itself refused — produces the
+        // store's fork proof once ingested.
+        let rival = signed::sign_move(&key, "ttt-ingest", 1, Some(first.id), b"cell-6").unwrap();
+        let outcome = store.ingest(&rival.bytes, 0).unwrap();
+        assert!(
+            matches!(outcome, Ingest::Fork { seq: 1, .. }),
+            "{outcome:?}"
+        );
+        let proof = store.fork_proof(&author).unwrap().unwrap();
+        assert_eq!(proof.seq, 1);
     }
 
     #[tokio::test]

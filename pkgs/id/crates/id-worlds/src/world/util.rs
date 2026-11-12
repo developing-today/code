@@ -55,6 +55,21 @@ pub fn publish_records(
     });
 }
 
+/// Lower-case hex decoding of an arbitrary-length byte string, the
+/// inverse of [`hex_encode`]. `None` on odd length or a non-hex digit.
+pub(crate) fn hex_decode(encoded: &str) -> Option<Vec<u8>> {
+    let bytes = encoded.as_bytes();
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let nibble = |b: u8| char::from(b).to_digit(16);
+        out.push(u8::try_from(nibble(pair[0])? << 4 | nibble(pair[1])?).ok()?);
+    }
+    Some(out)
+}
+
 pub(crate) fn hex_decode_32(encoded: &str) -> Option<[u8; 32]> {
     let bytes = encoded.as_bytes();
     if bytes.len() != 64 {
