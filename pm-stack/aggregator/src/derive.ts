@@ -5,6 +5,7 @@ import type { Comment, GhItem, Link, ProjectPoolItem, RefKey, RoadmapRow } from 
 import { validateRoadmapHorizon } from "./roadmap-horizon.ts";
 import { summarizeWipLanes, type WipLaneSummary } from "./wip-limits.ts";
 import { parseIsoDate } from "./validate.ts";
+import { canonicalStatusFor, ghItemDerivedStatus, type StatusSource } from "./status-taxonomy.ts";
 
 export interface ExecutionStrip {
   /** Draft PRs, and open issues already dispatched or in progress. */
@@ -718,6 +719,41 @@ export interface TodayObjective {
   /** Where the objective came from, e.g. "orchestrator · today". */
   chip: string;
   ref?: RefKey;
+  /** Source-vs-derived status disagreement (#1198), both sides named,
+   * when the objective's source status and the status derived from
+   * its linked GitHub item disagree canonically. Absent = agreement
+   * (or no second side to compare). */
+  statusNote?: string;
+}
+
+/**
+ * The #1198 disagreement note for one Today objective: the source's
+ * own status (Grist row, Kaneo column) against the linked GitHub
+ * item — its derived lifecycle status when GitHub derives one, else
+ * its Project Status. Canonical comparison via status-taxonomy.ts:
+ * spelling variants of the same status never produce a note.
+ */
+export function todayStatusNote(
+  source: StatusSource,
+  rawStatus: string,
+  links: Link[],
+  items: Map<RefKey, GhItem>,
+): string | undefined {
+  const sourceCanonical = canonicalStatusFor(source, rawStatus);
+  if (!sourceCanonical) return undefined;
+  const linked = links.map((l) => items.get(l.ref)).find((g) => g !== undefined);
+  if (!linked) return undefined;
+  const derived = ghItemDerivedStatus(linked);
+  if (derived && derived !== sourceCanonical) {
+    return `⚠ ${source}: ${rawStatus} · derived: ${derived}`;
+  }
+  if (linked.projectStatus) {
+    const projectCanonical = canonicalStatusFor("project", linked.projectStatus);
+    if (projectCanonical && projectCanonical !== sourceCanonical) {
+      return `⚠ ${source}: ${rawStatus} · project: ${linked.projectStatus}`;
+    }
+  }
+  return undefined;
 }
 
 export interface ProjectMomentum {
@@ -840,8 +876,15 @@ export function deriveToday(
   const today = chicagoYmd(now);
   const objectives: TodayObjective[] = [];
   for (const row of rows) {
-    if (rowDate(row) === today && !/^done$/i.test(row.status)) {
-      objectives.push({ title: row.title, chip: "roadmap · today", detail: `${row.area} · ${row.status}` });
+    // #1198: "done" is judged canonically (Grist also spells it
+    // Complete/Shipped), not by one source's regex.
+    if (rowDate(row) === today && canonicalStatusFor("grist", row.status) !== "Done" && !/^done$/i.test(row.status)) {
+      objectives.push({
+        title: row.title,
+        chip: "roadmap · today",
+        detail: `${row.area} · ${row.status}`,
+        statusNote: todayStatusNote("grist", row.status, row.links, items),
+      });
     }
   }
   const byPriority = (a: BoardItem, b: BoardItem) =>
@@ -850,13 +893,21 @@ export function deriveToday(
     .filter((b) => b.status === "in-progress")
     .sort(byPriority)
     .slice(0, 5)) {
-    objectives.push({ title: item.title, chip: `in progress · ${item.repo}` });
+    objectives.push({
+      title: item.title,
+      chip: `in progress · ${item.repo}`,
+      statusNote: todayStatusNote("kaneo", item.status, item.links, items),
+    });
   }
   for (const item of board
     .filter((b) => b.status === "in-review")
     .sort(byPriority)
     .slice(0, 3)) {
-    objectives.push({ title: item.title, chip: `in review · ${item.repo}` });
+    objectives.push({
+      title: item.title,
+      chip: `in review · ${item.repo}`,
+      statusNote: todayStatusNote("kaneo", item.status, item.links, items),
+    });
   }
 
   const weekAgo = now.getTime() - 7 * 86_400_000;
