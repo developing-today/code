@@ -513,36 +513,55 @@ func TestAFailedScriptExplainsItself(t *testing.T) {
 func TestTheSinkIsNeverCalledConcurrently(t *testing.T) {
 	needRuntime(t)
 	svc := service(t, store(t))
-	var inFlight, overlaps, emits, stdouts atomic.Int32
-	_, err := svc.RunWith(context.Background(), runner.Options{
-		Source: `
+	var overlaps atomic.Int32
+	// The premise (stdout split over several frames) depends on how the
+	// runtime's writes and the copier's reads line up. The script pauses
+	// every 20 lines so they usually land in separate reads, but a loaded
+	// builder can still deliver all of stdout in one read (darwin-nix
+	// build, 1 stdout frame), so a run that misses the premise is retried
+	// rather than failed. Overlaps count across every attempt.
+	const attempts = 5
+	var emits, stdouts int32
+	for attempt := 1; attempt <= attempts; attempt++ {
+		var inFlight, emitCount, stdoutCount atomic.Int32
+		_, err := svc.RunWith(context.Background(), runner.Options{
+			Source: `
 import { emit } from "./mcpx-client.ts";
-for (let i = 0; i < 200; i++) { console.log("out " + i); emit({ i }); }
+for (let i = 0; i < 200; i++) {
+  console.log("out " + i);
+  emit({ i });
+  if (i % 20 === 19) await new Promise((resolve) => setTimeout(resolve, 10));
+}
 `,
-		ClientSource: minimalClient,
-		Permissions:  "all",
-	}, execsvc.Options{}, func(f execsvc.Frame) error {
-		switch f.Type {
-		case execsvc.FrameEmit:
-			emits.Add(1)
-		case execsvc.FrameStdout:
-			stdouts.Add(1)
+			ClientSource: minimalClient,
+			Permissions:  "all",
+		}, execsvc.Options{}, func(f execsvc.Frame) error {
+			switch f.Type {
+			case execsvc.FrameEmit:
+				emitCount.Add(1)
+			case execsvc.FrameStdout:
+				stdoutCount.Add(1)
+			}
+			if inFlight.Add(1) > 1 {
+				overlaps.Add(1)
+			}
+			// Widens the window, so an unserialised sink is caught every run
+			// rather than occasionally.
+			time.Sleep(200 * time.Microsecond)
+			inFlight.Add(-1)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-		if inFlight.Add(1) > 1 {
-			overlaps.Add(1)
+		emits, stdouts = emitCount.Load(), stdoutCount.Load()
+		if emits >= 200 && stdouts >= 2 {
+			break
 		}
-		// Widens the window, so an unserialised sink is caught every run
-		// rather than occasionally.
-		time.Sleep(200 * time.Microsecond)
-		inFlight.Add(-1)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
-	if emits.Load() < 200 || stdouts.Load() < 2 {
-		t.Fatalf("premise: frames must come from both streams; %d emit, %d stdout",
-			emits.Load(), stdouts.Load())
+	if emits < 200 || stdouts < 2 {
+		t.Fatalf("premise: frames must come from both streams; %d emit, %d stdout after %d attempts",
+			emits, stdouts, attempts)
 	}
 	if n := overlaps.Load(); n > 0 {
 		t.Fatalf("the sink was entered concurrently %d times", n)
