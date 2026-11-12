@@ -925,7 +925,8 @@ impl CircuitBreaker {
     pub fn allow(&self, now: Instant) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         match *state {
-            BreakerState::Closed { .. } | BreakerState::HalfOpen => true,
+            BreakerState::Closed { .. } => true,
+            BreakerState::HalfOpen => false,
             BreakerState::Open { since } => {
                 if now.duration_since(since) >= BREAKER_HALF_OPEN_AFTER {
                     *state = BreakerState::HalfOpen;
@@ -958,6 +959,15 @@ impl CircuitBreaker {
             }
             BreakerState::HalfOpen | BreakerState::Open { .. } => BreakerState::Open { since: now },
         };
+    }
+
+    /// Re-open after a half-open probe cannot establish recovery. Other
+    /// non-transient failures leave a closed breaker unchanged.
+    fn record_probe_failure(&self, now: Instant) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(*state, BreakerState::HalfOpen) {
+            *state = BreakerState::Open { since: now };
+        }
     }
 }
 
@@ -1040,7 +1050,13 @@ impl<T: Transport, C: CredentialResolver> LibsqlAdapter<T, C> {
                 return Err(AdapterError::CircuitOpen(alias.to_owned()));
             }
             // The token is resolved per attempt and never stored.
-            let token = self.credentials.resolve(&alias_config.credential_ref)?;
+            let token = match self.credentials.resolve(&alias_config.credential_ref) {
+                Ok(token) => token,
+                Err(error) => {
+                    breaker.record_probe_failure(Instant::now());
+                    return Err(error);
+                }
+            };
             let outcome = self
                 .transport
                 .post_pipeline(
@@ -1072,11 +1088,15 @@ impl<T: Transport, C: CredentialResolver> LibsqlAdapter<T, C> {
                 }
                 Err(AdapterError::Auth { .. }) => {
                     // Fatal and never retried; the token is not in the error.
+                    breaker.record_probe_failure(Instant::now());
                     return Err(AdapterError::Auth {
                         credential_ref: alias_config.credential_ref.clone(),
                     });
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    breaker.record_probe_failure(Instant::now());
+                    return Err(error);
+                }
             }
         }
     }
@@ -1707,8 +1727,8 @@ mod tests {
     }
 
     /// Oracle: record item 7 — the breaker opens at the failure
-    /// threshold, refuses while open, half-opens after the timer, and
-    /// closes on a successful probe.
+    /// threshold, refuses while open, grants only one half-open probe,
+    /// reopens after a failed probe, and closes on a successful probe.
     #[test]
     fn test_circuit_breaker_opens_half_opens_and_closes() {
         let breaker = CircuitBreaker::new();
@@ -1719,7 +1739,17 @@ mod tests {
         }
         assert!(!breaker.allow(t0));
         assert!(!breaker.allow(t0 + BREAKER_HALF_OPEN_AFTER - Duration::from_secs(1)));
-        assert!(breaker.allow(t0 + BREAKER_HALF_OPEN_AFTER));
+        let probe_at = t0 + BREAKER_HALF_OPEN_AFTER;
+        assert!(breaker.allow(probe_at));
+        assert!(!breaker.allow(probe_at));
+        breaker.record_transient_failure(probe_at);
+        assert!(!breaker.allow(probe_at + BREAKER_HALF_OPEN_AFTER - Duration::from_secs(1)));
+        let retry_probe_at = probe_at + BREAKER_HALF_OPEN_AFTER;
+        assert!(breaker.allow(retry_probe_at));
+        assert!(!breaker.allow(retry_probe_at));
+        breaker.record_probe_failure(retry_probe_at);
+        assert!(!breaker.allow(retry_probe_at + BREAKER_HALF_OPEN_AFTER - Duration::from_secs(1)));
+        assert!(breaker.allow(retry_probe_at + BREAKER_HALF_OPEN_AFTER));
         breaker.record_success();
         assert!(breaker.allow(t0));
     }
