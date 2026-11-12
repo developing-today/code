@@ -42,11 +42,14 @@
 //! double-post. Reads repeat on any failure class.
 //!
 //! Tokens are never printed, logged, or written to a file: provider
-//! errors name the source and stage only, and failover notes on
-//! stderr name token *sources* (personal / app:<owner>), never
-//! values. Output capture note: attempts are captured (piped), not
-//! streamed, because the failure text is what classifies a failover;
-//! the final attempt's bytes are written out verbatim.
+//! errors name the source and stage only, never values. Attempts
+//! are silent by default — the final attempt's stdout, stderr and
+//! exit code are byte-exact what `gh` produced (a caller capturing
+//! both streams, as project-reconcile.sh does, must see gh's output
+//! and nothing else); FLEET_GH_TRACE=1 names each attempt's token
+//! *source* on stderr. Output capture note: attempts are captured
+//! (piped), not streamed, because the failure text is what
+//! classifies a failover.
 //!
 //! Controls (environment):
 //!   FLEET_GH_BIN        the `gh` binary to run (default: `gh`)
@@ -637,7 +640,9 @@ fn run_with_provider<P: TokenProvider>(
         let token = match provider.token_for(source) {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("fleet gh: skipping {} ({e})", source.label());
+                if trace {
+                    eprintln!("fleet gh: skipping {} ({e})", source.label());
+                }
                 provider_errors.push(e);
                 continue;
             }
@@ -664,15 +669,17 @@ fn run_with_provider<P: TokenProvider>(
         let class = classify_failure(&combined);
         let attempts_left = idx + 1 < sources.len();
         if may_retry(class, read_only, attempts_left) {
-            eprintln!(
-                "fleet gh: {} failed ({}); failing over",
-                source.label(),
-                match class {
-                    FailureClass::RateLimit => "rate limit",
-                    FailureClass::Permission => "permission/scope refusal",
-                    FailureClass::Other => "error on a read-only call",
-                }
-            );
+            if trace {
+                eprintln!(
+                    "fleet gh: {} failed ({}); failing over",
+                    source.label(),
+                    match class {
+                        FailureClass::RateLimit => "rate limit",
+                        FailureClass::Permission => "permission/scope refusal",
+                        FailureClass::Other => "error on a read-only call",
+                    }
+                );
+            }
             last = Some(attempt);
             continue;
         }
