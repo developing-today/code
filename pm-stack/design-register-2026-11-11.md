@@ -24,20 +24,20 @@
 
 ## Headline counts
 
-- **Register entries: 110** — 41 top-level entries + 69 named sub-designs, deduped by
+- **Register entries: 117** — 42 top-level entries + 75 named sub-designs, deduped by
   design (not by mention) across the six slices and the records pass:
-  Atlas 17 (2 top-level + 15 sub-designs) · ID & fleet 37 (4 parents + 33 sub-designs
-  across ID / mcpx / OpenCode / orchestration) · PM stack 17 (2 parents + 15 sub-entries) ·
-  Cloudflare 12 (9 top-level + 3 sub-designs) · Turso 5 · Adjacent infra 22
-  (19 top-level + 3 cluster sub-designs).
+  Atlas 18 (2 top-level + 16 sub-designs) · ID & fleet 41 (4 parents + 37 sub-designs
+  across ID / mcpx / OpenCode / orchestration) · PM stack 18 (2 parents + 16 sub-entries) ·
+  Cloudflare 12 (9 top-level + 3 sub-designs) · Turso 5 · Adjacent infra 23
+  (20 top-level + 3 cluster sub-designs).
 - **Plus 131 idea-engine entries** registered as one parent (T3) with every title
   preserved in Appendix A.
-- **Design status (across the 110):** the plurality are *built-into-running-system*
+- **Design status (across the 117):** the plurality are *built-into-running-system*
   (the fleet builds what Drew asks for, fast, usually the same day); the decided-but-only-
   *partial* band is the fat middle (Atlas service epic, ID Phase-14 ladder, PM coherence
   children, pool epic, unification slices); *drafted*-only designs cluster in Atlas search
   and the ID design mill; *none* (no design artifact) is rare and always flagged.
-- **Never-issued: 42 items triaged** — **8 STILL-LIVE** (the filing manifest in §7),
+- **Never-issued: 43 items triaged** — **9 STILL-LIVE** (the filing manifest in §7),
   **29 DONE-WITHOUT-ISSUE** (built via cron/goal/direct build; register-only),
   **5 SUPERSEDED/DEAD** (register-only, closed); 3 further never-issued items deliberately
   left unclassed, with reasons (§7).
@@ -51,6 +51,19 @@ the decisions ledger, goals, and an open-issue census), with ~45 issue statuses
 spot-verified live via `gh` during synthesis (marked **[live-checked 2026-11-11]**).
 No issue number, status, or quote below is invented: every claim traces to a slice
 line, a records-pass line, or a live `gh` check run in this pass.
+
+Gap pass merged 2026-11-11: +7 entries (G1–G7, marked in place as A1.16, F3.7, F3.8,
+F3.9, F4.18, P1.13, X20) found by scanning the places the main comb did not fully
+cover — the full hatch-personal tree, sandbox + laptop scratch space, and the
+OpenCode session corpus via Atlas (791 in-window sessions; Drew's direct OpenCode
+sessions are not in the Muse-side record). Plus 3 origin corrections (F4.3
+pool/routing origin 2026-10-05; multi-instance providers origin 2026-10-24, recorded
+at F4.3; F1.2 forks-org origin 2026-10-12) and A1's stale landing-tier follow-up
+closed (Turso Scaler, 2026-11-04). ChatGPT raw export verdict: definitively absent
+from both machines; the Atlas-held copy (938 conversations, undated) was title-scanned
+— no program-level design asks in the audit domains, so a raw export's yield for this
+register would be marginal (dates, not designs). Full detail: GAP-ADDENDUM.md
+alongside this register.
 
 Field key per entry:
 - **design_status**: none / drafted / decided / built-into-running-system
@@ -82,7 +95,7 @@ Field key per entry:
 - design_artifact: ~/hatch-personal/workspace/turso-atlas/docs/pro-month-plan.md (+ laptop-centric / anti-lock-in addendum 2026-10-20 ~22:51)
 - design_status: decided
 - implementation_status: partial (shipped in pieces — see sub-entries; no single completion record for the program as designed)
-- followups_open: final landing-tier confirmation (decide ~day 25 by measured hot-set size + active-DB count) never recorded as answered; the program's individual follow-ups live under the sub-entries.
+- followups_open: ~~final landing-tier confirmation (decide ~day 25 by measured hot-set size + active-DB count) never recorded as answered~~ — ANSWERED (gap pass 2026-11-11): Drew signed up for Turso Scaler on 2026-11-04 (recorded in ~/hatch-personal/workspace/scratch/atlas-scaler-revision/design.md — the design artifact behind A1.4's staging-tier lineage, §4 being the two-tier design #5669 tracks; its Appendix B carries the open questions for Drew as of 2026-11-04). The landing tier is Scaler. The program's individual follow-ups live under the sub-entries.
 
 #### A1.1 Atlas collector (atlas-ingest.py) + full-corpus ingest + recording-coverage directive
 - first_asked: 2026-10-20 — canonical archive must cover ALL conversations (Muse, OpenCode, Claude Code, local Codex, GitHub Copilot, Antigravity, Gemini + ChatGPT backups) with a maintained plan and a coverage proof (`atlas-ingest.py report`); collector built "for the Muse test but as a reusable template — config-driven default locations per client/machine"; Framework laptop (4 TB 990 Pro, always-on) = canonical warm store + ingest factory; buckets demoted to backup/distribution.
@@ -206,6 +219,15 @@ Field key per entry:
 - implementation_status: partial / not established in the slice record (slices #8622/#8625 exist per census; their states were not verified in this pass)
 - followups_open: the integration build itself; also on the ledger at slice end: developing-today/code#8479 **[live-checked 2026-11-11: OPEN]** — "Atlas boundary remediation: secret-bearing rows still live in the production monolith and a local replica (#6021 wave 1)" — purge or reclassify 638 secret-bearing rows; ledger item atlas-secret-remediation-8479 still pending Drew.
 
+#### A1.16 Modal GPU credit allocation design (sub-design in the A1.3 embedding lineage) — added by gap pass 2026-11-11
+- first_asked: 2026-11-04 ~23:27 CST — Drew's directive: design + research ONLY (nothing spent or provisioned) on the best use of the Modal balance ($30/mo Starter credits + $100 one-time hackathon grant = $130; grant treated as spend-by ~Oct 2027).
+- design: recurring $30/mo funds the Atlas delta-embedding + experiment rhythm; the one-time $100 funds one-shot corpus builds; a hard classification guardrail on what may be embedded off-box; a post-credit "GPU ladder" answering Drew's four questions about life after the credits. Dimension-identical to production (arctic-embed-m-v2.0, 768) — no migration.
+- tracking: doc-only; no issue cites this design (the Modal Qwen/embed completion rides A1.3's follow-ups)
+- design_artifact: ~/hatch-personal/workspace/scratch/modal-gpu-design-2026-11-04/design.md
+- design_status: decided (allocation recommended in the doc)
+- implementation_status: partial — the Modal embedding build it budgets was in flight per A1.3; the allocation/ledger itself has no completion record
+- gap note: the register's only Modal mentions before this entry were the bake-off's Modal build lines (A1.3); this commissioned design had no entry.
+
 ### A2. agent-fs + llm-wiki investigation (Atlas pre-history)
 - first_asked: 2026-09-29 — "what is agent-fs what is llm-wiki" + three reminders (Thu/Fri/Sat) to look into both further: agent-fs (shared, persistent, searchable filesystem for AI agents — MCP-native, S3-compatible) and llm-wiki (Karpathy's pattern: an LLM incrementally builds/maintains an interlinked markdown knowledge base).
 - timeline: 2026-10-01/02 — reminders delivered; 2026-10-02 slice record: standing interest, no design or build; Drew's extra "remind me once more next Friday morning" (Fri 2026-10-09) never scheduled — the scope question (both topics or just the lab cluster) was asked and never answered.
@@ -243,6 +265,7 @@ Field key per entry:
 - design_status: decided (five of six have since closed — rulings landed after the slice; all six were UNANSWERED at the 2026-10-29 flush)
 - implementation_status: partial
 - followups_open: opencode#587 remains open; per the record, opencode#566 is blocked until it is ruled.
+- origin (corrected by gap pass 2026-11-11): item (2)'s question is older than the 2026-10-29 layout — on 2026-10-12 Drew, in a direct OpenCode session (opencode:ses_ed12b0eaaffe), asked for the forks-org question to be filed; that ask is the origin of code#157.
 
 #### F1.3 ID conversion engine — permanent schema/allocator decisions (#5536)
 - first_asked: presented 2026-11-10 as the assemble-first decision item (design-mill / #5536 lineage); the record shows the question pending, not Drew's answer.
@@ -359,6 +382,32 @@ Field key per entry:
 - implementation_status: not started — premise check: the 7 lootbox MCP servers are stdio children of the gateway on Drew's Mac, bound to 127.0.0.1 only: 0 of 7 reachable over Tailscale; all 7 do run locally via this VM's mcpx daemon. The CLI would have to talk to this VM's mcpx instead, or the Mac gateway would need its loopback binding changed.
 - followups_open: Drew's answers (laptop OS, call method, auth preference) — in the manifest.
 
+#### F3.7 *-direct providers emulation doctrine — "emulate, don't embed" — added by gap pass 2026-11-11
+- first_asked: 2026-11-05 01:10 CST (vibe-direct embedding idea) → **corrected by Drew 2026-11-05 01:13 CST, verbatim: "no we emulate and don't actually need vibe at all except maybe for certain login calls. same for all direct."**
+- design: every `*-direct` provider reproduces the first-party client's wire behavior in our own code (endpoints, request shapes, headers, attribution markers, model presets); vendor binaries are for login/bootstrap only; auth must auto-renew without the vendor binary or a browser. The embedding set (opencode#1709, children #1710–#1714) was closed as not-planned under this ruling.
+- domain: ID & fleet / OpenCode platform (provider architecture)
+- tracking: developing-today-forks/opencode#1717 **[live-checked 2026-11-11: OPEN]** — "Doctrine: *-direct providers EMULATE the first-party wire — vendor binaries for login/bootstrap only, auth must auto-renew" (created 2026-11-05T07:36Z)
+- design_artifact: ~/hatch-personal/workspace/scratch/vibe-embed-2026-11-05/design.md
+- design_status: decided (standing doctrine)
+- implementation_status: partial / doctrinal — applies to each *-direct provider as built; no completion record
+- gap note: before this entry the register mentioned this doctrine only as a parenthetical inside F4.16 (the 2026-11-05 auto-renewal entry) — it had no entry of its own and #1717 was cited nowhere in the register.
+
+#### F3.8 OpenChamber retry-recovery controls — restart-with-new-model + force-next-pool-option — added by gap pass 2026-11-11
+- first_asked: 2026-10-19 — Drew, in a direct OpenCode session (opencode:ses_eabfb2c22ffem): "Please make a new feature in OpenChamber and fully implement it so that when an error occurs (such as the plan limit or other errors that stop the progression but trigger retries)" there is a button to restart with a new model (model picker) and, when using route pools, a control that forces the next route-pool option — available at all times, configurable whether it force-stops or applies on the next message.
+- tracking: implemented as OpenChamber PR #385 (prompt retry recovery); review issue developing-today-forks/openchamber#388 **[via gh search 2026-11-11: CLOSED]** — "PR #385 (prompt retry recovery) needs detailed review — settings restructure + sessionKnowledge API conflicts"
+- design_artifact: none — the ask lives in the session; the build is PR #385
+- design_status: decided (directive: "fully implement it")
+- implementation_status: shipped (PR #385; review issue closed)
+- gap note: no register entry before this one — the register's OpenChamber coverage was the fork/platform program level; this feature ask + build was absent.
+
+#### F3.9 OpenChamber Android app parity — do desktop updates reach the app, or a custom fork app? — added by gap pass 2026-11-11
+- first_asked: 2026-10-12 — Drew, in a direct OpenCode session (opencode:ses_ecfd4b73bffeo): "Review how the Open Chamber Android app works. Do updates to the desktop app reflect in the Android app or do we need a custom Android app? If so please implement all changes in the desktop and the mobile app and build an APK in our fork." (Followed 2026-10-17 by ses_eb649134affe: "fix mobile openchamber to have all the ui features and fix the mobile updater to use our fork".)
+- tracking: no single issue for the parity question; the fork's mobile app is real and tracked in-repo (openchamber#173 android-device launch break, #390 phantom Gradle flavors, #1341 mobile-release CI — all CLOSED per gh search 2026-11-11)
+- design_artifact: none
+- design_status: none (question + conditional build order)
+- implementation_status: partial — the fork carries the Android app and mobile fixes landed through October; no record ties them back to this ask as its acceptance check
+- gap note: the register contained no Android/mobile entry at all before this one (its only "mobile" hit was the PM stack's one-URL yardstick).
+
 ### F4. Fleet orchestration & dispatch (PARENT)
 
 #### F4.1 Fleet sweep/review job family (rotation, restructure, merge authority, PR review, reporting split, audits)
@@ -384,6 +433,8 @@ Field key per entry:
 
 #### F4.3 Pool & routing intelligence epic — lane scale-out, dispatcher/babysitter, design architect + program tending
 - first_asked: 2026-10-27 ~02:12 CDT (usage upgrade; more lanes for all types), followed by lane rebalance (02:23 — code 4 lanes, nix 1, opencode/openchamber 2 each), cadence retiming (02:30 — staggered starts), and DESIGN ARCHITECT + PROGRAM TENDING built at his direction (02:30): a 6-hourly design-architect job (one repo per run, ≤1 design per run, designs needing Drew carry user/review) and a daily program-tending job (epic status comments, roadmap-drift PRs, board corrections, aging user/review surfacing).
+- origin (corrected by gap pass 2026-11-11): the pool/routing program's origin is ~3 weeks earlier than the epic — **2026-10-05**, Drew in a direct OpenCode session (opencode:ses_ef2cf2f): the tiered-fallback / provider-rollup ask — "rollup various providers of the same model, so all gpt-6 luna as one, in a certain order… rollup cheap/fast models and smart/slow models… review uses smart/slow and hard uses frontier/heavy and explore/triage use cheap/fast". Same design, not a new item — the 2026-10-27 epic is its scale-out. The session's "don't break opencode 1" constraint is the same v1 exception F3.1 records, from this source.
+- origin — multi-instance providers (gap pass 2026-11-11): **2026-10-24**, Drew in a direct OpenCode session (opencode:ses_e93894d2dffe): "openai codex opencodego anthropic providers can each accept multiple… maybe like codex[customAlias]" — the origin of the multi-door provider system this program routes over; the alias syntax he proposed is not what shipped. Previously uncited in the register.
 - tracking: developing-today/code#1334 **[live-checked 2026-11-11: OPEN]** — "epic(fleet): pool & routing intelligence — lanes everywhere, live dispatch + babysitting, quota stewardship, reviewer oversight, AA + measured-speed model"; children #1335–#1343 + #1351 (design architect) + #1352 (program tending).
 - design_artifact: the epic + hidden_files instruction files (lane-shift, babysitter, dispatcher, pool-quota-steward, design-architect, program-tending) under the keep-the-four-repos-healthy goal
 - design_status: built-into-running-system
@@ -499,6 +550,15 @@ Field key per entry:
 - implementation_status: partial — research delegated and RUNNING at flush; analysis of swarm control patterns (partition-by-construction, funnel, tournament) delivered to Drew in chat.
 - followups_open: "Rockbot" and "Dots" unresolved — no product in Drew's records matches; Drew to confirm (candidates Dust, Devin, Lindy… unconfirmed); baseline noted: consumer Muse has NO public agent API/SDK (Drew filed a feature request 2026-09-29).
 
+#### F4.18 Time-based priority schedules for route pools — added by gap pass 2026-11-11
+- first_asked: 2026-10-12 — Drew, in a direct OpenCode session (opencode:ses_ecfab4789ffe): "expand how the config works to be able to set specific times to deprioritize or prioritize specific provider/model combinations and also per-provider or per-model/route pool, so that you can express… these are the peak hours and maybe choose another model if there are other options." Schedules by day of week + time + timezone + specific days of month; a default priority level (every model = 1); stickiness and user-override rules still apply on top.
+- domain: ID & fleet / routing (pool program)
+- tracking: NEVER-ISSUED at audit time — no matching issue found (gh searches: "peak hours schedule pool", openchamber/opencode title scans); the register's only "time-based" hit was the unrelated routine-job entry F4.2 — triage **(a) STILL-LIVE**; **filed 2026-11-11 as developing-today/code#8838** (see §7 manifest #9)
+- design_artifact: none — the ask lives only in the session (design review commissioned, no artifact survives in the scanned trees)
+- design_status: none
+- implementation_status: not established — no record of schedules landing in the pool config in any scanned source
+- followups_open: the whole item — whether time-based pool priority was ever built is unverified in every source the gap pass scanned.
+
 ---
 
 ## 3. PM STACK
@@ -603,6 +663,15 @@ Field key per entry:
 - design_status: decided — verdict: NO-GO moving board/aggregator to Workers (all data sources laptop-local/tailnet-only); GO on a small edge relay (1 Worker + 1 Durable Object).
 - implementation_status: partial — Phase 1 implemented (PR #8597 aggregator + PR #8598 CLI producer; proof push accepted 2026-11-11 07:44:12Z; whether the push reached Drew's phone was never explicitly confirmed by Drew — formally still open at window end, though Drew demonstrably reached and used the decisions page via a push link on 2026-11-11).
 - followups_open: Phases 2–3 (#8569, #8570); root cause of the ~dozen /board 503s on 2026-11-11 unproven.
+
+#### P1.13 PM aggregator PWA + Web Push design (ancestor of the real-notification design, P1.12) — added by gap pass 2026-11-11
+- first_asked: filed 2026-10-27 (issue) → design doc 2026-11-01 — an installable PWA + real Web Push for the PM aggregator so needs-Drew items and quota walls reach Drew's phone within a minute; branches on #1182 (one public URL behind Cloudflare Access) and specifies both branches because the access model's implementation was gated on Drew's recorded go.
+- domain: PM stack
+- tracking: developing-today/code#1254 **[live-checked 2026-11-11: CLOSED]** — "feat(aggregator): installable PWA + push notifications — NEEDS DREW and quota walls reach Drew's phone within a minute"; implementation filed as sub-issues of coherence epic #1184
+- design_artifact: ~/hatch-personal/workspace/scratch/push-design.md (2026-11-01; greenfield confirmed on main: no PWA manifest, /sw.js an unregister kill switch, no Web Push code)
+- design_status: drafted → decided in lineage (its Web Push throat is what #8568 later built producers into)
+- implementation_status: shipped-then-superseded in lineage — the throat exists (P1.12 Phase 1 built into it); #1254 itself is closed
+- gap note: the register's notification story previously started 2026-11-11 (P1.12) and never cited #1254 or this design, though P1.12's own text depends on "the existing Web Push throat" this design created.
 
 ### P2. Decisions system (PARENT)
 
@@ -960,19 +1029,28 @@ Cross-references: Ask-the-ledger (A1.14) is Atlas × Cloudflare AI Search; PM-st
 - implementation_status: not verified in this pass
 - followups_open: read with X6/X7/X17 — backups is the most fragmented domain in the register (cold-store nightly, Supabase DIY backups, fleet-backups provisioning, hash-tree scoping, Backblaze) with no single owning epic in the record.
 
+### X20. Docs migration — hatch-personal / hatch / darwin-nix docs → developing-today/code canonical home — added by gap pass 2026-11-11
+- first_asked: 2026-11-04 ~22:59–23:00 CST — Drew's directive: the three repos' accumulated documentation and design material belongs with the production code now that the fleet binaries are productionized; plan + enumeration first, the plan document itself moves nothing.
+- domain: adjacent infra / fleet documentation
+- tracking: developing-today/code#5983 **[live-checked 2026-11-11: OPEN]** — "Docs migration: hatch-personal/hatch/darwin-nix → code canonical home (tracking)"; batches #5976 (backup scripts & docs), #5978 (fleet designs & machinery), #5980 (architecture & how-it-works), #5981 (Atlas docs sweep), #5982 (darwin-nix non-flake docs); gap issue #5972 (fleet fallback connection mode)
+- design_artifact: ~/hatch-personal/workspace/scratch/docs-migration-plan-2026-11-04/plan.md (482 / 475 / 474 tracked files classified across the three repos)
+- design_status: decided (directive + filed plan)
+- implementation_status: partial — tracked by #5983 and its batches, all open at check time
+- gap note: zero hits in the register for #5983 or the migration before this entry.
+
 ---
 
 ## 7. NEVER-ISSUED TRIAGE — the dedicated section
 
 Every register item whose tracking is NEVER-ISSUED was classified:
-- **(a) STILL-LIVE — 8** (6 standalone asks + 2 live follow-ups of shipped systems): the filing manifest below.
+- **(a) STILL-LIVE — 9** (7 standalone asks + 2 live follow-ups of shipped systems; the 9th — F4.18 — added by the gap pass 2026-11-11): the filing manifest below.
 - **(b) DONE-WITHOUT-ISSUE — 29**: A1.1 Atlas collector + ingest · A1.5 delta publish + classification · A1.6 Atlas migration (with residual verification gap) · A1.7 publish v2 · A1.10 canonical-session rebuild · C1 nix-cache build · C1.1 benchmark program · C1.2 zstd push · C1.3 presigned R2 uploads · C2 Cloudflare credential architecture · C4 AI Gateway opencode-gateway · F2.2 mcpx dedup · F3.1 OpenCode 2 migration (core) · F4.1 sweep/review job family · F4.2 routine-task redesign · T1 Turso coordination schema · T3 idea engine (the vehicle) · X1 nix persistence · X2 Sol's six-point plan · X4 environment knowledge base · X5.1 lab-cluster research container · X6 cold-store system · X7 Supabase DIY backups · X8 Supabase agent schema · X10 Globalping watch · X11 account-connection campaign (vehicle) · X12 sandbox OpenCode server · X13 late-night shift rule · X14 subscription/model tracker. Register-only; no filing needed.
 - **(c) SUPERSEDED/DEAD — 5**: A1.2 magic-environment as a standalone build (absorbed piecemeal) · A2 agent-fs/llm-wiki standalone deep-dive (absorbed into Atlas) · T2 Turso temporary-surplus program (its month passed) · C3 credential receiver (purpose achieved another way; Vercel husk awaits Drew's dashboard deletion) · P1.10 orchestration-pass re-enable question (overtaken by events). Register-only, marked closed.
 - **Deliberately unclassed — 3**: X3 nix consolidation follow-ons (status unknown — a record gap, not evidence either way); A1 the Atlas program itself (never issued as a program; its pieces are classed individually); F4.17 agent-SDKs investigation (goal-tracked vehicle exists; residue is a Drew-answer).
 
-### STILL-LIVE NEVER-ISSUED — filing manifest (these 8 get filed in the next step)
+### STILL-LIVE NEVER-ISSUED — filing manifest (these 9 get filed)
 
-**Filed 2026-11-11** — all 8 are now issues; the filed number rides beside each item below. Tracking epic: developing-today/code#8805. Register committed to the PM stack as `pm-stack/design-register-2026-11-11.md` (PR #8804).
+**Filed 2026-11-11** — all 9 are now issues; the filed number rides beside each item below (items 1–8 in the first filing pass; item 9 by the gap pass). Tracking epic: developing-today/code#8805. Register committed to the PM stack as `pm-stack/design-register-2026-11-11.md` (PR #8804).
 
 | # | Proposed issue title | Repo | Register ref | Why it is still live (one line) |
 |---|---|---|---|---|
@@ -984,6 +1062,7 @@ Every register item whose tracking is NEVER-ISSUED was classified:
 | 6 | mcpx parity: GitHub / Atlassian / Datadog MCP server logins (Drew-gated OAuth/PAT) **[filed: developing-today/code#8809]** | developing-today/code | F2.6 | The standing gate in every mcpx watch run through 2026-10-11; tracked nowhere but watch text. |
 | 7 | One-command local agent CLI via this VM's mcpx — needs Drew's OS / call-method / auth answers **[filed: developing-today/code#8810]** | developing-today/code | F3.6 | Drew accepted the idea; the premise check rerouted the design (Mac gateway unreachable, VM mcpx works) and the three setup answers were never recorded. |
 | 8 | Cold-store: file the libsql /dump malformed-schema-rows quirk upstream (owed since 2026-10-27) **[filed: developing-today/code#8811]** | developing-today/code | X6 follow-up | The record says the upstream-quirk issue "was to be filed"; it never was. Small — and exactly the class this audit exists to catch. |
+| 9 | Time-based priority schedules for route pools (peak-hours prioritize/deprioritize per provider/model/pool by day/time/timezone/day-of-month) **[filed: developing-today/code#8838]** | developing-today/code | F4.18 | Drew asked 2026-10-12 in a direct OpenCode session; never issued, no design artifact, no build record in any scanned source — found only by the gap pass's OpenCode-DB comb. |
 
 Also noted but NOT manifested (Drew-only physical acts, not filings): delete the paused cred-receiver Vercel project in the Vercel dashboard (C3); the Atlas spike/probe DB delete-or-keep ruling (A1.4 — it is ledger-tracked, so not never-issued).
 
