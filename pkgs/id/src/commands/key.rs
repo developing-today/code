@@ -8,6 +8,7 @@ use zeroize::Zeroizing;
 
 use crate::cli::KeyCommand;
 use crate::key_envelope;
+use crate::seed_phrase;
 use crate::store::load_or_create_keypair;
 use crate::{CLIENT_KEY_FILE, KEY_FILE};
 
@@ -22,6 +23,8 @@ pub async fn cmd_key(command: KeyCommand) -> Result<()> {
             client,
             replace,
         } => import_key(&input, client, replace).await,
+        KeyCommand::ExportSeed { client } => export_seed(client).await,
+        KeyCommand::ImportSeed { client, replace } => import_seed(client, replace).await,
     }
 }
 
@@ -64,6 +67,42 @@ async fn import_key(input: &Path, client: bool, replace: bool) -> Result<()> {
         })?;
     }
     println!("Imported identity key to {}", target.display());
+    Ok(())
+}
+
+async fn export_seed(client: bool) -> Result<()> {
+    let key_path = if client { CLIENT_KEY_FILE } else { KEY_FILE };
+    let key = load_or_create_keypair(key_path).await?;
+    let key_bytes = Zeroizing::new(key.to_bytes());
+    let phrase = seed_phrase::encode_key(&key_bytes)?;
+    println!("Seed phrase for this identity — write it down and keep it offline:");
+    println!();
+    println!("{phrase}");
+    println!();
+    println!("Anyone with this phrase can restore (and impersonate) this identity.");
+    println!("It is shown once and is not stored anywhere by this command.");
+    Ok(())
+}
+
+async fn import_seed(client: bool, replace: bool) -> Result<()> {
+    let phrase = Zeroizing::new(rpassword::prompt_password("Seed phrase: ")?);
+    let key_bytes = seed_phrase::decode_key(&phrase)?;
+
+    let target = PathBuf::from(if client { CLIENT_KEY_FILE } else { KEY_FILE });
+    if replace {
+        replace_private_file(&target, &key_bytes[..])?;
+    } else {
+        write_new_private_file(&target, &key_bytes[..]).with_context(|| {
+            format!(
+                "could not create identity key {}; use --replace to overwrite it",
+                target.display()
+            )
+        })?;
+    }
+    println!(
+        "Imported identity key from seed phrase to {}",
+        target.display()
+    );
     Ok(())
 }
 

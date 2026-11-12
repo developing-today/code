@@ -1555,6 +1555,25 @@ pub enum KeyCommand {
         #[arg(long)]
         replace: bool,
     },
+    /// Print the server identity (or `--client` identity) as a 24-word
+    /// seed phrase. The phrase IS the key: anyone holding it holds the
+    /// identity. It is printed once, never written to a file by this
+    /// command, and never taken on the command line.
+    ExportSeed {
+        /// Export the client identity instead of the server identity.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Restore the server or client identity from a 24-word seed phrase
+    /// entered at a hidden prompt, never on the command line.
+    ImportSeed {
+        /// Import as the client identity instead of the server identity.
+        #[arg(long)]
+        client: bool,
+        /// Replace an existing identity key file atomically.
+        #[arg(long)]
+        replace: bool,
+    },
 }
 
 #[cfg(test)]
