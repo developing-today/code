@@ -911,6 +911,105 @@ fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Opt
     Some(bytes)
 }
 
+/// The retry alias recorded for a rejected form answer:
+/// `(form_id, view_token, current_token)`.
+///
+/// `view_token` is the token the guest's view still renders. A guest may
+/// keep rendering its original token across repeated rejections while
+/// each rejection advances the host-issued retry token, so when the
+/// rejected answer carried the current retry token, the ORIGINAL view
+/// token stays the alias; otherwise the rejected token starts a fresh
+/// alias. Losing the original alias makes the next unchanged redraw
+/// overwrite the active form with the stale token, and even a corrected
+/// answer is then refused as `stale_presentation` (Codex P2, PR #8928).
+fn form_retry_alias(
+    existing: Option<&(String, String, String)>,
+    form_id: &str,
+    rejected_token: &str,
+    new_token: &str,
+) -> (String, String, String) {
+    let view_token = match existing {
+        Some((retry_id, view_token, current_token))
+            if retry_id.as_str() == form_id && current_token.as_str() == rejected_token =>
+        {
+            view_token.clone()
+        }
+        _ => rejected_token.to_owned(),
+    };
+    (form_id.to_owned(), view_token, new_token.to_owned())
+}
+
+/// One fetched input unit for the form collector.
+enum FormBytes {
+    Bytes(Vec<u8>),
+    Resize(SshInputFrame),
+    Closed,
+}
+
+/// Fetch the next input unit while the startup probe window is open,
+/// routing bytes through the probe demultiplexer so terminal capability
+/// replies never reach the caller as input.
+///
+/// A form can become active before the terminal answers the startup
+/// probe burst (the burst is sent before `run_session`). Feeding those
+/// replies to the form collector would flag a normal cursor-position
+/// reply as invalid control input and leave its tail in the answer
+/// line, corrupting the user's first answer (Codex P2, PR #8928). On
+/// the probe deadline the window closes and any held bytes — partial
+/// prefixes that turned out to be user input — are returned. Without
+/// an open probe this is a plain frame read.
+async fn recv_bytes_through_probe(
+    frames: &mut mpsc::Receiver<SshInputFrame>,
+    probe: &mut Option<SshProbe>,
+) -> FormBytes {
+    loop {
+        let Some(deadline) = probe.as_ref().map(|probe| probe.deadline) else {
+            return match frames.recv().await {
+                Some(SshInputFrame::Bytes(bytes)) => FormBytes::Bytes(bytes),
+                Some(resize @ SshInputFrame::Resize(..)) => FormBytes::Resize(resize),
+                None => FormBytes::Closed,
+            };
+        };
+        // Cancel-safe like the raw-mode probe loop in `recv`: the probe
+        // stays in place across the await, and its demux holds any
+        // partial reply bytes between calls.
+        let received = tokio::select! {
+            frame = frames.recv() => Some(frame),
+            () = tokio::time::sleep_until(deadline) => None,
+        };
+        match received {
+            Some(Some(SshInputFrame::Bytes(bytes))) => {
+                let input = probe
+                    .as_mut()
+                    .map_or_else(Vec::new, |probe| probe.demux.push(&bytes));
+                if !input.is_empty() {
+                    return FormBytes::Bytes(input);
+                }
+            }
+            Some(Some(resize @ SshInputFrame::Resize(..))) => {
+                return FormBytes::Resize(resize);
+            }
+            Some(None) => return FormBytes::Closed,
+            None => {
+                let held = match probe.take() {
+                    Some(mut probe) => {
+                        let tier = probe.demux.tier();
+                        tracing::debug!(
+                            ?tier,
+                            "terminal capability probe closed; Tier 3 fallback stays active"
+                        );
+                        probe.demux.expire()
+                    }
+                    None => Vec::new(),
+                };
+                if !held.is_empty() {
+                    return FormBytes::Bytes(held);
+                }
+            }
+        }
+    }
+}
+
 impl SshIo {
     /// Encode one complete form answer; malformed JSON stays local to the SSH prompt.
     fn form_answer_frame(&self, line: &str) -> Result<String, String> {
@@ -925,13 +1024,13 @@ impl SshIo {
     async fn recv_form_answer(&mut self) -> Inbound {
         loop {
             if self.form_backlog.is_empty() {
-                match self.frames.recv().await {
-                    Some(SshInputFrame::Bytes(bytes)) => self.form_backlog.extend(bytes),
-                    Some(resize @ SshInputFrame::Resize(..)) => {
+                match recv_bytes_through_probe(&mut self.frames, &mut self.probe).await {
+                    FormBytes::Bytes(bytes) => self.form_backlog.extend(bytes),
+                    FormBytes::Resize(resize) => {
                         self.previous_screen = None;
                         return Inbound::Text(raw_frame(&resize));
                     }
-                    None => return Inbound::Closed,
+                    FormBytes::Closed => return Inbound::Closed,
                 }
             }
             let progress = consume_form_input(
@@ -1256,8 +1355,12 @@ impl SessionIo for SshIo {
                     && let Some(form) = &mut self.active_form
                 {
                     if let Some(previous_token) = form.presentation_token.clone() {
-                        self.retry_form_token =
-                            Some((form.form_id.clone(), previous_token, token.to_owned()));
+                        self.retry_form_token = Some(form_retry_alias(
+                            self.retry_form_token.as_ref(),
+                            &form.form_id,
+                            &previous_token,
+                            token,
+                        ));
                     }
                     form.presentation_token = Some(token.to_owned());
                     self.form_line.clear();
@@ -3868,6 +3971,76 @@ mod tests {
         assert_eq!(terminal_text("a\nb\tc"), "a\r\nb\tc");
         // Ordinary text, including non-joiner emoji bases, is byte-identical.
         assert_eq!(terminal_text("naïve-✦サーバー"), "naïve-✦サーバー");
+    }
+
+    #[test]
+    fn form_retry_alias_preserves_the_original_view_token_across_retries() {
+        let first = form_retry_alias(None, "form-1", "T0", "T1");
+        assert_eq!(
+            first,
+            ("form-1".to_owned(), "T0".to_owned(), "T1".to_owned())
+        );
+        // The guest still renders T0; a second rejection advances the
+        // current token but must keep T0 as the view alias.
+        let second = form_retry_alias(Some(&first), "form-1", "T1", "T2");
+        assert_eq!(
+            second,
+            ("form-1".to_owned(), "T0".to_owned(), "T2".to_owned())
+        );
+        // A different form, or a rejected token that is not the current
+        // retry token, starts a fresh alias from the rejected token.
+        let other = form_retry_alias(Some(&second), "form-2", "T9", "T10");
+        assert_eq!(
+            other,
+            ("form-2".to_owned(), "T9".to_owned(), "T10".to_owned())
+        );
+        let stale = form_retry_alias(Some(&second), "form-1", "T7", "T8");
+        assert_eq!(
+            stale,
+            ("form-1".to_owned(), "T7".to_owned(), "T8".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn form_input_fetch_filters_startup_probe_replies() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut probe = Some(SshProbe {
+            demux: ProbeDemux::new(),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+        });
+        // A cursor-position reply arrives first, then the user's answer.
+        tx.send(SshInputFrame::Bytes(b"\x1b[1;1R".to_vec()))
+            .await
+            .unwrap();
+        tx.send(SshInputFrame::Bytes(b"{\"action\":\"submit\"}\n".to_vec()))
+            .await
+            .unwrap();
+        match recv_bytes_through_probe(&mut rx, &mut probe).await {
+            FormBytes::Bytes(bytes) => {
+                assert_eq!(bytes, b"{\"action\":\"submit\"}\n".to_vec())
+            }
+            _ => panic!("expected the filtered user bytes"),
+        }
+        assert!(
+            probe.is_some(),
+            "probe window stays open until its deadline"
+        );
+
+        // At the deadline the window closes and held partial-prefix
+        // bytes are returned as input.
+        let (tx2, mut rx2) = mpsc::channel(4);
+        let mut probe2 = Some(SshProbe {
+            demux: ProbeDemux::new(),
+            deadline: tokio::time::Instant::now(),
+        });
+        tx2.send(SshInputFrame::Bytes(b"\x1b[".to_vec()))
+            .await
+            .unwrap();
+        match recv_bytes_through_probe(&mut rx2, &mut probe2).await {
+            FormBytes::Bytes(bytes) => assert_eq!(bytes, b"\x1b[".to_vec()),
+            _ => panic!("expected held bytes at probe expiry"),
+        }
+        assert!(probe2.is_none());
     }
 
     #[test]
