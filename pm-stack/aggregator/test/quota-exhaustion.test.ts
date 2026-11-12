@@ -54,6 +54,22 @@ describe("deriveExhaustionForecasts (#3983)", () => {
     expect(f.sampleRates).toBe(3);
   });
 
+  test("obsolete pairs do not publish a forecast from yesterday's rates (Codex P2, PR #8522)", () => {
+    // Two qualifying pairs yesterday (10min apart, inside the rate
+    // window by separation) plus one observation now: the bridging
+    // pair spans > RATE_WINDOW_MS, and yesterday's pairs end more
+    // than RATE_WINDOW_MS before now, so no recent pair remains.
+    const stale = [
+      obs(1000, "2026-10-31T01:00:00Z"),
+      obs(2000, "2026-10-31T01:10:00Z"), // +100/min, obsolete
+      obs(4000, "2026-10-31T01:20:00Z"), // +200/min, obsolete
+      obs(7000, "2026-11-01T01:59:00Z"), // now-side, no recent pair
+    ];
+    const [f] = deriveExhaustionForecasts([pool()], stale, NOW);
+    expect(f.state).toBe("unknown");
+    expect(f.reason).toBe("no_measured_burn");
+  });
+
   test("slow measured burn puts P50 after reset while P80 lands before", () => {
     const slow = [
       obs(3900, "2026-11-01T01:00:00Z"),

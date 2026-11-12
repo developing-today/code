@@ -114,7 +114,13 @@ export function deriveExhaustionForecasts(
         if (prev.resetsAt !== w.resetsAt || last.resetsAt !== w.resetsAt) continue;
         const dtMs = Date.parse(last.at) - Date.parse(prev.at);
         const delta = last.used - prev.used;
-        if (dtMs > 0 && dtMs <= RATE_WINDOW_MS && delta >= 0) {
+        // Recency, not just separation (Codex P2 on PR #8522): a pair
+        // whose later side is itself older than RATE_WINDOW_MS before
+        // now measures obsolete activity, not current burn — two
+        // qualifying pairs from yesterday plus one observation now
+        // must not publish a forecast from yesterday's rates.
+        const ageMs = nowMs - Date.parse(last.at);
+        if (dtMs > 0 && dtMs <= RATE_WINDOW_MS && ageMs <= RATE_WINDOW_MS && delta >= 0) {
           rates.push(delta / (dtMs / 60000));
         }
       }
