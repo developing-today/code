@@ -113,6 +113,7 @@ import { fileURLToPath } from "node:url";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
 import {
   GATHERER_SOURCE,
+  canonicalProviderId,
   entriesWithPoolSplits,
   entryFromResult,
   entryHasMeasuredWindow,
@@ -610,7 +611,19 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
   for (const [id, group] of byProvider) {
     const t0 = Date.now() - group.ms;
     const entries = group.results.map((r) => entryFromResult(r, tickAt));
-    let run = finalizeRun(id, entries, t0);
+    // The folded OpenAI door still answers under the fork's pre-rename
+    // spelling ("codex"); its entries already file under the canonical
+    // door id via entryFromResult, but the run kept the raw spelling —
+    // so the heartbeat's perProvider leg for the OpenAI pool was keyed
+    // "codex" while every consumer (quota-current's legErrorFor,
+    // matched on the entry's providerId) looks up "_openai". Rename
+    // the run to the canonical id, the same mapping quota-gather-map
+    // applies to the entries. Only this door's run id changes: the
+    // heartbeat contract for the other doors is the fork spelling
+    // (e.g. "meta"), and retention canonicalizes both sides already,
+    // so nothing else moves.
+    const runId = canonicalProviderId(id) === "_openai" ? "_openai" : id;
+    let run = finalizeRun(runId, entries, t0);
     if (id === "command-code" || id === "_commandcode") run = keepCommandCodePlanWindows(run);
     runs.push(run);
   }
