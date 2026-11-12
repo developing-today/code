@@ -18,7 +18,9 @@
 //! [`PRESENCE_TTL_SECS`] — and the entry's expiry runs from its *effective*
 //! stamp, `min(sender stamp, local receipt time)`. An accepted future-dated
 //! heartbeat thus stays live for at most one TTL *from receipt*, never a
-//! TTL plus its skew, and roster `last_seen` reports the effective stamp,
+//! TTL plus its skew (pruning retains the entry a little longer, purely as
+//! a replay watermark — see [`PresenceTable::prune_at`]), and roster
+//! `last_seen` reports the effective stamp,
 //! so it is never future-dated. A heartbeat stamped in the past keeps its
 //! sender stamp as its effective stamp, so re-delivery cannot extend its
 //! life either (see [`PresenceTable::update_at`]).
@@ -228,8 +230,8 @@ pub struct RosterEntry {
 }
 
 /// The latest accepted heartbeat for one node, plus its *effective* stamp:
-/// `min(heartbeat.ts, local receipt time)` at acceptance. Expiry (liveness,
-/// typing, pruning) is computed from the effective stamp, never from the raw
+/// `min(heartbeat.ts, local receipt time)` at acceptance. Expiry (liveness
+/// and typing) is computed from the effective stamp, never from the raw
 /// sender stamp and never from a later arrival time: a past-stamped
 /// heartbeat keeps its own stamp as the basis, so re-delivering a captured
 /// heartbeat cannot extend its life, and a future-stamped heartbeat accepted
@@ -491,15 +493,21 @@ impl PresenceTable {
         Some(self.roster_at(channel, members, now))
     }
 
-    /// Removes entries whose last heartbeat's effective stamp is more than
-    /// [`PRESENCE_TTL_SECS`] before `now`, returning how many were removed.
-    /// Stale entries already read as gone; pruning only bounds the table's size.
+    /// Removes entries whose last heartbeat can no longer be replayed into
+    /// the table, returning how many were removed. Liveness expires on the
+    /// effective stamp, but an entry is retained as a replay watermark until
+    /// its *sender* stamp also ages past [`PRESENCE_TTL_SECS`]: pruning on
+    /// the effective stamp alone would delete a future-dated entry while
+    /// its stamp still passes the freshness bound, and a replay would then
+    /// re-insert it with a later effective stamp and resurrect the node
+    /// past its receipt-based expiry (#8865). Stale entries already read as
+    /// gone; pruning only bounds the table's size.
     pub fn prune_at(&self, now: u64) -> usize {
         let Ok(mut entries) = self.entries.write() else {
             return 0;
         };
         let before = entries.len();
-        entries.retain(|_, entry| now.saturating_sub(entry.effective_ts) <= PRESENCE_TTL_SECS);
+        entries.retain(|_, entry| now.saturating_sub(entry.heartbeat.ts) <= PRESENCE_TTL_SECS);
         before - entries.len()
     }
 
@@ -776,8 +784,49 @@ mod tests {
         assert_eq!(roster[0].last_seen, Some(receipt));
         let roster = table.roster_at(&chan, &[alice], receipt + TYPING_TTL_SECS + 1);
         assert!(!roster[0].typing);
-        // Pruning uses the same basis.
-        assert_eq!(table.prune_at(receipt + PRESENCE_TTL_SECS + 1), 1);
+        // Pruning retains the entry past its liveness expiry as a replay
+        // watermark (see the replay test below); it is removed once the
+        // sender stamp itself ages past the TTL.
+        assert_eq!(table.prune_at(receipt + PRESENCE_TTL_SECS + 1), 0);
+        assert_eq!(
+            table.prune_at(receipt + MAX_FUTURE_SKEW_SECS + PRESENCE_TTL_SECS + 1),
+            1
+        );
+        assert_eq!(table.count(), 0);
+    }
+
+    #[test]
+    fn replay_after_receipt_expiry_does_not_resurrect_a_future_dated_heartbeat() {
+        // #8865, Codex finding on the fix: a future-dated heartbeat pruned on
+        // its effective stamp could be replayed while its sender stamp is
+        // still fresh, re-entering with a later effective stamp. The entry
+        // is therefore retained as a watermark: the replay is a tie that
+        // keeps the first effective stamp, liveness stays Offline, and once
+        // the watermark itself is pruned the stamp is too old to replay.
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let alice = key(1);
+        let hb = heartbeat(alice, vec![chan], 1_010);
+        assert!(table.update_at(hb.clone(), 1_000, &|_, _| true));
+        let after_expiry = 1_000 + PRESENCE_TTL_SECS + 1;
+        assert_eq!(
+            table.liveness_at(&alice, &chan, after_expiry),
+            Liveness::Offline
+        );
+        assert_eq!(table.prune_at(after_expiry), 0, "watermark retained");
+        assert!(table.update_at(hb.clone(), after_expiry, &|_, _| true));
+        assert_eq!(
+            table.liveness_at(&alice, &chan, after_expiry),
+            Liveness::Offline,
+            "a replay must not resurrect the node past its receipt-based expiry"
+        );
+        let roster = table.roster_at(&chan, &[alice], after_expiry);
+        assert_eq!(roster[0].last_seen, Some(1_000));
+        // Once the sender stamp ages past the TTL the watermark is pruned,
+        // and the same replay is refused by the freshness bound.
+        let stamp_expired = 1_010 + PRESENCE_TTL_SECS + 1;
+        assert_eq!(table.prune_at(stamp_expired), 1);
+        assert!(!table.update_at(hb, stamp_expired, &|_, _| true));
         assert_eq!(table.count(), 0);
     }
 
