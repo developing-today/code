@@ -48,6 +48,7 @@ stored one; the workflow decides whether to save it (main only). Exits 3 when
 more checks were skipped than the best record, or when a check was newly
 skipped against it, so the job can fail after every leg is saved; otherwise 0.
 """
+
 import json
 import sys
 
@@ -60,8 +61,14 @@ class ShapeError(ValueError):
     misreading (a string is not a list of names)."""
 
 
-_COUNT_FIELDS = ("passed_count", "failed_count", "total_count",
-                 "skipped_count", "warning_count", "info_count")
+_COUNT_FIELDS = (
+    "passed_count",
+    "failed_count",
+    "total_count",
+    "skipped_count",
+    "warning_count",
+    "info_count",
+)
 _STRING_FIELDS = ("first_timestamp", "latest_timestamp", "run")
 
 
@@ -72,14 +79,18 @@ def _shape(kind, value):
 def _validate_record(leg, key, rec):
     base = f"stored record for leg '{leg}'"
     if not isinstance(rec, dict):
-        raise ShapeError(f"{base}: field '{key}' must be an object, "
-                         f"got {_shape(type(rec).__name__, rec)}")
+        raise ShapeError(
+            f"{base}: field '{key}' must be an object, "
+            f"got {_shape(type(rec).__name__, rec)}"
+        )
     for field in _STRING_FIELDS:
         if field not in rec:
             raise ShapeError(f"{base}: field '{key}.{field}' is missing")
         if not isinstance(rec[field], str):
-            raise ShapeError(f"{base}: field '{key}.{field}' must be a string, "
-                             f"got {_shape(type(rec[field]).__name__, rec[field])}")
+            raise ShapeError(
+                f"{base}: field '{key}.{field}' must be a string, "
+                f"got {_shape(type(rec[field]).__name__, rec[field])}"
+            )
     for field in ("passed_count", "failed_count"):
         if field not in rec:
             raise ShapeError(f"{base}: field '{key}.{field}' is missing")
@@ -87,14 +98,18 @@ def _validate_record(leg, key, rec):
         if field in rec:
             v = rec[field]
             if isinstance(v, bool) or not isinstance(v, int) or v < 0:
-                raise ShapeError(f"{base}: field '{key}.{field}' must be a "
-                                 f"non-negative integer, "
-                                 f"got {_shape(type(v).__name__, v)}")
+                raise ShapeError(
+                    f"{base}: field '{key}.{field}' must be a "
+                    f"non-negative integer, "
+                    f"got {_shape(type(v).__name__, v)}"
+                )
     if "skipped" in rec:
         v = rec["skipped"]
         if not isinstance(v, list) or not all(isinstance(n, str) for n in v):
-            raise ShapeError(f"{base}: field '{key}.skipped' must be a list of "
-                             f"strings, got {_shape(type(v).__name__, v)}")
+            raise ShapeError(
+                f"{base}: field '{key}.skipped' must be a list of "
+                f"strings, got {_shape(type(v).__name__, v)}"
+            )
 
 
 def validate_stored(leg, stored):
@@ -110,8 +125,10 @@ def validate_stored(leg, stored):
     if stored is None:
         return None
     if not isinstance(stored, dict):
-        raise ShapeError(f"stored record for leg '{leg}' must be a JSON object, "
-                         f"got {_shape(type(stored).__name__, stored)}")
+        raise ShapeError(
+            f"stored record for leg '{leg}' must be a JSON object, "
+            f"got {_shape(type(stored).__name__, stored)}"
+        )
     for key in ("best", "largest"):
         if key in stored:
             _validate_record(leg, key, stored[key])
@@ -125,14 +142,23 @@ def validate_names(leg, names):
     if names is None:
         return None
     if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
-        raise ShapeError(f"skipped names for leg '{leg}' must be a JSON list of "
-                         f"strings, got {_shape(type(names).__name__, names)}")
+        raise ShapeError(
+            f"skipped names for leg '{leg}' must be a JSON list of "
+            f"strings, got {_shape(type(names).__name__, names)}"
+        )
     return names
 
 
-def record(passed, failed, run, now, checks=None, warnings=0, skipped=None, info=0, names=None):
-    r = {"first_timestamp": now, "latest_timestamp": now, "run": run,
-         "passed_count": passed, "failed_count": failed}
+def record(
+    passed, failed, run, now, checks=None, warnings=0, skipped=None, info=0, names=None
+):
+    r = {
+        "first_timestamp": now,
+        "latest_timestamp": now,
+        "run": run,
+        "passed_count": passed,
+        "failed_count": failed,
+    }
     if checks is not None:
         r["total_count"] = checks
         r["warning_count"] = warnings
@@ -154,11 +180,13 @@ def describe(r):
     not_passed = r["failed_count"] + r.get("skipped_count", 0)
     pct = (100.0 * not_passed / t) if t else 0.0
     of = f"of {t} checks" if "total_count" in r else "total not recorded"
-    return (f"{r['passed_count']} passed, {r['failed_count']} failed, "
-            f"{r.get('skipped_count', '?')} skipped, {r.get('warning_count', 0)} warnings, "
-            f"{r.get('info_count', 0)} info, {of} "
-            f"({pct:.1f}% not passed) -- run {r['run']}, first {r['first_timestamp']}, "
-            f"latest {r['latest_timestamp']}")
+    return (
+        f"{r['passed_count']} passed, {r['failed_count']} failed, "
+        f"{r.get('skipped_count', '?')} skipped, {r.get('warning_count', 0)} warnings, "
+        f"{r.get('info_count', 0)} info, {of} "
+        f"({pct:.1f}% not passed) -- run {r['run']}, first {r['first_timestamp']}, "
+        f"latest {r['latest_timestamp']}"
+    )
 
 
 def bad(r):
@@ -175,8 +203,19 @@ def complete(r):
     return r is not None and "total_count" in r and "skipped_count" in r
 
 
-def compare(leg, passed, failed, run, now, stored, checks=None, warnings_count=0,
-            skipped=None, info=0, names=None):
+def compare(
+    leg,
+    passed,
+    failed,
+    run,
+    now,
+    stored,
+    checks=None,
+    warnings_count=0,
+    skipped=None,
+    info=0,
+    names=None,
+):
     """Returns (new_state, lines, warnings, errors).
 
     Both records are always whole runs: a record is replaced, never patched.
@@ -205,8 +244,10 @@ def compare(leg, passed, failed, run, now, stored, checks=None, warnings_count=0
 
     for k in ("best", "largest"):
         if k in state and cur_complete and not complete(state[k]):
-            lines.append(f"{k}: the record predates full counts ({describe(state[k])}); "
-                         "this run replaces it")
+            lines.append(
+                f"{k}: the record predates full counts ({describe(state[k])}); "
+                "this run replaces it"
+            )
             state[k] = cur
 
     best = state.get("best")
@@ -217,21 +258,30 @@ def compare(leg, passed, failed, run, now, stored, checks=None, warnings_count=0
         # into a wholesale best replacement. Names are only compared
         # when both sides recorded them; a record that predates
         # skipped names is compared on counts only.
-        newly = (sorted(set(names) - set(best.get("skipped", [])))
-                 if names is not None and "skipped" in best else [])
+        newly = (
+            sorted(set(names) - set(best.get("skipped", [])))
+            if names is not None and "skipped" in best
+            else []
+        )
         if cur["skipped_count"] > best["skipped_count"]:
-            errors.append(f"skipped checks rose from {best['skipped_count']} to {cur['skipped_count']}.\n"
-                          f"  this run: {describe(cur)}\n  record:   {describe(best)}"
-                          + (f"\n  newly skipped: {', '.join(newly)}" if newly else ""))
+            errors.append(
+                f"skipped checks rose from {best['skipped_count']} to {cur['skipped_count']}.\n"
+                f"  this run: {describe(cur)}\n  record:   {describe(best)}"
+                + (f"\n  newly skipped: {', '.join(newly)}" if newly else "")
+            )
         elif newly:
-            errors.append(f"checks were newly skipped against the best record "
-                          f"at an unchanged skipped count of {cur['skipped_count']}: "
-                          f"{', '.join(newly)}.\n"
-                          f"  this run: {describe(cur)}\n  record:   {describe(best)}")
+            errors.append(
+                f"checks were newly skipped against the best record "
+                f"at an unchanged skipped count of {cur['skipped_count']}: "
+                f"{', '.join(newly)}.\n"
+                f"  this run: {describe(cur)}\n  record:   {describe(best)}"
+            )
 
     if errors:
-        lines.append("records unchanged: a run that newly skips checks does not "
-                     "move the best or largest record")
+        lines.append(
+            "records unchanged: a run that newly skips checks does not "
+            "move the best or largest record"
+        )
     elif best is None:
         state["best"] = cur
         lines.append("best: no record yet; this run becomes it")
@@ -240,15 +290,24 @@ def compare(leg, passed, failed, run, now, stored, checks=None, warnings_count=0
         # bad/total compared without division: a/b < c/d  <=>  a*d < c*b.
         lhs, rhs = bad(cur) * bt, bad(best) * t
         if t == 0:
-            warnings.append(f"best: this run produced no checks at all; record is {describe(best)}")
-        elif t >= bt and not errors and (lhs < rhs or (lhs == rhs and passed > best["passed_count"])):
+            warnings.append(
+                f"best: this run produced no checks at all; record is {describe(best)}"
+            )
+        elif (
+            t >= bt
+            and not errors
+            and (lhs < rhs or (lhs == rhs and passed > best["passed_count"]))
+        ):
             state["best"] = cur
             lines.append(f"best: **improved**, replacing {describe(best)}")
         elif t >= bt and lhs == rhs and passed == best["passed_count"]:
             state["best"] = dict(best, latest_timestamp=now)
             lines.append("best: matched the record; latest_timestamp updated")
-            if (names is not None and "skipped" in best
-                    and set(best.get("skipped", [])) != set(names)):
+            if (
+                names is not None
+                and "skipped" in best
+                and set(best.get("skipped", [])) != set(names)
+            ):
                 # No newly skipped name (that errors above), so the
                 # difference is a check that runs again -- but the
                 # retained record's skipped list now contradicts this
@@ -261,11 +320,17 @@ def compare(leg, passed, failed, run, now, stored, checks=None, warnings_count=0
                     f"({', '.join(sorted(best.get('skipped', []))) or 'none'}) differs from "
                     f"this run's ({', '.join(sorted(names)) or 'none'}); the record is "
                     f"retained unchanged, so its skipped list still describes the run "
-                    f"that set it")
+                    f"that set it"
+                )
         else:
-            why = ("fewer checks ran than in the record" if t < bt
-                   else "a larger share of checks did not pass than in the record")
-            warnings.append(f"best: {why}.\n  this run: {describe(cur)}\n  record:   {describe(best)}")
+            why = (
+                "fewer checks ran than in the record"
+                if t < bt
+                else "a larger share of checks did not pass than in the record"
+            )
+            warnings.append(
+                f"best: {why}.\n  this run: {describe(cur)}\n  record:   {describe(best)}"
+            )
 
     largest = state.get("largest")
     if errors:
@@ -282,8 +347,10 @@ def compare(leg, passed, failed, run, now, stored, checks=None, warnings_count=0
             state["largest"] = dict(cur, first_timestamp=largest["first_timestamp"])
             lines.append("largest: same number of checks; counts updated to this run")
         else:
-            warnings.append(f"largest: fewer checks ran than in the record "
-                            f"({t} against {lt}).\n  this run: {describe(cur)}\n  record:   {describe(largest)}")
+            warnings.append(
+                f"largest: fewer checks ran than in the record "
+                f"({t} against {lt}).\n  this run: {describe(cur)}\n  record:   {describe(largest)}"
+            )
     return state, lines, warnings, errors
 
 
@@ -297,18 +364,24 @@ def main(argv):
     try:
         names = json.loads(argv[13]) if len(argv) > 13 and argv[13].strip() else None
     except json.JSONDecodeError as e:
-        print(f"conformance-record: skipped names for leg '{leg}' are not valid "
-              f"JSON: {e}", file=sys.stderr)
+        print(
+            f"conformance-record: skipped names for leg '{leg}' are not valid "
+            f"JSON: {e}",
+            file=sys.stderr,
+        )
         return 1
     try:
         stored = json.loads(stored_raw) if stored_raw.strip() else None
     except json.JSONDecodeError as e:
-        print(f"conformance-record: stored record for leg '{leg}' is not valid "
-              f"JSON: {e}", file=sys.stderr)
+        print(
+            f"conformance-record: stored record for leg '{leg}' is not valid JSON: {e}",
+            file=sys.stderr,
+        )
         return 1
     try:
-        state, lines, warnings, errors = compare(leg, passed, failed, run, now, stored,
-                                                 checks, warn_n, skipped, info, names)
+        state, lines, warnings, errors = compare(
+            leg, passed, failed, run, now, stored, checks, warn_n, skipped, info, names
+        )
     except ShapeError as e:
         print(f"conformance-record: {e}", file=sys.stderr)
         return 1
@@ -318,7 +391,11 @@ def main(argv):
         for line in lines:
             f.write(f"- {line}\n")
         for e in errors:
-            f.write("\n> [!CAUTION]\n> # More checks skipped: `" + leg + "` -- this fails the job\n")
+            f.write(
+                "\n> [!CAUTION]\n> # More checks skipped: `"
+                + leg
+                + "` -- this fails the job\n"
+            )
             for el in e.splitlines():
                 f.write(f"> {el}\n")
         for w in warnings:

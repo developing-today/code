@@ -11,11 +11,14 @@
 //!    attacks from web pages in the user's browser.
 //! 3. **Origin check**: a request carrying an `Origin` header (every browser
 //!    cross-origin fetch and every WebSocket handshake) must come from the same
-//!    origin (host *and* port) it is addressed to, which defeats cross-site
-//!    request forgery and cross-site WebSocket hijacking. An origin with no
-//!    explicit port only matches a `Host` with no explicit port — there is no
-//!    scheme-default-port expansion, so `http://localhost` does not match a
-//!    request addressed to `localhost:3000`.
+//!    origin (scheme, host *and* port) it is addressed to, which defeats
+//!    cross-site request forgery and cross-site WebSocket hijacking. An origin
+//!    with no explicit port only matches a `Host` with no explicit port — there
+//!    is no scheme-default-port expansion, so `http://localhost` does not match
+//!    a request addressed to `localhost:3000`. The request scheme is defined by
+//!    [`request_scheme`]: the built-in listener speaks plain HTTP only, and
+//!    HTTPS exists solely when a proxy terminates it in front — the deployment
+//!    the operator declares with `--web-cookie-secure` (#8892).
 //!
 //! In addition, an optional **token** ([`WebSecurity::token`]) gates the whole
 //! interface. It is accepted as the `id_token` cookie, an
@@ -47,6 +50,10 @@ pub struct WebSecurity {
     /// Empty disables the host check.
     pub allowed_hosts: Vec<String>,
     /// Mark the `id_token` cookie `Secure` (HTTPS in front).
+    ///
+    /// This is also the operator's declaration that HTTPS is terminated in
+    /// front of the plain-HTTP listener, so the Origin guard treats the
+    /// request scheme as `https` (see [`request_scheme`], #8892).
     pub cookie_secure: bool,
 }
 
@@ -89,8 +96,21 @@ pub(super) fn protect(router: axum::Router, security: WebSecurity) -> axum::Rout
 fn host_only(authority: &str) -> String {
     let a = authority.trim().to_lowercase();
     if let Some(rest) = a.strip_prefix('[') {
-        // IPv6 literal: [::1]:3000
-        return rest.split(']').next().unwrap_or("").to_owned();
+        // IPv6 literal: [::1]:3000 -- validate the WHOLE bracketed authority
+        // before extracting the host (#8776). Only an empty tail or a
+        // colon + numeric port may follow the closing bracket; anything
+        // else (trailing host text, a non-numeric or empty port, a missing
+        // bracket) is malformed and must not reduce to the bracketed host,
+        // or the loopback allow-list would trust a mere prefix. Malformed
+        // authorities return the full text, which matches no allowed host.
+        let Some((host, tail)) = rest.split_once(']') else {
+            return a.clone();
+        };
+        let tail_ok = tail.is_empty()
+            || tail
+                .strip_prefix(':')
+                .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
+        return if tail_ok { host.to_owned() } else { a.clone() };
     }
     a.rsplit_once(':')
         .filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit()))
@@ -127,6 +147,32 @@ fn origin_authority(origin: &str) -> Option<&str> {
     origin
         .split_once("://")
         .map(|(_, rest)| rest.split('/').next().unwrap_or(rest))
+}
+
+/// Scheme of an `Origin` header value such as `http://a:1`, verbatim (callers
+/// compare ASCII case-insensitively). `None` when the value carries no
+/// `scheme://` prefix — such an Origin is refused by the guard.
+fn origin_scheme(origin: &str) -> Option<&str> {
+    origin.split_once("://").map(|(scheme, _)| scheme)
+}
+
+/// The scheme a request is effectively addressed under (#8892).
+///
+/// The built-in listener is plain HTTP only (`axum::serve` on a TCP
+/// listener; `id serve` has no TLS listener), so a direct request's scheme
+/// is `http`. HTTPS exists in exactly one supported deployment mode: a
+/// TLS-terminating proxy in front of the listener, which the operator
+/// declares with `--web-cookie-secure` ("set this only when HTTPS is
+/// terminated in front of the server") — carried here as
+/// [`WebSecurity::cookie_secure`] — and in that mode the effective scheme
+/// is `https`.
+///
+/// `X-Forwarded-Proto` is deliberately not consulted: no supported
+/// deployment sets or strips it, and on the directly exposed listener it
+/// is client-spoofable. The request line's own scheme is not trusted
+/// either: hyper accepts absolute-form request targets from any client.
+fn request_scheme(sec: &WebSecurity) -> &'static str {
+    if sec.cookie_secure { "https" } else { "http" }
 }
 
 /// Constant-time byte comparison (length leaks, content does not).
@@ -197,13 +243,16 @@ pub async fn guard(
         }
     }
 
-    // 3. Origin must match the authority (host and port) the request is
-    // addressed to (#814: a different port is a different origin).
+    // 3. Origin must match the scheme and the authority (host and port)
+    // the request is addressed to (#814: a different port is a different
+    // origin; #8892: so is a different scheme).
     if let Some(origin) = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok())
         && origin != "null"
     {
-        let same = origin_authority(origin)
-            .is_some_and(|a| authority_normalized(a) == authority_normalized(&host_header));
+        let same = origin_scheme(origin)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case(request_scheme(&sec)))
+            && origin_authority(origin)
+                .is_some_and(|a| authority_normalized(a) == authority_normalized(&host_header));
         if !same {
             return forbidden("cross-origin request refused", StatusCode::FORBIDDEN);
         }
@@ -303,6 +352,68 @@ mod tests {
     }
 
     #[test]
+    fn host_only_rejects_malformed_bracketed_authorities() {
+        // Oracle: a bracketed authority is well-formed only as a bracketed
+        // host, optionally followed by a colon and a numeric port. Anything
+        // else must NOT reduce to the bracketed host, or the loopback
+        // allow-list would trust a mere prefix.
+        for malformed in [
+            "[::1]attacker.example",
+            "[::1]attacker.example:3000",
+            "[::1]:abc",
+            "[::1]:",
+            "[::1",
+            "[::1]]",
+        ] {
+            assert_ne!(host_only(malformed), "::1", "{malformed}");
+        }
+        // Valid controls still extract the host.
+        assert_eq!(host_only("[::1]"), "::1");
+        assert_eq!(host_only("[::1]:3000"), "::1");
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn bracketed_authority_collapses_only_for_valid_tails(
+            host in proptest::sample::select(vec!["::1", "::", "fe80::1", "2001:db8::1"]),
+            tail in "[!-~]{0,12}",
+        ) {
+            // Oracle (#8776): host_only of a bracketed authority returns the
+            // bracketed host ONLY when the tail after the closing bracket is
+            // empty or a colon followed by a non-empty all-digit port. Every
+            // other tail leaves the authority unreduced, so it can never
+            // match an allowed host. The fixed examples in
+            // host_only_rejects_malformed_bracketed_authorities are the
+            // regression smoke tests for this generated invariant.
+            let authority = format!("[{host}]{tail}");
+            let valid_tail = tail.is_empty()
+                || tail
+                    .strip_prefix(':')
+                    .is_some_and(|port| {
+                        !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+                    });
+            if valid_tail {
+                prop_assert_eq!(host_only(&authority), host.to_owned(), "{}", authority);
+            } else {
+                prop_assert_ne!(host_only(&authority), host.to_owned(), "{}", authority);
+            }
+        }
+
+        #[test]
+        fn bracketed_authority_with_numeric_port_always_extracts_host(
+            host in proptest::sample::select(vec!["::1", "::", "fe80::1", "2001:db8::1"]),
+            port in any::<u16>(),
+        ) {
+            prop_assert_eq!(host_only(&format!("[{host}]:{port}")), host.to_owned());
+            prop_assert_eq!(host_only(&format!("[{host}]")), host.to_owned());
+        }
+    }
+
+    #[test]
     fn ct_eq_behaves_like_eq() {
         assert!(ct_eq(b"abc", b"abc"));
         assert!(!ct_eq(b"abc", b"abd"));
@@ -325,6 +436,19 @@ mod tests {
         )
         .await;
         assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn malformed_bracketed_host_is_refused() {
+        for host in ["[::1]attacker.example", "[::1", "[::1]:abc"] {
+            let r = call(app(loopback()), get_req(host).body(Body::empty()).unwrap()).await;
+            assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST, "{host}");
+        }
+        // Valid bracketed controls still pass the guard.
+        for host in ["[::1]", "[::1]:3000"] {
+            let r = call(app(loopback()), get_req(host).body(Body::empty()).unwrap()).await;
+            assert_eq!(r.status(), StatusCode::OK, "{host}");
+        }
     }
 
     #[tokio::test]
@@ -399,6 +523,82 @@ mod tests {
         )
         .await;
         assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn scheme_mismatched_origin_is_refused() {
+        // #8892 oracle: an Origin whose scheme differs from the request's
+        // scheme is a different origin even when host and port match. The
+        // built-in listener is plain HTTP, so an https Origin addressed to
+        // an http Host of the same authority must be refused.
+        let r = call(
+            app(loopback()),
+            get_req("localhost:3000")
+                .header(header::ORIGIN, "https://localhost:3000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+
+        // Case is not significant in a scheme.
+        let upper = call(
+            app(loopback()),
+            get_req("localhost:3000")
+                .header(header::ORIGIN, "HTTPS://localhost:3000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(upper.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn https_in_front_matches_https_origin_only() {
+        // #8892: with HTTPS terminated in front (operator-declared via
+        // cookie_secure / --web-cookie-secure), the request scheme is
+        // https: an https Origin of the same authority passes, an http
+        // Origin of the same authority is refused.
+        let sec = WebSecurity {
+            cookie_secure: true,
+            ..loopback()
+        };
+        let ok = call(
+            app(sec.clone()),
+            get_req("localhost:3000")
+                .header(header::ORIGIN, "https://localhost:3000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        let bad = call(
+            app(sec),
+            get_req("localhost:3000")
+                .header(header::ORIGIN, "http://localhost:3000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn request_scheme_follows_the_serving_mode() {
+        // #8892 oracle: plain-HTTP listener -> http; operator-declared
+        // HTTPS termination in front (cookie_secure) -> https. Origin
+        // schemes parse verbatim from `scheme://authority` values only.
+        assert_eq!(request_scheme(&loopback()), "http");
+        let https = WebSecurity {
+            cookie_secure: true,
+            ..loopback()
+        };
+        assert_eq!(request_scheme(&https), "https");
+        assert_eq!(origin_scheme("https://localhost:3000"), Some("https"));
+        assert_eq!(origin_scheme("http://localhost"), Some("http"));
+        assert_eq!(origin_scheme("null"), None);
+        assert_eq!(origin_scheme("localhost:3000"), None);
     }
 
     #[tokio::test]

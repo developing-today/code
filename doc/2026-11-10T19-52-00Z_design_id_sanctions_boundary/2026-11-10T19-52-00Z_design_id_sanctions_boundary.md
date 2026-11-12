@@ -8,7 +8,7 @@ over the data defined here.
 
 This record settles the five questions #5878 names — list sourcing,
 updates, scope of interaction, grandfathering, and appeals — for the
-sanctions boundary *data model*. It does not re-decide anything the
+sanctions boundary _data model_. It does not re-decide anything the
 parent framework already decided. Where a question cannot be settled
 without a new parent decision, §8 records it as an open question routed
 to #5683 instead of silently forking a parent decision.
@@ -131,18 +131,18 @@ different servers and worlds. The scope vocabulary is the parent's
 §5.2 table plus one row the parent's enforcement section (§8) already
 implies:
 
-| Interaction | Notes |
-| --- | --- |
-| Account creation / signup | |
-| Login to an existing account | transition behaviour is D5's, stated explicitly |
-| World membership | |
-| Blob storage | |
-| Bridge / federation traffic | transit may differ from service; state both |
-| Relay transit | transiting a jurisdiction may differ from serving it |
-| Capability grants | whether a grant may be issued to, or exercised by, a matched subject |
+| Interaction                  | Notes                                                                |
+| ---------------------------- | -------------------------------------------------------------------- |
+| Account creation / signup    |                                                                      |
+| Login to an existing account | transition behaviour is D5's, stated explicitly                      |
+| World membership             |                                                                      |
+| Blob storage                 |                                                                      |
+| Bridge / federation traffic  | transit may differ from service; state both                          |
+| Relay transit                | transiting a jurisdiction may differ from serving it                 |
+| Capability grants            | whether a grant may be issued to, or exercised by, a matched subject |
 
 Rules (from the parent, restated because implementations get them
-wrong): the declaration must record covered *and* not-covered
+wrong): the declaration must record covered _and_ not-covered
 interactions explicitly; an omitted interaction is not covered; an
 empty overall enforcement scope is invalid.
 

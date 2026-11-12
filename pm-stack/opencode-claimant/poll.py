@@ -165,6 +165,39 @@ def parse_lease_ms(value):
     return int(dt.timestamp() * 1000)
 
 
+def _session_timing(session):
+    """(idle, updated_ms) for a session entry, or None when its timing
+    cannot be read (#6868).
+
+    Readable: `time` absent/None (timeless: updated_ms 0, matching the
+    pinned timeless-entry behaviour), or a dict whose present
+    updated/created values are numbers (bool is not a number here).
+    The updated/created choice keeps the historical `or` chain: the
+    first present non-zero numeric value wins, absent stamps read 0.
+
+    Unreadable (None): `time` present but not an object, or a present
+    updated/created value of a non-numeric shape (string, list, dict,
+    bool). Callers fail closed on None: the entry is never counted as
+    known-inactive (cap counts go unknown instead) and never
+    classified stuck-bound on timing evidence it does not have."""
+    t = session.get("time")
+    if t is None:
+        t = {}
+    if not isinstance(t, dict):
+        return None
+    updated = 0
+    for key in ("updated", "created"):
+        v = t.get(key)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        if v:
+            updated = v
+            break
+    return t.get("idle"), updated
+
+
 def is_stuck_bound(row, session, active_ids, now_ms):
     """True iff a claimed opencode-lane task is bound to a session that
     looks created-but-never-prompted and dead (#4758): the task's lease
@@ -195,10 +228,12 @@ def is_stuck_bound(row, session, active_ids, now_ms):
         return False
     if active_ids is None or session_id in active_ids:
         return False
-    t = session.get("time") or {}
-    if t.get("idle") or session.get("outcome"):
+    timing = _session_timing(session)
+    if timing is None:
         return False
-    updated = t.get("updated") or t.get("created") or 0
+    idle, updated = timing
+    if idle or session.get("outcome"):
+        return False
     return now_ms - updated >= ACTIVE_WINDOW_MS
 
 
@@ -206,7 +241,10 @@ def is_root_session(s):
     return isinstance(s, dict) and not s.get("parentID") and not s.get("parent_id")
 
 
-def is_active_root(s, now_ms, active_ids=None):
+def _active_root_state(s, now_ms, active_ids=None):
+    """True (proven active), False (proven inactive), or None (the
+    entry's timing cannot be read, so its activity is UNKNOWN — see
+    _session_timing; #6868)."""
     if not is_root_session(s):
         return False
     # The server's active set is authoritative: a RESUMED session keeps
@@ -216,15 +254,36 @@ def is_active_root(s, now_ms, active_ids=None):
     # counts the root no matter what its stored markers say.
     if active_ids is not None and s.get("id") in active_ids:
         return True
-    t = s.get("time") or {}
-    if t.get("idle") or s.get("outcome"):
+    # Terminal markers are decidable without a readable clock
+    # (#8853): a finished root stays finished even when its
+    # timestamps are malformed — checking timing first made one
+    # such root report the whole cap unknown and block every
+    # launch. A root with malformed timing and NO terminal marker
+    # still falls through to the fail-closed None below.
+    t = s.get("time")
+    if (isinstance(t, dict) and t.get("idle")) or s.get("outcome"):
         return False
-    updated = t.get("updated") or t.get("created") or 0
+    timing = _session_timing(s)
+    if timing is None:
+        return None
+    idle, updated = timing
+    if idle or s.get("outcome"):
+        return False
     return now_ms - updated < ACTIVE_WINDOW_MS
 
 
+def is_active_root(s, now_ms, active_ids=None):
+    return _active_root_state(s, now_ms, active_ids) is True
+
+
 def count_active_roots(sessions, now_ms, active_ids=None):
-    return sum(1 for s in sessions if is_active_root(s, now_ms, active_ids))
+    """Count of proven-active roots, or None when any root's activity
+    is unknown (#6868): an unreadable entry must never be silently
+    counted as inactive, which would manufacture cap room."""
+    states = [_active_root_state(s, now_ms, active_ids) for s in sessions]
+    if any(state is None for state in states):
+        return None
+    return sum(1 for state in states if state)
 
 
 def summarize_cap(sessions, active_ids, now_ms):
@@ -243,6 +302,8 @@ def summarize_cap(sessions, active_ids, now_ms):
     if active_ids is None:
         return len(roots), None, None
     active = count_active_roots(roots, now_ms, active_ids)
+    if active is None:
+        return len(roots), None, None
     return len(roots), active, max(0, CAP - active)
 
 
@@ -316,20 +377,21 @@ def _broker_post(path, body):
     if not url:
         url = BROKER_URL_FILE.read_text().strip()
     token_file = os.environ.get("REPO_QUEUE_TOKEN_FILE", "").strip()
-    token = Path(token_file).read_text().strip() if token_file \
+    token = (
+        Path(token_file).read_text().strip()
+        if token_file
         else BROKER_TOKEN_FILE.read_text().strip()
+    )
     req = urllib.request.Request(
         url.rstrip("/") + path,
         data=json.dumps(body).encode(),
-        headers={"X-Agent-Token": token,
-                 "Content-Type": "application/json"},
+        headers={"X-Agent-Token": token, "Content-Type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as res:
         data = json.loads(res.read() or "null")
     if isinstance(data, dict) and data.get("ok") is False:
-        raise RuntimeError(
-            f"broker {path} failed: {str(data.get('error'))[:200]}")
+        raise RuntimeError(f"broker {path} failed: {str(data.get('error'))[:200]}")
     return data
 
 
@@ -343,12 +405,15 @@ def _fetch_rows(queue, status):
     rows, and the cap still fails closed via the session reads, so a
     partial view can never cause a launch by itself."""
     try:
-        data = _broker_post("/list", {
-            "queue": queue,
-            "status": status,
-            "rich": True,
-            "limit": LIST_LIMIT,
-        })
+        data = _broker_post(
+            "/list",
+            {
+                "queue": queue,
+                "status": status,
+                "rich": True,
+                "limit": LIST_LIMIT,
+            },
+        )
     except Exception as e:
         print(f"Warning: Could not poll queue {queue}: {e}", file=sys.stderr)
         return []
@@ -474,7 +539,8 @@ def _candidate_entry(row, queue):
 
 def _stuck_entry(row, queue, session):
     prog = row.get("progress") or {}
-    sess_t = (session or {}).get("time") or {}
+    timing = _session_timing(session) if isinstance(session, dict) else None
+    sess_updated = timing[1] if timing and timing[1] else None
     issue = prog.get("issue_number") or prog.get("issue") or ""
     return {
         "id": row.get("id"),
@@ -486,7 +552,7 @@ def _stuck_entry(row, queue, session):
         "lane": prog.get("lane"),
         "stage": prog.get("stage"),
         "session_id": prog.get("session_id"),
-        "session_updated": sess_t.get("updated") or sess_t.get("created"),
+        "session_updated": sess_updated,
         "issue": issue,
         "issue_number": prog.get("issue_number"),
         "attempts": row.get("attempts"),
@@ -527,7 +593,8 @@ def get_active_root_session_count():
     active_ids = fetch_active_ids()
     if active_ids is None:
         return -1
-    return count_active_roots(sessions, int(time.time() * 1000), active_ids)
+    count = count_active_roots(sessions, int(time.time() * 1000), active_ids)
+    return -1 if count is None else count
 
 
 def main():
@@ -551,7 +618,9 @@ def main():
             _candidate_entry(r, q) for r in get_handed_off_candidates(handed_off_rows)
         )
         stuck = [
-            _stuck_entry(r, q, session_by_id.get((r.get("progress") or {}).get("session_id")))
+            _stuck_entry(
+                r, q, session_by_id.get((r.get("progress") or {}).get("session_id"))
+            )
             for r in get_stuck_bound(rows, session_by_id, active_ids, now_ms)
         ]
         out["queues"][q] = {

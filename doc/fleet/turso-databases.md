@@ -7,7 +7,7 @@ ships a rename or mode-convert verb.
 
 Companions: [queue-turso-cutover.md](queue-turso-cutover.md) (the queue core
 cutover, #6741) and [agent-events-turso.md](agent-events-turso.md) (the
-`agent.events` stream, #5690). Those pages describe *specific* migrations; this
+`agent.events` stream, #5690). Those pages describe _specific_ migrations; this
 one states the rule every DB creator needs and the debt that rule leaves behind.
 
 ## The rule: every new fleet Turso DB is born `--tursodb`
@@ -33,17 +33,17 @@ because it was created without the flag.
 
 `turso db list` is the only mode evidence:
 
-| `TYPE` column | Mode | Verdict |
-| --- | --- | --- |
-| `Turso` | TursoDB (MVCC) | Correct — this is what `--tursodb` produces |
-| `SQLite` | libsql | Wrong for a new DB — conversion debt, see below |
+| `TYPE` column | Mode           | Verdict                                         |
+| ------------- | -------------- | ----------------------------------------------- |
+| `Turso`       | TursoDB (MVCC) | Correct — this is what `--tursodb` produces     |
+| `SQLite`      | libsql         | Wrong for a new DB — conversion debt, see below |
 
 ### Things that do not work (verified on CLI v1.0.33)
 
 - **There is no `turso db rename`.** A database's name is fixed at creation.
 - **A `--from-db` fork inherits the source database's type.** `turso db create
-  --from-db X --tursodb` fails with *"tursodb flag contradicts the database
-  derived type"*. A fork can never change mode, so forking a libsql database
+--from-db X --tursodb` fails with _"tursodb flag contradicts the database
+  derived type"_. A fork can never change mode, so forking a libsql database
   produces another libsql database.
 - **There is no `turso db dump`.** The subcommand does not exist in this CLI
   version; it prints help. Use `turso db export`.
@@ -53,10 +53,10 @@ because it was created without the flag.
 These databases predate the rule and are deliberately left in libsql mode. They
 are known debt, not oversights.
 
-| Database | Notes | Status |
-| --- | --- | --- |
-| **atlas monolith** | Deliberately untouched during the 2026-11-07 audit + migration program ([#6619](https://github.com/developing-today/code/issues/6619)) | Open debt — not scheduled |
-| **great-star-lord group DBs** | Same program and same deliberate hold ([#6619](https://github.com/developing-today/code/issues/6619)) | Open debt — not scheduled |
+| Database                      | Notes                                                                                                                                  | Status                    |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| **atlas monolith**            | Deliberately untouched during the 2026-11-07 audit + migration program ([#6619](https://github.com/developing-today/code/issues/6619)) | Open debt — not scheduled |
+| **great-star-lord group DBs** | Same program and same deliberate hold ([#6619](https://github.com/developing-today/code/issues/6619))                                  | Open debt — not scheduled |
 
 The 2026-11-07 program converted the fleet's eight libsql databases by full data
 move (~7.7 GB of exports total). These holdouts were excluded from it.
@@ -88,7 +88,7 @@ for downtime on the producer side.
    This produces dump files in the current directory.
 
 3. **Copy the export files to the target basename.** The new database is named
-   after the *file* basename, so rename the exported `.db` file to the name you
+   after the _file_ basename, so rename the exported `.db` file to the name you
    want the new database to have (`<target>.db`).
 
    The export is a pair, not a single file: CLI v1.0.33 also writes the

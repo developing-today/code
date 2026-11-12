@@ -310,7 +310,7 @@ describe("inFlightBoardItems", () => {
     );
     const by944 = out.find((i) => i.title.includes("#944"));
     expect(by944?.links.map((l) => l.ref)).toContain("developing-today/code#985");
-    expect(out.find((i) => i.title.includes("#889"))?.repo).toBe("dezren39/nix");
+    expect(out.find((i) => i.title.includes("#889"))?.repo).toBe("dezren39/darwin-nix");
     expect(out.find((i) => i.title.includes("#492"))?.links.map((l) => l.ref)).toEqual([
       "developing-today-forks/openchamber#492",
     ]);
@@ -370,7 +370,9 @@ describe("renderBoard in-flight lane", () => {
     const html = renderBoard([...lane, ...existing], items, provenance);
 
     expect(html).toContain('href="https://github.com/developing-today-forks/openchamber/issues/492"');
-    expect(html.match(/href="https:\/\/github.com\/developing-today-forks\/openchamber\/issues\/492"/g)).toHaveLength(1);
+    expect(html.match(/href="https:\/\/github.com\/developing-today-forks\/openchamber\/issues\/492"/g)).toHaveLength(
+      1,
+    );
     expect(html.match(/href="https:\/\/github.com\/developing-today\/code\/issues\/944"/g)).toHaveLength(1);
   });
 

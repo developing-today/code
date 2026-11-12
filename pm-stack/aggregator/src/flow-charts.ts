@@ -45,7 +45,9 @@ export function flowWindowHtml(window: FlowWindow): string {
           (g) =>
             `<span class="flow-gap" data-gap="${esc(g.cutoffAt)}">${esc(g.cutoffAt)} (${g.unavailable ? "unavailable" : "incomplete"})</span>`,
         )
-        .join(", ")} — intervals spanning a gap are excluded from every number below; nothing is zero-filled or smoothed over.</div>`
+        .join(
+          ", ",
+        )} — intervals spanning a gap are excluded from every number below; nothing is zero-filled or smoothed over.</div>`
     : "";
   return `<div class="flow-window" data-from="${esc(window.fromCutoff)}" data-to="${esc(window.toCutoff)}"><p class="muted">Computation window: ${esc(window.fromCutoff)} → ${esc(window.toCutoff)} · ${window.completeCutoffs} of ${window.cutoffCount} cutoffs complete. Source: <a href="/api/flow-analytics.json">/api/flow-analytics.json</a> — the charts below render that JSON twin and nothing else.</p>${gaps}</div>`;
 }

@@ -1,7 +1,8 @@
 // The AA cost explorer as data. The source of record is the Supabase
 // `ainventory` schema (the AA import: v_rankings,
-// v_threshold_metrics, benchmark_results, and the Test_Runs data in
-// sheet_rows, all read through v_latest_import_batch). The collector
+// v_threshold_metrics, measurement_events (the canonical benchmark
+// store, code#4401), and the Test_Runs data in sheet_rows, read
+// through v_latest_import_batch where the store carries batch identity). The collector
 // queries it, assembles the section with the helpers here, and embeds
 // it in the fleet feed; the aggregator renders the section as-is.
 // Everything in this module is pure and unit-tested (test/aa.test.ts),
@@ -22,6 +23,7 @@ import type {
   AaThreshold,
 } from "./model.ts";
 import { isIsoDate } from "./validate.ts";
+import { serviceIdFor } from "./quota-gather-map.ts";
 
 // --- scalar coercion ---------------------------------------------------------
 // The Supabase Management API serializes numeric columns as JSON
@@ -632,7 +634,7 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     multiplier: 6,
     note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×).",
   },
-  "_commandcode": {
+  _commandcode: {
     plan: "Command Code GOAT",
     multiplier: 7,
     note: "0/mo → 0 credits (7×); the entry Go tier is  → 0 credits (10×). Tier on the account is unconfirmed.",
@@ -652,12 +654,17 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     multiplier: null,
     note: "OpenAI plan quota — the fleet's final reserve, spent last by design.",
   },
-  "openai.alternate": {
+  "_openai.alt": {
     plan: "ChatGPT plan (student)",
     multiplier: null,
-    note: "Second ChatGPT account door; resolves through the fork's built-in catalog.",
+    note: "Second ChatGPT account door (popesdrew, self-contained _openai instance; renamed from openai.alternate 2026-11-10, code#8163).",
   },
-  "_claude": {
+  "_openai.main": {
+    plan: "ChatGPT plan",
+    multiplier: null,
+    note: "Main ChatGPT account door (drewrypope, self-contained _openai instance; renamed from openai.main 2026-11-10, code#8163).",
+  },
+  _claude: {
     plan: "Claude plan",
     multiplier: null,
     note: "Claude Code door — the fork's fleet-built _claude provider (renamed from claude-code 2026-11-07, #1823).",
@@ -752,7 +759,7 @@ interface RawModelEntry {
 }
 
 /** Route id -> the leaf model ids it reaches (nested routes expanded). */
-function routeLeafSets(cfg: { experimental?: { model_routes?: unknown } }): Map<string, Set<string>> {
+export function routeLeafSets(cfg: { experimental?: { model_routes?: unknown } }): Map<string, Set<string>> {
   const routes = new Map<string, unknown[]>();
   const rawRoutes = cfg.experimental?.model_routes;
   if (typeof rawRoutes === "object" && rawRoutes !== null) {
@@ -782,6 +789,65 @@ function routeLeafSets(cfg: { experimental?: { model_routes?: unknown } }): Map<
     const acc = new Set<string>();
     expand(routeId, new Set(), acc);
     out.set(routeId, acc);
+  }
+  return out;
+}
+
+/** The major route sections the section-risk notification class
+ * (#8882) watches: exactly the sections Drew named — no scout.
+ * `small` reaches small-100k's leaves through its nested
+ * opencode-route/small-100k target, and the live leaf analysis
+ * (2026-11-12) shows small-100k's door set identical to small's, so
+ * small-100k rolls up under small with no extra mapping. Keep in
+ * sync with SECTION_RISK_SECTIONS in notifications.ts. */
+export const SECTION_RISK_SECTIONS = ["workhorse", "speed", "specialist", "summit", "small"] as const;
+
+/** Does quota pool `poolId` serve route door `door` (a leaf's
+ * provider part)? The join, pinned by #8882's unit tests:
+ *  - exact: the gatherer's service-id spelling of the door is the
+ *    pool id (serviceIdFor: _claude -> anthropic:claude-pro,
+ *    _muse/meta -> meta, _openai -> _openai.main);
+ *  - split pools: a pool id under the door with a dot suffix serves
+ *    the door (_antigravity.gemini / _antigravity.claude-gpt serve
+ *    _antigravity; opencode-go.<workspace> serves opencode-go);
+ *  - plan doors: *-plan pseudo-providers in routes map to the pools
+ *    of their base provider (opencode-go-plans -> opencode-go.*,
+ *    openai-plan -> _openai.main/_openai.alt, mistral-plan -> mistral). */
+export function poolServesDoor(poolId: string, door: string): boolean {
+  if (serviceIdFor(door) === poolId) return true;
+  if (poolId.startsWith(`${door}.`)) return true;
+  if (door.endsWith("-plan") || door.endsWith("-plans")) {
+    const base = door.replace(/-plans?$/, "");
+    const bare = poolId.replace(/^_/, "");
+    if (poolId === base || bare === base) return true;
+    if (poolId.startsWith(`${base}.`) || bare.startsWith(`${base}.`) || bare.startsWith(`${base}:`)) return true;
+  }
+  return false;
+}
+
+/** Section -> quota pool ids serving it, from the deployed OpenCode
+ * config text (#8882). Unparseable config yields {} — the caller
+ * derives no section candidates, never a guessed membership. */
+export function sectionPoolIdsFromConfig(text: string, poolIds: readonly string[]): Record<string, string[]> {
+  let cfg: unknown;
+  try {
+    cfg = JSON.parse(stripJsonComments(text));
+  } catch {
+    return {};
+  }
+  if (typeof cfg !== "object" || cfg === null) return {};
+  const leafSets = routeLeafSets(cfg as { experimental?: { model_routes?: unknown } });
+  const out: Record<string, string[]> = {};
+  for (const section of SECTION_RISK_SECTIONS) {
+    const leaves = leafSets.get(section);
+    if (!leaves) {
+      out[section] = [];
+      continue;
+    }
+    const doors = new Set([...leaves].map((leaf) => leaf.split("/")[0]));
+    out[section] = [
+      ...new Set(poolIds.filter((poolId) => [...doors].some((door) => poolServesDoor(poolId, door)))),
+    ].sort();
   }
   return out;
 }
@@ -1263,7 +1329,14 @@ export function isAaSection(v: unknown): v is AaFeedSection {
     (s.coverage === undefined ||
       (typeof s.coverage === "object" &&
         s.coverage !== null &&
-        (["measuredNotPooled", "catalogNotPooledMeasured", "measuredNotInCatalog", "catalogNotPooledUnmeasured"] as const).every(
+        (
+          [
+            "measuredNotPooled",
+            "catalogNotPooledMeasured",
+            "measuredNotInCatalog",
+            "catalogNotPooledUnmeasured",
+          ] as const
+        ).every(
           (k) => Array.isArray(s.coverage?.[k]) && (s.coverage?.[k] as unknown[]).every((n) => typeof n === "string"),
         ))) &&
     (s.catalog === undefined ||

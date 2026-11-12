@@ -9,6 +9,22 @@
 //! its last heartbeat ages past [`PRESENCE_TTL_SECS`]; when it resumes, the next
 //! heartbeat makes it live again.
 //!
+//! # Clock skew and the expiry basis (#8865)
+//!
+//! A sender's clock is not the receiver's clock. Expiry is therefore NOT
+//! measured from the sender-provided stamp alone: a heartbeat is accepted
+//! only when its stamp is at most [`MAX_FUTURE_SKEW_SECS`] ahead of the
+//! receiver's clock — a small allowance documented separately from
+//! [`PRESENCE_TTL_SECS`] — and the entry's expiry runs from its *effective*
+//! stamp, `min(sender stamp, local receipt time)`. An accepted future-dated
+//! heartbeat thus stays live for at most one TTL *from receipt*, never a
+//! TTL plus its skew (pruning retains the entry a little longer, purely as
+//! a replay watermark — see [`PresenceTable::prune_at`]), and roster
+//! `last_seen` reports the effective stamp,
+//! so it is never future-dated. A heartbeat stamped in the past keeps its
+//! sender stamp as its effective stamp, so re-delivery cannot extend its
+//! life either (see [`PresenceTable::update_at`]).
+//!
 //! # Never journaled
 //!
 //! Presence is **never** written to the signed event journal, event sync, or replay.
@@ -61,6 +77,20 @@ use crate::waiting::AuthorKey;
 /// How long a heartbeat keeps a node live, in seconds: 75, inside the 60–90 s band
 /// #2809 specifies. A node silent for longer than this reads as gone.
 pub const PRESENCE_TTL_SECS: u64 = 75;
+
+/// Maximum future clock skew accepted on a heartbeat, in seconds: 10.
+///
+/// This allowance is deliberately separate from — and much smaller than —
+/// [`PRESENCE_TTL_SECS`]: the TTL is how long silence may last before a node
+/// reads as gone, while this bound is only how far a sender's clock may run
+/// ahead of the receiver's before its stamps stop being trusted at all.
+/// 10 s is generous for NTP-disciplined clocks and well under one
+/// [`HEARTBEAT_INTERVAL`], so a node whose clock is merely fast still lands
+/// two to three heartbeats inside every TTL window. A heartbeat stamped
+/// further ahead is refused outright (see [`PresenceTable::update_at`]),
+/// and an accepted future stamp never extends liveness past one TTL from
+/// receipt, because expiry runs from the receipt-clamped effective stamp.
+pub const MAX_FUTURE_SKEW_SECS: u64 = 10;
 
 /// How often a node broadcasts its presence heartbeat. Two to three heartbeats land
 /// inside one TTL window, so a single dropped gossip message never flickers a live
@@ -190,18 +220,27 @@ pub struct RosterEntry {
     /// Whether the member is live in the channel right now.
     pub liveness: Liveness,
     /// Unix seconds of the member's most recent accepted heartbeat for the channel,
-    /// or `None` if the member has never been seen.
+    /// or `None` if the member has never been seen. This is the entry's
+    /// *effective* stamp — the sender stamp clamped to the local receipt
+    /// time — so a future-dated sender stamp never makes `last_seen` read
+    /// as a time in the future (#8865).
     pub last_seen: Option<u64>,
     /// Whether the member's typing claim for the channel is currently live.
     pub typing: bool,
 }
 
-/// The latest accepted heartbeat for one node. Expiry is computed from the
-/// heartbeat's own stamp, never from a local arrival time, so re-delivering a
-/// captured heartbeat cannot extend its life (see [`PresenceTable::update_at`]).
+/// The latest accepted heartbeat for one node, plus its *effective* stamp:
+/// `min(heartbeat.ts, local receipt time)` at acceptance. Expiry (liveness
+/// and typing) is computed from the effective stamp, never from the raw
+/// sender stamp and never from a later arrival time: a past-stamped
+/// heartbeat keeps its own stamp as the basis, so re-delivering a captured
+/// heartbeat cannot extend its life, and a future-stamped heartbeat accepted
+/// inside [`MAX_FUTURE_SKEW_SECS`] is clamped to its receipt time, so its
+/// skew cannot extend its life either (see [`PresenceTable::update_at`]).
 #[derive(Clone, Debug)]
 struct Entry {
     heartbeat: PresenceHeartbeat,
+    effective_ts: u64,
 }
 
 /// Thread-safe in-memory table of the latest presence heartbeat per node.
@@ -253,14 +292,17 @@ impl PresenceTable {
     ///
     /// - **Freshness bound.** A heartbeat stamped older than [`PRESENCE_TTL_SECS`]
     ///   relative to `now` is refused — replaying a captured heartbeat cannot keep a
-    ///   departed node live — and so is one stamped more than the TTL in the future,
-    ///   which could otherwise poison the ordering check below.
+    ///   departed node live — and so is one stamped more than
+    ///   [`MAX_FUTURE_SKEW_SECS`] in the future (#8865: the skew allowance is
+    ///   separate from, and much smaller than, the TTL), which could otherwise
+    ///   poison the ordering check below and stretch liveness past the TTL.
     /// - **Ordering.** A heartbeat older than the stored one for the same node is
     ///   dropped: out-of-order delivery never regresses the table. Equal timestamps
     ///   are a tie; the most recent arrival wins — but because expiry is computed
-    ///   from the stamp (`ts + PRESENCE_TTL_SECS`), a duplicate delivery of the
-    ///   same heartbeat never extends its life, and no claim can outlive its
-    ///   stamp's freshness bound no matter when copies of it arrive.
+    ///   from the *effective* stamp (`min(ts, receipt time)` at first acceptance),
+    ///   a duplicate delivery of the same heartbeat never extends its life, and
+    ///   no claim can outlive `effective_ts + PRESENCE_TTL_SECS` — at most one
+    ///   TTL from receipt — no matter when copies of it arrive.
     /// - **Scoping.** Channels (and typing claims) the sender is not a member of,
     ///   per `is_member`, are filtered out before the heartbeat is stored, and
     ///   duplicates are dropped: a wire-decoded heartbeat bypasses
@@ -275,7 +317,7 @@ impl PresenceTable {
         is_member: &dyn Fn(&AuthorKey, &Hash) -> bool,
     ) -> bool {
         if now.saturating_sub(heartbeat.ts) > PRESENCE_TTL_SECS
-            || heartbeat.ts.saturating_sub(now) > PRESENCE_TTL_SECS
+            || heartbeat.ts.saturating_sub(now) > MAX_FUTURE_SKEW_SECS
         {
             return false;
         }
@@ -308,7 +350,24 @@ impl PresenceTable {
         {
             return false;
         }
-        entries.insert(node, Entry { heartbeat });
+        // The effective stamp (#8865): a past stamp stands as-is; a future
+        // stamp inside the skew allowance is clamped to the receipt time,
+        // so neither replay nor skew can push expiry past its basis. A
+        // duplicate delivery of the same stamp keeps the earliest
+        // effective stamp that stamp ever earned.
+        let mut effective_ts = heartbeat.ts.min(now);
+        if let Some(existing) = entries.get(&node)
+            && heartbeat.ts == existing.heartbeat.ts
+        {
+            effective_ts = effective_ts.min(existing.effective_ts);
+        }
+        entries.insert(
+            node,
+            Entry {
+                heartbeat,
+                effective_ts,
+            },
+        );
         true
     }
 
@@ -330,7 +389,7 @@ impl PresenceTable {
         match entries.get(node) {
             Some(entry)
                 if entry.heartbeat.channels.contains(channel)
-                    && now.saturating_sub(entry.heartbeat.ts) <= PRESENCE_TTL_SECS =>
+                    && now.saturating_sub(entry.effective_ts) <= PRESENCE_TTL_SECS =>
             {
                 Liveness::Live
             }
@@ -348,7 +407,7 @@ impl PresenceTable {
             .iter()
             .filter(|(_, entry)| {
                 entry.heartbeat.channels.contains(channel)
-                    && now.saturating_sub(entry.heartbeat.ts) <= PRESENCE_TTL_SECS
+                    && now.saturating_sub(entry.effective_ts) <= PRESENCE_TTL_SECS
             })
             .map(|(node, _)| *node)
             .collect();
@@ -382,7 +441,7 @@ impl PresenceTable {
                     .get(&node)
                     .filter(|entry| entry.heartbeat.channels.contains(channel));
                 let liveness = match entry {
-                    Some(entry) if now.saturating_sub(entry.heartbeat.ts) <= PRESENCE_TTL_SECS => {
+                    Some(entry) if now.saturating_sub(entry.effective_ts) <= PRESENCE_TTL_SECS => {
                         Liveness::Live
                     }
                     _ => Liveness::Offline,
@@ -390,12 +449,12 @@ impl PresenceTable {
                 RosterEntry {
                     node,
                     liveness,
-                    last_seen: entry.map(|entry| entry.heartbeat.ts),
+                    last_seen: entry.map(|entry| entry.effective_ts),
                     typing: match entry {
                         Some(entry) => {
                             liveness == Liveness::Live
                                 && entry.heartbeat.is_typing_in(channel)
-                                && now.saturating_sub(entry.heartbeat.ts) <= TYPING_TTL_SECS
+                                && now.saturating_sub(entry.effective_ts) <= TYPING_TTL_SECS
                         }
                         None => false,
                     },
@@ -434,8 +493,14 @@ impl PresenceTable {
         Some(self.roster_at(channel, members, now))
     }
 
-    /// Removes entries whose last heartbeat arrived more than [`PRESENCE_TTL_SECS`]
-    /// before `now`, returning how many were removed. Stale entries already read as
+    /// Removes entries whose last heartbeat can no longer be replayed into
+    /// the table, returning how many were removed. Liveness expires on the
+    /// effective stamp, but an entry is retained as a replay watermark until
+    /// its *sender* stamp also ages past [`PRESENCE_TTL_SECS`]: pruning on
+    /// the effective stamp alone would delete a future-dated entry while
+    /// its stamp still passes the freshness bound, and a replay would then
+    /// re-insert it with a later effective stamp and resurrect the node
+    /// past its receipt-based expiry (#8865). Stale entries already read as
     /// gone; pruning only bounds the table's size.
     pub fn prune_at(&self, now: u64) -> usize {
         let Ok(mut entries) = self.entries.write() else {
@@ -687,6 +752,123 @@ mod tests {
         );
         // A far-future stamp is refused too: it must not poison ordering.
         assert!(!table.update_at(heartbeat(alice, vec![chan], u64::MAX), 6_100, &|_, _| true));
+    }
+
+    #[test]
+    fn future_skew_at_the_allowance_expires_from_receipt_not_from_the_stamp() {
+        // #8865 oracle, boundary at the allowance: a heartbeat stamped exactly
+        // MAX_FUTURE_SKEW_SECS ahead of receipt is accepted, but its expiry
+        // runs from receipt — live at receipt + TTL, gone one second later,
+        // NOT live until stamp + TTL. Typing rides the same basis, and
+        // last_seen reports the receipt-clamped effective stamp.
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let alice = key(1);
+        let receipt = 1_000;
+        let mut hb = heartbeat(alice, vec![chan], receipt + MAX_FUTURE_SKEW_SECS);
+        hb.typing = vec![chan];
+        assert!(table.update_at(hb, receipt, &|_, _| true));
+        assert_eq!(table.liveness_at(&alice, &chan, receipt), Liveness::Live);
+        assert_eq!(
+            table.liveness_at(&alice, &chan, receipt + PRESENCE_TTL_SECS),
+            Liveness::Live
+        );
+        assert_eq!(
+            table.liveness_at(&alice, &chan, receipt + PRESENCE_TTL_SECS + 1),
+            Liveness::Offline,
+            "a future-dated heartbeat must not stay live past one TTL from receipt"
+        );
+        // Typing expires on the typing TTL from receipt, not from the stamp.
+        let roster = table.roster_at(&chan, &[alice], receipt + TYPING_TTL_SECS);
+        assert!(roster[0].typing);
+        assert_eq!(roster[0].last_seen, Some(receipt));
+        let roster = table.roster_at(&chan, &[alice], receipt + TYPING_TTL_SECS + 1);
+        assert!(!roster[0].typing);
+        // Pruning retains the entry past its liveness expiry as a replay
+        // watermark (see the replay test below); it is removed once the
+        // sender stamp itself ages past the TTL.
+        assert_eq!(table.prune_at(receipt + PRESENCE_TTL_SECS + 1), 0);
+        assert_eq!(
+            table.prune_at(receipt + MAX_FUTURE_SKEW_SECS + PRESENCE_TTL_SECS + 1),
+            1
+        );
+        assert_eq!(table.count(), 0);
+    }
+
+    #[test]
+    fn replay_after_receipt_expiry_does_not_resurrect_a_future_dated_heartbeat() {
+        // #8865, Codex finding on the fix: a future-dated heartbeat pruned on
+        // its effective stamp could be replayed while its sender stamp is
+        // still fresh, re-entering with a later effective stamp. The entry
+        // is therefore retained as a watermark: the replay is a tie that
+        // keeps the first effective stamp, liveness stays Offline, and once
+        // the watermark itself is pruned the stamp is too old to replay.
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let alice = key(1);
+        let hb = heartbeat(alice, vec![chan], 1_010);
+        assert!(table.update_at(hb.clone(), 1_000, &|_, _| true));
+        let after_expiry = 1_000 + PRESENCE_TTL_SECS + 1;
+        assert_eq!(
+            table.liveness_at(&alice, &chan, after_expiry),
+            Liveness::Offline
+        );
+        assert_eq!(table.prune_at(after_expiry), 0, "watermark retained");
+        assert!(table.update_at(hb.clone(), after_expiry, &|_, _| true));
+        assert_eq!(
+            table.liveness_at(&alice, &chan, after_expiry),
+            Liveness::Offline,
+            "a replay must not resurrect the node past its receipt-based expiry"
+        );
+        let roster = table.roster_at(&chan, &[alice], after_expiry);
+        assert_eq!(roster[0].last_seen, Some(1_000));
+        // Once the sender stamp ages past the TTL the watermark is pruned,
+        // and the same replay is refused by the freshness bound.
+        let stamp_expired = 1_010 + PRESENCE_TTL_SECS + 1;
+        assert_eq!(table.prune_at(stamp_expired), 1);
+        assert!(!table.update_at(hb, stamp_expired, &|_, _| true));
+        assert_eq!(table.count(), 0);
+    }
+
+    #[test]
+    fn future_skew_just_beyond_the_allowance_is_refused() {
+        // #8865 oracle, boundary just beyond the allowance — including the
+        // stamp the old TTL-sized allowance used to accept (receipt + 75):
+        // both are refused outright, so neither can extend liveness at all.
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let alice = key(1);
+        let receipt = 2_000;
+        assert!(!table.update_at(
+            heartbeat(alice, vec![chan], receipt + MAX_FUTURE_SKEW_SECS + 1),
+            receipt,
+            &|_, _| true
+        ));
+        assert!(!table.update_at(
+            heartbeat(alice, vec![chan], receipt + PRESENCE_TTL_SECS),
+            receipt,
+            &|_, _| true
+        ));
+        assert_eq!(table.count(), 0);
+        assert_eq!(table.liveness_at(&alice, &chan, receipt), Liveness::Offline);
+    }
+
+    #[test]
+    fn redelivered_future_heartbeat_keeps_its_first_effective_stamp() {
+        // Re-delivery inside the skew window must not re-clamp to the later
+        // receipt and so extend the claim: the earliest effective stamp wins.
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let alice = key(1);
+        let hb = heartbeat(alice, vec![chan], 3_010);
+        assert!(table.update_at(hb.clone(), 3_000, &|_, _| true));
+        assert!(table.update_at(hb, 3_010, &|_, _| true));
+        assert_eq!(
+            table.liveness_at(&alice, &chan, 3_000 + PRESENCE_TTL_SECS + 1),
+            Liveness::Offline
+        );
+        let roster = table.roster_at(&chan, &[alice], 3_010);
+        assert_eq!(roster[0].last_seen, Some(3_000));
     }
 
     #[test]

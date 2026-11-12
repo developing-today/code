@@ -20,7 +20,7 @@ type OpSpec = {
   response: "json" | "response"
 }
 
-export const OPERATION_FINGERPRINT = "f991ef3215011e82484759f8a9b2122671e0b974d4da47647141cf2f1017e8af"
+export const OPERATION_FINGERPRINT = "b550dece6a6208ddcdabac4a9da76397619772151487268e258da04090b4ff72"
 
 /** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
@@ -42,6 +42,31 @@ export const OPS: Record<string, OpSpec> = {
   adapters_remove: {
     method: "DELETE",
     path: "/v1/adapters/{name}",
+    params: {
+      name: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  apis_add: {
+    method: "POST",
+    path: "/v1/apis",
+    params: {
+      name: { in: "body", required: true },
+      spec: { in: "body", required: true },
+      baseUrl: { in: "body" },
+      include: { in: "body" },
+      exclude: { in: "body" },
+      methods: { in: "body" },
+      includeDeprecated: { in: "body" },
+      headers: { in: "body" },
+      description: { in: "body" },
+      replace: { in: "body" },
+    },
+    response: "json",
+  },
+  apis_remove: {
+    method: "DELETE",
+    path: "/v1/apis/{name}",
     params: {
       name: { in: "path", required: true },
     },
@@ -929,6 +954,23 @@ export class DaemonOps {
    */
   adaptersRemove(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("adapters_remove", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Add an API declaration, live. `POST /v1/apis`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  apisAdd(args: { name: string; spec: string; baseUrl?: string; include?: unknown[]; exclude?: unknown[]; methods?: unknown[]; includeDeprecated?: boolean; headers?: Record<string, unknown>; description?: string; replace?: boolean }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("apis_add", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Remove an API declaration, live. `DELETE /v1/apis/{name}`.
+   * Privileged: it changes the daemon rather than reading it.
+   * Destructive: it cannot be undone, and other callers are affected.
+   */
+  apisRemove(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("apis_remove", args, opts) as Promise<unknown>
   }
 
   /**

@@ -120,7 +120,9 @@ mod tests {
         assert!(is_retryable(
             "HTTP 503 from PostgREST: {\"code\":\"PGRST002\",\"message\":\"Could not query the database for the schema cache\"}"
         ));
-        assert!(!is_retryable("HTTP 400 from PostgREST: {\"code\":\"PGRST102\"}"));
+        assert!(!is_retryable(
+            "HTTP 400 from PostgREST: {\"code\":\"PGRST102\"}"
+        ));
         assert!(!is_retryable("packet validation failed (1 error(s))"));
         assert!(!is_retryable("claim_repo_task: no matching claimed row"));
     }

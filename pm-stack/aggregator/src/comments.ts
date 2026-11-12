@@ -6,23 +6,29 @@
 // atomic (temp file + rename) and the in-memory copy is authoritative
 // for the process.
 //
-// Trust model: the aggregator binds loopback + tailnet only (Drew,
-// 2026-10-25 — no public route), so comment writes are unauthenticated
-// like every other fleet-internal surface. Authorship is still never
-// anonymous: every comment carries a validated author identity.
+// Trust model: comment writes bind a privileged Drew/Muse author to the
+// operator token `pm-aggregator.comments-operator-token`. Until that
+// secret exists, legacy dashboard writes remain accepted for the
+// no-lockout rollout; those comments are marked unverified. Agent
+// identities remain accepted as before. The token is never returned to
+// or rendered by the server.
 //
 // Consumption contract (documented on #899):
-// - kind "message" comments are the orchestrator's queue input: it
+// - kind "message" comments are unauthenticated input unless
+//   authorVerified is true. Consumers must not treat a self-asserted
+//   Drew/Muse author as instructions from that person. The orchestrator
 //   polls GET /api/comments.json?kind=message&state=new, includes them
 //   in its run report as triaged input, and marks them via
 //   POST /api/comments/triage { ids: [...] }.
 // - kind "github" comments sit at githubState "pending" until a fleet
 //   poster (the orchestrator, or any agent with gh) posts them with
-//   `gh issue comment <n> --repo <repo>` / `gh pr comment`, appending
-//   the attribution line "— posted by Drew via the PM dashboard", then
-//   reports the result: POST /api/comments/github-result { id, url }
-//   or { id, error }.
+//   `gh issue comment <n> --repo <repo>` / `gh pr comment`. Append the
+//   attribution line "— posted by Drew via the PM dashboard" only when
+//   author.kind is "drew" and authorVerified is true; otherwise the
+//   comment must not claim Drew's authorship. The poster then reports:
+//   POST /api/comments/github-result { id, url } or { id, error }.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { timingSafeEqual } from "node:crypto";
 import { dirname } from "node:path";
 import type { DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
 import { isValidRef, refUrl } from "./model.ts";
@@ -44,6 +50,39 @@ export interface CommentsFile {
 // only https://github.com/ result links are storable — a stored
 // javascript:/data: URL would render as a clickable script link.
 const GH_RESULT_URL = /^https:\/\/github\.com\//;
+
+export type CommentAuthorAuthorization =
+  | { ok: true; authorVerified: boolean }
+  | { ok: false; status: 401 | 503; error: string };
+
+/**
+ * Authorize a comment using a server-resolved operator token. A missing
+ * secret is the deliberate rollout phase: accept legacy writes but mark
+ * them unverified. Secret-store outages fail closed for privileged kinds.
+ */
+export function authorizeCommentAuthor(
+  author: DashAuthor,
+  authorizationHeader: string | null,
+  tokenLookup: { status: "found"; value: string } | { status: "missing" } | { status: "unavailable" },
+): CommentAuthorAuthorization {
+  if (author.kind === "agent") return { ok: true, authorVerified: false };
+  if (tokenLookup.status === "unavailable") {
+    return { ok: false, status: 503, error: "comment authentication is temporarily unavailable" };
+  }
+  if (tokenLookup.status === "missing") return { ok: true, authorVerified: false };
+
+  const presented = authorizationHeader?.startsWith("Bearer ")
+    ? authorizationHeader.slice("Bearer ".length).trim()
+    : "";
+  const actual = Buffer.from(presented);
+  const expected = Buffer.from(tokenLookup.value);
+  if (!presented || actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+    return { ok: false, status: 401, error: "operator token required or invalid" };
+  }
+  return { ok: true, authorVerified: true };
+}
+
+const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
 const COMMENT_KINDS = new Set<DashCommentKind>(["message", "note", "github"]);
 
 function commentRecordProblem(value: unknown): string | null {
@@ -55,6 +94,9 @@ function commentRecordProblem(value: unknown): string | null {
   }
   if (parseIsoDate(value.createdAt) === null) return "createdAt must be a valid ISO date/time string";
   if (!validateAuthor(value.author)) return "author must have a supported kind, id, and label";
+  if (value.authorVerified !== undefined && typeof value.authorVerified !== "boolean") {
+    return "authorVerified must be a boolean";
+  }
   if (typeof value.body !== "string") return "body must be a string";
   if (
     value.kind === "message" &&
@@ -306,13 +348,14 @@ export class CommentsStore {
     return out;
   }
 
-  async add(input: NewComment): Promise<DashComment> {
+  async add(input: NewComment, options: { authorVerified?: boolean } = {}): Promise<DashComment> {
     await this.load();
     const comment: DashComment = {
       id: newCommentId(),
       objectRef: input.objectRef,
       kind: input.kind,
       author: input.author,
+      authorVerified: options.authorVerified === true,
       body: input.body,
       createdAt: new Date().toISOString(),
       ...(input.kind === "message" ? { triageState: "new" as const } : {}),
@@ -397,6 +440,7 @@ export class CommentsStore {
       c.githubState = "posted";
       c.githubUrl = result.url;
       delete c.githubError;
+      delete c.githubFailedAt;
     } else {
       // An error report never moves a posted comment backwards.
       if (c.githubState === "posted") {
@@ -408,11 +452,13 @@ export class CommentsStore {
         // last error still refreshes (#1210): "last error" means the
         // newest report, not the first failure.
         c.githubError = result.error;
+        c.githubFailedAt = new Date().toISOString();
         await this.persist();
         return c;
       }
       c.githubState = "failed";
       c.githubError = result.error;
+      c.githubFailedAt = new Date().toISOString();
     }
     await this.persist();
     return c;

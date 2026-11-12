@@ -60,7 +60,7 @@ FLEET_REPOS = (
     "developing-today/code",
     "developing-today-forks/opencode",
     "developing-today-forks/openchamber",
-    "developing-today/nix",
+    "dezren39/darwin-nix",
 )
 
 # The repo this runner is checked out in when the workflow runs; the
@@ -241,9 +241,7 @@ def _epic_comment(kind: str, epic: dict, children: list[dict]) -> str:
     total = len(children)
     closed = [c for c in children if c["state"] == "closed"]
     open_children = [c for c in children if c["state"] == "open"]
-    blocked = [
-        c for c in open_children if "status/blocked" in c.get("labels", [])
-    ]
+    blocked = [c for c in open_children if "status/blocked" in c.get("labels", [])]
     lines = [
         f"**Program tending — epic {'completion' if kind == 'completion' else 'check-in'}**"
         f" (tracking: #{TENDING_ISSUE})",
@@ -278,19 +276,17 @@ def _epic_comment(kind: str, epic: dict, children: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def section_epics(
-    repos: list[str], live: bool, now: dt.datetime, budget: int
-) -> dict:
+def section_epics(repos: list[str], live: bool, now: dt.datetime, budget: int) -> dict:
     checked: list[dict] = []
     actions: list[dict] = []
     cache: dict = {}
     for repo in repos:
         try:
-            epics = _gh_api(
-                f"/repos/{repo}/issues?state=open&labels=epic&per_page=100"
-            )
+            epics = _gh_api(f"/repos/{repo}/issues?state=open&labels=epic&per_page=100")
         except Exception as exc:  # noqa: BLE001 - report, never fail
-            checked.append({"repo": repo, "open_epics": "unverified", "error": str(exc)})
+            checked.append(
+                {"repo": repo, "open_epics": "unverified", "error": str(exc)}
+            )
             continue
         for epic in epics:
             entry: dict = {"repo": repo, "epic": epic.get("number")}
@@ -322,8 +318,11 @@ def section_epics(
             silent_days = (now - updated).days if updated else 0
             entry["silent_days"] = silent_days
             kind = None
-            if verified and all(c["state"] == "closed" for c in verified) \
-                    and entry["children"]["unverified"] == 0:
+            if (
+                verified
+                and all(c["state"] == "closed" for c in verified)
+                and entry["children"]["unverified"] == 0
+            ):
                 kind = "completion"
             elif silent_days >= EPIC_SILENCE_DAYS:
                 kind = "status"
@@ -441,9 +440,7 @@ def _roadmap_drift(root: Path) -> tuple[list[dict], list[dict]]:
     ambiguous: list[dict] = []
     for path in _roadmap_files(root):
         kind = "neutral"
-        for lineno, line in enumerate(
-            path.read_text().splitlines(), start=1
-        ):
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
             if line.startswith("##"):
                 kind = _section_kind(line)
                 continue
@@ -452,9 +449,7 @@ def _roadmap_drift(root: Path) -> tuple[list[dict], list[dict]]:
             refs = _refs_in(line, HOME_REPO)
             if not refs:
                 continue
-            resolved = [
-                (ref, states.get(ref, "unverified")) for ref in refs
-            ]
+            resolved = [(ref, states.get(ref, "unverified")) for ref in refs]
             verified = [s for _, s in resolved if s in ("open", "closed")]
             if not verified:
                 continue
@@ -464,12 +459,9 @@ def _roadmap_drift(root: Path) -> tuple[list[dict], list[dict]]:
                 "text": line.strip()[:200],
                 "refs": [f"{r[0]}#{r[1]}:{s}" for r, s in resolved],
             }
-            if kind == "forward" and all(
-                s == "closed" for _, s in resolved
-            ):
+            if kind == "forward" and all(s == "closed" for _, s in resolved):
                 certain.append(entry)
-            elif kind == "forward" and "closed" in verified \
-                    and "open" in verified:
+            elif kind == "forward" and "closed" in verified and "open" in verified:
                 entry["reason"] = "forward item mixes closed and open refs"
                 ambiguous.append(entry)
             elif kind == "done" and "open" in verified:
@@ -497,8 +489,7 @@ def _open_drift_pr(root: Path, certain: list[dict], today: str) -> dict:
         _remove_lines(root / rel, linenos)
     branch = f"program-tending/roadmap-drift-{today}"
     removed = "\n".join(
-        f"- `{e['file']}` line {e['line']}: {e['text']} "
-        f"(refs: {', '.join(e['refs'])})"
+        f"- `{e['file']}` line {e['line']}: {e['text']} (refs: {', '.join(e['refs'])})"
         for e in certain
     )
     body = (
@@ -513,9 +504,12 @@ def _open_drift_pr(root: Path, certain: list[dict], today: str) -> dict:
     _run_cmd(
         [
             "git",
-            "-c", "user.name=github-actions[bot]",
-            "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
-            "commit", "-m",
+            "-c",
+            "user.name=github-actions[bot]",
+            "-c",
+            "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+            "commit",
+            "-m",
             "docs(roadmap): program-tending drift fix — remove landed forward items",
         ],
         root,
@@ -523,16 +517,32 @@ def _open_drift_pr(root: Path, certain: list[dict], today: str) -> dict:
     _run_cmd(["git", "push", "-u", "origin", branch], root)
     proc = subprocess.run(
         [
-            "gh", "pr", "create", "--repo", HOME_REPO, "--base", "main",
-            "--head", branch, "--title",
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            HOME_REPO,
+            "--base",
+            "main",
+            "--head",
+            branch,
+            "--title",
             "docs(roadmap): program-tending drift fix (landed forward items)",
-            "--body", body,
+            "--body",
+            body,
         ],
-        cwd=str(root), capture_output=True, text=True, check=True,
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        check=True,
     )
-    return {"kind": "roadmap-drift-pr", "branch": branch,
-            "pr": proc.stdout.strip().splitlines()[-1] if proc.stdout else "",
-            "items_removed": len(certain), "live": True}
+    return {
+        "kind": "roadmap-drift-pr",
+        "branch": branch,
+        "pr": proc.stdout.strip().splitlines()[-1] if proc.stdout else "",
+        "items_removed": len(certain),
+        "live": True,
+    }
 
 
 def section_roadmaps(
@@ -543,22 +553,28 @@ def section_roadmaps(
     for repo in repos:
         if repo != HOME_REPO:
             checked.append(
-                {"repo": repo,
-                 "drift": "not evaluated: roadmap files live in the checked-out home repo"}
+                {
+                    "repo": repo,
+                    "drift": "not evaluated: roadmap files live in the checked-out home repo",
+                }
             )
     if HOME_REPO not in repos:
         return {
-            "section": "roadmaps", "status": "no-action",
+            "section": "roadmaps",
+            "status": "no-action",
             "detail": "home repo not in this run's repo set",
-            "checked": checked, "actions": actions,
+            "checked": checked,
+            "actions": actions,
         }
     files = _roadmap_files(root)
     if not files:
         checked.append({"repo": HOME_REPO, "drift": "no roadmap files found"})
         return {
-            "section": "roadmaps", "status": "no-action",
+            "section": "roadmaps",
+            "status": "no-action",
             "detail": "ROADMAP.md + planning/roadmaps vs landed work",
-            "checked": checked, "actions": actions,
+            "checked": checked,
+            "actions": actions,
         }
     certain, ambiguous = _roadmap_drift(root)
     checked.append(
@@ -572,13 +588,9 @@ def section_roadmaps(
     if certain and len(actions) < budget:
         if live:
             try:
-                actions.append(
-                    _open_drift_pr(root, certain, now.strftime("%Y-%m-%d"))
-                )
+                actions.append(_open_drift_pr(root, certain, now.strftime("%Y-%m-%d")))
             except Exception as exc:  # noqa: BLE001 - report, never fail
-                checked.append(
-                    {"repo": HOME_REPO, "drift_pr_error": str(exc)[:300]}
-                )
+                checked.append({"repo": HOME_REPO, "drift_pr_error": str(exc)[:300]})
         else:
             actions.append(
                 {

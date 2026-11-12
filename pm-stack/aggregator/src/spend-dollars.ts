@@ -118,10 +118,7 @@ function toDollars(cents: number): number {
  * the unmatchedSaas surfacing are deliberately not returned — rule
  * (4): they are absent from the rollups by construction.
  */
-export function matchedChargesFrom(
-  result: ChargeMatchResult,
-  serviceNames: ReadonlySet<string>,
-): MatchedCharge[] {
+export function matchedChargesFrom(result: ChargeMatchResult, serviceNames: ReadonlySet<string>): MatchedCharge[] {
   return result.rows
     .filter((row) => serviceNames.has(row.label))
     .map((row) => ({ service: row.label, at: row.at, amountUsd: row.amountUsd }));
@@ -143,10 +140,7 @@ function scopeKey(scope: Scope): string {
  * invariant (rollupTotalUsd === matchedTotalUsd per month) holds for
  * every returned rollup.
  */
-export function attributePaygDollars(
-  matched: MatchedCharge[],
-  activity: AttributedActivity[],
-): PaygDollarRollup[] {
+export function attributePaygDollars(matched: MatchedCharge[], activity: AttributedActivity[]): PaygDollarRollup[] {
   // service|month -> the distinct scopes its attributed activity
   // resolves to. Facts with no scope attribute nothing.
   const scopesByServiceMonth = new Map<string, Map<string, Scope>>();
@@ -226,8 +220,7 @@ export function attributePaygDollars(
         }))
         .sort(
           (a, b) =>
-            (a.projectRef ?? "").localeCompare(b.projectRef ?? "") ||
-            (a.epicRef ?? "").localeCompare(b.epicRef ?? ""),
+            (a.projectRef ?? "").localeCompare(b.projectRef ?? "") || (a.epicRef ?? "").localeCompare(b.epicRef ?? ""),
         );
       const attributedCents = [...work.projectCents.values()].reduce((sum, e) => sum + e.cents, 0);
       return {

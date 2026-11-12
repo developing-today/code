@@ -192,6 +192,25 @@ class TestExportTursoArgv(unittest.TestCase):
         self.assertIn("skipped (TURSO_PLATFORM_API_TOKEN not set)", result.stdout)
         self.assertEqual(list(self.capture.glob("argv-*.log")), [])
 
+    def test_work_dir_is_named_wiped_at_start_and_removed_on_exit(self):
+        # darwin-nix#373 regression: scratch must live in ONE named
+        # directory. A previous run killed mid-flight (SIGKILL defeats
+        # the EXIT trap) leaves its files there; the next run wipes
+        # them at startup instead of starting a second anonymous
+        # mktemp dir, and a clean exit removes the directory.
+        work = Path(self.tmp.name) / "named-work"
+        work.mkdir()
+        (work / "stale-from-a-killed-run.sql").write_text("leftover")
+        env = {**self.env, "EXPORT_TURSO_WORK_DIR": str(work)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("all 1 database(s) filed", result.stdout)
+        # the named location was used (its lock file exists) ...
+        self.assertTrue(Path(f"{work}.lock").exists())
+        # ... and the directory itself is gone after a clean exit,
+        # stale leftovers included.
+        self.assertFalse(work.exists())
+
 
 BROKEN_SCHEMA_INSERT = (
     b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
@@ -279,7 +298,9 @@ class TestDumpRepairFilter(unittest.TestCase):
             "INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql) "
             "VALUES('trigger','tr','ft',0,'" + sql + "');\n"
         ).encode()
-        escaped = raw.replace(b"'bad'", b"''bad''").replace(b"VALUES('x')", b"VALUES(''x'')")
+        escaped = raw.replace(b"'bad'", b"''bad''").replace(
+            b"VALUES('x')", b"VALUES(''x'')"
+        )
         for variant in (raw, escaped):
             data = (
                 b"PRAGMA writable_schema=ON;\n"
@@ -289,7 +310,9 @@ class TestDumpRepairFilter(unittest.TestCase):
             out = self.run_filter(data)
             # Mis-escaped input is repaired (quotes doubled); escaped
             # input passes through byte-identical.
-            self.assertEqual(out, data.replace(raw, escaped) if variant is raw else data)
+            self.assertEqual(
+                out, data.replace(raw, escaped) if variant is raw else data
+            )
             db = sqlite3.connect(":memory:")
             db.executescript(
                 "CREATE TABLE ft(x); CREATE TABLE log(v);"
@@ -298,7 +321,9 @@ class TestDumpRepairFilter(unittest.TestCase):
             )
             db.executescript(out.decode())
             self.assertEqual(
-                db.execute("SELECT sql FROM sqlite_schema WHERE name='tr'").fetchone()[0],
+                db.execute("SELECT sql FROM sqlite_schema WHERE name='tr'").fetchone()[
+                    0
+                ],
                 sql,
             )
             db.close()
@@ -312,6 +337,166 @@ class TestDumpRepairFilter(unittest.TestCase):
             b" VALUES('table','t','t',0,'CREATE TABLE t (x INTEGER)');\n"
         )
         self.assertEqual(self.run_filter(data), data)
+
+    def run_filter_capped(self, data: bytes, cap: int) -> bytes:
+        env = dict(os.environ, REPAIR_DUMP_MAX_CANDIDATE_BYTES=str(cap))
+        result = subprocess.run(
+            [sys.executable, str(REPAIR)],
+            input=data,
+            capture_output=True,
+            timeout=60,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_over_cap_candidate_streams_through_and_following_statement_is_repaired(
+        self,
+    ):
+        # #6525: a candidate that grows past the buffer cap without
+        # terminating is flushed unchanged and streamed, not held;
+        # its end is still recognised, so the next statement gets
+        # the normal repair treatment.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 100  # 10 KB, no terminator line
+        data = opener + filler + b"');\n" + BROKEN_SCHEMA_INSERT
+        expected = opener + filler + b"');\n" + ESCAPED_SCHEMA_INSERT
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
+    def test_cap_crossed_on_terminating_line_does_not_leak_passthrough(self):
+        # Codex P2 on PR #8415: when the cap is first exceeded ON the
+        # candidate's terminating line, the statement is complete --
+        # it flushes whole (unrepaired, like any over-cap statement)
+        # and must NOT enable pass-through, or the following statement
+        # streams through unrepaired even when it is below the cap
+        # and needs quote repair.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 39 + b"x" * 46 + b"\n"
+        # opener + filler stays under the 4096 cap; the terminating
+        # line itself is what pushes the buffer over it.
+        self.assertLessEqual(len(opener) + len(filler), 4096)
+        self.assertGreater(len(opener) + len(filler) + len(b"');\n"), 4096)
+        data = opener + filler + b"');\n" + BROKEN_SCHEMA_INSERT
+        expected = opener + filler + b"');\n" + ESCAPED_SCHEMA_INSERT
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
+    def test_over_cap_valid_candidate_end_recognised_before_blank_line(self):
+        # Codex P2 on PR #8415 (second round): a correctly escaped
+        # candidate that crosses the cap BEFORE its terminating line
+        # enters pass-through; when a blank line follows the
+        # terminating line, ends_statement() applied to the lone
+        # terminating line cannot recognise the end (no statement
+        # head for its valid-literal path, and a blank lookahead
+        # fails the top-level fallback), so pass-through leaked into
+        # the following statement, which streamed through unrepaired.
+        # The pass-through literal tracker recognises the end from
+        # the statement's own bytes.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 100  # 10 KB, no terminator line
+        data = opener + filler + b"');\n" + b"\n" + BROKEN_SCHEMA_INSERT
+        expected = opener + filler + b"');\n" + b"\n" + ESCAPED_SCHEMA_INSERT
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
+    def test_over_cap_interior_insert_line_is_not_a_boundary(self):
+        # Codex P2 on PR #8415 (third round): in pass-through mode the
+        # old ends_statement() fallback parsed the current interior
+        # line standalone -- an interior line that itself parses as a
+        # complete schema INSERT (the fake_complete line below,
+        # followed by a blank line) ended pass-through while the
+        # tracker was
+        # still inside the outer literal, and a later interior
+        # INSERT-prefixed line was then treated as a new repair
+        # candidate and quote-rewritten, corrupting the valid outer
+        # statement. Oracle: the whole over-cap statement is
+        # byte-identical and the following broken statement is
+        # repaired.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 50  # 5 KB: cap crossed in filler
+        fake_complete = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES(1,2,3,4," + b"'" * 4 + b");\n"
+        )
+        fake_candidate = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES(1,2,3,4,''X'');\n"
+        )
+        # The tail after fake_candidate stays below the cap, so if
+        # fake_candidate is wrongly taken as a new candidate its
+        # buffer terminates below the cap and repair_chunk runs on
+        # it -- that is where the corruption would appear.
+        filler2 = (b"x" * 100 + b"\n") * 20
+        data = (
+            opener
+            + filler
+            + fake_complete
+            + b"\n"
+            + fake_candidate
+            + filler2
+            + b"');\n"
+            + BROKEN_SCHEMA_INSERT
+        )
+        expected = (
+            opener
+            + filler
+            + fake_complete
+            + b"\n"
+            + fake_candidate
+            + filler2
+            + b"');\n"
+            + ESCAPED_SCHEMA_INSERT
+        )
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
+    def test_over_cap_candidate_emits_before_eof(self):
+        # #6525, the streaming half of the oracle: with stdin held
+        # open, output from an over-cap candidate must already be
+        # flowing (the old code emitted nothing until a terminator
+        # or EOF, buffering the whole remainder of the dump).
+        import select
+
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"y" * 100 + b"\n") * 100
+        env = dict(os.environ, REPAIR_DUMP_MAX_CANDIDATE_BYTES="4096")
+        proc = subprocess.Popen(
+            [sys.executable, str(REPAIR)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            env=env,
+        )
+        try:
+            proc.stdin.write(opener + filler)
+            proc.stdin.flush()
+            ready, _, _ = select.select([proc.stdout], [], [], 15)
+            self.assertTrue(
+                ready, "no output before EOF: the candidate is being buffered whole"
+            )
+            first = os.read(proc.stdout.fileno(), 4096)
+            self.assertTrue(first.startswith(b"INSERT INTO sqlite_schema("))
+            proc.stdin.write(b"');\nPRAGMA writable_schema=OFF;\n")
+            proc.stdin.close()
+            rest = proc.stdout.read()
+            self.assertEqual(proc.wait(timeout=60), 0)
+            self.assertEqual(
+                first + rest, opener + filler + b"');\nPRAGMA writable_schema=OFF;\n"
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
 
 
 if __name__ == "__main__":

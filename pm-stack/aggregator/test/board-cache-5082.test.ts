@@ -141,9 +141,7 @@ describe("board variants derive from one shared assembly (#5082)", () => {
       card(`live-${i}`, "in-progress", [`developing-today/code#${2000 + i}`], iso(0)),
     );
     const board = [...liveCards, ...doneCards];
-    const items = new Map<RefKey, GhItem>(
-      board.flatMap((c) => c.links.map((l) => [l.ref, item(l.ref)] as const)),
-    );
+    const items = new Map<RefKey, GhItem>(board.flatMap((c) => c.links.map((l) => [l.ref, item(l.ref)] as const)));
 
     let assemblies = 0;
     const cache = new TodayCache<BoardContextShape>(TODAY_CACHE_TTL_MS);

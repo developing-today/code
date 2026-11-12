@@ -6,7 +6,7 @@
 // its result companion) on the same pattern. Everything underneath
 // (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
 // apply actions; the dashboard only records them.
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
@@ -18,9 +18,16 @@ import {
   findTierItem,
   questionIdForOption,
 } from "./tier-items.ts";
-import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
+import {
+  authorizeCommentAuthor,
+  commentKindCounts,
+  CommentsStore,
+  queuedComments,
+  validateNewComment,
+} from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
+import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
 import { EventsStore, emitEvent, pageEvents } from "./events.ts";
 import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
@@ -36,6 +43,7 @@ import {
   ACTIVITY_SOURCE_COVERAGE,
 } from "./activity.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
+import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -46,8 +54,42 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import { AA_PLAN_FACTS } from "./aa.ts";
-import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
+import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
+import {
+  getNeedsDrew,
+  listOpenNeedsDrew,
+  raiseNeedsDrew,
+  recordAnswer,
+  shouldFetchNeedsDrewCensus,
+  validateNeedsDrew,
+  type NeedsDrewCensus,
+  type NeedsDrewQuestion,
+} from "./needs-drew.ts";
+import {
+  decisionSetOpenState,
+  decisionSetProgress,
+  deferWithSubmissions,
+  getDecisionDrafts,
+  getDecisionSet,
+  isDeferLean,
+  decisionSetSummary,
+  decisionSetsForView,
+  isDecisionSetView,
+  listDecisionSets,
+  listOpenDecisionSets,
+  raiseDecisionSet,
+  recordResolutions,
+  requestInfoOpenQuestions,
+  upsertDecisionDrafts,
+  validateDecisionDraftUpsert,
+  validateDecisionSet,
+  type DecisionItem,
+  type DecisionSet,
+  type DecisionSetView,
+  type DecisionSubmission,
+  decisionsDraftScript,
+} from "./decisions.ts";
+import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -59,7 +101,16 @@ import {
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { allRefs, buildAttention, buildQuotaActions, deriveToday, filterAttentionViewByRefs, projectPace, quotaActionTierItems, type RoadmapGrain } from "./derive.ts";
+import {
+  allRefs,
+  buildAttention,
+  buildQuotaActions,
+  deriveToday,
+  filterAttentionViewByRefs,
+  projectPace,
+  quotaActionTierItems,
+  type RoadmapGrain,
+} from "./derive.ts";
 import {
   reconcileRoadmap,
   roadmapDriftReport,
@@ -69,6 +120,8 @@ import {
 import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
 import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
+import { SpendRollupStore } from "./spend-rollups.ts";
+import { buildSpendCards, type SpendCardsView } from "./spend-cards.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
   PROJECT_CONFIGS,
@@ -120,6 +173,7 @@ import { buildDigest, listDigestArchives, readDigestArchive, type Digest, type D
 import { timingSafeEqual } from "node:crypto";
 import {
   getAlertsStore,
+  requestAlertTick,
   sendClassTestPush,
   sendTestPush,
   startAlertEngine,
@@ -128,7 +182,7 @@ import {
   validateNewSubscription,
 } from "./alerts.ts";
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
-import { resolveBwsSecret } from "./secrets.ts";
+import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
 import {
@@ -159,7 +213,6 @@ import {
   type ForecastContract,
 } from "./forecast-contract.ts";
 
-
 // Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
 // pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
 // astral character straddling the cap is dropped whole, so a persisted
@@ -178,10 +231,22 @@ const commentsStore = new CommentsStore(cfg.commentsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
+const spendRollupStore = new SpendRollupStore(cfg.snapshotsDir);
+/** #4824: the Projects/Roadmap spend-beside-progress view over the
+ * #4823 rollup store. A failed read renders no spend block (the
+ * store's absence is already the honest state — ingestion is a
+ * separate slice); it never fabricates zeroed cards. */
+const loadSpendCards = async (): Promise<SpendCardsView | null> => {
+  try {
+    return buildSpendCards(await spendRollupStore.readAll());
+  } catch {
+    return null;
+  }
+};
 
 async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
-  const targets = [...items.values()].filter((item) =>
-    item.labels.some((label) => label.toLowerCase() === "ready-for-agent") && /#\d+$/.test(item.ref),
+  const targets = [...items.values()].filter(
+    (item) => item.labels.some((label) => label.toLowerCase() === "ready-for-agent") && /#\d+$/.test(item.ref),
   );
   if (!targets.length) return [];
   const observedAt = new Date().toISOString();
@@ -199,20 +264,27 @@ async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
   }
   try {
     const state = await fetchRfaState(cfg.readyForAgent.baseUrl);
-    return targets.map((item) => {
-      const match = /^(.*)#(\d+)$/.exec(item.ref);
-      if (!match) return null;
-      return {
-        ref: item.ref,
-        state: dispatchStateFor(state, match[1], Number(match[2])) || RFA_NOT_PICKED_UP,
-        provenance: { source: "ready-for-agent", observedAt, repository: match[1] },
-      };
-    }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    return targets
+      .map((item) => {
+        const match = /^(.*)#(\d+)$/.exec(item.ref);
+        if (!match) return null;
+        return {
+          ref: item.ref,
+          state: dispatchStateFor(state, match[1], Number(match[2])) || RFA_NOT_PICKED_UP,
+          provenance: { source: "ready-for-agent", observedAt, repository: match[1] },
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
   } catch {
     return targets.map((item) => ({
       ref: item.ref,
       state: "unavailable",
-      provenance: { source: "ready-for-agent", observedAt, repository: item.ref.split("#")[0], error: "harness read failed" },
+      provenance: {
+        source: "ready-for-agent",
+        observedAt,
+        repository: item.ref.split("#")[0],
+        error: "harness read failed",
+      },
     }));
   }
 }
@@ -524,6 +596,482 @@ async function alertsIntakeAuthorized(req: Request): Promise<boolean> {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// --- Needs-Drew questions (#8568) ------------------------------------------
+
+/** The token-carrying answer-page URL for a raised question. */
+function needsDrewAnswerUrl(item: NeedsDrewQuestion): string {
+  return `${cfg.publicOrigin}/answer/${encodeURIComponent(item.ledgerId)}?t=${item.token}`;
+}
+
+const ANSWER_PAGE_STYLE = `<style>
+  body { font-family: system-ui, sans-serif; background: #0e1117; color: #e6edf3; margin: 0; padding: 2rem 1rem; }
+  main { max-width: 40rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; line-height: 1.35; }
+  .context { color: #9da7b1; white-space: pre-wrap; }
+  .links a { color: #58a6ff; display: block; margin: 0.35rem 0; overflow-wrap: anywhere; }
+  .options { display: grid; gap: 0.6rem; margin: 1.2rem 0; }
+  button.option { text-align: left; padding: 0.8rem 1rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; }
+  button.option:hover { border-color: #58a6ff; }
+  textarea { width: 100%; min-height: 4.5rem; box-sizing: border-box; background: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 0.5rem; padding: 0.6rem; }
+  button.submit { margin-top: 0.6rem; padding: 0.7rem 1.2rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 0; background: #1f6feb; color: #fff; cursor: pointer; }
+  .confirm { border: 1px solid #238636; border-radius: 0.5rem; padding: 1rem; }
+</style>`;
+
+/** Render GET /answer/<ledgerId>. The caller has already verified the
+ * token; the 403 shape renders nothing about the question. */
+function renderAnswerPage(item: NeedsDrewQuestion): string {
+  const links = item.links
+    .filter((l) => /^https?:\/\//.test(l))
+    .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
+    .join("");
+  if (item.answer) {
+    const chosen = item.answer.optionId
+      ? (item.options.find((o) => o.id === item.answer?.optionId)?.label ?? item.answer.optionId)
+      : null;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+<div class="confirm"><p>Answered${chosen ? `: <strong>${esc(chosen)}</strong>` : ""}.</p>
+${item.answer.freeText ? `<p>${esc(item.answer.freeText)}</p>` : ""}
+<p class="context">Recorded at ${esc(item.answer.at)} — the fleet worker has been unblocked.</p></div>
+</main></body></html>`;
+  }
+  const buttons = item.options
+    .map((o) => `<button class="option" type="button" data-option="${esc(o.id)}">${esc(o.label)}</button>`)
+    .join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Needs Drew — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+${item.context ? `<p class="context">${esc(item.context)}</p>` : ""}
+${links ? `<div class="links">${links}</div>` : ""}
+<div class="options">${buttons}</div>
+<label>Or answer in your own words (optional, sent with a tapped option or on its own):
+<textarea id="freeText" placeholder="Free-text answer"></textarea></label>
+<button class="submit" type="button" id="sendText">Send free-text answer</button>
+<p id="status" class="context"></p>
+<script>
+const token = ${JSON.stringify(item.token)};
+const endpoint = ${JSON.stringify(`/api/needs-drew/${encodeURIComponent(item.ledgerId)}/answer`)};
+async function answer(payload) {
+  const status = document.getElementById('status');
+  status.textContent = 'Sending…';
+  try {
+    const res = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, ...payload }) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    status.textContent = 'Answer recorded — thank you. The fleet worker has been unblocked.';
+    document.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  } catch { status.textContent = 'Sending failed — please try again.'; }
+}
+document.querySelectorAll('button.option').forEach((b) => {
+  b.addEventListener('click', () => {
+    const freeText = document.getElementById('freeText').value.trim();
+    answer({ optionId: b.dataset.option, ...(freeText ? { freeText } : {}) });
+  });
+});
+document.getElementById('sendText').addEventListener('click', () => {
+  const freeText = document.getElementById('freeText').value.trim();
+  if (!freeText) { document.getElementById('status').textContent = 'Write an answer first, or tap an option above.'; return; }
+  answer({ freeText });
+});
+</script>
+</main></body></html>`;
+}
+
+function renderAnswerForbidden(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>Answer link not available</h1>
+<p class="context">This answer link is unknown or its token does not match. Nothing about the question is shown without the correct link.</p>
+</main></body></html>`;
+}
+
+// --- Decision sets (#8766) -------------------------------------------------
+
+/** The token-carrying decisions-page URL for a raised set. */
+function decisionsPageUrl(set: DecisionSet): string {
+  return `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
+}
+
+/** Parse a decisions submissions array — shared by /submit and by
+ * /defer's filled-answers-win payload (#8766). */
+function parseDecisionSubmissions(
+  raw: unknown,
+): { ok: true; value: DecisionSubmission[] } | { ok: false; error: string } {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 256) {
+    return { ok: false, error: "submissions must be an array of 1-256 entries" };
+  }
+  const submissions: DecisionSubmission[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return { ok: false, error: "submissions entries must be objects" };
+    }
+    const s = entry as Record<string, unknown>;
+    const ledgerId = typeof s.ledgerId === "string" ? s.ledgerId : "";
+    const qid = typeof s.qid === "string" ? s.qid : "";
+    const kind = s.kind;
+    if (!ledgerId || !qid || (kind !== "answered" && kind !== "deferred" && kind !== "request-info")) {
+      return { ok: false, error: "submissions entries require ledgerId, qid and kind answered|deferred|request-info" };
+    }
+    if (kind === "deferred" && !isDeferLean(s.lean)) {
+      return { ok: false, error: "deferred submissions require a lean of none|skeptical|approve" };
+    }
+    submissions.push({
+      ledgerId,
+      qid,
+      kind,
+      ...(typeof s.optionId === "string" ? { optionId: s.optionId } : {}),
+      ...(typeof s.freeText === "string" ? { freeText: s.freeText } : {}),
+      ...(isDeferLean(s.lean) ? { lean: s.lean } : {}),
+      ...(typeof s.note === "string" ? { note: s.note } : {}),
+      ...(typeof s.comment === "string" ? { comment: s.comment } : {}),
+    });
+  }
+  return { ok: true, value: submissions };
+}
+
+const DECISIONS_PAGE_STYLE = `${ANSWER_PAGE_STYLE}<style>
+  .group { color: #9da7b1; text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.85rem; margin: 1.6rem 0 0.4rem; }
+  .item { border: 1px solid #30363d; border-radius: 0.6rem; padding: 1rem; margin: 0.8rem 0; background: #11161d; }
+  .item h2 { font-size: 1.1rem; margin: 0 0 0.3rem; line-height: 1.35; }
+  .q { border-top: 1px solid #21262d; padding: 0.8rem 0 0.2rem; margin-top: 0.8rem; }
+  .q p.qq { font-weight: 600; margin: 0 0 0.3rem; }
+  .opt { display: block; padding: 0.45rem 0; cursor: pointer; }
+  .opt input { margin-right: 0.5rem; }
+  select.defer { width: 100%; box-sizing: border-box; margin-top: 0.5rem; padding: 0.55rem; background: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 0.5rem; }
+  .done { color: #3fb950; font-size: 0.92rem; padding: 0.35rem 0; }
+  .bar { border: 1px solid #30363d; border-radius: 0.6rem; padding: 1rem; margin: 1.2rem 0; background: #11161d; }
+  .bar button { margin: 0.3rem 0.4rem 0.3rem 0; }
+  button.sendback { background: #6e3feb; }
+  .provided { border: 1px solid #1f6feb; border-radius: 0.5rem; padding: 0.6rem 0.8rem; margin: 0.5rem 0; background: #0d1b2e; }
+  .provided .ph { color: #58a6ff; font-weight: 600; margin: 0 0 0.3rem; }
+  .provided p { margin: 0; white-space: pre-wrap; }
+  button.reqinfo { background: #8250df; margin-top: 0.4rem; }
+  .bulkchk { font-size: 0.92rem; color: #9da7b1; }
+  #status { min-height: 1.2em; }
+</style>`;
+
+/** Render GET /decisions/<setId>. The caller has already verified the
+ * token; the 403 shape renders nothing about the set. Only open
+ * questions are interactive; resolved ones show as a compact recorded
+ * line, and an item whose questions are all resolved is not rendered
+ * at all — it has gone away, per the spec. */
+function renderDecisionsPage(set: DecisionSet): string {
+  const progress = decisionSetProgress(set);
+  const groups: string[] = [];
+  for (const item of set.items) if (!groups.includes(item.group)) groups.push(item.group);
+  const itemCard = (item: DecisionItem): string => {
+    const open = item.questions.filter((q) => !q.resolution);
+    if (open.length === 0) return "";
+    const links = item.links
+      .filter((l) => /^https?:\/\//.test(l))
+      .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
+      .join("");
+    const resolvedLines = item.questions
+      .filter((q) => q.resolution)
+      .map((q) => {
+        const r = q.resolution!;
+        const what =
+          r.kind === "deferred"
+            ? `deferred to the orchestrator${r.lean && r.lean !== "none" ? ` (lean: ${esc(r.lean)})` : ""}${r.optionLabel ? ` — your tentative pick: ${esc(r.optionLabel)}` : ""}${r.comment ? ` — comment: ${esc(r.comment)}` : ""}`
+            : r.kind === "request-info"
+              ? `more information requested${r.note ? ` — you said: ${esc(r.note)}` : ""}`
+              : `answered${r.optionLabel ? `: ${esc(r.optionLabel)}` : r.freeText ? `: ${esc(r.freeText)}` : ""}`;
+        return `<div class="done">✓ ${esc(q.question)} — ${what}</div>`;
+      })
+      .join("");
+    const questionBlocks = open
+      .map((q) => {
+        const radios = q.options
+          .map(
+            (o) =>
+              `<label class="opt"><input type="radio" name="opt-${esc(q.qid)}" value="${esc(o.id)}">${esc(o.label)}</label>`,
+          )
+          .join("");
+        return `<div class="q" data-ledger="${esc(item.ledgerId)}" data-qid="${esc(q.qid)}">
+<p class="qq">${esc(q.question)}</p>
+${q.infoProvided ? `<div class="provided"><p class="ph">Information you requested</p><p>${esc(q.infoProvided)}</p></div>` : ""}
+${q.context ? `<p class="context">${esc(q.context)}</p>` : ""}
+${radios}
+<textarea class="ft" placeholder="Answer in your own words, or a comment (sent back with any action on this question)"></textarea>
+<select class="defer">
+<option value="">I'll answer this one</option>
+<option value="none">Defer</option>
+<option value="skeptical">Defer — leaning no</option>
+<option value="approve">Defer — leaning yes</option>
+</select>
+<textarea class="infonote" placeholder="Need more information first? Say what's missing (optional)"></textarea>
+<button class="reqinfo" type="button" data-reqinfo>Request more information</button>
+</div>`;
+      })
+      .join("");
+    return `<section class="item" data-ledger="${esc(item.ledgerId)}">
+<label class="bulkchk"><input type="checkbox" class="bulk"> select this item for a bulk action below (defer or request info)</label>
+<h2>${esc(item.title)}</h2>
+${links ? `<div class="links">${links}</div>` : ""}
+${resolvedLines}
+${questionBlocks}
+<button class="submit" type="button" data-submit-item="${esc(item.ledgerId)}">Submit this item</button>
+</section>`;
+  };
+  const body = groups
+    .map((g) => {
+      const cards = set.items
+        .filter((i) => i.group === g)
+        .map(itemCard)
+        .join("");
+      return cards ? `<div class="group">${esc(g)}</div>${cards}` : "";
+    })
+    .join("");
+  const caughtUp = progress.openQuestions === 0;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Decisions — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
+<body><main><h1>${esc(set.title)}</h1>
+<p class="context">${progress.openQuestions} question${progress.openQuestions === 1 ? "" : "s"} open across ${progress.openItems} item${progress.openItems === 1 ? "" : "s"} · ${progress.answered} answered · ${progress.deferred} deferred · ${progress.infoRequested} sent back for more information so far. Fill in what you want — you can submit a partially-filled item; what you filled in is recorded and the rest stays here.</p>
+${caughtUp ? `<div class="confirm"><p>All caught up — every question in this set has been answered or sent back. Nothing left on this page.</p></div>` : body}
+<div class="bar">
+<p class="context">Bulk actions</p>
+<button class="submit" type="button" id="submitAll">Submit everything I've filled in</button>
+<p class="context">Defer checked items to the orchestrator instead of answering — they leave this page and become the orchestrator's job. Precedence per question: (1) the question's own defer setting wins, with its tentative pick and comment riding along as guidance; (2) a filled-in answer submits as an answer; (3) only a question nobody touched uses the default flavor picked here:</p>
+<select class="defer" id="bulkLean">
+<option value="none">Defer</option>
+<option value="skeptical">Defer — leaning no</option>
+<option value="approve">Defer — leaning yes</option>
+</select>
+<button class="submit sendback" type="button" id="deferChecked">Defer checked to orchestrator</button>
+<button class="submit sendback" type="button" id="deferAll">Defer ALL remaining</button>
+<p class="context">Or request more information for the checked items — they leave this page and come back in a later set once the information has been gathered:</p>
+<textarea class="infonote" id="bulkInfoNote" placeholder="Comment for the bulk actions — rides back with the checked items (for request-info: say what's missing)"></textarea>
+<button class="submit reqinfo" type="button" id="reqinfoChecked">Request more info for checked items</button>
+</div>
+<p id="status" class="context"></p>
+<script>
+var TOKEN = ${JSON.stringify(set.token)};
+var SET_ID = ${JSON.stringify(set.setId)};
+function status(msg) { document.getElementById('status').textContent = msg; }
+function collect(scopeLedger) {
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var ledger = block.getAttribute('data-ledger');
+    if (scopeLedger && ledger !== scopeLedger) return;
+    var qid = block.getAttribute('data-qid');
+    var lean = block.querySelector('select.defer').value;
+    if (lean) {
+      var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: lean };
+      var dpick = block.querySelector('input[type=radio]:checked');
+      if (dpick) dsub.optionId = dpick.value;
+      var dtext = block.querySelector('textarea.ft').value.trim();
+      if (dtext) dsub.comment = dtext;
+      subs.push(dsub); return;
+    }
+    var picked = block.querySelector('input[type=radio]:checked');
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (picked || text) {
+      var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
+      if (picked) sub.optionId = picked.value;
+      if (text) sub.freeText = text;
+      subs.push(sub);
+    }
+  });
+  return subs;
+}
+function applyOpenState(state) {
+  var openByItem = {};
+  state.items.forEach(function (i) { openByItem[i.ledgerId] = i.openQids; });
+  document.querySelectorAll('.q').forEach(function (block) {
+    var open = openByItem[block.getAttribute('data-ledger')] || [];
+    if (open.indexOf(block.getAttribute('data-qid')) === -1) block.remove();
+  });
+  document.querySelectorAll('section.item').forEach(function (card) {
+    if (!card.querySelector('.q')) card.remove();
+  });
+  if (!document.querySelector('section.item')) {
+    status('All caught up — every question in this set is recorded. You can close this page.');
+  }
+}
+async function post(path, payload) {
+  var res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(Object.assign({ token: TOKEN }, payload)) });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+async function submit(scopeLedger) {
+  var subs = collect(scopeLedger);
+  if (subs.length === 0) { status('Nothing filled in yet — pick an option, write an answer, or choose a defer.'); return; }
+  status('Sending…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: subs });
+    applyOpenState(out);
+    var applied = out.outcomes.filter(function (o) { return o.applied; }).length;
+    status('Recorded ' + applied + ' — ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+async function sendBack(all) {
+  // The flavor picked here is only the DEFAULT for questions nobody
+  // touched: the gather below sends each question's own defer setting
+  // and each filled answer as submissions, the server records those
+  // first, and this payload lean reaches only what is still open.
+  var lean = document.getElementById('bulkLean').value;
+  var payload;
+  var scopeIds = null;
+  if (all) { payload = { lean: lean, allRemaining: true }; }
+  else {
+    var ids = [];
+    document.querySelectorAll('section.item').forEach(function (card) {
+      if (card.querySelector('input.bulk').checked) ids.push(card.getAttribute('data-ledger'));
+    });
+    if (ids.length === 0) { status('Check at least one item first, or use ALL remaining.'); return; }
+    payload = { lean: lean, ledgerIds: ids };
+    scopeIds = ids;
+  }
+  // Filled answers win over the bulk defer: everything already filled
+  // in inside the scope rides along as submissions — the server records
+  // them first (answers stay rulings, per-question defers keep their
+  // own lean and comment) and defers only what is still unanswered.
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var ledger = block.getAttribute('data-ledger');
+    if (scopeIds && scopeIds.indexOf(ledger) === -1) return;
+    var qid = block.getAttribute('data-qid');
+    var qlean = block.querySelector('select.defer').value;
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (qlean) {
+      var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: qlean };
+      var dpick = block.querySelector('input[type=radio]:checked');
+      if (dpick) dsub.optionId = dpick.value;
+      if (text) dsub.comment = text;
+      subs.push(dsub); return;
+    }
+    var picked = block.querySelector('input[type=radio]:checked');
+    if (picked || text) {
+      var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
+      if (picked) sub.optionId = picked.value;
+      if (text) sub.freeText = text;
+      subs.push(sub);
+    }
+  });
+  if (subs.length) payload.submissions = subs;
+  var bulkComment = document.getElementById('bulkInfoNote').value.trim();
+  if (bulkComment) payload.comment = bulkComment;
+  status('Sending back…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/defer', payload);
+    applyOpenState(out);
+    var recorded = (out.outcomes || []).filter(function (o) { return o.applied; }).length;
+    var msg = 'Deferred ' + out.deferredCount + ' question(s) to the orchestrator';
+    if (recorded) msg = 'Recorded ' + recorded + ' filled-in answer(s) first; deferred the rest — ' + out.deferredCount + ' question(s) deferred to the orchestrator';
+    status(msg + ' — ' + out.remainingOpenQuestions + ' still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+document.querySelectorAll('[data-submit-item]').forEach(function (b) {
+  b.addEventListener('click', function () { submit(b.getAttribute('data-submit-item')); });
+});
+document.getElementById('submitAll').addEventListener('click', function () { submit(null); });
+document.getElementById('deferChecked').addEventListener('click', function () { sendBack(false); });
+document.getElementById('deferAll').addEventListener('click', function () { sendBack(true); });
+async function requestInfoOne(block) {
+  var note = block.querySelector('textarea.infonote').value.trim();
+  var sub = { ledgerId: block.getAttribute('data-ledger'), qid: block.getAttribute('data-qid'), kind: 'request-info' };
+  if (note) sub.note = note;
+  status('Requesting more information…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: [sub] });
+    applyOpenState(out);
+    status('Recorded — that question will come back in a later set with the information added. ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+async function requestInfoChecked() {
+  var ids = [];
+  document.querySelectorAll('section.item').forEach(function (card) {
+    if (card.querySelector('input.bulk').checked) ids.push(card.getAttribute('data-ledger'));
+  });
+  if (ids.length === 0) { status('Check at least one item first.'); return; }
+  var note = document.getElementById('bulkInfoNote').value.trim();
+  var payload = { ledgerIds: ids };
+  if (note) payload.note = note;
+  status('Requesting more information…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/request-info', payload);
+    applyOpenState(out);
+    status('Recorded ' + out.requestedCount + ' question(s) to come back with more information — ' + out.remainingOpenQuestions + ' still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+document.querySelectorAll('[data-reqinfo]').forEach(function (b) {
+  b.addEventListener('click', function () { requestInfoOne(b.closest('.q')); });
+});
+document.getElementById('reqinfoChecked').addEventListener('click', requestInfoChecked);
+${decisionsDraftScript(set.setId)}
+</script>
+</main></body></html>`;
+}
+
+/** Render GET /decisions — the decision-sets index (#8867). Lists every
+ * set in the store with counts live from decisionSetSummary (the same
+ * numbers the set page itself reports), in today / this-week / all
+ * views with an open-only toggle, newest first. Each row links to the
+ * set's own token-carrying page; the index carries no token of its own
+ * and sits behind the same access as every other aggregator page
+ * (tailnet origin / Cloudflare Access on pm.security.cab) — no new
+ * public surface, and the per-set token model is untouched. */
+const CHICAGO_STAMP = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, openOnly: boolean): string {
+  const inView = decisionSetsForView(allSets, view);
+  const visible = openOnly ? inView.filter((s) => decisionSetSummary(s).openQuestions > 0) : inView;
+  const totalOpen = inView.reduce((n, s) => n + decisionSetSummary(s).openQuestions, 0);
+  const viewTab = (v: DecisionSetView, label: string): string =>
+    v === view
+      ? `<strong>${label}</strong>`
+      : `<a href="/decisions?view=${v}${openOnly ? "&open=1" : ""}">${label}</a>`;
+  const toggle = openOnly
+    ? `<strong>Open only</strong> · <a href="/decisions?view=${view}">Show all</a>`
+    : `<a href="/decisions?view=${view}&open=1">Open only</a>`;
+  const rows = visible
+    .map((set) => {
+      const s = decisionSetSummary(set);
+      const stamp = Number.isFinite(Date.parse(s.createdAt))
+        ? CHICAGO_STAMP.format(new Date(s.createdAt))
+        : s.createdAt;
+      const breakdown = `${s.answered} answered · ${s.deferred} deferred · ${s.infoRequested} sent back for more info`;
+      const state = s.fullyResolved ? `all settled — ${breakdown}` : `${s.openQuestions} open · ${breakdown}`;
+      return `<div class="item"><h2><a href="${esc(decisionsPageUrl(set))}">${esc(s.title)}</a></h2>
+<p class="context">Raised ${esc(stamp)} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · ${state}</p>
+<p class="context">Set <code>${esc(s.setId)}</code></p></div>`;
+    })
+    .join("");
+  const empty =
+    allSets.length === 0
+      ? `<p class="context">No decision sets have been raised yet.</p>`
+      : `<p class="context">No sets in this view${openOnly ? " with open questions" : ""}.</p>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Decision sets — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
+<body><main><h1>Decision sets</h1>
+<p class="context">${inView.length} set${inView.length === 1 ? "" : "s"} · ${totalOpen} question${totalOpen === 1 ? "" : "s"} open. Newest first. Each set opens its own page — the same link its push notification carried.</p>
+<p class="context">${viewTab("today", "New today")} · ${viewTab("week", "This week")} · ${viewTab("all", "All")} &nbsp;|&nbsp; ${toggle}</p>
+${visible.length ? rows : empty}
+</main></body></html>`;
+}
+
+function renderDecisionsForbidden(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>Decisions link not available</h1>
+<p class="context">This decisions link is unknown or its token does not match. Nothing about the set is shown without the correct link.</p>
+</main></body></html>`;
+}
+
 /** The PWA manifest (#3315 slice a, landed with #3676): start_url is
  * the attention view per the design; icons incl. maskable + iOS. */
 const PWA_MANIFEST = {
@@ -550,7 +1098,16 @@ function emptyQuotaView(): QuotaView {
   return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
 }
 function emptyUsageView(): UsageView {
-  return { services: [], uninstrumentedServices: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
+  return {
+    services: [],
+    uninstrumentedServices: [],
+    payg: [],
+    charges: [],
+    attention: [],
+    domains: null,
+    subscriptions: [],
+    history: {},
+  };
 }
 
 async function loadBoardContext() {
@@ -615,7 +1172,10 @@ async function allForecastContracts(
     for (const subjectRef of subjects) {
       const poolItem = poolByRef.get(subjectRef);
       const statusDisagreement =
-        poolItem && poolItem.status && ((poolItem.state === "closed" && poolItem.status !== "Done") || (poolItem.state === "open" && poolItem.status === "Done"))
+        poolItem &&
+        poolItem.status &&
+        ((poolItem.state === "closed" && poolItem.status !== "Done") ||
+          (poolItem.state === "open" && poolItem.status === "Done"))
           ? `GitHub state ${poolItem.state} disagrees with Project Status ${poolItem.status}; both are shown, neither is preferred`
           : null;
       for (const c of subjectForecastContracts(cutoffs, subjectRef, {
@@ -712,7 +1272,9 @@ async function searchContext(query: string) {
   // (registry taskRefs, tier-item refs) join the resolution set, or
   // their search badges always render unresolved even when the live
   // pool/projector could resolve them.
-  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(isValidRef);
+  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(
+    isValidRef,
+  );
   const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
   const items = await source.items(refs);
   const extras = { registry, dns, services: usage?.services ?? [], tierItems };
@@ -1030,18 +1592,6 @@ async function resolveView(url: URL): Promise<ResolvedView | null> {
   return null;
 }
 
-function ghItemLike(item: GhItem, pool?: ProjectPoolItem | null): ViewItemLike {
-  return {
-    ref: item.ref,
-    repo: item.ref.replace(/#\d+$/, ""),
-    area: item.projectArea ?? pool?.area ?? null,
-    horizon: item.projectHorizon ?? pool?.horizon ?? null,
-    owner: item.author,
-    state: item.state,
-    epic: pool?.epicRef ?? null,
-  };
-}
-
 function poolItemLike(item: ProjectPoolItem): ViewItemLike {
   return {
     ref: item.ref,
@@ -1079,23 +1629,6 @@ function eventFilterFromUrl(
     search: url.searchParams.get("q") ?? undefined,
     itemContext,
   };
-}
-
-/** A board card / roadmap row matches when its own fields match, or
- *  when any canonical item it links to matches. */
-function linkedLike(
-  own: ViewItemLike,
-  links: readonly { ref: RefKey }[],
-  items: Map<RefKey, GhItem>,
-  poolByRef: Map<RefKey, ProjectPoolItem>,
-  filters: ViewFilters,
-): boolean {
-  if (itemMatchesView(own, filters)) return true;
-  for (const l of links) {
-    const item = items.get(l.ref);
-    if (item && itemMatchesView(ghItemLike(item, poolByRef.get(l.ref)), filters)) return true;
-  }
-  return false;
 }
 
 /** Apply a preference view verb to the views store (#1276). Returns a
@@ -1188,6 +1721,11 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewRoadmapAnnotation(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const annotationAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!annotationAccess.ok) return json({ error: annotationAccess.error }, annotationAccess.status);
+      parsed.value.author = annotationAccess.author;
       const rows = await source.roadmap().catch(() => []);
       if (!rows.some((row) => row.subject === parsed.value.objectRef)) {
         return json({ error: "objectRef is not a current roadmap row" }, 404);
@@ -1226,11 +1764,27 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const commentAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!commentAccess.ok) return json({ error: commentAccess.error }, commentAccess.status);
+      parsed.value.author = commentAccess.author;
+      // #941: a privileged author additionally requires the operator
+      // token when one is configured (fail closed on a secret-store
+      // outage); with no secret configured the write stays unverified.
+      // Runs on the Access-derived author above, so the two gates
+      // compose: identity first, privilege second.
+      const authorization = authorizeCommentAuthor(
+        parsed.value.author,
+        req.headers.get("authorization"),
+        await resolveBwsSecretLookup("pm-aggregator.comments-operator-token"),
+      );
+      if (!authorization.ok) return json({ error: authorization.error }, authorization.status);
       // #1509: a persistence failure is a server error, not bad input -
       // only the validation/body-parse path above earns a 400.
       let comment;
       try {
-        comment = await commentsStore.add(parsed.value);
+        comment = await commentsStore.add(parsed.value, { authorVerified: authorization.authorVerified });
       } catch (err) {
         return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
@@ -1270,6 +1824,11 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewAction(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: gate every action write, including non-triage and
+      // preference actions, on the configured Access identity.
+      const actionAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!actionAccess.ok) return json({ error: actionAccess.error }, actionAccess.status);
+      parsed.value.author = actionAccess.author;
       // #1291/#1293: checks that need the currently published item —
       // option/survey membership, required-question coverage, proposal
       // identity, the access/policy auto ban. Enforced only when the
@@ -1382,6 +1941,9 @@ async function handler(req: Request): Promise<Response> {
         deduped?: boolean;
         error?: string;
       }[] = [];
+      // One enforcer for the whole batch: the request's JWT is
+      // verified once, not once per action (see access-identity.ts).
+      const enforceBatchAuthor = createAccessAuthorEnforcer(req);
       for (const [index, raw] of entries.entries()) {
         const objectRef =
           typeof raw === "object" && raw !== null && typeof (raw as { objectRef?: unknown }).objectRef === "string"
@@ -1392,6 +1954,12 @@ async function handler(req: Request): Promise<Response> {
           results.push({ index, objectRef, ok: false, error: parsed.error });
           continue;
         }
+        const batchAccess = await enforceBatchAuthor(parsed.value.author);
+        if (!batchAccess.ok) {
+          results.push({ index, objectRef, ok: false, error: batchAccess.error });
+          continue;
+        }
+        parsed.value.author = batchAccess.author;
         if (parsed.value.kind === "triage" && section) {
           const problem = checkActionAgainstItem(
             parsed.value,
@@ -1627,17 +2195,7 @@ async function handler(req: Request): Promise<Response> {
         }),
       );
     }
-    const poolByRef = act.poolByRef;
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
-    );
-    const keptRefs = new Set<string>();
-    for (const b of keptBoard) for (const l of b.links) keptRefs.add(l.ref);
-    const keptItems = new Map(
-      [...items].filter(
-        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
-      ),
-    );
+    const { board: keptBoard, items: keptItems } = filterBoardForView(board, items, act.poolByRef, resolved.filters);
     return html(
       renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, {
         showAllDone: url.searchParams.get("done") === "all",
@@ -1646,7 +2204,16 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
-    const wrapped = `<div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')">${renderBoardBody(board, items, counts, act)}</div>`;
+    // #8521: the fragment twin applies the same saved view as /board
+    // (PR #4013 missed it), and its refresh URLs re-name the view so
+    // a reload does not silently drop the filter. #7937: the same
+    // treatment for ?done=all — the fragment renders the full Done
+    // strip when the flag is present (PR #3855 wired it only into
+    // /board), and fragBoardUrl carries it across refreshes.
+    const fragUrl = fragBoardUrl(url.searchParams);
+    const resolved = await resolveView(url);
+    const view = resolved ? filterBoardForView(board, items, act.poolByRef, resolved.filters) : { board, items };
+    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on-dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
     return sseResponse(ssePatch("#board-main", wrapped));
   }
 
@@ -1656,7 +2223,9 @@ async function handler(req: Request): Promise<Response> {
       return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
     }
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale));
+    return html(
+      renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale),
+    );
   }
   if (path === "/frag/today") {
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
@@ -1703,6 +2272,7 @@ async function handler(req: Request): Promise<Response> {
     // #4830: the same twin /api/flow-analytics.json serves, computed
     // the same way — the Roadmap charts render exactly this object.
     const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
+    const spendCards = await loadSpendCards();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -1735,29 +2305,16 @@ async function handler(req: Request): Promise<Response> {
           briefs,
           forecasts,
           flowAnalytics,
+          spendCards,
         ),
       );
     }
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike(
-        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
-        r.links,
-        items,
-        poolByRef,
-        resolved.filters,
-      ),
-    );
     // Codex P2, PR #4013: items linked from a KEPT row keep their
     // metadata (links/badges in roadmapCard) even when they fail the
     // item filter themselves — same rule the board handler applies.
-    const keptRefs = new Set<string>();
-    for (const r of keptRows) for (const l of r.links) keptRefs.add(l.ref);
-    const keptItems = new Map(
-      [...items].filter(
-        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
-      ),
-    );
+    // Shared with /api/roadmap.json via filterRoadmapForView (#8723).
+    const { rows: keptRows, items: keptItems } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
     return html(
       renderRoadmap(
         keptRows,
@@ -1773,6 +2330,7 @@ async function handler(req: Request): Promise<Response> {
         briefs,
         forecasts,
         flowAnalytics,
+        spendCards,
       ),
     );
   }
@@ -1837,23 +2395,53 @@ async function handler(req: Request): Promise<Response> {
     // only the named entries render, and the refs ride the fragment
     // URLs so the streamed sections stay filtered.
     const refsParam = url.searchParams.get("refs");
-    const refs = refsParam ? refsParam.split(",").map((ref) => ref.trim()).filter(Boolean) : [];
+    const refs = refsParam
+      ? refsParam
+          .split(",")
+          .map((ref) => ref.trim())
+          .filter(Boolean)
+      : [];
     if (url.searchParams.get("full") !== "1") {
       return html(renderAttentionShell(prov(), provDetail(), refsParam ?? undefined));
     }
     const rendered = await attentionRender();
     const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
-    return html(renderAttention(view, rendered.coverage, prov(), rendered.counts, provDetail(), rendered.act, rendered.briefs, rendered.census));
+    return html(
+      renderAttention(
+        view,
+        rendered.coverage,
+        prov(),
+        rendered.counts,
+        provDetail(),
+        rendered.act,
+        rendered.briefs,
+        rendered.census,
+      ),
+    );
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
     const refsParam = url.searchParams.get("refs");
-    const refs = refsParam ? refsParam.split(",").map((ref) => ref.trim()).filter(Boolean) : [];
+    const refs = refsParam
+      ? refsParam
+          .split(",")
+          .map((ref) => ref.trim())
+          .filter(Boolean)
+      : [];
     const rendered = await attentionRender();
     const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
-    const sections = attentionSections(view, rendered.coverage, rendered.counts, rendered.act, rendered.briefs, rendered.census);
-    return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section], refsParam ?? undefined)));
+    const sections = attentionSections(
+      view,
+      rendered.coverage,
+      rendered.counts,
+      rendered.act,
+      rendered.briefs,
+      rendered.census,
+    );
+    return sseResponse(
+      ssePatch(`#attn-${section}`, attentionFragment(section, sections[section], refsParam ?? undefined)),
+    );
   }
   if (path === "/assets/app.css") {
     // The committed Tailwind + DaisyUI build (Phase C): source is
@@ -2009,8 +2597,11 @@ async function handler(req: Request): Promise<Response> {
     // #5082: the live-source fan-out rides the programSources cache
     // (TTL + single-flight); the local-store reads and everything
     // view-dependent below stay per-request.
-    const [{ items, pool, rows, orchestration, census, poolAvailable }, formOpts, actionsByObject] =
-      await Promise.all([programSources(), commentFormOpts(), actionsStore.byObject()]);
+    const [{ items, pool, rows, orchestration, census, poolAvailable }, formOpts, actionsByObject] = await Promise.all([
+      programSources(),
+      commentFormOpts(),
+      actionsStore.byObject(),
+    ]);
     // #1276 (Codex P2, PR #4013): /projects redirects here with the
     // view parameters preserved, but this handler never resolved the
     // view — apply it to the pool before rendering, exactly as
@@ -2046,6 +2637,8 @@ async function handler(req: Request): Promise<Response> {
         // renders the #4829 twin as charts, computed as the endpoint
         // computes it.
         flowAnalytics: computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => [])),
+        // #4824: spend beside progress on the pool cards.
+        spend: await loadSpendCards(),
       }),
     );
   }
@@ -2128,8 +2721,7 @@ async function handler(req: Request): Promise<Response> {
     const bounded = boardJsonViewBody(
       board,
       items,
-      (b) =>
-        linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+      (b) => linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
       { showAllDone },
     );
     return jsonCompact({ board: bounded.board, items: bounded.items, view: resolved.view?.id ?? null });
@@ -2150,18 +2742,10 @@ async function handler(req: Request): Promise<Response> {
     }
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike(
-        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
-        r.links,
-        items,
-        poolByRef,
-        resolved.filters,
-      ),
-    );
-    const keptItems = [...items.values()].filter((it) =>
-      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
-    );
+    // #8723: the same rule as the HTML twin -- items linked from a
+    // kept row ship even when they fail the view themselves.
+    const { rows: keptRows, items: keptItemMap } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
+    const keptItems = [...keptItemMap.values()];
     const annotatedKeptRows = await Promise.all(
       keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
     );
@@ -2382,13 +2966,288 @@ async function handler(req: Request): Promise<Response> {
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
     try {
-      const parsed = validateNewIncident(await readJsonBody(req));
+      const rawBody: unknown = await readJsonBody(req);
+      const parsed = validateNewIncident(rawBody);
       if (!parsed.ok) return json({ error: parsed.error }, 400);
       const { incident, created } = await store.postIncident(parsed.value);
-      return json({ incident, created }, created ? 201 : 200);
+      const status = created ? 201 : 200;
+      // #8568/#8766 producer extensions: exactly one of needsDrew /
+      // stackHealth / decisionSet may ride an incident post. The incident insert
+      // above is unchanged; a VALIDATION failure of an extension is a
+      // 400 (the poster's bug should be loud at the poster), while a
+      // store failure is logged and never fails the incident post.
+      const ext =
+        rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? (rawBody as Record<string, unknown>) : {};
+      const hasNeedsDrew = ext.needsDrew !== undefined;
+      const hasStackHealth = ext.stackHealth !== undefined;
+      const hasDecisionSet = ext.decisionSet !== undefined;
+      if ([hasNeedsDrew, hasStackHealth, hasDecisionSet].filter(Boolean).length > 1) {
+        return json({ error: "needsDrew, stackHealth and decisionSet extensions are mutually exclusive" }, 400);
+      }
+      if (hasNeedsDrew) {
+        const v = validateNeedsDrew(ext.needsDrew);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source);
+          requestAlertTick();
+          return json(
+            { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
+            status,
+          );
+        } catch (err) {
+          console.error(`alerts intake: needsDrew raise failed (${err instanceof Error ? err.message : "error"})`);
+          return json({ incident, created }, status);
+        }
+      }
+      if (hasStackHealth) {
+        const v = validateStackHealth(ext.stackHealth);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          await setStackHealth(cfg.stackHealthFile, v.value);
+          if (v.value.state === "up") {
+            await store.closeOpenIncidentByKey(parsed.value.source, parsed.value.key);
+          }
+          requestAlertTick();
+        } catch (err) {
+          console.error(`alerts intake: stackHealth update failed (${err instanceof Error ? err.message : "error"})`);
+        }
+        return json({ incident, created }, status);
+      }
+      if (hasDecisionSet) {
+        const v = validateDecisionSet(ext.decisionSet);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          const set = await raiseDecisionSet(cfg.decisionsFile, v.value, parsed.value.source);
+          requestAlertTick();
+          return json({ incident, created, decisionSet: { setId: set.setId, pageUrl: decisionsPageUrl(set) } }, status);
+        } catch (err) {
+          console.error(`alerts intake: decisionSet raise failed (${err instanceof Error ? err.message : "error"})`);
+          return json({ incident, created }, status);
+        }
+      }
+      return json({ incident, created }, status);
     } catch (err) {
       return json({ error: `invalid incident: ${err instanceof Error ? err.message : err}` }, 400);
     }
+  }
+  // --- Needs-Drew answers (#8568) --------------------------------------
+  const needsDrewAnswerMatch = /^\/api\/needs-drew\/([^/]+)\/answer$/.exec(path);
+  if (req.method === "POST" && needsDrewAnswerMatch) {
+    const ledgerId = decodePathSegment(needsDrewAnswerMatch[1]);
+    if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);
+    let body: { token?: unknown; optionId?: unknown; freeText?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid answer body" }, 400);
+    }
+    // No bearer: the per-question token is the authority.
+    const item = await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    if (!item || typeof body.token !== "string" || body.token !== item.token) {
+      return json({ error: "unknown question or bad token" }, 403);
+    }
+    const optionId = typeof body.optionId === "string" ? body.optionId : undefined;
+    if (optionId !== undefined && !item.options.some((o) => o.id === optionId)) {
+      return json({ error: "optionId is not one of the question options" }, 400);
+    }
+    const freeText = typeof body.freeText === "string" ? body.freeText : undefined;
+    if (body.freeText !== undefined && freeText === undefined) {
+      return json({ error: "freeText must be a string" }, 400);
+    }
+    if (optionId === undefined && !freeText?.trim()) {
+      return json({ error: "optionId or freeText required" }, 400);
+    }
+    const updated = await recordAnswer(cfg.needsDrewFile, ledgerId, {
+      ...(optionId !== undefined ? { optionId } : {}),
+      ...(freeText !== undefined ? { freeText } : {}),
+      via: "api",
+    });
+    if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
+    return json({
+      ledgerId,
+      answered: true,
+      answer: {
+        ...(updated.answer.optionId !== undefined ? { optionId: updated.answer.optionId } : {}),
+        ...(updated.answer.freeText !== undefined ? { freeText: updated.answer.freeText } : {}),
+        at: updated.answer.at,
+        via: updated.answer.via,
+      },
+    });
+  }
+  const answerPageMatch = /^\/answer\/([^/]+)$/.exec(path);
+  if (req.method === "GET" && answerPageMatch) {
+    const ledgerId = decodePathSegment(answerPageMatch[1]);
+    const token = url.searchParams.get("t") ?? "";
+    const item = ledgerId === null ? null : await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    // Unknown question or token mismatch: 403, and the question is
+    // never rendered — the token is the only authority here.
+    if (!item || !token || token !== item.token) return html(renderAnswerForbidden(), 403);
+    return html(renderAnswerPage(item));
+  }
+  // --- Decision sets (#8766) -------------------------------------------
+  // --- Decision-sets index (#8867) --------------------------------------
+  // GET /decisions: every set in the store, counts computed live at
+  // request time. The index carries no token of its own — it sits behind
+  // the same access as the rest of the aggregator (tailnet origin /
+  // Cloudflare Access), and each row links onward to the set's own
+  // token-carrying page.
+  if (req.method === "GET" && path === "/decisions") {
+    const sets = await listDecisionSets(cfg.decisionsFile).catch(() => [] as DecisionSet[]);
+    const viewParam = url.searchParams.get("view");
+    const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "all";
+    return html(renderDecisionsIndex(sets, view, url.searchParams.get("open") === "1"));
+  }
+  const decisionsPageMatch = /^\/decisions\/([^/]+)$/.exec(path);
+  if (req.method === "GET" && decisionsPageMatch) {
+    const setId = decodePathSegment(decisionsPageMatch[1]);
+    const token = url.searchParams.get("t") ?? "";
+    const set = setId === null ? null : await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    // Unknown set or token mismatch: 403, and the set is never rendered
+    // — the per-set token is the only authority here.
+    if (!set || !token || token !== set.token) return html(renderDecisionsForbidden(), 403);
+    return html(renderDecisionsPage(set));
+  }
+  const decisionsSubmitMatch = /^\/api\/decisions\/([^/]+)\/submit$/.exec(path);
+  if (req.method === "POST" && decisionsSubmitMatch) {
+    const setId = decodePathSegment(decisionsSubmitMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: { token?: unknown; submissions?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid submit body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const parsedSubs = parseDecisionSubmissions(body.submissions);
+    if (!parsedSubs.ok) return json({ error: parsedSubs.error }, 400);
+    const result = await recordResolutions(cfg.decisionsFile, setId, parsedSubs.value);
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({ outcomes: result.outcomes, ...decisionSetOpenState(result.set) });
+  }
+  const decisionsDeferMatch = /^\/api\/decisions\/([^/]+)\/defer$/.exec(path);
+  if (req.method === "POST" && decisionsDeferMatch) {
+    const setId = decodePathSegment(decisionsDeferMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: {
+      token?: unknown;
+      lean?: unknown;
+      ledgerIds?: unknown;
+      allRemaining?: unknown;
+      submissions?: unknown;
+      comment?: unknown;
+    };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid defer body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    if (!isDeferLean(body.lean)) {
+      return json({ error: "lean must be none|skeptical|approve" }, 400);
+    }
+    const all = body.allRemaining === true;
+    const ledgerIds = Array.isArray(body.ledgerIds)
+      ? body.ledgerIds.filter((x): x is string => typeof x === "string")
+      : [];
+    if (!all && ledgerIds.length === 0) {
+      return json({ error: "ledgerIds or allRemaining required" }, 400);
+    }
+    // Filled answers win over the bulk defer (#8766): submissions the
+    // page gathered from filled-in fields are recorded FIRST, and only
+    // the still-unanswered questions in scope are deferred.
+    let submissions: DecisionSubmission[] = [];
+    if (body.submissions !== undefined) {
+      const parsedSubs = parseDecisionSubmissions(body.submissions);
+      if (!parsedSubs.ok) return json({ error: parsedSubs.error }, 400);
+      submissions = parsedSubs.value;
+    }
+    const result = await deferWithSubmissions(
+      cfg.decisionsFile,
+      setId,
+      submissions,
+      all ? { allRemaining: true as const } : { ledgerIds },
+      body.lean,
+      typeof body.comment === "string" ? body.comment : undefined,
+    );
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({
+      outcomes: result.outcomes,
+      deferredCount: result.deferredCount,
+      ...decisionSetOpenState(result.set),
+    });
+  }
+  const decisionsReqInfoMatch = /^\/api\/decisions\/([^/]+)\/request-info$/.exec(path);
+  if (req.method === "POST" && decisionsReqInfoMatch) {
+    const setId = decodePathSegment(decisionsReqInfoMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: { token?: unknown; note?: unknown; ledgerIds?: unknown; allRemaining?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid request-info body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const all = body.allRemaining === true;
+    const ledgerIds = Array.isArray(body.ledgerIds)
+      ? body.ledgerIds.filter((x): x is string => typeof x === "string")
+      : [];
+    if (!all && ledgerIds.length === 0) {
+      return json({ error: "ledgerIds or allRemaining required" }, 400);
+    }
+    const result = await requestInfoOpenQuestions(
+      cfg.decisionsFile,
+      setId,
+      all ? { allRemaining: true as const } : { ledgerIds },
+      typeof body.note === "string" ? body.note : undefined,
+    );
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({ requestedCount: result.requestedCount, ...decisionSetOpenState(result.set) });
+  }
+
+  const decisionsDraftsMatch = /^\/api\/decisions\/([^/]+)\/drafts$/.exec(path);
+  if ((req.method === "GET" || req.method === "POST") && decisionsDraftsMatch) {
+    const setId = decodePathSegment(decisionsDraftsMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (req.method === "GET") {
+      const token = url.searchParams.get("t") ?? "";
+      // Unknown set or token mismatch: 403, nothing about the set's
+      // drafts is shown without the correct link.
+      if (!set || !token || token !== set.token) {
+        return json({ error: "unknown set or bad token" }, 403);
+      }
+      const drafts = await getDecisionDrafts(cfg.decisionsFile, setId).catch(() => null);
+      return json({
+        drafts: drafts ?? { questions: {}, bulk: [], bulkLean: "", bulkNote: "", updatedAt: "" },
+      });
+    }
+    let body: { token?: unknown; drafts?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid drafts body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const parsedDrafts = validateDecisionDraftUpsert(body.drafts);
+    if (!parsedDrafts.ok) return json({ error: parsedDrafts.error }, 400);
+    const result = await upsertDecisionDrafts(cfg.decisionsFile, setId, parsedDrafts.value);
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({ drafts: result.drafts, applied: result.applied, skipped: result.skipped });
   }
   const alertActionMatch = /^\/api\/alerts\/([\w-]+)\/(ack|close)$/.exec(path);
   if (req.method === "POST" && alertActionMatch) {
@@ -2704,16 +3563,52 @@ if (source.ingestSnapshots) {
 // The alert throat's engine (#3676): the ~60s delivery/escalation
 // tick (live mode only, fail-soft — see src/alerts.ts).
 startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
-  const [attention, quota, health, actions, comments] = await Promise.all([
+  const [
+    attention,
+    quota,
+    health,
+    actions,
+    comments,
+    needsDrewRaised,
+    decisionSets,
+    stackHealthDown,
+    stackHealthStates,
+    opencodeConfigText,
+  ] = await Promise.all([
     attentionContext(),
     source.quota().catch(() => emptyQuotaView()),
     healthContext(false),
     actionsStore.all().catch(() => []),
     commentsStore.all().catch(() => []),
+    listOpenNeedsDrew(cfg.needsDrewFile).catch(() => []),
+    listOpenDecisionSets(cfg.decisionsFile).catch(() => []),
+    listStackHealthDown(cfg.stackHealthFile).catch(() => []),
+    readStackHealthStates(cfg.stackHealthFile).catch(() => ({})),
+    // #8882: the section-risk join reads the deployed config's route
+    // leaf sets; a missing/unreadable config yields no membership.
+    readFile(cfg.opencodeConfigFile, "utf8").catch(() => ""),
   ]);
   const drewActivity = [
-    ...actions.filter((action) => action.author.kind === "drew").map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
-    ...comments.filter((comment) => comment.author.kind === "drew").map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
+    ...actions
+      .filter((action) => action.author.kind === "drew")
+      .map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
+    ...comments
+      .filter((comment) => comment.author.kind === "drew")
+      .map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
   ];
-  return { attention: attention.view, quota, health, drewActivity, soleDoorPoolIds: deriveSoleDoorPoolIds(quota) };
+  return {
+    attention: attention.view,
+    quota,
+    health,
+    drewActivity,
+    soleDoorPoolIds: deriveSoleDoorPoolIds(quota),
+    sectionPools: sectionPoolIdsFromConfig(
+      opencodeConfigText,
+      quota.pools.map((pool) => pool.id),
+    ),
+    needsDrewRaised,
+    decisionSets,
+    stackHealthDown,
+    stackHealthStates,
+  };
 });

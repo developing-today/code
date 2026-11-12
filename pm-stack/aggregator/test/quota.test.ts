@@ -73,7 +73,7 @@ describe("quota extractors", () => {
   });
 
   test("codex 7-day read", () => {
-    const p = byId.get("openai.main")!;
+    const p = byId.get("_openai.main")!;
     expect(p.windows[0].percent).toBe(11);
     expect(p.windows[0].resetsAt).toBe("2026-10-30T18:01:00.000Z");
   });
@@ -81,7 +81,7 @@ describe("quota extractors", () => {
   test("month-based resets normalize month case and preserve reads for invalid dates across extractors", () => {
     const consumers = [
       {
-        id: "openai.main",
+        id: "_openai.main",
         view: (reset: string) => `\n### ChatGPT — main account plans\n7-day 42% used; resets ${reset}, 18:01 UTC.\n`,
         window: { name: "7-day", percent: 42 },
         extraWindows: 0,
@@ -126,7 +126,7 @@ describe("quota extractors", () => {
     const pastDate = "Sep 24";
     const cases = [
       {
-        id: "openai.main",
+        id: "_openai.main",
         view: `\n### ChatGPT — main account plans\n7-day 42% used; resets ${pastDate}, 18:01 UTC.\n`,
       },
       {
@@ -145,7 +145,7 @@ describe("quota extractors", () => {
   });
 
   test("alternate ChatGPT account is its own pool — never merged into the main pool", () => {
-    const p = byId.get("openai.alternate")!;
+    const p = byId.get("_openai.alt")!;
     expect(p).toBeDefined();
     expect(p.provider).toBe("OpenAI");
     // This view has no "### ChatGPT (Alternate)" dated-read section, so
@@ -159,8 +159,8 @@ describe("quota extractors", () => {
     const altSection = "### ChatGPT (Alternate)\n- 7-day 42% used.\n";
     for (const view of ["\n" + altSection + "\n" + mainSection, "\n" + mainSection + "\n" + altSection]) {
       const m = new Map(extractQuotaPools(view, NOW).map((p) => [p.id, p]));
-      expect(m.get("openai.main")!.windows[0].percent).toBe(11);
-      expect(m.get("openai.alternate")!.windows[0].percent).toBe(42);
+      expect(m.get("_openai.main")!.windows[0].percent).toBe(11);
+      expect(m.get("_openai.alt")!.windows[0].percent).toBe(42);
     }
   });
 
@@ -359,7 +359,7 @@ describe("windowPercent + guidance", () => {
     const pools = extractQuotaPools(VIEW, NOW);
     const choices = computeChoices(pools, NOW.getTime());
     expect(choices.doNotStart).toContain("meta");
-    expect(choices.hasHeadroom).toContain("openai.main");
+    expect(choices.hasHeadroom).toContain("_openai.main");
     expect(choices.hasHeadroom).not.toContain("meta");
     // Claude resets in >24h; nothing in this fixture resets within a day
     // with headroom, so burn-before-reset is empty.
@@ -392,15 +392,16 @@ describe("pass-through pool assembly (Drew, 2026-11-03)", () => {
     // #1114 the board lost anthropic:claude-pro, commandcode, deepseek
     // and BOTH Antigravity pools, and meta survived only through an
     // exemption hack — while the OpenCode quota read reported all of
-    // them. All twelve pools now render unconditionally; the dated
+    // them. All thirteen pools now render unconditionally; the dated
     // reads are the live read's fail-soft fallback, nothing more.
     expect(extractQuotaPools(VIEW, NOW).map((p) => p.id)).toEqual([
       "meta",
       "anthropic:claude-pro",
-      "openai.main",
-      "openai.alternate",
+      "_openai.main",
+      "_openai.alt",
       "opencode-go.drewrypope",
       "opencode-go.popesdrew",
+      "opencode-go.developing-today-0",
       "cline-pass",
       "_commandcode",
       "_antigravity.gemini",

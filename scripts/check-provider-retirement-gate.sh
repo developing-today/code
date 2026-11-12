@@ -161,31 +161,31 @@ allow_empty=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --config)
-      if [[ $# -lt 2 ]]; then
-        echo "::error::--config requires a file path." >&2
-        exit 2
-      fi
-      configs+=("$2")
-      shift 2
-      ;;
-    --allow-empty)
-      allow_empty=1
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    -*)
-      echo "::error::Unknown option: $1" >&2
-      usage >&2
+  --config)
+    if [[ $# -lt 2 ]]; then
+      echo "::error::--config requires a file path." >&2
       exit 2
-      ;;
-    *)
-      providers+=("$1")
-      shift
-      ;;
+    fi
+    configs+=("$2")
+    shift 2
+    ;;
+  --allow-empty)
+    allow_empty=1
+    shift
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  -*)
+    echo "::error::Unknown option: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+  *)
+    providers+=("$1")
+    shift
+    ;;
   esac
 done
 
@@ -196,7 +196,7 @@ if [[ ${#providers[@]} -eq 0 ]]; then
 fi
 
 for provider in "${providers[@]}"; do
-  if [[ -z "$provider" ]]; then
+  if [[ -z $provider ]]; then
     echo "::error::Provider IDs must not be empty." >&2
     usage >&2
     exit 2
@@ -207,7 +207,7 @@ done
 resolved_configs=()
 if [[ ${#configs[@]} -gt 0 ]]; then
   for cfg in "${configs[@]}"; do
-    if [[ ! -f "$cfg" ]]; then
+    if [[ ! -f $cfg ]]; then
       echo "::error::Specified config file does not exist: $cfg" >&2
       exit 2
     fi
@@ -229,10 +229,13 @@ else
     "$HOME/.local/state/opencode/opencode-runtime.jsonc"
   )
   for candidate in "${default_candidates[@]}"; do
-    if [[ -f "$candidate" ]]; then
+    if [[ -f $candidate ]]; then
       already=0
       for existing in "${resolved_configs[@]}"; do
-        if [[ "$existing" == "$candidate" ]]; then already=1; break; fi
+        if [[ $existing == "$candidate" ]]; then
+          already=1
+          break
+        fi
       done
       if [[ $already -eq 0 ]]; then
         resolved_configs+=("$candidate")
@@ -256,13 +259,13 @@ for provider in "${providers[@]}"; do
   provider_matches=0
   for cfg in "${resolved_configs[@]}"; do
     stripped_file="$(mktemp)"
-    if ! strip_jsonc_comments "$cfg" > "$stripped_file"; then
+    if ! strip_jsonc_comments "$cfg" >"$stripped_file"; then
       echo "::error::Config file '$cfg' could not be read/searched; failing closed (exit 2)." >&2
       rm -f "$stripped_file"
       exit 2
     fi
     filtered_file="$(mktemp)"
-    if ! strip_disabled_providers "$stripped_file" > "$filtered_file"; then
+    if ! strip_disabled_providers "$stripped_file" >"$filtered_file"; then
       echo "::error::Config file '$cfg' could not be read/searched; failing closed (exit 2)." >&2
       rm -f "$stripped_file" "$filtered_file"
       exit 2

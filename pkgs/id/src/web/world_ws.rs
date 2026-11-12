@@ -1398,6 +1398,68 @@ mod tests {
         );
     }
 
+    /// Oracle (#5728 acceptance, websocket entry point): on a
+    /// bridge whose hub is pinned to one world, a join naming
+    /// another world is refused with the session's `unknown world`
+    /// error — the same refusal an unhosted world gets — while a
+    /// join naming the pinned world reaches it and snapshots.
+    #[tokio::test]
+    async fn pinned_bridge_refuses_websocket_joins_to_other_worlds() {
+        let opener = crate::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: std::sync::Arc<dyn crate::world_hub::WorldOpener> = opener.clone();
+        let hub = WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "lobby",
+            crate::world_hub::HubLimits::default(),
+        );
+        hub.create("arena").await.unwrap();
+        hub.create("vault").await.unwrap();
+        let router = world_routes().with_state(WorldWebState {
+            hub: Some(hub.pinned_to("arena")),
+            cookie_secure: false,
+        });
+
+        // Mint an invite on the pinned world through the bridge.
+        let response = router
+            .clone()
+            .oneshot(invite_body(
+                Some("admin"),
+                r#"{"display_name":"ann","world":"arena"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let capability = serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+            ["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let addr = serve(router).await;
+        // A join naming the other world never reaches it.
+        let mut stray = connect(
+            addr,
+            serde_json::json!({"type":"join","capability": capability, "world":"vault"}),
+        )
+        .await;
+        assert_eq!(
+            next_frame(&mut stray).await.unwrap()["message"],
+            "unknown world"
+        );
+        // A join naming the pinned world snapshots it.
+        let mut client = connect(
+            addr,
+            serde_json::json!({"type":"join","capability": capability, "world":"arena"}),
+        )
+        .await;
+        let snapshot = next_frame(&mut client).await.unwrap();
+        assert_eq!(snapshot["snapshot"]["world_id"], "arena");
+    }
+
     #[tokio::test]
     async fn websocket_join_broadcast_and_catch_up() {
         let world = lobby();

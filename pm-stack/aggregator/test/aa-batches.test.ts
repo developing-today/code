@@ -78,6 +78,27 @@ describe("parameterized payload SQL", () => {
     expect(sql).toContain("power(intel_eff_norm, 0.7)");
   });
 
+  test("configs/cai scope as-of the selected batch, not to the newest event batch (#8817)", () => {
+    const sql = aaPayloadSql(B2);
+    // The pre-#8817 predicate pinned both sections to the newest
+    // workbook-import event batch regardless of the selected batch, so a
+    // historical payload silently mixed the newest configs/CAI into data
+    // cached under the historical batch's UUID.
+    expect(sql).not.toContain("where source_kind = 'workbook-import' order by ingested_at desc limit 1");
+    // Both sections now take the as-of mapping: an event batch is eligible
+    // only when its workbook import is no newer than the selected batch.
+    const asOf = "s.imported_at <= (select max(s2.imported_at) from ainventory.sources s2";
+    expect(sql.split(asOf).length - 1).toBe(2);
+    expect(sql).toContain("me.ingest_batch_id in (select s.import_batch from ainventory.sources s");
+    expect(sql).toContain(`s2.import_batch = '${B2}'::uuid`);
+  });
+
+  test("the default (latest) payload keeps the as-of configs/cai scoping (#8817)", () => {
+    const sql = aaPayloadSql(null);
+    expect(sql).not.toContain("where source_kind = 'workbook-import' order by ingested_at desc limit 1");
+    expect(sql.split("s.imported_at <=").length - 1).toBe(2);
+  });
+
   test("the default query still pins v_latest_import_batch", () => {
     expect(aaPayloadSql(null)).toContain("(select import_batch from ainventory.v_latest_import_batch)");
   });
@@ -117,12 +138,48 @@ describe("semantic fingerprint", () => {
     // (raw rows) or read back from a built section (parsed rows)
     // hashes identically.
     const a = [
-      { modelName: "A", inputPer1M: 1, outputPer1M: 2, cacheReadPer1M: null, cacheWritePer1M: null, contextMinTokens: 0, contextMaxTokens: 100, windowKind: "fixed" },
-      { modelName: "B", inputPer1M: 3, outputPer1M: 4, cacheReadPer1M: 1, cacheWritePer1M: 2, contextMinTokens: null, contextMaxTokens: null, windowKind: null },
+      {
+        modelName: "A",
+        inputPer1M: 1,
+        outputPer1M: 2,
+        cacheReadPer1M: null,
+        cacheWritePer1M: null,
+        contextMinTokens: 0,
+        contextMaxTokens: 100,
+        windowKind: "fixed",
+      },
+      {
+        modelName: "B",
+        inputPer1M: 3,
+        outputPer1M: 4,
+        cacheReadPer1M: 1,
+        cacheWritePer1M: 2,
+        contextMinTokens: null,
+        contextMaxTokens: null,
+        windowKind: null,
+      },
     ];
     const b = [
-      { windowKind: null, contextMaxTokens: null, contextMinTokens: null, cacheWritePer1M: 2, cacheReadPer1M: 1, outputPer1M: 4, inputPer1M: 3, modelName: "B" },
-      { windowKind: "fixed", contextMaxTokens: 100, contextMinTokens: 0, cacheWritePer1M: null, cacheReadPer1M: null, outputPer1M: 2, inputPer1M: 1, modelName: "A" },
+      {
+        windowKind: null,
+        contextMaxTokens: null,
+        contextMinTokens: null,
+        cacheWritePer1M: 2,
+        cacheReadPer1M: 1,
+        outputPer1M: 4,
+        inputPer1M: 3,
+        modelName: "B",
+      },
+      {
+        windowKind: "fixed",
+        contextMaxTokens: 100,
+        contextMinTokens: 0,
+        cacheWritePer1M: null,
+        cacheReadPer1M: null,
+        outputPer1M: 2,
+        inputPer1M: 1,
+        modelName: "A",
+      },
     ];
     expect(aaPricesFingerprint(a)).toBe(aaPricesFingerprint(b));
   });
@@ -132,7 +189,18 @@ describe("semantic fingerprint", () => {
     // no config change — produces a different validity key, so
     // cached sections rebuild instead of serving stale prices as
     // the current overlay.
-    const base = [{ modelName: "A", inputPer1M: 1, outputPer1M: 2, cacheReadPer1M: null, cacheWritePer1M: null, contextMinTokens: null, contextMaxTokens: null, windowKind: null }];
+    const base = [
+      {
+        modelName: "A",
+        inputPer1M: 1,
+        outputPer1M: 2,
+        cacheReadPer1M: null,
+        cacheWritePer1M: null,
+        contextMinTokens: null,
+        contextMaxTokens: null,
+        windowKind: null,
+      },
+    ];
     const changed = [{ ...base[0], inputPer1M: 5 }];
     expect(aaPricesFingerprint(base)).not.toBe(aaPricesFingerprint(changed));
     expect(aaPricesFingerprint([])).not.toBe(aaPricesFingerprint(base));
@@ -170,12 +238,27 @@ describe("batch summaries", () => {
     expect(out.every((b) => b.fingerprint === null)).toBe(true);
   });
 
+  test("cache entries may carry a numeric sql revision (#8817)", () => {
+    const base = { batch: B1, configFingerprint: "c", fingerprint: "f", builtAt: "t", section: {} };
+    expect(isAaBatchCacheEntry(base)).toBe(true);
+    expect(isAaBatchCacheEntry({ ...base, sqlRevision: 1 })).toBe(true);
+    expect(isAaBatchCacheEntry({ ...base, sqlRevision: "1" })).toBe(false);
+  });
+
   test("cache names are uuid-only and label is human-readable", () => {
     expect(aaCacheFileName(B1)).toBe(`aa-batch-${B1}.json`);
     expect(() => aaCacheFileName("../escape")).toThrow();
-    expect(isAaBatchCacheEntry({ batch: B1, configFingerprint: "c", fingerprint: "f", builtAt: "t", section: {} })).toBe(true);
+    expect(
+      isAaBatchCacheEntry({ batch: B1, configFingerprint: "c", fingerprint: "f", builtAt: "t", section: {} }),
+    ).toBe(true);
     expect(isAaBatchCacheEntry({ batch: "../x" })).toBe(false);
-    expect(batchLabel({ name: "ai_model_benchmark_inventory_advanced_2026-10-21", importedAt: "2026-10-31T15:00:00Z", driveModifiedAt: null })).toStartWith("2026-10-31");
+    expect(
+      batchLabel({
+        name: "ai_model_benchmark_inventory_advanced_2026-10-21",
+        importedAt: "2026-10-31T15:00:00Z",
+        driveModifiedAt: null,
+      }),
+    ).toStartWith("2026-10-31");
   });
 });
 

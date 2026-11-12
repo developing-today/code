@@ -251,7 +251,10 @@ export function quotaForecastContract(input: QuotaForecastInput): QuotaExhaustio
   }
   if (status === "quota_rate_unavailable") {
     for (const m of [...new Set(missing)]) {
-      reasons.push({ code: `missing_${m.replace(/[^a-z]+/g, "_")}`, text: `${m} unavailable for pool ${input.poolId}` });
+      reasons.push({
+        code: `missing_${m.replace(/[^a-z]+/g, "_")}`,
+        text: `${m} unavailable for pool ${input.poolId}`,
+      });
     }
     if (!reasons.some((r) => r.code === "stale_source")) {
       reasons.push({
@@ -294,7 +297,10 @@ export function stallForecastContract(risk: StallRisk, opts: StallForecastOption
     .map((s) => ({ code: s.code, text: s.detail }));
   const limitations: ForecastReason[] = risk.signals
     .filter((s) => !s.known)
-    .map((s) => ({ code: "signal_unknown", text: `${s.code}: no source supplied this signal; it contributed nothing` }));
+    .map((s) => ({
+      code: "signal_unknown",
+      text: `${s.code}: no source supplied this signal; it contributed nothing`,
+    }));
   return {
     contractVersion: FORECAST_CONTRACT_VERSION,
     type: "stall_risk",
@@ -377,9 +383,7 @@ export function formatForecastSummary(contract: ForecastContract): string {
     }
     return `Quota rate unavailable · pool ${contract.poolId} · no exhaustion date published`;
   }
-  const signals = contract.reasons.length
-    ? contract.reasons.map((r) => r.text).join("; ")
-    : "no contributing signals";
+  const signals = contract.reasons.length ? contract.reasons.map((r) => r.text).join("; ") : "no contributing signals";
   const known = contract.signals.filter((sig) => sig.known).length;
   return (
     `Stall risk ${contract.score} (threshold ${contract.threshold}) · ${contract.atRisk ? "at risk" : "below threshold"} · ` +

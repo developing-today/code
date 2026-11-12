@@ -59,6 +59,12 @@
 #   COLD_STORE_BIN            optional; the cold-store executable
 #                             (default: ../cold-store next to this
 #                             script).
+#   EXPORT_TURSO_WORK_DIR     optional; the scratch directory for
+#                             dumps and rebuilds (default:
+#                             ${TMPDIR:-/tmp}/cold-store-export-turso).
+#                             One named directory, wiped at startup
+#                             and on exit - never a fresh anonymous
+#                             mktemp dir (darwin-nix#373).
 #
 # A database that fails any stage prints a loud ERROR line naming it;
 # the run continues with the remaining databases and exits non-zero
@@ -90,7 +96,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COLD_STORE="${COLD_STORE_BIN:-${SCRIPT_DIR}/../cold-store}"
 SQLITE3="${SQLITE3_BIN:-sqlite3}"
 
-WORK="$(mktemp -d)"
+# Scratch lives in ONE named directory, never a fresh anonymous
+# mktemp dir (darwin-nix#373): the 2026-11-08/09/10 cold-store-nightly
+# runs were killed by the service's 30-minute start timeout with
+# ~30 GB of accumulated exports in an anonymous /tmp/tmp.* dir; the
+# EXIT trap does not run under SIGKILL, so each killed run leaked
+# the whole directory and the next run started a new one. A fixed
+# location bounds the damage: a killed run leaves at most this one
+# directory, and the next run wipes it before starting. The flock
+# keeps two concurrent runs (timer + manual) from wiping each
+# other's scratch mid-flight. Per-database files are deleted as
+# soon as each database is filed (see export_one), so a live run's
+# footprint is its largest single database, not the sum of all of
+# them. The .lock file itself is 0 bytes and stays.
+WORK="${EXPORT_TURSO_WORK_DIR:-${TMPDIR:-/tmp}/cold-store-export-turso}"
+exec 9>"${WORK}.lock"
+if ! flock -n 9; then
+  echo "turso export: ERROR: another export-turso run holds ${WORK}.lock" >&2
+  exit 1
+fi
+rm -rf "${WORK}"
+mkdir -p "${WORK}"
 trap 'rm -rf "${WORK}"' EXIT
 
 # curl with an Authorization header that never touches argv (#1027):
@@ -136,7 +162,7 @@ if [[ ${#DB_ROWS[@]} -eq 0 ]]; then
 fi
 
 # ------------------------------------------------------------ one database
-export_one() {
+export_one_run() {
   local name="$1" hostname="$2"
   local dump_sql="${WORK}/${name}.sql" db_file="${WORK}/${name}.db"
   local filtered_sql="${WORK}/${name}.filtered.sql"
@@ -251,6 +277,22 @@ PY
     return 1
   fi
   echo "turso export: filed ${name} (${gz_size} bytes gzipped)"
+}
+
+# export_one wraps export_one_run with per-database scratch cleanup:
+# a database's dump, filtered dump, rebuilt file, gzipped export and
+# minted-token response are deleted as soon as its export finishes,
+# pass or fail, instead of accumulating in WORK until the run ends.
+# Only the run-level files (databases.json / databases.tsv) live for
+# the whole run, and WORK itself is wiped at the next run's start.
+export_one() {
+  local name="$1" hostname="$2"
+  local rc=0
+  export_one_run "${name}" "${hostname}" || rc=$?
+  rm -f "${WORK}/${name}.sql" "${WORK}/${name}.filtered.sql" \
+    "${WORK}/${name}.db" "${WORK}/${name}.db.gz" \
+    "${WORK}/${name}.token.json"
+  return "${rc}"
 }
 
 FAILURES=0

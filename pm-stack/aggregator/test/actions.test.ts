@@ -857,8 +857,9 @@ describe("actions HTTP round-trip (fixture consumer)", () => {
     expect(result.status).toBe(200);
 
     const listFor = async (qs: string) =>
-      ((await (await fetch(`http://127.0.0.1:${port}/api/actions.json?${qs}`)).json()) as { actions: DashAction[] })
-        .actions.map((a) => a.id);
+      (
+        (await (await fetch(`http://127.0.0.1:${port}/api/actions.json?${qs}`)).json()) as { actions: DashAction[] }
+      ).actions.map((a) => a.id);
 
     // The regression: state=all must return the applied record, not [].
     expect(await listFor("state=all")).toContain(action.id);

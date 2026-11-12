@@ -602,7 +602,7 @@ fn delay_seconds(req: &Value) -> Result<Option<i64>, String> {
 /// own checks as defense in depth.
 fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
     match path {
-        "/claim" => lease_seconds(req).map(|_| ()),
+        "/claim" | "/claim-flow" => lease_seconds(req).map(|_| ()),
         "/heartbeat" => extend_seconds(req).map(|_| ()),
         "/park" => delay_seconds(req).map(|_| ()),
         _ => Ok(()),
@@ -820,6 +820,57 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
     }
 }
 
+/// #8568 (PM-stack notifications Phase 1): after a block lands,
+/// if it was an escalated-to-user block carrying a needs_drew
+/// payload, raise the alert into the PM aggregator's throat from
+/// inside the broker process — the same fixed wire contract the
+/// CLI half posts (crate::needs_drew). The intake token resolves
+/// by name through the in-process secrets source this broker
+/// already uses for every other credential (DirectSecrets: the
+/// colocated secrets broker). Fire-and-forget on a spawned
+/// thread: the block response never waits on the throat, and a
+/// failure is logged to stderr only — it never fails the block.
+/// The throat dedupes by (source, key), so the CLI half and this
+/// half posting for the same block is safe. This half goes live
+/// only when the broker binary is replaced (the coordinated
+/// switch); until then the CLI half is the live path.
+fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
+    if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return;
+    }
+    if req.get("reason_class").and_then(|v| v.as_str()) != Some("escalated-to-user") {
+        return;
+    }
+    let blocker = req.get("blocker").and_then(|v| v.as_str()).unwrap_or("");
+    let Some(nd) = crate::needs_drew::from_block_request(req, blocker) else {
+        return;
+    };
+    let secrets_url = st.secrets_url.clone();
+    let secrets_token = st.secrets_token.clone();
+    let agent = st.agent.clone();
+    std::thread::spawn(move || {
+        let resolver = Resolver::new(vec![Box::new(DirectSecrets {
+            url: secrets_url,
+            token: secrets_token,
+            agent: agent.clone(),
+        })]);
+        let raised = resolver
+            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .map_err(|e| e.to_string())
+            .and_then(|token| crate::needs_drew::post_needs_drew(token.expose(), &nd));
+        match raised {
+            Ok(_) => crate::log::info(
+                "queue-broker",
+                &format!("needs-drew raised for ledger item {}", nd.ledger_id),
+            ),
+            Err(e) => crate::log::info(
+                "queue-broker",
+                &format!("needs-drew throat post failed: {e}"),
+            ),
+        }
+    });
+}
+
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Err(e) = validate_durations(path, req) {
         return fail(2, e);
@@ -829,7 +880,14 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     }
     if let Some(t) = &st.turso {
         if path != "/validate" && path != "/healthz" {
-            return crate::turso_queue::dispatch(t, path, req);
+            let resp = crate::turso_queue::dispatch(t, path, req);
+            // #8568: the Turso backend answers /block before the
+            // Postgres match below, so the broker-side needs-drew
+            // raise hooks here too — same condition, same helper.
+            if path == "/block" {
+                maybe_raise_needs_drew(st, req, &resp);
+            }
+            return resp;
         }
     }
     match path {
@@ -904,6 +962,94 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }
             simple_rpc(st, "claim_repo_task", args)
         }
+        "/claim-flow" => {
+            // #5757-A: claim + lane-assign + session-bind in one
+            // broker round trip. Each step is the corresponding
+            // single-verb RPC with the same arguments the three
+            // verbs pass. A claim-step failure — or an empty claim —
+            // returns that step's answer verbatim and later steps
+            // are not attempted (the three-verb flow's semantics,
+            // one trip). A LANE/BIND failure is different: the claim
+            // RPC has already COMMITTED, so it answers as a partial
+            // success (ok envelope + claimed row +
+            // `claim_flow_partial`), never as an error — a retryable
+            // error here (57014 / PGRST002) would make the client's
+            // call_result replay the WHOLE flow and claim a second
+            // task, leaking this one (Codex P1 on PR #8493). The
+            // caller finishes the failed step with the single-verb
+            // /lane or /bind call for this task id. The answer
+            // carries every step's row:
+            // `row` is the claimed task row (the shape /claim
+            // answers and the client's claim_output consumes);
+            // `lane_row` / `bind_row` are what /lane and /bind
+            // answer in the three-verb flow.
+            let lease = match lease_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
+            if let Err(e) = crate::client::claim_flow_precheck(req) {
+                return fail(2, e);
+            }
+            let mut args = json!({
+                "p_worker": req.get("worker"),
+                "p_queue": req.get("queue"),
+                "p_lease_seconds": lease,
+            });
+            if let Some(lane) = req.get("lane").filter(|l| !l.is_null()) {
+                args["p_lane_id"] = lane.clone();
+            }
+            let row = match st.rpc("claim_repo_task", args) {
+                Ok(row) => row,
+                Err(e) => return fail(e.exit, e.msg),
+            };
+            if row.is_null() {
+                return ok(json!({"row": row}));
+            }
+            let task_id = row.get("id").cloned().unwrap_or(Value::Null);
+            let lane_row = match st.rpc(
+                "assign_repo_task_lane",
+                json!({
+                    "p_task_id": task_id,
+                    "p_worker": req.get("worker"),
+                    "p_exclusion_reason": req.get("exclusion_reason"),
+                }),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    return ok(json!({
+                        "row": row,
+                        "claim_flow_partial": {
+                            "step": "lane",
+                            "exit": e.exit,
+                            "error": e.msg,
+                        },
+                    }));
+                }
+            };
+            let bind_row = match st.rpc(
+                "bind_repo_task_lane_session",
+                json!({
+                    "p_task_id": task_id,
+                    "p_worker": req.get("worker"),
+                    "p_session_id": req.get("session_id"),
+                    "p_launched_by": req.get("launched_by"),
+                }),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    return ok(json!({
+                        "row": row,
+                        "lane_row": lane_row,
+                        "claim_flow_partial": {
+                            "step": "bind",
+                            "exit": e.exit,
+                            "error": e.msg,
+                        },
+                    }));
+                }
+            };
+            ok(json!({"row": row, "lane_row": lane_row, "bind_row": bind_row}))
+        }
         "/lane" => simple_rpc(
             st,
             "assign_repo_task_lane",
@@ -970,17 +1116,26 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }
             verb_with_execution(st, "park_task", args, req)
         }
-        "/block" => simple_rpc(
-            st,
-            "block_task",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_reason_class": req.get("reason_class"),
-                "p_blocker": req.get("blocker"),
-                "p_progress": req.get("progress").cloned().unwrap_or(json!({})),
-            }),
-        ),
+        "/block" => {
+            let resp = simple_rpc(
+                st,
+                "block_task",
+                json!({
+                    "p_task_id": req.get("task_id"),
+                    "p_worker": req.get("worker"),
+                    "p_reason_class": req.get("reason_class"),
+                    "p_blocker": req.get("blocker"),
+                    "p_progress": req.get("progress").cloned().unwrap_or(json!({})),
+                }),
+            );
+            // #8568: broker-side needs-drew raise, fire-and-forget
+            // (see maybe_raise_needs_drew). NOTE: this arm is the
+            // Postgres backend's route — dispatch() hands /block
+            // to the Turso backend before reaching here when
+            // QUEUE_BROKER_BACKEND=turso.
+            maybe_raise_needs_drew(st, req, &resp);
+            resp
+        }
         "/cancel" => simple_rpc(
             st,
             "cancel_repo_task",
@@ -1128,6 +1283,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                 Err(e) => fail(e.exit, e.msg),
             }
         }
+        "/stack-record" | "/stack-list" | "/stack-restack" => fail(
+            2,
+            "merge-intent stack verbs require the turso queue backend (#8582)".to_string(),
+        ),
         "/healthz" => ok(json!({"service": "queue-broker"})),
         _ => json!({"ok": false, "exit": 2, "error": format!("unknown command {path}")}),
     }
@@ -1216,24 +1375,32 @@ pub fn run() -> i32 {
     use std::io::Read as _;
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
-    let home = crate::home::from_env().unwrap_or_else(|error| {
-        eprintln!("queue-broker: {error}");
-        std::process::exit(2);
-    });
+    let home = match crate::home::from_env() {
+        Ok(home) => home,
+        Err(error) => {
+            eprintln!("queue-broker: {error}");
+            return 2;
+        }
+    };
     let token_file = std::env::var("QUEUE_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/queue-broker/token"));
-    let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
-        crate::log::info("queue-broker", &e);
-        std::process::exit(3);
-    });
+    let token = match crate::token_file::load_token_file(&token_file) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::log::info("queue-broker", &e);
+            return 3;
+        }
+    };
     let secrets_url = default_secrets_url(std::env::var("QUEUE_BROKER_SECRETS_URL").ok());
     let secrets_token_file = std::env::var("QUEUE_BROKER_SECRETS_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/secrets-broker/token"));
-    let secrets_token =
-        crate::token_file::load_token_file(&secrets_token_file).unwrap_or_else(|e| {
+    let secrets_token = match crate::token_file::load_token_file(&secrets_token_file) {
+        Ok(v) => v,
+        Err(e) => {
             crate::log::info("queue-broker", &e);
-            std::process::exit(3);
-        });
+            return 3;
+        }
+    };
 
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
@@ -1261,26 +1428,35 @@ pub fn run() -> i32 {
         let url = std::env::var("QUEUE_BROKER_TURSO_URL")
             .unwrap_or_else(|_| crate::turso_queue::DEFAULT_TURSO_URL.to_string());
         let token = match std::env::var("QUEUE_BROKER_TURSO_TOKEN_FILE") {
-            Ok(f) => crate::token_file::load_token_file(&f).unwrap_or_else(|e| {
-                crate::log::info("queue-broker", &e);
-                std::process::exit(3);
-            }),
+            Ok(f) => match crate::token_file::load_token_file(&f) {
+                Ok(v) => v,
+                Err(e) => {
+                    crate::log::info("queue-broker", &e);
+                    return 3;
+                }
+            },
             Err(_) => {
                 let resolver = Resolver::new(vec![Box::new(DirectSecrets {
                     url: secrets_url.clone(),
                     token: secrets_token.clone(),
                     agent: agent.clone(),
                 })]);
-                resolver
-                    .resolve(crate::turso_queue::TURSO_TOKEN_SECRET_NAME)
-                    .map(|v| v.expose().to_string())
-                    .unwrap_or_else(|e| {
+                match resolve_with_startup_retry(
+                    &resolver,
+                    crate::turso_queue::TURSO_TOKEN_SECRET_NAME,
+                    Duration::from_secs(30),
+                ) {
+                    Ok(v) => v.expose().to_string(),
+                    Err(e) => {
                         crate::log::info(
                             "queue-broker",
-                            &format!("turso backend token resolve failed: {e}"),
+                            &format!(
+                                "turso backend token resolve failed after 30s of retries: {e}"
+                            ),
                         );
-                        std::process::exit(3);
-                    })
+                        return 3;
+                    }
+                }
             }
         };
         let mut backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
@@ -1293,13 +1469,13 @@ pub fn run() -> i32 {
             agent: agent.clone(),
             token: Mutex::new(None),
         }));
-        backend.ensure_schema().unwrap_or_else(|e| {
+        if let Err(e) = backend.ensure_schema() {
             crate::log::info(
                 "queue-broker",
                 &format!("turso backend schema ensure failed: {e}"),
             );
-            std::process::exit(3);
-        });
+            return 3;
+        }
         crate::log::info(
             "queue-broker",
             &format!("queue backend: turso ({})", backend.url()),
@@ -1320,10 +1496,13 @@ pub fn run() -> i32 {
         turso,
     });
 
-    let server = Server::http(&bind).unwrap_or_else(|e| {
-        crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
-        std::process::exit(3);
-    });
+    let server = match Server::http(&bind) {
+        Ok(server) => server,
+        Err(e) => {
+            crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
+            return 3;
+        }
+    };
     crate::log::info("queue-broker", &format!("listening on {bind}"));
 
     // Dual-bind (#6216): the same handler over a Unix socket. A bind
@@ -1451,6 +1630,48 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claim_flow_post_commit_failures_are_partial_not_errors_5757() {
+        // #5757-A Codex P1 oracle (PR #8493): in the PostgREST
+        // broker's /claim-flow handler, the lane and bind RPC
+        // failures answer with claim_flow_partial inside an ok
+        // envelope — never `return fail(...)`, whose retryable
+        // error text the client would replay into a second claim
+        // after the first claim already committed.
+        let src = include_str!("queue_broker.rs");
+        let start = src
+            .find("\"/claim-flow\" => {")
+            .expect("claim-flow handler");
+        let end = src[start..]
+            .find("\"/lane\" =>")
+            .expect("lane handler follows")
+            + start;
+        let flow = &src[start..end];
+        assert_eq!(
+            flow.matches("\"claim_flow_partial\"").count(),
+            2,
+            "lane and bind failures both carry claim_flow_partial"
+        );
+        assert!(
+            flow.contains("\"step\": \"lane\""),
+            "lane partial names its step"
+        );
+        assert!(
+            flow.contains("\"step\": \"bind\""),
+            "bind partial names its step"
+        );
+        // The claim RPC's own `return fail(...)` is pre-commit and
+        // legitimate; the invariant binds everything from the lane
+        // RPC onward (post-commit).
+        let lane_at = flow
+            .find("assign_repo_task_lane")
+            .expect("lane RPC present");
+        assert!(
+            !flow[lane_at..].contains("return fail(e.exit, e.msg)"),
+            "no post-claim step returns the raw retryable error"
+        );
+    }
 
     #[test]
     fn park_and_revive_not_before_are_gated_before_the_rpc() {
@@ -1700,5 +1921,83 @@ mod tests {
             validate_durations("/list", &json!({"lease_seconds": 0})),
             Ok(())
         );
+    }
+}
+
+/// Resolve `name` through `resolver`, retrying until `budget`
+/// elapses. Startup only: a co-hosted or freshly started
+/// secrets-broker binds before its first vault refresh completes
+/// and answers 503 while its cache is cold, so a one-shot resolve
+/// races its readiness and the whole serve list exits (#8394
+/// Codex P2). Bounded: once the budget is spent the last error is
+/// returned and the caller fails exactly as the one-shot did.
+fn resolve_with_startup_retry(
+    resolver: &Resolver,
+    name: &str,
+    budget: Duration,
+) -> Result<SecretValue, SecretError> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match resolver.resolve(name) {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod startup_retry_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A source that answers Unavailable for the first `fail_first`
+    /// calls, then resolves — the cold secrets-broker shape.
+    struct FlakySource {
+        calls: AtomicUsize,
+        fail_first: usize,
+    }
+
+    impl SecretSource for FlakySource {
+        fn source_name(&self) -> &'static str {
+            "flaky-test"
+        }
+        fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) < self.fail_first {
+                return Err(SecretError::Unavailable {
+                    source: "flaky-test",
+                    name: name.to_string(),
+                    detail: "cold cache".to_string(),
+                });
+            }
+            Ok(SecretValue::from_resolved("tok".to_string()))
+        }
+    }
+
+    #[test]
+    fn startup_retry_outlasts_a_cold_source() {
+        let resolver = Resolver::new(vec![Box::new(FlakySource {
+            calls: AtomicUsize::new(0),
+            fail_first: 3,
+        })]);
+        let v = resolve_with_startup_retry(&resolver, "some.token", Duration::from_secs(5))
+            .expect("retry should reach the warmed source");
+        assert_eq!(v.expose(), "tok");
+    }
+
+    #[test]
+    fn startup_retry_gives_up_within_budget() {
+        let resolver = Resolver::new(vec![Box::new(FlakySource {
+            calls: AtomicUsize::new(0),
+            fail_first: usize::MAX,
+        })]);
+        let start = std::time::Instant::now();
+        let r = resolve_with_startup_retry(&resolver, "some.token", Duration::from_millis(300));
+        assert!(r.is_err());
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 }

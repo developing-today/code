@@ -51,10 +51,10 @@
 # The Kaneo stack is the exception to the checkout model: pm-kaneo
 # runs deploy.sh from the ~/pm-stack deployment dir, because the
 # rendered .env, the compose project, and the pm-stack_postgres_data
-# volume live there. deploy.sh also renders ~/pm-stack/tunnel.env,
-# which pm-tunnel consumes — systemd expands TUNNEL_TOKEN from that
-# EnvironmentFile in the tunnel's ExecStart, exactly as the
-# hand-written unit relied on. (The tunnel's ingress is managed in
+# volume live there. deploy.sh also renders ~/pm-stack/tunnel.token,
+# which pm-tunnel consumes via cloudflared's --token-file flag
+# (#8933: the token never enters the tunnel's ExecStart argv; the
+# older tunnel.env rendering is kept for rollback only). (The tunnel's ingress is managed in
 # Cloudflare: kaneo.security.cab -> http://localhost:5173 and
 # dispatch.security.cab -> http://localhost:4879.)
 #
@@ -444,11 +444,10 @@ in
           Service = {
             Type = "simple";
             WorkingDirectory = "${stackDir}";
-            # tunnel.env is rendered by the pm-kaneo deploy flow
-            # (deploy.sh); systemd expands TUNNEL_TOKEN from this
-            # EnvironmentFile in ExecStart, exactly as the hand-written
-            # unit relied on.
-            EnvironmentFile = "${stackDir}/tunnel.env";
+            # tunnel.token is rendered by the pm-kaneo deploy flow
+            # (deploy.sh) from the same SOPS secret as the old
+            # tunnel.env; cloudflared reads it via --token-file so
+            # the token stays out of the process argv (#8933).
             # Wait until the edge hostname resolves (#6992).
             TimeoutStartSec = 300;
             ExecStartPre = "${waitForDns}";
@@ -460,7 +459,7 @@ in
             # pm-dispatch callers with 502 ("error code: 502") even
             # though pm-dispatch itself was healthy. HTTP/2 runs over
             # TCP and does not depend on the UDP path QUIC needs.
-            ExecStart = "${cloudflared} tunnel --no-autoupdate --protocol http2 --metrics 127.0.0.1:${toString tunnelMetricsPort} run --token \${TUNNEL_TOKEN}";
+            ExecStart = "${cloudflared} tunnel --no-autoupdate --protocol http2 --metrics 127.0.0.1:${toString tunnelMetricsPort} run --token-file ${stackDir}/tunnel.token";
             Restart = "on-failure";
             RestartSec = 5;
           };

@@ -316,7 +316,9 @@ export class ViewsStore {
   /** Create a view for the owner. Names are unique per owner. */
   async save(input: { owner: string; name: string; filters: ViewFilters }): Promise<SavedView> {
     await this.load();
-    if (this.views.some((v) => v.owner === input.owner && normalizedViewName(v.name) === normalizedViewName(input.name))) {
+    if (
+      this.views.some((v) => v.owner === input.owner && normalizedViewName(v.name) === normalizedViewName(input.name))
+    ) {
       throw new Error(`a view named "${input.name}" already exists for this owner`);
     }
     const now = new Date().toISOString();
@@ -338,7 +340,11 @@ export class ViewsStore {
     await this.load();
     const v = this.views.find((x) => x.id === id && x.owner === owner);
     if (!v) return null;
-    if (this.views.some((x) => x.owner === owner && x.id !== id && normalizedViewName(x.name) === normalizedViewName(name))) {
+    if (
+      this.views.some(
+        (x) => x.owner === owner && x.id !== id && normalizedViewName(x.name) === normalizedViewName(name),
+      )
+    ) {
       throw new Error(`a view named "${name}" already exists for this owner`);
     }
     v.name = name;

@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
   feedSectionStatus,
   coverageFromFeed,
-  feedSectionStatus,
   isBurnSegment,
   isChargeRow,
   isFleetFeed,
@@ -122,9 +121,9 @@ describe("feed project-pool section gate (#2399)", () => {
     expect(isProjectPoolItem(GRAPHED)).toBe(true);
     for (const bad of malformed) expect(isProjectPoolItem(bad)).toBe(false);
     expect(projectPoolSectionProblem([GRAPHED, malformed[0]])).toBe("item 1");
-    expect(
-      poolFromFeed({ projects: [EDGElESS, ...malformed, GRAPHED] as unknown as never }).map((p) => p.ref),
-    ).toEqual([EDGElESS.ref, GRAPHED.ref]);
+    expect(poolFromFeed({ projects: [EDGElESS, ...malformed, GRAPHED] as unknown as never }).map((p) => p.ref)).toEqual(
+      [EDGElESS.ref, GRAPHED.ref],
+    );
   });
 
   test("structural fields + optional-field types are gated (#2418)", () => {
@@ -777,7 +776,12 @@ describe("uninstrumented tracker feed sanitization (#1172)", () => {
   };
 
   test("valid tracker rows survive; malformed rows drop and are counted", async () => {
-    const out = sanitizeUninstrumentedServices([SERVICE, UNDATED_SERVICE, null, { ...SERVICE, checkedAt: "yesterday" }]);
+    const out = sanitizeUninstrumentedServices([
+      SERVICE,
+      UNDATED_SERVICE,
+      null,
+      { ...SERVICE, checkedAt: "yesterday" },
+    ]);
     expect(out.rows).toEqual([SERVICE, UNDATED_SERVICE]);
     expect(out.dropped).toBe(2);
     const loaded = await loadWithServices([SERVICE, UNDATED_SERVICE, null]);
@@ -1298,9 +1302,7 @@ describe("sanitizeCollectionError quoted-key + URL redaction (#3966)", () => {
 
   test("single-quoted and nested keys redact the value", () => {
     expect(sanitizeCollectionError("{'token': 'tok-abc12345'}")).toBe("{'token': [redacted]}");
-    expect(sanitizeCollectionError('{"data": {"secret": "s3cr3t-value-9"}}')).toBe(
-      '{"data": {"secret": [redacted]}}',
-    );
+    expect(sanitizeCollectionError('{"data": {"secret": "s3cr3t-value-9"}}')).toBe('{"data": {"secret": [redacted]}}');
     expect(sanitizeCollectionError('{"secret": "contains \\" quote and remains private"}')).toBe(
       '{"secret": [redacted]}',
     );

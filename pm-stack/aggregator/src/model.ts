@@ -891,7 +891,7 @@ export interface AaThreshold {
   usdPerUsablePoint: number | null;
 }
 
-/** One AA Intelligence Index row of ainventory.benchmark_results. */
+/** One AA Intelligence Index row of ainventory.measurement_events (canonical, code#4401). */
 export interface AaConfig {
   modelName: string;
   benchmark: string;
@@ -920,7 +920,7 @@ export interface AaTestRun {
 }
 
 /**
- * One Coding Agent Index row of ainventory.benchmark_results (the
+ * One Coding Agent Index row of ainventory.measurement_events (the
  * import's Coding_Agent_Results rows): a model + effort + agent
  * harness observation, kept strictly separate from the AA Intelligence
  * Index — no score conversion between the indexes (the ChatGPT
@@ -1214,6 +1214,8 @@ export interface DashComment {
   objectRef: string;
   kind: DashCommentKind;
   author: DashAuthor;
+  /** True only when a privileged Drew/Muse author supplied the configured operator token. */
+  authorVerified?: boolean;
   body: string;
   createdAt: string;
   /** kind "message": the orchestrator's triage state. */
@@ -1228,6 +1230,13 @@ export interface DashComment {
    *  fleet poster reported (#1210), rendered so a failed comment
    *  shows why it failed, not just that it did. Cleared on posting. */
   githubError?: string;
+  /** kind "github", when githubState is "failed": when the most
+   *  recent failure was reported (#8586), so the queue renders the
+   *  failure's age rather than the comment's age. Refreshed on every
+   *  repeat failure alongside githubError; cleared on posting.
+   *  Absent on records written before the field existed — readers
+   *  fall back to createdAt for those. */
+  githubFailedAt?: string;
 }
 
 /** Runtime families the session registry tracks. */

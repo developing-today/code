@@ -32,8 +32,12 @@ describe("pickOpenDesignSessionCookie", () => {
     expect(found?.value).toBe("b");
   });
   test("ignores other domains and empty values", () => {
-    expect(pickOpenDesignSessionCookie([{ name: "better-auth.session_token", value: "a", domain: ".example.com" }])).toBeNull();
-    expect(pickOpenDesignSessionCookie([{ name: "better-auth.session_token", value: "", domain: ".open-design.ai" }])).toBeNull();
+    expect(
+      pickOpenDesignSessionCookie([{ name: "better-auth.session_token", value: "a", domain: ".example.com" }]),
+    ).toBeNull();
+    expect(
+      pickOpenDesignSessionCookie([{ name: "better-auth.session_token", value: "", domain: ".open-design.ai" }]),
+    ).toBeNull();
   });
 });
 

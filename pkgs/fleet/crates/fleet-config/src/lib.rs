@@ -33,6 +33,8 @@ pub const DEFAULT_SECRETS_BROKER_SOCKET: &str = ".config/secrets-broker/broker.s
 pub const PORT_LAPTOP_AGENT: u16 = 4799;
 pub const PORT_SECRETS_BROKER: u16 = 4800;
 pub const PORT_QUEUE_BROKER: u16 = 4801;
+/// RustDesk's direct-access TCP endpoint on the laptop.
+pub const PORT_RUSTDESK: u16 = 21118;
 /// Broker idle exit (§4: retained from the Python broker — a warmth
 /// cache that exits when cold is a feature on a shared sandbox).
 pub const DEFAULT_IDLE_EXIT_SECS: u64 = 3600;
@@ -715,6 +717,34 @@ impl Config {
                 DEFAULT_DISPATCH_TEST_THRESHOLD,
             ));
         }
+        // Blank scalar strings (#6405): an empty or
+        // whitespace-only string in a path/URL/name field is the
+        // same misspelling class as the zero rule above — a
+        // templated config rendering a variable that came out
+        // empty. Left alone, an empty broker_socket resolves to
+        // $HOME itself and an empty dispatch url surfaces as a
+        // configured Some("") instead of the documented default.
+        // Reject at load, naming the field; omitting the field
+        // keeps the default. The configured value is never echoed
+        // in the error.
+        let blank = |value: &Option<String>| value.as_deref().is_some_and(|v| v.trim().is_empty());
+        for (value, field) in [
+            (&self.proxy.broker_socket, "[proxy] broker_socket"),
+            (&self.proxy.target_host, "[proxy] target_host"),
+            (&self.proxy.connect_udp_listen, "[proxy] connect_udp_listen"),
+            (&self.secrets.token_file, "[secrets] token_file"),
+            (&self.dispatch.url, "[dispatch] url"),
+            (&self.dispatch.token_name, "[dispatch] token_name"),
+        ] {
+            if blank(value) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "{field} must not be empty or blank; omit the field for the default"
+                    ),
+                });
+            }
+        }
         // [host] (#6770, design #5687 §1): the manifest's loud
         // rules run at load like every other section's, plus one
         // structural rule of its own — a section that sets
@@ -1126,8 +1156,9 @@ impl Config {
     /// The routing table: config's `[proxy] services`, or the
     /// built-in table matching today's live system — 4799 the
     /// (Python) laptop-agent daemon, 4800/4801 the fleet broker
-    /// roles (§4: a serve build without a role advertises a map
-    /// without its port; the table is how that is said).
+    /// roles, and 21118 RustDesk direct access (§4: a serve build
+    /// without a role advertises a map without its port; the table
+    /// is how that is said).
     pub fn services(&self) -> Vec<ServiceConfig> {
         if !self.proxy.services.is_empty() {
             return self.proxy.services.clone();
@@ -1137,6 +1168,7 @@ impl Config {
             (PORT_LAPTOP_AGENT, "laptop-agent", "python".to_string()),
             (PORT_SECRETS_BROKER, "secrets-broker", fleet_version.clone()),
             (PORT_QUEUE_BROKER, "queue-broker", fleet_version),
+            (PORT_RUSTDESK, "rustdesk", "rustdesk-direct-v1".to_string()),
         ]
         .into_iter()
         .map(|(port, name, version)| ServiceConfig {
@@ -1406,11 +1438,13 @@ mod tests {
     fn services_default_to_the_live_table() {
         let cfg = Config::default();
         let services = cfg.services();
-        assert_eq!(services.len(), 3);
+        assert_eq!(services.len(), 4);
         assert_eq!(services[0].port, PORT_LAPTOP_AGENT);
         assert_eq!(services[0].name, "laptop-agent");
         assert_eq!(services[1].port, PORT_SECRETS_BROKER);
         assert_eq!(services[2].port, PORT_QUEUE_BROKER);
+        assert_eq!(services[3].port, PORT_RUSTDESK);
+        assert_eq!(services[3].name, "rustdesk");
         assert!(services.iter().all(|s| s.version.is_some()));
         assert_eq!(cfg.target_host(), DEFAULT_TARGET_HOST);
         assert_eq!(cfg.egress_proxy_port(), DEFAULT_EGRESS_PROXY_PORT);
@@ -2045,6 +2079,68 @@ socket = "rel/s.sock"
         let (_dir3, path3) = write_temp("[dispatch-test]\nthreshold = 7\n");
         let cfg = Config::load_from(&path3).unwrap();
         assert_eq!(cfg.dispatch_test_threshold(), 7);
+    }
+    #[test]
+    fn blank_scalar_strings_are_a_loud_error() {
+        // #6405: an empty or whitespace-only string in a scalar
+        // path/URL/name field fails at load naming its field
+        // (oracle: the Parse message contains the field name for
+        // both the empty and the whitespace spelling of each of
+        // the six fields). Nonblank values surface unchanged and
+        // omitted fields keep their documented defaults.
+        for (contents, field) in [
+            ("[proxy]\nbroker_socket = \"\"\n", "[proxy] broker_socket"),
+            (
+                "[proxy]\nbroker_socket = \"   \"\n",
+                "[proxy] broker_socket",
+            ),
+            ("[proxy]\ntarget_host = \"\"\n", "[proxy] target_host"),
+            ("[proxy]\ntarget_host = \"\t\"\n", "[proxy] target_host"),
+            (
+                "[proxy]\nconnect_udp_listen = \"\"\n",
+                "[proxy] connect_udp_listen",
+            ),
+            (
+                "[proxy]\nconnect_udp_listen = \"  \"\n",
+                "[proxy] connect_udp_listen",
+            ),
+            ("[secrets]\ntoken_file = \"\"\n", "[secrets] token_file"),
+            ("[secrets]\ntoken_file = \"  \"\n", "[secrets] token_file"),
+            ("[dispatch]\nurl = \"\"\n", "[dispatch] url"),
+            ("[dispatch]\nurl = \"  \"\n", "[dispatch] url"),
+            ("[dispatch]\ntoken_name = \"\"\n", "[dispatch] token_name"),
+            ("[dispatch]\ntoken_name = \"  \"\n", "[dispatch] token_name"),
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(
+                        message.contains(field),
+                        "error should name {field}: {message}"
+                    );
+                }
+                other => panic!("expected Parse error for {contents:?}, got {other:?}"),
+            }
+        }
+        // Valid control: every field set to a nonblank value loads
+        // and surfaces exactly that value.
+        let (_dir, path) = write_temp(
+            "[proxy]\nbroker_socket = \"/run/fleet.sock\"\ntarget_host = \"host.example\"\nconnect_udp_listen = \"127.0.0.1:1080\"\n[secrets]\ntoken_file = \"/run/token\"\n[dispatch]\nurl = \"http://host:4880\"\ntoken_name = \"custom-token\"\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.broker_socket(), PathBuf::from("/run/fleet.sock"));
+        assert_eq!(cfg.target_host(), "host.example");
+        assert_eq!(cfg.connect_udp_listen(), "127.0.0.1:1080");
+        assert_eq!(cfg.secrets_token_file(), PathBuf::from("/run/token"));
+        assert_eq!(cfg.dispatch_url(), Some("http://host:4880".to_string()));
+        assert_eq!(cfg.dispatch_token_name(), "custom-token");
+        // Omitted control: an empty file keeps every default.
+        let (_dir, path) = write_temp("");
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.target_host(), DEFAULT_TARGET_HOST);
+        assert_eq!(cfg.connect_udp_listen(), DEFAULT_CONNECT_UDP_LISTEN);
+        assert_eq!(cfg.dispatch_url(), None);
+        assert_eq!(cfg.dispatch_token_name(), DEFAULT_DISPATCH_TOKEN_NAME);
     }
     // ---- [host] manifest + location resolution (#6770, #5687) ----
 

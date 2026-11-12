@@ -33,8 +33,10 @@ import sys
 import tempfile
 import unittest
 
-DEPLOY_PATH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "deploy.py"
+DEPLOY_PATH = (
+    sys.argv[1]
+    if len(sys.argv) > 1
+    else os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy.py")
 )
 
 spec = importlib.util.spec_from_file_location("deploy", DEPLOY_PATH)
@@ -87,14 +89,18 @@ class RenderTests(unittest.TestCase):
         unit = deploy.render_unit("svc", DEFN, base=BASE)
         self.assertIn('Environment="PCT=100%%"', unit)
         self.assertIn("Environment=MODE=prod", unit)
-        self.assertIn("# secrets resolved by name at activation time: svc.api-key", unit)
+        self.assertIn(
+            "# secrets resolved by name at activation time: svc.api-key", unit
+        )
 
     def test_unit_render_is_generation_independent(self):
         # The flip-is-a-repoint invariant: the rendered unit cannot
         # depend on which generation is current.
         self.assertEqual(
             deploy.render_unit("svc", DEFN, base=BASE),
-            deploy.render_unit("svc", dict(DEFN, package="/nix/store/zzz-svc-2.0"), base=BASE),
+            deploy.render_unit(
+                "svc", dict(DEFN, package="/nix/store/zzz-svc-2.0"), base=BASE
+            ),
         )
 
     def test_plist_stub_points_at_profile_current_link(self):
@@ -122,7 +128,13 @@ class GenerationLogTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state:
             record(state, 1, "/nix/store/aaa-svc-1.0")
             record(state, 2, "/nix/store/bbb-svc-1.1")
-            record(state, 1, "/nix/store/aaa-svc-1.0", action="rollback", result="rolled-back")
+            record(
+                state,
+                1,
+                "/nix/store/aaa-svc-1.0",
+                action="rollback",
+                result="rolled-back",
+            )
             current, previous = deploy.current_previous(
                 deploy.read_generations("svc", state)
             )
@@ -137,7 +149,9 @@ class GenerationLogTests(unittest.TestCase):
     def test_malformed_log_line_is_named(self):
         with tempfile.TemporaryDirectory() as state:
             record(state, 1, "/nix/store/aaa-svc-1.0")
-            with open(deploy.generations_path("svc", state), "a", encoding="utf-8") as fh:
+            with open(
+                deploy.generations_path("svc", state), "a", encoding="utf-8"
+            ) as fh:
                 fh.write("not json\n")
             with self.assertRaises(ValueError) as ctx:
                 deploy.read_generations("svc", state)
@@ -229,7 +243,10 @@ class CliTests(unittest.TestCase):
         env = dict(os.environ, DEPLOY_STATE_DIR=state)
         return subprocess.run(
             [sys.executable, DEPLOY_PATH, "--registry", reg_path, *argv],
-            capture_output=True, text=True, env=env, timeout=30,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
         )
 
     def test_dry_run_prints_plan_and_creates_no_state(self):
@@ -250,13 +267,20 @@ class CliTests(unittest.TestCase):
             reg_path = os.path.join(state, "registry.json")
             with open(reg_path, "w", encoding="utf-8") as fh:
                 json.dump(registry, fh)
-            env = dict(os.environ, DEPLOY_STATE_DIR=state,
-                       DEPLOY_PROFILE_BASE=os.path.join(state, "profiles"),
-                       DEPLOY_UNIT_DIR=os.path.join(state, "units"),
-                       PATH=state)
+            env = dict(
+                os.environ,
+                DEPLOY_STATE_DIR=state,
+                DEPLOY_PROFILE_BASE=os.path.join(state, "profiles"),
+                DEPLOY_UNIT_DIR=os.path.join(state, "units"),
+                PATH=state,
+            )
             proc = subprocess.run(
                 [sys.executable, DEPLOY_PATH, "--registry", reg_path, "svc"],
-                capture_output=True, text=True, env=env, timeout=30)
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30,
+            )
             self.assertEqual(proc.returncode, 1, proc.stderr)
             self.assertIn("FAILED", proc.stderr)
             entries = deploy.read_generations("svc", state)
@@ -286,6 +310,24 @@ class CliTests(unittest.TestCase):
             proc = self.run_cli(state, "nope", "status")
             self.assertEqual(proc.returncode, 1)
             self.assertIn("unknown target", proc.stderr)
+
+    def test_cli_rejects_invalid_target_shape(self):
+        with tempfile.TemporaryDirectory() as state:
+            bad_defn = dict(DEFN, targets=["bad target"])
+            registry = {"svc": bad_defn}
+            reg_path = os.path.join(state, "registry.json")
+            with open(reg_path, "w", encoding="utf-8") as fh:
+                json.dump(registry, fh)
+            env = dict(os.environ, DEPLOY_STATE_DIR=state)
+            proc = subprocess.run(
+                [sys.executable, DEPLOY_PATH, "--registry", reg_path, "list"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("targets must be host/class names matching", proc.stderr)
 
 
 if __name__ == "__main__":

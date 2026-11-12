@@ -46,16 +46,16 @@ A match carries its own proof (a valid checksum or a rigid structure),
 so Tier A findings are high-precision and may be recorded as
 confirmed-class findings without NER corroboration.
 
-| Recognizer | Backing | Scope decision |
-|---|---|---|
-| Credit card | Luhn checksum | ON, all tiers |
-| IBAN | mod-97 checksum | ON, all tiers, all countries (checksum makes locale FP risk negligible) |
-| US SSN / ITIN | structure + issuance rules | ON |
-| US bank account / routing | structure | ON |
-| US passport, US driver licence | structure | ON |
-| UK NHS number | checksum (mod-11) | ON |
-| Email, IP address, URL | rigid structure | ON (recorded; PII signal only in combination — an email alone is not a quarantine trigger, §5) |
-| Crypto wallet (BTC/ETH patterns) | structure (+ checksum for bech32) | ON |
+| Recognizer                       | Backing                           | Scope decision                                                                                 |
+| -------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Credit card                      | Luhn checksum                     | ON, all tiers                                                                                  |
+| IBAN                             | mod-97 checksum                   | ON, all tiers, all countries (checksum makes locale FP risk negligible)                        |
+| US SSN / ITIN                    | structure + issuance rules        | ON                                                                                             |
+| US bank account / routing        | structure                         | ON                                                                                             |
+| US passport, US driver licence   | structure                         | ON                                                                                             |
+| UK NHS number                    | checksum (mod-11)                 | ON                                                                                             |
+| Email, IP address, URL           | rigid structure                   | ON (recorded; PII signal only in combination — an email alone is not a quarantine trigger, §5) |
+| Crypto wallet (BTC/ETH patterns) | structure (+ checksum for bech32) | ON                                                                                             |
 
 Country recognizers beyond US/UK are **OFF by default**: ES NIF, IT
 fiscal code / VAT / driver licence, PL PESEL, SG NRIC/FIN, AU
@@ -103,11 +103,11 @@ They are recorded only as co-occurrence signals for §2.2 rule 2.
 
 ## 3. Tier scoping — full internal, sampled secret
 
-| Tier | Tier A pass | Tier B (NER) pass | Why |
-|---|---|---|---|
-| internal (107,001 chunks) | 100% | 100% | This is the tier a leak damages; #6021's question is presence, and presence needs a census, not a sample. |
-| secret (638 chunks) | 100% | **25% stratified sample** (160 chunks) | PII in the secret tier is expected and already handled at the highest sensitivity; a finding there changes no tiering decision. The sample's job is calibration: measuring Tier B precision/recall behaviour on known-sensitive text to tune the thresholds the internal pass depends on. |
-| staging / new ingestion | 100% at ingest | 100% at ingest | Cheapest point to catch a mis-tier: before the chunk joins a tier (relates to #6021's staging-path check; mechanics owned by the implementation follow-on). |
+| Tier                      | Tier A pass    | Tier B (NER) pass                      | Why                                                                                                                                                                                                                                                                                       |
+| ------------------------- | -------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| internal (107,001 chunks) | 100%           | 100%                                   | This is the tier a leak damages; #6021's question is presence, and presence needs a census, not a sample.                                                                                                                                                                                 |
+| secret (638 chunks)       | 100%           | **25% stratified sample** (160 chunks) | PII in the secret tier is expected and already handled at the highest sensitivity; a finding there changes no tiering decision. The sample's job is calibration: measuring Tier B precision/recall behaviour on known-sensitive text to tune the thresholds the internal pass depends on. |
+| staging / new ingestion   | 100% at ingest | 100% at ingest                         | Cheapest point to catch a mis-tier: before the chunk joins a tier (relates to #6021's staging-path check; mechanics owned by the implementation follow-on).                                                                                                                               |
 
 Secret-tier sampling design: stratified by source class (the #6021 /
 manifest source classes), proportional allocation, fixed seed recorded
@@ -132,12 +132,12 @@ arithmetic and is at least an order of magnitude cheaper per chunk;
 it is not the budget driver and is not modelled separately beyond a
 flat allowance.
 
-| Symbol | Meaning | Planning value (estimate) |
-|---|---|---|
-| `N` | internal chunks | 107,001 (cited, #6021) |
-| `S` | secret chunks sampled | 160 (§3) |
-| `r` | NER throughput per core | 2–6 chunks/s for typical Atlas chunk sizes with a mid-size spaCy English model (estimate; the pilot in §4.3 replaces this with a measured fleet number before the full run is scheduled) |
-| `c` | cores used on the fleet laptop | 8 (estimate; leaves the machine usable, job runs niced and off-peak) |
+| Symbol | Meaning                        | Planning value (estimate)                                                                                                                                                                |
+| ------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `N`    | internal chunks                | 107,001 (cited, #6021)                                                                                                                                                                   |
+| `S`    | secret chunks sampled          | 160 (§3)                                                                                                                                                                                 |
+| `r`    | NER throughput per core        | 2–6 chunks/s for typical Atlas chunk sizes with a mid-size spaCy English model (estimate; the pilot in §4.3 replaces this with a measured fleet number before the full run is scheduled) |
+| `c`    | cores used on the fleet laptop | 8 (estimate; leaves the machine usable, job runs niced and off-peak)                                                                                                                     |
 
 Wall-clock estimate for the full internal NER pass:
 `N / (r × c)` = 107,001 / (2–6 × 8) ≈ **0.6–1.9 hours** of dedicated
@@ -177,8 +177,8 @@ the pilot re-run before any census starts).
 - Work unit: one shard at a time; batch = 500 chunks within a shard.
 - Each batch commits a checkpoint row to the run manifest:
   `(run_id, shard, chunk_range, recognizer_config_hash,
-  spacy_model_version, presidio_version, batch_started_at,
-  batch_finished_at, counts_by_recognizer_and_tier)`.
+spacy_model_version, presidio_version, batch_started_at,
+batch_finished_at, counts_by_recognizer_and_tier)`.
 - The recognizer configuration (enabled set, thresholds, context
   word lists) is content-hashed into every checkpoint and every
   finding. A config change starts a new run_id; runs are never
@@ -210,16 +210,16 @@ state: **quarantine candidate**. The queue record carries:
 Dispositions (each is a recorded act by a named reviewer — human or
 agent acting as reviewer — with timestamp and rationale):
 
-| Disposition | Effect |
-|---|---|
-| confirm | The chunk is **tier-locked upward**: reclassified to secret handling (move + re-embed at the secret tier and purge from the internal tier incl. replicas, per #6021's remediation path, filed as a follow-on if not done in the same pass). |
-| dismiss-false-positive | Chunk stays at its tier. The dismissal, with recognizer + context, feeds threshold calibration (§4.3) — dismissals are tuning data, not waste. |
-| escalate | Reviewer cannot decide from the record; chunk is provisionally tier-locked upward until a decider rules. Uncertainty resolves toward the safer tier. |
+| Disposition            | Effect                                                                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| confirm                | The chunk is **tier-locked upward**: reclassified to secret handling (move + re-embed at the secret tier and purge from the internal tier incl. replicas, per #6021's remediation path, filed as a follow-on if not done in the same pass). |
+| dismiss-false-positive | Chunk stays at its tier. The dismissal, with recognizer + context, feeds threshold calibration (§4.3) — dismissals are tuning data, not waste.                                                                                              |
+| escalate               | Reviewer cannot decide from the record; chunk is provisionally tier-locked upward until a decider rules. Uncertainty resolves toward the safer tier.                                                                                        |
 
 Hard rules of the queue:
 
 - **Never silent delete.** No disposition deletes chunk content.
-  Confirm moves and purges the *wrong-tier copy* only as part of the
+  Confirm moves and purges the _wrong-tier copy_ only as part of the
   recorded remediation; dismiss and escalate change no content.
 - **Tier-lock only moves upward.** The queue can raise a chunk's
   handling to secret; lowering a tier is out of scope for this pass
@@ -279,7 +279,7 @@ Hard rules of the queue:
    a classification or deletes content.
 5. The secret tier's boundary is unchanged: secret material exists
    only in the 2 secret DBs before and after the pass; a confirm
-   disposition moves a chunk *into* that boundary, it never widens
+   disposition moves a chunk _into_ that boundary, it never widens
    it.
 6. Sampling is seeded and recorded; two runs of the secret-tier pass
    with the same seed and config examine the same chunks.
@@ -295,7 +295,7 @@ nothing from #6021.** It adopts #6021's handling rules verbatim
 secret-tier sensitivity for findings) and its corpus figures, and it
 supplies the pass-level decisions #6048 asked for (recognizer set,
 scoping, cost, queue shape) inside that frame. Two clarifications
-that are *consequences* of #6021, not changes to it:
+that are _consequences_ of #6021, not changes to it:
 
 - The sampled secret-tier pass does not weaken #6021's converse
   boundary check (secret contents are actually secret-class): that

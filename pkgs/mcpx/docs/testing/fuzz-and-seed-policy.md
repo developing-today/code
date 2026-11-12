@@ -11,7 +11,7 @@ stream.
   as a seed, or `crypto/rand` to create test inputs. When production code uses
   randomness, prefer injecting a source so tests can control it.
 - Derive a test's source with `gen.ForTest(t, runSeed, generatorName,
-  generatorVersion)` (or `gen.Stream` when a test name is supplied explicitly).
+generatorVersion)` (or `gen.Stream` when a test name is supplied explicitly).
   A stream is keyed by the run seed, test name and generator `name@version`;
   adding another test or changing one generator must not shift unrelated
   streams.

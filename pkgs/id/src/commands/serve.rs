@@ -147,6 +147,14 @@ pub struct ServeInfo {
     /// Defaults to empty so lock files written before #2145 still parse.
     #[serde(default)]
     pub web_bindings: Vec<String>,
+    /// Process start time of the serve instance (Linux: /proc/<pid>/stat
+    /// field 22, clock ticks since boot), tying the lock to the exact
+    /// process incarnation that wrote it (#3040). Defaults to None so
+    /// lock files written before this field still parse; None also on
+    /// platforms where the start time cannot be read — those locks fall
+    /// back to PID-existence liveness only.
+    #[serde(default)]
+    pub start_time: Option<u64>,
 }
 
 impl ServeInfo {
@@ -184,7 +192,7 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
     let info: ServeInfo = serde_json::from_str(&contents).ok()?;
 
     // Check if process is still alive
-    if !is_process_alive(info.pid) {
+    if !is_process_alive(info.pid, info.start_time) {
         // Stale lock file - remove it
         let _ = afs::remove_file(SERVE_LOCK).await;
         return None;
@@ -208,7 +216,51 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
 /// `true` if the process exists, `false` otherwise.
 #[allow(clippy::cast_possible_wrap)] // The Unix branch validates the PID before casting.
 #[allow(unsafe_code)] // Required for libc::kill
-pub fn is_process_alive(pid: u32) -> bool {
+/// Start time of a process on Linux (/proc/<pid>/stat field 22:
+/// clock ticks since boot at which the process started). Together
+/// with the PID this identifies one process incarnation: a reused
+/// PID has a different start time. Returns None where the value
+/// cannot be read (non-Linux, or the process is already gone).
+#[cfg(target_os = "linux")]
+fn get_process_start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_proc_stat_start_time(&stat)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn get_process_start_time(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// Parse the start time (field 22) out of a `/proc/<pid>/stat` string.
+///
+/// comm (field 2) is parenthesised and may contain spaces or parens;
+/// the remaining fields follow the final ')'. starttime is field 22
+/// overall, i.e. index 19 of the fields after comm. Extracted as a
+/// pure helper so tests can drive it with generated stat strings and
+/// an independently chosen field-22 value (#8816): the oracle for
+/// this parser must not be the parser itself.
+#[cfg(any(target_os = "linux", test))]
+#[allow(dead_code)] // On non-Linux test builds the driving tests are Linux-gated.
+fn parse_proc_stat_start_time(stat: &str) -> Option<u64> {
+    let after_comm = &stat[stat.rfind(')')? + 1..];
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    fields.get(19).and_then(|f| f.parse().ok())
+}
+
+pub fn is_process_alive(pid: u32, expected_start_time: Option<u64>) -> bool {
+    // #3040: a recorded start time that does not match the process now
+    // holding the PID means the PID was reused by an unrelated process;
+    // the lock is stale no matter what the existence probe says. When
+    // either side has no start time (old lock, non-Linux), fall back
+    // to existence only.
+    if let Some(expected) = expected_start_time {
+        if let Some(actual) = get_process_start_time(pid) {
+            if actual != expected {
+                return false;
+            }
+        }
+    }
     #[cfg(unix)]
     {
         // PIDs read from the serve lock are untrusted u32 values. Zero checks
@@ -263,6 +315,7 @@ pub async fn create_serve_lock(
         addrs: addrs.iter().map(ToString::to_string).collect(),
         web_port,
         web_bindings,
+        start_time: get_process_start_time(std::process::id()),
     };
     let contents = serde_json::to_string_pretty(&info)?;
     afs::write(SERVE_LOCK, contents).await?;
@@ -405,13 +458,16 @@ impl Default for WebContentTarget {
 }
 
 impl WebContentTarget {
-    /// Build a `Program` target, validating the world name the same
-    /// way the #2147 publication registry validates its world names:
-    /// non-empty once trimmed. The stored name is the trimmed one.
+    /// Build a `Program` target, validating the world name against
+    /// the world-name rule ([`crate::world_hub::validate_world_name`]):
+    /// a program target names a world, so it must be a name a world
+    /// can bear -- 1 to 64 bytes of `a-z`, `0-9`, `-` and `_`, never
+    /// a path segment. The stored name is the trimmed one.
     ///
     /// # Errors
     ///
-    /// Fails on an empty or all-whitespace world name.
+    /// Fails on an empty or all-whitespace world name, or on any
+    /// name the world-name rule rejects.
     pub fn program(world: impl Into<String>) -> Result<Self> {
         let world = world.into();
         let world = world.trim();
@@ -419,6 +475,9 @@ impl WebContentTarget {
             !world.is_empty(),
             "program target world name must not be empty (expected program:<world-name>)"
         );
+        crate::world_hub::validate_world_name(world).map_err(|e| {
+            anyhow::anyhow!("invalid program target world name {world:?}: {e}")
+        })?;
         Ok(Self::Program(world.to_owned()))
     }
 
@@ -431,8 +490,8 @@ impl WebContentTarget {
     ///
     /// # Errors
     ///
-    /// Fails on an unknown spec or an empty program world name,
-    /// naming the spec.
+    /// Fails on an unknown spec or a program world name the
+    /// world-name rule rejects, naming the spec.
     pub fn parse(spec: &str) -> Result<Self> {
         match spec {
             "explorer" => Ok(Self::Explorer),
@@ -484,7 +543,8 @@ impl WebBinding {
     ///
     /// # Errors
     ///
-    /// Fails on an empty or all-whitespace world name.
+    /// Fails on an empty or all-whitespace world name, or on any
+    /// name the world-name rule rejects.
     pub fn program(addr: SocketAddr, world: impl Into<String>) -> Result<Self> {
         Ok(Self {
             addr,
@@ -1174,6 +1234,18 @@ pub fn seed_world_directory(
 fn serve_pull_policy(started: Option<&StartedServerConfig>) -> crate::pull_policy::PullPolicy {
     started.map_or(crate::pull_policy::PullPolicy::Open, |started| {
         started.config.pull_policy()
+    })
+}
+
+/// The freshness window seitan admission serves under (#8487): the loaded
+/// server config's `[policy] freshness_window_seconds`, resolved through
+/// [`crate::server_config::ServerConfig::freshness`], when a config was
+/// loaded, else [`crate::seitan::DEFAULT_WINDOW`] — so a `serve` without
+/// `--server-config` behaves exactly as before.
+#[cfg(feature = "world")]
+fn serve_freshness_window(started: Option<&StartedServerConfig>) -> std::time::Duration {
+    started.map_or(crate::seitan::DEFAULT_WINDOW, |started| {
+        started.config.freshness().window()
     })
 }
 
@@ -1953,6 +2025,21 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     WebContentTarget::Program(world) => Some(world.clone()),
                 })
                 .collect();
+            // #8487: the seitan admission state the web surface
+            // serves: the freshness window resolved from the loaded
+            // server config (the code default without one), and the
+            // server-config directory journal beside the groups log
+            // opened after provisioning persisted into it, so the
+            // admit path's account check sees the provisioned
+            // accounts and its `AccountVerified` appends land in the
+            // same journal.
+            #[cfg(feature = "world")]
+            let seitan_state = crate::web::SeitanState::new(
+                crate::directory::Directory::open(&server_config_directory_path(&groups_log))?,
+                serve_freshness_window(started_server_config.as_ref()),
+            );
+            #[cfg(not(feature = "world"))]
+            let seitan_state = crate::web::SeitanState::default();
             let web_routers = crate::web::web_routers(
                 store_handle.clone(),
                 Some(peer_discovery.clone()),
@@ -1966,6 +2053,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 event_events.as_ref().map(Arc::clone),
                 surfaces,
                 Some(groups_log.clone()),
+                seitan_state,
             )
             .await?;
             for ((listener_addr, listener, target), web_router) in
@@ -2697,6 +2785,8 @@ fn select_stale_probe_batch(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config as ProptestConfig, TestCaseError};
     use super::*;
 
     fn stale_test_peer(seed: u8) -> crate::discovery::PeerInfo {
@@ -3189,17 +3279,104 @@ mod tests {
         );
     }
 
+    /// Build a `/proc/<pid>/stat` string whose every field carries a
+    /// distinct, field-number-derived value, with field 22 (starttime)
+    /// set to `start_time`. The builder counts fields by position as
+    /// it writes them, so the expected value is known by construction
+    /// — independently of the parser under test (#8816).
+    #[cfg(target_os = "linux")]
+    fn stat_string_with_oracle(comm: &str, start_time: u64) -> String {
+        // Fields 3..=52 follow comm. Field f (for f != 22) gets the
+        // value f * 1_000, which never collides with a start_time in
+        // the generated range below, so extracting any neighbouring
+        // field yields a different value and fails the assertion.
+        let mut stat = format!("4242 ({comm})");
+        for field in 3..=52u64 {
+            if field == 3 {
+                stat.push_str(" S");
+            } else if field == 22 {
+                stat.push_str(&format!(" {start_time}"));
+            } else {
+                stat.push_str(&format!(" {}", field * 1_000));
+            }
+        }
+        stat
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn parse_proc_stat_start_time_reads_field_22_by_independent_oracle() {
+        // Hand-counted stat line: after "(my proc)" the fields are
+        // state S (3), then fields 4..=21 are 4..=21, field 22 is
+        // 987654, and fields 23..=25 are 23, 24, 25. Neighbouring
+        // fields hold 21 and 23, so a wrong-field extraction fails.
+        let stat =
+            "1234 (my proc) S 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 987654 23 24 25";
+        assert_eq!(parse_proc_stat_start_time(stat), Some(987654));
+        // comm containing parentheses: parsing resumes after the
+        // FINAL ')', so the same field layout still yields field 22.
+        let stat_parens = "1234 (weird (proc) name) S 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 987654 23 24 25";
+        assert_eq!(parse_proc_stat_start_time(stat_parens), Some(987654));
+        // Malformed inputs have no field 22 to read.
+        assert_eq!(parse_proc_stat_start_time(""), None);
+        assert_eq!(parse_proc_stat_start_time("1234 (unclosed S 1 2 3"), None);
+        assert_eq!(parse_proc_stat_start_time("1234 (p) S 1 2 3"), None);
+        assert_eq!(
+            parse_proc_stat_start_time(
+                "1234 (p) S 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 notanumber 23 24 25"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn parse_proc_stat_start_time_matches_generated_oracle() {
+        // Oracle: `property_parse_proc_stat_start_time_matches_oracle` —
+        // for generated comm values (spaces/parens included) and an
+        // independently chosen field-22 value, the parser returns
+        // exactly that value; every other field holds a distinct
+        // value, so extracting the wrong field fails.
+        let check = |comm: &str, start_time: u64| -> Result<(), TestCaseError> {
+            let stat = stat_string_with_oracle(comm, start_time);
+            prop_assert_eq!(parse_proc_stat_start_time(&stat), Some(start_time));
+            Ok(())
+        };
+        let config = ProptestConfig {
+            cases: 256,
+            ..ProptestConfig::default()
+        };
+        proptest!(config, |(comm in proptest::string::string_regex("[a-zA-Z0-9 ()_-]{0,24}").expect("comm strategy"), start_time in 1_000_000u64..2_000_000u64)| {
+            check(&comm, start_time)?;
+        });
+    }
+
     #[test]
     fn test_is_process_alive_current_process() {
         let pid = std::process::id();
-        assert!(is_process_alive(pid));
+        assert!(is_process_alive(pid, get_process_start_time(pid)));
+    }
+
+    #[test]
+    fn test_is_process_alive_reused_pid() {
+        // #3040: this live process holding the PID, but a lock recording
+        // a different start time names a dead incarnation of the PID —
+        // the answer must be stale (false), not alive. Linux-only: the
+        // start time is read from /proc there.
+        #[cfg(target_os = "linux")]
+        {
+            let pid = std::process::id();
+            let actual = get_process_start_time(pid).expect("own start time is readable");
+            assert!(is_process_alive(pid, Some(actual)));
+            assert!(!is_process_alive(pid, Some(actual + 1)));
+        }
     }
 
     #[test]
     fn test_is_process_alive_pid_zero() {
         #[cfg(unix)]
         {
-            assert!(!is_process_alive(0));
+            assert!(!is_process_alive(0, None));
         }
     }
 
@@ -3207,8 +3384,8 @@ mod tests {
     fn test_is_process_alive_pid_out_of_i32_range() {
         #[cfg(unix)]
         {
-            assert!(!is_process_alive(i32::MAX as u32 + 1));
-            assert!(!is_process_alive(u32::MAX));
+            assert!(!is_process_alive(i32::MAX as u32 + 1, None));
+            assert!(!is_process_alive(u32::MAX, None));
         }
     }
 
@@ -3218,7 +3395,7 @@ mod tests {
         // Note: On non-Unix this always returns true
         #[cfg(unix)]
         {
-            assert!(!is_process_alive(999_999_999));
+            assert!(!is_process_alive(999_999_999, None));
         }
     }
 
@@ -3232,7 +3409,7 @@ mod tests {
         #[cfg(unix)]
         {
             assert!(
-                is_process_alive(1),
+                is_process_alive(1, None),
                 "pid 1 exists and must read as alive (EPERM is not death)"
             );
         }
@@ -3251,6 +3428,7 @@ mod tests {
             addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:8080".to_owned()],
             web_port: Some(3000),
             web_bindings: vec!["127.0.0.1:3000".to_owned()],
+            start_time: None,
         };
 
         assert_eq!(info.node_id, node_id.to_string());
@@ -3272,6 +3450,7 @@ mod tests {
             addrs: vec!["127.0.0.1:8080".to_owned()],
             web_port: None,
             web_bindings: Vec::new(),
+            start_time: None,
         };
 
         let cloned = info.clone();
@@ -3289,6 +3468,7 @@ mod tests {
             addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:9090".to_owned()],
             web_port: Some(3001),
             web_bindings: vec!["127.0.0.1:3001".to_owned(), "[::1]:3001".to_owned()],
+            start_time: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -3307,6 +3487,7 @@ mod tests {
             addrs: vec!["127.0.0.1:5555".to_owned()],
             web_port: None,
             web_bindings: Vec::new(),
+            start_time: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -3491,7 +3672,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_web_content_target_program_rejects_empty_world() {
         // #2146 phase 1: a program target is a world name; an empty
         // one can never resolve, so it fails at construction/parse.
@@ -3512,6 +3692,104 @@ mod tests {
             WebContentTarget::Explorer
         );
         assert!(WebContentTarget::parse("document:readme").is_err());
+    }
+
+    #[test]
+    fn test_web_content_target_program_validates_world_name_rule() {
+        // #5711: a program target names a world, so program()/parse
+        // reject every name crate::world_hub::validate_world_name
+        // rejects -- a target no world can bear could never resolve.
+        for bad in [
+            "Arena",               // uppercase
+            ".",                   // dot segment
+            "..",                  // parent segment
+            "a/b",                 // slash
+            "a.b",                 // embedded dot
+            "has space",           // interior whitespace survives trim
+            "caf\u{e9}",          // non-ASCII
+            &"a".repeat(65),       // over the 64-byte cap
+        ] {
+            assert!(
+                WebContentTarget::program(bad).is_err(),
+                "program target accepted {bad:?}"
+            );
+            let spec = format!("program:{bad}");
+            let err = WebContentTarget::parse(&spec).unwrap_err();
+            assert!(
+                err.to_string().contains(&spec),
+                "parse error must name the spec {spec:?}: {err}"
+            );
+        }
+        // Legal names keep working: exactly at the byte cap, and
+        // hyphen/underscore/digit mixes, with trim preserved.
+        let max = "a".repeat(64);
+        assert_eq!(
+            WebContentTarget::program(max.clone()).unwrap(),
+            WebContentTarget::Program(max)
+        );
+        assert_eq!(
+            WebContentTarget::program(" my-world_2 ").unwrap(),
+            WebContentTarget::Program("my-world_2".to_owned())
+        );
+        assert_eq!(
+            WebContentTarget::parse("program:my-world_2")
+                .unwrap()
+                .describe(),
+            "program:my-world_2"
+        );
+    }
+
+    #[test]
+    fn prop_program_target_acceptance_matches_world_name_oracle() {
+        // Oracle (AGENTS.md testing doctrine; Codex finding on PR #8682):
+        // crate::world_hub::validate_world_name applied to the trimmed
+        // input decides acceptance. program() and parse("program:<input>")
+        // must agree with the oracle, and on acceptance the stored name
+        // is exactly the trimmed input.
+        fn check(input: &str) -> Result<(), TestCaseError> {
+            let trimmed = input.trim();
+            let oracle_ok = crate::world_hub::validate_world_name(trimmed).is_ok();
+            let program = WebContentTarget::program(input.to_owned());
+            prop_assert!(
+                program.is_ok() == oracle_ok,
+                "program({:?}) disagrees with validate_world_name({:?})",
+                input,
+                trimmed
+            );
+            if oracle_ok {
+                prop_assert_eq!(
+                    program.expect("oracle-accepted program target"),
+                    WebContentTarget::Program(trimmed.to_owned())
+                );
+            }
+            let spec = format!("program:{input}");
+            let parsed = WebContentTarget::parse(&spec);
+            prop_assert!(
+                parsed.is_ok() == oracle_ok,
+                "parse({:?}) disagrees with validate_world_name({:?})",
+                spec,
+                trimmed
+            );
+            if oracle_ok {
+                prop_assert_eq!(
+                    parsed.expect("oracle-accepted parse").describe(),
+                    format!("program:{trimmed}")
+                );
+            }
+            Ok(())
+        }
+        let config = ProptestConfig {
+            cases: 256,
+            ..ProptestConfig::default()
+        };
+        proptest!(config, |(input in proptest::string::string_regex(".{0,70}").expect("input strategy"))| {
+            check(&input)?;
+        });
+        // Targeted alphabet: characters at the rule boundary (case, dot,
+        // slash, separators, whitespace) at boundary lengths.
+        proptest!(config, |(input in proptest::string::string_regex("[a-zA-Z0-9._/ -]{0,70}").expect("boundary strategy"))| {
+            check(&input)?;
+        });
     }
 
     #[test]
@@ -3768,6 +4046,34 @@ mod tests {
         assert_eq!(
             serve_pull_policy(Some(&started)),
             crate::pull_policy::PullPolicy::Members
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #8487: without a server config, seitan admission serves under
+    /// the code default window (5 minutes), exactly as before.
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_freshness_window_defaults_without_a_config() {
+        assert_eq!(
+            serve_freshness_window(None),
+            crate::seitan::DEFAULT_WINDOW
+        );
+    }
+
+    /// #8487: the live admission path takes its window from the
+    /// loaded config's `[policy] freshness_window_seconds`, not from
+    /// the code default.
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_freshness_window_reads_the_configured_window() {
+        let dir = serve_config_dir("freshness-window");
+        let path = dir.join("server.toml");
+        std::fs::write(&path, "[policy]\nfreshness_window_seconds = 60\n").unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_eq!(
+            serve_freshness_window(Some(&started)),
+            std::time::Duration::from_secs(60)
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -36,7 +36,7 @@ alias check-all := check
 
 # CI-safe checks (read-only, no modifications) [bun]
 [group('check')]
-ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell web-lint test-sandbox test-native-shell test-web-unit test-web-typecheck roc-test doc build release
+ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell web-lint test-sandbox test-native-shell test-rust-examples test-web-unit test-web-typecheck roc-test doc build release
     @echo "✓ CI checks passed!"
 
 # Auto-fix formatting and lint issues
@@ -298,6 +298,12 @@ alias test-lib := test-unit
 [group('test')]
 test-native-shell:
     cargo nextest run -p id-native-shell
+
+# Run the Rust example-guest unit tests (#7904): plaza-sdk (examples/rust-world, 9 tests) and rust-counter (examples/rust-counter, 2 tests) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.
+[group('test')]
+test-rust-examples:
+    cargo test --manifest-path examples/rust-world/Cargo.toml
+    cargo test --manifest-path examples/rust-counter/Cargo.toml
 
 # Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out
 bench *args:

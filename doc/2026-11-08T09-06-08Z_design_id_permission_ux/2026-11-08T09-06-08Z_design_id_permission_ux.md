@@ -147,12 +147,12 @@ server's admin surface — never by the connecting user, and never as a
 side effect of a user grant. The admin decides at one of four modes,
 settable per capability and per world (site):
 
-| Mode | Meaning | Prompt behaviour |
-| --- | --- | --- |
-| **Approve generally** | This capability is granted, for all worlds/sites the server serves. | No per-world admin prompt. Disclosed to connecting users as a server-side line. |
+| Mode                                        | Meaning                                                                                                  | Prompt behaviour                                                                                                          |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **Approve generally**                       | This capability is granted, for all worlds/sites the server serves.                                      | No per-world admin prompt. Disclosed to connecting users as a server-side line.                                           |
 | **Ignore for all time — specific websites** | For the named websites (world origins), this capability is never granted and never prompted about again. | Admin is never re-asked for those sites; the capability is inert there. Connecting users see the line marked unavailable. |
-| **Ignore — specific permissions** | The named permissions are never granted on this server, for any world. | Admin is never re-asked for those permissions; they are inert everywhere on the server. |
-| **YOLO mode** | Everything is granted; the admin has decided not to decide. | No admin prompts at all. See §5 for scoping and loudness. |
+| **Ignore — specific permissions**           | The named permissions are never granted on this server, for any world.                                   | Admin is never re-asked for those permissions; they are inert everywhere on the server.                                   |
+| **YOLO mode**                               | Everything is granted; the admin has decided not to decide.                                              | No admin prompts at all. See §5 for scoping and loudness.                                                                 |
 
 Rules:
 
@@ -202,7 +202,7 @@ across their devices with their other ID state.
 ### 5.2 YOLO mode
 
 YOLO exists on both sides (admin §3, user §5.1 global scope is its
-client-side cousin but is *not* YOLO — it is a remembered grant set;
+client-side cousin but is _not_ YOLO — it is a remembered grant set;
 YOLO proper is "stop asking, grant what arrives, including future
 capabilities not yet requested").
 
@@ -229,8 +229,8 @@ marked required (server-side).
 
 1. The disclosure shows four lines in two groups; the storage line is
    marked "required".
-2. The server admin has storage on *approve generally* and server-side
-   internet on *ignore — specific permissions*: the world is served,
+2. The server admin has storage on _approve generally_ and server-side
+   internet on _ignore — specific permissions_: the world is served,
    its server-side internet line is disclosed as unavailable, and the
    world runs without it (it was optional).
 3. The user grants client internet "this world only", denies file read
@@ -248,12 +248,12 @@ Recorded 2026-11-08 against the live state of the design children of
 outputs are not finished, so every dependency below is named rather than
 silently assumed; nothing here claims a sibling decision it does not yet own.
 
-| Sibling | State at authoring | What this record takes from it | Dependency |
-|---|---|---|---|
-| [#5958](https://github.com/developing-today/code/issues/5958) capability model — requested vs discovered-used sets | open; design PR [#7599](https://github.com/developing-today/code/pull/7599) in review, not yet on `main` | the requested/discovered-used vocabulary and the registry listing that names capabilities | **dependency.** The requested-vs-used disclosure in §1.1 presumes #5958's used-set measurement. Until it lands, the used set is shown only when a world publishes instrumentation, and the disclosure degrades to the requested set alone. |
-| [#5959](https://github.com/developing-today/code/issues/5959) capability-change notices | open, triaged, waiting on dependency | nothing yet | **dependency.** The "capability change" firing rule in §1.2 consumes #5959's classification of expansion vs sideways change. This record fixes only the prompt behaviour for a change, not the notice taxonomy or transport. |
-| [#5961](https://github.com/developing-today/code/issues/5961) permission-prompt precedents | open, in progress; research not landed | nothing yet | **assumption.** The prompt shape follows the Play Store precedent fixed by the 2026-11-04 brief (S19–S23). If #5961's findings contradict a specific content rule here (group labelling, denial copy, memory defaults), the issue owner revises that rule; it is not treated as frozen against new evidence. |
-| [#5840](https://github.com/developing-today/code/issues/5840) knowledge-layer sharing & permissions | separate layer | shared vocabulary (principal, grant, scope) | none — the surfaces are deliberately different. |
+| Sibling                                                                                                            | State at authoring                                                                                       | What this record takes from it                                                            | Dependency                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [#5958](https://github.com/developing-today/code/issues/5958) capability model — requested vs discovered-used sets | open; design PR [#7599](https://github.com/developing-today/code/pull/7599) in review, not yet on `main` | the requested/discovered-used vocabulary and the registry listing that names capabilities | **dependency.** The requested-vs-used disclosure in §1.1 presumes #5958's used-set measurement. Until it lands, the used set is shown only when a world publishes instrumentation, and the disclosure degrades to the requested set alone.                                                                   |
+| [#5959](https://github.com/developing-today/code/issues/5959) capability-change notices                            | open, triaged, waiting on dependency                                                                     | nothing yet                                                                               | **dependency.** The "capability change" firing rule in §1.2 consumes #5959's classification of expansion vs sideways change. This record fixes only the prompt behaviour for a change, not the notice taxonomy or transport.                                                                                 |
+| [#5961](https://github.com/developing-today/code/issues/5961) permission-prompt precedents                         | open, in progress; research not landed                                                                   | nothing yet                                                                               | **assumption.** The prompt shape follows the Play Store precedent fixed by the 2026-11-04 brief (S19–S23). If #5961's findings contradict a specific content rule here (group labelling, denial copy, memory defaults), the issue owner revises that rule; it is not treated as frozen against new evidence. |
+| [#5840](https://github.com/developing-today/code/issues/5840) knowledge-layer sharing & permissions                | separate layer                                                                                           | shared vocabulary (principal, grant, scope)                                               | none — the surfaces are deliberately different.                                                                                                                                                                                                                                                              |
 
 ## Out of scope
 
@@ -262,7 +262,7 @@ silently assumed; nothing here claims a sibling decision it does not yet own.
 - Capability-change notices beyond the prompt behaviour named here:
   [#5959](https://github.com/developing-today/code/issues/5959).
 - Knowledge-layer sharing (notes, groups, read/edit grants): #5840.
-  This record governs *world connection* permissions; the vocabulary
+  This record governs _world connection_ permissions; the vocabulary
   (principal, grant, scope) is shared deliberately, the surfaces are
   not.
 - Implementation: this record is the UX contract an implementation

@@ -88,8 +88,7 @@ export interface MetaRenewalDeps {
   log?: (line: string) => void;
 }
 
-export const defaultLatestPath = (): string =>
-  join(homedir(), "atlas", "meta-quota-export", "latest.json");
+export const defaultLatestPath = (): string => join(homedir(), "atlas", "meta-quota-export", "latest.json");
 
 const defaultReadLatest = async (latestPath: string): Promise<MetaExporterDoc | null> => {
   try {
@@ -110,9 +109,7 @@ const defaultReadLatest = async (latestPath: string): Promise<MetaExporterDoc | 
 
 const reloadAndEnableExporter = async (): Promise<void> => {
   await execFileAsync("systemctl", ["--user", "daemon-reload"]).catch(() => undefined);
-  await execFileAsync("systemctl", ["--user", "enable", "--now", "meta-quota-export.timer"]).catch(
-    () => undefined,
-  );
+  await execFileAsync("systemctl", ["--user", "enable", "--now", "meta-quota-export.timer"]).catch(() => undefined);
 };
 
 const EXPORTER_UNITS = [
@@ -236,8 +233,7 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
   };
 
   let doc = await readLatest().catch(() => null);
-  const lastGoodAt =
-    doc?.status === "ok" && doc.measuredAt ? doc.measuredAt : (previous?.lastGoodAt ?? null);
+  const lastGoodAt = doc?.status === "ok" && doc.measuredAt ? doc.measuredAt : (previous?.lastGoodAt ?? null);
 
   if (doc?.status === "ok" && isFresh(doc, now, staleMs)) {
     return finish({
@@ -283,14 +279,13 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
   }
 
   const darkSince = lastGoodAt ?? previous?.lastGoodAt ?? null;
-  const alert =
-    recoveryResult.startsWith("exporter-partial:")
-      ? `Meta quota exporter units are only partially armed in ~/.config/systemd/user (per-unit state: ${recoveryResult.slice("exporter-partial:".length)}); Meta measurement has no probe until the missing units are restored. Restore the missing units to re-arm the Meta session keeper.`
-      : recoveryResult === "exporter-missing"
-        ? "Meta quota exporter units (meta-quota-export.service/.timer) are missing from ~/.config/systemd/user and no .backup copies exist; Meta measurement has no probe. Restore the units to re-arm the Meta session keeper."
-        : doc?.status === "session-expired"
-          ? `dev.meta.ai session is logged out in the laptop Helium profile; Meta re-login needs a human step (Meta emails a login code) in that profile. Meta measurement is dark${darkSince ? ` since last good ${darkSince}` : ""} until then.`
-          : `Meta quota exporter is not producing fresh readings (status=${doc?.status ?? "no document"}, recovery=${recoveryResult}); check meta-quota-export.timer and the laptop Helium dev.meta.ai session.`;
+  const alert = recoveryResult.startsWith("exporter-partial:")
+    ? `Meta quota exporter units are only partially armed in ~/.config/systemd/user (per-unit state: ${recoveryResult.slice("exporter-partial:".length)}); Meta measurement has no probe until the missing units are restored. Restore the missing units to re-arm the Meta session keeper.`
+    : recoveryResult === "exporter-missing"
+      ? "Meta quota exporter units (meta-quota-export.service/.timer) are missing from ~/.config/systemd/user and no .backup copies exist; Meta measurement has no probe. Restore the units to re-arm the Meta session keeper."
+      : doc?.status === "session-expired"
+        ? `dev.meta.ai session is logged out in the laptop Helium profile; Meta re-login needs a human step (Meta emails a login code) in that profile. Meta measurement is dark${darkSince ? ` since last good ${darkSince}` : ""} until then.`
+        : `Meta quota exporter is not producing fresh readings (status=${doc?.status ?? "no document"}, recovery=${recoveryResult}); check meta-quota-export.timer and the laptop Helium dev.meta.ai session.`;
   return finish({
     status: "attention",
     exporterStatus: doc?.status ?? null,

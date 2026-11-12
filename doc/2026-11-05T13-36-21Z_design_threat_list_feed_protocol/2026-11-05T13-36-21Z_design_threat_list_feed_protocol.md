@@ -61,10 +61,10 @@ understands; unknown kinds are stored and not applied.
 
 Three object kinds define a feed:
 
-| Kind | Purpose |
-|---|---|
-| `FeedHead` | Declares a new feed version: snapshot/delta pointers, validity window, entry counts. |
-| `FeedDelta` | A batch of entry additions and tombstones against the previous head. |
+| Kind           | Purpose                                                                                      |
+| -------------- | -------------------------------------------------------------------------------------------- |
+| `FeedHead`     | Declares a new feed version: snapshot/delta pointers, validity window, entry counts.         |
+| `FeedDelta`    | A batch of entry additions and tombstones against the previous head.                         |
 | `FeedSnapshot` | The full entry set at a seq, content-addressed, so a new subscriber need not replay history. |
 
 ### 1.1 Feed identity
@@ -173,7 +173,7 @@ it would be matching.
   the subscriber fetches the missing range or the latest snapshot (§8.2).
 - A head whose `prev` does not match the subscriber's current head id is
   a fork (§7.2), never a fast-forward.
-- Snapshots are full-state checkpoints: applying snapshot at seq *n*
+- Snapshots are full-state checkpoints: applying snapshot at seq _n_
   sets the effective set exactly, and its `set_hash` must match the
   computed set after application.
 
@@ -214,7 +214,7 @@ shape.
   seq, and window checks in §8.2 either all pass or the update is
   rejected whole (§0 rule 3).
 - **Vouching is a writer-set question, not a feed question** (composes
-  with #5545). A feed is *counted* by a world only when the world's
+  with #5545). A feed is _counted_ by a world only when the world's
   moderation pack (§5) names the feed id in a subscription, and the
   subscription pins the expected feed author key. When writer-set view
   projection (#5545) lands, a pack may instead name a writer set and
@@ -269,7 +269,7 @@ Subscription {
 Feed actions are requests, not commands. A pack maps each feed action
 to a local action per subscription (`Block → Quarantine` for a cautious
 world; `Flag → Flag` typically). Unmapped actions default to `Flag`.
-A mapping can weaken or strengthen, but the *feed's* stated action is
+A mapping can weaken or strengthen, but the _feed's_ stated action is
 what §6 compares before mapping.
 
 ### 5.2 Advisory mode
@@ -277,23 +277,24 @@ what §6 compares before mapping.
 In `Advisory` mode a feed's entries are surfaced to moderators (and
 counted in reports) but never auto-enforced. New subscriptions SHOULD
 start `Advisory` and be promoted to `Enforce` by an explicit pack
-change — the Paladin precedent is opt-out-by-default for a *platform's
-own* list; for third-party feeds this protocol makes the world's
+change — the Paladin precedent is opt-out-by-default for a _platform's
+own_ list; for third-party feeds this protocol makes the world's
 opt-in explicit instead.
 
 ## 6. The effective decision (normative algorithm)
 
-For a subject *S* in a world *W* at a moment *T*:
+For a subject _S_ in a world _W_ at a moment _T_:
 
 ### 6.1 Local lists first
 
-1. **Local lists.** If *S* is on *W*'s exemption list → **Allow** (stop).
-   If *S* is on *W*'s override list → the override's action (stop).
+1. **Local lists.** If _S_ is on _W_'s exemption list → **Allow** (stop).
+   If _S_ is on _W_'s override list → the override's action (stop).
    (§0 rule 2: this step cannot be reached by feed data.)
+
 ### 6.2 Collect, resolve, map
 
 2. **Collect.** From every `Enforce`-mode subscription, take each
-   unexpired entry whose subject matches *S* (§2.1) at the feed's latest
+   unexpired entry whose subject matches _S_ (§2.1) at the feed's latest
    applied head, subject to the feed's staleness state (§7.1).
 3. **Resolve conflicts** among the collected entries (§6.3). The result
    is a single feed action, or none.
@@ -308,7 +309,7 @@ For a subject *S* in a world *W* at a moment *T*:
   feeds; the highest-ranked feed with a matching entry supplies the
   action.
 - (b) **Tie → strongest action:** at equal rank, `Block > Quarantine >
-  Flag`.
+Flag`.
 - (c) **Signed clear:** a feed may publish a `clear` entry (an entry
   with action `Flag` and reason `other` naming the cleared entry id in
   `evidence`) — it only affects outcomes when it comes from a feed
@@ -327,17 +328,17 @@ can see that two trusted feeds disagreed and which rule decided.
 
 ### 7.1 Stale feed
 
-Let *age* = now − last applied head's `issued_at`, against the genesis
+Let _age_ = now − last applied head's `issued_at`, against the genesis
 commitments (§3.3):
 
-- *age ≤ cadence_seconds × 3*: **fresh**. Normal enforcement.
-- *age > cadence × 3 and ≤ retire_after*: **stale**. Entries continue
+- _age ≤ cadence_seconds × 3_: **fresh**. Normal enforcement.
+- _age > cadence × 3 and ≤ retire_after_: **stale**. Entries continue
   to enforce until their own `expires_at` (no early drop — an attacker
   who can silence a feed must not thereby unblock listed subjects), but
   the feed is marked stale in every moderator surface, and no entry
-  from it may be *strengthened* by conflict rules (it can lose a §6.3
+  from it may be _strengthened_ by conflict rules (it can lose a §6.3
   comparison, never win one against a fresh feed).
-- *age > retire_after_seconds*, or head `expires_at` passed with no
+- _age > retire_after_seconds_, or head `expires_at` passed with no
   successor for the same interval: **retired**. All entries stop being
   enforced (they lapse; they are not deleted). A later valid head
   revives the feed — retirement is a state, not a tombstone.
@@ -350,7 +351,7 @@ entries still die at their own `expires_at`.
 - **Bad signature / broken chain / seq gap that cannot be filled /
   `set_hash` mismatch:** reject the update whole, keep last good state,
   mark the feed `suspect`, and surface to moderators. Repeated failures
-  (≥ 3 consecutive) move the subscription's *effective* mode to
+  (≥ 3 consecutive) move the subscription's _effective_ mode to
   Advisory until a valid head applies cleanly. The feed can degrade
   itself, never silently.
 - **Fork (two validly signed heads at the same seq with different

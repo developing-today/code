@@ -3,10 +3,11 @@
 // Primary route: the pm-stack GitHub App (installation token minted from
 // the app id + private key rendered into the service env from
 // ~/secrets/pm-stack.sops.yaml — the same material connect-repo.sh uses).
-// The installations cover developing-today/code, developing-today-forks/opencode
-// and dezren39/nix; callers skip repos with no
-// installation (developing-today/zettel, dezren39/dezren39) before reaching
-// here.
+// The installations cover developing-today/code and
+// dezren39/darwin-nix (APP_INSTALLED_REPOS in config.ts is the list
+// of record); callers skip repos with no installation
+// (developing-today-forks/opencode, developing-today-forks/openchamber,
+// developing-today/zettel, dezren39/dezren39) before reaching here.
 //
 // Fallback: if the app route is unusable (no app credentials in env, or
 // the installation/token call fails), use the laptop's authenticated
@@ -262,9 +263,7 @@ export class GitHubClient {
         try {
           data = bodyObject(await jsonBody(res, endpoint), endpoint);
         } catch (shapeErr) {
-          throw new MalformedCreateBodyError(
-            shapeErr instanceof Error ? shapeErr.message : String(shapeErr),
-          );
+          throw new MalformedCreateBodyError(shapeErr instanceof Error ? shapeErr.message : String(shapeErr));
         }
         let number: number;
         let url: string;
@@ -272,9 +271,7 @@ export class GitHubClient {
           number = reqInt(data, "number", endpoint);
           url = reqString(data, "html_url", endpoint);
         } catch (shapeErr) {
-          throw new MalformedCreateBodyError(
-            shapeErr instanceof Error ? shapeErr.message : String(shapeErr),
-          );
+          throw new MalformedCreateBodyError(shapeErr instanceof Error ? shapeErr.message : String(shapeErr));
         }
         return { number, url };
       } catch (e) {

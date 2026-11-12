@@ -76,9 +76,21 @@ function requiredIdentityString(value: unknown, field: string, endpoint: string)
  */
 export function parseIdentityMeResponse(payload: unknown): IdentityMeResponse {
   const record = asIdentityRecord(payload, "/api/identity/me");
-  const token =
-    record.token === undefined ? null : requiredIdentityString(record.token, "token", "/api/identity/me");
+  const token = record.token === undefined ? null : requiredIdentityString(record.token, "token", "/api/identity/me");
   return { token, name: identityNameField(record.name, "/api/identity/me") };
+}
+
+/**
+ * Whether a `/api/identity/me` payload carries a `name` field at all
+ * (#7838). The parser maps an absent name to `null`, which is also the
+ * legitimate "no display name" value, so presence has to be checked on
+ * the raw payload: a wrong-shape 200 with no name field ({}) must never
+ * be applied as a name change, or it silently wipes the stored display
+ * name. An explicit `name: null` does count as carried — that is the
+ * server saying the name is unset.
+ */
+export function meResponseCarriesName(payload: unknown): boolean {
+  return typeof payload === "object" && payload !== null && "name" in payload;
 }
 
 /**

@@ -97,7 +97,7 @@ queue (so no backup-era task could be picked up by a proof claim):
    Turso claim (task **10999**) for a packet naming that issue was
    auto-blocked: claim returned
    `{"task": null, "guard": "fallback_held", "held_by":
-   "guard-holder-6741", ...}`, exit 5; the task row sits
+"guard-holder-6741", ...}`, exit 5; the task row sits
    `blocked` with `reason_class: fallback_held` in its progress.
    The test task was then cancelled with the reason recorded and
    the fallback claim released.
@@ -105,7 +105,7 @@ queue (so no backup-era task could be picked up by a proof claim):
    against the production broker while it still ran the dead PG
    backend emitted
    `{"ok": false, "fallback": true, "switch_to":
-   "github-fallback", "verb": "/health", "broker_exit": 4}` and
+"github-fallback", "verb": "/health", "broker_exit": 4}` and
    exited 6; (b) with the side broker killed by its recorded PID,
    a claim emitted the same switch JSON (transport error) and
    exited 6 immediately.
@@ -149,7 +149,7 @@ queue (so no backup-era task could be picked up by a proof claim):
    `Environment=QUEUE_BROKER_BACKEND=turso`), daemon-reload,
    `systemctl --user restart queue-broker.service`. Journal:
    `queue-broker: queue backend: turso
-   (https://fleet-queue-dezren39.aws-us-east-1.turso.io)`,
+(https://fleet-queue-dezren39.aws-us-east-1.turso.io)`,
    MainPID 925323, listening on 100.99.113.103:4801 + UDS. The
    broker resolves the token from the secrets broker by name —
    no token file in the unit.
@@ -322,7 +322,7 @@ moved or dropped by #6741.
   the webhook receiver off Edge Functions and flip the reader to
   Turso (flip criteria already staged: one verified real delivery
   landing in `ci_events`).
-- **agent.mirror_\* PG originals (28 tables)** — verified shadows
+- **agent.mirror\_\* PG originals (28 tables)** — verified shadows
   live in Turso `muse-mirror`; the PG copies remain the target of
   the **paused runtime-db-export cron**, whose loader still points
   at PG. Retiring takes: repoint that loader to `muse-mirror`
@@ -362,7 +362,6 @@ moved or dropped by #6741.
   that function first; nothing else needs moving — these stay
   in the decommissioned project, unused, like everything else.
 
-
 ## Amendment 2026-11-10 — claim-model stamp columns (#8176)
 
 Drew's order (2026-11-10 10:53 CST): a session picking up an item
@@ -379,7 +378,6 @@ detail carries the same three fields. Non-session claimants (Muse
 lanes) stamp the distinct provider marker `muse-lane` rather than
 a model. Claim-time semantics: a later failover changes the
 serving leaf but never rewrites the stamp.
-
 
 ## Amendment 2026-11-10 — broker-owned waits (#8184)
 

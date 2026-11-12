@@ -97,6 +97,9 @@
 //      the subcommand owns fetch concurrency now),
 //      OPENCHAMBER_LIB_DIR (ONLY the OpenDesign keeper's credential
 //      store accessors resolve from here; no quota reading does),
+//      OPENCHAMBER_LIB_INSTALL_CMD (override for the lib checkout's
+//      dependency install step, shell-split like QUOTA_SUBCOMMAND;
+//      default is bun install at the checkout root, #8759),
 //      TURSO_QUOTA_SINK=0 (or the legacy SUPABASE_QUOTA_SINK=0)
 //      disables the Turso sink (default on; token resolved by name
 //      via the resolveBwsSecret plumbing:
@@ -110,6 +113,7 @@ import { fileURLToPath } from "node:url";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
 import {
   GATHERER_SOURCE,
+  canonicalProviderId,
   entriesWithPoolSplits,
   entryFromResult,
   entryHasMeasuredWindow,
@@ -121,6 +125,7 @@ import {
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
+import { ensureLibDependencies } from "../src/lib-deps.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 
@@ -283,8 +288,39 @@ interface OpenDesignProviderModule {
 async function runOpenDesignRenewal(tickAt: string): Promise<void> {
   if (process.env.OPENDESIGN_RENEWAL_DISABLED === "1") return;
   try {
-    const credentials = (await import(join(libDir, "quota/credentials/providers.js"))) as unknown as OpenDesignCredentialsModule;
-    const provider = (await import(join(libDir, "quota/providers/opendesign.js"))) as unknown as OpenDesignProviderModule;
+    // #8759: the lib checkout is a plain clone; if its declared
+    // dependencies were never installed, every import below fails
+    // with "Cannot find package ..." and Bun caches that failure
+    // for the process, so install BEFORE the first import
+    // (src/lib-deps.ts preflight), never as an import retry.
+    const installCmd = process.env.OPENCHAMBER_LIB_INSTALL_CMD?.split(/\s+/).filter(Boolean) ?? [];
+    const install =
+      installCmd.length > 0
+        ? async (root: string): Promise<void> => {
+            await new Promise<void>((resolve, reject) => {
+              execFile(
+                installCmd[0],
+                installCmd.slice(1),
+                { cwd: root, timeout: 240_000, maxBuffer: 16 * 1024 * 1024 },
+                (err) => {
+                  if (err) reject(new Error("OPENCHAMBER_LIB_INSTALL_CMD failed in the OpenChamber lib checkout"));
+                  else resolve();
+                },
+              );
+            });
+          }
+        : undefined;
+    await ensureLibDependencies({
+      libDir,
+      log: (line) => console.log("quota-gatherer: " + line),
+      ...(install ? { install } : {}),
+    });
+    const credentials = (await import(
+      join(libDir, "quota/credentials/providers.js")
+    )) as unknown as OpenDesignCredentialsModule;
+    const provider = (await import(
+      join(libDir, "quota/providers/opendesign.js")
+    )) as unknown as OpenDesignProviderModule;
     const state = await renewOpenDesignSession({
       readCredential: () => credentials.readManagedCredential("opendesign"),
       writeCredential: (value) => {
@@ -368,8 +404,7 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
   const anyMeasured = entries.some((e) => entryHasMeasuredWindow(e));
   if (anyOk && !anyMeasured) {
     const reason =
-      entries.find((e) => e.error)?.error ??
-      "no-data: provider reported ok but no window carried a percentage";
+      entries.find((e) => e.error)?.error ?? "no-data: provider reported ok but no window carried a percentage";
     for (const e of entries) {
       if (e.state === "ok") e.state = "error";
       if (!e.error) e.error = reason;
@@ -388,10 +423,10 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
     ms: Date.now() - t0,
     entries,
     // A partially-failed run still surfaces its first failure: a
-    // folded provider (codex answers one row per OpenAI credential)
+    // folded provider (_openai answers one row per OpenAI credential)
     // must not let one credential's ok row hide a sibling credential's
-    // error from the heartbeat — 2026-11-10 the codex run read "ok"
-    // with no error while the openai.main and _openai credentials were
+    // error from the heartbeat — 2026-11-10 the _openai run read "ok"
+    // with no error while the main and self-contained credentials were
     // both failing token_expired at the provider.
     ...(firstFailure?.error
       ? { error: firstFailure.error }
@@ -584,7 +619,19 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
   for (const [id, group] of byProvider) {
     const t0 = Date.now() - group.ms;
     const entries = group.results.map((r) => entryFromResult(r, tickAt));
-    let run = finalizeRun(id, entries, t0);
+    // The folded OpenAI door still answers under the fork's pre-rename
+    // spelling ("codex"); its entries already file under the canonical
+    // door id via entryFromResult, but the run kept the raw spelling —
+    // so the heartbeat's perProvider leg for the OpenAI pool was keyed
+    // "codex" while every consumer (quota-current's legErrorFor,
+    // matched on the entry's providerId) looks up "_openai". Rename
+    // the run to the canonical id, the same mapping quota-gather-map
+    // applies to the entries. Only this door's run id changes: the
+    // heartbeat contract for the other doors is the fork spelling
+    // (e.g. "meta"), and retention canonicalizes both sides already,
+    // so nothing else moves.
+    const runId = canonicalProviderId(id) === "_openai" ? "_openai" : id;
+    let run = finalizeRun(runId, entries, t0);
     if (id === "command-code" || id === "_commandcode") run = keepCommandCodePlanWindows(run);
     runs.push(run);
   }
@@ -651,10 +698,7 @@ async function writeTursoRecords(entries: QuotaCurrentEntry[], tickAt: string): 
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        requests: [
-          { type: "execute", stmt: { sql: query } },
-          { type: "close" },
-        ],
+        requests: [{ type: "execute", stmt: { sql: query } }, { type: "close" }],
       }),
     });
     if (!res.ok) {
@@ -728,10 +772,11 @@ async function main(): Promise<number> {
           ? retained
           : retained.filter(
               (previous) =>
-                !lapsed.some((current) =>
-                  (current.credentialId && previous.credentialId === current.credentialId) ||
-                  (current.credentialLabel &&
-                    previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
+                !lapsed.some(
+                  (current) =>
+                    (current.credentialId && previous.credentialId === current.credentialId) ||
+                    (current.credentialLabel &&
+                      previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
                 ),
             );
         run.entries = [...markRetained(retainedSiblings, tickAt), ...lapsed];
@@ -774,8 +819,7 @@ async function main(): Promise<number> {
   // project as "keeper not reporting", never silence). Fail-soft:
   // the reader never throws.
   const providerAuth = await readProviderAuthAlerts({
-    opendesign:
-      process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
+    opendesign: process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
     meta: process.env.META_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "meta-renewal.json"),
   });
   const file: QuotaCurrentFile = {

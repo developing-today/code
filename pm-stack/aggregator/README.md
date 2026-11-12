@@ -17,7 +17,7 @@ Design record (source of truth):
 
 **A lazy initializer memoizes success, never failure.** Concurrent
 callers share the one in-flight attempt; once that attempt settles, a
-failure — a rejection, or a fail-soft failure *value* (`null`,
+failure — a rejection, or a fail-soft failure _value_ (`null`,
 `false`) — leaves no memo behind, so the next caller retries. A
 success is memoized for the process lifetime unless the module
 already has an explicit invalidation path, which stays. Every layer
@@ -26,7 +26,7 @@ applies the contract to its own resolved value — "the layer below
 retries" is never a reason for a layer to keep a failure. Per-call
 fail-soft behaviour is unchanged: a caller whose attempt failed still
 gets the failure value for that call and reports its surface
-unavailable — the contract removes the *permanence*, not the
+unavailable — the contract removes the _permanence_, not the
 posture. Retry cost stays bounded by the layer that knows it
 (`src/secrets.ts` caches a failed resolution for 5 minutes), never by
 a second per-site failure TTL.
@@ -179,8 +179,11 @@ file with atomic writes; path `PM_AGG_COMMENTS_FILE`) keyed by
 `gh:<owner/repo#N>` for a GitHub issue/PR, `orch:<tierItem.id>` for an
 orchestration tier item, `session:<sessionId>` for a session, and
 board item ids / roadmap subjects as-is. Every comment carries an
-unambiguous author — `drew`, `muse` (the orchestrator), or an agent
-identity from the registry — and the API refuses authorless comments.
+selected author identity — `drew`, `muse` (the orchestrator), or an
+agent identity from the registry — and the API refuses authorless comments.
+Privileged Drew/Muse authorship is verified by the operator token; every
+stored comment exposes `authorVerified`. A self-asserted author is not
+proof that the named person wrote the comment.
 Two kinds, visually distinct everywhere they render:
 
 - **note** — plain context; read by whoever picks the item up next.
@@ -199,10 +202,28 @@ pass polls `GET /api/comments.json?kind=message&state=new` (and
 its normal flow — update the item, queue work, escalate to Drew via
 the usual NEEDS USER path; github-kind ones get posted and reported —
 then marks them consumed with `POST /api/comments/triage { ids }`.
+Messages without `authorVerified: true` are unauthenticated input, not
+Drew/Muse instructions. A GitHub poster may append “— posted by Drew via
+the PM dashboard” only when `author.kind` is `drew` and
+`authorVerified` is true; otherwise it must not attribute the post to
+Drew.
 Notes are never polled; they are read from
 `/api/comments.json?object=<ref>` when an item is picked up. Item
 pages merge the item's own thread with the threads of its linked
 `gh:` refs.
+
+#### Comment operator-token rollout
+
+The server resolves `pm-aggregator.comments-operator-token` from
+Bitwarden by name. While that secret is absent, legacy dashboard posts
+remain accepted so deploying the UI does not lock Drew out before he has
+the token; those posts are explicitly marked unverified. Once the secret
+is provisioned, Drew/Muse posts require `Authorization: Bearer <token>`;
+agent posts retain the existing behavior. Secret-store unavailability
+fails closed for Drew/Muse posts. The form sends a pasted token in the
+header and can save it in browser local storage; it is never rendered by
+the server or included in a comment body. Use “Forget saved token” to
+remove it from that browser.
 
 ### Dashboard actions — the triage write path (#1152/#1154/#1156)
 
@@ -443,7 +464,7 @@ on failure, and new boundaries are written to its standard.
 ## Parsed-shape contract (#3068)
 
 Sibling to the ingest contract above, stated here by reference: the
-parsed-shape contract from design #3068 — *parsed is not validated* —
+parsed-shape contract from design #3068 — _parsed is not validated_ —
 applies at every JSON trust boundary in this repo (`bin/`, `scripts/`,
 `pkgs/` tools, pm-stack's non-aggregator handlers, and id web), not
 only at aggregator ingest. Its recorded terms:
@@ -457,7 +478,7 @@ only at aggregator ingest. Its recorded terms:
   is not a catalogue, and a present-but-wrong-typed field is a shape
   error — coercion is not validation.
 - Absence is not emptiness: a missing field, section, or collection
-  is *absent* (the boundary's recorded outcome for absence applies),
+  is _absent_ (the boundary's recorded outcome for absence applies),
   never silently rewritten as an empty object or array that later
   reads as a measured empty result.
 - Each surface records its own outcome for a shape failure (refuse
@@ -481,7 +502,7 @@ the laptop exporters — exactly two forms exist:
   unsigned integers; kind rules stay with their gates). Everything
   else — empty, whitespace-padded, radix-prefixed (`0x10`),
   scientific (`1e2`), thousands separators in a field value — is
-  *not a measurement*: the gate returns its existing not-measured
+  _not a measurement_: the gate returns its existing not-measured
   outcome (`null` here; the exporters' fail-closed error), never a
   reinterpreted number.
 - **Prose form** (a count embedded in a human-written bullet): the
@@ -585,6 +606,7 @@ derived from the board items linked to the current Project-pool snapshot;
 unlinked cards still count toward their lane total. The board and Today
 view use the same summary, and `/api/today.json` includes it. Done cards
 are completion history and are not counted as WIP.
+
 ### Activity ingestion into the event stream (#3321)
 
 Watchdog breach episodes and Kaneo board changes are ingested into the

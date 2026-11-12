@@ -79,16 +79,12 @@ def load_profile(path, *, lifecycle_skills=False):
     ):
         raise ValueError(f"{path}: lifecycle_skills must be a list of strings")
     if lifecycle_skills and any(
-        skill in (".", "..")
-        or not Path(skill).parts
-        or Path(skill).parts != (skill,)
+        skill in (".", "..") or not Path(skill).parts or Path(skill).parts != (skill,)
         for skill in skills
     ):
         # "" / "." would map the whole .agents/skills tree, and a name
         # with separators is not a skill directory name.
-        raise ValueError(
-            f"{path}: lifecycle_skills entries must be directory names"
-        )
+        raise ValueError(f"{path}: lifecycle_skills entries must be directory names")
     return profile, skills
 
 

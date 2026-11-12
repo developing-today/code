@@ -117,6 +117,7 @@ import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./project
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
+import { spendCardHtml, unattributedSpendHtml, type SpendCardsView } from "./spend-cards.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
@@ -223,12 +224,22 @@ if (!window.__dashAuthorPickerHook) {
  * posts to the issue (the aggregator holds no GitHub credentials).
  */
 const COMMENT_SCRIPT = `<script>${DASH_AFTER_JS}
+const commentOperatorTokenKey = "pm-aggregator.operator-token";
+const savedCommentOperatorToken = () => {
+  try { return localStorage.getItem(commentOperatorTokenKey) || ""; } catch { return ""; }
+};
 document.addEventListener("submit", async (ev) => {
   const form = ev.target;
   if (!(form instanceof HTMLFormElement) || !form.classList.contains("cform")) return;
   ev.preventDefault();
   const err = form.querySelector(".err");
   const data = new FormData(form);
+  let operatorToken = String(data.get("operatorToken") || "").trim();
+  if (operatorToken) {
+    try { localStorage.setItem(commentOperatorTokenKey, operatorToken); } catch { /* send this request even if storage is unavailable */ }
+  } else {
+    operatorToken = savedCommentOperatorToken();
+  }
   const kind = String(data.get("kind") || "note");
   const [akind, aid, asession] = String(data.get("author") || "drew|drew|").split("|");
   const labelEl = form.querySelector('option[value="' + CSS.escape(String(data.get("author"))) + '"]');
@@ -241,7 +252,8 @@ document.addEventListener("submit", async (ev) => {
     ...(kind === "github" ? { githubRef: String(data.get("githubRef") || "") } : {}),
   };
   const post = async (p) => {
-    const res = await fetch("/api/comments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(p) });
+    const headers = { "content-type": "application/json", ...(operatorToken ? { authorization: "Bearer " + operatorToken } : {}) };
+    const res = await fetch("/api/comments", { method: "POST", headers, body: JSON.stringify(p) });
     if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
   };
   try {
@@ -252,6 +264,13 @@ document.addEventListener("submit", async (ev) => {
     }
     window.__dashAfter(form, "✓ sent · pending — the orchestrator picks it up on its next pass");
   } catch (e) { if (err) err.textContent = "Not posted: " + e.message; }
+});
+document.addEventListener("click", (ev) => {
+  const button = ev.target;
+  if (!(button instanceof HTMLButtonElement) || !button.matches("[data-forget-operator-token]")) return;
+  try { localStorage.removeItem(commentOperatorTokenKey); } catch { /* storage may be disabled */ }
+  const input = button.closest(".cform")?.querySelector('input[name="operatorToken"]');
+  if (input instanceof HTMLInputElement) input.value = "";
 });
 document.addEventListener("change", (ev) => {
   const t = ev.target;
@@ -534,17 +553,17 @@ export function renderSearch(
   for (const result of results) {
     if (result.kind === "registry") chipKeys.add("registry");
     if (result.kind === "dns") chipKeys.add("dns");
-    if (result.kind === "service") { chipKeys.add("quota"); chipKeys.add("usage"); }
-    if (result.kind === "tier") { chipKeys.add("orchestration"); chipKeys.add("attention"); chipKeys.add("registry"); }
+    if (result.kind === "service") {
+      chipKeys.add("quota");
+      chipKeys.add("usage");
+    }
+    if (result.kind === "tier") {
+      chipKeys.add("orchestration");
+      chipKeys.add("attention");
+      chipKeys.add("registry");
+    }
   }
-  return layout(
-    "Search",
-    body,
-    provenance,
-    "/search",
-    "",
-    detail ? freshnessChips(detail, [...chipKeys]) : "",
-  );
+  return layout("Search", body, provenance, "/search", "", detail ? freshnessChips(detail, [...chipKeys]) : "");
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -589,6 +608,8 @@ export function authorBadge(a: DashAuthor): string {
 }
 
 export function dashCommentHtml(c: DashComment, showObject = false): string {
+  const verificationChip =
+    c.authorVerified === true ? `<span class="badge">verified</span>` : `<span class="badge">unverified</span>`;
   const kindChip =
     c.kind === "message"
       ? `<span class="badge msg">✉ message to Muse</span> <span class="muted">${c.triageState === "triaged" ? "triaged by the orchestrator" : "awaiting triage"}</span>`
@@ -597,12 +618,12 @@ export function dashCommentHtml(c: DashComment, showObject = false): string {
             c.githubState === "posted"
               ? `posted${c.githubUrl ? ` — <a href="${esc(c.githubUrl)}">view</a>` : ""}`
               : c.githubState === "failed"
-                ? `posting failed ${relTime(c.createdAt)} — no automatic retry exists; a fleet poster must post it by hand${c.githubError ? ` — last error: ${esc(c.githubError)}` : ""}`
+                ? `posting failed ${relTime(c.githubFailedAt ?? c.createdAt)} — no automatic retry exists; a fleet poster must post it by hand${c.githubError ? ` — last error: ${esc(c.githubError)}` : ""}`
                 : `pending — will post to ${esc(c.githubRef ?? "")}`
           }</span>`
         : `<span class="badge">note</span>`;
   const obj = showObject ? ` <span class="muted">on <code>${esc(c.objectRef)}</code></span>` : "";
-  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author)} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
+  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author)} ${verificationChip} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
 }
 
 export interface CommentFormOpts {
@@ -644,6 +665,8 @@ export function commentFormHtml(objectRef: string, opts: CommentFormOpts): strin
     : "";
   return `<form class="cform" data-object="${esc(objectRef)}">
 <label>Comment as</label><select name="author" data-author-picker>${authorOptions}</select>
+<label>Operator token <span class="muted">(needed for verified Drew/Muse posts after setup; saved only in this browser)</span></label><input type="password" name="operatorToken" autocomplete="off" placeholder="Paste operator token when issued">
+<button type="button" data-forget-operator-token>Forget saved token</button>
 <label>Kind</label><div class="kinds">
 <label><input type="radio" name="kind" value="note" checked> Note — read when this is next picked up</label>
 <label><input type="radio" name="kind" value="message"> ✉ Message to Muse — the orchestrator triages it on its next pass</label>
@@ -1560,8 +1583,12 @@ export function renderBoardBody(
           : `${esc(k)} (${colItems.length}/${wipByLane.get(k)?.cap ?? 0})`;
       const summary = wipByLane.get(k);
       const scopeFlags = [
-        ...(summary?.projects ?? []).filter((scope) => scope.overCap).map((scope) => `project ${scope.key} ${scope.count}/${scope.cap}`),
-        ...(summary?.epics ?? []).filter((scope) => scope.overCap).map((scope) => `epic ${scope.key} ${scope.count}/${scope.cap}`),
+        ...(summary?.projects ?? [])
+          .filter((scope) => scope.overCap)
+          .map((scope) => `project ${scope.key} ${scope.count}/${scope.cap}`),
+        ...(summary?.epics ?? [])
+          .filter((scope) => scope.overCap)
+          .map((scope) => `epic ${scope.key} ${scope.count}/${scope.cap}`),
       ];
       if (summary?.overCap) scopeFlags.unshift(`lane over cap by ${summary.count - summary.cap}`);
       const overCapBadges = scopeFlags
@@ -1600,10 +1627,11 @@ export function renderBoard(
 
 /** The Datastar shell for / (#1444): heading + intro paint at once;
  *  the board itself streams in from /frag/board. */
-export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDetail, viewQuery = ""): string {
+  const fragBoard = viewQuery ? `/frag/board?${viewQuery}` : "/frag/board";
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')"><div class="skel">Loading the board…</div></div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('${fragBoard}')" data-on-dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
     provenance,
     "/board",
     ACTION_SCRIPT,
@@ -1664,7 +1692,12 @@ export function forecastSummaryHtml(contracts: ForecastContract[] | undefined): 
   return `<div class="forecast">${lines}</div>`;
 }
 
-function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow, forecasts?: Map<RefKey, ForecastContract[]>): string {
+function roadmapDrilldown(
+  drill: RoadmapDrill,
+  row: RoadmapRow,
+  forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
+): string {
   const parts: string[] = [];
   if (!drill.epic) {
     parts.push(`<p class="muted">No epic yet — no Project epic matches this roadmap row.</p>`);
@@ -1696,6 +1729,10 @@ function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow, forecasts?: Map<
     const fc = forecastSummaryHtml(forecasts?.get(drill.epic.ref));
     if (fc) parts.push(fc);
   }
+  if (drill.epic) {
+    const card = spend?.byScope.get(drill.epic.ref);
+    if (card) parts.push(spendCardHtml(card));
+  }
   if (row.notes.trim()) parts.push(`<p class="notes">${esc(row.notes)}</p>`);
   return `<details class="roadmap-drill"><summary>Epic &amp; issues</summary>${parts.join("")}</details>`;
 }
@@ -1708,6 +1745,7 @@ function roadmapCard(
   annotations?: Map<string, RoadmapAnnotation[]>,
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1717,7 +1755,7 @@ function roadmapCard(
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
-  const expansion = drill ? roadmapDrilldown(drill, row, forecasts) : "";
+  const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
   const notes = annotations?.get(row.subject) ?? [];
   const annotationHtml = notes.length
     ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
@@ -1741,6 +1779,7 @@ function timelineTable(
   annotations?: Map<string, RoadmapAnnotation[]>,
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1750,7 +1789,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
@@ -1773,6 +1812,7 @@ export function renderRoadmap(
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
   flowAnalytics?: FlowAnalytics,
+  spend?: SpendCardsView | null,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1793,9 +1833,9 @@ export function renderRoadmap(
     : "";
   let body: string;
   if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const byTheme = new Map<string, RoadmapRow[]>();
@@ -1808,7 +1848,11 @@ export function renderRoadmap(
           .map(([theme, themeRows]) => {
             const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
             const cards = (laneRows: RoadmapRow[]) =>
-              laneRows.map((row) => roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts)).join("");
+              laneRows
+                .map((row) =>
+                  roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts, spend),
+                )
+                .join("");
             const lanes = dg.lanes
               .map((lane) => {
                 const laneRows = lane.rows.filter((row) => (row.area || "Unthemed") === theme);
@@ -1817,8 +1861,12 @@ export function renderRoadmap(
               .join("");
             const outsideRows = dg.outsideRows.filter((row) => (row.area || "Unthemed") === theme);
             const coarseRows = dg.coarse.filter((row) => (row.area || "Unthemed") === theme);
-            const outside = outsideRows.length ? `<h3>Outside this window (${outsideRows.length})</h3>${cards(outsideRows)}` : "";
-            const coarse = coarseRows.length ? `<h3>Undated or coarse horizons (${coarseRows.length})</h3>${cards(coarseRows)}` : "";
+            const outside = outsideRows.length
+              ? `<h3>Outside this window (${outsideRows.length})</h3>${cards(outsideRows)}`
+              : "";
+            const coarse = coarseRows.length
+              ? `<h3>Undated or coarse horizons (${coarseRows.length})</h3>${cards(coarseRows)}`
+              : "";
             return `<section class="roadmap-theme"><h2>${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></h2>${lanes}${outside}${coarse}</section>`;
           })
           .join("")
@@ -1826,7 +1874,7 @@ export function renderRoadmap(
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}${flowAnalytics ? flowChartsHtml(flowAnalytics) : ""}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}${spend?.unattributed ? unattributedSpendHtml(spend.unattributed) : ""}${flowAnalytics ? flowChartsHtml(flowAnalytics) : ""}`,
     provenance,
     "/roadmap",
     "",
@@ -2149,10 +2197,7 @@ function chargesStripHtml(usage: UsageView): string {
 /** Lazy-refresh strip (#1171): a visible "refreshing" marker while a
  *  gatherer run is in flight, plus the manual refresh-now control. Both
  *  use the same trigger path; neither blocks the page on provider calls. */
-function quotaRefreshHtml(
-  refresh?: import("./quota-refresh.ts").RefreshStatus,
-  generatedAt?: string | null,
-): string {
+function quotaRefreshHtml(refresh?: import("./quota-refresh.ts").RefreshStatus, generatedAt?: string | null): string {
   if (!refresh) return "";
   const marker = refresh.refreshing
     ? `<span class="badge refreshing" data-quota-refreshing="true">refreshing — the quota gatherer is running; reload for updated data</span>`
@@ -2249,9 +2294,7 @@ export function renderQuota(
     ...view.pools.map((p) => p.id),
     ...(view.burn ?? []).map((b) => b.provider),
     ...(view.burn ?? []).map((b) => b.pool),
-    ...(view.choices
-      ? [...view.choices.hasHeadroom, ...view.choices.burnBeforeReset, ...view.choices.doNotStart]
-      : []),
+    ...(view.choices ? [...view.choices.hasHeadroom, ...view.choices.burnBeforeReset, ...view.choices.doNotStart] : []),
     ...(view.credentialLifecycle ?? []).map((c) => c.providerName),
   ]);
   const display = (name: string) => displayNames.get(name) ?? name;
@@ -2633,7 +2676,8 @@ function tierItemCard(
   // carries a gh: ref, and every card expands inline to its full
   // detail — source, state, since/lastSeenAt, horizon, blockedBy,
   // the question payload, and the recorded action history.
-  const titleHtml = item.ref && isValidRef(item.ref) ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
+  const titleHtml =
+    item.ref && isValidRef(item.ref) ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
   const questionPayload = item.questions?.length
     ? `<dt>Questions</dt><dd>${item.questions
         .map(
@@ -3468,8 +3512,12 @@ export function renderTodayBody(
   }
   const wipViolations = (today.wipLanes ?? []).flatMap((lane) => [
     ...(lane.overCap ? [`${lane.lane} ${lane.count}/${lane.cap}`] : []),
-    ...lane.projects.filter((scope) => scope.overCap).map((scope) => `project ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
-    ...lane.epics.filter((scope) => scope.overCap).map((scope) => `epic ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+    ...lane.projects
+      .filter((scope) => scope.overCap)
+      .map((scope) => `project ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+    ...lane.epics
+      .filter((scope) => scope.overCap)
+      .map((scope) => `epic ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
   ]);
   if (wipViolations.length) {
     alerts.push(
@@ -5064,29 +5112,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
   // price within 25% of the band leader; the scale select multiplies all
   // three. Lane charts visualize the same near-leader choices as the
   // comparison tables; they do not recalculate band membership.
-  function logEdges(vals, n) {
-    var xs = vals.filter(function (v) { return v != null && v > 0; });
-    if (!xs.length) return [];
-    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
-    if (mn === mx) return [mn, mx];
-    var edges = [];
-    for (var i = 0; i <= n; i++) edges.push(mn * Math.pow(mx / mn, i / n));
-    return edges;
-  }
-  function scoreEdges(rows, n) {
-    var xs = rows.map(function (p) { return p.score; }).filter(function (v) { return v != null; });
-    if (!xs.length) return [];
-    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
-    var edges = [];
-    for (var i = 0; i <= n; i++) edges.push(mn + ((mx - mn) * i) / n);
-    return edges;
-  }
-  function bandIndex(v, edges) {
-    for (var i = 0; i < edges.length - 1; i++) {
-      if (v >= edges[i] && (i === edges.length - 2 ? v <= edges[i + 1] : v < edges[i + 1])) return i;
-    }
-    return -1;
-  }
+  // logEdges/scoreEdges/bandIndex come from the aa-explorer-computations.js import above (#7562): no inline copies here - an inline definition would shadow the tested module implementation.
   function chipFor(p, leader) {
     var notes = [];
     if (leader && leader.key !== p.key) {
@@ -6354,23 +6380,21 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
       : `${v} <span class="muted">(${d > 0 ? "+" : ""}${d})</span>`;
   };
   const rows = current.repos
-    .map(
-      (r) => {
-        const state = staleIssueState(r);
-        const status =
-          state === "error"
-            ? `Collection error${r.staleIssuesError ? `: ${esc(r.staleIssuesError)}` : ""}`
-            : state === "stale"
-              ? "STALE — collection is over 7 days old"
-              : state === "unavailable"
-                ? "Unavailable — collection failed or not collected"
-                : "Current";
-        const collectedAt = r.staleIssuesCollectedAt
-          ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
-          : "—";
-        return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
-      },
-    )
+    .map((r) => {
+      const state = staleIssueState(r);
+      const status =
+        state === "error"
+          ? `Collection error${r.staleIssuesError ? `: ${esc(r.staleIssuesError)}` : ""}`
+          : state === "stale"
+            ? "STALE — collection is over 7 days old"
+            : state === "unavailable"
+              ? "Unavailable — collection failed or not collected"
+              : "Current";
+      const collectedAt = r.staleIssuesCollectedAt
+        ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
+        : "—";
+      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
+    })
     .join("");
   const note = baseline
     ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
@@ -6414,6 +6438,9 @@ export function projectsBodyHtml(
     /** Shared forecast contracts by item ref (#3984): the same objects
      * /api/forecasts.json serves, rendered as one-line summaries. */
     forecasts?: Map<RefKey, ForecastContract[]>;
+    /** Spend beside progress (#4824): the #4823 rollup store's
+     * reader view. Absent/null: cards render exactly as before. */
+    spend?: SpendCardsView | null;
   } = {},
 ): string {
   const base = opts.basePath ?? "/projects";
@@ -6476,9 +6503,11 @@ export function projectsBodyHtml(
         : "";
       const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
+      const spendCard = opts.spend?.byScope.get(p.ref);
+      const spendHtml = spendCard ? spendCardHtml(spendCard) : "";
       const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
       const forecastHtml = forecastSummaryHtml(opts.forecasts?.get(p.ref));
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
@@ -6490,7 +6519,7 @@ ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
 <p class="muted">Live services: ${serviceHomeLinks()
     .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
     .join(" · ")}</p>
-${cards || '<p class="muted">No items in this area.</p>'}`;
+${cards || '<p class="muted">No items in this area.</p>'}${opts.spend?.unattributed ? unattributedSpendHtml(opts.spend.unattributed) : ""}`;
   return body;
 }
 
@@ -6507,6 +6536,7 @@ export function renderProjects(
     basePath?: string;
     briefs?: Map<RefKey, ItemBrief>;
     forecasts?: Map<RefKey, ForecastContract[]>;
+    spend?: SpendCardsView | null;
   } = {},
 ): string {
   return layout(
@@ -6609,12 +6639,14 @@ export function renderProgram(
     forecasts?: Map<RefKey, ForecastContract[]>;
     /** The #4829 flow twin the #4830 charts render on this page. */
     flowAnalytics?: FlowAnalytics;
+    /** Spend beside progress (#4824) for the pool section. */
+    spend?: SpendCardsView | null;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
@@ -6782,22 +6814,22 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
   const ranked = g.rankedBlocked;
   const rankedHtml = ranked.length
     ? `<ul class="epic-graph-list">${ranked
-        .map(
-          (r) => {
-            const blockerItems = r.blockers.map((b) => poolRefLink(b));
-            const contributingItems = r.contributingItems.length > 0
+        .map((r) => {
+          const blockerItems = r.blockers.map((b) => poolRefLink(b));
+          const contributingItems =
+            r.contributingItems.length > 0
               ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => poolRefLink(ci)).join(", ")}</span>`
               : "";
-            return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
-          },
-        )
+          return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
+        })
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
 
   const rankedBlockersHtml = g.rankedBlockers.length
     ? `<ol class="epic-graph-list">${g.rankedBlockers
         .map((blocker) => {
-          const stateText = blocker.state === null ? "outside this pool; status unknown — unresolved" : "open unresolved blocker";
+          const stateText =
+            blocker.state === null ? "outside this pool; status unknown — unresolved" : "open unresolved blocker";
           const downstream = blocker.downstreamItems
             .map((item) => {
               const weightText = item.effortWeight === null ? "unsized" : `effort weight ${item.effortWeight}`;

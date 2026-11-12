@@ -10,7 +10,7 @@ The lease itself lives in the journal, the DO is the only grantor, and fencing i
 
 Handoff is ordered: the DO appends `LeaseHandedOff{epoch+1}` as its last act as writer, and the new holder appends only after replaying the journal through the handoff position. Commands in flight at the boundary are refused with a retryable not-holder error — never executed by the old holder, and never silently re-executed. The recommended defaults are a 30-second term with renewal at 10 seconds.
 
-*Citations: #2819 (OPEN, "id: design: native-spill write lease protocol for hot worlds (from #2059)"): "the journaled single-writer lease is the whole safety design — split-brain (DO and native node both accepting writes) is the catastrophic failure. The lease protocol itself was not designed. This issue designs it." Design record comment (2026-11-01): "The lease lives in the journal itself, the DO is the only grantor, and fencing is an epoch check on journal append." Design doc `doc/2026-11-01_design_id2819.md`, PR #3857 merged; implementation phased in #3803 (closed) / #3804 / #3805. Footer: epic #2056, parent #2059, consumer #2046.*
+_Citations: #2819 (OPEN, "id: design: native-spill write lease protocol for hot worlds (from #2059)"): "the journaled single-writer lease is the whole safety design — split-brain (DO and native node both accepting writes) is the catastrophic failure. The lease protocol itself was not designed. This issue designs it." Design record comment (2026-11-01): "The lease lives in the journal itself, the DO is the only grantor, and fencing is an epoch check on journal append." Design doc `doc/2026-11-01_design_id2819.md`, PR #3857 merged; implementation phased in #3803 (closed) / #3804 / #3805. Footer: epic #2056, parent #2059, consumer #2046._
 
 ## 2. #2898 — Reconstruction is admission
 
@@ -20,7 +20,7 @@ Three corollaries follow. Validation is against state you hold, not claims the i
 
 This one rule unifies six filings as "one defect with six addresses": Phase 1, journal restore validates authors/scopes; Phase 2, attestation agreement validity; and Phase 3, derive-don't-trust plus a closing audit.
 
-*Citations: #2898 (OPEN, epic + kind/design), recorded rule: "reconstruction is admission. Anywhere pkgs/id rebuilds authority-bearing state from stored or supplied data, the rebuilding code validates the same invariants the live path enforces at creation, and refuses (never partially applies, never silently repairs) data that violates them." Phase 1: #2894 + #2890 — restore's `Committed` arm checked only sequence continuity, and the `Issued` arm was never scoped. Phase 2: #2863 (`players=[A,A]` computing `Agreed` from one key); #2868 (free-form winner naming a third party). Phase 3: #2882 (caller-supplied `replacing: bool` admitting a 65th schedule); #2876 (manifest serde without `deny_unknown_fields`). Corrections of record (2026-10-31): participant 0 IS a legitimate `Committed` author (rule: 0, or issued earlier and not revoked); the attestation outcome domain includes the "draw" sentinel. Design doc: `files/designs/code-id-reconstruction-validation.md`.*
+_Citations: #2898 (OPEN, epic + kind/design), recorded rule: "reconstruction is admission. Anywhere pkgs/id rebuilds authority-bearing state from stored or supplied data, the rebuilding code validates the same invariants the live path enforces at creation, and refuses (never partially applies, never silently repairs) data that violates them." Phase 1: #2894 + #2890 — restore's `Committed` arm checked only sequence continuity, and the `Issued` arm was never scoped. Phase 2: #2863 (`players=[A,A]` computing `Agreed` from one key); #2868 (free-form winner naming a third party). Phase 3: #2882 (caller-supplied `replacing: bool` admitting a 65th schedule); #2876 (manifest serde without `deny_unknown_fields`). Corrections of record (2026-10-31): participant 0 IS a legitimate `Committed` author (rule: 0, or issued earlier and not revoked); the attestation outcome domain includes the "draw" sentinel. Design doc: `files/designs/code-id-reconstruction-validation.md`._
 
 ## 3. #3231 — One receipt contract, and #3232 — what's audited
 
@@ -36,7 +36,7 @@ The contract has three rules:
 
 > **Caveat:** #3232 shows CLOSED as of 2026-11-04T17:03:48Z, but its comments record the audit as gated / not started, with #3187 as the last gate. Closed state alone is not evidence the audit completed.
 
-*Citations: #3231 (OPEN, epic); #3232 (Phase 3 of #3231).*
+_Citations: #3231 (OPEN, epic); #3232 (Phase 3 of #3231)._
 
 ## 4. #534 — Phase 12: which program, what the pipeline does
 
@@ -46,7 +46,7 @@ The pipeline in #534 is a research-then-design-then-implement gate. Each item ne
 
 There were 11 items, F12.1–F12.17. #534 closed on 2026-11-04: all 11 boxes qualify as done by the issue's own definition, and the remaining work lives in the 8 open implementation issues.
 
-*Citations: #534 (CLOSED, epic, "id: Phase 12 designs to run through the research workflow"): items "need a design, or for D1-026 a research package, before anyone implements them. Run each through the research workflow, commit the design, then open an implementation issue." Items: manifest #807 (closed); roles v2 → #835 (open); provider registry #1061; first providers #1062; audit log #1063; ABI spec #1064 (closed); guest SDKs research #1065; program upgrade #1066; fair scheduling #1067; portals #1068; module trust #1069 (closed). Research package: `doc/2026-11-03T00-05-09Z_research_phase-12-package-534/` (PR #4672).*
+_Citations: #534 (CLOSED, epic, "id: Phase 12 designs to run through the research workflow"): items "need a design, or for D1-026 a research package, before anyone implements them. Run each through the research workflow, commit the design, then open an implementation issue." Items: manifest #807 (closed); roles v2 → #835 (open); provider registry #1061; first providers #1062; audit log #1063; ABI spec #1064 (closed); guest SDKs research #1065; program upgrade #1066; fair scheduling #1067; portals #1068; module trust #1069 (closed). Research package: `doc/2026-11-03T00-05-09Z_research_phase-12-package-534/` (PR #4672)._
 
 ## 5. #558 — `id world dev`: what the loop is and isn't
 
@@ -56,7 +56,7 @@ It is not a WYSIWYG editor, and it is not publish or rollback tooling for live w
 
 The real implementation gate is #1066 (F12.9 upgrade/migration), which is still open.
 
-*Citations: #558 (OPEN, "id: F12.15 `id world dev`: watch, rebuild, hot-swap, fixture replay, fuzz harness"): "Watch the source, rebuild, hot-swap into a scratch world via F12.9 migration, replay fixtures on each change, and run a deterministic fuzz harness against declared invariants; edit-to-running under 3 s." Design record: `doc/2026-11-01_design_id558.md`, PR #3823. Implementation issue #5541.*
+_Citations: #558 (OPEN, "id: F12.15 `id world dev`: watch, rebuild, hot-swap, fixture replay, fuzz harness"): "Watch the source, rebuild, hot-swap into a scratch world via F12.9 migration, replay fixtures on each change, and run a deterministic fuzz harness against declared invariants; edit-to-running under 3 s." Design record: `doc/2026-11-01_design_id558.md`, PR #3823. Implementation issue #5541._
 
 ## 6. #788 — Native reference shell
 
@@ -66,7 +66,7 @@ Its acceptance test is equivalence: it renders the same world and emits the same
 
 Current state: the shell contract exists, but no native client shell exists yet. A workspace member `crates/id-native-shell` — "Native reference shell for id (F13.6, design #788)", deliberately not a default member — now exists per the crate-split research (see §12).
 
-*Citations: #788 (OPEN, XL, "id: Phase 13 F13.6 native client shells on the shell contract"). Shell contract: `pkgs/id/src/shell_contract.rs`, `contract/shell-contract.v1.json`, PR #842.*
+_Citations: #788 (OPEN, XL, "id: Phase 13 F13.6 native client shells on the shell contract"). Shell contract: `pkgs/id/src/shell_contract.rs`, `contract/shell-contract.v1.json`, PR #842._
 
 ## 7. #790 — Topology: the specific cases
 
@@ -78,7 +78,7 @@ A client can connect to several worlds and servers, and to other clients, at onc
 4. **Client + server simultaneously in one node.** One serve process hosts many worlds (`world_hub.rs`).
 5. **Client-only mode.** Satisfied WITHOUT a `--client-only` flag: only an explicit `id serve` hosts a world, and SSH serving is opt-in.
 
-*Citations: #790 (CLOSED + implemented): "Clients connect to several worlds and servers and to other clients at once, and id is often client and server simultaneously. A client-only mode must always exist (cheap web load, SSH-only clients); SSH servers in id stay rare and opt-in." Implemented: `WorldSessions` coordinator in `pkgs/id/src/world_net.rs` (PR #3896), PR #3862.*
+_Citations: #790 (CLOSED + implemented): "Clients connect to several worlds and servers and to other clients at once, and id is often client and server simultaneously. A client-only mode must always exist (cheap web load, SSH-only clients); SSH servers in id stay rare and opt-in." Implemented: `WorldSessions` coordinator in `pkgs/id/src/world_net.rs` (PR #3896), PR #3862._
 
 ## 8. #835 — Moderator authority: the corrected model
 
@@ -88,7 +88,7 @@ The powers are asymmetric. An install-module frame accepts a `BUILDER` holder, w
 
 Frames are authorized by each session's live capability. The actor derives the audit identity; no client-supplied actor ID is trusted. Builders install Wasm only.
 
-*Citations: #835 (OPEN). Implementation issue #5543.*
+_Citations: #835 (OPEN). Implementation issue #5543._
 
 ## 9. Writer-set projection and the discovery query (#5545) — definitions
 
@@ -104,7 +104,7 @@ The output is `Projection{counted, uncounted, provenance}` — never the same ty
 
 Tree state today: `idset.rs` (35,988 B) is types and encoding only. Expansion, projection, and counting are later slices, deliberately absent there; `WhyNotCounted` / `expand_retro` exist only in the design doc.
 
-*Citations: #5545 (OPEN). Design doc `doc/2026-10-30T13-15-00Z_design_id_writer_set_view_projection/`, Rule §0: "ingest is a validity gate, never an authority gate; every object that verifies is stored; a view counts only its writer set."*
+_Citations: #5545 (OPEN). Design doc `doc/2026-10-30T13-15-00Z_design_id_writer_set_view_projection/`, Rule §0: "ingest is a validity gate, never an authority gate; every object that verifies is stored; a view counts only its writer set."_
 
 ## 10. #3455 — The Cf contract
 
@@ -126,7 +126,7 @@ The following are Drew's extensions, and they are not yet covered by the #3455 c
 
 These are flagged as a candidate follow-on design, not as part of #3455.
 
-*Citations: #3455 (CLOSED, sub-issues 4/4 complete, "Design: a value cannot act on the terminal — one format-character (Cf) contract for pkgs/id plain output"). Contract text: "A plain-text field is row-safe only if it contains no character that can act on the terminal: no structure character (Cc controls, U+2028/U+2029) and no format character (category Cf, the crate's one shared set). Every plain renderer in pkgs/id accounts for both classes; the disposition differs by surface kind — row renderers escape, stripping sanitizers strip, ingest validators refuse — and no surface re-derives the character set." Phases: #2839, #3111, #3089, plus the closing inventory.*
+_Citations: #3455 (CLOSED, sub-issues 4/4 complete, "Design: a value cannot act on the terminal — one format-character (Cf) contract for pkgs/id plain output"). Contract text: "A plain-text field is row-safe only if it contains no character that can act on the terminal: no structure character (Cc controls, U+2028/U+2029) and no format character (category Cf, the crate's one shared set). Every plain renderer in pkgs/id accounts for both classes; the disposition differs by surface kind — row renderers escape, stripping sanitizers strip, ingest validators refuse — and no surface re-derives the character set." Phases: #2839, #3111, #3089, plus the closing inventory._
 
 ## 11. #2146 — Programs-as-websites: progress and what remains
 
@@ -138,7 +138,7 @@ What remains: Phase 4, live path-mount routing — there is no mount dispatch in
 
 One open question the design left for Drew: anonymous public program sessions, versus always invite-capability-gated. The design's recommendation is invite-gated for v1.
 
-*Citations: #2146 (CLOSED as design delivered, PR #3836, `doc/2026-11-01_design_id2146.md`); #2147 (OPEN).*
+_Citations: #2146 (CLOSED as design delivered, PR #3836, `doc/2026-11-01_design_id2146.md`); #2147 (OPEN)._
 
 ## 12. Crate split — priority, current state, next steps
 
@@ -158,7 +158,7 @@ Next steps, all OPEN:
 - #4409 — step 6 (`id-directory`, then `id-web`)
 - #4411 — step 7 (`id-cli` + facade slimming)
 
-*Citations: #3447 ("pkgs/id: split the monolith crate into sub-crates along module seams (prioritized by Drew 2026-11-01)"); Drew 2026-11-01: "prioritize the crate splitting work." Design: `doc/2026-11-01T16-53-00Z_design_id_crate_split/`.*
+_Citations: #3447 ("pkgs/id: split the monolith crate into sub-crates along module seams (prioritized by Drew 2026-11-01)"); Drew 2026-11-01: "prioritize the crate splitting work." Design: `doc/2026-11-01T16-53-00Z_design_id_crate_split/`._
 
 ## 13. KDL prior art — what the hunt found
 

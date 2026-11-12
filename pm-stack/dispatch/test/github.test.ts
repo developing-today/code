@@ -89,10 +89,12 @@ describe("GitHubClient response-shape validation (#7101)", () => {
 
   test("installation {} raises GitHubError naming the endpoint and 'id'; no mint to undefined", async () => {
     const err = await withStub({ installation: {} }, () =>
-      client().createIssue(REPO, "t", "b", []).then(
-        () => null,
-        (e: unknown) => e,
-      ),
+      client()
+        .createIssue(REPO, "t", "b", [])
+        .then(
+          () => null,
+          (e: unknown) => e,
+        ),
     );
     // installation/token malformation may fall back to gh; the fake gh
     // fails, so the combined error must preserve the malformed reason.
@@ -104,10 +106,12 @@ describe("GitHubClient response-shape validation (#7101)", () => {
 
   test("installation null body raises GitHubError, not a raw TypeError", async () => {
     const err = await withStub({ installation: undefined }, () =>
-      client().createIssue(REPO, "t", "b", []).then(
-        () => null,
-        (e: unknown) => e,
-      ),
+      client()
+        .createIssue(REPO, "t", "b", [])
+        .then(
+          () => null,
+          (e: unknown) => e,
+        ),
     );
     expect(err).toBeInstanceOf(GitHubError);
     expect(err).not.toBeInstanceOf(TypeError);
@@ -116,10 +120,12 @@ describe("GitHubClient response-shape validation (#7101)", () => {
 
   test("token {} raises naming 'token'; no Bearer undefined is ever sent", async () => {
     const err = await withStub({ token: {} }, () =>
-      client().createIssue(REPO, "t", "b", []).then(
-        () => null,
-        (e: unknown) => e,
-      ),
+      client()
+        .createIssue(REPO, "t", "b", [])
+        .then(
+          () => null,
+          (e: unknown) => e,
+        ),
     );
     expect(err).toBeInstanceOf(GitHubError);
     expect((err as Error).message).toContain("'token'");
@@ -128,10 +134,12 @@ describe("GitHubClient response-shape validation (#7101)", () => {
 
   test("token numeric raises naming 'token'", async () => {
     const err = await withStub({ token: { token: 123, expires_at: FUTURE } }, () =>
-      client().createIssue(REPO, "t", "b", []).then(
-        () => null,
-        (e: unknown) => e,
-      ),
+      client()
+        .createIssue(REPO, "t", "b", [])
+        .then(
+          () => null,
+          (e: unknown) => e,
+        ),
     );
     expect(err).toBeInstanceOf(GitHubError);
     expect((err as Error).message).toContain("'token'");
@@ -141,10 +149,12 @@ describe("GitHubClient response-shape validation (#7101)", () => {
 
   test("token with unparseable expires_at raises naming 'expires_at'", async () => {
     const err = await withStub({ token: { token: "test-token", expires_at: "not-a-date" } }, () =>
-      client().createIssue(REPO, "t", "b", []).then(
-        () => null,
-        (e: unknown) => e,
-      ),
+      client()
+        .createIssue(REPO, "t", "b", [])
+        .then(
+          () => null,
+          (e: unknown) => e,
+        ),
     );
     expect(err).toBeInstanceOf(GitHubError);
     expect((err as Error).message).toContain("'expires_at'");
@@ -152,10 +162,12 @@ describe("GitHubClient response-shape validation (#7101)", () => {
 
   test("create {} surfaces a malformed-body GitHubError and does NOT fall back to a gh create", async () => {
     const err = await withStub({ create: {} }, () =>
-      client().createIssue(REPO, "t", "b", []).then(
-        () => null,
-        (e: unknown) => e,
-      ),
+      client()
+        .createIssue(REPO, "t", "b", [])
+        .then(
+          () => null,
+          (e: unknown) => e,
+        ),
     );
     // A gh fallback would wrap the failure in a combined "failed via
     // app ... and via gh" GitHubError; the bare malformed-body error
@@ -168,10 +180,12 @@ describe("GitHubClient response-shape validation (#7101)", () => {
 
   test("create with wrong-typed fields surfaces a malformed-body GitHubError, no gh create", async () => {
     const err = await withStub({ create: { number: "abc", html_url: 42 } }, () =>
-      client().createIssue(REPO, "t", "b", []).then(
-        () => null,
-        (e: unknown) => e,
-      ),
+      client()
+        .createIssue(REPO, "t", "b", [])
+        .then(
+          () => null,
+          (e: unknown) => e,
+        ),
     );
     expect(err).toBeInstanceOf(GitHubError);
     expect((err as Error).message).toContain("malformed");
@@ -179,10 +193,12 @@ describe("GitHubClient response-shape validation (#7101)", () => {
 
   test("create null body surfaces a malformed-body GitHubError, no gh create, no TypeError", async () => {
     const err = await withStub({ create: undefined }, () =>
-      client().createIssue(REPO, "t", "b", []).then(
-        () => null,
-        (e: unknown) => e,
-      ),
+      client()
+        .createIssue(REPO, "t", "b", [])
+        .then(
+          () => null,
+          (e: unknown) => e,
+        ),
     );
     expect(err).toBeInstanceOf(GitHubError);
     expect((err as Error).message).toContain("malformed");
@@ -191,10 +207,12 @@ describe("GitHubClient response-shape validation (#7101)", () => {
 
   test("lookup {} does not fabricate an issue", async () => {
     const out = await withStub({ lookup: {} }, () =>
-      client().getIssue(REPO, 3007).then(
-        (v) => ({ v }),
-        (e: unknown) => ({ e }),
-      ),
+      client()
+        .getIssue(REPO, 3007)
+        .then(
+          (v) => ({ v }),
+          (e: unknown) => ({ e }),
+        ),
     );
     // Never a fabricated IssueInfo and never a raw TypeError: either the
     // gh route's definitive 404 governs (null) or the combined
@@ -210,10 +228,12 @@ describe("GitHubClient response-shape validation (#7101)", () => {
 
   test("lookup null body never escapes as a raw TypeError", async () => {
     const out = await withStub({ lookup: undefined }, () =>
-      client().getIssue(REPO, 3007).then(
-        (v) => ({ v }),
-        (e: unknown) => ({ e }),
-      ),
+      client()
+        .getIssue(REPO, 3007)
+        .then(
+          (v) => ({ v }),
+          (e: unknown) => ({ e }),
+        ),
     );
     if ("v" in out) {
       expect(out.v).toBeNull();

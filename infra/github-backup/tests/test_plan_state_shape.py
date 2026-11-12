@@ -83,8 +83,10 @@ class ValidatePlanTests(unittest.TestCase):
         # A non-string branch crashes manifest head_sha for a present
         # mirror; parent is copied into MANIFEST.json verbatim.
         entries, problems = ghb_common.validate_plan(
-            [{"repo": "a/b", "branch": 7, "parent": ["x/y"]},
-             {"repo": "c/d", "branch": ["main"], "parent": {"x": 1}}]
+            [
+                {"repo": "a/b", "branch": 7, "parent": ["x/y"]},
+                {"repo": "c/d", "branch": ["main"], "parent": {"x": 1}},
+            ]
         )
         self.assertEqual(len(entries), 2)
         for entry in entries:
@@ -96,10 +98,8 @@ class ValidatePlanTests(unittest.TestCase):
 
     def test_string_and_null_fields_pass_unchanged(self):
         plan = [
-            {"repo": "a/b", "reference": "c/d", "branch": "main",
-             "parent": "x/y"},
-            {"repo": "c/d", "reference": None, "branch": None,
-             "parent": None},
+            {"repo": "a/b", "reference": "c/d", "branch": "main", "parent": "x/y"},
+            {"repo": "c/d", "reference": None, "branch": None, "parent": None},
             {"repo": "e/f"},
         ]
         entries, problems = ghb_common.validate_plan(plan)
@@ -155,6 +155,35 @@ class ValidateStateTests(unittest.TestCase):
         self.assertEqual(clean, {})
         self.assertEqual(len(problems), 2)
         self.assertIn("drain_last::a/b", problems[0])
+
+    def test_wrong_shape_last_fetch_is_named_and_dropped(self):
+        # Oracle (#6821): fetch_mirrors.main does arithmetic on
+        # last_fetch, so any non-number shape must surface as a named
+        # problem at validation and never reach the fetch loop.
+        for bad in ["2026-11-01T00:00:00Z", [1762000000], {"ts": 1}, True]:
+            clean, problems = ghb_common.validate_state(
+                {"a/b": {"last_fetch": bad, "fail_days": []}}
+            )
+            self.assertEqual(len(problems), 1, bad)
+            self.assertIn("last_fetch", problems[0])
+            self.assertIn("a/b", problems[0])
+            self.assertNotIn("last_fetch", clean["a/b"])
+            self.assertEqual(clean["a/b"]["fail_days"], [])
+
+    def test_drain_fail_entry_inner_fields_are_preserved(self):
+        # drain_fail::<repo> is a drainer bookkeeping object, preserved
+        # verbatim under its own shape (#6637) — its inner fields are
+        # not per-repo fetch state and are not last_fetch-validated.
+        entry = {"count": 2, "last_fetch": {}}
+        clean, problems = ghb_common.validate_state({"drain_fail::a/b": entry})
+        self.assertEqual(problems, [])
+        self.assertEqual(clean["drain_fail::a/b"], entry)
+
+    def test_numeric_last_fetch_passes_unchanged(self):
+        for good in [1762000000, 1762000000.5, 0]:
+            clean, problems = ghb_common.validate_state({"a/b": {"last_fetch": good}})
+            self.assertEqual(problems, [])
+            self.assertEqual(clean["a/b"]["last_fetch"], good)
 
     def test_non_list_fail_days_is_reset_with_problem(self):
         clean, problems = ghb_common.validate_state(
@@ -239,9 +268,7 @@ class FetchMirrorsShapeTests(unittest.TestCase):
             patch.object(
                 fetch_mirrors.subprocess,
                 "run",
-                return_value=SimpleNamespace(
-                    returncode=1, stdout="", stderr="boom"
-                ),
+                return_value=SimpleNamespace(returncode=1, stdout="", stderr="boom"),
             ),
             contextlib.redirect_stderr(io.StringIO()) as err,
         ):
@@ -323,9 +350,7 @@ class ManifestShapeTests(unittest.TestCase):
                 ],
                 {},
             )
-            self.assertEqual(
-                sorted(manifest["mirrors"]), ["a/b", "c/d", "e/f", "g/h"]
-            )
+            self.assertEqual(sorted(manifest["mirrors"]), ["a/b", "c/d", "e/f", "g/h"])
             self.assertIsNone(manifest["mirrors"]["a/b"]["reference"])
             self.assertIsNone(manifest["mirrors"]["e/f"]["reference"])
             self.assertIsNone(manifest["mirrors"]["g/h"]["default_branch"])
@@ -341,9 +366,7 @@ class ManifestShapeTests(unittest.TestCase):
         # head_sha concatenates "refs/heads/" + branch — only reached
         # for present mirrors, so patch valid_mirror on.
         with tempfile.TemporaryDirectory() as root:
-            write_json(
-                root, "plan.json", [{"repo": "a/b", "branch": ["main"]}]
-            )
+            write_json(root, "plan.json", [{"repo": "a/b", "branch": ["main"]}])
             write_json(root, "state.json", {})
             with (
                 patch.object(manifest_mod, "load_config", return_value={}),
@@ -450,9 +473,7 @@ class ShapePropertyTests(unittest.TestCase):
         if not isinstance(plan, list):
             return [], 1
         valid = [
-            e
-            for e in plan
-            if isinstance(e, dict) and isinstance(e.get("repo"), str)
+            e for e in plan if isinstance(e, dict) and isinstance(e.get("repo"), str)
         ]
         return valid, len(plan) - len(valid)
 
@@ -489,6 +510,20 @@ class ShapePropertyTests(unittest.TestCase):
             days = entry.get("fail_days")
             if days is not None and not isinstance(days, list):
                 entry["fail_days"] = []
+                problems += 1
+            # #6821: a wrong-shape per-repo last_fetch is dropped
+            # under a named problem; drain bookkeeping entries are
+            # preserved under their own shapes.
+            last_fetch = entry.get("last_fetch")
+            if (
+                not key.startswith("drain_")
+                and last_fetch is not None
+                and (
+                    not isinstance(last_fetch, (int, float))
+                    or isinstance(last_fetch, bool)
+                )
+            ):
+                del entry["last_fetch"]
                 problems += 1
             clean[key] = entry
         return clean, problems

@@ -137,6 +137,15 @@ rec {
       url = "github:edolstra/flake-compat"; # ?shallow=1
       flake = false;
     };
+    crane = {
+      # Splits Rust dependency compilation out of package builds
+      # (craneLib.buildDepsOnly -> cargoArtifacts) so a workspace
+      # source change reuses the dependency layer instead of
+      # recompiling every registry crate (code#8392). Same rev the
+      # lock graph already carries via rust-flake; pkgs/atlas-search's
+      # package flake pins the same rev.
+      url = "github:ipetkov/crane/01bc1d404a51a0a07e9d8759cd50a7903e218c82";
+    };
     waybar = {
       # TODO: use this?
       url = "github:Alexays/Waybar"; # ?shallow=1";

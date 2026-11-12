@@ -82,8 +82,8 @@ def _auth_header_args() -> List[str]:
 # on a 401/404, which is how an auth error body used to read as a gone
 # session and a failed DELETE as a completed one (#7367).
 
-def _server_request(method: str, path: str, body: Any = None,
-                    timeout: int = 5):
+
+def _server_request(method: str, path: str, body: Any = None, timeout: int = 5):
     """One authenticated server call. Returns (status, payload):
     status is the HTTP status int, or None when no status was
     captured (transport failure - the reply is UNKNOWN); payload is
@@ -94,8 +94,7 @@ def _server_request(method: str, path: str, body: Any = None,
     if method != "GET":
         cmd += ["-X", method]
     if body is not None:
-        cmd += ["-H", "Content-Type: application/json",
-                "-d", json.dumps(body)]
+        cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(body)]
     cmd += _auth_header_args()
     cmd.append(f"{OPENCODE_URL}{path}")
     try:
@@ -137,8 +136,7 @@ def _get_session(session_id: str):
     accident); "unknown" with None for every other outcome - auth
     failures, 5xx, transport failures and mis-shaped 2xx bodies
     never authorize an action."""
-    status, payload = _server_request(
-        "GET", f"/api/session/{session_id}", timeout=5)
+    status, payload = _server_request("GET", f"/api/session/{session_id}", timeout=5)
     if status == 404:
         return "gone", None
     if _is_2xx(status):
@@ -152,8 +150,10 @@ def _delete_session(session_id: str) -> bool:
     """DELETE through the verified transport: True only on a 2xx
     verdict. A non-2xx delete did not happen, whatever curl said."""
     status, _payload = _server_request(
-        "DELETE", f"/api/session/{session_id}", timeout=5)
+        "DELETE", f"/api/session/{session_id}", timeout=5
+    )
     return _is_2xx(status)
+
 
 # Concurrency cap
 CONCURRENCY_CAP = 36
@@ -167,7 +167,7 @@ def read_mode() -> str:
     """Read the execution mode from the mode file."""
     if not MODE_FILE.exists():
         return "shadow"
-    
+
     try:
         mode = MODE_FILE.read_text().strip().lower()
         if mode in ("shadow", "live"):
@@ -182,7 +182,13 @@ def ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def log_fire(mode: str, candidates: "List[Dict] | None", launched: List[Dict], cap_room: "int | None", skips: List[Dict]) -> None:
+def log_fire(
+    mode: str,
+    candidates: "List[Dict] | None",
+    launched: List[Dict],
+    cap_room: "int | None",
+    skips: List[Dict],
+) -> None:
     """Append a fire log entry to fires.jsonl.
 
     cap_room is the measured available-slot count, or None when the
@@ -196,7 +202,7 @@ def log_fire(mode: str, candidates: "List[Dict] | None", launched: List[Dict], c
     the two identically.
     """
     ensure_state_dir()
-    
+
     fire_entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
@@ -205,7 +211,7 @@ def log_fire(mode: str, candidates: "List[Dict] | None", launched: List[Dict], c
         "cap_room": cap_room,
         "skips": skips,
     }
-    
+
     with FIRES_FILE.open("a") as f:
         f.write(json.dumps(fire_entry) + "\n")
 
@@ -213,22 +219,22 @@ def log_fire(mode: str, candidates: "List[Dict] | None", launched: List[Dict], c
 def run_poll() -> Dict[str, Any]:
     """Run poll.py to discover candidates and get system state."""
     poll_script = PRIMARY_CLONE / "pm-stack" / "opencode-claimant" / "poll.py"
-    
+
     if not poll_script.exists():
         raise FileNotFoundError(f"poll.py not found at {poll_script}")
-    
+
     # Run poll.py from the primary clone
     result = subprocess.run(
         ["python3", str(poll_script)],
         cwd=str(PRIMARY_CLONE),
         capture_output=True,
         text=True,
-        timeout=30
+        timeout=30,
     )
-    
+
     if result.returncode != 0:
         raise RuntimeError(f"poll.py failed: {result.stderr}")
-    
+
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as e:
@@ -273,9 +279,8 @@ def get_active_root_session_count() -> int:
         active_ids = poll.fetch_active_ids()
         if active_ids is None:
             return -1  # Unknown
-        return poll.count_active_roots(
-            sessions, int(time.time() * 1000), active_ids
-        )
+        count = poll.count_active_roots(sessions, int(time.time() * 1000), active_ids)
+        return -1 if count is None else count
     except Exception as e:
         print(f"Warning: Could not get active session count: {e}")
         return -1  # Unknown
@@ -284,14 +289,14 @@ def get_active_root_session_count() -> int:
 def supervision_step(mode: str) -> List[Dict]:
     """
     Step 1: Supervision - check bound sessions for recovery candidates.
-    
+
     Returns list of tasks that need recovery (bound but stuck/zero-message sessions).
     """
     if mode != "live":
         return []
-    
+
     recovery_candidates = []
-    
+
     # Get all claimed opencode-lane tasks with bound session IDs.
     # Rows come from poll.py's broker rich read: the repo-queue
     # binary's list verb prints a human table, and json-parsing it
@@ -306,7 +311,6 @@ def supervision_step(mode: str) -> List[Dict]:
                 lane = prog.get("lane") or task.get("lane")
                 session_id = prog.get("session_id") or task.get("session_id")
                 if lane == "opencode" and session_id:
-
                     # Check if session exists and is progressing.
                     # The verdict comes from the verified transport:
                     # "gone" is a 404 from the per-id GET; "unknown"
@@ -319,8 +323,9 @@ def supervision_step(mode: str) -> List[Dict]:
                     if verdict == "ok":
                         # Check for terminal state
                         has_terminal = any(
-                            marker in str(session.get("outcome", "") or "") or
-                            marker in str((session.get("time") or {}).get("idle", "") or "")
+                            marker in str(session.get("outcome", "") or "")
+                            or marker
+                            in str((session.get("time") or {}).get("idle", "") or "")
                             for marker in ["idle", "outcome", "completed", "failed"]
                         )
                         if not has_terminal:
@@ -353,19 +358,21 @@ def supervision_step(mode: str) -> List[Dict]:
                             )
                             continue
                         if len(messages) == 0:
-                            recovery_candidates.append({
-                                "task_id": task["id"],
-                                "session_id": session_id,
-                                "reason": "zero_message"
-                            })
+                            recovery_candidates.append(
+                                {
+                                    "task_id": task["id"],
+                                    "session_id": session_id,
+                                    "reason": "zero_message",
+                                }
+                            )
         except Exception as e:
             print(f"Warning: Supervision check failed for queue {queue}: {e}")
-    
+
     # Process recovery candidates
     for candidate in recovery_candidates:
         task_id = candidate["task_id"]
         session_id = candidate["session_id"]
-        
+
         try:
             # Delete the zero-message session. Only a verified 2xx
             # DELETE counts: a non-2xx delete did not happen, and the
@@ -375,18 +382,24 @@ def supervision_step(mode: str) -> List[Dict]:
                 bind_result = subprocess.run(
                     [
                         str(REPO_QUEUE_CMD),
-                        "bind", str(task_id),
-                        "--worker", "opencode-claimant",
-                        "--session-id", session_id,
-                        "--launched-by", LAUNCHED_BY_RECOVERY_ZERO_MESSAGE
+                        "bind",
+                        str(task_id),
+                        "--worker",
+                        "opencode-claimant",
+                        "--session-id",
+                        session_id,
+                        "--launched-by",
+                        LAUNCHED_BY_RECOVERY_ZERO_MESSAGE,
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=10,
                 )
-                
+
                 if bind_result.returncode == 0:
-                    print(f"Recovered task {task_id}: deleted zero-message session {session_id}")
+                    print(
+                        f"Recovered task {task_id}: deleted zero-message session {session_id}"
+                    )
                     # Task is now unbound and eligible for next fire
                 else:
                     print(f"Failed to recover task {task_id}: {bind_result.stderr}")
@@ -394,7 +407,7 @@ def supervision_step(mode: str) -> List[Dict]:
                 print(f"Failed to delete session {session_id} for task {task_id}")
         except Exception as e:
             print(f"Error during recovery of task {task_id}: {e}")
-    
+
     return recovery_candidates
 
 
@@ -414,7 +427,8 @@ def gate_step() -> Optional[bool]:
 
         # Filter for unbound opencode-lane tasks
         unbound_opencode = [
-            c for c in candidates
+            c
+            for c in candidates
             if c.get("lane") == "opencode" and not c.get("session_id")
         ]
 
@@ -427,14 +441,14 @@ def gate_step() -> Optional[bool]:
 def cap_step() -> int:
     """
     Step 3: Cap - check if we're at the concurrency limit.
-    
+
     Returns cap_room (available slots) or -1 if unknown.
     """
     active_count = get_active_root_session_count()
-    
+
     if active_count == -1:
         return -1
-    
+
     cap_room = max(0, CONCURRENCY_CAP - active_count)
     return cap_room
 
@@ -444,8 +458,8 @@ def _post_prompt(session_id: str, prompt: str) -> bool:
     server answered 2xx. A non-2xx POST did not land, whatever
     curl's exit code says."""
     status, _payload = _server_request(
-        "POST", f"/api/session/{session_id}/prompt",
-        body={"text": prompt}, timeout=15)
+        "POST", f"/api/session/{session_id}/prompt", body={"text": prompt}, timeout=15
+    )
     return _is_2xx(status)
 
 
@@ -462,7 +476,8 @@ def _get_messages(session_id: str) -> Optional[List]:
     and strict parsing keeps an empty or error body from
     masquerading as a confirmed list."""
     status, payload = _server_request(
-        "GET", f"/api/session/{session_id}/message", timeout=5)
+        "GET", f"/api/session/{session_id}/message", timeout=5
+    )
     if not _is_2xx(status):
         return None
     data = _unwrap_envelope(payload)
@@ -519,9 +534,12 @@ def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
                 [
                     str(REPO_QUEUE_CMD),
                     "claim",
-                    "--queue", queue,
-                    "--worker", CLAIMANT_WORKER,
-                    "--platform", "openchamber",
+                    "--queue",
+                    queue,
+                    "--worker",
+                    CLAIMANT_WORKER,
+                    "--platform",
+                    "openchamber",
                     "--handoff",
                 ],
                 capture_output=True,
@@ -543,21 +561,39 @@ def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
 
 HELD_ISSUE_LABELS = {"held", "user/owned", "do-not-merge", "do-not-auto-edit"}
 
-_CREDENTIAL_KEY_PARTS = ("password", "secret", "token", "credential",
-                         "api_key", "apikey", "private_key")
+_CREDENTIAL_KEY_PARTS = (
+    "password",
+    "secret",
+    "token",
+    "credential",
+    "api_key",
+    "apikey",
+    "private_key",
+)
 
 
 def _github_issue_labels(repo: str, issue_number: int) -> set:
     """Live label names on an issue, read through the gh CLI.
     Raises on any failure so the caller can fail closed (#7670)."""
     result = subprocess.run(
-        ["gh", "issue", "view", str(issue_number), "--repo", repo,
-         "--json", "labels", "--jq", "[.labels[].name]"],
-        capture_output=True, text=True, timeout=15,
+        [
+            "gh",
+            "issue",
+            "view",
+            str(issue_number),
+            "--repo",
+            repo,
+            "--json",
+            "labels",
+            "--jq",
+            "[.labels[].name]",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"gh issue view failed: {result.stderr.strip()[:200]}")
+        raise RuntimeError(f"gh issue view failed: {result.stderr.strip()[:200]}")
     names = json.loads(result.stdout)
     if not isinstance(names, list):
         raise RuntimeError("gh issue view returned a non-list label set")
@@ -599,7 +635,8 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
         try:
             poll_data = run_poll()
             candidates = [
-                c for c in poll_data.get("candidates", [])
+                c
+                for c in poll_data.get("candidates", [])
                 if c.get("lane") == "opencode"
                 and not c.get("session_id")
                 and c.get("stage") in ("handed_off", "launch_failed")
@@ -611,33 +648,36 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
         room = cap_room
         for candidate in candidates:
             if room > 0:
-                skips.append({"task_id": candidate["id"],
-                              "reason": "shadow_would_launch"})
+                skips.append(
+                    {"task_id": candidate["id"], "reason": "shadow_would_launch"}
+                )
                 room -= 1
             else:
-                skips.append({"task_id": candidate["id"],
-                              "reason": "shadow_beyond_cap"})
+                skips.append(
+                    {"task_id": candidate["id"], "reason": "shadow_beyond_cap"}
+                )
         return [], skips
 
     if cap_room <= 0:
         return [], []
-    
+
     launched = []
     skips = []
-    
+
     try:
         poll_data = run_poll()
         candidates = poll_data.get("candidates", [])
-        
+
         # Sort by queue priority (order in QUEUES list)
         # Filter for unbound opencode-lane tasks with correct stage
         unbound_opencode = [
-            c for c in candidates
-            if c.get("lane") == "opencode" 
+            c
+            for c in candidates
+            if c.get("lane") == "opencode"
             and not c.get("session_id")
             and c.get("stage") in ("handed_off", "launch_failed")
         ]
-        
+
         # Parked handoff sink (#8097 Rule 1): collect this fire's
         # sink candidates' claims up front, grouped by queue,
         # without naming any task id — one broker-picked handoff
@@ -649,19 +689,18 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
         handed_off_by_queue: Dict[str, int] = {}
         for c in unbound_opencode:
             if c.get("status") == "handed_off":
-                handed_off_by_queue[c["queue"]] = handed_off_by_queue.get(c["queue"], 0) + 1
+                handed_off_by_queue[c["queue"]] = (
+                    handed_off_by_queue.get(c["queue"], 0) + 1
+                )
         collected: Dict[int, Dict] = {}
         for queue_name, want in handed_off_by_queue.items():
             collected.update(_collect_handed_offs(queue_name, want))
 
         for candidate in unbound_opencode:
             if cap_room <= 0:
-                skips.append({
-                    "task_id": candidate["id"],
-                    "reason": "cap_saturated"
-                })
+                skips.append({"task_id": candidate["id"], "reason": "cap_saturated"})
                 continue
-            
+
             task_id = candidate["id"]
             worker_id = candidate.get("worker_id", "unknown")
             issue = candidate.get("issue", "")
@@ -677,10 +716,7 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             # is never improvised.
             if candidate.get("status") == "handed_off":
                 if task_id not in collected:
-                    skips.append({
-                        "task_id": task_id,
-                        "reason": "sink_claim_failed"
-                    })
+                    skips.append({"task_id": task_id, "reason": "sink_claim_failed"})
                     continue
                 candidate["status"] = "claimed"
                 candidate["worker_id"] = CLAIMANT_WORKER
@@ -689,21 +725,24 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             # Step 4a: Re-verify task state
             try:
                 poll_data = run_poll()
-                task = next((t for t in poll_data.get("candidates", []) if t.get("id") == task_id), None)
-                
+                task = next(
+                    (
+                        t
+                        for t in poll_data.get("candidates", [])
+                        if t.get("id") == task_id
+                    ),
+                    None,
+                )
+
                 if not task or task.get("lane") != "opencode" or task.get("session_id"):
-                    skips.append({
-                        "task_id": task_id,
-                        "reason": "task_state_changed"
-                    })
+                    skips.append({"task_id": task_id, "reason": "task_state_changed"})
                     continue
             except Exception as e:
-                skips.append({
-                    "task_id": task_id,
-                    "reason": f"verification_failed: {str(e)}"
-                })
+                skips.append(
+                    {"task_id": task_id, "reason": f"verification_failed: {str(e)}"}
+                )
                 continue
-            
+
             # Step 4a2: Held-label gate (#7670). A candidate whose
             # issue carries a held label (held, user/owned,
             # do-not-merge, do-not-auto-edit) must never be launched:
@@ -720,85 +759,86 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             if _repo and _issue_no:
                 try:
                     _labels = _github_issue_labels(
-                        str(_repo), int(str(_issue_no).lstrip("#")))
+                        str(_repo), int(str(_issue_no).lstrip("#"))
+                    )
                 except Exception as e:
-                    skips.append({
-                        "task_id": task_id,
-                        "reason": f"held_label_check_failed: {str(e)}"
-                    })
+                    skips.append(
+                        {
+                            "task_id": task_id,
+                            "reason": f"held_label_check_failed: {str(e)}",
+                        }
+                    )
                     continue
                 _held = sorted(_labels & HELD_ISSUE_LABELS)
                 if _held:
-                    skips.append({
-                        "task_id": task_id,
-                        "reason": f"held_issue_labels: {','.join(_held)}"
-                    })
+                    skips.append(
+                        {
+                            "task_id": task_id,
+                            "reason": f"held_issue_labels: {','.join(_held)}",
+                        }
+                    )
                     continue
 
             # Step 4b: Create worker session
             session_create_body = {
-                "location": {
-                    "directory": str(PRIMARY_CLONE)
-                },
+                "location": {"directory": str(PRIMARY_CLONE)},
                 "title": f"Queue task {task_id} - {issue}",
-                "model": {
-                    "id": "workhorse",
-                    "providerID": "opencode-route"
-                },
-                "agent": "build"
+                "model": {"id": "workhorse", "providerID": "opencode-route"},
+                "agent": "build",
             }
-            
+
             try:
                 # Create session through the verified transport,
                 # with the server's Basic auth - unauthenticated
                 # calls are rejected (#7367).
                 status, create_payload = _server_request(
-                    "POST", "/api/session", body=session_create_body,
-                    timeout=10)
+                    "POST", "/api/session", body=session_create_body, timeout=10
+                )
                 if not _is_2xx(status):
                     raise RuntimeError(
                         f"Session creation failed: http status "
                         f"{status if status is not None else 'unknown'}"
-                        + (" (unauthorized)" if status == 401 else ""))
+                        + (" (unauthorized)" if status == 401 else "")
+                    )
 
                 session = _unwrap_envelope(create_payload)
                 session_id = session.get("id") if isinstance(session, dict) else None
                 if not session_id:
                     raise RuntimeError(
-                        f"Session creation returned no id: "
-                        f"{str(create_payload)[:200]}")
+                        f"Session creation returned no id: {str(create_payload)[:200]}"
+                    )
 
                 # Verify location before proceeding
                 if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
                     # Wrong location - delete and skip
                     _delete_session(session_id)
-                    skips.append({
-                        "task_id": task_id,
-                        "reason": "session_wrong_location"
-                    })
+                    skips.append(
+                        {"task_id": task_id, "reason": "session_wrong_location"}
+                    )
                     continue
-                
+
                 # Step 4c: Bind the session (atomic operation)
                 bind_result = subprocess.run(
                     [
                         str(REPO_QUEUE_CMD),
-                        "bind", str(task_id),
-                        "--worker", "opencode-claimant",
-                        "--session-id", session_id,
-                        "--launched-by", "opencode-claimant"
+                        "bind",
+                        str(task_id),
+                        "--worker",
+                        "opencode-claimant",
+                        "--session-id",
+                        session_id,
+                        "--launched-by",
+                        "opencode-claimant",
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=10,
                 )
-                
+
                 if bind_result.returncode != 0:
                     # Bind failed - delete session and skip
                     _delete_session(session_id)
-                    skips.append({
-                        "task_id": task_id,
-                        "reason": "bind_failed"
-                    })
+                    skips.append({"task_id": task_id, "reason": "bind_failed"})
                     continue
 
                 # Step 4d: Send the execution prompt to the bound
@@ -818,6 +858,7 @@ Issue: {issue}
 Packet: {json.dumps(_prompt_safe_packet(packet), indent=2)}
 
 You are a build agent working on this opencode-lane task.
+Build discipline: run heavy cargo builds/tests through ~/tools/cargo-target-broker exec --repo <repo short name> --profile <test|dev|release> -- cargo ... so they use a leased pooled target dir (code#6797); never use a per-worktree CARGO_TARGET_DIR and never blank RUSTC_WRAPPER. ~/tools/fleet-build-lock is an accepted equivalent wrapper.
 Use --worker {worker_id} for all queue CLI operations.
 Heartbeat while working to keep the claim lease alive.
 Finish with a queue terminal verb (complete, park, block, or fail) carrying --worker {worker_id} and --execution '{{"lane": "opencode", "session_id": "{session_id}"}}'.
@@ -827,20 +868,18 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
                     "task_id": task_id,
                     "session_id": session_id,
                     "worker_id": worker_id,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                    "queue": candidate.get("queue"),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
                 if not _send_prompt(session_id, prompt):
                     entry["prompt_failed"] = True
                 launched.append(entry)
 
                 cap_room -= 1
-                
+
             except Exception as e:
-                skips.append({
-                    "task_id": task_id,
-                    "reason": f"launch_error: {str(e)}"
-                })
-                
+                skips.append({"task_id": task_id, "reason": f"launch_error: {str(e)}"})
+
     except Exception as e:
         print(f"Launch step failed: {e}")
 
@@ -850,14 +889,14 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
 def main():
     """Main entry point for the claimant/executor."""
     mode = read_mode()
-    
+
     print(f"OpenCode claimant starting in {mode} mode")
-    
+
     # Step 1: Supervision (always runs in live mode)
     if mode == "live":
         print("Running supervision step...")
         supervision_step(mode)
-    
+
     # Step 2: Gate
     print("Running gate step...")
     has_candidates = gate_step()
@@ -880,24 +919,24 @@ def main():
         print("Warning: Could not determine cap room. Exiting.")
         log_fire(mode, [], [], None, [{"reason": "cap_unknown"}])
         return 1
-    
+
     if cap_room <= 0:
         print(f"Cap saturated ({CONCURRENCY_CAP} active sessions). Exiting.")
         log_fire(mode, [], [], cap_room, [{"reason": "cap_saturated"}])
         return 0
-    
+
     print(f"Cap room: {cap_room} sessions available")
-    
+
     # Step 4: Launch
     print("Running launch step...")
     launched, skips = launch_step(mode, cap_room)
-    
+
     # Step 5: Terminal states (handled by workers)
     # Step 6: Log fire
     print(f"Fire complete. Launched {len(launched)} sessions.")
-    
+
     log_fire(mode, [], launched, cap_room, skips)
-    
+
     return 0
 
 

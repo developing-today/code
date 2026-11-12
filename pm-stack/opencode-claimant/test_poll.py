@@ -121,6 +121,95 @@ class TestSummarizeCap(unittest.TestCase):
         self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
 
 
+class TestWrongShapeTime(unittest.TestCase):
+    """#6868: a wrong-shaped `time` / timestamp must never raise out of
+    the classifiers, and must fail closed: never counted as a
+    known-inactive root (cap goes unknown), never stuck-bound."""
+
+    BAD_TIMES = [
+        "soon",
+        123,
+        True,
+        ["x"],
+        {"updated": "soon"},
+        {"created": "soon"},
+        {"updated": ["x"]},
+        {"created": {"at": 1}},
+        {"updated": True},
+    ]
+
+    def test_is_active_root_never_raises_and_never_active(self):
+        for bad in self.BAD_TIMES:
+            s = {"id": "ses_x", "time": bad}
+            self.assertFalse(poll.is_active_root(s, NOW), repr(bad))
+            self.assertFalse(poll.is_active_root(s, NOW, set()), repr(bad))
+
+    def test_active_set_membership_still_authoritative(self):
+        s = {"id": "ses_x", "time": "soon"}
+        self.assertTrue(poll.is_active_root(s, NOW, {"ses_x"}))
+
+    def test_count_active_roots_unknown_on_malformed_entry(self):
+        sessions = [root(), {"id": "ses_bad", "time": "soon"}]
+        self.assertIsNone(poll.count_active_roots(sessions, NOW, set()))
+
+    def test_summarize_cap_unknown_not_manufactured_room(self):
+        live, active, room = poll.summarize_cap(
+            [root(), {"id": "ses_bad", "time": {"updated": "soon"}}], set(), NOW
+        )
+        self.assertEqual(live, 2)
+        self.assertIsNone(active)
+        self.assertIsNone(room)
+
+    def test_terminal_marker_with_malformed_timing_is_inactive(self):
+        # #8853 (oracle: the acceptance example on issue #8853): a
+        # finished root's malformed timestamp must not make the cap
+        # unknown — the terminal marker is checked before timing.
+        s = {"id": "ses_done", "time": {"idle": 123, "updated": "bad"}}
+        self.assertIs(poll._active_root_state(s, NOW, set()), False)
+        self.assertEqual(poll.count_active_roots([s], NOW, set()), 0)
+        live, active, room = poll.summarize_cap([root(), s], set(), NOW)
+        self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
+
+    def test_outcome_with_malformed_timing_is_inactive(self):
+        s = {"id": "ses_done", "time": {"updated": "bad"}, "outcome": "failed"}
+        self.assertIs(poll._active_root_state(s, NOW, set()), False)
+
+    def test_active_set_still_overrides_terminal_marker(self):
+        # A resumed session in the server's active set counts active
+        # even with a stored terminal marker and malformed timing.
+        s = {"id": "ses_done", "time": {"idle": 123, "updated": "bad"}}
+        self.assertIs(poll._active_root_state(s, NOW, {"ses_done"}), True)
+
+    def test_is_stuck_bound_never_raises_and_never_stuck(self):
+        row = TestIsStuckBound().row()
+        for bad in self.BAD_TIMES:
+            s = {"id": "ses_x", "time": bad}
+            self.assertFalse(poll.is_stuck_bound(row, s, set(), NOW), repr(bad))
+
+    def test_stuck_entry_session_updated_none_on_malformed(self):
+        row = TestIsStuckBound().row()
+        for bad in self.BAD_TIMES:
+            entry = poll._stuck_entry(row, "q", {"id": "ses_x", "time": bad})
+            self.assertIsNone(entry["session_updated"], repr(bad))
+
+    def test_stuck_entry_keeps_numeric_updated(self):
+        row = TestIsStuckBound().row()
+        s = {
+            "id": "ses_x",
+            "time": {"created": NOW - 90 * MIN, "updated": NOW - 31 * MIN},
+        }
+        entry = poll._stuck_entry(row, "q", s)
+        self.assertEqual(entry["session_updated"], NOW - 31 * MIN)
+
+    def test_get_stuck_bound_over_mixed_list(self):
+        row = TestIsStuckBound().row()
+        good_dead = TestIsStuckBound().dead_session()
+        bad = {"id": "ses_bad", "time": "soon"}
+        by_id = {"ses_x": good_dead, "ses_bad": bad}
+        stuck = poll.get_stuck_bound([row], by_id, set(), NOW)
+        self.assertEqual(stuck, [row])
+
+
 class TestIsCandidate(unittest.TestCase):
     def row(self, **over):
         r = {
@@ -405,18 +494,28 @@ class TestFetchClaimedRows(unittest.TestCase):
         self.assertEqual(captured["path"], "/list")
         self.assertEqual(
             captured["body"],
-            {"queue": "repo-health-code-pilot", "status": "claimed",
-             "rich": True, "limit": poll.LIST_LIMIT},
+            {
+                "queue": "repo-health-code-pilot",
+                "status": "claimed",
+                "rich": True,
+                "limit": poll.LIST_LIMIT,
+            },
         )
 
     def test_flattened_row_gets_progress_synthesized(self):
-        rows, _ = self.fetch({"rows": [{
-            "id": 7,
-            "status": "claimed",
-            "lane": "opencode",
-            "stage": "handed_off",
-            "session_id": None,
-        }]})
+        rows, _ = self.fetch(
+            {
+                "rows": [
+                    {
+                        "id": 7,
+                        "status": "claimed",
+                        "lane": "opencode",
+                        "stage": "handed_off",
+                        "session_id": None,
+                    }
+                ]
+            }
+        )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["progress"]["lane"], "opencode")
         self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
@@ -425,33 +524,55 @@ class TestFetchClaimedRows(unittest.TestCase):
         # #7706: the checkpoint verb records the yield under
         # progress.last_checkpoint.stage; the classifiers read
         # progress.stage. The lifted row must classify as a candidate.
-        rows, _ = self.fetch({"rows": [{
-            "id": 9,
-            "status": "claimed",
-            "progress": {"lane": "opencode",
-                         "last_checkpoint": {"stage": "handed_off"}},
-        }]})
+        rows, _ = self.fetch(
+            {
+                "rows": [
+                    {
+                        "id": 9,
+                        "status": "claimed",
+                        "progress": {
+                            "lane": "opencode",
+                            "last_checkpoint": {"stage": "handed_off"},
+                        },
+                    }
+                ]
+            }
+        )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
         self.assertTrue(poll.is_candidate(rows[0]))
 
     def test_packet_lifted_from_payload(self):
-        packet = {"kind": "fix", "repo": "developing-today/code",
-                  "issue": 1234}
-        rows, _ = self.fetch({"rows": [{
-            "id": 11, "status": "claimed", "payload": packet,
-            "progress": {"lane": "opencode", "stage": "handed_off"},
-        }]})
+        packet = {"kind": "fix", "repo": "developing-today/code", "issue": 1234}
+        rows, _ = self.fetch(
+            {
+                "rows": [
+                    {
+                        "id": 11,
+                        "status": "claimed",
+                        "payload": packet,
+                        "progress": {"lane": "opencode", "stage": "handed_off"},
+                    }
+                ]
+            }
+        )
         self.assertEqual(rows[0]["packet"], packet)
         entry = poll._candidate_entry(rows[0], "repo-health-code-pilot")
         self.assertEqual(entry["packet"], packet)
 
     def test_packet_lifted_from_payload_string(self):
-        rows, _ = self.fetch({"rows": [{
-            "id": 12, "status": "claimed",
-            "payload": "{\"kind\": \"triage\"}",
-            "progress": {"lane": "opencode", "stage": "handed_off"},
-        }]})
+        rows, _ = self.fetch(
+            {
+                "rows": [
+                    {
+                        "id": 12,
+                        "status": "claimed",
+                        "payload": '{"kind": "triage"}',
+                        "progress": {"lane": "opencode", "stage": "handed_off"},
+                    }
+                ]
+            }
+        )
         self.assertEqual(rows[0]["packet"], {"kind": "triage"})
 
     def test_empty_list_is_a_valid_empty_queue(self):
@@ -469,12 +590,15 @@ class TestFetchClaimedRows(unittest.TestCase):
         self.assertEqual(rows, [])
 
     def test_non_dict_and_unclaimed_rows_are_skipped(self):
-        rows, _ = self.fetch({"rows": [
-            None,
-            {"id": 1, "status": "queued"},
-            {"id": 2, "status": "claimed",
-             "progress": {"lane": "opencode"}},
-        ]})
+        rows, _ = self.fetch(
+            {
+                "rows": [
+                    None,
+                    {"id": 1, "status": "queued"},
+                    {"id": 2, "status": "claimed", "progress": {"lane": "opencode"}},
+                ]
+            }
+        )
         self.assertEqual([r["id"] for r in rows], [2])
 
 

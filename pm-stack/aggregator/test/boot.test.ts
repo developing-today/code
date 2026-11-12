@@ -53,7 +53,9 @@ describe("server boots from fixtures", () => {
       linkedItems: { ref: string; labels: string[] }[];
       dispatchStates: { ref: string; state: string; provenance: { source: string; observedAt: string } }[];
     };
-    expect(body.linkedItems.find((item) => item.ref === "developing-today/code#762")?.labels).toContain("ready-for-agent");
+    expect(body.linkedItems.find((item) => item.ref === "developing-today/code#762")?.labels).toContain(
+      "ready-for-agent",
+    );
     expect(body.dispatchStates).toHaveLength(1);
     // Fixtures mode is deterministic and never reads the live harness:
     // the canned dispatch-trial item has no work item, so its state is
@@ -65,7 +67,9 @@ describe("server boots from fixtures", () => {
   });
 
   test("unknown item JSON id returns a structured JSON 404", async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/item/${encodeURIComponent("kaneo:code/no-such-item-4969")}.json`);
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/item/${encodeURIComponent("kaneo:code/no-such-item-4969")}.json`,
+    );
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toContain("application/json");
     const body = (await res.json()) as { error: string };
@@ -231,7 +235,7 @@ describe("server boots from fixtures", () => {
     expect(res.status).toBe(200);
     // Machine consumer: no pretty-print padding.
     const raw = await res.text();
-    expect(raw).not.toContain("\n  \"board\"");
+    expect(raw).not.toContain('\n  "board"');
     const body = JSON.parse(raw) as {
       board: { links?: { ref: string }[]; status?: string }[];
       items: { ref: string }[];

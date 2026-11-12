@@ -48,10 +48,10 @@ boards only:
 Not settled here, and not re-decided:
 
 - **Post semantics** (reference vs snapshot, pinning, presentation,
-  widening, withdrawal): #5856. This record fixes *where* the intake
+  widening, withdrawal): #5856. This record fixes _where_ the intake
   decision hooks into that flow (§2.5 of that record) and nothing else.
 - **Subscription, discovery and feed**, including `notify_mode` on
-  subscriptions: #5862. This record defines only the *intake* events that
+  subscriptions: #5862. This record defines only the _intake_ events that
   #5862's notification machinery delivers.
 - **Moderation roles, reports, audit and appeals** on published content:
   [#5861](https://github.com/developing-today/code/issues/5861) on
@@ -121,7 +121,7 @@ signature system.
   in the graph and stay attributable. This is the same
   acceptance-vs-enforcement split `BoardGraph::has_role` already
   documents for moderators: the substrate records grants and revocations
-  in any arrival order, and the view layer decides who may act *now*.
+  in any arrival order, and the view layer decides who may act _now_.
 - **The owner's own submissions do not queue on their own board.** An
   owner posting to a curated board is admitted by the act (the owner is
   the admitting authority). This is not a bypass: the post and the
@@ -153,8 +153,8 @@ signature system.
   without consulting wall-clock order.
 - **The intake decision is its own signed object**, `IntakeDecision`:
   `{board, submission, decision: admit | decline | unadmit, kind:
-  initial | reversal, reverses: decision_id | null, reason,
-  policy_revision}`. An `initial` decision has `reverses: null`. A
+initial | reversal, reverses: decision_id | null, reason,
+policy_revision}`. An `initial` decision has `reverses: null`. A
   `reversal` (§4) must cite, in `reverses`, the exact decision it
   supersedes; a decision that cites nothing is an initial decision
   whatever its author intended. The shape therefore distinguishes a
@@ -165,8 +165,8 @@ signature system.
   made under. It is **not** a `ModerationAction`: nothing is being hidden
   from a public view, because nothing was ever in it.
 - **Pending is derived, never stored.** On a `curated` board, a post is
-  *pending* while it has no `IntakeDecision` naming it; *admitted* while
-  its earliest `admit` decision stands; *declined* while its earliest
+  _pending_ while it has no `IntakeDecision` naming it; _admitted_ while
+  its earliest `admit` decision stands; _declined_ while its earliest
   `decline` decision stands. The board view (`compose_view`) includes
   admitted posts, excludes pending and declined posts, and reports both
   in the `hidden` list with the layer that excluded them — the same
@@ -219,7 +219,7 @@ signature system.
 
 - **An admitted post can be removed from the board view by an intake
   decision, not by a moderation action.** `IntakeDecision { decision:
-  unadmit, kind: reversal, reverses: <the standing admit> }` by the
+unadmit, kind: reversal, reverses: <the standing admit> }` by the
   owner or an active `Intake` holder removes the post
   from the board view from that point on, with a reason, and leaves the
   post, the admission, the unadmission and the chain in the graph.
@@ -320,30 +320,30 @@ signature system.
 
 ## Alternatives considered and rejected
 
-| Option | Why rejected |
-|---|---|
-| **A single `Moderator` role decides intake** | Bundles "may admit content" with "may hide published content" and their different audit consequences. An owner handing out queue duty would silently hand out moderation power, and #5861 owns moderation roles. |
-| **Pending state as a field on `Post` (`pending: bool`)** | Makes pending mutable state on an immutable signed object (an edit would be needed to admit), breaks the "approval cannot rewrite the submission" property, and lets two peers disagree on a flag instead of deriving from decisions. |
+| Option                                                     | Why rejected                                                                                                                                                                                                                                                    |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A single `Moderator` role decides intake**               | Bundles "may admit content" with "may hide published content" and their different audit consequences. An owner handing out queue duty would silently hand out moderation power, and #5861 owns moderation roles.                                                |
+| **Pending state as a field on `Post` (`pending: bool`)**   | Makes pending mutable state on an immutable signed object (an edit would be needed to admit), breaks the "approval cannot rewrite the submission" property, and lets two peers disagree on a flag instead of deriving from decisions.                           |
 | **Reuse `ModerationAction::Hide` for pending and decline** | A hide is a public moderation statement about published content with an appeals path; a pending item was never published. Conflating them makes the moderation log claim actions that never happened and gives intake grants moderation power by the back door. |
-| **A stored queue object per board** | A mutable list is a second source of truth that can diverge from the signed set; the graph already has everything needed to derive the queue. |
-| **Per-forum or per-author intake modes** | Multiplies the state space and the notification matrix before any board needs it; a board can get the same effect with a curated board and forums that carry no posts directly. |
-| **"Trusted posters skip the queue"** | An implicit role with no attestation; it would need its own grants, its own revocation and its own audit. If the owner trusts a poster, the answer is to let them post to an open board. |
-| **Approval rewrites the post (approve-with-edits)** | Turns the decider into an author of someone else's post, breaking attribution and #5856's derived-attribution rule. A decider who wants changes declines with a reason; the author resubmits. |
-| **Notification system owned by intake** | A second channel with a second mute and a second default, which #5862 exists to prevent. |
-| **Notify followers of every submission** | Turns every pending item into board content for readers who cannot see it, and leaks the existence and cadence of unadmitted material. |
-| **Silent backlog admission on `curated → open`** | Publishes content nobody decided on, under a policy change that looked like an administrative switch. |
+| **A stored queue object per board**                        | A mutable list is a second source of truth that can diverge from the signed set; the graph already has everything needed to derive the queue.                                                                                                                   |
+| **Per-forum or per-author intake modes**                   | Multiplies the state space and the notification matrix before any board needs it; a board can get the same effect with a curated board and forums that carry no posts directly.                                                                                 |
+| **"Trusted posters skip the queue"**                       | An implicit role with no attestation; it would need its own grants, its own revocation and its own audit. If the owner trusts a poster, the answer is to let them post to an open board.                                                                        |
+| **Approval rewrites the post (approve-with-edits)**        | Turns the decider into an author of someone else's post, breaking attribution and #5856's derived-attribution rule. A decider who wants changes declines with a reason; the author resubmits.                                                                   |
+| **Notification system owned by intake**                    | A second channel with a second mute and a second default, which #5862 exists to prevent.                                                                                                                                                                        |
+| **Notify followers of every submission**                   | Turns every pending item into board content for readers who cannot see it, and leaks the existence and cadence of unadmitted material.                                                                                                                          |
+| **Silent backlog admission on `curated → open`**           | Publishes content nobody decided on, under a policy change that looked like an administrative switch.                                                                                                                                                           |
 
 ## Parent-decision check
 
 Nothing here changes a decision in parent #5680. It answers the parent's
-§1 bullet *"Inbox/requests model for curated boards: submit-to-board with
+§1 bullet _"Inbox/requests model for curated boards: submit-to-board with
 owner/moderator approval queue vs. open boards where anyone with access
-posts immediately"* — answered as: **both modes exist, `open` is the
+posts immediately"_ — answered as: **both modes exist, `open` is the
 default, `curated` routes through a derived queue decided by an
 owner-granted `Intake` role, and the approved post is the submitted post**
-— and the parent's §1 bullet *"Notifications: board owner, board
+— and the parent's §1 bullet _"Notifications: board owner, board
 subscribers, and object owner each notified of what, and how it can be
-muted"* — answered in Decision 5, with delivery delegated to #5862's
+muted"_ — answered in Decision 5, with delivery delegated to #5862's
 `notify_mode` and mute.
 
 It applies rather than forks the adjacent decided designs: #5856's

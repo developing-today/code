@@ -101,6 +101,7 @@ describe("class + quiet merges (design §1/§2)", () => {
       "needs-drew": true,
       "quota-wall": true,
       "quota-near-wall": true,
+      "section-risk": true,
       "stack-health": true,
       "blocked-age": true,
     });
@@ -344,6 +345,7 @@ describe("validation", () => {
         "needs-drew": true,
         "quota-wall": true,
         "quota-near-wall": true,
+        "section-risk": true,
         "stack-health": true,
         "blocked-age": true,
       });
@@ -616,7 +618,11 @@ describe("alert tick delivery state", () => {
     expect(historyRows.map((row) => row.outcome)).toEqual(["suppressed-quiet", "queued"]);
 
     // Recreate the tick over the same durable history at quiet-window end.
-    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now: Date.parse("2026-11-04T07:00:00Z") });
+    await runAlertTick(tickConfig, store, push, {
+      dashboardSnapshot,
+      notificationHistory,
+      now: Date.parse("2026-11-04T07:00:00Z"),
+    });
     expect(pushed).toHaveLength(1);
     expect(pushed[0]).toMatchObject({ class: "digest", items: [{ title: "Quiet-hour task" }] });
     expect(historyRows.map((row) => row.outcome)).toEqual(["suppressed-quiet", "queued", "sent"]);

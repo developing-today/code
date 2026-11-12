@@ -245,7 +245,9 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<{ items: BoardIt
             // non-numeric) must not become a board link renderers throw
             // on; the card survives, the drop is traced.
             if (!isValidRef(ref)) {
-              console.error(`[board] WARNING: dropping Kaneo link with invalid ref ${JSON.stringify(ref)} for task ${t.id} (#6243)`);
+              console.error(
+                `[board] WARNING: dropping Kaneo link with invalid ref ${JSON.stringify(ref)} for task ${t.id} (#6243)`,
+              );
               return [];
             }
             return [{ ref, relation: "tracks" as const }];
@@ -532,7 +534,9 @@ export async function projectorLinks(baseUrl: string, subject: string): Promise<
   // bad registry row stays visible instead of silently vanishing.
   return rows.flatMap((row) => {
     if (!isValidRef(row.ref)) {
-      console.error(`[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`);
+      console.error(
+        `[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`,
+      );
       return [];
     }
     return [{ ref: row.ref, relation: asRelation(row.relation) }];
@@ -679,9 +683,7 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
     const refs: RefKey[] = [];
     const add = (ref: unknown) => {
       if (!isValidRef(ref)) {
-        console.error(
-          `[board] WARNING: dropping invalid in-flight ref ${JSON.stringify(ref)} for task ${item.id}`,
-        );
+        console.error(`[board] WARNING: dropping invalid in-flight ref ${JSON.stringify(ref)} for task ${item.id}`);
         return;
       }
       if (!refs.includes(ref)) refs.push(ref);
@@ -845,7 +847,9 @@ export function liveSource(
         reason: "source-event",
       });
     } catch (err) {
-      console.error(`[freshness] WARNING: kaneo invalidation publish failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `[freshness] WARNING: kaneo invalidation publish failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
   // #3321: per-card ingested-transition counters (the `seq` on
@@ -1050,11 +1054,9 @@ export function liveSource(
         password?: string;
       };
       if (state.url && state.password) {
-        const mapped = await mapServerSessions(
-          { baseUrl: state.url, password: state.password },
-          Date.now(),
-          { source: "opencode-laptop" },
-        );
+        const mapped = await mapServerSessions({ baseUrl: state.url, password: state.password }, Date.now(), {
+          source: "opencode-laptop",
+        });
         laptopLegs.standing = mapped !== null;
         if (mapped) {
           laptopCache = { value: mapped, at: Date.now() };
@@ -1836,11 +1838,14 @@ export function liveSource(
       // beside the feed. The feed's latest section carries the index, so the
       // historical render keeps the same selector list.
       if (batch !== undefined && batch !== null && batch !== "") {
-        const batchList =
-          feed?.aa && isAaSection(feed.aa) && feed.aa.status === "ok" ? (feed.aa.batches ?? []) : [];
+        const batchList = feed?.aa && isAaSection(feed.aa) && feed.aa.status === "ok" ? (feed.aa.batches ?? []) : [];
         if (!isBatchUuid(batch)) {
           provenance.aa = "live (fleet feed · invalid ?batch value)";
-          return { status: "absent", reason: "invalid batch id", generatedAt: feed?.generatedAt ?? new Date().toISOString() };
+          return {
+            status: "absent",
+            reason: "invalid batch id",
+            generatedAt: feed?.generatedAt ?? new Date().toISOString(),
+          };
         }
         try {
           const parsed: unknown = JSON.parse(

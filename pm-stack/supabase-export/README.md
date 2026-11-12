@@ -21,14 +21,9 @@ Supabase card.
   "measuredAt": "2026-10-29T15:55:00Z",
   "project": "<Management API project name>",
   "ref": "<resolved from supabase.project-ref>",
-  "metrics": [
-    { "id": "db-size", "used": 1.154, "limit": 0.5, "unit": "gb",
-      "source": "management-api:/database/query pg_database_size",
-      "flag": "approaching-paid-trigger" }
-  ],
-  "billing": { "plan": "free", "billedUsd": 0, "measured": true,
-               "source": "management-api:/billing/addons (no selected paid addons)" },
-  "scope": [ { "endpoint": "organizations/:slug", "status": 403, "note": "scope gap: …" } ]
+  "metrics": [{ "id": "db-size", "used": 1.154, "limit": 0.5, "unit": "gb", "source": "management-api:/database/query pg_database_size", "flag": "approaching-paid-trigger" }],
+  "billing": { "plan": "free", "billedUsd": 0, "measured": true, "source": "management-api:/billing/addons (no selected paid addons)" },
+  "scope": [{ "endpoint": "organizations/:slug", "status": 403, "note": "scope gap: …" }]
 }
 ```
 
@@ -43,11 +38,11 @@ guessing around it.
 
 ## Metrics and limits
 
-| Metric | Source | Free limit |
-|---|---|---|
-| `db-size` | `POST /database/query` → `pg_database_size(current_database())` | 0.5 GB |
-| `egress` | **no endpoint reports bytes** — gap recorded, request counts as context | 5 GB |
-| `storage` | `GET /storage/buckets` (0 buckets on the current project → 0 GB) | 1 GB |
+| Metric    | Source                                                                  | Free limit |
+| --------- | ----------------------------------------------------------------------- | ---------- |
+| `db-size` | `POST /database/query` → `pg_database_size(current_database())`         | 0.5 GB     |
+| `egress`  | **no endpoint reports bytes** — gap recorded, request counts as context | 5 GB       |
+| `storage` | `GET /storage/buckets` (0 buckets on the current project → 0 GB)        | 1 GB       |
 
 Limits are the Supabase Free-plan allowances recorded on 2026-10-29
 (supabase.com/pricing); the API measures usage, it does not publish the numbers.

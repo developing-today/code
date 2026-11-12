@@ -1104,8 +1104,6 @@ in
     # inherits them — the mcpx daemon receives them the same way.)
   };
 
-
-
   services.opencode = {
     # enable comes from the cascade (mkDefault at each layer).
     #
@@ -1184,7 +1182,9 @@ in
         fi
       ''
     );
-    EnvironmentFile = "%h/.local/state/opencode/mistral-api-key.env";
+    # Let ExecStartPre run when the file is absent; systemd reads it again
+    # for ExecStart after the materializer has created it.
+    EnvironmentFile = "-%h/.local/state/opencode/mistral-api-key.env";
   };
 
   services.mcpx = {

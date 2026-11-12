@@ -294,14 +294,17 @@ export function isProjectAudit(value: unknown): value is ProjectAudit {
     Number.isInteger(value.totalItems) &&
     (value.totalItems as number) >= 0 &&
     Array.isArray(value.fields) &&
-    value.fields.every((field) =>
-      isRecord(field) &&
-      typeof field.id === "string" &&
-      typeof field.name === "string" &&
-      typeof field.dataType === "string" &&
-      (field.options === undefined ||
-        (Array.isArray(field.options) &&
-          field.options.every((option) => isRecord(option) && typeof option.id === "string" && typeof option.name === "string"))),
+    value.fields.every(
+      (field) =>
+        isRecord(field) &&
+        typeof field.id === "string" &&
+        typeof field.name === "string" &&
+        typeof field.dataType === "string" &&
+        (field.options === undefined ||
+          (Array.isArray(field.options) &&
+            field.options.every(
+              (option) => isRecord(option) && typeof option.id === "string" && typeof option.name === "string",
+            ))),
     ) &&
     Array.isArray(value.views) &&
     value.views.every(
@@ -334,6 +337,7 @@ export async function fetchProjectSnapshot(
 ): Promise<ProjectSnapshot> {
   const parsedItems: ProjectPoolItem[] = [];
   const auditItems: GqlItem[] = [];
+  const seenItemIds = new Set<string>();
   let firstPage: unknown;
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
@@ -353,13 +357,30 @@ export async function fetchProjectSnapshot(
     if ((json as GqlProjectPage).errors) throw new Error("github GraphQL returned errors");
     if (!firstPage) firstPage = json;
     const nodes = (json as GqlProjectPage).data?.node?.items?.nodes ?? [];
-    auditItems.push(...nodes.filter((node): node is GqlItem => node !== null));
-    parsedItems.push(...parseProjectItems(json));
+    // #8599: overlapping pages (the board mutating mid-export) can
+    // deliver the same node twice. Deduplicate by item id at
+    // collection, first delivery wins: the audit distributions and
+    // the completeness check below are judged on the deduplicated
+    // export, so an over-delivered export still sums to totalItems
+    // and survives the feed-side isProjectAudit gate instead of
+    // being discarded as an absent snapshot. Fetch-side tolerance
+    // and feed-side strictness agree on the distinct-item count.
+    const freshNodes = nodes.filter((node): node is GqlItem => {
+      if (node === null) return false;
+      if (!node.id) return true;
+      if (seenItemIds.has(node.id)) return false;
+      seenItemIds.add(node.id);
+      return true;
+    });
+    auditItems.push(...freshNodes);
+    const freshIds = new Set(freshNodes.map((node) => node.id));
+    parsedItems.push(...parseProjectItems(json).filter((item) => freshIds.has(item.id)));
     const info = projectPageInfo(json);
     if (!info.hasNextPage) {
       if (auditItems.length < info.totalCount) {
-        // Shortfall only: overlapping pages can over-deliver nodes, but
-        // fewer nodes than the board total means the export lost items.
+        // Shortfall only, judged on the deduplicated count: fewer
+        // distinct items than the board total means the export lost
+        // items. Over-delivery is absorbed by the dedupe above.
         throw new Error(`github GraphQL project export incomplete (${auditItems.length}/${info.totalCount} items)`);
       }
       return {
@@ -367,7 +388,8 @@ export async function fetchProjectSnapshot(
         audit: parseProjectAudit(firstPage, auditItems, generatedAt),
       };
     }
-    if (!info.endCursor || info.endCursor === cursor) throw new Error("github GraphQL project pagination did not advance");
+    if (!info.endCursor || info.endCursor === cursor)
+      throw new Error("github GraphQL project pagination did not advance");
     if (page === 9) throw new Error(`github project pool truncated at 10-page cap (totalCount: ${info.totalCount})`);
     cursor = info.endCursor;
   }

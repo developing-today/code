@@ -92,7 +92,16 @@ export const TUNING = {
  */
 export const goDurationMs = (v: string | undefined): number | undefined => {
   if (!v) return undefined;
-  const unit: Record<string, number> = { ns: 1e-6, us: 1e-3, µs: 1e-3, μs: 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+  const unit: Record<string, number> = {
+    ns: 1e-6,
+    us: 1e-3,
+    µs: 1e-3,
+    μs: 1e-3,
+    ms: 1,
+    s: 1000,
+    m: 60_000,
+    h: 3_600_000,
+  };
   // Go's number grammar is digits[.digits*] or .digits, so ".5s" and
   // "1.s" are whole components (#3490); Go also accepts both mu
   // codepoints for microseconds -- U+00B5 (micro sign) and U+03BC
@@ -428,13 +437,19 @@ export class DaemonClient {
   private async verifyOperationCompatibility(): Promise<void> {
     const health = await this.health();
     if (!health) {
-      throw new Error("mcpx: cannot verify /v1 operation compatibility because the daemon health endpoint did not answer; update or restart the mcpx daemon and plugin");
+      throw new Error(
+        "mcpx: cannot verify /v1 operation compatibility because the daemon health endpoint did not answer; update or restart the mcpx daemon and plugin",
+      );
     }
     if (typeof health.operationFingerprint !== "string" || health.operationFingerprint.length === 0) {
-      throw new Error("mcpx: cannot verify /v1 operation compatibility because the daemon does not publish an operation fingerprint; update and restart the mcpx daemon before using generated plugin operations");
+      throw new Error(
+        "mcpx: cannot verify /v1 operation compatibility because the daemon does not publish an operation fingerprint; update and restart the mcpx daemon before using generated plugin operations",
+      );
     }
     if (health.operationFingerprint !== OPERATION_FINGERPRINT) {
-      throw new Error(`mcpx: /v1 operation table mismatch (plugin ${OPERATION_FINGERPRINT}, daemon ${health.operationFingerprint}); update the mcpx plugin and daemon from matching versions`);
+      throw new Error(
+        `mcpx: /v1 operation table mismatch (plugin ${OPERATION_FINGERPRINT}, daemon ${health.operationFingerprint}); update the mcpx plugin and daemon from matching versions`,
+      );
     }
   }
 
@@ -503,7 +518,17 @@ export class DaemonClient {
    */
   async health(
     timeoutMs = TUNING.healthTimeoutMs,
-  ): Promise<{ status: string; version?: string; pid?: number; uptime?: string; endpoint?: string; operationFingerprint?: string } | undefined> {
+  ): Promise<
+    | {
+        status: string;
+        version?: string;
+        pid?: number;
+        uptime?: string;
+        endpoint?: string;
+        operationFingerprint?: string;
+      }
+    | undefined
+  > {
     try {
       return await this.get("/v1/health", timeoutMs);
     } catch {

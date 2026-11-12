@@ -347,7 +347,11 @@ describe("buildHealth probes", () => {
     delete feed.projects;
     feed.meta = {
       sections: {
-        projects: feedSectionStatus("error", new Date(NOW - 2 * 60_000).toISOString(), "GitHub Project read returned zero items"),
+        projects: feedSectionStatus(
+          "error",
+          new Date(NOW - 2 * 60_000).toISOString(),
+          "GitHub Project read returned zero items",
+        ),
       },
     };
     const view = await buildHealth(inputs({ feed }), { fetcher, cache: createProbeCache(), now: NOW });
