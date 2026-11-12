@@ -2061,8 +2061,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// surface as it has always been.
 	r = r.WithContext(withCodemode(r.Context(), r.URL.Query().Get("codemode") == "false"))
 	if !s.originAllowed(r.Header.Get("Origin")) {
-		writeJSON(w, http.StatusForbidden, response{JSONRPC: "2.0", Error: &rpcError{
-			Code: codeInvalidRequest, Message: "Origin " + r.Header.Get("Origin") + " is not allowed"}})
+		writeJSON(w, http.StatusForbidden, response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{
+			Code: codeInvalidRequest, Message: "Origin " + r.Header.Get("Origin") + " is not allowed"})})
 		return
 	}
 	switch r.Method {
@@ -2250,7 +2250,7 @@ func (s *Server) serveBatch(w http.ResponseWriter, r *http.Request, body []byte,
 	}
 	if len(elems) == 0 {
 		writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0",
-			Error: &rpcError{Code: codeInvalidRequest, Message: "an empty batch is not a request"}})
+			Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest, Message: "an empty batch is not a request"})})
 		return
 	}
 	var c *Conn
@@ -2261,7 +2261,7 @@ func (s *Server) serveBatch(w http.ResponseWriter, r *http.Request, body []byte,
 		sc, ok := s.session(id)
 		if !ok {
 			writeJSON(w, http.StatusNotFound, response{JSONRPC: "2.0",
-				Error: &rpcError{Code: codeInvalidRequest, Message: "no such session"}})
+				Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest, Message: "no such session"})})
 			return
 		}
 		c, tracked, ctx = sc, true, context.WithoutCancel(ctx)
@@ -2299,13 +2299,13 @@ func (s *Server) serveBatch(w http.ResponseWriter, r *http.Request, body []byte,
 func (s *Server) serveDELETE(w http.ResponseWriter, r *http.Request) {
 	id := r.Header.Get(sessionHeader)
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: &rpcError{
-			Code: codeInvalidRequest, Message: "DELETE ends a session; name it in " + sessionHeader}})
+		writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{
+			Code: codeInvalidRequest, Message: "DELETE ends a session; name it in " + sessionHeader})})
 		return
 	}
 	if _, ok := s.session(id); !ok {
-		writeJSON(w, http.StatusNotFound, response{JSONRPC: "2.0", Error: &rpcError{
-			Code: codeInvalidRequest, Message: "no such session"}})
+		writeJSON(w, http.StatusNotFound, response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{
+			Code: codeInvalidRequest, Message: "no such session"})})
 		return
 	}
 	s.dropSession(id)
