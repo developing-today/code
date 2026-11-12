@@ -419,6 +419,20 @@ type HookConfig struct {
 	Phase  string `json:"phase"`
 	Script string `json:"script"`
 	Name   string `json:"name,omitempty"`
+	// Prompt makes the entry a prompt action rather than a script
+	// action (#5276): the text is rendered with @placeholders as data
+	// and sent to the configured model provider for advice. Exactly
+	// one of Script and Prompt is set; execsvc validates the
+	// combination at run time.
+	Prompt string `json:"prompt,omitempty"`
+	// Effect is the declared effect from 0002's dial; for a prompt
+	// action only advise is implemented in this slice.
+	Effect string `json:"effect,omitempty"`
+	// Model selects the model for a prompt action, in the
+	// provider/model namespace. Empty means the configured default.
+	Model string `json:"model,omitempty"`
+	// Values supplies the user @placeholders for a prompt action.
+	Values map[string]any `json:"values,omitempty"`
 }
 
 // ScriptHooks returns the resolved hooks, nearest layer last.
@@ -458,13 +472,14 @@ func ResolveHooks(layers [][]any) []HookConfig {
 }
 
 // hookEntry decodes one element of a hooks list. An entry that names no phase
-// or no script is dropped here rather than failing every run of the config: it
+// or no action (script or prompt) is dropped here rather than failing every
+// run of the config: it
 // is the one defect a config can carry that would otherwise break unrelated
 // work.
 func hookEntry(el any) (HookConfig, bool) {
 	switch v := el.(type) {
 	case HookConfig:
-		if v.Phase == "" || strings.TrimSpace(v.Script) == "" {
+		if v.Phase == "" || (strings.TrimSpace(v.Script) == "" && strings.TrimSpace(v.Prompt) == "") {
 			return HookConfig{}, false
 		}
 		return v, true
@@ -479,7 +494,19 @@ func hookEntry(el any) (HookConfig, bool) {
 		if s, ok := v["name"].(string); ok {
 			h.Name = s
 		}
-		if h.Phase == "" || strings.TrimSpace(h.Script) == "" {
+		if s, ok := v["prompt"].(string); ok {
+			h.Prompt = s
+		}
+		if s, ok := v["effect"].(string); ok {
+			h.Effect = s
+		}
+		if s, ok := v["model"].(string); ok {
+			h.Model = s
+		}
+		if m, ok := v["values"].(map[string]any); ok {
+			h.Values = m
+		}
+		if h.Phase == "" || (strings.TrimSpace(h.Script) == "" && strings.TrimSpace(h.Prompt) == "") {
 			return HookConfig{}, false
 		}
 		return h, true

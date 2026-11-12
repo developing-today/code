@@ -19,6 +19,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
 	"github.com/developing-today/code/pkgs/mcpx/internal/scriptresolve"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
@@ -270,8 +271,17 @@ func (s *Server) ExecService() *execsvc.Service {
 	// and are not governed by the gate.
 	if s.cfg != nil && settings.AutonomyAtLeast(set.String("hooks.autonomy"), "run") {
 		for _, h := range s.cfg.ScriptHooks() {
-			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Name: h.Name})
+			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Name: h.Name,
+				Prompt: h.Prompt, Effect: h.Effect, Model: h.Model, Values: h.Values})
 		}
+	}
+	// Prompt-action hooks (#5276) resolve the daemon's model layer at
+	// hook time, with the run's own context. ExecService does not know
+	// the caller's session, so the samplers see an empty session here;
+	// API-backed providers are unaffected, and a sampling-backed one
+	// reports its failure in the hook frame like any provider error.
+	svc.ProviderFor = func(ctx context.Context) (model.Provider, error) {
+		return s.modelLayer(ctx, "")
 	}
 	return svc
 }

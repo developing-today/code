@@ -20,12 +20,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
 	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 )
 
@@ -55,6 +57,11 @@ const HookPointScript = "script"
 // by mcpx's own runner, per 0001's action table.
 const hookActionModule = "module"
 
+// hookActionPrompt is what a prompt-action hook is recorded as in its
+// frame, per the same table: text with @placeholders, sent to the
+// configured model provider.
+const hookActionPrompt = "prompt"
+
 // hookTimeout is a hook's own budget.
 //
 // Its own rather than the script's: a slow hook must not eat the budget of the
@@ -73,6 +80,28 @@ type Hook struct {
 	Script string `json:"script"`
 	// Name labels the hook in errors and frames. Optional.
 	Name string `json:"name,omitempty"`
+	// Prompt, when set, makes this a prompt action instead of a script
+	// action: the text is rendered with @placeholders as JSON-encoded
+	// data and sent to the configured model provider, and the answer
+	// comes back as advice in the hook frame. Exactly one of Script and
+	// Prompt may be set; validateHooks refuses a hook that sets both or
+	// neither.
+	Prompt string `json:"prompt,omitempty"`
+	// Effect declares what the hook may do, from 0002's dial. A prompt
+	// action supports only advise (the default) in this slice (#5276);
+	// any higher effect on a prompt hook fails validation rather than
+	// being silently clamped. Effects ask, propose, apply and run stay
+	// with #1929.
+	Effect string `json:"effect,omitempty"`
+	// Model selects the model for a prompt action, in the provider/model
+	// namespace the model layer routes by. Empty means the configured
+	// default.
+	Model string `json:"model,omitempty"`
+	// Values supplies the user @placeholders for a prompt action: each
+	// key is a placeholder name, with or without the leading @, and each
+	// value is rendered JSON-encoded, as data, exactly like the
+	// built-ins. A user value never overrides a built-in name.
+	Values map[string]any `json:"values,omitempty"`
 }
 
 // HookFrame is what a hook reports about itself.
@@ -86,7 +115,10 @@ type HookFrame struct {
 	Action string `json:"action,omitempty"`
 	// Effect is what the hook was allowed to do, which is fixed by its phase
 	// in this version rather than declared per hook.
-	Effect     string          `json:"effect,omitempty"`
+	Effect string `json:"effect,omitempty"`
+	// Model is the model that answered a prompt action, as the provider
+	// reported it; empty for script actions and for skipped prompt hooks.
+	Model      string          `json:"model,omitempty"`
 	DurationMs int64           `json:"durationMs,omitempty"`
 	Changed    bool            `json:"changed"`
 	Original   json.RawMessage `json:"original,omitempty"`
@@ -141,8 +173,26 @@ func validateHooks(hooks []Hook, origin string) error {
 			return fmt.Errorf("exec: %s hook %d: unknown phase %q (one of %s, %s, %s, %s)",
 				origin, i, h.Phase, HookBefore, HookOnSuccess, HookOnError, HookSuffix)
 		}
-		if strings.TrimSpace(h.Script) == "" {
+		hasScript := strings.TrimSpace(h.Script) != ""
+		hasPrompt := strings.TrimSpace(h.Prompt) != ""
+		switch {
+		case hasScript && hasPrompt:
+			return fmt.Errorf("exec: %s hook %d (%s): both script and prompt are set; a hook is exactly one action",
+				origin, i, h.Phase)
+		case !hasScript && !hasPrompt:
 			return fmt.Errorf("exec: %s hook %d (%s): script is empty", origin, i, h.Phase)
+		}
+		if hasPrompt {
+			switch h.Effect {
+			case "", "advise":
+			default:
+				return fmt.Errorf("exec: %s hook %d (%s): a prompt action supports effect %q only in this slice, not %q",
+					origin, i, h.Phase, "advise", h.Effect)
+			}
+		}
+		if h.Model != "" && !hasPrompt {
+			return fmt.Errorf("exec: %s hook %d (%s): model is set but the hook has no prompt action",
+				origin, i, h.Phase)
 		}
 	}
 	return nil
@@ -202,9 +252,18 @@ func (s *Service) runHooks(ctx context.Context, phase string, hooks []Hook, hctx
 		hctx.Diagnostic = hookDiagnostic(res.Error)
 		hctx.ExitCode = res.ExitCode
 		hctx.Artifacts = res.Artifacts
-		run := s.runOneHook(ctx, phase, h, hctx, ropts, res, emit)
-		run.Frame.Effect = effectFor(phase)
-		run.Frame.Original = applyHookResult(&run, phase, res)
+		var run hookRun
+		if strings.TrimSpace(h.Prompt) != "" {
+			// A prompt action runs no code and never transforms the
+			// outcome: its effect is advise whatever phase it sits in,
+			// so applyHookResult is not consulted for it.
+			run = s.runPromptHook(ctx, phase, h, hctx)
+			run.Frame.Effect = "advise"
+		} else {
+			run = s.runOneHook(ctx, phase, h, hctx, ropts, res, emit)
+			run.Frame.Effect = effectFor(phase)
+			run.Frame.Original = applyHookResult(&run, phase, res)
+		}
 		run.Frame.Changed = run.Frame.Original != nil
 		f := run.Frame
 		emit(Frame{Type: FrameHook, RunID: res.RunID, Hook: &f})
@@ -418,4 +477,95 @@ func copyEnv(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// runPromptHook executes one prompt action: render the prompt with its
+// placeholders as data, ask the configured model provider, and attach
+// the answer to the frame as advice.
+//
+// The answer is advice only -- it is never applied to the run, whatever
+// phase the hook sits in (0001: a key above the hook's effect is
+// dropped, and advise is the only prompt effect this slice implements,
+// #5276). With no provider configured, or a provider that fails, the
+// hook is skipped with the reason in its frame and the run continues
+// deterministically -- the behaviour 0001 fixes for a prompt action
+// with no model behind it.
+func (s *Service) runPromptHook(ctx context.Context, phase string, h Hook, hctx hookContext) hookRun {
+	out := hookRun{Hook: h}
+	out.Frame = HookFrame{On: HookPointScript, Phase: phase, Action: hookActionPrompt, Model: h.Model}
+	start := time.Now()
+	defer func() {
+		out.Duration = time.Since(start)
+		out.Frame.DurationMs = out.Duration.Milliseconds()
+	}()
+
+	rendered := renderPrompt(h.Prompt, hctx, h.Values)
+
+	pctx, cancel := context.WithTimeout(ctx, hookTimeout)
+	defer cancel()
+	var prov model.Provider
+	if s.ProviderFor != nil {
+		var err error
+		prov, err = s.ProviderFor(pctx)
+		if err != nil {
+			out.Frame.Error = "advice unavailable: " + err.Error()
+			return out
+		}
+	}
+	if prov == nil {
+		out.Frame.Error = "advice unavailable: no model provider is configured; the prompt hook was skipped"
+		return out
+	}
+	resp, err := prov.Generate(pctx, model.Request{
+		Model:    h.Model,
+		Messages: []model.Message{{Role: "user", Content: rendered}},
+	})
+	if err != nil {
+		out.Frame.Error = "advice unavailable: provider " + prov.Name() + " did not answer: " + err.Error()
+		return out
+	}
+	if resp.Model != "" {
+		out.Frame.Model = resp.Model
+	}
+	out.Frame.Advice = strings.TrimSpace(resp.Text)
+	return out
+}
+
+// promptPlaceholder is one @name token in a prompt action's text.
+var promptPlaceholder = regexp.MustCompile("@[A-Za-z][A-Za-z0-9_]*")
+
+// renderPrompt substitutes a prompt action's @placeholders.
+//
+// Built-ins come from the hook context (@result, @error, @diagnostic,
+// @artifacts, @runId, @phase, @point); the hook's own Values supply the
+// user placeholders and never override a built-in name. Every value is
+// JSON-encoded at substitution -- data, never raw text (0001) -- so a
+// result or error containing placeholder-shaped text cannot escape its
+// value or impersonate another placeholder. An unknown @name is left
+// as written: it is the author's text, not an error the run should
+// carry.
+func renderPrompt(tmpl string, hctx hookContext, values map[string]any) string {
+	builtins := map[string]any{
+		"result": hctx.Result, "error": hctx.Error, "diagnostic": hctx.Diagnostic,
+		"artifacts": hctx.Artifacts, "runId": hctx.RunID, "phase": hctx.Phase, "point": hctx.Point,
+	}
+	user := make(map[string]any, len(values))
+	for k, v := range values {
+		user[strings.TrimPrefix(k, "@")] = v
+	}
+	return promptPlaceholder.ReplaceAllStringFunc(tmpl, func(tok string) string {
+		name := tok[1:]
+		if v, ok := builtins[name]; ok {
+			if b, err := json.Marshal(v); err == nil {
+				return string(b)
+			}
+			return tok
+		}
+		if v, ok := user[name]; ok {
+			if b, err := json.Marshal(v); err == nil {
+				return string(b)
+			}
+		}
+		return tok
+	})
 }

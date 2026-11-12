@@ -39,6 +39,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/deps"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
 	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 	"github.com/developing-today/code/pkgs/mcpx/internal/scriptresolve"
 )
@@ -617,6 +618,12 @@ type Service struct {
 	// Hooks run at the edges of every run this service performs. They are the
 	// config-declared list; a caller's Options.Hooks append to them.
 	Hooks []Hook
+	// ProviderFor resolves the configured model layer for prompt-action
+	// hooks (#5276), at hook time, when a request context exists. Nil --
+	// or a resolution to (nil, nil) -- means no model is configured:
+	// prompt hooks are then skipped with a warning in their frame and
+	// the run stays deterministic, per decision 0001.
+	ProviderFor func(ctx context.Context) (model.Provider, error)
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)
