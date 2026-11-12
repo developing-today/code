@@ -78,6 +78,11 @@ export function deriveExhaustionForecasts(
         unknown("stale_source", remaining);
         continue;
       }
+      const resetMs = w.resetsAt ? Date.parse(w.resetsAt) : Number.NaN;
+      if (Number.isFinite(resetMs) && resetMs <= nowMs) {
+        unknown("reset_passed", remaining);
+        continue;
+      }
       if (remaining <= 0) {
         forecasts.push({ ...base, state: "exhausted", remaining, exhaustsAt: now.toISOString() });
         continue;
@@ -128,7 +133,6 @@ export function deriveExhaustionForecasts(
         unknown("zero_rate", remaining);
         continue;
       }
-      const resetMs = Date.parse(w.resetsAt);
       const p50ExhaustsMs = nowMs + (remaining / p50) * 60000;
       const p80ExhaustsMs = nowMs + (remaining / p80) * 60000;
       forecasts.push({

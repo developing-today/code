@@ -114,6 +114,16 @@ describe("deriveExhaustionForecasts (#3983)", () => {
     expect(f.exhaustsAt).toBe(NOW.toISOString());
   });
 
+  test("a passed reset is unknown even when the dated window is at its limit", () => {
+    const [f] = deriveExhaustionForecasts(
+      [pool({}, { used: 10000, resetsAt: "2026-11-01T01:59:00Z" })],
+      clean,
+      NOW,
+    );
+    expect(f).toMatchObject({ state: "unknown", reason: "reset_passed", remaining: 0 });
+    expect(f.exhaustsAt).toBeUndefined();
+  });
+
   test("the pool carries its forecasts for view consumers", () => {
     const p = pool();
     deriveExhaustionForecasts([p], clean, NOW);

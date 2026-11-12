@@ -321,6 +321,7 @@ export interface ExhaustionForecast {
   reason?:
     | "missing_limit"
     | "missing_reset"
+    | "reset_passed"
     | "stale_source"
     | "no_measured_burn"
     | "insufficient_observations"
