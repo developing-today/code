@@ -3999,6 +3999,7 @@ impl GhCreator {
     /// as proven absence, so every uncertain entry was re-created.
     fn find_by_marker(&mut self, entry: &Value) -> MarkerLookup {
         let repo = s(entry, "repo");
+        let kind = s(entry, "kind");
         let id = s(entry, "id");
         let q = format!("repo:{repo} fleet-outbox:{id}");
         let results = match self.gh.json(&[
@@ -4015,10 +4016,26 @@ impl GhCreator {
         let Some(items) = results.get("items").and_then(|i| i.as_array()) else {
             return MarkerLookup::CouldNotCheck("unexpected_search_shape".to_string());
         };
+        // For comment entries the search hit's number is the ISSUE
+        // (or PR) number -- a different id namespace from comment
+        // ids -- so the marker must be resolved through the issue's
+        // comment list, and what is recorded is the COMMENT's id and
+        // html_url (#8363). Reading the issue number back as a
+        // comment id can never match a landed comment, so every
+        // landed comment was judged absent and re-created.
+        let comment_kind = matches!(kind.as_str(), "issue_comment" | "pr_comment");
         for item in items {
             let Some(number) = item.get("number").and_then(|n| n.as_i64()) else {
                 continue;
             };
+            if comment_kind {
+                match self.find_comment_on_issue(entry, number) {
+                    Ok(Some(found)) => return MarkerLookup::Found(found.0, found.1),
+                    Ok(None) => {}
+                    Err(class) => return MarkerLookup::CouldNotCheck(class),
+                }
+                continue;
+            }
             let url = s(item, "html_url");
             match self.read_back_checked(entry, number) {
                 Ok(true) => return MarkerLookup::Found(number, url),
@@ -4027,6 +4044,48 @@ impl GhCreator {
             }
         }
         MarkerLookup::Absent
+    }
+
+    /// Resolve a comment entry's marker on one candidate issue:
+    /// page the issue's comments and return the (id, html_url) of
+    /// the one carrying the entry's marker, or None when the issue's
+    /// comments were fully listed and none carries it (#8363). The
+    /// page bound mirrors the fallback marker read's: a listing that
+    /// still has not terminated there is an error, never a proven
+    /// absence.
+    fn find_comment_on_issue(
+        &mut self,
+        entry: &Value,
+        issue_number: i64,
+    ) -> Result<Option<(i64, String)>, String> {
+        let repo = s(entry, "repo");
+        let id = s(entry, "id");
+        const PER_PAGE: usize = 100;
+        const MAX_PAGES: usize = 10;
+        for page in 1..=MAX_PAGES {
+            let comments = self.gh.json(&[
+                "api".into(),
+                format!(
+                    "repos/{repo}/issues/{issue_number}/comments?per_page={PER_PAGE}&page={page}"
+                ),
+            ])?;
+            let Some(list) = comments.as_array() else {
+                return Err("unexpected_comments_shape".to_string());
+            };
+            let full_page = list.len() == PER_PAGE;
+            for comment in list {
+                if crate::creation_outbox::marker_id(&s(comment, "body")) == Some(id.clone()) {
+                    let Some(cid) = comment.get("id").and_then(|n| n.as_i64()) else {
+                        continue;
+                    };
+                    return Ok(Some((cid, s(comment, "html_url"))));
+                }
+            }
+            if !full_page {
+                return Ok(None);
+            }
+        }
+        Err("comments_list_unbounded".to_string())
     }
 }
 
@@ -6567,6 +6626,105 @@ esac
         assert!(
             search_line.contains("--method GET"),
             "marker search must be a GET, argv was: {search_line}"
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+
+    // ---- #8363: comment-kind marker resolution ----
+    // Oracle: for issue_comment / pr_comment entries the search hit's
+    // number is the ISSUE number, a different id namespace from
+    // comment ids. Reconcile must resolve the marker through the
+    // issue's comment list and record the COMMENT's id and html_url;
+    // the old code read the issue number back as a comment id
+    // (repos/{repo}/issues/comments/{issue_number}), which can never
+    // match a landed comment, so landed comments were re-created.
+
+    fn outbox_comment_entry_8363(kind: &str) -> Value {
+        json!({
+            "id": "OB-test-1",
+            "repo": "developing-today/code",
+            "kind": kind,
+            "payload": {"target_number": 7, "body": "b"},
+        })
+    }
+
+    #[test]
+    fn comment_marker_resolves_through_the_issues_comment_list() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, log) = stub_gh_8361(
+            "comment8363",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{},{"number":7,"html_url":"https://github.com/developing-today/code/issues/7"}]}' ;;
+  *issues/7/comments*) printf '%s' '[{"id":111,"html_url":"https://github.com/developing-today/code/issues/7#issuecomment-111","body":"an earlier comment"},{"id":6781256653,"html_url":"https://github.com/developing-today/code/issues/7#issuecomment-6781256653","body":"landed <!-- fleet-outbox:OB-test-1 -->"}]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        // The first search item is malformed (no number): skipped,
+        // not fatal (#8363). The landed comment is the second one on
+        // issue 7; reconcile must find THAT comment's id and URL.
+        let found = creator.find_by_marker(&outbox_comment_entry_8363("issue_comment"));
+        assert_eq!(
+            found,
+            MarkerLookup::Found(
+                6781256653,
+                "https://github.com/developing-today/code/issues/7#issuecomment-6781256653"
+                    .to_string()
+            )
+        );
+        let argv_log = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            argv_log.contains("issues/7/comments"),
+            "reconcile must list the candidate issue's comments, argv was: {argv_log}"
+        );
+        assert!(
+            !argv_log.contains("issues/comments/7"),
+            "the issue number must not be read back as a comment id, argv was: {argv_log}"
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn pr_comment_marker_resolves_the_same_way() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "prcomment8363",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":7,"html_url":"https://github.com/developing-today/code/pull/7"}]}' ;;
+  *issues/7/comments*) printf '%s' '[{"id":555,"html_url":"https://github.com/developing-today/code/pull/7#issuecomment-555","body":"landed <!-- fleet-outbox:OB-test-1 -->"}]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_comment_entry_8363("pr_comment")),
+            MarkerLookup::Found(
+                555,
+                "https://github.com/developing-today/code/pull/7#issuecomment-555".to_string()
+            )
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn comment_list_failure_is_could_not_check_not_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "commentfail8363",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":7,"html_url":"https://github.com/developing-today/code/issues/7"}]}' ;;
+  *issues/7/comments*) echo 'gh: Forbidden (HTTP 403)' >&2; exit 1 ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_comment_entry_8363("issue_comment")),
+            MarkerLookup::CouldNotCheck("http_403".to_string())
         );
         let _ = std::fs::remove_dir_all(bin.parent().unwrap());
     }
