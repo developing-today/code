@@ -255,10 +255,9 @@ test('keeps a standalone comment when removing the following member', () => {
 // temp target config — never the live config — is the only write candidate.
 const scriptPath = path.join(binDir, 'sync-models.mjs');
 
-function runWithTempConfig(args) {
+function runWithTempConfig(args, before = '{\n  // temp probe config\n  "provider": {}\n}\n') {
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-models-test-home-'));
   const configPath = path.join(tmpHome, 'opencode.jsonc');
-  const before = '{\n  // temp probe config\n  "provider": {}\n}\n';
   fs.writeFileSync(configPath, before);
   const result = spawnSync(process.execPath, [scriptPath, ...args], {
     encoding: 'utf-8',
@@ -300,7 +299,14 @@ test('rejects a positional argument non-zero and leaves the target config byte-i
 });
 
 test('--dry-run still exits 0 writing nothing', () => {
-  const { result, before, after, backupExists } = runWithTempConfig(['--dry-run']);
+  // The probe carries the sync target section (empty). Without it the
+  // run is a #7333 absent-provider skip and exits 2 whenever a live
+  // Antigravity catalog is discoverable from this machine - the probe
+  // would test the environment instead of the dry-run contract.
+  const { result, before, after, backupExists } = runWithTempConfig(
+    ['--dry-run'],
+    '{\n  // temp probe config\n  "provider": {\n    "_antigravity": {}\n  }\n}\n',
+  );
   assert.equal(result.status, 0);
   assert.equal(after, before);
   assert.equal(backupExists, false);
