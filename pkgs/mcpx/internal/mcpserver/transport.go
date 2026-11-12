@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -93,6 +94,25 @@ func (c *Conn) cancelInflight(requestID any) {
 	if r != nil {
 		r.cancel()
 	}
+}
+
+// cancelledFor reports whether the client sent notifications/cancelled
+// naming this request id, and the reason it gave. The key is derived
+// exactly as Conn.cancel derived it when recording: canonical JSON via
+// idKey, unquoted when the id is a string, so "7" and 7 stay different
+// requests. A cancelled context alone does not prove the client asked
+// for the cancellation -- the transport may have died instead -- which
+// is why the ask path consults this record before stopping work the
+// client may still mean to collect (§6, #1864 item 2).
+func (c *Conn) cancelledFor(id json.RawMessage) (string, bool) {
+	key := idKey(id)
+	if unq, err := strconv.Unquote(key); err == nil {
+		key = unq
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	reason, ok := c.cancelled[key]
+	return reason, ok
 }
 
 // ---- batching ----
