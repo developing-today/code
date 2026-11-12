@@ -46,3 +46,15 @@ text into this repo. The generator re-derives the text from
 corpus.db on every run. The synthetic probes (the opencode#1554
 spike texts, an empty string, a query-shaped sentence) carry their
 text inline.
+
+## Intentional parity deviation: topics/projects LIKE escaping (code#5375)
+
+`core-expectations.json` records the production Python's topics/projects
+filter as `l.topics LIKE ?` with param `%"<value>"%`. atlas-core
+(`Filters::where_clause` / `Filters::session_clauses`) deliberately
+deviates for Gate B (code#5356): the clause is `LIKE ? ESCAPE '\'` and the
+pattern escapes `%`, `_`, `\` and the JSON-encoded form of `"`, so a value
+matches only a JSON element exactly equal to it. For ordinary values the
+params are identical to the recorded ones; `tests/parity.rs` normalizes the
+`ESCAPE` suffix before comparing SQL text. The Python `Filters` is
+unchanged and has the same wildcard bug; fixing it is a separate follow-up.
