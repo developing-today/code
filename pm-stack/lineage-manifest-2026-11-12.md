@@ -387,3 +387,38 @@ the recorded candidates.
 - #2150 fix(web): honor Markdown closing-fence rules in image grants
 - #2151 fix(web): ignore images inside indented code blocks in grants
 - #2152 fix(web): prevent split surrogate pairs in content-search previews
+
+## Amendment (2026-11-12, later pass) — zero-carrier program epics created
+
+Drew approved "do both"; the zero-carrier labels from the register above now
+have epic issues in developing-today/code, members natively linked and
+verified from both the epics' sub-issue lists (per_page=100) and sampled
+children's parent pointers:
+
+| Epic | Label | Members | Natively linked |
+|---|---|---|---|
+| #8983 Atlas program | `epic/atlas-program` | 68 | 68 |
+| #8985 GitHub and dynamic compute | `epic/github-dynamic-compute` | 28 | 24 |
+| #8986 design register | `epic/design-register` | 27 | 26 |
+| #8987 Turso + Cloudflare integration | `epic/turso-cloudflare` | 16 | 11 |
+| #8988 storage program | `epic/storage` | 11 | 10 |
+| #8989 SaaS service | `epic/saas-service` | 6 | 3 |
+| #8990 fleet tool | `epic/fleet-tool` | 6 | 6 |
+| #8991 pool routing | `epic/pool-routing` | 5 | 1 (+4 nested under member #1334) |
+| #8992 fleet apps | `epic/fleet-apps` | 2 | 2 |
+| #8993 mcpx | `epic/mcpx` | 2 | 0 (see below) |
+
+- `epic/atlas` (8) is a strict subset of `epic/atlas-program` (68) — folded,
+  no separate epic; both carrier labels sit on #8983 (label redundancy noted
+  on the epic).
+- Unlinked members are one-parent-rule exceptions, recorded on each epic:
+  already parented elsewhere (#5942/#5992/#6188 under #6185, #7091 under
+  #7089, #1111/#1115/#1116 under #1047, #1335/#1338/#1340/#1342 under fellow
+  member #1334, #8833 under #8988 by cross-label assignment), or dual-carrier
+  register tracking homes parented under #8986 (#8832/#8821/#8820/#8808/#8807
+  of turso-cloudflare, #8811 of storage, #8822/#8809 of mcpx — hence #8993's
+  0 direct sub-issues).
+- All members of every cluster live in developing-today/code (other repos
+  checked: zero carriers). The ambiguous multi-carrier labels remain
+  untouched, awaiting Drew's pick. The Project-board blocker above is
+  unchanged by this pass.
