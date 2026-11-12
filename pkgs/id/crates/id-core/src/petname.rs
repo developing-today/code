@@ -714,6 +714,111 @@ mod tests {
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
 
+    mod replay_property {
+        use super::*;
+        use proptest::prelude::*;
+
+        const OWNERS: [&str; 2] = ["owner-a", "owner-b"];
+        const ACCOUNTS: [&str; 3] = [ALICE, BOB, CAROL];
+        const NAMES: [&str; 8] = [
+            "PayPal", "Dana", "Mom", "Rex", "Sunny", "Kite", "Bobby", "Zed",
+        ];
+
+        fn op_strategy() -> impl Strategy<Value = (usize, usize, usize, bool)> {
+            (0..OWNERS.len(), 0..ACCOUNTS.len(), 0..NAMES.len(), any::<bool>())
+        }
+
+        proptest! {
+            /// Oracle: the replayed state equals the model built from exactly
+            /// the mutations the write path accepted — a journal written by
+            /// set()/remove() always reopens, and reopens to the same state.
+            #[test]
+            fn generated_write_sequences_reopen_to_the_model_state(
+                ops in prop::collection::vec(op_strategy(), 0..40),
+            ) {
+                let dir = TempDir::new().unwrap();
+                let path = dir.path().join("petnames.jsonl");
+                let mut model: BTreeMap<(String, String), String> = BTreeMap::new();
+                {
+                    let mut store = Petnames::open(&path).unwrap();
+                    for (owner, account, name, remove) in &ops {
+                        let (owner, account, name) =
+                            (OWNERS[*owner], ACCOUNTS[*account], NAMES[*name]);
+                        if *remove {
+                            if store.remove(owner, account).is_ok() {
+                                model.remove(&(owner.to_owned(), account.to_owned()));
+                            }
+                        } else if store.set(owner, account, name, []).is_ok() {
+                            model.insert((owner.to_owned(), account.to_owned()), name.to_owned());
+                        }
+                    }
+                }
+                let bytes_before = std::fs::read(&path).unwrap_or_default();
+                let reopened = Petnames::open(&path).unwrap();
+                for owner in OWNERS {
+                    let replayed: BTreeMap<String, String> = reopened
+                        .of_owner(owner)
+                        .map(|(account, name)| (account.to_owned(), name.to_owned()))
+                        .collect();
+                    let expected: BTreeMap<String, String> = model
+                        .iter()
+                        .filter(|((o, _), _)| o == owner)
+                        .map(|((_, account), name)| (account.clone(), name.clone()))
+                        .collect();
+                    prop_assert_eq!(replayed, expected);
+                }
+                prop_assert_eq!(std::fs::read(&path).unwrap_or_default(), bytes_before);
+            }
+
+            /// Oracle: a journal whose second record is a generated mutation
+            /// of the first record's name that set() refuses — a fold
+            /// duplicate, a format-carrying spelling, or an overlong name —
+            /// is rejected at load, naming line 2.
+            #[test]
+            fn generated_refused_records_fail_load_at_line_2(
+                base in prop::sample::select(NAMES.to_vec()),
+                mutation in 0..3u8,
+            ) {
+                let mutated = match mutation {
+                    0 => base.to_lowercase(),
+                    1 => {
+                        let mut name = base.to_owned();
+                        name.insert(2, '\u{200b}');
+                        name
+                    }
+                    _ => base.repeat(30),
+                };
+                prop_assert_ne!(&mutated, base);
+                let records = [
+                    Record::Set {
+                        owner: OWNER.to_owned(),
+                        account: ALICE.to_owned(),
+                        name: base.to_owned(),
+                    },
+                    Record::Set {
+                        owner: OWNER.to_owned(),
+                        account: BOB.to_owned(),
+                        name: mutated,
+                    },
+                ];
+                let journal = records
+                    .iter()
+                    .map(|record| serde_json::to_string(record).unwrap())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n";
+                let dir = TempDir::new().unwrap();
+                let path = dir.path().join("petnames.jsonl");
+                std::fs::write(&path, journal).unwrap();
+                let error = Petnames::open(&path)
+                    .err()
+                    .expect("refused-at-write record must fail load");
+                let message = format!("{error:#}");
+                prop_assert!(message.contains("line 2"), "{}", message);
+            }
+        }
+    }
+
     #[test]
     fn a_torn_final_line_is_dropped_and_truncated() {
         let dir = TempDir::new().unwrap();

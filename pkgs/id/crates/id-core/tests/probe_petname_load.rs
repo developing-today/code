@@ -1,9 +1,12 @@
 // Probe: does Petnames::open replay records that Petnames::set refuses?
+// Updated for the load-time validation fix (issue #5225): open must now
+// fail loud on the first journal record set() would refuse, instead of
+// loading it verbatim.
 use id_core::petname::Petnames;
 
 #[test]
 #[allow(clippy::unwrap_used)]
-fn probe_open_replays_names_set_would_refuse() {
+fn probe_open_rejects_names_set_would_refuse() {
     let dir = std::env::temp_dir().join(format!("petname-probe-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("petnames.jsonl");
@@ -17,17 +20,14 @@ fn probe_open_replays_names_set_would_refuse() {
          {{\"op\":\"set\",\"owner\":\"me\",\"account\":\"acct-d\",\"name\":\"{long}\"}}\n"
     );
     std::fs::write(&path, journal).unwrap();
-    let store = Petnames::open(&path).unwrap();
-    let loaded: Vec<(String, String)> = store
-        .of_owner("me")
-        .map(|(a, n)| (a.to_string(), n.to_string()))
-        .collect();
-    println!("LOADED: {loaded:?}");
-    assert_eq!(
-        loaded.len(),
-        4,
-        "all four refused-at-write records loaded verbatim"
+    let error = Petnames::open(&path).expect_err("journal with refused-at-write records must not load");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("line 2"),
+        "error names the first invalid journal line: {message}"
     );
-    assert!(store.get("me", "acct-b") == Some("paypal"));
-    assert!(store.get("me", "acct-c").unwrap().contains('\u{200b}'));
+    assert!(
+        message.contains("fold uniqueness"),
+        "error names the violated invariant: {message}"
+    );
 }
