@@ -282,7 +282,41 @@ pub fn plan_append(existing: &[MergeIntent], req: &AppendRequest) -> MergeIntent
 /// at the first live non-intended entry — a `conflicted` or
 /// `replaying` intent blocks everything stacked above it — so only
 /// the intended prefix is returned.
+/// Branches in `stack_id` that still carry an abandoned intent's
+/// changes: the abandoned intents' own branches, plus — transitively —
+/// every branch stacked on one of them (its `base_branch` names a
+/// tainted branch). An `abandoned` intent is its author withdrawing
+/// the change; a descendant replayed without restacking would merge
+/// the withdrawn commits along with its own (Codex P1, PR #8849), so
+/// both walks stop before the first tainted intent: replay refuses
+/// descendants that still contain abandoned changes until their
+/// author restacks them off the withdrawn branch.
+fn abandoned_tainted_branches<'a>(
+    intents: &'a [MergeIntent],
+    stack_id: &str,
+) -> std::collections::HashSet<&'a str> {
+    let mut tainted: std::collections::HashSet<&'a str> = intents
+        .iter()
+        .filter(|i| i.stack_id == stack_id && i.state == IntentState::Abandoned)
+        .map(|i| i.branch.as_str())
+        .collect();
+    loop {
+        let mut grew = false;
+        for i in intents.iter().filter(|i| i.stack_id == stack_id) {
+            if !tainted.contains(i.branch.as_str()) && tainted.contains(i.base_branch.as_str()) {
+                tainted.insert(i.branch.as_str());
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    tainted
+}
+
 pub fn replay_prefix<'a>(intents: &'a [MergeIntent], stack_id: &str) -> Vec<&'a MergeIntent> {
+    let tainted = abandoned_tainted_branches(intents, stack_id);
     let mut ordered: Vec<&MergeIntent> = intents
         .iter()
         .filter(|i| {
@@ -294,7 +328,7 @@ pub fn replay_prefix<'a>(intents: &'a [MergeIntent], stack_id: &str) -> Vec<&'a 
     ordered.sort_by_key(|i| i.position);
     ordered
         .into_iter()
-        .take_while(|i| i.state == IntentState::Intended)
+        .take_while(|i| i.state == IntentState::Intended && !tainted.contains(i.branch.as_str()))
         .collect()
 }
 
@@ -399,8 +433,12 @@ pub fn resumable_walk<'a>(intents: &'a [MergeIntent], stack_id: &str) -> Vec<&'a
         })
         .collect();
     ordered.sort_by_key(|i| i.position);
+    let tainted = abandoned_tainted_branches(intents, stack_id);
     let mut out = Vec::new();
     for (idx, i) in ordered.iter().enumerate() {
+        if tainted.contains(i.branch.as_str()) {
+            break;
+        }
         match i.state {
             IntentState::Intended => out.push(*i),
             IntentState::Replaying if idx == 0 => out.push(*i),
@@ -831,6 +869,50 @@ mod tests {
             intent("s1", 1, "queue/b", IntentState::Intended),
         ];
         assert!(resumable_walk(&stack, "s1").is_empty());
+    }
+
+    fn stacked(
+        stack: &str,
+        position: i64,
+        branch: &str,
+        base: &str,
+        state: IntentState,
+    ) -> MergeIntent {
+        let mut i = intent(stack, position, branch, state);
+        i.base_branch = base.to_string();
+        i
+    }
+
+    #[test]
+    fn replay_refuses_descendants_of_an_abandoned_intent() {
+        // Oracle: `abandoned` is the author withdrawing the change
+        // (#8582 lifecycle). A branch stacked on the withdrawn branch
+        // still contains its commits; replaying it would merge the
+        // withdrawn changes, so the walk stops before it — and before
+        // everything stacked on it, transitively (Codex P1, PR #8849).
+        let stack = vec![
+            stacked("s1", 0, "queue/a", "main", IntentState::Abandoned),
+            stacked("s1", 1, "queue/b", "queue/a", IntentState::Intended),
+            stacked("s1", 2, "queue/c", "queue/b", IntentState::Intended),
+        ];
+        assert!(replay_prefix(&stack, "s1").is_empty());
+        assert!(resumable_walk(&stack, "s1").is_empty());
+        assert!(replay_plan(&stack, "s1").is_empty());
+    }
+
+    #[test]
+    fn replay_still_walks_the_clean_prefix_below_an_abandoned_tip() {
+        // An abandoned entry higher in the stack does not taint the
+        // intents below it: their bases never contained its changes.
+        let stack = vec![
+            stacked("s1", 0, "queue/a", "main", IntentState::Intended),
+            stacked("s1", 1, "queue/b", "queue/a", IntentState::Abandoned),
+        ];
+        let walk: Vec<&str> = replay_prefix(&stack, "s1")
+            .iter()
+            .map(|i| i.branch.as_str())
+            .collect();
+        assert_eq!(walk, vec!["queue/a"]);
     }
 
     #[test]

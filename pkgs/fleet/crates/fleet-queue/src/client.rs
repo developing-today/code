@@ -3716,6 +3716,28 @@ fn replay_run(dir: &str, program: &str, argv: &[String]) -> Result<String, Strin
     }
 }
 
+/// Whether the checkout at `dir` already has a rebase in progress
+/// that this replay did NOT start (Codex P2, PR #8849). Replay must
+/// refuse that checkout state up front: `git rebase --abort` on a
+/// rebase somebody else is mid-way through would discard their
+/// conflict-resolution progress.
+fn rebase_in_progress(dir: &str) -> bool {
+    for kind in ["rebase-merge", "rebase-apply"] {
+        if let Ok(p) = replay_run(dir, "git", &replay_args(&["rev-parse", "--git-path", kind])) {
+            let path = std::path::Path::new(&p);
+            let full = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::path::Path::new(dir).join(path)
+            };
+            if full.exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn replay_args(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
@@ -3787,6 +3809,17 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
         }));
         return 3;
     }
+    // Preflight (Codex P2, PR #8849): a checkout with somebody
+    // else's rebase already in progress is not replay's to abort
+    // or build on — refuse before any step runs.
+    if rebase_in_progress(&dir) {
+        print_json(&json!({
+            "stack_id": stack_id,
+            "landed": landed,
+            "stopped_at": {"step": "preflight", "error": "checkout already has a rebase in progress that this replay did not start; finish or abort it outside replay first"},
+        }));
+        return 3;
+    }
     // Shared conflict exit: mark the intent conflicted (it is
     // `replaying` by then — Begin precedes every other step in the
     // plan), name the route to its authoring lane, and stop.
@@ -3839,12 +3872,24 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                 }
             }
             crate::merge_intent::ReplayAction::RebaseOntoMain => {
+                if rebase_in_progress(&dir) {
+                    return transient_exit(
+                        step,
+                        "checkout already has a rebase in progress that this replay did not start; finish or abort it outside replay first".to_string(),
+                        &landed,
+                    );
+                }
                 if let Err(e) = replay_run(
                     &dir,
                     "git",
                     &replay_args(&["rebase", "origin/main", &branch]),
                 ) {
-                    let _ = replay_run(&dir, "git", &replay_args(&["rebase", "--abort"]));
+                    // Only a rebase this step started is ours to
+                    // abort: the guard above proved none was in
+                    // progress before, so one present now is it.
+                    if rebase_in_progress(&dir) {
+                        let _ = replay_run(&dir, "git", &replay_args(&["rebase", "--abort"]));
+                    }
                     return conflict_exit(
                         step.position,
                         format!("rebase of {branch} onto origin/main failed at replay: {e}"),
@@ -3883,8 +3928,8 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                             &dir,
                             "gh",
                             &replay_args(&[
-                                "pr", "list", "--repo", &repo, "--head", &branch, "--state",
-                                "open", "--json", "number", "--limit", "1",
+                                "pr", "list", "--repo", &repo, "--head", &branch, "--state", "all",
+                                "--json", "number", "--limit", "1",
                             ]),
                         )
                         .ok()
@@ -3919,7 +3964,30 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                     .flatten()
                     .unwrap_or_else(|| die(2, "stack replay: merge step without a PR number"));
                 let pr_s = pr.to_string();
-                if let Err(e) = replay_run(
+                // Resume reconciliation (Codex P1, PR #8849): if an
+                // earlier pass merged this PR but stopped before the
+                // landed transition recorded it, the intent is still
+                // `replaying` with no persisted number — the OpenPr
+                // fallback above recovered the number across all PR
+                // states, and an already-MERGED PR here is success,
+                // not a merge to re-attempt (re-attempting fails and
+                // would block the rest of the stack forever).
+                let pr_state = replay_run(
+                    &dir,
+                    "gh",
+                    &replay_args(&["pr", "view", &pr_s, "--repo", &repo, "--json", "state"]),
+                )
+                .ok()
+                .and_then(|out| serde_json::from_str::<Value>(&out).ok())
+                .and_then(|v| {
+                    v.get("state")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string())
+                });
+                if pr_state.as_deref() == Some("MERGED") {
+                    // Fall through to Land: the merge already
+                    // happened; recording it is the remaining step.
+                } else if let Err(e) = replay_run(
                     &dir,
                     "gh",
                     &replay_args(&["pr", "merge", &pr_s, "--repo", &repo, "--merge"]),

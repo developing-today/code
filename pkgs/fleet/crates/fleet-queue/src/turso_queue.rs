@@ -6737,9 +6737,16 @@ fn verb_stack_transition(t: &TursoBackend, req: &Value) -> Value {
         None
     };
     let now = now_iso();
-    if let Err(e) = t.exec(
+    // Condition the write on the state that was validated above
+    // (Codex P2, PR #8849): the broker serves connections
+    // concurrently, so a second transition can land between this
+    // verb's read and its UPDATE — an unconditional write would let
+    // it overwrite a terminal state the core has already sealed.
+    // With the validated state in the predicate, a lost race
+    // affects 0 rows and is refused as a concurrent change.
+    let upd = match t.exec(
         "UPDATE merge_intents SET state = ?, pr_number = ?, conflict_detail = ?, \
-         updated_at = ? WHERE stack_id = ? AND position = ?",
+         updated_at = ? WHERE stack_id = ? AND position = ? AND state = ?",
         &[
             Arg::Text(to.as_str().to_string()),
             pr_number.map(Arg::Int).unwrap_or(Arg::Null),
@@ -6747,9 +6754,22 @@ fn verb_stack_transition(t: &TursoBackend, req: &Value) -> Value {
             Arg::Text(now),
             Arg::Text(stack_id.clone()),
             Arg::Int(position),
+            Arg::Text(current.state.as_str().to_string()),
         ],
     ) {
-        return terr(e);
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    if upd.affected == 0 {
+        return fail(
+            2,
+            format!(
+                "stack_transition: intent at stack {stack_id} position {position} changed \
+                 concurrently (validated state {} is no longer current); re-read the stack \
+                 and retry",
+                current.state.as_str()
+            ),
+        );
     }
     let rows = match stack_rows(t, &stack_id) {
         Ok(r) => r,
