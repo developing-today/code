@@ -597,6 +597,33 @@ pub fn rescan_changed(dir: &Path, known_snapshot_id: &str) -> Result<Option<DevS
     }
 }
 
+/// The verdict of the post-compile freshness rescan in
+/// [`run_dev_watch`]: what the sources are at *now*, after the
+/// candidate was compiled. `Failed` carries the discovery diagnostic
+/// — freshness could not be established, so the candidate must not
+/// be promoted (issue #8781: a failed rescan was previously replaced
+/// with the candidate's own snapshot id, which made the stale check
+/// in [`DevSession::promote`] pass by construction and let the
+/// candidate replace the last-good program while the sources were
+/// undiscoverable).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FreshnessVerdict {
+    /// Discovery succeeded; the current snapshot id.
+    Current(String),
+    /// Discovery failed; the diagnostic.
+    Failed(String),
+}
+
+/// Rescan `dir` for the post-compile freshness verdict. This never
+/// substitutes any other snapshot id for a failed discovery: the
+/// caller records a failed cycle and retains the active world.
+fn freshness_verdict(dir: &Path) -> FreshnessVerdict {
+    match discover_sources(dir) {
+        Ok(fresh) => FreshnessVerdict::Current(fresh.snapshot_id()),
+        Err(err) => FreshnessVerdict::Failed(format!("{err:#}")),
+    }
+}
+
 /// The watch debouncer (Phase 2): a pure state machine over a
 /// logical millisecond clock, so its behaviour is deterministic in
 /// tests. Events noted inside the window coalesce; the pending
@@ -605,6 +632,7 @@ pub fn rescan_changed(dir: &Path, known_snapshot_id: &str) -> Result<Option<DevS
 #[derive(Clone, Debug)]
 pub struct Debouncer {
     window_ms: u64,
+    first_event_ms: Option<u64>,
     last_event_ms: Option<u64>,
     pending_events: usize,
     total_coalesced: usize,
@@ -616,6 +644,7 @@ impl Debouncer {
     pub fn new(window_ms: u64) -> Self {
         Self {
             window_ms,
+            first_event_ms: None,
             last_event_ms: None,
             pending_events: 0,
             total_coalesced: 0,
@@ -627,6 +656,8 @@ impl Debouncer {
     pub fn note_event(&mut self, now_ms: u64) {
         if self.pending_events > 0 {
             self.total_coalesced += 1;
+        } else {
+            self.first_event_ms = Some(now_ms);
         }
         self.pending_events += 1;
         self.last_event_ms = Some(now_ms);
@@ -648,11 +679,32 @@ impl Debouncer {
         }
     }
 
+    /// True when [`Debouncer::due`] holds, or when the pending
+    /// change has been waiting at least `max_wait_ms` since the
+    /// FIRST event of its burst. The trailing deadline alone is
+    /// unbounded under continuous changes: every new event pushes
+    /// it out, so a source that keeps changing faster than the
+    /// window would never become due (Codex P2 on PR #8647). The
+    /// max wait bounds the watch loop independently of source
+    /// activity; the caller takes the newest snapshot when it
+    /// fires, so no change is lost, only coalesced less.
+    #[must_use]
+    pub fn due_with_max_wait(&self, now_ms: u64, max_wait_ms: u64) -> bool {
+        if self.due(now_ms) {
+            return true;
+        }
+        match self.first_event_ms {
+            Some(first) => self.pending_events > 0 && now_ms.saturating_sub(first) >= max_wait_ms,
+            None => false,
+        }
+    }
+
     /// Take the pending change, returning how many events it
     /// coalesced (at least 1 when one was pending).
     pub fn take(&mut self) -> usize {
         let taken = self.pending_events;
         self.pending_events = 0;
+        self.first_event_ms = None;
         self.last_event_ms = None;
         taken
     }
@@ -1088,11 +1140,16 @@ pub struct WatchCycle {
     /// Change events the debouncer coalesced into this cycle.
     pub coalesced_events: usize,
     /// The cycle's outcome: a [`PromotionOutcome`] name, or
-    /// `rescan_failed` / `compile_failed` for cycles that never
-    /// reached promotion.
+    /// `rescan_failed` / `compile_failed` /
+    /// `freshness_rescan_failed` for cycles that never reached
+    /// promotion.
     pub outcome: String,
     /// The diagnostic, for failed cycles.
     pub detail: Option<String>,
+    /// The active world's rendered view after this cycle, when the
+    /// cycle promoted a new program (issue #8782); `None` for cycles
+    /// that did not promote, and when the guest renders no view.
+    pub view: Option<String>,
 }
 
 /// The outcome of a bounded watch session (Phase 2).
@@ -1110,6 +1167,15 @@ pub struct WatchReport {
     /// when a fixture gate blocked it: nothing was launched and no
     /// watch cycle ran.
     pub initial_promoted: bool,
+    /// The view before any initial input was sent (`null` when a
+    /// fixture gate blocked the initial candidate: nothing was
+    /// launched).
+    pub initial_view: Option<String>,
+    /// Initial inputs applied, in order, each with its resulting
+    /// view -- the watch counterpart of [`DevReport`]'s steps, so a
+    /// `--watch --input` user can observe the private scratch world
+    /// after their inputs (issue #8782).
+    pub steps: Vec<DevStep>,
     /// Fixture gates run against the initial candidate.
     pub fixture_gates: Vec<FixtureGate>,
     /// Polls performed (bounded by the caller's cycle budget).
@@ -1151,6 +1217,28 @@ async fn compile_sources(
             .await?;
     let provenance = serde_json::to_value(&provenance)?;
     Ok((module, diagnostics, provenance))
+}
+
+/// Decide the watch loop's known snapshot after a candidate has
+/// been compiled: it stays the candidate, never the freshest rescan.
+///
+/// A snapshot becomes known only by being compiled as a candidate
+/// itself. If the sources moved while the candidate compiled
+/// (candidate B, current C), marking C known would strand it: the
+/// promotion discards B as stale, and every later poll compares C
+/// against itself, so C is never compiled and the old program keeps
+/// running until another edit (issue #8779). Keeping the candidate
+/// known means the next poll sees C as a change and compiles it; if
+/// that compile fails, C is by then the candidate of its own cycle
+/// and is marked known at that attempt — invariant 7 (a failing
+/// snapshot is never rebuilt in a loop) still holds, per candidate.
+#[must_use]
+pub fn known_snapshot_after_candidate(
+    candidate_snapshot_id: &str,
+    current_snapshot_id: &str,
+) -> String {
+    let _ = current_snapshot_id;
+    candidate_snapshot_id.to_owned()
 }
 
 /// Run a bounded watch session (Phase 2): launch the initial
@@ -1205,6 +1293,8 @@ pub async fn run_dev_watch(
             seed,
             initial_snapshot_id: initial_snapshot_id.clone(),
             initial_promoted: false,
+            initial_view: None,
+            steps: Vec::new(),
             fixture_gates,
             polls: 0,
             changes: 0,
@@ -1221,8 +1311,35 @@ pub async fn run_dev_watch(
         });
     }
     let mut session = DevSession::launch(&module, seed, initial_snapshot_id.clone()).await?;
+    // Rendering failures before the first poll are captured, not
+    // fatal (Codex P2 on PR #8792): the program stays healthy after
+    // a failed view, and exiting here would stop the user repairing
+    // the rendering code through the watch -- an initial input can
+    // even be what makes the view render again. The diagnostic
+    // surfaces in the report through last_good.last_failure, the
+    // same channel as the other recoverable session failures;
+    // a later successful promotion clears it.
+    let initial_view = match session.view().await {
+        Ok(view) => view,
+        Err(err) => {
+            session.last_failure = Some(format!("initial view failed: {err:#}"));
+            None
+        }
+    };
+    let mut steps = Vec::with_capacity(inputs.len());
     for input in inputs {
         session.input(input.as_bytes()).await?;
+        let view = match session.view().await {
+            Ok(view) => view,
+            Err(err) => {
+                session.last_failure = Some(format!("view failed after input: {err:#}"));
+                None
+            }
+        };
+        steps.push(DevStep {
+            input: input.clone(),
+            view,
+        });
     }
     let started = std::time::Instant::now();
     let now_ms = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -1242,6 +1359,7 @@ pub async fn run_dev_watch(
                     coalesced_events: 0,
                     outcome: "rescan_failed".to_owned(),
                     detail: Some(format!("{err:#}")),
+                    view: None,
                 });
                 continue;
             }
@@ -1252,9 +1370,14 @@ pub async fn run_dev_watch(
         changes += 1;
         // Debounce + coalesce: keep rescanning inside the window;
         // the candidate is built from the newest snapshot only.
+        // The wait is capped at one window from the first event of
+        // the burst (due_with_max_wait): under continuous changes
+        // the trailing deadline alone would never fire, and this
+        // loop would run indefinitely inside one cycle, defeating
+        // the max_cycles bound (invariant 7; Codex P2 on PR #8647).
         let mut debouncer = Debouncer::new(debounce_ms);
         debouncer.note_event(now_ms());
-        while !debouncer.due(now_ms()) {
+        while !debouncer.due_with_max_wait(now_ms(), debounce_ms) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             if let Ok(Some(newer)) = rescan_changed(dir, &sources.snapshot_id()) {
                 sources = newer;
@@ -1278,18 +1401,40 @@ pub async fn run_dev_watch(
                     coalesced_events,
                     outcome: "compile_failed".to_owned(),
                     detail: Some(detail),
+                    view: None,
                 });
                 continue;
             }
         };
         // Fresh rescan for the stale check: what the sources are at
         // *now*, after the compile, is what the candidate must match.
-        let current_snapshot_id = discover_sources(dir)
-            .map(|fresh| fresh.snapshot_id())
-            .unwrap_or_else(|_| candidate_snapshot_id.clone());
-        if current_snapshot_id != candidate_snapshot_id {
-            known_snapshot_id = current_snapshot_id.clone();
-        }
+        // A failed rescan establishes nothing about freshness, so it
+        // must never be treated as "unchanged": record a failed
+        // cycle and retain the active world instead of promoting
+        // (issue #8781).
+        let current_snapshot_id = match freshness_verdict(dir) {
+            FreshnessVerdict::Current(current_snapshot_id) => current_snapshot_id,
+            FreshnessVerdict::Failed(detail) => {
+                session.last_failure = Some(detail.clone());
+                cycles.push(WatchCycle {
+                    cycle,
+                    snapshot_id: candidate_snapshot_id,
+                    coalesced_events,
+                    outcome: "freshness_rescan_failed".to_owned(),
+                    detail: Some(detail),
+                    view: None,
+                });
+                continue;
+            }
+        };
+        // The freshest snapshot becomes known only by being
+        // compiled as a candidate itself (#8779): if the sources
+        // moved past the candidate during its compile, promotion
+        // discards the candidate as stale — leaving known at the
+        // candidate here is what makes the next poll compile the
+        // freshest snapshot instead of comparing it against itself.
+        known_snapshot_id =
+            known_snapshot_after_candidate(&candidate_snapshot_id, &current_snapshot_id);
         let promotion = session
             .promote(
                 &module,
@@ -1298,12 +1443,32 @@ pub async fn run_dev_watch(
                 fixtures,
             )
             .await;
+        // A rendering failure after a successful promotion is a
+        // cycle diagnostic, not a session failure (Codex P2 on
+        // PR #8792): the program stays healthy after a failed view,
+        // so record the error on the cycle and keep polling -- the
+        // `?` form terminated the watch and discarded the whole
+        // report. The promotion itself stands; only the view is
+        // missing, and the next change can fix the rendering code.
+        let mut detail = promotion.detail;
+        let view = if promotion.outcome == PromotionOutcome::Promoted {
+            match session.view().await {
+                Ok(view) => view,
+                Err(err) => {
+                    detail = Some(format!("view failed after promotion: {err:#}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         cycles.push(WatchCycle {
             cycle,
             snapshot_id: candidate_snapshot_id,
             coalesced_events,
             outcome: promotion.outcome.as_str().to_owned(),
-            detail: promotion.detail,
+            detail,
+            view,
         });
     }
     Ok(WatchReport {
@@ -1312,6 +1477,8 @@ pub async fn run_dev_watch(
         seed,
         initial_snapshot_id,
         initial_promoted: true,
+        initial_view,
+        steps,
         fixture_gates,
         polls,
         changes,
@@ -2561,6 +2728,41 @@ mod watch_tests {
     }
 
     #[test]
+    fn debouncer_max_wait_bounds_a_continuous_burst() {
+        // Oracle: invariant 7 (bounded work) and the Codex P2 on
+        // PR #8647 -- events arriving faster than the window keep
+        // resetting the trailing deadline, so due() alone never
+        // fires; the max wait measured from the FIRST event of the
+        // burst must still make the change due, so the watch
+        // session terminates within its budget under continuous
+        // source changes (issue #8780).
+        let mut debouncer = Debouncer::new(150);
+        debouncer.note_event(1_000);
+        // A new event every 50ms, faster than the 150ms window:
+        // the trailing deadline never arrives.
+        for t in [1_050, 1_100] {
+            debouncer.note_event(t);
+            assert!(!debouncer.due(t), "trailing deadline must not fire at {t}");
+            assert!(
+                !debouncer.due_with_max_wait(t, 150),
+                "max wait not yet reached at {t}"
+            );
+        }
+        // One full window after the first event the burst is due
+        // even though the last event is only 50ms old.
+        assert!(!debouncer.due(1_150));
+        assert!(debouncer.due_with_max_wait(1_150, 150));
+        // The whole burst is one coalesced change.
+        assert_eq!(debouncer.take(), 3);
+        // A later burst gets a fresh max wait from its own first
+        // event, not from the earlier burst.
+        debouncer.note_event(5_000);
+        assert!(!debouncer.due_with_max_wait(5_100, 150));
+        assert!(debouncer.due_with_max_wait(5_150, 150));
+        assert_eq!(debouncer.take(), 1);
+    }
+
+    #[test]
     fn rescan_changed_reports_only_a_real_change() {
         // Oracle: a rescan over an unchanged directory finds no new
         // snapshot; editing a declared source produces the fresh
@@ -2574,6 +2776,71 @@ mod watch_tests {
             .unwrap()
             .expect("an edit must rescan as a change");
         assert_ne!(changed.snapshot_id(), known);
+    }
+
+    #[test]
+    fn freshness_verdict_fails_when_sources_become_undiscoverable() {
+        // Oracle: issue #8781's acceptance — when the post-compile
+        // freshness rescan cannot discover the sources (here:
+        // main.roc deleted during compilation), the verdict is
+        // Failed carrying the diagnostic, never a snapshot id the
+        // candidate could match; run_dev_watch records a
+        // `freshness_rescan_failed` cycle on this verdict and does
+        // not promote, so the active world is retained.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.roc"), "app [main!] {}\n").unwrap();
+        let known = discover_sources(dir.path()).unwrap().snapshot_id();
+        assert_eq!(
+            freshness_verdict(dir.path()),
+            FreshnessVerdict::Current(known)
+        );
+        std::fs::remove_file(dir.path().join("main.roc")).unwrap();
+        match freshness_verdict(dir.path()) {
+            FreshnessVerdict::Failed(detail) => {
+                assert!(detail.contains("main.roc"), "{detail}");
+            }
+            FreshnessVerdict::Current(id) => {
+                panic!("a failed discovery must not report a current snapshot, got {id}")
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_saved_during_a_stale_compile_is_the_next_change() {
+        // Oracle: issue #8779 — snapshot C is saved while candidate
+        // B compiles, and B is then discarded as stale. The watch
+        // loop's known snapshot after B's compile must not be C:
+        // the next poll's rescan over a directory still at C must
+        // report C as a change, so C is compiled with no further
+        // edit. (Before the fix the loop set known to C, the rescan
+        // compared C against itself, and the old program kept
+        // running until another edit.)
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.roc"), "app [main!] {}\n").unwrap();
+        let snapshot_a = discover_sources(dir.path()).unwrap().snapshot_id();
+        // Edit to B — the candidate the loop compiles.
+        std::fs::write(dir.path().join("main.roc"), "app [main!] {}\n\nx = 1\n").unwrap();
+        let candidate_b = discover_sources(dir.path()).unwrap().snapshot_id();
+        assert_ne!(candidate_b, snapshot_a);
+        // Edit to C while B compiles; the freshest rescan is C.
+        std::fs::write(dir.path().join("main.roc"), "app [main!] {}\n\nx = 2\n").unwrap();
+        let current_c = discover_sources(dir.path()).unwrap().snapshot_id();
+        assert_ne!(current_c, candidate_b);
+        let known = known_snapshot_after_candidate(&candidate_b, &current_c);
+        assert_eq!(known, candidate_b);
+        let next = rescan_changed(dir.path(), &known)
+            .unwrap()
+            .expect("snapshot C must rescan as the next change");
+        assert_eq!(next.snapshot_id(), current_c);
+        // Once C itself has been the candidate, it is known: a
+        // further rescan finds nothing, so no snapshot is rebuilt
+        // in a loop (invariant 7).
+        let known_after_c = known_snapshot_after_candidate(&current_c, &current_c);
+        assert!(
+            rescan_changed(dir.path(), &known_after_c)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -2633,6 +2900,141 @@ mod watch_tests {
         let report = session.promote(wasm, "snap-b", "snap-b", &[]).await;
         assert_eq!(report.outcome, PromotionOutcome::Unchanged);
         assert_eq!(session.version(), 2);
+    }
+
+    #[test]
+    fn watch_report_serializes_the_views_it_carries() {
+        // Oracle: issue #8782 at the output boundary -- the CLI
+        // prints the watch report as JSON, so a view the report
+        // carries must appear in that JSON under `initial_view`,
+        // `steps[].view`, and `cycles[].view`; a fixture-blocked
+        // report carries `initial_view: null` and no steps.
+        let report = WatchReport {
+            world_id: DEV_WORLD_ID,
+            dir: PathBuf::from("/tmp/dev-watch-test"),
+            seed: 7,
+            initial_snapshot_id: "snap-a".to_owned(),
+            initial_promoted: true,
+            initial_view: Some("count=0".to_owned()),
+            steps: vec![DevStep {
+                input: "inc".to_owned(),
+                view: Some("count=1".to_owned()),
+            }],
+            fixture_gates: Vec::new(),
+            polls: 3,
+            changes: 1,
+            cycles: vec![WatchCycle {
+                cycle: 0,
+                snapshot_id: "snap-b".to_owned(),
+                coalesced_events: 0,
+                outcome: "promoted".to_owned(),
+                detail: None,
+                view: Some("count=1".to_owned()),
+            }],
+            active_snapshot_id: "snap-b".to_owned(),
+            active_version: 2,
+            last_good: LastGood {
+                snapshot_id: "snap-b".to_owned(),
+                module_hash: "hash".to_owned(),
+                version: 2,
+                records_sequence: 1,
+                last_failure: None,
+            },
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["initial_view"], "count=0");
+        assert_eq!(json["steps"][0]["input"], "inc");
+        assert_eq!(json["steps"][0]["view"], "count=1");
+        assert_eq!(json["cycles"][0]["view"], "count=1");
+    }
+
+    #[tokio::test]
+    async fn watch_report_carries_views_after_inputs_and_promotion() {
+        // Oracle: issue #8782 -- the checked-in Roc counter example
+        // renders `count=N`; a `--watch --input inc` user must see
+        // that rendering in the watch output, first after the
+        // initial inputs and again after a promotion, because the
+        // scratch world is private and never served. Skips where
+        // the roc toolchain or the built platform host is absent,
+        // like the world_compile tests.
+        if crate::world_compile::locate_roc().is_err() {
+            eprintln!("skipping: no roc toolchain located");
+            return;
+        }
+        let platform_src = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/roc-world"
+        ));
+        if !platform_src.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!("skipping: roc-world platform host.wasm not built");
+            return;
+        }
+        let counter_main = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/roc-counter/main.roc"
+        ))
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("main.roc"), &counter_main).unwrap();
+        std::os::unix::fs::symlink(&platform_src, root.path().join("roc-world")).unwrap();
+
+        // Edit the source while the watch polls: a comment-only
+        // change is a new snapshot that compiles to the same
+        // behaviour, so the promotion must succeed and its cycle
+        // must carry the preserved state's view (count=2).
+        let editor_app = app.clone();
+        let editor = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let mut text = std::fs::read_to_string(editor_app.join("main.roc")).unwrap();
+            text.push_str("\n# watch views test edit\n");
+            std::fs::write(editor_app.join("main.roc"), text).unwrap();
+        });
+
+        let inputs = vec!["inc".to_owned(), "inc".to_owned()];
+        let report = run_dev_watch(&app, None, None, 7, &inputs, &[], 200, 20)
+            .await
+            .unwrap();
+        editor.await.unwrap();
+
+        assert!(report.initial_promoted, "{report:?}");
+        assert!(
+            report
+                .initial_view
+                .as_deref()
+                .is_some_and(|view| view.contains("count=0")),
+            "initial_view: {:?}",
+            report.initial_view
+        );
+        assert_eq!(report.steps.len(), 2, "{report:?}");
+        assert!(
+            report.steps[1]
+                .view
+                .as_deref()
+                .is_some_and(|view| view.contains("count=2")),
+            "step view after inputs: {:?}",
+            report.steps[1].view
+        );
+        let promoted: Vec<&WatchCycle> = report
+            .cycles
+            .iter()
+            .filter(|cycle| cycle.outcome == "promoted")
+            .collect();
+        assert!(!promoted.is_empty(), "cycles: {:?}", report.cycles);
+        assert!(
+            promoted[0]
+                .view
+                .as_deref()
+                .is_some_and(|view| view.contains("count=2")),
+            "promoted cycle view: {:?}",
+            promoted[0].view
+        );
+        // The serialized report is the CLI's output: the views must
+        // survive into it under their field names.
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"initial_view\""), "{json}");
+        assert!(json.contains("\"view\""), "{json}");
     }
 
     #[tokio::test]
