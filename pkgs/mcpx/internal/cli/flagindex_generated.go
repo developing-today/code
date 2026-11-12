@@ -306,4 +306,8 @@ var handFlagIndex = map[string][]HandFlag{
 	"types": {
 		{Name: "no-instructions", Usage: "omit the server's own guidance, which can be long"},
 	},
+	"want": {
+		{Name: "kind", Usage: "list only this kind: request or search-miss"},
+		{Name: "limit", Usage: "list at most this many groups (default all)"},
+	},
 }

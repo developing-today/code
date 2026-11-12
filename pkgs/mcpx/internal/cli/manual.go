@@ -528,6 +528,22 @@ func handCommands() []Command {
 				"Enables discovering unrated queries or inspecting full input/output logs.",
 		},
 		{
+			Name: "want", Group: "inspection",
+			Local: "Local-only: appends to wantlog.jsonl under the state directory, " +
+				"which is never transmitted; there is no /v1 operation for it.",
+			Usage:   "request <text...> | list [--kind <request|search-miss>] [--limit <n>]",
+			Summary: "record a capability request, or list grouped local wants",
+			Detail: "Records what mcpx was asked for and could not find: an explicit " +
+				"capability request, or a registry search that returned nothing " +
+				"(recorded automatically, with no flags). The grouped list shows " +
+				"the count with first- and last-seen per normalised query.",
+			Examples: []string{
+				"mcpx want request calendar mcp",
+				"mcpx want list",
+				"mcpx want list --kind search-miss",
+			},
+		},
+		{
 			Name: "log", Aliases: []string{"logs"}, Group: "inspection",
 			Usage:   "[--since d] [--chain id] [--follow] | sql '<query>' | record '<json>'",
 			Summary: "query the structured log, or add to it",
@@ -832,6 +848,7 @@ func ManPage(version string) string {
 		{".config/mcpx/config.json", "the same, spelled more explicitly"},
 		{".config/mcpx/scripts/", "named scripts"},
 		{"$MCPX_STATE_DIR/logs/", "rotated JSONL logs"},
+		{"$MCPX_STATE_DIR/wantlog.jsonl", "append-only capability requests and empty-search misses"},
 	} {
 		fmt.Fprintf(&b, ".TP\n.B %s\n%s\n", roffEscape(f.path), roffEscape(f.what))
 	}

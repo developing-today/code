@@ -77,6 +77,7 @@ func (a *App) handWritten() map[string]Handler {
 		"embeddings":   a.CmdEmbeddings,
 		"feedback":     a.CmdFeedback,
 		"interactions": a.CmdInteractions,
+		"want":         a.CmdWant,
 	}
 }
 

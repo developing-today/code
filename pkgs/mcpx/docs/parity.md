@@ -126,7 +126,7 @@ carry instead is a description that says so and MCP annotations
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
 | `writes_clear` | `POST /v1/writes/{server}/clear` | `mcpx writes clear` *generated* | `mcpx_writes_clear` | `ops.writesClear()` | Privileged. |
 
-## CLI commands (72)
+## CLI commands (73)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -204,6 +204,7 @@ that reaches none says why: those are decisions, not gaps.
 | `tui` | – | An interactive interface over the reads above; it consumes the API rather than extending it. |
 | `types` | `types` |  |
 | `upgrade` | – | Replaces the running daemon with another binary, a decision for whoever runs the CLI rather than a tool a model can call. |
+| `want` | – | Local-only: appends to wantlog.jsonl under the state directory, which is never transmitted; there is no /v1 operation for it. |
 | `writes` | `writes_clear` | Generated from the operation table. |
 
 ## Hand-written MCP tools (12)
