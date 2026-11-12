@@ -927,6 +927,10 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "sync-models-run" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+          if [ ! -f "$HOME/code/bin/sync-models.mjs" ]; then
+            echo "sync-models: $HOME/code/bin/sync-models.mjs not found — the developing-today/code checkout is required on this host" >&2
+            exit 1
+          fi
           exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs"
         ''
       );
@@ -1793,10 +1797,18 @@ in
         # native openai provider replaced the CLI bridge).
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+          if [ ! -f "$HOME/code/bin/sync-models.mjs" ]; then
+            echo "sync-models: $HOME/code/bin/sync-models.mjs not found — the developing-today/code checkout is required on this host" >&2
+            exit 1
+          fi
           exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" "$@"
         '')
         (pkgs.writeShellScriptBin "update-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+          if [ ! -f "$HOME/code/bin/sync-models.mjs" ]; then
+            echo "sync-models: $HOME/code/bin/sync-models.mjs not found — the developing-today/code checkout is required on this host" >&2
+            exit 1
+          fi
           exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" "$@"
         '')
         # No standalone "opencode" script in this list: the CLI is
