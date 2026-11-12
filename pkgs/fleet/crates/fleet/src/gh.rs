@@ -16,21 +16,32 @@
 //!      the broker secret named `github-cli.hosts-yml` (the hosts
 //!      file itself, stored by name — the value never leaves the
 //!      resolver);
-//!   2. an installation token of the fleet's own GitHub App
-//!      ("developing.today fleet", App ID 5612056 — the App whose
-//!      private key the broker carries by name; not the paperwork
-//!      App, whose key lives only in sops) for each fleet owner,
-//!      minted in-process:
-//!      the App private key is resolved by name
-//!      (`github-app.developing-today-fleet.private-key`), an RS256
-//!      JWT is signed with the system `openssl` (key passed over an
-//!      inherited fd — never written to disk, never in argv), and
-//!      the installation for the owner is resolved live from
-//!      GET /app/installations (paginated, per the #7930 lesson).
-//!      Default owners: developing-today, developing-today-forks,
-//!      dezren39. When the call names a repo or org, that owner's
-//!      installation moves to the front of the App leg — an
-//!      installation token only sees its own installation's scope.
+//!   2. installation tokens of the fleet's THREE GitHub Apps, in
+//!      App order, minted in-process per owner: the fleet App
+//!      ("developing.today fleet", App ID 5612056), the
+//!      developing.today App, and the developing-today-backup App
+//!      (the latter two carry their App IDs in the broker alongside
+//!      their keys). Each App's private key is resolved by name, an
+//!      RS256 JWT is signed with the system `openssl` (key passed
+//!      over an inherited fd — never written to disk, never in
+//!      argv), and the installation for the owner is resolved live
+//!      from GET /app/installations (paginated, per the #7930
+//!      lesson). Default owners: fleet App — developing-today,
+//!      developing-today-forks, dezren39; developing.today App —
+//!      developing-today, dezren39; backup App — developing-today.
+//!      When the call names a repo or org, that owner's installation
+//!      moves to the front of each App leg — an installation token
+//!      only sees its own installation's scope.
+//!
+//! The App leg's own HTTPS validates against the PLATFORM root
+//! store (ureq's platform-verifier), not webpki-roots alone: hosts
+//! behind a TLS-intercepting egress proxy (the sandbox) present the
+//! proxy's CA, which lives in the platform store — with webpki
+//! roots the leg died with UnknownIssuer while `gh` itself worked.
+//!
+//! `fleet gh tiers` (a shadow subcommand; real `gh` has none)
+//! prints every rotation source with its core and GraphQL
+//! rate-limit headroom and exits 3 when any source is down.
 //!
 //! Retry-safety rule (the #8887 contract): a WRITE is only repeated
 //! under a fresh token when the failure proves GitHub refused the
@@ -56,7 +67,10 @@
 //!   FLEET_GH_APP_ID     GitHub App ID (default: 5612056)
 //!   FLEET_GH_APP_OWNERS comma list replacing the default App owners
 //!   FLEET_GH_ORDER      comma list fixing the rotation exactly:
-//!                       `personal`, `app:<owner>` entries
+//!                       `personal`, `app:<owner>` (fleet App),
+//!                       `devtoday:<owner>`, `backup:<owner>` entries
+//!   FLEET_GH_DEVTODAY_OWNERS / FLEET_GH_BACKUP_OWNERS
+//!                       comma lists replacing those Apps' owners
 //!   FLEET_GH_TRACE=1    name each attempt's token source on stderr
 
 use fleet_config::Config;
@@ -76,30 +90,96 @@ const PERSONAL_SECRET_NAME: &str = "github-cli.hosts-yml";
 const APP_KEY_SECRET_NAME: &str = "github-app.developing-today-fleet.private-key";
 const DEFAULT_APP_ID: &str = "5612056";
 const DEFAULT_APP_OWNERS: [&str; 3] = ["developing-today", "developing-today-forks", "dezren39"];
+const DEVTODAY_APP_ID_SECRET_NAME: &str = "kaneo.github-app-id";
+const DEVTODAY_APP_KEY_SECRET_NAME: &str = "kaneo.github-app-private-key";
+const DEVTODAY_DEFAULT_OWNERS: [&str; 2] = ["developing-today", "dezren39"];
+const BACKUP_APP_ID_SECRET_NAME: &str = "github-app.backup-app-id";
+const BACKUP_APP_KEY_SECRET_NAME: &str = "github-app.backup-private-key";
+const BACKUP_DEFAULT_OWNERS: [&str; 1] = ["developing-today"];
 const GITHUB_API: &str = "https://api.github.com";
 
 const USAGE: &str = "\
 Usage: fleet gh <gh args...>
+       fleet gh tiers
 
 Run the real `gh` CLI with every argument passed through unchanged,
 under a token selected from the fleet rotation (personal token, then
-the developing.today App's installation tokens). A rate-limit or
+the fleet's three GitHub Apps' installation tokens). A rate-limit or
 permission failure fails over to the next token; the caller sees only
-the final attempt's output and exit code. See code#8887.";
+the final attempt's output and exit code. `fleet gh tiers` lists each
+rotation source with its rate-limit headroom. See code#8887.";
+
+/// The fleet's GitHub Apps, in rotation order. Each carries its
+/// private key (and, except the fleet App whose ID is a public
+/// constant, its App ID) as broker secrets resolved by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GhApp {
+    Fleet,
+    DevToday,
+    Backup,
+}
+
+impl GhApp {
+    const ALL: [GhApp; 3] = [GhApp::Fleet, GhApp::DevToday, GhApp::Backup];
+
+    /// The FLEET_GH_ORDER / label prefix for this App's sources.
+    fn slug(&self) -> &'static str {
+        match self {
+            GhApp::Fleet => "app",
+            GhApp::DevToday => "devtoday",
+            GhApp::Backup => "backup",
+        }
+    }
+
+    fn key_secret(&self) -> &'static str {
+        match self {
+            GhApp::Fleet => APP_KEY_SECRET_NAME,
+            GhApp::DevToday => DEVTODAY_APP_KEY_SECRET_NAME,
+            GhApp::Backup => BACKUP_APP_KEY_SECRET_NAME,
+        }
+    }
+
+    /// The secret carrying the App ID, when the ID is not a public
+    /// constant compiled in (the fleet App's is: 5612056).
+    fn id_secret(&self) -> Option<&'static str> {
+        match self {
+            GhApp::Fleet => None,
+            GhApp::DevToday => Some(DEVTODAY_APP_ID_SECRET_NAME),
+            GhApp::Backup => Some(BACKUP_APP_ID_SECRET_NAME),
+        }
+    }
+
+    fn default_owners(&self) -> &'static [&'static str] {
+        match self {
+            GhApp::Fleet => &DEFAULT_APP_OWNERS,
+            GhApp::DevToday => &DEVTODAY_DEFAULT_OWNERS,
+            GhApp::Backup => &BACKUP_DEFAULT_OWNERS,
+        }
+    }
+}
 
 /// One identity the rotation can run `gh` under. The label is all
 /// that ever reaches stderr; the token value stays in the provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TokenSource {
     Personal,
-    AppInstallation(String),
+    AppInstallation { app: GhApp, owner: String },
 }
 
 impl TokenSource {
+    fn app(app: GhApp, owner: &str) -> TokenSource {
+        TokenSource::AppInstallation {
+            app,
+            owner: owner.to_string(),
+        }
+    }
+
     fn label(&self) -> String {
         match self {
             TokenSource::Personal => "personal".to_string(),
-            TokenSource::AppInstallation(owner) => format!("app:{owner}"),
+            TokenSource::AppInstallation { app, owner } => {
+                format!("{}:{owner}", app.slug())
+            }
         }
     }
 }
@@ -245,20 +325,53 @@ fn owner_hint(args: &[String]) -> Option<String> {
     None
 }
 
-/// The rotation for one invocation: personal first, then the App
-/// owners with the hinted owner (if any) leading the App leg.
+/// Per-App owner overrides, from the FLEET_GH_*_OWNERS environment
+/// variables; None for an App means its compiled-in defaults.
+#[derive(Default)]
+struct Owners {
+    fleet: Option<Vec<String>>,
+    devtoday: Option<Vec<String>>,
+    backup: Option<Vec<String>>,
+}
+
+impl Owners {
+    fn from_env() -> Owners {
+        let parse = |name: &str| {
+            std::env::var(name).ok().map(|list| {
+                list.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            })
+        };
+        Owners {
+            fleet: parse("FLEET_GH_APP_OWNERS"),
+            devtoday: parse("FLEET_GH_DEVTODAY_OWNERS"),
+            backup: parse("FLEET_GH_BACKUP_OWNERS"),
+        }
+    }
+
+    fn for_app(&self, app: GhApp) -> Vec<String> {
+        let over = match app {
+            GhApp::Fleet => &self.fleet,
+            GhApp::DevToday => &self.devtoday,
+            GhApp::Backup => &self.backup,
+        };
+        over.clone().unwrap_or_else(|| {
+            app.default_owners().iter().map(|s| s.to_string()).collect()
+        })
+    }
+}
+
+/// The rotation for one invocation: personal first, then each
+/// App's owners with the hinted owner (if any) leading each App leg.
 /// `FLEET_GH_ORDER` replaces the whole order when set.
-/// Oracle: code#8887's rotation definition (personal + the 3 App
-/// installations), hint-first per the installation-scope fact.
+/// Oracle: code#8887's rotation definition as extended by Drew
+/// 2026-11-12 (personal + all three fleet Apps' installations),
+/// hint-first per the installation-scope fact.
 fn rotation(args: &[String]) -> Vec<TokenSource> {
     let order_env = std::env::var("FLEET_GH_ORDER").ok();
-    let owners_env = std::env::var("FLEET_GH_APP_OWNERS").ok().map(|list| {
-        list.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-    });
-    rotation_with(args, order_env.as_deref(), owners_env)
+    rotation_with(args, order_env.as_deref(), &Owners::from_env())
 }
 
 /// `rotation` with its environment inputs made explicit, so the
@@ -266,32 +379,38 @@ fn rotation(args: &[String]) -> Vec<TokenSource> {
 fn rotation_with(
     args: &[String],
     order_env: Option<&str>,
-    owners_env: Option<Vec<String>>,
+    owners_env: &Owners,
 ) -> Vec<TokenSource> {
     if let Some(order) = order_env {
         let parsed: Vec<TokenSource> = order
             .split(',')
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
-            .map(|s| match s.strip_prefix("app:") {
-                Some(owner) => TokenSource::AppInstallation(owner.to_string()),
-                _ => TokenSource::Personal,
+            .map(|s| {
+                for app in GhApp::ALL {
+                    if let Some(owner) = s.strip_prefix(&format!("{}:", app.slug())) {
+                        return TokenSource::app(app, owner);
+                    }
+                }
+                TokenSource::Personal
             })
             .collect();
         if !parsed.is_empty() {
             return parsed;
         }
     }
-    let mut owners: Vec<String> =
-        owners_env.unwrap_or_else(|| DEFAULT_APP_OWNERS.iter().map(|s| s.to_string()).collect());
-    if let Some(hint) = owner_hint(args) {
-        if let Some(pos) = owners.iter().position(|o| o.eq_ignore_ascii_case(&hint)) {
-            let owner = owners.remove(pos);
-            owners.insert(0, owner);
-        }
-    }
+    let hint = owner_hint(args);
     let mut out = vec![TokenSource::Personal];
-    out.extend(owners.into_iter().map(TokenSource::AppInstallation));
+    for app in GhApp::ALL {
+        let mut owners = owners_env.for_app(app);
+        if let Some(hint) = &hint {
+            if let Some(pos) = owners.iter().position(|o| o.eq_ignore_ascii_case(hint)) {
+                let owner = owners.remove(pos);
+                owners.insert(0, owner);
+            }
+        }
+        out.extend(owners.into_iter().map(|o| TokenSource::app(app, &o)));
+    }
     out
 }
 
@@ -325,22 +444,40 @@ trait TokenProvider {
 /// named secrets, plus in-process App installation minting.
 struct FleetTokenProvider<'a> {
     config: &'a Config,
-    app_id: String,
-    app_jwt: Option<String>,
-    minted: Vec<(String, String)>,
+    app_ids: Vec<(GhApp, String)>,
+    app_jwts: Vec<(GhApp, String)>,
+    minted: Vec<(GhApp, String, String)>,
 }
 
 impl<'a> FleetTokenProvider<'a> {
     fn new(config: &'a Config) -> Self {
         FleetTokenProvider {
             config,
-            app_id: std::env::var("FLEET_GH_APP_ID")
+            app_ids: Vec::new(),
+            app_jwts: Vec::new(),
+            minted: Vec::new(),
+        }
+    }
+
+    /// The App ID for one App: the fleet App's is a public constant
+    /// (FLEET_GH_APP_ID may override it); the other Apps carry
+    /// theirs in the broker next to their keys.
+    fn app_id(&mut self, app: GhApp) -> Result<String, String> {
+        if let Some((_, id)) = self.app_ids.iter().find(|(a, _)| *a == app) {
+            return Ok(id.clone());
+        }
+        let id = match app.id_secret() {
+            None => std::env::var("FLEET_GH_APP_ID")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_APP_ID.to_string()),
-            app_jwt: None,
-            minted: Vec::new(),
+            Some(name) => self.resolve_named(name)?.trim().to_string(),
+        };
+        if id.is_empty() {
+            return Err(format!("app id for {} resolved empty", app.slug()));
         }
+        self.app_ids.push((app, id.clone()));
+        Ok(id)
     }
 
     fn resolve_named(&self, name: &str) -> Result<String, String> {
@@ -350,15 +487,16 @@ impl<'a> FleetTokenProvider<'a> {
             .map_err(|e| format!("secret '{name}' unresolved: {e}"))
     }
 
-    /// The App JWT, built once per process: header/payload are
-    /// public claims; only the signature touches the private key,
-    /// and that happens inside `openssl` with the key arriving on
-    /// an inherited fd.
-    fn jwt(&mut self) -> Result<String, String> {
-        if let Some(jwt) = &self.app_jwt {
+    /// One App's JWT, built once per process per App: header and
+    /// payload are public claims; only the signature touches the
+    /// private key, and that happens inside `openssl` with the key
+    /// arriving on an inherited fd.
+    fn jwt(&mut self, app: GhApp) -> Result<String, String> {
+        if let Some((_, jwt)) = self.app_jwts.iter().find(|(a, _)| *a == app) {
             return Ok(jwt.clone());
         }
-        let key_pem = self.resolve_named(APP_KEY_SECRET_NAME)?;
+        let app_id = self.app_id(app)?;
+        let key_pem = self.resolve_named(app.key_secret())?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "system clock before epoch".to_string())?
@@ -369,26 +507,39 @@ impl<'a> FleetTokenProvider<'a> {
                 "{{\"iat\":{},\"exp\":{},\"iss\":\"{}\"}}",
                 now.saturating_sub(60),
                 now + 540,
-                self.app_id
+                app_id
             )
             .as_bytes(),
         );
         let signing_input = format!("{header}.{payload}");
         let signature = openssl_rs256_sign(key_pem.as_bytes(), signing_input.as_bytes())?;
         let jwt = format!("{signing_input}.{}", base64url(&signature));
-        self.app_jwt = Some(jwt.clone());
+        self.app_jwts.push((app, jwt.clone()));
         Ok(jwt)
     }
 
-    fn mint_installation_token(&mut self, owner: &str) -> Result<String, String> {
-        if let Some((_, token)) = self.minted.iter().find(|(o, _)| o == owner) {
+    fn mint_installation_token(&mut self, app: GhApp, owner: &str) -> Result<String, String> {
+        if let Some((_, _, token)) = self
+            .minted
+            .iter()
+            .find(|(a, o, _)| *a == app && o == owner)
+        {
             return Ok(token.clone());
         }
-        let jwt = self.jwt()?;
+        let jwt = self.jwt(app)?;
+        // Platform root store, not webpki-roots alone: hosts
+        // behind a TLS-intercepting egress proxy present the
+        // proxy's CA, which only the platform store carries (the
+        // sandbox App leg died with UnknownIssuer before this).
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(60)))
             .timeout_connect(Some(std::time::Duration::from_secs(10)))
             .http_status_as_error(false)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
             .build()
             .into();
         // Resolve the owner's installation live, paginating: the App
@@ -443,7 +594,8 @@ impl<'a> FleetTokenProvider<'a> {
             .filter(|t| !t.is_empty())
             .ok_or_else(|| "mint response carried no token".to_string())?
             .to_string();
-        self.minted.push((owner.to_string(), token.clone()));
+        self.minted
+            .push((app, owner.to_string(), token.clone()));
         Ok(token)
     }
 }
@@ -457,7 +609,9 @@ impl TokenProvider for FleetTokenProvider<'_> {
                     format!("secret '{PERSONAL_SECRET_NAME}' carries no oauth_token")
                 })
             }
-            TokenSource::AppInstallation(owner) => self.mint_installation_token(owner),
+            TokenSource::AppInstallation { app, owner } => {
+                self.mint_installation_token(*app, owner)
+            }
         }
     }
 }
@@ -712,12 +866,75 @@ fn emit(attempt: &Attempt) {
     let _ = err.flush();
 }
 
+/// `fleet gh tiers`: probe every rotation source and print its
+/// core and GraphQL rate-limit headroom. Labels and numbers only —
+/// token values never leave the provider. Exit 0 when every source
+/// answers, EXIT_UNRESOLVED when any source is down.
+fn run_tiers(config: &Config) -> i32 {
+    let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
+    let sources = rotation(&[]);
+    let mut provider = FleetTokenProvider::new(config);
+    let mut any_down = false;
+    for source in &sources {
+        let label = source.label();
+        let token = match provider.token_for(source) {
+            Ok(t) => t,
+            Err(e) => {
+                println!("{label}\tDOWN\t{e}");
+                any_down = true;
+                continue;
+            }
+        };
+        let args: Vec<String> = vec!["api".to_string(), "rate_limit".to_string()];
+        match run_gh_once(&gh_bin, &args, &token) {
+            Ok(attempt) if attempt.code == 0 => {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&attempt.stdout).unwrap_or_default();
+                let show = |name: &str| {
+                    let r = &body["resources"][name];
+                    format!(
+                        "{}/{}",
+                        r["remaining"].as_i64().unwrap_or(-1),
+                        r["limit"].as_i64().unwrap_or(-1)
+                    )
+                };
+                println!(
+                    "{label}\tcore {}\tgraphql {}",
+                    show("core"),
+                    show("graphql")
+                );
+            }
+            Ok(attempt) => {
+                println!(
+                    "{label}\tDOWN\tgh api rate_limit exited {}",
+                    attempt.code
+                );
+                any_down = true;
+            }
+            Err(e) => {
+                println!("{label}\tDOWN\tfailed to run '{gh_bin}': {e}");
+                any_down = true;
+            }
+        }
+    }
+    if any_down {
+        EXIT_UNRESOLVED
+    } else {
+        EXIT_OK
+    }
+}
+
 pub fn run(config: &Config, args: &[String]) -> i32 {
     if args.is_empty()
         || args.first().is_some_and(|a| a == "--help" || a == "-h") && args.len() == 1
     {
         println!("{USAGE}");
         return EXIT_OK;
+    }
+    // `tiers` is a shadow subcommand: real `gh` has no such verb,
+    // so intercepting it cannot shadow a passthrough call.
+    if args.first().is_some_and(|a| a == "tiers") {
+        return run_tiers(config);
     }
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
     let sources = rotation(args);
@@ -817,9 +1034,11 @@ mod tests {
         assert!(!read(&["frobnicate", "list"]));
     }
 
-    // oracle: code#8887's rotation definition — personal first,
-    // then the three fleet App installations; a call naming an
-    // owner leads the App leg with that owner's installation.
+    // oracle: code#8887's rotation definition as extended by Drew
+    // 2026-11-12 — personal first, then the installations of all
+    // three fleet Apps (fleet: 3 owners, developing.today: 2,
+    // backup: 1); a call naming an owner leads each App leg with
+    // that owner's installation where the App has one.
     #[test]
     fn rotation_order_and_owner_hint() {
         let args: Vec<String> = ["api", "repos/developing-today/code"]
@@ -827,31 +1046,52 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(owner_hint(&args).as_deref(), Some("developing-today"));
-        let order = rotation_with(&args, None, None);
+        let order = rotation_with(&args, None, &Owners::default());
         assert_eq!(order[0], TokenSource::Personal);
-        assert_eq!(
-            order[1],
-            TokenSource::AppInstallation("developing-today".to_string())
-        );
-        assert_eq!(order.len(), 4);
+        assert_eq!(order[1], TokenSource::app(GhApp::Fleet, "developing-today"));
+        assert_eq!(order.len(), 7);
+        assert!(order.contains(&TokenSource::app(GhApp::DevToday, "dezren39")));
+        assert!(order.contains(&TokenSource::app(GhApp::Backup, "developing-today")));
+        assert!(!order.contains(&TokenSource::app(GhApp::Backup, "dezren39")));
 
         let fork_args: Vec<String> = ["issue", "list", "--repo", "developing-today-forks/opencode"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let order = rotation_with(&fork_args, None, None);
+        let order = rotation_with(&fork_args, None, &Owners::default());
         assert_eq!(
             order[1],
-            TokenSource::AppInstallation("developing-today-forks".to_string())
+            TokenSource::app(GhApp::Fleet, "developing-today-forks")
         );
 
-        let fixed = rotation_with(&fork_args, Some("app:dezren39,personal"), None);
+        let fixed = rotation_with(&fork_args, Some("app:dezren39,personal"), &Owners::default());
         assert_eq!(
             fixed,
             vec![
-                TokenSource::AppInstallation("dezren39".to_string()),
+                TokenSource::app(GhApp::Fleet, "dezren39"),
                 TokenSource::Personal
             ]
+        );
+
+        let fixed2 = rotation_with(
+            &fork_args,
+            Some("devtoday:developing-today,backup:developing-today"),
+            &Owners::default(),
+        );
+        assert_eq!(
+            fixed2,
+            vec![
+                TokenSource::app(GhApp::DevToday, "developing-today"),
+                TokenSource::app(GhApp::Backup, "developing-today")
+            ]
+        );
+        assert_eq!(
+            TokenSource::app(GhApp::DevToday, "dezren39").label(),
+            "devtoday:dezren39"
+        );
+        assert_eq!(
+            TokenSource::app(GhApp::Fleet, "dezren39").label(),
+            "app:dezren39"
         );
     }
 
@@ -941,7 +1181,7 @@ mod tests {
         let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
         let sources = vec![
             TokenSource::Personal,
-            TokenSource::AppInstallation("developing-today".to_string()),
+            TokenSource::app(GhApp::Fleet, "developing-today"),
         ];
         let code = run_with_provider(&mut provider, &script, &args, &sources, false);
         assert_eq!(code, 0);
@@ -973,7 +1213,7 @@ mod tests {
             .collect();
         let sources = vec![
             TokenSource::Personal,
-            TokenSource::AppInstallation("developing-today".to_string()),
+            TokenSource::app(GhApp::Fleet, "developing-today"),
         ];
         let code = run_with_provider(&mut provider, &script, &args, &sources, false);
         assert_eq!(code, 7, "the first attempt's exit code is propagated");

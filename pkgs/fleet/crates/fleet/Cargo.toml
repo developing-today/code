@@ -31,7 +31,7 @@ serde_json = { workspace = true }
 # GitHub API; same ureq pin as fleet-queue/fleet-search (rustls, no
 # native-tls). Only the JSON-free surface is needed: bodies are read
 # as strings and parsed with serde_json.
-ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"], optional = true }
 # Direct dep for the SIGPIPE disposition reset in main (#5569);
 # already in the workspace lockfile as a transitive dependency.
 [target.'cfg(unix)'.dependencies]
