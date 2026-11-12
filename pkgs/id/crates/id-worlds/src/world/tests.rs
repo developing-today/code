@@ -1,6 +1,6 @@
 #[cfg(test)]
 use crate::world::*;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1237,6 +1237,25 @@ mod tests {
             error.to_string().contains("journal sequence jumps"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn commit_prepared_refuses_sequence_exhaustion_at_u64_max() {
+        let mut core = WorldCore::new("sequence-max", WorldLimits::default()).unwrap();
+        core.sequence = u64::MAX;
+        let event = WorldEvent {
+            sequence: u64::MAX,
+            participant_id: 0,
+            kind: WorldEventKind::Chat("must not commit".to_owned()),
+        };
+
+        let error = core
+            .commit_prepared(event)
+            .expect_err("a saturated same-sequence event must be refused");
+
+        assert!(error.to_string().contains("world sequence exhausted"));
+        assert_eq!(core.sequence, u64::MAX);
+        assert!(core.events.is_empty());
     }
 
     #[test]
@@ -9552,6 +9571,54 @@ mod audit_tests {
         );
         assert_eq!(install_records[0]["outcome"], "refused");
         assert_eq!(install_records[0]["parameters"]["module_hash"], "deadbeef");
+    }
+
+    #[test]
+    fn install_program_refuses_at_sequence_max_before_journaling() {
+        #[derive(Clone)]
+        struct CapturingJournal(Arc<Mutex<Vec<JournalEntry>>>);
+
+        impl WorldJournal for CapturingJournal {
+            fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+                self.0.lock().unwrap().push(entry.clone());
+                Ok(())
+            }
+        }
+
+        let persisted = Arc::new(Mutex::new(Vec::new()));
+        let mut core = WorldCore::new("sequence-max", WorldLimits::default()).unwrap();
+        core.sequence = u64::MAX;
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(FirstUseProgram),
+            Some(Box::new(CapturingJournal(persisted.clone()))),
+        );
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::InstallProgram {
+                    module_hash: "replacement".to_owned(),
+                    seed: 9,
+                    provenance: None,
+                    installed_by: None,
+                    trust: None,
+                    program: Box::new(FirstUseProgram),
+                    reply,
+                })
+                .await;
+
+            let error = response
+                .await
+                .unwrap()
+                .expect_err("install must be refused");
+            assert!(format!("{error:#}").contains("world sequence exhausted"));
+        });
+
+        assert_eq!(actor.core.sequence, u64::MAX);
+        assert!(actor.core.events.is_empty());
+        assert_eq!(actor.core.active_module_hash, None);
+        assert!(persisted.lock().unwrap().is_empty());
     }
 
     #[test]
