@@ -72,6 +72,10 @@ import {
   getDecisionDrafts,
   getDecisionSet,
   isDeferLean,
+  decisionSetSummary,
+  decisionSetsForView,
+  isDecisionSetView,
+  listDecisionSets,
   listOpenDecisionSets,
   raiseDecisionSet,
   recordResolutions,
@@ -81,6 +85,7 @@ import {
   validateDecisionSet,
   type DecisionItem,
   type DecisionSet,
+  type DecisionSetView,
   type DecisionSubmission,
   decisionsDraftScript,
 } from "./decisions.ts";
@@ -988,6 +993,57 @@ ${decisionsDraftScript(set.setId)}
 </script>
 </main></body></html>`;
 }
+
+/** Render GET /decisions — the decision-sets index (#8867). Lists every
+ * set in the store with counts live from decisionSetSummary (the same
+ * numbers the set page itself reports), in today / this-week / all
+ * views with an open-only toggle, newest first. Each row links to the
+ * set's own token-carrying page; the index carries no token of its own
+ * and sits behind the same access as every other aggregator page
+ * (tailnet origin / Cloudflare Access on pm.security.cab) — no new
+ * public surface, and the per-set token model is untouched. */
+const CHICAGO_STAMP = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZoneName: "short",
+});
+
+function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, openOnly: boolean): string {
+  const inView = decisionSetsForView(allSets, view);
+  const visible = openOnly ? inView.filter((s) => decisionSetSummary(s).openQuestions > 0) : inView;
+  const totalOpen = inView.reduce((n, s) => n + decisionSetSummary(s).openQuestions, 0);
+  const viewTab = (v: DecisionSetView, label: string): string =>
+    v === view
+      ? `<strong>${label}</strong>`
+      : `<a href="/decisions?view=${v}${openOnly ? "&open=1" : ""}">${label}</a>`;
+  const toggle = openOnly
+    ? `<strong>Open only</strong> · <a href="/decisions?view=${view}">Show all</a>`
+    : `<a href="/decisions?view=${view}&open=1">Open only</a>`;
+  const rows = visible
+    .map((set) => {
+      const s = decisionSetSummary(set);
+      const stamp = Number.isFinite(Date.parse(s.createdAt)) ? CHICAGO_STAMP.format(new Date(s.createdAt)) : s.createdAt;
+      const breakdown = `${s.answered} answered · ${s.deferred} deferred · ${s.infoRequested} sent back for more info`;
+      const state = s.fullyResolved ? `all settled — ${breakdown}` : `${s.openQuestions} open · ${breakdown}`;
+      return `<div class="item"><h2><a href="${esc(decisionsPageUrl(set))}">${esc(s.title)}</a></h2>
+<p class="context">Raised ${esc(stamp)} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · ${state}</p>
+<p class="context">Set <code>${esc(s.setId)}</code></p></div>`;
+    })
+    .join("");
+  const empty =
+    allSets.length === 0
+      ? `<p class="context">No decision sets have been raised yet.</p>`
+      : `<p class="context">No sets in this view${openOnly ? " with open questions" : ""}.</p>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Decision sets — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
+<body><main><h1>Decision sets</h1>
+<p class="context">${inView.length} set${inView.length === 1 ? "" : "s"} · ${totalOpen} question${totalOpen === 1 ? "" : "s"} open. Newest first. Each set opens its own page — the same link its push notification carried.</p>
+<p class="context">${viewTab("today", "New today")} · ${viewTab("week", "This week")} · ${viewTab("all", "All")} &nbsp;|&nbsp; ${toggle}</p>
+${visible.length ? rows : empty}
+</main></body></html>`;
+}
+
 
 function renderDecisionsForbidden(): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -2974,6 +3030,18 @@ async function handler(req: Request): Promise<Response> {
     return html(renderAnswerPage(item));
   }
   // --- Decision sets (#8766) -------------------------------------------
+  // --- Decision-sets index (#8867) --------------------------------------
+  // GET /decisions: every set in the store, counts computed live at
+  // request time. The index carries no token of its own — it sits behind
+  // the same access as the rest of the aggregator (tailnet origin /
+  // Cloudflare Access), and each row links onward to the set's own
+  // token-carrying page.
+  if (req.method === "GET" && path === "/decisions") {
+    const sets = await listDecisionSets(cfg.decisionsFile).catch(() => [] as DecisionSet[]);
+    const viewParam = url.searchParams.get("view");
+    const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "all";
+    return html(renderDecisionsIndex(sets, view, url.searchParams.get("open") === "1"));
+  }
   const decisionsPageMatch = /^\/decisions\/([^/]+)$/.exec(path);
   if (req.method === "GET" && decisionsPageMatch) {
     const setId = decodePathSegment(decisionsPageMatch[1]);

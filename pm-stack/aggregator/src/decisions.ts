@@ -792,6 +792,107 @@ export async function listOpenDecisionSets(file: string, now = Date.now()): Prom
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/** Every set in the store, in raise order (the #8867 index page's
+ * source — unlike listOpenDecisionSets, fully-resolved and older sets
+ * are included: the index is the browse-everything view). */
+export async function listDecisionSets(file: string): Promise<DecisionSet[]> {
+  return readDecisionSets(file);
+}
+
+/** One set's row on the decision-sets index (#8867): identity plus the
+ * same counts the set page itself reports (decisionSetProgress), so the
+ * index can never disagree with the page it links to. Open means "no
+ * resolution" — answered, deferred and request-info questions are all
+ * resolved for counting, exactly as on the set page. */
+export interface DecisionSetSummary {
+  setId: string;
+  title: string;
+  createdAt: string;
+  items: number;
+  questions: number;
+  openQuestions: number;
+  answered: number;
+  deferred: number;
+  infoRequested: number;
+  fullyResolved: boolean;
+}
+
+export function decisionSetSummary(set: DecisionSet): DecisionSetSummary {
+  const p = decisionSetProgress(set);
+  return {
+    setId: set.setId,
+    title: set.title,
+    createdAt: set.createdAt,
+    items: p.items,
+    questions: p.questions,
+    openQuestions: p.openQuestions,
+    answered: p.answered,
+    deferred: p.deferred,
+    infoRequested: p.infoRequested,
+    fullyResolved: p.openQuestions === 0,
+  };
+}
+
+/** Index views (#8867): "today" = raised on the current America/Chicago
+ * calendar day; "week" = raised in the current America/Chicago calendar
+ * week (Monday–Sunday); "all" = everything. */
+export type DecisionSetView = "today" | "week" | "all";
+export const DECISION_SET_VIEWS: readonly DecisionSetView[] = ["today", "week", "all"];
+
+export function isDecisionSetView(value: unknown): value is DecisionSetView {
+  return typeof value === "string" && (DECISION_SET_VIEWS as readonly string[]).includes(value);
+}
+
+const CHICAGO_DAY = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/** The America/Chicago calendar date of an instant, as a day number
+ * (the calendar date read as UTC, in days since the epoch). Comparing
+ * day numbers keeps today/week arithmetic free of DST edges. Returns
+ * null for an unparseable instant. */
+function chicagoDayNumber(ms: number): number | null {
+  if (!Number.isFinite(ms)) return null;
+  let y = 0;
+  let m = 0;
+  let d = 0;
+  for (const part of CHICAGO_DAY.formatToParts(new Date(ms))) {
+    if (part.type === "year") y = Number(part.value);
+    else if (part.type === "month") m = Number(part.value);
+    else if (part.type === "day") d = Number(part.value);
+  }
+  if (!y || !m || !d) return null;
+  return Math.floor(Date.UTC(y, m - 1, d) / 86_400_000);
+}
+
+/** Monday (as a Chicago day number) of the week containing a Chicago
+ * day number. Day number 0 (1970-01-01) was a Thursday, so the weekday
+ * of day n is ((n + 4) mod 7) with 0 = Sunday. */
+function chicagoWeekMonday(dayNum: number): number {
+  const weekday = (((dayNum + 4) % 7) + 7) % 7; // 0 = Sunday
+  return dayNum - ((weekday + 6) % 7);
+}
+
+/** The sets visible in an index view, newest first (#8867). A set with
+ * an unparseable createdAt only ever appears in "all". */
+export function decisionSetsForView(sets: DecisionSet[], view: DecisionSetView, now = Date.now()): DecisionSet[] {
+  const sorted = [...sets].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (view === "all") return sorted;
+  const today = chicagoDayNumber(now);
+  if (today === null) return sorted;
+  if (view === "today") {
+    return sorted.filter((s) => chicagoDayNumber(Date.parse(s.createdAt)) === today);
+  }
+  const monday = chicagoWeekMonday(today);
+  return sorted.filter((s) => {
+    const d = chicagoDayNumber(Date.parse(s.createdAt));
+    return d !== null && d >= monday && d <= monday + 6;
+  });
+}
+
 /** Every recorded resolution across all sets, in raise order (the feed's
  * `decisionResolutions` source for the dropped-thread catcher). */
 export async function listDecisionResolutions(file: string): Promise<DecisionResolutionRecord[]> {
