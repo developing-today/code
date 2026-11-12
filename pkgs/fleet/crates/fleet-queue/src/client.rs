@@ -2427,6 +2427,30 @@ fn cmd_claim(rest: &[String]) -> i32 {
     // timeline (a no-op when the broker stamped in-op).
     if let Some(row) = resp.get("row") {
         if !row.is_null() {
+            // A transfer closes the previous session's window
+            // first: the CLI knows the from-session even when a
+            // pre-switch broker recorded no binding to clear (its
+            // claims never set progress.session_id). Same
+            // capability signal as claim_timeline_appends — a
+            // post-switch broker writes this unbound in-op via
+            // on_binding_cleared, and its rows carry the key.
+            if tl_trigger == "transfer" && row.get("claim_session_id").is_none() {
+                if let (Some(fs), Some(tid)) = (
+                    args.get("from-session"),
+                    row.get("id").and_then(|v| v.as_i64()),
+                ) {
+                    append_timeline_event(
+                        &worker,
+                        tid,
+                        "session_unbound",
+                        json!({
+                            "session_id": fs,
+                            "trigger": "transfer",
+                            "via": "fleet-cli",
+                        }),
+                    );
+                }
+            }
             claim_timeline_appends(&worker, row, &tl_stamp, &tl_session, tl_trigger);
         }
     }
