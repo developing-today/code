@@ -679,8 +679,6 @@ export function parseArgs(argv) {
 }
 
 async function main() {
-
-async function main() {
   let options;
   try {
     options = parseArgs(process.argv.slice(2));

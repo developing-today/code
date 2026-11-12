@@ -234,3 +234,71 @@ describe("parseArgs strict argv (#3469)", () => {
     expectUsage(["out"], "out");
   });
 });
+
+describe("parseArgs property-based (#3469, Codex P1 on PR #9009)", () => {
+  // Oracle: the declared argv grammar — a stream is zero or more
+  // (value-flag, value) pairs; a value is a non-empty token not
+  // starting with "--"; a repeated flag's last occurrence wins.
+  // Streams are generated from that grammar (valid) or by injecting
+  // exactly one grammar violation (malformed), so the expected
+  // outcome is known by construction, independent of the parser
+  // under test. Deterministic seeded RNG: failures reproduce exactly.
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function expectUsage(argv, flag) {
+    let error = null;
+    try {
+      parseArgs(argv);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(ExportError);
+    expect(error.status).toBe("usage");
+    expect(error.exitCode).toBe(2);
+    expect(error.message).toContain(flag);
+  }
+  const FLAGS = ["--out-dir", "--project-ref"];
+  const VALUES = ["out", "a/b", "x", "-single", "proberef", "19222"];
+
+  test("generated valid streams parse, last value wins, no token consumed twice", () => {
+    const rand = mulberry32(0x3469e);
+    const defaults = parseArgs([]);
+    for (let iter = 0; iter < 250; iter++) {
+      const pairs = [];
+      const n = Math.floor(rand() * 5);
+      for (let k = 0; k < n; k++) {
+        pairs.push([FLAGS[Math.floor(rand() * FLAGS.length)], VALUES[Math.floor(rand() * VALUES.length)]]);
+      }
+      const argv = pairs.flat();
+      const parsed = parseArgs(argv);
+      const last = (flag) => pairs.filter(([f]) => f === flag).at(-1)?.[1];
+      expect(parsed.outDir).toBe(last("--out-dir") ?? defaults.outDir);
+      expect(parsed.refOverride).toBe(last("--project-ref"));
+      for (const v of [parsed.outDir, parsed.refOverride]) if (v !== undefined) expect(String(v).startsWith("--")).toBe(false);
+    }
+  });
+
+  test("generated malformed streams are usage errors naming the offending flag", () => {
+    const rand = mulberry32(0x3469f);
+    for (let iter = 0; iter < 250; iter++) {
+      const kind = Math.floor(rand() * 3);
+      const flag = FLAGS[Math.floor(rand() * FLAGS.length)];
+      if (kind === 0) {
+        const other = FLAGS[Math.floor(rand() * FLAGS.length)];
+        expectUsage([flag, other, "x"], flag);
+      } else if (kind === 1) {
+        expectUsage(["--out-dir", "out", flag], flag);
+      } else {
+        const bogus = "--bogus-" + Math.floor(rand() * 1000);
+        expectUsage(["--out-dir", "out", bogus, "x"], bogus);
+      }
+    }
+  });
+});

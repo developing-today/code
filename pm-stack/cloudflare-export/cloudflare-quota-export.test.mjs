@@ -818,3 +818,60 @@ test("parseArgs: unknown flags and bare positionals are usage errors (#3469)", (
   expectUsage(["--out-dir=out"], "--out-dir=out");
   expectUsage(["out"], "out");
 });
+
+// Property-based coverage for parseArgs (#3469, Codex P1 on PR #9009).
+// Oracle: the declared argv grammar — a stream is zero or more
+// (value-flag, value) pairs; a value is a non-empty token not starting
+// with "--"; a repeated flag's last occurrence wins. Streams are
+// generated from that grammar (valid) or by injecting exactly one
+// grammar violation (malformed), so the expected outcome is known by
+// construction, independent of the parser under test. Deterministic
+// seeded RNG: failures reproduce exactly.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test("parseArgs property: generated valid streams parse, last value wins, no token consumed twice (#3469)", () => {
+  const rand = mulberry32(0x3469c);
+  const flags = ["--out-dir", "--account-id"];
+  const plainValues = ["out", "a/b", "x", "-single", "probeacct", "19222"];
+  const defaults = parseArgs([]);
+  for (let iter = 0; iter < 250; iter++) {
+    const pairs = [];
+    const n = Math.floor(rand() * 5);
+    for (let k = 0; k < n; k++) {
+      pairs.push([flags[Math.floor(rand() * flags.length)], plainValues[Math.floor(rand() * plainValues.length)]]);
+    }
+    const argv = pairs.flat();
+    const parsed = parseArgs(argv);
+    const last = (flag) => pairs.filter(([f]) => f === flag).at(-1)?.[1];
+    assert.equal(parsed.outDir, last("--out-dir") ?? defaults.outDir, JSON.stringify(argv));
+    assert.equal(parsed.accountId, last("--account-id"), JSON.stringify(argv));
+    // No-token-twice invariant: no parsed value is itself a flag token.
+    for (const v of [parsed.outDir, parsed.accountId]) if (v !== undefined) assert.ok(!String(v).startsWith("--"), JSON.stringify(argv));
+  }
+});
+
+test("parseArgs property: generated malformed streams are usage errors naming the offending flag (#3469)", () => {
+  const rand = mulberry32(0x3469d);
+  const flags = ["--out-dir", "--account-id"];
+  for (let iter = 0; iter < 250; iter++) {
+    const kind = Math.floor(rand() * 3);
+    const flag = flags[Math.floor(rand() * flags.length)];
+    if (kind === 0) {
+      const other = flags[Math.floor(rand() * flags.length)];
+      expectUsage([flag, other, "x"], flag);
+    } else if (kind === 1) {
+      expectUsage(["--out-dir", "out", flag], flag);
+    } else {
+      const bogus = "--bogus-" + Math.floor(rand() * 1000);
+      expectUsage(["--out-dir", "out", bogus, "x"], bogus);
+    }
+  }
+});
