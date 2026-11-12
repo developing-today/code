@@ -165,6 +165,27 @@ const PROV = {
   aa: "x",
 };
 
+describe("isProjectPoolItem updatedAt gate (#5202)", () => {
+  const validItem = () => parseProjectItems(GQL)[0];
+
+  test("a valid ISO updatedAt passes", () => {
+    expect(isProjectPoolItem({ ...validItem(), updatedAt: "2026-02-25T00:00:00Z" })).toBe(true);
+  });
+
+  test("impossible and non-ISO updatedAt stamps are refused", () => {
+    for (const updatedAt of ["2026-02-30T00:00:00Z", "2026-04-31T00:00:00Z", "March 2, 2026", "not-a-date"]) {
+      expect(isProjectPoolItem({ ...validItem(), updatedAt })).toBe(false);
+    }
+  });
+
+  test("the collector missing-stamp spellings still pass: empty string and absent", () => {
+    expect(isProjectPoolItem({ ...validItem(), updatedAt: "" })).toBe(true);
+    const absent = { ...validItem() };
+    delete absent.updatedAt;
+    expect(isProjectPoolItem(absent)).toBe(true);
+  });
+});
+
 describe("collector projects parsing (GraphQL -> feed section)", () => {
   test("parses items with fields, ref, and both URLs; skips unlinked drafts", () => {
     const pool = parseProjectItems(GQL);
