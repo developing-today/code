@@ -725,7 +725,12 @@ mod tests {
         ];
 
         fn op_strategy() -> impl Strategy<Value = (usize, usize, usize, bool)> {
-            (0..OWNERS.len(), 0..ACCOUNTS.len(), 0..NAMES.len(), any::<bool>())
+            (
+                0..OWNERS.len(),
+                0..ACCOUNTS.len(),
+                0..NAMES.len(),
+                any::<bool>(),
+            )
         }
 
         proptest! {

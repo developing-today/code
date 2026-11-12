@@ -20,7 +20,8 @@ fn probe_open_rejects_names_set_would_refuse() {
          {{\"op\":\"set\",\"owner\":\"me\",\"account\":\"acct-d\",\"name\":\"{long}\"}}\n"
     );
     std::fs::write(&path, journal).unwrap();
-    let error = Petnames::open(&path).expect_err("journal with refused-at-write records must not load");
+    let error =
+        Petnames::open(&path).expect_err("journal with refused-at-write records must not load");
     let message = format!("{error:#}");
     assert!(
         message.contains("line 2"),
