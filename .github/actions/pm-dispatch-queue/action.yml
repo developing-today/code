@@ -44,6 +44,10 @@ inputs:
     description: "Optional existing issue number in the target repo to attach to instead of creating an issue. Takes precedence over issue."
     required: false
     default: ""
+  dedupe_key:
+    description: "Optional stable request key. When supplied, transient POST failures may be retried safely without creating duplicate tasks."
+    required: false
+    default: ""
 outputs:
   task_id:
     description: "pm-dispatch queue task id."
@@ -71,6 +75,7 @@ runs:
         INPUT_KIND: ${{ inputs.kind }}
         INPUT_ISSUE: ${{ inputs.issue }}
         INPUT_ISSUE_NUMBER: ${{ inputs.issue_number }}
+        INPUT_DEDUPE_KEY: ${{ inputs.dedupe_key }}
       run: |
         set -euo pipefail
         # Resolve the prompt text. Resolution order: (1) prompt-file,
@@ -141,17 +146,18 @@ runs:
         if [ -n "$INPUT_ISSUE_NUMBER" ]; then
           payload="$(printf '%s' "$payload" | jq --argjson issue_number "$INPUT_ISSUE_NUMBER" '. + {issue_number: $issue_number}')"
         fi
-        response="$(curl -sS -w $'\n%{http_code}' -X POST "https://dispatch.security.cab/v1/tasks" \
-          -H "Authorization: Bearer $oidc_token" \
-          -H "Content-Type: application/json" \
-          -d "$payload")"
-        http_code="${response##*$'\n'}"
-        body="${response%$'\n'*}"
-        if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-          echo "::error::pm-dispatch-queue: pm-dispatch POST /v1/tasks failed (HTTP $http_code):" >&2
-          echo "$body" >&2
-          exit 1
+        if [ -n "$INPUT_DEDUPE_KEY" ]; then
+          payload="$(printf '%s' "$payload" | jq --arg dedupe_key "$INPUT_DEDUPE_KEY" '. + {dedupe_key: $dedupe_key}')"
         fi
+        # A retry is safe only when the caller supplied an invocation-stable
+        # dedupe key; issue_number alone represents a distinct dispatch each
+        # time and therefore is not sufficient protection against duplicates.
+        retryable=false
+        if [ -n "$INPUT_DEDUPE_KEY" ]; then
+          retryable=true
+        fi
+        body="$(OIDC_TOKEN="$oidc_token" PAYLOAD="$payload" RETRYABLE="$retryable" \
+          bash "${GITHUB_ACTION_PATH}/post-task.sh")" || exit 1
         echo "$body"
         task_id="$(printf '%s' "$body" | jq -r '.task_id // empty')"
         issue_number="$(printf '%s' "$body" | jq -r '.issue_number // empty')"
