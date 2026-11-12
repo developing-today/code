@@ -39,6 +39,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/deps"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
 	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 	"github.com/developing-today/code/pkgs/mcpx/internal/scriptresolve"
 )
@@ -617,6 +618,15 @@ type Service struct {
 	// Hooks run at the edges of every run this service performs. They are the
 	// config-declared list; a caller's Options.Hooks append to them.
 	Hooks []Hook
+	// ModelProvider is the configured model layer (internal/model) a
+	// prompt hook asks for advice. Nil means no provider is configured:
+	// a prompt hook then reports its advice as unavailable in its frame
+	// and the run continues deterministically (prompt_hooks.go).
+	ModelProvider model.Provider
+	// ModelProviderErr, when set, is why a configured provider could not
+	// be built; a prompt hook's unavailable message names it, so a
+	// misconfigured provider is distinguishable from none configured.
+	ModelProviderErr error
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)
@@ -946,8 +956,26 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// exactly where it happened.
 	unregisterCalls := func() {}
 	unregisterDryRun := func() {}
+	// Call frames are also retained for this run, so an outcome hook's
+	// context can name the calls the script made (@calls for a prompt
+	// hook, the calls field of a script hook's stdin context). Only the
+	// hashed-arguments CallInfo is kept, never the arguments.
+	var callsMu sync.Mutex
+	var runCalls []CallInfo
+	snapshotCalls := func() []CallInfo {
+		callsMu.Lock()
+		defer callsMu.Unlock()
+		return append([]CallInfo(nil), runCalls...)
+	}
 	if s.Calls != nil {
-		unregisterCalls = s.Calls.Register(runID, emitFrame)
+		unregisterCalls = s.Calls.Register(runID, func(f Frame) {
+			if f.Call != nil {
+				callsMu.Lock()
+				runCalls = append(runCalls, *f.Call)
+				callsMu.Unlock()
+			}
+			emitFrame(f)
+		})
 		if opts.DryRun {
 			// Marked for the whole run: the daemon's call path
 			// checks the registry before dispatching a call that
@@ -1170,6 +1198,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	hookCtx.Diagnostic = hookDiagnostic(res.Error)
 	hookCtx.ExitCode, hookCtx.DurationMs = res.ExitCode, res.DurationMs
 	hookCtx.Artifacts = res.Artifacts
+	hookCtx.Calls = snapshotCalls()
 	phase := HookOnSuccess
 	if res.Error != "" {
 		phase = HookOnError
@@ -1214,6 +1243,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	if hs := phaseHooks(hooks, HookSuffix); len(hs) > 0 {
 		hookCtx.Phase = HookSuffix
 		hookCtx.Result, hookCtx.Error = res.Result, res.Error
+		hookCtx.Calls = snapshotCalls()
 		s.runHooks(runCtx, HookSuffix, hs, hookCtx, ropts, res, emitFrame)
 	}
 

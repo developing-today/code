@@ -270,7 +270,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	// and are not governed by the gate.
 	if s.cfg != nil && settings.AutonomyAtLeast(set.String("hooks.autonomy"), "run") {
 		for _, h := range s.cfg.ScriptHooks() {
-			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Name: h.Name})
+			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Prompt: h.Prompt, Effect: h.Effect, Model: h.Model, Name: h.Name})
 		}
 	}
 	return svc
@@ -307,6 +307,16 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	// from the daemon's cached startup settings and cannot see it; apply
 	// the request-resolved value to the service this request runs through.
 	svc.Limits.StdoutLimit = s.callSettings(r).Bytes("exec.maxOutputBytes")
+	// Prompt hooks (#5276) resolve through this request's model layer.
+	// (nil, nil) — no layer configured — leaves ModelProvider nil, and a
+	// prompt hook reports its advice unavailable in its frame; a build
+	// error is kept on the service so the frame can name it instead of
+	// looking like no provider was configured.
+	if prov, merr := s.modelLayer(r.Context(), req.Options.Session); merr != nil {
+		svc.ModelProviderErr = merr
+	} else {
+		svc.ModelProvider = prov
+	}
 
 	// A task is a handle now and the result later, which is the right shape
 	// for a script that takes minutes: holding a request open that long

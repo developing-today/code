@@ -20,6 +20,7 @@ import (
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
 	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
 )
 
 // execOptions is what the exec and run commands resolved from their flags,
@@ -182,7 +183,7 @@ func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Servi
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
 	lim.StdoutLimit = set.Bytes("exec.maxOutputBytes")
-	return &execsvc.Service{
+	svc := &execsvc.Service{
 		Store: store,
 		// The script runs in this process's machine, and the daemon whose
 		// store it is has to be the same one for a path to mean anything to
@@ -191,6 +192,25 @@ func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Servi
 		Local:  socket != "",
 		Limits: lim,
 	}
+	// Prompt hooks (#5276) on a local run resolve through the same
+	// configured model layer the daemon uses, minus the broker samplers
+	// only a daemon can offer. model.provider=none (the default)
+	// resolves to (nil, nil): no behaviour change for a user who
+	// configures nothing, and a prompt hook reports advice unavailable.
+	if prov, merr := model.Resolve(model.Config{
+		Provider:             set.String("model.provider"),
+		BaseURL:              set.String("model.baseURL"),
+		APIKeyEnv:            set.String("model.apiKeyEnv"),
+		ProviderSettingsJSON: set.String("model.providers"),
+		ProfilesJSON:         set.String("model.profiles"),
+		DefaultModel:         set.String("model.default"),
+		Timeout:              set.Duration("model.timeout"),
+	}); merr != nil {
+		svc.ModelProviderErr = merr
+	} else {
+		svc.ModelProvider = prov
+	}
+	return svc
 }
 
 // ---- the remote path ----

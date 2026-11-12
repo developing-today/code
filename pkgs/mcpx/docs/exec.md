@@ -206,6 +206,27 @@ frame it may have replaced (its frame carries the original when it changed
 the value), and a `suffix` hook frame follows the outcome, before `end`. A
 replaced error produces no `error` frame at all.
 
+A hook entry declares exactly one action. `script` is the deterministic
+action above. `prompt` is the model-backed one (#1929 Approach C, first
+slice): the entry's `prompt` text is sent to the configured model provider
+(`model.provider` and friends, resolved per request on the daemon, from
+the same settings for a local CLI run), with `effect` defaulting to
+`advise` — the only effect this slice implements; `ask`, `propose`,
+`apply` and `run` are refused at validation rather than silently
+downgraded. `@placeholders` in the prompt text — the built-ins `@result`,
+`@error`, `@diagnostic`, `@calls`, `@artifacts`, `@source`, plus the
+call's own placeholder values — are substituted JSON-encoded, as data,
+never as raw text. The provider's answer rides the hook frame as
+`advice`, with `model` and `provider` naming what answered; advice never
+transforms the result or the error, in any phase. When no provider is
+configured, or the provider errors, the frame instead carries
+`error: "advice unavailable: …"` and the run continues deterministically
+— a prompt hook can slow a run down by its timeout, but it cannot change
+or fail it. A per-hook `model` names the model to ask, in the
+provider/model namespace. Prompt hooks are declared in the same lists as
+script hooks — the config `hooks` entries and a call's `options.hooks` —
+and run in declaration order among them.
+
 Artifact **metadata** comes before `end`; artifact **bodies** come strictly
 after it. That is the whole point of the design, and it is step 5 of the
 issue: a streaming consumer reads the emits and the return value, decides it
