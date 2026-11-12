@@ -528,8 +528,39 @@ fn test_a_non_manager_may_not_add_or_remove_a_member() {
         add("a0", 2, g, 4, Role::Read, &["g"]),
         remove("x0", 2, g, 3, &["g"]),
     ]);
-    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NotManager));
-    assert_eq!(outcome(&p, "x0"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&p, "x0"), Outcome::Refused(Refusal::NoChain));
+}
+
+#[test]
+fn test_a_delegated_manage_holder_may_add_and_remove_members() {
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[(2, Role::Read)], Policy::default()),
+        add("a0", 1, g, 3, Role::Read, &["g"]),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["a0"]),
+        add("a1", 2, g, 4, Role::Read, &["a0", "d0"]),
+        remove("r0", 2, g, 3, &["a1"]),
+    ]);
+
+    assert_eq!(outcome(&p, "a1"), Outcome::Applied);
+    assert_eq!(outcome(&p, "r0"), Outcome::Applied);
+}
+
+#[test]
+fn test_a_cut_manage_delegation_cannot_authorize_member_changes() {
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[(2, Role::Read)], Policy::default()),
+        add("a0", 1, g, 3, Role::Read, &["g"]),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["a0"]),
+        veto("v0", 1, g, "d0", &["d0"]),
+        add("a1", 2, g, 4, Role::Read, &["a0", "d0", "v0"]),
+        remove("r0", 2, g, 3, &["a0", "d0", "v0"]),
+    ]);
+
+    assert_eq!(outcome(&p, "a1"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&p, "r0"), Outcome::Refused(Refusal::NoChain));
 }
 
 #[test]

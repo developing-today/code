@@ -938,12 +938,8 @@ impl Engine {
             None => return Err(Refusal::NotActive),
         };
         let is_admin = author_role == Role::Admin;
-        let is_manager = author_role >= Role::Manage;
         match op {
             MemberOp::Add { member, role } => {
-                if !is_manager {
-                    return Err(Refusal::NotManager);
-                }
                 if role == Role::Admin && !is_admin {
                     return Err(Refusal::NotAdmin);
                 }
@@ -1004,9 +1000,6 @@ impl Engine {
                 }
                 if !self.listed(&group, &member) {
                     return Err(Refusal::NotAMember(member));
-                }
-                if member != author && !is_manager {
-                    return Err(Refusal::NotManager);
                 }
                 // Manage removes members at or below its own level. Admin is above it (design §5.2).
                 if member != author && record.admins.contains(&member) && !is_admin {
