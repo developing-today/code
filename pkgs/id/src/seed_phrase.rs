@@ -260,6 +260,102 @@ mod tests {
         assert!(decode_key(&short).is_err());
     }
 
+    mod property {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn entropy_strategy() -> impl Strategy<Value = Vec<u8>> {
+            (0..ENTROPY_LENGTHS.len())
+                .prop_flat_map(|i| prop::collection::vec(any::<u8>(), ENTROPY_LENGTHS[i]))
+        }
+
+        proptest! {
+            /// Oracle: decode is the exact inverse of encode at every BIP39
+            /// entropy length — generated entropy of any supported length
+            /// round-trips byte-for-byte, at the word count the BIP39 layout
+            /// predicts ((entropy bits + entropy/32 checksum bits) / 11).
+            #[test]
+            fn generated_entropy_round_trips_at_every_length(
+                entropy in entropy_strategy(),
+            ) {
+                let phrase = encode(&entropy).unwrap();
+                prop_assert_eq!(
+                    phrase.split_whitespace().count(),
+                    (entropy.len() * 8 + entropy.len() / 4) / 11
+                );
+                prop_assert_eq!(&decode(&phrase).unwrap()[..], &entropy[..]);
+            }
+
+            /// Oracle: an arbitrary 32-byte identity key round-trips through
+            /// its 24-word phrase unchanged — restore produces the same key.
+            #[test]
+            fn generated_keys_round_trip_through_their_phrase(key in any::<[u8; 32]>()) {
+                let phrase = encode_key(&key).unwrap();
+                prop_assert_eq!(phrase.split_whitespace().count(), 24);
+                prop_assert_eq!(&decode_key(&phrase).unwrap()[..], &key[..]);
+            }
+
+            /// Oracle: flipping only a checksum bit of the last word leaves
+            /// the entropy bits untouched, so the checksum oracle must
+            /// reject the phrase — a wrong or retyped word never restores
+            /// a different key silently.
+            #[test]
+            fn a_checksum_bit_flip_is_always_rejected(key in any::<[u8; 32]>()) {
+                let phrase = encode_key(&key).unwrap();
+                let words = wordlist();
+                let mut tokens: Vec<&str> = phrase.split_whitespace().collect();
+                let last = words
+                    .binary_search(&tokens[23])
+                    .expect("encoded word is in the wordlist");
+                // The last word of a 24-word phrase carries 3 entropy bits
+                // in its high bits and the 8 checksum bits below them, so
+                // flipping bit 0 changes the checksum field only.
+                tokens[23] = words[last ^ 1];
+                prop_assert!(decode_key(&tokens.join(" ")).is_err());
+            }
+
+            /// Oracle: a generated token that is not a wordlist word is
+            /// rejected wherever it lands in an otherwise valid phrase.
+            #[test]
+            fn an_unknown_word_is_always_rejected(
+                key in any::<[u8; 32]>(),
+                position in 0..24usize,
+                token in "[a-z]{3,10}",
+            ) {
+                prop_assume!(!wordlist().contains(&token.as_str()));
+                let phrase = encode_key(&key).unwrap();
+                let mut tokens: Vec<&str> = phrase.split_whitespace().collect();
+                tokens[position] = token.as_str();
+                prop_assert!(decode_key(&tokens.join(" ")).is_err());
+            }
+
+            /// Oracle: word counts outside the BIP39 set are rejected no
+            /// matter the words — only 12/15/18/21/24-word phrases decode.
+            #[test]
+            fn a_non_bip39_word_count_is_always_rejected(count in 1..=30usize) {
+                prop_assume!(![12, 15, 18, 21, 24].contains(&count));
+                let phrase = std::iter::repeat_n("abandon", count)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                prop_assert!(decode(&phrase).is_err());
+            }
+
+            /// Oracle: a valid phrase carrying fewer than 32 bytes decodes
+            /// as entropy but is never an identity key — decode_key rejects
+            /// every generated sub-key-length phrase.
+            #[test]
+            fn a_short_phrase_is_never_a_key(
+                entropy in (0..ENTROPY_LENGTHS.len() - 1).prop_flat_map(|i| {
+                    prop::collection::vec(any::<u8>(), ENTROPY_LENGTHS[i])
+                }),
+            ) {
+                let phrase = encode(&entropy).unwrap();
+                prop_assert!(decode(&phrase).is_ok());
+                prop_assert!(decode_key(&phrase).is_err());
+            }
+        }
+    }
+
     #[test]
     fn encode_rejects_non_bip39_entropy_lengths() {
         assert!(encode(&[0u8; 10]).is_err());
