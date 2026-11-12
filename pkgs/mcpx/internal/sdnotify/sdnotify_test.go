@@ -181,8 +181,13 @@ func TestSendWriteHasDeadline(t *testing.T) {
 	if err := sendWithDialer("/unused", "READY=1", fixedDialer{conn: conn}, timeout); err != nil {
 		t.Fatal(err)
 	}
-	if conn.writeDeadline.Before(started) || conn.writeDeadline.After(started.Add(timeout+time.Millisecond)) {
-		t.Fatalf("write deadline = %s, want it within %s of send start", conn.writeDeadline, timeout)
+	finished := time.Now()
+	// The deadline is set after dialing, at some instant between started
+	// and finished, so it must fall in [started+timeout, finished+timeout].
+	// Bounding it by timestamps captured around the call avoids assuming
+	// the setup itself finishes within any fixed scheduling slack.
+	if conn.writeDeadline.Before(started.Add(timeout)) || conn.writeDeadline.After(finished.Add(timeout)) {
+		t.Fatalf("write deadline = %s, want between %s and %s", conn.writeDeadline, started.Add(timeout), finished.Add(timeout))
 	}
 	if conn.written != "READY=1" {
 		t.Fatalf("write = %q, want READY=1", conn.written)
