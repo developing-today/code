@@ -3243,6 +3243,22 @@ mod tests {
     }
 
     #[test]
+    fn test_spaced_destination_placeholder_avoids_captured_raw_urls() {
+        // #1348 (Codex review on PR #4665): a placeholder minted for a
+        // later destination must not occur inside a raw destination
+        // captured earlier — restoring the captured raw reintroduces
+        // its literal text while later placeholders are still pending,
+        // so a colliding token inside it would be rewritten and the
+        // captured destination corrupted. Here the second link's raw
+        // destination literally contains the -0- and -2- tokens; the
+        // first link's placeholder must skip both.
+        let original = "[a](<x y>)\n\n[b](<idweb-spaced-destination-0-placeholder ](idweb-spaced-destination-2-placeholder)>)\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, original, "captured raw corrupted: {first:?}");
+        assert_eq!(first, second, "fixpoint");
+    }
+
+    #[test]
     fn test_tab_and_newline_destinations_roundtrip_in_angle_form() {
         // #1423: the #1019 protection only triggered on a literal space,
         // so a tab destination was percent-encoded to %09 on save and a

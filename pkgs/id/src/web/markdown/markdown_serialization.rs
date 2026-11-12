@@ -1115,8 +1115,13 @@ fn ast_contains_literal<'a>(root: &'a AstNode<'a>, needle: &str) -> bool {
 }
 
 /// Mint a spaced-destination placeholder that occurs nowhere in the
-/// document already (#1348). `counter` advances past every candidate so
-/// skipped indices are never reused; the `-{n}-placeholder` shape keeps
+/// document already (#1348) and in none of the raw destinations
+/// captured so far: a captured raw is restored into the rendered
+/// output while later placeholders are still unrestored, so a token
+/// embedded in a captured raw would be rewritten by a later
+/// restoration and corrupt that destination. `counter` advances past
+/// every candidate so skipped indices are never reused; the
+/// `-{n}-placeholder` shape keeps
 /// tokens mutually prefix-free (as with the #1496 fence tokens).
 fn fresh_spaced_destination_placeholder<'a>(
     root: &'a AstNode<'a>,
@@ -1130,6 +1135,7 @@ fn fresh_spaced_destination_placeholder<'a>(
             .iter()
             .any(|(placeholder, _)| placeholder == &candidate)
             || ast_contains_literal(root, &candidate)
+            || taken.iter().any(|(_, raw)| raw.contains(&candidate))
         {
             continue;
         }
