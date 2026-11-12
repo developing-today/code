@@ -4092,7 +4092,7 @@ ${dnsTable(section.entries, renewingSoon, next)}`;
  * Written without template literals on purpose — it lives inside one.
  */
 const AA_EXPLORER_SCRIPT = `<script type="module">
-import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, normName, paretoSet, pctRank, projectTask, scoreEdges } from "/assets/aa-explorer-computations.js";
+import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, normName, paretoSet, pctRank, projectTask, scoreEdges, unpricedScoredPoints } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -4832,6 +4832,33 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     });
   }
   // --- hidden tray (reference design's hide-a-configuration flow) ---
+  function renderUnpriced() {
+    // #1400 remainder: visible scored configurations with no published
+    // cost cannot appear on the cost charts; list them under the charts
+    // as real buttons that open the existing detail card via
+    // selectPoint — the same flow as clicking a dot or a table row.
+    // visPoints() already applies every filter and the hidden set.
+    var box = document.getElementById("xpl-unpriced");
+    if (!box) return;
+    var rows = unpricedScoredPoints(visPoints());
+    box.innerHTML = "";
+    if (!rows.length) {
+      var none = document.createElement("p");
+      none.className = "muted";
+      none.textContent = "No visible scored configurations are missing a published cost.";
+      box.appendChild(none);
+      return;
+    }
+    rows.forEach(function (p) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "xpl-ctl-btn";
+      b.setAttribute("data-unpriced", p.key);
+      b.textContent = (p.family || p.key) + (p.effort ? " \u2014 " + p.effort : "") + " \u00b7 " + scoreWord() + " " + fmtN(p.score, 1) + " \u00b7 no published cost";
+      b.addEventListener("click", function () { selectPoint(p.key); });
+      box.appendChild(b);
+    });
+  }
   function renderTray() {
     var tray = document.getElementById("xpl-tray");
     if (!tray) return;
@@ -5442,7 +5469,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
         : "Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the import's per-task figures (time excludes TTFT).";
     }
     applyTab();
-    if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
+    if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderUnpriced(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
     else renderModels();
     enhanceCharts();
   }
@@ -5937,6 +5964,7 @@ ${aaTabAge}
 <div class="chart" data-chart="xpl-c5"><h3>Multiples of the baseline</h3><span class="xpl-ctl"><label>Baseline <select id="xf-baseline"></select></label><button type="button" data-dl="xpl-c5">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c5"><button type="button" data-zact="expand" data-zfor="xpl-c5">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c5" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c5" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c5" aria-label="Reset view">⟲</button></span><svg id="xpl-c5" viewBox="0 0 680 400" role="img" aria-label="Cost and duration multiples scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c6"><h3>Scores — every measured configuration</h3><span class="xpl-ctl"><button type="button" data-dl="xpl-c6">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c6"><button type="button" data-zact="expand" data-zfor="xpl-c6">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c6" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c6" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c6" aria-label="Reset view">⟲</button></span><svg id="xpl-c6" viewBox="0 0 680 400" role="img" aria-label="Scores bar chart"></svg><p class="muted" data-note></p></div>
 </div>
+<div class="card" id="xpl-unpriced-wrap"><h3>Scored configurations without a published cost</h3><p class="muted">These visible configurations have a score but no published cost, so they cannot appear on the cost charts. Select one to open its detail card.</p><div id="xpl-unpriced" class="strip"></div></div>
 <p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; white-ringed dots sit on it, dimmed dots are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only measured configurations are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
 <h2>Multiples table</h2>
 <p class="muted">Every visible configuration with all three measures, as multiples of the baseline chosen above, sorted by cost multiple.</p>

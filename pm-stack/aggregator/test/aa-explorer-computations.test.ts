@@ -9,6 +9,7 @@ import {
   pctRank,
   projectTask,
   scoreEdges,
+  unpricedScoredPoints,
 } from "../src/assets/aa-explorer-computations.js";
 
 describe("Cost Explorer browser computations", () => {
@@ -125,5 +126,31 @@ describe("Cost Explorer browser computations", () => {
 
     const missingCacheRate = { name: "GPT-6 Luna", rate: { bands: [{ window: "peak", input: 0.75, output: 4.5 }] } };
     expect(projectTask(missingCacheRate, settings, [point], []).cost).toBeNull();
+  });
+});
+
+describe("unpricedScoredPoints (#1400 remainder)", () => {
+  const rows = [
+    { key: "priced", family: "Beta", effort: "high", score: 50, cost: 1.2 },
+    { key: "unpriced-low", family: "Alpha", effort: "low", score: 30, cost: null },
+    { key: "unpriced-high", family: "Alpha", effort: "high", score: 70, cost: null },
+    { key: "unscored", family: "Gamma", effort: "low", score: null, cost: null },
+    { key: "unpriced-mid", family: "Beta", effort: "med", score: 50, cost: undefined },
+  ];
+  test("selects scored-but-unpriced only, ordered by score desc", () => {
+    expect(unpricedScoredPoints(rows).map((r) => r.key)).toEqual([
+      "unpriced-high",
+      "unpriced-mid",
+      "unpriced-low",
+    ]);
+  });
+  test("empty state: no unpriced scored rows yields an empty list", () => {
+    expect(unpricedScoredPoints([rows[0], rows[3]])).toEqual([]);
+    expect(unpricedScoredPoints([])).toEqual([]);
+  });
+  test("does not mutate the input rows or their order", () => {
+    const before = rows.map((r) => r.key);
+    unpricedScoredPoints(rows);
+    expect(rows.map((r) => r.key)).toEqual(before);
   });
 });
