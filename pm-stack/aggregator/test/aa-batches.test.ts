@@ -78,6 +78,27 @@ describe("parameterized payload SQL", () => {
     expect(sql).toContain("power(intel_eff_norm, 0.7)");
   });
 
+  test("configs/cai scope as-of the selected batch, not to the newest event batch (#8817)", () => {
+    const sql = aaPayloadSql(B2);
+    // The pre-#8817 predicate pinned both sections to the newest
+    // workbook-import event batch regardless of the selected batch, so a
+    // historical payload silently mixed the newest configs/CAI into data
+    // cached under the historical batch's UUID.
+    expect(sql).not.toContain("where source_kind = 'workbook-import' order by ingested_at desc limit 1");
+    // Both sections now take the as-of mapping: an event batch is eligible
+    // only when its workbook import is no newer than the selected batch.
+    const asOf = "s.imported_at <= (select max(s2.imported_at) from ainventory.sources s2";
+    expect(sql.split(asOf).length - 1).toBe(2);
+    expect(sql).toContain("me.ingest_batch_id in (select s.import_batch from ainventory.sources s");
+    expect(sql).toContain(`s2.import_batch = '${B2}'::uuid`);
+  });
+
+  test("the default (latest) payload keeps the as-of configs/cai scoping (#8817)", () => {
+    const sql = aaPayloadSql(null);
+    expect(sql).not.toContain("where source_kind = 'workbook-import' order by ingested_at desc limit 1");
+    expect(sql.split("s.imported_at <=").length - 1).toBe(2);
+  });
+
   test("the default query still pins v_latest_import_batch", () => {
     expect(aaPayloadSql(null)).toContain("(select import_batch from ainventory.v_latest_import_batch)");
   });
@@ -168,6 +189,13 @@ describe("batch summaries", () => {
     const out = summarizeBatches(rows, new Map());
     expect(out).toHaveLength(2);
     expect(out.every((b) => b.fingerprint === null)).toBe(true);
+  });
+
+  test("cache entries may carry a numeric sql revision (#8817)", () => {
+    const base = { batch: B1, configFingerprint: "c", fingerprint: "f", builtAt: "t", section: {} };
+    expect(isAaBatchCacheEntry(base)).toBe(true);
+    expect(isAaBatchCacheEntry({ ...base, sqlRevision: 1 })).toBe(true);
+    expect(isAaBatchCacheEntry({ ...base, sqlRevision: "1" })).toBe(false);
   });
 
   test("cache names are uuid-only and label is human-readable", () => {
