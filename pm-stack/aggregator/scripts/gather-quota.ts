@@ -97,6 +97,9 @@
 //      the subcommand owns fetch concurrency now),
 //      OPENCHAMBER_LIB_DIR (ONLY the OpenDesign keeper's credential
 //      store accessors resolve from here; no quota reading does),
+//      OPENCHAMBER_LIB_INSTALL_CMD (override for the lib checkout's
+//      dependency install step, shell-split like QUOTA_SUBCOMMAND;
+//      default is bun install at the checkout root, #8759),
 //      TURSO_QUOTA_SINK=0 (or the legacy SUPABASE_QUOTA_SINK=0)
 //      disables the Turso sink (default on; token resolved by name
 //      via the resolveBwsSecret plumbing:
@@ -121,6 +124,7 @@ import {
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
+import { ensureLibDependencies } from "../src/lib-deps.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 
@@ -283,6 +287,28 @@ interface OpenDesignProviderModule {
 async function runOpenDesignRenewal(tickAt: string): Promise<void> {
   if (process.env.OPENDESIGN_RENEWAL_DISABLED === "1") return;
   try {
+    // #8759: the lib checkout is a plain clone; if its declared
+    // dependencies were never installed, every import below fails
+    // with "Cannot find package ..." and Bun caches that failure
+    // for the process, so install BEFORE the first import
+    // (src/lib-deps.ts preflight), never as an import retry.
+    const installCmd = process.env.OPENCHAMBER_LIB_INSTALL_CMD?.split(/\s+/).filter(Boolean) ?? [];
+    const install =
+      installCmd.length > 0
+        ? async (root: string): Promise<void> => {
+            await new Promise<void>((resolve, reject) => {
+              execFile(installCmd[0], installCmd.slice(1), { cwd: root, timeout: 240_000, maxBuffer: 16 * 1024 * 1024 }, (err) => {
+                if (err) reject(new Error("OPENCHAMBER_LIB_INSTALL_CMD failed in the OpenChamber lib checkout"));
+                else resolve();
+              });
+            });
+          }
+        : undefined;
+    await ensureLibDependencies({
+      libDir,
+      log: (line) => console.log("quota-gatherer: " + line),
+      ...(install ? { install } : {}),
+    });
     const credentials = (await import(join(libDir, "quota/credentials/providers.js"))) as unknown as OpenDesignCredentialsModule;
     const provider = (await import(join(libDir, "quota/providers/opendesign.js"))) as unknown as OpenDesignProviderModule;
     const state = await renewOpenDesignSession({

@@ -224,17 +224,28 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
 #[cfg(target_os = "linux")]
 fn get_process_start_time(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // comm (field 2) is parenthesised and may contain spaces or parens;
-    // the remaining fields follow the final ')'. starttime is field 22
-    // overall, i.e. index 19 of the fields after comm.
-    let after_comm = &stat[stat.rfind(')')? + 1..];
-    let fields: Vec<&str> = after_comm.split_whitespace().collect();
-    fields.get(19).and_then(|f| f.parse().ok())
+    parse_proc_stat_start_time(&stat)
 }
 
 #[cfg(not(target_os = "linux"))]
 fn get_process_start_time(_pid: u32) -> Option<u64> {
     None
+}
+
+/// Parse the start time (field 22) out of a `/proc/<pid>/stat` string.
+///
+/// comm (field 2) is parenthesised and may contain spaces or parens;
+/// the remaining fields follow the final ')'. starttime is field 22
+/// overall, i.e. index 19 of the fields after comm. Extracted as a
+/// pure helper so tests can drive it with generated stat strings and
+/// an independently chosen field-22 value (#8816): the oracle for
+/// this parser must not be the parser itself.
+#[cfg(any(target_os = "linux", test))]
+#[allow(dead_code)] // On non-Linux test builds the driving tests are Linux-gated.
+fn parse_proc_stat_start_time(stat: &str) -> Option<u64> {
+    let after_comm = &stat[stat.rfind(')')? + 1..];
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    fields.get(19).and_then(|f| f.parse().ok())
 }
 
 pub fn is_process_alive(pid: u32, expected_start_time: Option<u64>) -> bool {
@@ -3266,6 +3277,78 @@ mod tests {
             validate_world_options(true, Some("admin"), None, "lobby", "sometimes", false).is_err(),
             "an unknown policy is refused"
         );
+    }
+
+    /// Build a `/proc/<pid>/stat` string whose every field carries a
+    /// distinct, field-number-derived value, with field 22 (starttime)
+    /// set to `start_time`. The builder counts fields by position as
+    /// it writes them, so the expected value is known by construction
+    /// — independently of the parser under test (#8816).
+    #[cfg(target_os = "linux")]
+    fn stat_string_with_oracle(comm: &str, start_time: u64) -> String {
+        // Fields 3..=52 follow comm. Field f (for f != 22) gets the
+        // value f * 1_000, which never collides with a start_time in
+        // the generated range below, so extracting any neighbouring
+        // field yields a different value and fails the assertion.
+        let mut stat = format!("4242 ({comm})");
+        for field in 3..=52u64 {
+            if field == 3 {
+                stat.push_str(" S");
+            } else if field == 22 {
+                stat.push_str(&format!(" {start_time}"));
+            } else {
+                stat.push_str(&format!(" {}", field * 1_000));
+            }
+        }
+        stat
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn parse_proc_stat_start_time_reads_field_22_by_independent_oracle() {
+        // Hand-counted stat line: after "(my proc)" the fields are
+        // state S (3), then fields 4..=21 are 4..=21, field 22 is
+        // 987654, and fields 23..=25 are 23, 24, 25. Neighbouring
+        // fields hold 21 and 23, so a wrong-field extraction fails.
+        let stat =
+            "1234 (my proc) S 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 987654 23 24 25";
+        assert_eq!(parse_proc_stat_start_time(stat), Some(987654));
+        // comm containing parentheses: parsing resumes after the
+        // FINAL ')', so the same field layout still yields field 22.
+        let stat_parens = "1234 (weird (proc) name) S 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 987654 23 24 25";
+        assert_eq!(parse_proc_stat_start_time(stat_parens), Some(987654));
+        // Malformed inputs have no field 22 to read.
+        assert_eq!(parse_proc_stat_start_time(""), None);
+        assert_eq!(parse_proc_stat_start_time("1234 (unclosed S 1 2 3"), None);
+        assert_eq!(parse_proc_stat_start_time("1234 (p) S 1 2 3"), None);
+        assert_eq!(
+            parse_proc_stat_start_time(
+                "1234 (p) S 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 notanumber 23 24 25"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn parse_proc_stat_start_time_matches_generated_oracle() {
+        // Oracle: `property_parse_proc_stat_start_time_matches_oracle` —
+        // for generated comm values (spaces/parens included) and an
+        // independently chosen field-22 value, the parser returns
+        // exactly that value; every other field holds a distinct
+        // value, so extracting the wrong field fails.
+        let check = |comm: &str, start_time: u64| -> Result<(), TestCaseError> {
+            let stat = stat_string_with_oracle(comm, start_time);
+            prop_assert_eq!(parse_proc_stat_start_time(&stat), Some(start_time));
+            Ok(())
+        };
+        let config = ProptestConfig {
+            cases: 256,
+            ..ProptestConfig::default()
+        };
+        proptest!(config, |(comm in proptest::string::string_regex("[a-zA-Z0-9 ()_-]{0,24}").expect("comm strategy"), start_time in 1_000_000u64..2_000_000u64)| {
+            check(&comm, start_time)?;
+        });
     }
 
     #[test]

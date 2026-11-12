@@ -151,8 +151,66 @@ fn direct_token() -> Result<String, String> {
     Ok(token.trim().to_string())
 }
 
+/// Decode one complete HTTP chunked body. The direct transports read
+/// through connection close, so an incomplete chunk is a definite
+/// truncation rather than a request for more bytes.
+fn decode_chunked_body(mut rest: &[u8]) -> Result<Vec<u8>, String> {
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = rest
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or_else(|| {
+                "queue-broker response truncated inside a chunk-size line".to_string()
+            })?;
+        let line = std::str::from_utf8(&rest[..line_end])
+            .map_err(|_| "queue-broker response has a non-ASCII chunk-size line".to_string())?;
+        let size_field = line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_field, 16).map_err(|_| {
+            format!("queue-broker response has malformed chunk size {size_field:?}")
+        })?;
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            loop {
+                if rest.starts_with(b"\r\n") {
+                    rest = &rest[2..];
+                    if !rest.is_empty() {
+                        return Err(
+                            "queue-broker response has bytes after the terminal chunk".into()
+                        );
+                    }
+                    return Ok(decoded);
+                }
+                let trailer_end = rest
+                    .windows(2)
+                    .position(|window| window == b"\r\n")
+                    .ok_or_else(|| {
+                        "queue-broker response truncated inside chunk trailers".to_string()
+                    })?;
+                if !rest[..trailer_end].contains(&b':') {
+                    return Err("queue-broker response has a malformed chunk trailer".into());
+                }
+                rest = &rest[trailer_end + 2..];
+            }
+        }
+        let chunk_end = size
+            .checked_add(2)
+            .ok_or_else(|| "queue-broker response chunk size overflow".to_string())?;
+        if rest.len() < chunk_end {
+            return Err("queue-broker response truncated inside a chunk".into());
+        }
+        if &rest[size..chunk_end] != b"\r\n" {
+            return Err("queue-broker response chunk is missing its CRLF terminator".into());
+        }
+        decoded.extend_from_slice(&rest[..size]);
+        rest = &rest[chunk_end..];
+    }
+}
+
 /// The response handling both direct legs share: status line,
-/// JSON body, 401 and >=400 die with exit 3 exactly as before.
+/// transfer framing, JSON body, 401 and >=400 die with exit 3 exactly
+/// as before. A malformed successful JSON body is never converted to
+/// `Value::Null`: callers must not mistake it for an empty result.
 fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
     let split = raw
         .windows(4)
@@ -163,12 +221,67 @@ fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
         .split_whitespace()
         .nth(1)
         .and_then(|c| c.parse().ok())
-        .unwrap_or(0);
-    let resp_body: Value = serde_json::from_slice(&raw[split + 4..]).unwrap_or(Value::Null);
+        .ok_or_else(|| "queue-broker answered with a malformed status line".to_string())?;
+    let mut transfer_codings = Vec::new();
+    let mut content_length = None;
+    for line in head_txt.lines().skip(1) {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("transfer-encoding") {
+                transfer_codings.extend(
+                    value
+                        .split(',')
+                        .map(|coding| coding.trim().to_ascii_lowercase())
+                        .filter(|coding| !coding.is_empty()),
+                );
+            } else if name.eq_ignore_ascii_case("content-length") {
+                for part in value.split(',') {
+                    let length: usize = part.trim().parse().map_err(|_| {
+                        format!("queue-broker response has malformed Content-Length {value:?}")
+                    })?;
+                    match content_length {
+                        None => content_length = Some(length),
+                        Some(previous) if previous == length => {}
+                        Some(previous) => {
+                            return Err(format!(
+                                "queue-broker response has conflicting Content-Length values {previous} and {length}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let wire_body = &raw[split + 4..];
+    let decoded_body = match (content_length, transfer_codings.as_slice()) {
+        (Some(expected), []) => {
+            if wire_body.len() != expected {
+                return Err(format!(
+                    "queue-broker response truncated: Content-Length {expected}, received {} body bytes",
+                    wire_body.len()
+                ));
+            }
+            wire_body.to_vec()
+        }
+        (None, []) => wire_body.to_vec(),
+        (None, [coding]) if coding == "chunked" => decode_chunked_body(wire_body)?,
+        (Some(_), _) => {
+            return Err(
+                "queue-broker response has both Content-Length and Transfer-Encoding".into(),
+            );
+        }
+        _ => {
+            return Err(format!(
+                "queue-broker response has unsupported Transfer-Encoding: {}",
+                transfer_codings.join(", ")
+            ));
+        }
+    };
+    let parsed_body: Result<Value, _> = serde_json::from_slice(&decoded_body);
     if status == 401 {
         die(3, "queue-broker rejected the client token (HTTP 401)");
     }
     if status >= 400 {
+        let resp_body: Value = parsed_body.unwrap_or(Value::Null);
         let msg = resp_body
             .get("error")
             .and_then(|e| e.as_str())
@@ -176,7 +289,9 @@ fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
             .to_string();
         die(3, &msg);
     }
-    Ok(resp_body)
+    parsed_body.map_err(|error| {
+        format!("queue-broker answered HTTP {status} with invalid JSON body: {error}")
+    })
 }
 
 fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String> {
@@ -728,7 +843,10 @@ fn parse_args(rest: &[String], flags: &[&str], bools: &[&str]) -> Args {
 /// (e.g. `--queue a --queue b` recorded queue=b), and a boolean given
 /// an inline value (`--dry-run=false`) used to be read as `true` —
 /// a real enqueue silently became a dry run that enqueued nothing
-/// and exited 0.
+/// and exited 0. A value flag followed by another flag token is the
+/// same class (#8582, Codex P1 on PR #8790): the flag token is not a
+/// value — `--head-sha --dry-run` used to persist "--dry-run" as the
+/// SHA on a mutating stack record instead of erroring.
 fn parse_args_inner(rest: &[String], flags: &[&str], bools: &[&str]) -> Result<Args, String> {
     let mut pos = Vec::new();
     let mut opts = Map::new();
@@ -755,7 +873,7 @@ fn parse_args_inner(rest: &[String], flags: &[&str], bools: &[&str]) -> Result<A
                 if let Some(v) = inline {
                     opts.insert(name, Value::String(v));
                     i += 1;
-                } else if i + 1 < rest.len() {
+                } else if i + 1 < rest.len() && !rest[i + 1].starts_with("--") {
                     opts.insert(name, Value::String(rest[i + 1].clone()));
                     i += 2;
                 } else {
@@ -3345,6 +3463,142 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
     0
 }
 
+/// Merge-intent stack verbs (#8582 increment 3): the client surface
+/// for the broker's /stack-record and /stack-list routes (increment
+/// 2). Recording a finished branch names its authoring lane/worker
+/// pair; the broker validates that pair against the lane registry
+/// (the validation deferred from the CodeRabbit round on PR #8660,
+/// where the pair originates — here, at the client verbs).
+/// Stack list answers the full stack state from the database alone.
+pub(crate) fn stack_record_body(
+    stack_id: &str,
+    repo: &str,
+    branch: &str,
+    base_branch: Option<&str>,
+    head_sha: Option<&str>,
+    issue_number: Option<i64>,
+    pr_number: Option<i64>,
+    owner_lane: &str,
+    owner_worker: &str,
+    owner_session: Option<&str>,
+) -> Result<Value, String> {
+    // Fail fast with the pure core's own append rules, so a bad
+    // record is a usage error here and the identical verdict at
+    // the broker (validate_append is the one rule set, #8582).
+    let append = crate::merge_intent::AppendRequest {
+        stack_id: stack_id.to_string(),
+        repo: repo.to_string(),
+        branch: branch.to_string(),
+        base_branch: base_branch.map(|s| s.to_string()),
+        head_sha: head_sha.map(|s| s.to_string()),
+        issue_number,
+        pr_number,
+        owner_lane: owner_lane.to_string(),
+        owner_worker: owner_worker.to_string(),
+        owner_session: owner_session.map(|s| s.to_string()),
+    };
+    crate::merge_intent::validate_append(&append)?;
+    Ok(json!({
+        "stack_id": stack_id,
+        "repo": repo,
+        "branch": branch,
+        "base_branch": base_branch,
+        "head_sha": head_sha,
+        "issue_number": issue_number,
+        "pr_number": pr_number,
+        "owner_lane": owner_lane,
+        "owner_worker": owner_worker,
+        "owner_session": owner_session,
+    }))
+}
+
+fn cmd_stack_record(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &[
+            "stack",
+            "repo",
+            "branch",
+            "base-branch",
+            "head-sha",
+            "issue",
+            "pr",
+            "lane",
+            "worker",
+            "session-id",
+        ],
+        &[],
+    );
+    reject_extra_pos("stack record", &args, 0);
+    let stack_id = args
+        .get("stack")
+        .unwrap_or_else(|| die(2, "stack record: --stack is required"));
+    let repo = args
+        .get("repo")
+        .unwrap_or_else(|| die(2, "stack record: --repo is required"));
+    let branch = args
+        .get("branch")
+        .unwrap_or_else(|| die(2, "stack record: --branch is required"));
+    // The owner pair originates here (#8582): the authoring lane is
+    // required, and the worker defaults to this caller's worker —
+    // the broker refuses a pair the lane registry does not hold.
+    let owner_lane = args
+        .get("lane")
+        .unwrap_or_else(|| die(2, "stack record: --lane is required (the authoring lane)"));
+    let body = match stack_record_body(
+        &stack_id,
+        &repo,
+        &branch,
+        args.get("base-branch").as_deref(),
+        args.get("head-sha").as_deref(),
+        args.get_i64("issue"),
+        args.get_i64("pr"),
+        &owner_lane,
+        &opt_worker(&args),
+        args.get("session-id").as_deref(),
+    ) {
+        Ok(b) => b,
+        Err(e) => die(2, &e),
+    };
+    let resp = unwrap_ok(call("/stack-record", &body));
+    print_json(&require_row(&resp, "stack_record"));
+    0
+}
+
+fn cmd_stack_list(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["stack", "worker"], &[]);
+    reject_extra_pos("stack list", &args, 1);
+    let positional = args.pos.first().cloned();
+    let stack_id = match (positional, args.get("stack")) {
+        (Some(p), Some(f)) if p != f => {
+            die(2, "stack list: positional stack id and --stack disagree")
+        }
+        (Some(p), _) => p,
+        (None, Some(f)) => f,
+        (None, None) => die(2, "stack list: a stack id is required"),
+    };
+    let resp = unwrap_ok(call("/stack-list", &json!({"stack_id": stack_id})));
+    print_json(&require_row(&resp, "stack_list"));
+    0
+}
+
+fn cmd_stack(rest: &[String]) -> i32 {
+    if rest.is_empty() {
+        eprint("usage: repo-queue stack <record|list> ...");
+        return 2;
+    }
+    let sub = rest[0].as_str();
+    let tail = &rest[1..];
+    match sub {
+        "record" => cmd_stack_record(tail),
+        "list" => cmd_stack_list(tail),
+        _ => {
+            eprint(&format!("repo-queue: unknown stack command {sub:?}"));
+            2
+        }
+    }
+}
+
 fn cmd_outbox(rest: &[String]) -> i32 {
     if rest.is_empty() {
         eprint("usage: repo-queue outbox <enqueue|list|metrics|claim|resolve|drain> ...");
@@ -3368,7 +3622,7 @@ fn cmd_outbox(rest: &[String]) -> i32 {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|revive|health|signal|fallback|outbox|dispatch|session|surfaces> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|revive|health|signal|fallback|outbox|dispatch|session|surfaces|stack> ...",
         );
         return 2;
     }
@@ -3403,6 +3657,7 @@ pub fn run(args: &[String]) -> i32 {
         "session" => crate::placement::cmd_session(rest),
         "surfaces" => crate::placement::cmd_surfaces(rest),
         "outbox" => cmd_outbox(rest),
+        "stack" => cmd_stack(rest),
         _ => {
             eprint(&format!("repo-queue: unknown command {sub:?}"));
             2
@@ -3467,6 +3722,77 @@ mod tests {
         assert!(batch_count_flag(Some(0)).is_err());
         assert!(batch_count_flag(Some(-3)).is_err());
         assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
+    }
+
+    #[test]
+    fn stack_record_body_carries_the_append_shape_8582() {
+        // #8582 increment 3 oracle: the client record body is
+        // exactly the broker's append shape (stack, repo, branch,
+        // owner lane/worker pair, optional base/head/issue/pr/
+        // session), and the pure core's append rules are the
+        // client's fail-fast rules too — an ownerless or
+        // branchless record never reaches the broker.
+        let body = stack_record_body(
+            "outage-2026-11-11",
+            "developing-today/code",
+            "queue/1-2-fix",
+            None,
+            Some("abc123"),
+            Some(8582),
+            None,
+            "any-a",
+            "repo-worker-code",
+            Some("ses_1"),
+        )
+        .expect("a complete append is valid");
+        assert_eq!(body["stack_id"], json!("outage-2026-11-11"));
+        assert_eq!(body["repo"], json!("developing-today/code"));
+        assert_eq!(body["branch"], json!("queue/1-2-fix"));
+        assert_eq!(body["base_branch"], Value::Null);
+        assert_eq!(body["head_sha"], json!("abc123"));
+        assert_eq!(body["issue_number"], json!(8582));
+        assert_eq!(body["owner_lane"], json!("any-a"));
+        assert_eq!(body["owner_worker"], json!("repo-worker-code"));
+        assert_eq!(body["owner_session"], json!("ses_1"));
+        assert!(stack_record_body(
+            "s",
+            "developing-today/code",
+            "queue/1-2-fix",
+            None,
+            None,
+            None,
+            None,
+            "",
+            "repo-worker-code",
+            None,
+        )
+        .is_err());
+        assert!(stack_record_body(
+            "s",
+            "developing-today/code",
+            "",
+            None,
+            None,
+            None,
+            None,
+            "any-a",
+            "repo-worker-code",
+            None,
+        )
+        .is_err());
+        assert!(stack_record_body(
+            "s",
+            "developing-today/code",
+            "queue/1-2-fix",
+            Some("  "),
+            None,
+            None,
+            None,
+            "any-a",
+            "repo-worker-code",
+            None,
+        )
+        .is_err());
     }
 
     #[test]
@@ -3601,6 +3927,37 @@ mod tests {
     }
 
     #[test]
+    fn finish_direct_response_dechunks_and_rejects_invalid_success_json() {
+        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{\"ok\r\n4\r\n\":tr\r\n3\r\nue}\r\n0\r\n\r\n";
+        assert_eq!(
+            finish_direct_response(response).unwrap(),
+            json!({"ok": true})
+        );
+
+        let malformed = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nnope!";
+        let error = finish_direct_response(malformed).unwrap_err();
+        assert!(error.contains("invalid JSON body"), "{error}");
+
+        let truncated = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n[]";
+        let error = finish_direct_response(truncated).unwrap_err();
+        assert!(error.contains("response truncated"), "{error}");
+    }
+
+    #[test]
+    fn chunk_decoder_rejects_truncated_and_malformed_chunks() {
+        assert!(
+            decode_chunked_body(b"5\r\nabc")
+                .unwrap_err()
+                .contains("truncated")
+        );
+        assert!(
+            decode_chunked_body(b"x\r\nabc\r\n0\r\n\r\n")
+                .unwrap_err()
+                .contains("malformed chunk size")
+        );
+    }
+
+    #[test]
     fn token_file_empty_env_values_use_home_default() {
         let home_dir = "/home/test";
         let default = format!("{home_dir}/.config/queue-broker/token");
@@ -3671,6 +4028,47 @@ mod tests {
         assert!(err.contains("--queue"), "error names the flag: {err}");
         // Inline and separate forms of the same flag also collide.
         assert!(parse_args_inner(&pos(&["--queue=a", "--queue", "b"]), &["queue"], &[]).is_err());
+    }
+
+    #[test]
+    fn flag_token_as_value_is_a_usage_error() {
+        // #8582 (Codex P1 on PR #8790): a value flag followed by a flag
+        // token used to consume that token as its value, so
+        // `stack record --head-sha --dry-run` persisted "--dry-run" as
+        // the head SHA on a mutating broker call instead of erroring.
+        // Oracle: the operator argument contract (AGENTS.md #3352) - a
+        // present-but-valueless option is a usage error naming the flag.
+        let err = parse_args_inner(
+            &pos(&["--head-sha", "--dry-run"]),
+            &["head-sha"],
+            &["dry-run"],
+        )
+        .err()
+        .expect("flag token must not be consumed as a value");
+        assert!(err.contains("--head-sha"), "error names the flag: {err}");
+        assert!(
+            err.contains("expected one argument"),
+            "error names the defect: {err}"
+        );
+        // Any flag-shaped token is refused, known or not, and the
+        // refusal fires even when a well-formed flag follows it.
+        assert!(
+            parse_args_inner(
+                &pos(&["--queue", "--bogus", "--limit", "5"]),
+                &["queue", "limit"],
+                &[]
+            )
+            .is_err()
+        );
+        // Ordinary values still parse, including single-dash values.
+        let args = parse_args_inner(&pos(&["--queue", "alpha"]), &["queue"], &[])
+            .ok()
+            .expect("ordinary value parses");
+        assert_eq!(args.get("queue").as_deref(), Some("alpha"));
+        let args = parse_args_inner(&pos(&["--limit", "-1"]), &["limit"], &[])
+            .ok()
+            .expect("single-dash value parses");
+        assert_eq!(args.get("limit").as_deref(), Some("-1"));
     }
 
     #[test]
@@ -3763,7 +4161,8 @@ mod tests {
         assert_eq!(out["id"], 4242);
         assert_eq!(out["claim_flow_partial"]["step"], "bind");
         assert_eq!(out["claim_flow_partial"]["exit"], 4);
-        let full = json!({"row": {"id": 4242, "status": "claimed"}, "lane_row": {}, "bind_row": {}});
+        let full =
+            json!({"row": {"id": 4242, "status": "claimed"}, "lane_row": {}, "bind_row": {}});
         let (out, code) = claim_output(&full);
         assert_eq!(code, 0);
         assert!(out.get("claim_flow_partial").is_none());

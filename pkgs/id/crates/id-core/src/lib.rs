@@ -24,6 +24,7 @@ pub mod abuse;
 pub mod access;
 pub mod block_list;
 pub mod boundary;
+pub mod boundary_surfaces;
 pub mod connectivity;
 pub mod discovery;
 pub mod frames;
@@ -40,6 +41,9 @@ pub mod tuple;
 mod unicode;
 pub use unicode::is_format_char;
 pub mod waiting;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_forgeries;
 
 #[cfg(feature = "world")]
 pub mod petname;

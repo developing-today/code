@@ -73,11 +73,13 @@ mod waiting_rows;
 mod writer_set;
 
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
+pub use id_store::event_types::{
+    Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Chain, FILE_NAME, StoreError,
+};
 pub use id_store::event_types::{Ingest, Refusal};
 use ingest::{is_present, is_proof_header, present_in};
 use waiting_rows::{Mirror, Row};
 pub use writer_set::{DiscoveredWriterSet, WriterSetStoreError};
-pub use id_store::event_types::{Block, BlockKind, BlockList, Chain, StoreError, FILE_NAME};
 
 impl EventStore {
     /// Adds `block` to the operator block list, replacing any row that names
@@ -368,9 +370,30 @@ pub struct EventStore {
 
 impl BlockList for EventStore {
     fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
-        // A read error invents no block: the seam fails open, and the
-        // store's error still surfaces on the store's own read paths.
-        EventStore::is_blocked(self, kind, value, id_core::time::unix_ms()).unwrap_or(false)
+        // The bool seam fails open (see the trait docs): a read error
+        // invents no block. `lookup` preserves the failure for the
+        // seams that distinguish it (#8750).
+        self.lookup(kind, value).is_blocked()
+    }
+
+    fn lookup(&self, kind: BlockKind, value: &[u8]) -> BlockLookup {
+        match EventStore::is_blocked(self, kind, value, id_core::time::unix_ms()) {
+            Ok(true) => BlockLookup::Blocked,
+            Ok(false) => BlockLookup::Unblocked,
+            Err(err) => {
+                let failure = if matches!(err, StoreError::Corrupt(_)) {
+                    BlockLookupFailure::Corrupt
+                } else {
+                    BlockLookupFailure::Storage
+                };
+                // The operator-visible diagnostic (#8750): the failure
+                // category and the store error stay on this side of the
+                // seam; a remote peer only ever sees the fail-open
+                // verdict the caller's policy chooses.
+                tracing::warn!("block-list lookup failed ({}): {err}", failure.as_str());
+                BlockLookup::Indeterminate(failure)
+            }
+        }
     }
 }
 
@@ -1822,6 +1845,50 @@ mod tests {
             .unwrap();
         assert!(!list.peer_blocked(&[9u8; 32]));
         assert_eq!(store.blocks().unwrap().len(), 4);
+    }
+
+    /// #8750 error oracle: a block row that cannot decode is a failed
+    /// lookup, and the trait must say so — `Indeterminate(Corrupt)` —
+    /// instead of erasing it to the same `false` an ordinary unblocked
+    /// answer returns. The bool seam keeps its fail-open meaning.
+    #[test]
+    fn test_block_list_lookup_reports_a_corrupt_row_as_indeterminate() {
+        let (_dir, store) = open_temp();
+        store
+            .add_block(&block(BlockKind::PeerKey, &[7u8; 32], None))
+            .unwrap();
+        // A row whose value cannot decode, written raw under a second
+        // peer's key, exactly as a damaged store file would hold it.
+        {
+            let mut key = vec![BlockKind::PeerKey.tag()];
+            key.extend_from_slice(&[9u8; 32]);
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut blocks = txn.open_table(BLOCKS).unwrap();
+                blocks.insert(key.as_slice(), b"x".as_slice()).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        let list: &dyn BlockList = &store;
+        assert_eq!(
+            list.lookup(BlockKind::PeerKey, &[7u8; 32]),
+            BlockLookup::Blocked
+        );
+        assert_eq!(
+            list.lookup(BlockKind::PeerKey, &[8u8; 32]),
+            BlockLookup::Unblocked
+        );
+        assert_eq!(
+            list.lookup(BlockKind::PeerKey, &[9u8; 32]),
+            BlockLookup::Indeterminate(BlockLookupFailure::Corrupt),
+            "a failed lookup must not read as an ordinary unblocked result"
+        );
+        assert_eq!(
+            list.peer_lookup(&[9u8; 32]),
+            BlockLookup::Indeterminate(BlockLookupFailure::Corrupt)
+        );
+        // The bool seam keeps its documented fail-open meaning.
+        assert!(!list.peer_blocked(&[9u8; 32]));
     }
 
     /// The #2245 invariant: a block changes serving and subscribing only.

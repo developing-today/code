@@ -22,11 +22,17 @@ default = []
 # Mainline DHT address lookup (P7.3). Off in the default build; the
 # facade forwards its `dht` feature here.
 dht = ["dep:iroh-mainline-address-lookup"]
+test-utils = []
 
 [dependencies]
 anyhow = "1"
 futures-lite = "2"
 futures-util = { version = "0.3", features = ["sink"] }
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+iroh-tickets = "1"
+rand = "0.10"
+sha2 = "0.11"
+unicode-normalization = "0.1"
 id-core = { path = "../id-core", default-features = false }
 id-events = { path = "../id-events", default-features = false }
 id-store = { path = "../id-store", default-features = false }

@@ -285,6 +285,7 @@ in
       "diffs" # diff rendering for code review in chat
       "tokenjuice" # context compression
       "memory-lancedb" # LanceDB long-term memory; owns plugins.slots.memory (#1300 phase 1)
+      "memory-wiki" # Wiki-backed memory search; favorable evaluation recorded on #6167
     ];
 
     # Instance-local skills that encode how this fleet works.
@@ -590,6 +591,7 @@ in
               autoCapture = true;
             };
           };
+          "memory-wiki".enabled = true;
         };
       };
 

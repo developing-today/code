@@ -693,7 +693,11 @@ describe("pages manifest + slice-3 renders", () => {
     const html = renderDns(FIXTURE_DNS, fixtureSource().provenance());
     expect(html).toContain("Next renewal");
     for (const entry of FIXTURE_DNS.entries) {
-      expect(html.split(entry.domain).length - 1).toBe(1);
+      // One row per domain: the domain appears in its row's anchor id
+      // (dns-<domain>, the next-renewal card's link target) and as the
+      // row's cell text — count rows, not raw string occurrences.
+      expect(html.split('id="dns-' + entry.domain + '"').length - 1).toBe(1);
+      expect(html.split('>' + entry.domain + '</strong>').length - 1).toBe(1);
     }
     expect(html).toContain('data-dns-filter="active"');
     expect(html).toContain('data-dns-filter="earmarked"');

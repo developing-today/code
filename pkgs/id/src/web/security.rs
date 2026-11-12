@@ -89,8 +89,21 @@ pub(super) fn protect(router: axum::Router, security: WebSecurity) -> axum::Rout
 fn host_only(authority: &str) -> String {
     let a = authority.trim().to_lowercase();
     if let Some(rest) = a.strip_prefix('[') {
-        // IPv6 literal: [::1]:3000
-        return rest.split(']').next().unwrap_or("").to_owned();
+        // IPv6 literal: [::1]:3000 -- validate the WHOLE bracketed authority
+        // before extracting the host (#8776). Only an empty tail or a
+        // colon + numeric port may follow the closing bracket; anything
+        // else (trailing host text, a non-numeric or empty port, a missing
+        // bracket) is malformed and must not reduce to the bracketed host,
+        // or the loopback allow-list would trust a mere prefix. Malformed
+        // authorities return the full text, which matches no allowed host.
+        let Some((host, tail)) = rest.split_once(']') else {
+            return a.clone();
+        };
+        let tail_ok = tail.is_empty()
+            || tail
+                .strip_prefix(':')
+                .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
+        return if tail_ok { host.to_owned() } else { a.clone() };
     }
     a.rsplit_once(':')
         .filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit()))
@@ -303,6 +316,68 @@ mod tests {
     }
 
     #[test]
+    fn host_only_rejects_malformed_bracketed_authorities() {
+        // Oracle: a bracketed authority is well-formed only as a bracketed
+        // host, optionally followed by a colon and a numeric port. Anything
+        // else must NOT reduce to the bracketed host, or the loopback
+        // allow-list would trust a mere prefix.
+        for malformed in [
+            "[::1]attacker.example",
+            "[::1]attacker.example:3000",
+            "[::1]:abc",
+            "[::1]:",
+            "[::1",
+            "[::1]]",
+        ] {
+            assert_ne!(host_only(malformed), "::1", "{malformed}");
+        }
+        // Valid controls still extract the host.
+        assert_eq!(host_only("[::1]"), "::1");
+        assert_eq!(host_only("[::1]:3000"), "::1");
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn bracketed_authority_collapses_only_for_valid_tails(
+            host in proptest::sample::select(vec!["::1", "::", "fe80::1", "2001:db8::1"]),
+            tail in "[!-~]{0,12}",
+        ) {
+            // Oracle (#8776): host_only of a bracketed authority returns the
+            // bracketed host ONLY when the tail after the closing bracket is
+            // empty or a colon followed by a non-empty all-digit port. Every
+            // other tail leaves the authority unreduced, so it can never
+            // match an allowed host. The fixed examples in
+            // host_only_rejects_malformed_bracketed_authorities are the
+            // regression smoke tests for this generated invariant.
+            let authority = format!("[{host}]{tail}");
+            let valid_tail = tail.is_empty()
+                || tail
+                    .strip_prefix(':')
+                    .is_some_and(|port| {
+                        !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+                    });
+            if valid_tail {
+                prop_assert_eq!(host_only(&authority), host.to_owned(), "{}", authority);
+            } else {
+                prop_assert_ne!(host_only(&authority), host.to_owned(), "{}", authority);
+            }
+        }
+
+        #[test]
+        fn bracketed_authority_with_numeric_port_always_extracts_host(
+            host in proptest::sample::select(vec!["::1", "::", "fe80::1", "2001:db8::1"]),
+            port in any::<u16>(),
+        ) {
+            prop_assert_eq!(host_only(&format!("[{host}]:{port}")), host.to_owned());
+            prop_assert_eq!(host_only(&format!("[{host}]")), host.to_owned());
+        }
+    }
+
+    #[test]
     fn ct_eq_behaves_like_eq() {
         assert!(ct_eq(b"abc", b"abc"));
         assert!(!ct_eq(b"abc", b"abd"));
@@ -325,6 +400,19 @@ mod tests {
         )
         .await;
         assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn malformed_bracketed_host_is_refused() {
+        for host in ["[::1]attacker.example", "[::1", "[::1]:abc"] {
+            let r = call(app(loopback()), get_req(host).body(Body::empty()).unwrap()).await;
+            assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST, "{host}");
+        }
+        // Valid bracketed controls still pass the guard.
+        for host in ["[::1]", "[::1]:3000"] {
+            let r = call(app(loopback()), get_req(host).body(Body::empty()).unwrap()).await;
+            assert_eq!(r.status(), StatusCode::OK, "{host}");
+        }
     }
 
     #[tokio::test]

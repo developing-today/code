@@ -683,9 +683,22 @@ func TestTaskTouchMetadataPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st1.Configure(700*time.Millisecond, time.Second)
-	task := completedTask(t, st1, 700, 0)
-	time.Sleep(400 * time.Millisecond)
+	// The reopen below must land AFTER the original expiry but BEFORE
+	// the touch-renewed one, so both margins have to dwarf scheduling
+	// jitter on a loaded builder. The previous shape (TTL 700ms,
+	// maxAge 1s, two 400ms sleeps) did not: maxAge clamps the renewed
+	// expiry to 1s after the terminal transition, so the reopen had
+	// only ~200ms of slack, and a >200ms stall between the touch and
+	// the reopen -- routine under parallel Nix builds -- expired the
+	// task first and made the test report the touch as lost
+	// (darwin-nix #1815, run 43098524363). The persisted touch
+	// metadata itself was correct. Production defaults (TTL 10m,
+	// maxAge 1h) keep the same proportions at a larger scale; this
+	// shape does too: reopen at ~5s against an original expiry of
+	// 4s (1s margin) and a renewed expiry of 6.5s (1.5s margin).
+	st1.Configure(4*time.Second, time.Minute)
+	task := completedTask(t, st1, 4_000, 0)
+	time.Sleep(2500 * time.Millisecond)
 	touched, ok := st1.Read(task.TaskID)
 	if !ok || touched.ExpiresAt == nil || touched.LastTouched == nil {
 		t.Fatalf("touch failed: %+v", touched)
@@ -694,7 +707,7 @@ func TestTaskTouchMetadataPersistsAcrossReopen(t *testing.T) {
 	if err := st1.Close(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(400 * time.Millisecond) // past the original expiry, before the renewed expiry
+	time.Sleep(2500 * time.Millisecond) // past the original expiry, before the renewed expiry
 
 	st2, err := tasks.Open(dbPath)
 	if err != nil {

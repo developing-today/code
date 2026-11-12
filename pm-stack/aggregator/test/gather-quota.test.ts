@@ -512,3 +512,99 @@ test("a lapsed Go workspace survives retention when a sibling workspace fails", 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("an uninstalled lib checkout dependency is installed and the OpenDesign keeper runs (#8759)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gather-quota-libdeps-"));
+  try {
+    const currentPath = join(dir, "quota-current.json");
+    const heartbeatPath = join(dir, "quota-gatherer-heartbeat.json");
+    const statePath = join(dir, "quota-gatherer-state.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const outboxPath = join(dir, "snapshots.outbox.jsonl");
+    const subcommandPath = join(dir, "quota-subcommand.mjs");
+    const installerPath = join(dir, "install-fake-dep.mjs");
+    const checkoutRoot = join(dir, "checkout");
+    const libDir = join(checkoutRoot, "packages/web/server/lib");
+    const renewalStatePath = join(dir, "opendesign-renewal.json");
+    const providerResult = {
+      providerId: "meta",
+      providerName: "Meta",
+      ok: true,
+      configured: true,
+      fetchedAt: Date.parse("2026-11-06T04:30:00.000Z"),
+      failureClass: "no-data",
+      lastSuccessAt: Date.parse("2026-11-06T04:00:00.000Z"),
+      usage: { windows: { weekly: { usedPercent: null } } },
+    };
+
+    // A plain-clone lib checkout: manifest + lockfile declare fake-dep,
+    // but node_modules was never installed — the #8759 defect shape.
+    await mkdir(join(libDir, "quota/credentials"), { recursive: true });
+    await mkdir(join(libDir, "quota/providers"), { recursive: true });
+    await writeFile(join(checkoutRoot, "package.json"), JSON.stringify({ dependencies: { "fake-dep": "1.0.0" } }), "utf8");
+    await writeFile(join(checkoutRoot, "bun.lock"), "", "utf8");
+    await writeFile(join(libDir, "quota/index.js"), "export async function listConfiguredQuotaProviders() { return []; }\n", "utf8");
+    await writeFile(
+      join(libDir, "quota/credentials/providers.js"),
+      "import 'fake-dep';\nexport function readManagedCredential() { return null; }\nexport function writeManagedCredential() {}\n",
+      "utf8",
+    );
+    await writeFile(
+      join(libDir, "quota/providers/opendesign.js"),
+      "export async function fetchOpenDesignQuota() { return {}; }\n",
+      "utf8",
+    );
+    // The install step (OPENCHAMBER_LIB_INSTALL_CMD seam; production
+    // default is bun install at the checkout root): materialize the
+    // declared package under the cwd the gatherer gives it — the root.
+    const installerSource = [
+      "import { mkdir, writeFile } from 'node:fs/promises';",
+      "import { join } from 'node:path';",
+      "const pkgDir = join(process.cwd(), 'node_modules/fake-dep');",
+      "await mkdir(pkgDir, { recursive: true });",
+      "await writeFile(join(pkgDir, 'package.json'), JSON.stringify({ name: 'fake-dep', version: '1.0.0', main: 'index.js', type: 'module' }));",
+      "await writeFile(join(pkgDir, 'index.js'), 'export {};');",
+      "",
+    ].join("\n");
+    await writeFile(installerPath, installerSource, "utf8");
+    await writeFile(subcommandPath, "console.log(" + JSON.stringify(JSON.stringify([providerResult])) + ");\n", "utf8");
+
+    const result = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        QUOTA_CURRENT_PATH: currentPath,
+        QUOTA_HEARTBEAT_PATH: heartbeatPath,
+        QUOTA_GATHERER_STATE_PATH: statePath,
+        QUOTA_SNAPSHOTS_DIR: snapshotsDir,
+        USAGE_SNAPSHOT_OUTBOX_PATH: outboxPath,
+        QUOTA_SUBCOMMAND: process.execPath + " " + subcommandPath,
+        QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+        META_RENEWAL_DISABLED: "1",
+        SUPABASE_QUOTA_SINK: "0",
+        OPENCHAMBER_LIB_DIR: libDir,
+        OPENCHAMBER_LIB_INSTALL_CMD: process.execPath + " " + installerPath,
+        OPENDESIGN_RENEWAL_STATE_PATH: renewalStatePath,
+      },
+    });
+
+    if (result.error || result.status !== 0) {
+      throw new Error("gatherer failed: " + (result.error?.message ?? result.stderr) + "\n" + result.stdout);
+    }
+    // Oracle: the missing dependency was recovered explicitly, the
+    // keeper ran to a real outcome (no stored credential in the
+    // fixture), and no failed-soft line was emitted.
+    expect(result.stdout).toContain("installing declared dependencies");
+    expect(result.stdout).toContain("opendesign-renewal: status=not-configured");
+    expect(result.stdout).not.toContain("failed-soft");
+    const renewalState = JSON.parse(await readFile(renewalStatePath, "utf8"));
+    expect(renewalState.status).toBe("not-configured");
+    const installed = JSON.parse(await readFile(join(checkoutRoot, "node_modules/fake-dep/package.json"), "utf8"));
+    expect(installed.name).toBe("fake-dep");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

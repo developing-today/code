@@ -35,6 +35,7 @@ import {
 } from "./notifications.ts";
 import { JsonlNotificationHistory, type NotificationHistoryStore } from "./notification-history.ts";
 import { getNeedsDrew } from "./needs-drew.ts";
+import { getDecisionSet } from "./decisions.ts";
 
 // --- Shapes ----------------------------------------------------------------
 
@@ -1045,6 +1046,21 @@ async function runDashboardNotificationTick(
         } catch (err) {
           console.error(
             `alerts engine: needs-drew answer payload lookup failed (${err instanceof Error ? err.message : "error"})`,
+          );
+        }
+      }
+      // #8766: a decision-set candidate pushes with the set page as
+      // its URL — the per-set token rides the URL; the page itself is
+      // the answer surface, so no `answer` payload is attached.
+      if (candidate.decisionSet) {
+        try {
+          const set = await getDecisionSet(cfg.decisionsFile, candidate.decisionSet.setId);
+          if (set) {
+            payload.url = `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
+          }
+        } catch (err) {
+          console.error(
+            `alerts engine: decision-set payload lookup failed (${err instanceof Error ? err.message : "error"})`,
           );
         }
       }

@@ -3904,8 +3904,10 @@ dependencies = [
  "id-caps",
  "id-core",
  "id-events",
+ "id-groups",
  "id-store",
  "id-sync",
+ "id-worlds",
  "iroh",
  "iroh-base",
  "iroh-blobs",
@@ -3918,7 +3920,6 @@ dependencies = [
  "n0-mainline",
  "p2panda-auth",
  "p2panda-core",
- "p2panda-encryption",
  "p2panda-store",
  "p2panda-sync",
  "postcard",
@@ -3954,8 +3955,6 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "urlencoding",
- "vt100",
- "wasmtime",
  "wat",
  "webpki-roots",
  "zeroize",
@@ -3979,6 +3978,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "cbor-core",
+ "ed25519-dalek 3.0.0",
  "futures-lite",
  "iroh",
  "iroh-base",
@@ -4028,6 +4028,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-groups"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "id-core",
+ "id-events",
+ "id-store",
+ "iroh-base",
+ "iroh-blobs",
+ "p2panda-core",
+ "p2panda-encryption",
+ "postcard",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "id-native-shell"
 version = "0.1.0"
 dependencies = [
@@ -4074,6 +4096,7 @@ name = "id-sync"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ed25519-dalek 3.0.0",
  "futures-lite",
  "futures-util",
  "id-core",
@@ -4083,18 +4106,61 @@ dependencies = [
  "iroh-base",
  "iroh-blobs",
  "iroh-mainline-address-lookup",
+ "iroh-tickets",
  "p2panda-auth",
  "p2panda-core",
  "p2panda-store",
  "p2panda-sync",
  "postcard",
  "proptest",
+ "rand 0.10.3",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "id-worlds"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "futures-lite",
+ "id-caps",
+ "id-core",
+ "id-events",
+ "id-groups",
+ "id-store",
+ "id-sync",
+ "iroh",
+ "iroh-base",
+ "iroh-blobs",
+ "iroh-docs",
+ "iroh-gossip",
+ "libc",
+ "p2panda-core",
+ "postcard",
+ "proptest",
+ "rand 0.10.3",
+ "russh",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "vt100",
+ "wasmtime",
+ "wat",
 ]
 
 [[package]]

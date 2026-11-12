@@ -88,7 +88,7 @@ import {
   isAaSection,
   type AaRawPayload,
 } from "../src/aa.ts";
-import { AA_BATCH_INDEX_SQL, AA_PRICES_SQL, aaPayloadSql } from "../src/aa-batch-sql.ts";
+import { AA_BATCH_INDEX_SQL, AA_PAYLOAD_SQL_REVISION, AA_PRICES_SQL, aaPayloadSql } from "../src/aa-batch-sql.ts";
 import {
   aaBatchFingerprint,
   aaCacheFileName,
@@ -110,6 +110,7 @@ import {
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
 import { assembleCollectorFeed } from "../src/feed-contract.ts";
 import { defaultNeedsDrewFile, listAnswers } from "../src/needs-drew.ts";
+import { defaultDecisionsFile, listDecisionResolutions } from "../src/decisions.ts";
 import type {
   AaBatchSummary,
   AaFeedSection,
@@ -464,6 +465,8 @@ interface AaLastGood {
   configFingerprint: string;
   /** sha256 of the batch-bound semantic data (aa-batches.ts). */
   fingerprint?: string;
+  /** aaPayloadSql revision the section was built with (#8817). */
+  sqlRevision?: number;
   section: AaSection;
 }
 
@@ -476,6 +479,7 @@ async function readAaLastGood(): Promise<AaLastGood | null> {
       batch: parsed.batch,
       configFingerprint: parsed.configFingerprint,
       fingerprint: typeof parsed.fingerprint === "string" ? parsed.fingerprint : undefined,
+      sqlRevision: typeof parsed.sqlRevision === "number" ? parsed.sqlRevision : undefined,
       section: parsed.section,
     };
   } catch {
@@ -595,6 +599,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
       configFingerprint: fingerprint,
       fingerprint: contentFingerprint,
       pricesFingerprint: aaPricesFingerprint(section.prices ?? []),
+      sqlRevision: AA_PAYLOAD_SQL_REVISION,
       builtAt: generatedAt,
       section,
     });
@@ -638,15 +643,17 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
   }
 
-  // Read every batch cache once; a changed config — or a changed
-  // current-price overlay — invalidates all of them.
+  // Read every batch cache once; a changed config, a changed
+  // current-price overlay, or a moved aaPayloadSql revision (#8817)
+  // invalidates all of them.
   const cachedSections = new Map<string, AaSection>();
   for (const row of index) {
     const cached = await readAaBatchCache(row.importBatch);
     if (
       cached &&
       cached.configFingerprint === fingerprint &&
-      (cached.pricesFingerprint ?? null) === currentPricesFingerprint
+      (cached.pricesFingerprint ?? null) === currentPricesFingerprint &&
+      (cached.sqlRevision ?? 0) === AA_PAYLOAD_SQL_REVISION
     ) {
       cacheMeta.set(row.importBatch, { fingerprint: cached.fingerprint, cached: true });
       cachedSections.set(row.importBatch, cached.section);
@@ -664,6 +671,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     lastGood &&
     lastGood.batch === latestBatch &&
     lastGood.configFingerprint === fingerprint &&
+    (lastGood.sqlRevision ?? 0) === AA_PAYLOAD_SQL_REVISION &&
     lastGood.fingerprint
   ) {
     // Reuse the last good latest section without re-running the full query.
@@ -673,6 +681,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
       configFingerprint: fingerprint,
       fingerprint: lastGood.fingerprint,
       pricesFingerprint: aaPricesFingerprint(lastGood.section.prices ?? []),
+      sqlRevision: AA_PAYLOAD_SQL_REVISION,
       builtAt: latestSection.generatedAt,
       section: latestSection,
     });
@@ -692,6 +701,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     batch: latestSection.batch,
     configFingerprint: fingerprint,
     fingerprint: cacheMeta.get(latestSection.batch)?.fingerprint ?? undefined,
+    sqlRevision: AA_PAYLOAD_SQL_REVISION,
     section: latestSection,
   });
 
@@ -722,6 +732,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     batch: withIndex.batch,
     configFingerprint: fingerprint,
     fingerprint: cacheMeta.get(withIndex.batch)?.fingerprint ?? undefined,
+    sqlRevision: AA_PAYLOAD_SQL_REVISION,
     section: withIndex,
   });
   return withIndex;
@@ -1244,9 +1255,19 @@ async function main(): Promise<void> {
     answers = [];
   }
 
+  // #8766: Drew's decisions-page resolutions (answers + defers), from
+  // the aggregator's decision-set store. Fail-soft like `answers`.
+  let decisionResolutions: NonNullable<FleetFeed["decisionResolutions"]> = [];
+  try {
+    decisionResolutions = await listDecisionResolutions(defaultDecisionsFile());
+  } catch {
+    decisionResolutions = [];
+  }
+
   const feed: FleetFeed = assembleCollectorFeed({
     generatedAt: now.toISOString(),
     answers,
+    decisionResolutions,
     checkout,
     meta: { sections: sectionStatuses },
     quota: { pools, burn: burnSegments, choices: computeChoices(pools, now.getTime()) },

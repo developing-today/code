@@ -51,6 +51,57 @@
 //! - [`repl`] - Interactive REPL with shell-like features
 //! - [`helpers`] - Utility functions for parsing and formatting
 //!
+//! ## Signing contract — sign only what receipt would accept
+//!
+//! Every public signing entry point in this crate family (`sign_*`,
+//! `Signed*::sign`, and any public method whose purpose is producing a
+//! signed object) follows one contract, recorded as design #6487 and
+//! inventoried in the closing audit on issue #6488:
+//!
+//! > **Sign only what receipt would accept.** Mirror at sign time every
+//! > receipt rule that is decidable from the signer's own inputs — the
+//! > key, the object being signed, and the function's existing
+//! > arguments. Receipt means whichever side consumes the object: a
+//! > fold, a viewer, a verifier, or an accept function. A rule receipt
+//! > enforces unconditionally, and the signer can decide, must not be
+//! > signable-around: a signer that produces an object no consumer will
+//! > ever count has reported success for a failure the caller discovers
+//! > far from the signing call, if at all.
+//!
+//! The decidability line is part of the contract, in four classes:
+//!
+//! - **(a) intrinsic** — decidable from the object alone: a field's
+//!   domain, a version, a roster's shape, an envelope's internal
+//!   agreement.
+//! - **(b) signer-relative** — decidable from the key plus the object:
+//!   the author the key implies versus the object's issuer, players,
+//!   roster, successor, source, or named sender.
+//! - **(c) seam-extended** — decidable only if the seam takes one more
+//!   input it already conceptually has (the agreement for a claim). The
+//!   public seam changes — a checked sibling or an extra parameter —
+//!   it never silently skips the check.
+//! - **(d) receiver-state** — not decidable at the seam: the
+//!   receiver's cursor, a per-world limit, a store's current epoch, the
+//!   key being replaced in a recovery the inputs do not name, an
+//!   assembled log's context. These rules stay receipt-only, and the
+//!   closing inventory on issue #6488 names each one with its reason,
+//!   so the line is auditable rather than implied.
+//!
+//! Two corollaries bind a new signer before it lands:
+//!
+//! - Refusal speaks the module's own vocabulary — the receipt error
+//!   itself, or a typed sign error naming the rule — never a generic
+//!   failure, and never a silently repaired object. Wire formats and
+//!   receipt verdicts do not change under this contract.
+//! - A bypass, where tests need one, is crate-private (or gated to
+//!   tests) and named `*_unchecked` — the artifact pattern
+//!   (`SignedArtifact::sign_unchecked`). There is never a second
+//!   *public* unchecked signer.
+//!
+//! Adding a `sign_*` function without dispositioning it against this
+//! contract — enforced for the decidable classes, or deliberately
+//! receipt-only with the class-(d) reason named — is incomplete work.
+//!
 //! ## Quick Start
 //!
 //! ### As a Library
@@ -174,15 +225,15 @@ pub mod currency;
 pub mod currency_poc;
 pub use id_sync::dht;
 #[cfg(feature = "world")]
-pub mod directory;
+pub use id_worlds::directory;
 #[cfg(feature = "world")]
-pub mod directory_auth;
+pub use id_worlds::directory_auth;
 #[cfg(feature = "world")]
 pub mod directory_log;
 #[cfg(feature = "world")]
-pub mod directory_mail;
+pub use id_worlds::directory_mail;
 #[cfg(feature = "world")]
-pub mod directory_view;
+pub use id_worlds::directory_view;
 pub use id_core::discovery;
 pub mod didit;
 pub use id_store::documents;
@@ -230,9 +281,9 @@ pub mod references;
 pub use id_core::rejection;
 pub mod repl;
 #[cfg(feature = "sandbox")]
-pub mod sandbox;
+pub use id_worlds::sandbox;
 #[cfg(feature = "sandbox")]
-pub mod world_dev;
+pub use id_worlds::world_dev;
 pub use id_store::search;
 #[cfg(feature = "world")]
 pub mod seitan;
@@ -240,7 +291,7 @@ pub mod seitan;
 pub mod server_config;
 pub use id_store::session_checkpoint;
 #[cfg(feature = "world")]
-pub mod shell_contract;
+pub use id_worlds::shell_contract;
 pub use id_store::store;
 pub mod store_traits;
 pub mod structured_logging;
@@ -249,48 +300,48 @@ pub use id_store::tag_claims;
 pub use id_store::tag_index;
 pub use id_store::tags;
 #[cfg(test)]
-mod test_forgeries;
+pub(crate) use id_core::test_forgeries;
 pub(crate) use id_core::text;
 pub(crate) use id_core::is_format_char;
 pub(crate) use id_core::time;
 pub use id_core::tuple;
 pub use id_core::waiting;
 #[cfg(feature = "world")]
-pub mod world;
+pub use id_worlds::world;
 #[cfg(feature = "world")]
 pub use id_caps::world_caps;
 #[cfg(feature = "world")]
-pub mod world_cache;
-pub mod world_compile;
+pub use id_worlds::world_cache;
+pub use id_worlds::world_compile;
 #[cfg(feature = "world")]
-pub mod world_doctor;
+pub use id_worlds::world_doctor;
 #[cfg(feature = "world")]
-pub mod world_fixture;
-#[cfg(feature = "world")]
-pub mod world_hub;
+pub use id_worlds::world_fixture;
+
+pub use id_worlds::world_hub;
 #[cfg(feature = "world")]
 pub use id_caps::world_limits;
-pub(crate) mod world_line;
+pub(crate) use id_worlds::world_line;
 #[cfg(feature = "world")]
 pub use id_caps::world_manifest;
 #[cfg(feature = "world")]
-pub mod world_native;
+pub use id_worlds::world_native;
 #[cfg(feature = "world")]
-pub mod world_net;
+pub use id_worlds::world_net;
 #[cfg(feature = "world")]
-pub mod world_replication_net;
+pub use id_worlds::world_replication_net;
 #[cfg(feature = "world")]
 pub use id_core::world_presentation;
 #[cfg(feature = "world")]
-pub mod world_records;
+pub use id_worlds::world_records;
 #[cfg(feature = "world")]
-pub mod world_session;
+pub use id_worlds::world_session;
 #[cfg(feature = "ssh")]
-pub mod world_ssh;
+pub use id_worlds::world_ssh;
 #[cfg(feature = "world")]
-pub mod world_store;
+pub use id_worlds::world_store;
 #[cfg(feature = "world")]
-pub(crate) mod world_terminal;
+pub(crate) use id_worlds::world_terminal;
 
 #[cfg(feature = "web")]
 pub use id_core::qr;

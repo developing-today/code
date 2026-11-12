@@ -32,7 +32,7 @@ use std::sync::Arc;
 use iroh_base::EndpointId;
 
 use crate::world_access::WorldAccess;
-use id_store::event_types::BlockList;
+use id_store::event_types::{BlockList, BlockLookup};
 
 /// Who may pull a world's events from this server.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -100,12 +100,24 @@ impl PullGate {
     }
 
     /// Whether the operator block list blocks `peer` by key. False when
-    /// no list is attached.
+    /// no list is attached, and false when the lookup cannot answer
+    /// (the fail-open bool seam; see [`PullGate::peer_lookup`]).
     #[must_use]
     pub fn peer_blocked(&self, peer: &EndpointId) -> bool {
+        self.peer_lookup(peer)
+            .is_some_and(|lookup| lookup.is_blocked())
+    }
+
+    /// The block list's distinguishing answer for `peer` (#8750):
+    /// `None` when no list is attached, otherwise the lookup itself,
+    /// with a failed lookup preserved as
+    /// [`BlockLookup::Indeterminate`] instead of erased to "not
+    /// blocked".
+    #[must_use]
+    pub fn peer_lookup(&self, peer: &EndpointId) -> Option<BlockLookup> {
         self.blocks
             .as_ref()
-            .is_some_and(|blocks| blocks.peer_blocked(peer.as_bytes()))
+            .map(|blocks| blocks.peer_lookup(peer.as_bytes()))
     }
 
     /// Whether the operator block list blocks this topic tag (raw bytes:
@@ -114,19 +126,47 @@ impl PullGate {
     /// not name — the `log_sync` handshake — check the tag through here.
     #[must_use]
     pub fn topic_tag_blocked(&self, tag: &[u8]) -> bool {
+        self.topic_tag_lookup(tag)
+            .is_some_and(|lookup| lookup.is_blocked())
+    }
+
+    /// The [`BlockLookup`] form of [`PullGate::topic_tag_blocked`]
+    /// (#8750): `None` when no list is attached.
+    #[must_use]
+    pub fn topic_tag_lookup(&self, tag: &[u8]) -> Option<BlockLookup> {
         self.blocks
             .as_ref()
-            .is_some_and(|blocks| blocks.topic_tag_blocked(tag))
+            .map(|blocks| blocks.topic_tag_lookup(tag))
     }
 
     /// Whether `peer` may pull this world's events now: not blocked by
     /// key, the world not blocked as a topic tag, and the policy admits
     /// the peer.
+    ///
+    /// Explicit indeterminate-result policy (#8750): the gate fails
+    /// open — a block lookup that cannot answer does not refuse the
+    /// pull (availability, as documented on
+    /// [`BlockList`](id_store::event_types::BlockList)) — and the
+    /// failure is logged for the operator instead of being treated as
+    /// a clean "not blocked". Only a definite block refuses here.
     #[must_use]
     pub fn admits(&self, peer: &EndpointId) -> bool {
-        !self.peer_blocked(peer)
-            && !self.topic_tag_blocked(self.world.as_bytes())
-            && self.policy.admits(self.access.as_ref(), &self.world, peer)
+        for lookup in [
+            self.peer_lookup(peer),
+            self.topic_tag_lookup(self.world.as_bytes()),
+        ] {
+            match lookup {
+                Some(BlockLookup::Blocked) => return false,
+                Some(BlockLookup::Indeterminate(failure)) => {
+                    tracing::warn!(
+                        "pull gate: block-list lookup failed ({}); failing open",
+                        failure.as_str()
+                    );
+                }
+                Some(BlockLookup::Unblocked) | None => {}
+            }
+        }
+        self.policy.admits(self.access.as_ref(), &self.world, peer)
     }
 }
 
@@ -417,6 +457,56 @@ mod tests {
         assert!(
             gate.admits(&key(2).public()),
             "an unblocked peer still pulls"
+        );
+    }
+
+    /// A block list whose lookup never answers (#8750): every check is
+    /// indeterminate, as a failed store read is at the real seams.
+    #[derive(Debug)]
+    struct FailingBlocks;
+
+    impl id_store::event_types::BlockList for FailingBlocks {
+        fn is_blocked(&self, _kind: id_store::event_types::BlockKind, _value: &[u8]) -> bool {
+            false
+        }
+
+        fn lookup(
+            &self,
+            _kind: id_store::event_types::BlockKind,
+            _value: &[u8],
+        ) -> id_store::event_types::BlockLookup {
+            id_store::event_types::BlockLookup::Indeterminate(
+                id_store::event_types::BlockLookupFailure::Storage,
+            )
+        }
+    }
+
+    /// #8750: the gate surfaces a failed lookup as indeterminate —
+    /// distinguishable from an ordinary unblocked answer — and its
+    /// stated policy fails open: the pull is admitted, the bool seam
+    /// reads false, and the failure is logged at the seam.
+    #[test]
+    fn test_pull_gate_surfaces_an_indeterminate_block_lookup_and_fails_open() {
+        let gate = PullGate::new(
+            PullPolicy::Open,
+            WORLD,
+            live(docs_world(key(1).public(), key(2).public(), false)),
+        )
+        .with_blocks(Arc::new(FailingBlocks));
+        assert_eq!(
+            gate.peer_lookup(&key(2).public()),
+            Some(id_store::event_types::BlockLookup::Indeterminate(
+                id_store::event_types::BlockLookupFailure::Storage
+            )),
+            "a failed lookup must not read as an ordinary unblocked result"
+        );
+        assert!(
+            !gate.peer_blocked(&key(2).public()),
+            "the bool seam fails open"
+        );
+        assert!(
+            gate.admits(&key(2).public()),
+            "the gate's stated policy fails open"
         );
     }
 

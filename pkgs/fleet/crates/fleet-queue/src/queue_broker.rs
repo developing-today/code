@@ -1283,6 +1283,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                 Err(e) => fail(e.exit, e.msg),
             }
         }
+        "/stack-record" | "/stack-list" => fail(
+            2,
+            "merge-intent stack verbs require the turso queue backend (#8582)".to_string(),
+        ),
         "/healthz" => ok(json!({"service": "queue-broker"})),
         _ => json!({"ok": false, "exit": 2, "error": format!("unknown command {path}")}),
     }
