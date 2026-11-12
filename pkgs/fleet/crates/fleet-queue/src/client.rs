@@ -5813,6 +5813,91 @@ esac
         let _ = std::fs::remove_dir_all(bin.parent().unwrap());
     }
 
+    // ---- #8363: comment-kind marker resolution ----
+    // Oracle: for issue_comment/pr_comment entries the search hit's
+    // number is the PARENT issue/PR number, not a comment id. The
+    // lookup must resolve the marker to the real comment id by
+    // listing the candidate's comments; reading the issue number
+    // back as a comment id (repos/.../issues/comments/<issue>) can
+    // never match and re-creates landed comments as duplicates.
+
+    fn outbox_entry_8363(kind: &str) -> Value {
+        json!({
+            "id": "OB-test-2",
+            "repo": "developing-today/code",
+            "kind": kind,
+            "payload": {"target_number": 7, "body": "b"},
+        })
+    }
+
+    #[test]
+    fn marker_search_comment_kind_resolves_comment_id_not_issue_number() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "comment8363",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{},{"number":7,"html_url":"https://github.com/developing-today/code/issues/7"}]}' ;;
+  *issues/comments/7*) echo "the issue number is not a comment id" >&2; exit 1 ;;
+  *issues/7/comments*) printf '%s' '[{"id":555,"html_url":"https://github.com/developing-today/code/issues/7#issuecomment-555","body":"landed <!-- fleet-outbox:OB-test-2 -->"}]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8363("issue_comment")),
+            MarkerLookup::Found(
+                555,
+                "https://github.com/developing-today/code/issues/7#issuecomment-555".to_string()
+            )
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_pr_comment_kind_resolves_comment_id() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "prcomment8363",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":9,"html_url":"https://github.com/developing-today/code/pull/9"}]}' ;;
+  *issues/comments/9*) echo "the issue number is not a comment id" >&2; exit 1 ;;
+  *issues/9/comments*) printf '%s' '[{"id":777,"html_url":"https://github.com/developing-today/code/pull/9#issuecomment-777","body":"landed <!-- fleet-outbox:OB-test-2 -->"}]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8363("pr_comment")),
+            MarkerLookup::Found(
+                777,
+                "https://github.com/developing-today/code/pull/9#issuecomment-777".to_string()
+            )
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_comment_list_failure_is_could_not_check() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "commentlist404",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":7,"html_url":"https://github.com/developing-today/code/issues/7"}]}' ;;
+  *issues/7/comments*) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8363("issue_comment")),
+            MarkerLookup::CouldNotCheck("http_404".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
     #[test]
     fn marker_search_failed_candidate_readback_is_could_not_check() {
         let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
