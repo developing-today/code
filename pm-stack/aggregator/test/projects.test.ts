@@ -106,18 +106,37 @@ function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount 
 }
 
 describe("fetchProjectPool pagination", () => {
-  test("throws rather than returning a partial pool when page ten has another page", async () => {
+  test("paginates past ten pages and returns every item from a long finite pool", async () => {
+    // Oracle: the pool is complete iff every page was fetched and every
+    // delivered item returned — no page-count cap (Drew, 2026-11-12).
     let calls = 0;
     const fetchFn: typeof fetch = Object.assign(
       async () => {
         calls++;
-        return new Response(JSON.stringify(projectPage(true, `cursor-${calls}`)));
+        return new Response(
+          JSON.stringify(projectPage(calls < 13, calls < 13 ? `cursor-${calls}` : null, 26)),
+        );
       },
       { preconnect: () => {} },
     );
 
-    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/truncat.*25/i);
-    expect(calls).toBe(10);
+    const items = await fetchProjectPool("test-token", fetchFn);
+    expect(calls).toBe(13);
+    expect(items).toHaveLength(26);
+  });
+
+  test("throws when pagination does not advance instead of looping forever", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = Object.assign(
+      async () => {
+        calls++;
+        return new Response(JSON.stringify(projectPage(true, "cursor-stuck")));
+      },
+      { preconnect: () => {} },
+    );
+
+    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/did not advance/i);
+    expect(calls).toBe(2);
   });
 
   test("returns every item from a finite multi-page pool", async () => {

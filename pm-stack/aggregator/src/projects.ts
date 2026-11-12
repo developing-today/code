@@ -341,7 +341,11 @@ export async function fetchProjectSnapshot(
   let firstPage: unknown;
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
-  for (let page = 0; page < 10; page++) {
+  // Paginate to exhaustion (Drew, 2026-11-12: scan them all, or paginate —
+  // no page-count cap; the old 10-page fetch cap discarded the whole pool
+  // once Project #4 passed 1,000 items). The did-not-advance guard below
+  // is the loop-safety bound.
+  for (let page = 0; ; page++) {
     const res = await fetchFn("https://api.github.com/graphql", {
       method: "POST",
       headers: {
@@ -390,7 +394,6 @@ export async function fetchProjectSnapshot(
     }
     if (!info.endCursor || info.endCursor === cursor)
       throw new Error("github GraphQL project pagination did not advance");
-    if (page === 9) throw new Error(`github project pool truncated at 10-page cap (totalCount: ${info.totalCount})`);
     cursor = info.endCursor;
   }
   throw new Error("github GraphQL project pagination ended unexpectedly");
@@ -407,7 +410,8 @@ export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fe
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
-  for (let page = 0; page < 10; page++) {
+  // Paginate to exhaustion, same as fetchProjectSnapshot (no page cap).
+  for (let page = 0; ; page++) {
     const res = await fetchFn("https://api.github.com/graphql", {
       method: "POST",
       headers: {
@@ -423,11 +427,10 @@ export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fe
     if ((json as GqlProjectPage).errors) throw new Error("github GraphQL returned errors");
     out.push(...parseProjectItems(json));
     lastPageInfo = projectPageInfo(json);
-    if (!lastPageInfo.hasNextPage || !lastPageInfo.endCursor) break;
+    if (!lastPageInfo.hasNextPage) break;
+    if (!lastPageInfo.endCursor || lastPageInfo.endCursor === cursor)
+      throw new Error("github GraphQL project pagination did not advance");
     cursor = lastPageInfo.endCursor;
-  }
-  if (lastPageInfo?.hasNextPage && lastPageInfo.endCursor) {
-    throw new Error(`github project pool truncated at 10-page cap (totalCount: ${lastPageInfo.totalCount})`);
   }
   // Epic membership needs the whole pool (parents may sit on other
   // pages), so it resolves once over the aggregate, not per page.
