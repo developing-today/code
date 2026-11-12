@@ -21,11 +21,36 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// Provenance records where a generated declaration came from, so a
+// reader (and `adapter check`) can tell what it was written against
+// instead of trusting it blindly (#1962 steps 3-5). Hand-written
+// declarations carry none; every `adapter import` emission does.
+type Provenance struct {
+	// Source is the ladder rung that produced the declaration:
+	// completion, man, help or bare.
+	Source string `json:"source"`
+	// BinaryPath is the resolved path of the binary at import time,
+	// empty when the binary was not present (a completion file can be
+	// imported for a program mcpx cannot run here).
+	BinaryPath string `json:"binaryPath,omitempty"`
+	// BinaryVersion is the version extracted from the binary's
+	// --version output at import time, empty when unknown. `adapter
+	// check` compares the live binary against it and reports drift.
+	BinaryVersion string `json:"binaryVersion,omitempty"`
+	// SourceSHA256 fingerprints the exact source text the declaration
+	// was generated from, so re-importing the same source is
+	// recognisably the same generation.
+	SourceSHA256 string `json:"sourceSha256,omitempty"`
+	// GeneratedAt is the import date (UTC, RFC3339).
+	GeneratedAt string `json:"generatedAt,omitempty"`
+}
 
 // Spec declares a command-line program as a server.
 type Spec struct {
@@ -58,6 +83,10 @@ type Spec struct {
 	// Instructions explain conventions the schemas cannot, exactly as a real
 	// server's initialize does.
 	Instructions string `json:"instructions,omitempty"`
+	// Provenance is set on declarations `adapter import` generated, and
+	// absent on hand-written ones. It never changes how the adapter
+	// runs; it is the record `adapter check` uses for version drift.
+	Provenance *Provenance `json:"provenance,omitempty"`
 	// Timeout bounds every invocation. Empty or zero means 60s.
 	Timeout string `json:"timeout,omitempty"`
 	// Tools are the subcommands worth exposing. Empty for a bare
@@ -490,6 +519,67 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// versionTokenRe finds the first dotted version token in --version
+// output: "git version 2.43.0" yields "2.43.0", "jq-1.7.1" yields
+// "1.7.1". A bare integer is not a version for this purpose -- too
+// many programs print one for unrelated reasons.
+var versionTokenRe = regexp.MustCompile(`\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?`)
+
+// ExtractVersion pulls the version token out of a program's
+// --version output (its first line is authoritative; some programs
+// print a banner after it). It returns "" when no dotted version is
+// present, and callers treat that as "version unknown", never as a
+// version of zero.
+func ExtractVersion(versionOutput string) string {
+	first, _, _ := strings.Cut(versionOutput, "\n")
+	return versionTokenRe.FindString(strings.TrimSpace(first))
+}
+
+// VersionDrift compares the version a generated declaration was
+// written against (Provenance.BinaryVersion) with the version the
+// binary on PATH reports now. It is the check #1962 step 3 asks for:
+// "this declaration was written against jq 1.7, found 1.8", said out
+// loud instead of drifting silently.
+//
+// Returns (declared, found, drift). A spec with no recorded version
+// reports drift=false and found="" -- there is nothing to compare,
+// which is a different fact from a mismatch. An error means the
+// live version could not be determined at all.
+func (s Spec) VersionDrift(ctx context.Context) (declared, found string, drift bool, err error) {
+	if s.Provenance == nil || s.Provenance.BinaryVersion == "" {
+		return "", "", false, nil
+	}
+	declared = s.Provenance.BinaryVersion
+	bin, prefix, script, err := s.command()
+	if err != nil {
+		return declared, "", false, err
+	}
+	if script != "" {
+		// A script command's --version would run the script with an
+		// argument it never agreed to take; there is no safe probe.
+		return declared, "", false, fmt.Errorf("%s: version check is not applicable to a script command", s.Name)
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	args := append(append([]string{}, prefix...), s.Args...)
+	args = append(args, "--version")
+	cmd := exec.CommandContext(cctx, bin, args...)
+	cmd.Dir = s.Dir
+	cmd.Env = os.Environ()
+	for k, v := range s.Env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	out, runErr := cmd.Output()
+	if runErr != nil {
+		return declared, "", false, fmt.Errorf("%s: running %s --version: %w", s.Name, s.Command, runErr)
+	}
+	found = ExtractVersion(string(out))
+	if found == "" {
+		return declared, "", false, fmt.Errorf("%s: %s --version printed no version to compare against %q", s.Name, s.Command, declared)
+	}
+	return declared, found, found != declared, nil
 }
 
 // Probe checks the binary exists before anything tries to call it.

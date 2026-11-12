@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
@@ -133,6 +134,18 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 		for _, s := range specs {
 			if err := s.Probe(); err != nil {
 				problems = append(problems, err.Error())
+				continue
+			}
+			// A generated declaration records the version it was
+			// written against (#1962 step 3): say the drift out loud
+			// instead of letting the declaration silently age.
+			declared, found, drift, verr := s.VersionDrift(ctx)
+			if verr != nil {
+				problems = append(problems, verr.Error())
+			} else if drift {
+				problems = append(problems, fmt.Sprintf(
+					"%s: this declaration was written against %s %s, found %s; re-run `mcpx adapter import %s` to regenerate it",
+					s.Name, s.Command, declared, found, s.Command))
 			}
 		}
 		if len(problems) > 0 {
@@ -225,17 +238,17 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 	return fmt.Errorf("no adapter subcommand %q; list, check, call, tools, serve, import, add or remove", sub)
 }
 
-const importUsage = "usage: mcpx adapter import --bare <binary> --description \"what it is for\" [--out FILE]"
+const importUsage = "usage: mcpx adapter import <binary> [--source auto|completion|man|help|bare] [--out FILE] | mcpx adapter import --completion <file> [--shell bash|zsh|fish] [--name NAME] [--out FILE] | mcpx adapter import --bare <binary> --description \"what it is for\" [--out FILE]"
 
 // adapterImport is parsed apart from the adapter command's flags: --bare
 // and friends are import's own, not registry settings, and the registry
 // flag set would refuse them before the switch ever ran.
 func adapterImport(args []string) error {
-	// Only the bare passthrough exists so far. Declaration generation
-	// from --help, completions and man pages is #1962 steps 2-5, held
-	// for the #2118 reconciliation, so anything else is refused loudly
-	// rather than emitted silently.
-	bare, description, outPath, rest, err := splitImportArgs(args)
+	// Generation from completions, man pages and --help is #1962
+	// steps 2-5, unblocked when #2118 closed (PR #4637 merged). The
+	// --bare passthrough (#2647) is unchanged: it is one explicit
+	// source among the ladder, never what a plain import produces.
+	opts, err := splitImportArgsFull(args)
 	if err == flag.ErrHelp {
 		fmt.Fprintln(os.Stderr, importUsage)
 		return err
@@ -243,17 +256,42 @@ func adapterImport(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !bare {
-		return fmt.Errorf("mcpx adapter import only implements --bare so far: declaration generation from --help, completions and man pages is #1962 steps 2-5, pending reconciliation with #2118")
+	if opts.bare || opts.source == "bare" {
+		if len(opts.rest) != 1 {
+			fmt.Fprintln(os.Stderr, importUsage)
+			return fmt.Errorf("mcpx adapter import --bare takes exactly one binary")
+		}
+		spec, err := buildBareImport(opts.rest[0], opts.description)
+		if err != nil {
+			return err
+		}
+		if err := emitImportedSpec(spec, opts.out); err != nil {
+			return err
+		}
+		fmt.Fprint(os.Stderr, bareImportWarning(spec))
+		return nil
 	}
-	if len(rest) != 1 {
-		fmt.Fprintln(os.Stderr, importUsage)
-		return fmt.Errorf("mcpx adapter import --bare takes exactly one binary")
-	}
-	spec, err := buildBareImport(rest[0], description)
+	spec, err := generateImport(opts, time.Now().UTC())
 	if err != nil {
 		return err
 	}
+	if err := emitImportedSpec(spec, opts.out); err != nil {
+		return err
+	}
+	versionNote := ""
+	if spec.Provenance.BinaryVersion != "" {
+		versionNote = " " + spec.Provenance.BinaryVersion
+	}
+	fmt.Fprintf(os.Stderr, "mcpx: generated adapter %q from %s for %s%s; review the declaration before relying on it -- generation is deterministic parsing, not a model, and a source it could not parse is refused rather than guessed at.\n",
+		spec.Name, spec.Provenance.Source, spec.Command, versionNote)
+	return nil
+}
+
+// emitImportedSpec writes one generated declaration the way
+// adapterImport always has: stdout by default, or atomically to
+// --out, as an AdapterFile document loadAdapterFiles reads back
+// unchanged.
+func emitImportedSpec(spec adapter.Spec, outPath string) error {
 	doc, err := json.MarshalIndent(AdapterFile{Adapters: []adapter.Spec{spec}}, "", "  ")
 	if err != nil {
 		return err
@@ -263,10 +301,9 @@ func adapterImport(args []string) error {
 		if err := writeFileAtomic(outPath, doc, 0o644); err != nil {
 			return fmt.Errorf("writing %s: %w", outPath, err)
 		}
-	} else {
-		fmt.Print(string(doc))
+		return nil
 	}
-	fmt.Fprint(os.Stderr, bareImportWarning(spec))
+	fmt.Print(string(doc))
 	return nil
 }
 
@@ -295,43 +332,98 @@ func writeFileAtomic(path string, doc []byte, perm os.FileMode) error {
 	return os.Rename(tmpName, path)
 }
 
+// importOptions is import's parsed command line.
+type importOptions struct {
+	bare        bool
+	description string
+	out         string
+	source      string // auto (default), completion, man, help or bare
+	completion  string // --completion <file>: a completion script as input
+	shell       string // bash, zsh or fish; inferred when empty
+	name        string // --name: adapter name override for --completion
+	rest        []string
+}
+
+// importValuedFlags maps import's value-taking flags to the field
+// they fill, so the hand parser below stays a table, not a thicket.
+func (o *importOptions) setValued(flagName, value string) error {
+	switch flagName {
+	case "--description":
+		o.description = value
+	case "--out":
+		o.out = value
+	case "--source":
+		o.source = value
+	case "--completion":
+		o.completion = value
+	case "--shell":
+		o.shell = value
+	case "--name":
+		o.name = value
+	default:
+		return fmt.Errorf("unknown flag %q: %s", flagName, importUsage)
+	}
+	return nil
+}
+
 // splitImportArgs partitions import's command line by hand: the standard
 // flag parser stops at the first positional, so `import --bare echo
-// --description ...` would leave --description unparsed. Import takes
-// exactly three flags, so they are lifted wherever they appear and the
-// rest must be the single binary.
+// --description ...` would leave --description unparsed. Import's flags
+// are lifted wherever they appear and the rest must be the single binary
+// (or nothing, with --completion).
 func splitImportArgs(args []string) (bare bool, description, out string, rest []string, err error) {
+	opts, err := splitImportArgsFull(args)
+	if err != nil {
+		return false, "", "", nil, err
+	}
+	return opts.bare, opts.description, opts.out, opts.rest, nil
+}
+
+func splitImportArgsFull(args []string) (*importOptions, error) {
+	opts := &importOptions{source: "auto"}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--":
-			rest = append(rest, args[i+1:]...)
+			opts.rest = append(opts.rest, args[i+1:]...)
 			i = len(args)
 		case a == "--bare":
-			bare = true
-		case a == "--description" || a == "--out":
+			opts.bare = true
+		case a == "--description" || a == "--out" || a == "--source" ||
+			a == "--completion" || a == "--shell" || a == "--name":
 			if i+1 >= len(args) {
-				return false, "", "", nil, fmt.Errorf("%s needs a value: %s", a, importUsage)
+				return nil, fmt.Errorf("%s needs a value: %s", a, importUsage)
 			}
 			i++
-			if a == "--description" {
-				description = args[i]
-			} else {
-				out = args[i]
+			if err := opts.setValued(a, args[i]); err != nil {
+				return nil, err
 			}
-		case strings.HasPrefix(a, "--description="):
-			description = strings.TrimPrefix(a, "--description=")
-		case strings.HasPrefix(a, "--out="):
-			out = strings.TrimPrefix(a, "--out=")
+		case strings.HasPrefix(a, "--description=") || strings.HasPrefix(a, "--out=") ||
+			strings.HasPrefix(a, "--source=") || strings.HasPrefix(a, "--completion=") ||
+			strings.HasPrefix(a, "--shell=") || strings.HasPrefix(a, "--name="):
+			name, value, _ := strings.Cut(a, "=")
+			if err := opts.setValued(name, value); err != nil {
+				return nil, err
+			}
 		case a == "--help" || a == "-h":
-			return false, "", "", nil, flag.ErrHelp
+			return nil, flag.ErrHelp
 		case strings.HasPrefix(a, "-") && a != "-":
-			return false, "", "", nil, fmt.Errorf("unknown flag %q: %s", a, importUsage)
+			return nil, fmt.Errorf("unknown flag %q: %s", a, importUsage)
 		default:
-			rest = append(rest, a)
+			opts.rest = append(opts.rest, a)
 		}
 	}
-	return bare, description, out, rest, nil
+	switch opts.source {
+	case "auto", "completion", "man", "help", "bare":
+	default:
+		return nil, fmt.Errorf("unknown --source %q: want auto, completion, man, help or bare", opts.source)
+	}
+	switch opts.shell {
+	case "", "bash", "zsh", "fish":
+	default:
+		return nil, fmt.Errorf("unknown --shell %q: want bash, zsh or fish", opts.shell)
+	}
+	return opts, nil
 }
 
 // buildBareImport returns the passthrough declaration `import --bare`
@@ -339,6 +431,25 @@ func splitImportArgs(args []string) (bare bool, description, out string, rest []
 // description. A bare declaration without one is refused here, and again
 // by Spec.Validate on load, because nothing else constrains what a caller
 // can reach.
+// importNameAndCommand derives a generated declaration's name and
+// command from the binary as given. The name must survive
+// `adapter call <name>.<tool>`, which splits at the first dot: a
+// dotted basename (python3.12) would name an adapter no call can
+// address, so dots become dashes. The command is the binary as
+// given, except that a path-like binary is stored absolute: the
+// adapter server resolves a relative command against its own
+// working directory, not the importer's, so ./bin/tool would probe
+// (or run) whatever happens to sit at that relative path there.
+func importNameAndCommand(binary string) (name, command string) {
+	command = binary
+	if strings.ContainsRune(binary, '/') {
+		if abs, err := filepath.Abs(binary); err == nil {
+			command = abs
+		}
+	}
+	return strings.ReplaceAll(filepath.Base(binary), ".", "-"), command
+}
+
 func buildBareImport(binary, description string) (adapter.Spec, error) {
 	if strings.TrimSpace(binary) == "" {
 		return adapter.Spec{}, fmt.Errorf("usage: mcpx adapter import --bare <binary> --description \"what it is for\" [--out FILE]")
@@ -346,25 +457,16 @@ func buildBareImport(binary, description string) (adapter.Spec, error) {
 	if strings.TrimSpace(description) == "" {
 		return adapter.Spec{}, fmt.Errorf("a description is required for --bare: say what %q is for, since bare exposes its whole argv surface", binary)
 	}
-	// The name must survive `adapter call <name>.<tool>`, which
-	// splits at the first dot: a dotted basename (python3.12) would
-	// name an adapter no call can address, so dots become dashes.
-	// The command is the binary as given, except that a path-like
-	// binary is stored absolute: the adapter server resolves a
-	// relative command against its own working directory, not the
-	// importer's, so ./bin/tool would probe (or run) whatever
-	// happens to sit at that relative path there.
-	command := binary
-	if strings.ContainsRune(binary, '/') {
-		if abs, err := filepath.Abs(binary); err == nil {
-			command = abs
-		}
-	}
+	name, command := importNameAndCommand(binary)
 	spec := adapter.Spec{
-		Name:        strings.ReplaceAll(filepath.Base(binary), ".", "-"),
+		Name:        name,
 		Command:     command,
 		Bare:        true,
 		Description: description,
+		// Bare records its rung of the ladder as provenance, but no
+		// version: --bare has never run the binary, and starting to
+		// run it here would change the passthrough contract (#2647).
+		Provenance: &adapter.Provenance{Source: "bare"},
 	}
 	if err := spec.Validate(); err != nil {
 		return adapter.Spec{}, err

@@ -622,7 +622,13 @@ func handCommands() []Command {
 			Detail: "An adapter file, named by paths.adapters, declares a program and " +
 				"the tools it offers. list shows them, check says whether each " +
 				"program is installed, call runs one tool, and tools prints the " +
-				"tool definitions an MCP host would see. import --bare writes a " +
+				"tool definitions an MCP host would see. import generates a " +
+				"declaration for a program deterministically -- from its shell " +
+				"completions, man page or --help, in that order -- and records " +
+				"provenance (source, binary version) that check compares against " +
+				"the live binary, reporting version drift. import --completion " +
+				"takes a completion script as input, for programs with no " +
+				"generator or not installed here. import --bare writes a " +
 				"passthrough declaration for a program with no declared subcommands, " +
 				"with a loud warning about what passthrough costs. Every adapter is " +
 				"also a namespace: the daemon runs it as `mcpx adapter serve <name>`, " +
@@ -635,6 +641,8 @@ func handCommands() []Command {
 				"mcpx adapter check",
 				`mcpx adapter call jq.run '{"filter":"."}'`,
 				`mcpx adapter import --bare git --description "version control"`,
+				"mcpx adapter import git",
+				"mcpx adapter import --completion /usr/share/fish/vendor_completions.d/git.fish",
 				"mcpx adapter add demo --tool status -- git",
 			},
 		},
