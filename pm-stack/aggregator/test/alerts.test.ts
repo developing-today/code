@@ -101,6 +101,7 @@ describe("class + quiet merges (design §1/§2)", () => {
       "needs-drew": true,
       "quota-wall": true,
       "quota-near-wall": true,
+      "section-risk": true,
       "stack-health": true,
       "blocked-age": true,
     });
@@ -344,6 +345,7 @@ describe("validation", () => {
         "needs-drew": true,
         "quota-wall": true,
         "quota-near-wall": true,
+        "section-risk": true,
         "stack-health": true,
         "blocked-age": true,
       });

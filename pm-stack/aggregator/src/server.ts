@@ -6,7 +6,7 @@
 // its result companion) on the same pattern. Everything underneath
 // (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
 // apply actions; the dashboard only records them.
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
@@ -54,7 +54,7 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import { AA_PLAN_FACTS } from "./aa.ts";
+import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
 import {
   getNeedsDrew,
   listOpenNeedsDrew,
@@ -3507,18 +3507,31 @@ if (source.ingestSnapshots) {
 // The alert throat's engine (#3676): the ~60s delivery/escalation
 // tick (live mode only, fail-soft — see src/alerts.ts).
 startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
-  const [attention, quota, health, actions, comments, needsDrewRaised, decisionSets, stackHealthDown, stackHealthStates] =
-    await Promise.all([
-      attentionContext(),
-      source.quota().catch(() => emptyQuotaView()),
-      healthContext(false),
-      actionsStore.all().catch(() => []),
-      commentsStore.all().catch(() => []),
-      listOpenNeedsDrew(cfg.needsDrewFile).catch(() => []),
-      listOpenDecisionSets(cfg.decisionsFile).catch(() => []),
-      listStackHealthDown(cfg.stackHealthFile).catch(() => []),
-      readStackHealthStates(cfg.stackHealthFile).catch(() => ({})),
-    ]);
+  const [
+    attention,
+    quota,
+    health,
+    actions,
+    comments,
+    needsDrewRaised,
+    decisionSets,
+    stackHealthDown,
+    stackHealthStates,
+    opencodeConfigText,
+  ] = await Promise.all([
+    attentionContext(),
+    source.quota().catch(() => emptyQuotaView()),
+    healthContext(false),
+    actionsStore.all().catch(() => []),
+    commentsStore.all().catch(() => []),
+    listOpenNeedsDrew(cfg.needsDrewFile).catch(() => []),
+    listOpenDecisionSets(cfg.decisionsFile).catch(() => []),
+    listStackHealthDown(cfg.stackHealthFile).catch(() => []),
+    readStackHealthStates(cfg.stackHealthFile).catch(() => ({})),
+    // #8882: the section-risk join reads the deployed config's route
+    // leaf sets; a missing/unreadable config yields no membership.
+    readFile(cfg.opencodeConfigFile, "utf8").catch(() => ""),
+  ]);
   const drewActivity = [
     ...actions.filter((action) => action.author.kind === "drew").map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
     ...comments.filter((comment) => comment.author.kind === "drew").map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
@@ -3529,6 +3542,7 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
     health,
     drewActivity,
     soleDoorPoolIds: deriveSoleDoorPoolIds(quota),
+    sectionPools: sectionPoolIdsFromConfig(opencodeConfigText, quota.pools.map((pool) => pool.id)),
     needsDrewRaised,
     decisionSets,
     stackHealthDown,
