@@ -2,6 +2,7 @@
 package testsupport
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
@@ -94,10 +95,45 @@ func FakeMCPBinary(t *testing.T) string {
 	return binary
 }
 
+// mcpxBinaryOverrideEnv names the environment variable that points the
+// binary suite at a prebuilt mcpx binary instead of a fresh `go build`
+// (#1980, approach B): the nix `result/bin/mcpx`, or the binary inside
+// the shipped container image. That is the only way the suite exercises
+// the artifact users actually install -- the wrapper's PATH pinning,
+// the ldflags version, the generated man page and completions -- rather
+// than a plain build of the same source.
+const mcpxBinaryOverrideEnv = "MCPX_TEST_BINARY"
+
+// resolveMCPXOverride validates a mcpxBinaryOverrideEnv value. An empty
+// value means no override: the caller builds as before. A set value must
+// name an existing executable file; anything else is a hard error, so a
+// typo'd path fails the suite loudly instead of silently falling back
+// to a fresh build and testing the wrong artifact.
+func resolveMCPXOverride(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(value)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", mcpxBinaryOverrideEnv, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", mcpxBinaryOverrideEnv, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%s: %s is a directory, not a binary", mcpxBinaryOverrideEnv, abs)
+	}
+	if info.Mode()&0o111 == 0 {
+		return "", fmt.Errorf("%s: %s is not executable", mcpxBinaryOverrideEnv, abs)
+	}
+	return abs, nil
+}
+
 // MCPXBinary compiles the mcpx command once per test binary.
 //
 // Every end-to-end test needs the real binary, and building it per test meant
-// roughly a hundred `go build` invocations in one package. Go runs package
+// roughly a hundred `go build` invocations in one package. When MCPX_TEST_BINARY names a prebuilt binary, that binary is used as-is and nothing is built. Go runs package
 // test binaries concurrently, so under a full `go test ./...` that load was
 // enough to push start timeouts over the edge -- producing a different
 // spurious failure on each run, which is the signature that sends someone
@@ -105,6 +141,15 @@ func FakeMCPBinary(t *testing.T) string {
 func MCPXBinary(t *testing.T) string {
 	t.Helper()
 	mcpxOnce.Do(func() {
+		override, err := resolveMCPXOverride(os.Getenv(mcpxBinaryOverrideEnv))
+		if err != nil {
+			mcpxErr = err
+			return
+		}
+		if override != "" {
+			mcpxBin = override
+			return
+		}
 		dir, err := os.MkdirTemp("", "mcpx-bin-")
 		if err != nil {
 			mcpxErr = err
