@@ -255,6 +255,15 @@ def _active_root_state(s, now_ms, active_ids=None):
     # counts the root no matter what its stored markers say.
     if active_ids is not None and s.get("id") in active_ids:
         return True
+    # Terminal markers are decidable without a readable clock
+    # (#8853): a finished root stays finished even when its
+    # timestamps are malformed — checking timing first made one
+    # such root report the whole cap unknown and block every
+    # launch. A root with malformed timing and NO terminal marker
+    # still falls through to the fail-closed None below.
+    t = s.get("time")
+    if (isinstance(t, dict) and t.get("idle")) or s.get("outcome"):
+        return False
     timing = _session_timing(s)
     if timing is None:
         return None

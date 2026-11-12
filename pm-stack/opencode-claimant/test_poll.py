@@ -153,6 +153,27 @@ class TestWrongShapeTime(unittest.TestCase):
         self.assertIsNone(active)
         self.assertIsNone(room)
 
+    def test_terminal_marker_with_malformed_timing_is_inactive(self):
+        # #8853 (oracle: the acceptance example on issue #8853): a
+        # finished root's malformed timestamp must not make the cap
+        # unknown — the terminal marker is checked before timing.
+        s = {"id": "ses_done", "time": {"idle": 123, "updated": "bad"}}
+        self.assertIs(poll._active_root_state(s, NOW, set()), False)
+        self.assertEqual(poll.count_active_roots([s], NOW, set()), 0)
+        live, active, room = poll.summarize_cap([root(), s], set(), NOW)
+        self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
+
+    def test_outcome_with_malformed_timing_is_inactive(self):
+        s = {"id": "ses_done", "time": {"updated": "bad"},
+             "outcome": "failed"}
+        self.assertIs(poll._active_root_state(s, NOW, set()), False)
+
+    def test_active_set_still_overrides_terminal_marker(self):
+        # A resumed session in the server's active set counts active
+        # even with a stored terminal marker and malformed timing.
+        s = {"id": "ses_done", "time": {"idle": 123, "updated": "bad"}}
+        self.assertIs(poll._active_root_state(s, NOW, {"ses_done"}), True)
+
     def test_is_stuck_bound_never_raises_and_never_stuck(self):
         row = TestIsStuckBound().row()
         for bad in self.BAD_TIMES:
