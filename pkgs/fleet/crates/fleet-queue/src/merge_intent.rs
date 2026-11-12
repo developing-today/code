@@ -274,6 +274,112 @@ pub fn plan_append(existing: &[MergeIntent], req: &AppendRequest) -> MergeIntent
     }
 }
 
+/// A request to re-record one intent's base after its author has
+/// restacked the branch onto a new base (#8582; Codex P2, PR #8849,
+/// comment 4547537340). Recording a branch again is impossible — the
+/// append path INSERTs and `UNIQUE (repo, branch)` refuses the
+/// second row — and the transition verb moves only lifecycle state,
+/// so without this refresh a descendant restacked off a withdrawn
+/// branch stayed blocked by its stale recorded ancestry forever:
+/// [`abandoned_tainted_branches`] derives the taint from the
+/// recorded `base_branch` chain, and nothing could update it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestackRequest {
+    pub stack_id: String,
+    pub position: i64,
+    pub new_base_branch: String,
+    /// The restacked branch's new head, when the author recorded it:
+    /// a restack rewrites the branch, so the recorded head moves
+    /// with the base. `None` keeps the recorded head.
+    pub new_head_sha: Option<String>,
+}
+
+/// Plan the metadata refresh a restack acknowledgement applies: the
+/// intent at `req.position` in `req.stack_id`, with its recorded
+/// base (and head, when given) replaced. The rules keep the refresh
+/// from becoming a laundering path for withdrawn changes:
+///
+/// - terminal intents (`landed`, `abandoned`) are sealed — their
+///   recorded base is history, never refreshed;
+/// - the new base is `main`, or the branch of another intent in the
+///   same stack that is neither abandoned nor itself tainted by an
+///   abandoned ancestor (restacking onto a still-tainted branch
+///   would keep the withdrawn commits in the ancestry);
+/// - an intent cannot be based on its own branch.
+///
+/// Taint is derived from the recorded chain on every walk, so this
+/// one refresh unblocks the restacked intent AND its descendants:
+/// their bases name this branch, which is no longer tainted once
+/// its own base is clean.
+pub fn plan_restack(
+    intents: &[MergeIntent],
+    req: &RestackRequest,
+) -> Result<MergeIntent, String> {
+    if req.new_base_branch.trim().is_empty() {
+        return Err("merge-intent restack requires a non-empty new base_branch".to_string());
+    }
+    if let Some(sha) = &req.new_head_sha {
+        if sha.trim().is_empty() {
+            return Err(
+                "merge-intent restack requires a non-empty head_sha when one is given"
+                    .to_string(),
+            );
+        }
+    }
+    let Some(intent) = intents
+        .iter()
+        .find(|i| i.stack_id == req.stack_id && i.position == req.position)
+    else {
+        return Err(format!(
+            "merge-intent restack: no intent at stack {} position {}",
+            req.stack_id, req.position
+        ));
+    };
+    match intent.state {
+        IntentState::Landed | IntentState::Abandoned => {
+            return Err(format!(
+                "merge-intent restack: intent at stack {} position {} is {} (terminal); \
+                 its recorded base is sealed",
+                req.stack_id,
+                req.position,
+                intent.state.as_str()
+            ));
+        }
+        _ => {}
+    }
+    if req.new_base_branch == intent.branch {
+        return Err(
+            "merge-intent restack: an intent cannot be based on its own branch".to_string(),
+        );
+    }
+    if req.new_base_branch != "main" {
+        let Some(base) = intents
+            .iter()
+            .find(|i| i.stack_id == req.stack_id && i.branch == req.new_base_branch)
+        else {
+            return Err(format!(
+                "merge-intent restack: new base {:?} is not \"main\" and no intent in \
+                 stack {} records it",
+                req.new_base_branch, req.stack_id
+            ));
+        };
+        let tainted = abandoned_tainted_branches(intents, &req.stack_id);
+        if base.state == IntentState::Abandoned || tainted.contains(base.branch.as_str()) {
+            return Err(format!(
+                "merge-intent restack: new base {:?} still carries an abandoned \
+                 intent's changes; restack onto a live base or main",
+                req.new_base_branch
+            ));
+        }
+    }
+    let mut updated = intent.clone();
+    updated.base_branch = req.new_base_branch.clone();
+    if let Some(sha) = &req.new_head_sha {
+        updated.head_sha = Some(sha.clone());
+    }
+    Ok(updated)
+}
+
 /// The replay walk for one stack: the `intended` intents in recorded
 /// order, bottom first. Finished entries — `landed` (already merged
 /// by an earlier replay pass) and `abandoned` (withdrawn) — are
@@ -988,6 +1094,72 @@ mod tests {
                 .collect();
             prop_assert_eq!(plan, expected);
         }
+    }
+
+    #[test]
+    fn restack_acknowledgement_unblocks_a_restacked_descendant() {
+        // Oracle: the documented recovery for a descendant of an
+        // abandoned intent is its author restacking it off the
+        // withdrawn branch (#8582). Recording that restack
+        // (plan_restack) must unblock the descendant and everything
+        // stacked on it, because the taint is derived from the
+        // recorded base chain (Codex P2, PR #8849).
+        let stack = vec![
+            stacked("s1", 0, "queue/a", "main", IntentState::Abandoned),
+            stacked("s1", 1, "queue/b", "queue/a", IntentState::Intended),
+            stacked("s1", 2, "queue/c", "queue/b", IntentState::Intended),
+        ];
+        assert!(replay_prefix(&stack, "s1").is_empty(), "tainted stack is blocked");
+        // Restacking onto a still-tainted (or the abandoned) base
+        // is refused: the withdrawn commits would remain.
+        let onto_a = RestackRequest {
+            stack_id: "s1".to_string(),
+            position: 1,
+            new_base_branch: "queue/a".to_string(),
+            new_head_sha: None,
+        };
+        assert!(plan_restack(&stack, &onto_a).is_err());
+        // Restacking onto an unrecorded base is refused.
+        let onto_nowhere = RestackRequest {
+            new_base_branch: "release/x".to_string(),
+            ..onto_a.clone()
+        };
+        assert!(plan_restack(&stack, &onto_nowhere).is_err());
+        // The real restack: queue/b rebuilt on main, new head noted.
+        let req = RestackRequest {
+            stack_id: "s1".to_string(),
+            position: 1,
+            new_base_branch: "main".to_string(),
+            new_head_sha: Some("deadbeef".to_string()),
+        };
+        let updated = plan_restack(&stack, &req).expect("restack onto main is legal");
+        assert_eq!(updated.base_branch, "main");
+        assert_eq!(updated.head_sha.as_deref(), Some("deadbeef"));
+        assert_eq!(updated.state, IntentState::Intended);
+        let stack: Vec<MergeIntent> = stack
+            .into_iter()
+            .map(|i| if i.position == 1 { updated.clone() } else { i })
+            .collect();
+        let walk: Vec<&str> = replay_prefix(&stack, "s1")
+            .iter()
+            .map(|i| i.branch.as_str())
+            .collect();
+        assert_eq!(walk, vec!["queue/b", "queue/c"], "descendants unblock transitively");
+        // Terminal intents are sealed against a refresh.
+        let sealed = RestackRequest {
+            stack_id: "s1".to_string(),
+            position: 0,
+            new_base_branch: "main".to_string(),
+            new_head_sha: None,
+        };
+        assert!(plan_restack(&stack, &sealed).is_err(), "abandoned is terminal");
+        // An intent cannot be based on itself.
+        let self_based = RestackRequest {
+            position: 1,
+            new_base_branch: "queue/b".to_string(),
+            ..sealed
+        };
+        assert!(plan_restack(&stack, &self_based).is_err());
     }
 
     #[test]

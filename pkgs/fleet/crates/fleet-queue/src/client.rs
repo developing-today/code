@@ -3668,6 +3668,72 @@ fn cmd_stack_transition(rest: &[String]) -> i32 {
     0
 }
 
+/// Body for the broker's /stack-restack route (#8582; Codex P2,
+/// PR #8849, comment 4547537340): the acknowledgement that an
+/// intent's author restacked its branch off a withdrawn base, so
+/// the recorded base_branch can be refreshed. Fail-fast validated
+/// here for shape; the broker re-plans with the pure core's
+/// `plan_restack` against the stored rows, which is where the
+/// taint rules bind.
+pub(crate) fn stack_restack_body(
+    stack_id: &str,
+    position: i64,
+    new_base_branch: &str,
+    new_head_sha: Option<&str>,
+) -> Result<Value, String> {
+    if stack_id.trim().is_empty() {
+        return Err("stack restack requires a non-empty stack_id".to_string());
+    }
+    if new_base_branch.trim().is_empty() {
+        return Err(
+            "stack restack requires a non-empty --base (the branch's new base)".to_string(),
+        );
+    }
+    if let Some(sha) = new_head_sha {
+        if sha.trim().is_empty() {
+            return Err(
+                "stack restack requires a non-empty --head-sha when one is given".to_string(),
+            );
+        }
+    }
+    Ok(json!({
+        "stack_id": stack_id,
+        "position": position,
+        "new_base_branch": new_base_branch,
+        "head_sha": new_head_sha,
+    }))
+}
+
+fn cmd_stack_restack(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &["stack", "position", "base", "head-sha", "worker"],
+        &[],
+    );
+    reject_extra_pos("stack restack", &args, 0);
+    let stack_id = args
+        .get("stack")
+        .unwrap_or_else(|| die(2, "stack restack: --stack is required"));
+    let position = args
+        .get_i64("position")
+        .unwrap_or_else(|| die(2, "stack restack: --position is required"));
+    let base = args.get("base").unwrap_or_else(|| {
+        die(2, "stack restack: --base is required (the branch's new base after restacking)")
+    });
+    let body = match stack_restack_body(
+        &stack_id,
+        position,
+        &base,
+        args.get("head-sha").as_deref(),
+    ) {
+        Ok(b) => b,
+        Err(e) => die(2, &e),
+    };
+    let resp = unwrap_ok(call("/stack-restack", &body));
+    print_json(&require_row(&resp, "stack_restack"));
+    0
+}
+
 /// One recorded intent, parsed back from a /stack-list row for the
 /// replay executor (the broker's row shape is the storage shape).
 fn stack_intent_from_row(row: &Value) -> Option<crate::merge_intent::MergeIntent> {
@@ -3801,6 +3867,13 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
         intents.iter().map(|i| (i.position, i.pr_number)).collect();
     let mut landed: Vec<i64> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    // The verified pre-rebase tip of every branch this pass rebases
+    // (position -> sha recorded immediately before its rebase ran):
+    // the Push step pins its force-with-lease to this tip and refuses
+    // to rewrite a branch whose remote moved past it (Codex P1,
+    // PR #8849, comment 4547537332).
+    let mut pre_rebase_tips: std::collections::HashMap<i64, String> =
+        std::collections::HashMap::new();
     if let Err(e) = replay_run(&dir, "git", &replay_args(&["fetch", "origin", "main"])) {
         print_json(&json!({
             "stack_id": stack_id,
@@ -3879,47 +3952,125 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
                         &landed,
                     );
                 }
+                if let Ok(tip) = replay_run(&dir, "git", &replay_args(&["rev-parse", &branch])) {
+                    pre_rebase_tips.insert(step.position, tip);
+                }
                 if let Err(e) = replay_run(
                     &dir,
                     "git",
                     &replay_args(&["rebase", "origin/main", &branch]),
                 ) {
-                    // Only a rebase this step started is ours to
-                    // abort: the guard above proved none was in
-                    // progress before, so one present now is it.
+                    // Distinguish a rebase conflict from a rebase
+                    // that never started (Codex P2, PR #8849,
+                    // comment 4547537349): git refuses to START a
+                    // rebase — dirty checkout, missing branch,
+                    // spawn failure — without leaving any rebase
+                    // state behind, and that failure is transient:
+                    // the intent stays `replaying` and a later pass
+                    // resumes it once the cause is fixed. Only a
+                    // rebase this step actually started can be a
+                    // conflict — the guard above proved none was in
+                    // progress before, so state present now is ours
+                    // to abort before routing the conflict to the
+                    // authoring lane.
                     if rebase_in_progress(&dir) {
                         let _ = replay_run(&dir, "git", &replay_args(&["rebase", "--abort"]));
+                        return conflict_exit(
+                            step.position,
+                            format!(
+                                "rebase of {branch} onto origin/main failed at replay: {e}"
+                            ),
+                            &landed,
+                        );
                     }
-                    return conflict_exit(
-                        step.position,
-                        format!("rebase of {branch} onto origin/main failed at replay: {e}"),
+                    return transient_exit(
+                        step,
+                        format!("rebase of {branch} onto origin/main never started: {e}"),
                         &landed,
                     );
                 }
             }
             crate::merge_intent::ReplayAction::Push => {
-                // Already-published branches (Codex P2, PR #8849,
-                // comment 4546983376): a rebase earlier in this
-                // replay can rewrite commits already on the remote,
-                // and a plain push then rejects the non-fast-forward
-                // update on every retry, forever. Publish those with
-                // --force-with-lease (refuses if the remote moved
-                // since our fetch); unpublished branches keep the
-                // plain push.
-                let published = replay_run(
+                // Publishing a branch must never delete commits this
+                // pass has not accounted for (Codex P1, PR #8849,
+                // comment 4547537332). The earlier fix for
+                // already-published branches (comment 4546983376)
+                // used a bare --force-with-lease, whose expected
+                // value is the mutable remote-tracking ref: an
+                // ordinary fetch can move that ref to a tip carrying
+                // remote-only commits the local branch lacks, and
+                // the lease then passes while the push deletes them.
+                // So decide from the LIVE remote tip, read with
+                // ls-remote at push time:
+                // - no remote branch yet: plain first push;
+                // - remote tip == local tip, or an ancestor of the
+                //   local branch: a no-op or a fast-forward (the
+                //   untouched bottom branch's case) — plain push;
+                // - this pass rebased the branch and the remote tip
+                //   is still the verified pre-rebase tip: the
+                //   rewrite is this pass's alone — publish with the
+                //   lease PINNED to that tip;
+                // - anything else (the remote moved past what this
+                //   pass verified): refuse. The intent stays
+                //   `replaying`; its author reconciles the
+                //   remote-only commits and a later pass resumes.
+                let remote_tip = replay_run(
                     &dir,
                     "git",
-                    &replay_args(&["ls-remote", "--exit-code", "--heads", "origin", &branch]),
+                    &replay_args(&["ls-remote", "origin", &format!("refs/heads/{branch}")]),
                 )
-                .is_ok();
-                let push = if published {
-                    replay_run(
-                        &dir,
-                        "git",
-                        &replay_args(&["push", "--force-with-lease", "origin", &branch]),
-                    )
-                } else {
-                    replay_run(&dir, "git", &replay_args(&["push", "origin", &branch]))
+                .ok()
+                .and_then(|out| out.split_whitespace().next().map(|s| s.to_string()));
+                let push = match remote_tip {
+                    None => replay_run(&dir, "git", &replay_args(&["push", "origin", &branch])),
+                    Some(remote_sha) => {
+                        // Make the remote tip's object available for
+                        // the ancestry check below.
+                        let _ =
+                            replay_run(&dir, "git", &replay_args(&["fetch", "origin", &branch]));
+                        let local_tip =
+                            replay_run(&dir, "git", &replay_args(&["rev-parse", &branch]))
+                                .unwrap_or_default();
+                        let remote_is_ancestor = replay_run(
+                            &dir,
+                            "git",
+                            &replay_args(&[
+                                "merge-base",
+                                "--is-ancestor",
+                                &remote_sha,
+                                &branch,
+                            ]),
+                        )
+                        .is_ok();
+                        if remote_sha == local_tip || remote_is_ancestor {
+                            replay_run(&dir, "git", &replay_args(&["push", "origin", &branch]))
+                        } else if pre_rebase_tips.get(&step.position) == Some(&remote_sha) {
+                            replay_run(
+                                &dir,
+                                "git",
+                                &replay_args(&[
+                                    "push",
+                                    &format!(
+                                        "--force-with-lease=refs/heads/{branch}:{remote_sha}"
+                                    ),
+                                    "origin",
+                                    &branch,
+                                ]),
+                            )
+                        } else {
+                            return transient_exit(
+                                step,
+                                format!(
+                                    "remote branch {branch} is at {remote_sha}, which is \
+                                     neither contained in the local branch nor the verified \
+                                     pre-rebase tip of this pass; refusing to force-push \
+                                     over possible remote-only commits — the authoring \
+                                     lane reconciles the remote branch first"
+                                ),
+                                &landed,
+                            );
+                        }
+                    }
                 };
                 if let Err(e) = push {
                     return transient_exit(step, e, &landed);
@@ -4141,7 +4292,7 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
 
 fn cmd_stack(rest: &[String]) -> i32 {
     if rest.is_empty() {
-        eprint("usage: repo-queue stack <record|list|transition|replay> ...");
+        eprint("usage: repo-queue stack <record|list|transition|restack|replay> ...");
         return 2;
     }
     let sub = rest[0].as_str();
@@ -4150,6 +4301,7 @@ fn cmd_stack(rest: &[String]) -> i32 {
         "record" => cmd_stack_record(tail),
         "list" => cmd_stack_list(tail),
         "transition" => cmd_stack_transition(tail),
+        "restack" => cmd_stack_restack(tail),
         "replay" => cmd_stack_replay(tail),
         _ => {
             eprint(&format!("repo-queue: unknown stack command {sub:?}"));
@@ -4322,6 +4474,22 @@ mod tests {
         assert!(stack_transition_body("s1", 0, "conflicted", None, Some("  ")).is_err());
         assert!(stack_transition_body(" ", 0, "replaying", None, None).is_err());
         assert!(stack_transition_body("s1", 0, "replaying", None, None).is_ok());
+    }
+
+    fn stack_restack_body_carries_the_refresh_shape_8582() {
+        // Oracle: the restack acknowledgement carries exactly the
+        // fields the broker's plan_restack consumes (#8582) — stack,
+        // position, the new base, and the restacked head when given.
+        let body = stack_restack_body("outage-2026-11-11", 2, "main", Some("deadbeef"))
+            .expect("valid restack body");
+        assert_eq!(body["stack_id"], "outage-2026-11-11");
+        assert_eq!(body["position"], 2);
+        assert_eq!(body["new_base_branch"], "main");
+        assert_eq!(body["head_sha"], "deadbeef");
+        assert!(stack_restack_body("s1", 2, "main", None).is_ok());
+        assert!(stack_restack_body(" ", 2, "main", None).is_err());
+        assert!(stack_restack_body("s1", 2, " ", None).is_err());
+        assert!(stack_restack_body("s1", 2, "main", Some(" ")).is_err());
     }
 
     #[test]

@@ -6783,6 +6783,87 @@ fn verb_stack_transition(t: &TursoBackend, req: &Value) -> Value {
     ok(json!({"row": {"intent": updated, "stack": stack_state(&stack_id, &rows)}}))
 }
 
+/// Re-record one intent's base after its author restacked the
+/// branch off a withdrawn base (#8582; Codex P2, PR #8849): the
+/// storage half of the `stack restack` acknowledgement. The
+/// refresh rules are the pure core's (`plan_restack`) — this verb
+/// only reads the stack, refuses what the core refuses, and
+/// writes the new base (plus the restacked head, when the author
+/// recorded one), conditioned on the base that was validated so a
+/// concurrent change is refused rather than overwritten (the
+/// transition verb's CAS discipline).
+fn verb_stack_restack(t: &TursoBackend, req: &Value) -> Value {
+    let Some(stack_id) = req_str(req, "stack_id") else {
+        return fail(2, "stack_id is required".to_string());
+    };
+    let stack_id = stack_id.to_string();
+    let Some(position) = req_i64(req, "position") else {
+        return fail(2, "position is required".to_string());
+    };
+    let Some(new_base) = req_str(req, "new_base_branch") else {
+        return fail(2, "new_base_branch is required".to_string());
+    };
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let core: Vec<crate::merge_intent::MergeIntent> =
+        rows.iter().filter_map(merge_intent_core).collect();
+    let restack = crate::merge_intent::RestackRequest {
+        stack_id: stack_id.clone(),
+        position,
+        new_base_branch: new_base.to_string(),
+        new_head_sha: req_str(req, "head_sha").map(|s| s.to_string()),
+    };
+    let planned = match crate::merge_intent::plan_restack(&core, &restack) {
+        Ok(pl) => pl,
+        Err(e) => return fail(2, e),
+    };
+    // plan_restack found the intent; its validated base is the CAS
+    // predicate for the write below.
+    let current_base = core
+        .iter()
+        .find(|i| i.position == position)
+        .map(|i| i.base_branch.clone())
+        .unwrap_or_default();
+    let now = now_iso();
+    let upd = match t.exec(
+        "UPDATE merge_intents SET base_branch = ?, head_sha = ?, updated_at = ? \
+         WHERE stack_id = ? AND position = ? AND base_branch = ?",
+        &[
+            Arg::Text(planned.base_branch.clone()),
+            arg_str(planned.head_sha.as_deref()),
+            Arg::Text(now),
+            Arg::Text(stack_id.clone()),
+            Arg::Int(position),
+            Arg::Text(current_base),
+        ],
+    ) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    if upd.affected == 0 {
+        return fail(
+            2,
+            format!(
+                "stack_restack: intent at stack {stack_id} position {position} changed \
+                 concurrently (validated base is no longer current); re-read the stack \
+                 and retry"
+            ),
+        );
+    }
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let updated = rows
+        .iter()
+        .find(|r| r.get("position").and_then(|v| v.as_i64()) == Some(position))
+        .cloned()
+        .unwrap_or(Value::Null);
+    ok(json!({"row": {"intent": updated, "stack": stack_state(&stack_id, &rows)}}))
+}
+
 fn verb_signal_count(t: &TursoBackend, req: &Value) -> Value {
     let queue = req_str(req, "queue").unwrap_or("").to_string();
     let work = (|| -> Result<Value, TErr> {
@@ -7375,6 +7456,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/stack-record" => verb_stack_record(t, req),
         "/stack-list" => verb_stack_list(t, req),
         "/stack-transition" => verb_stack_transition(t, req),
+        "/stack-restack" => verb_stack_restack(t, req),
         "/events-append" => verb_events_append(t, req),
         "/events-seen" => verb_events_seen(t, req),
         "/events-count" => verb_events_count(t, req),
@@ -7466,6 +7548,28 @@ mod tests {
         assert!(
             seg.contains("stack_state("),
             "transition answers the derived stack state"
+        );
+    }
+
+    #[test]
+    fn stack_restack_wiring_8582() {
+        // Source oracle for the restack acknowledgement (#8582;
+        // Codex P2, PR #8849): dispatch routes the restack verb,
+        // and the verb decides the refresh in the pure core
+        // (plan_restack) — never in SQL — and answers the derived
+        // stack state.
+        let src = include_str!("turso_queue.rs");
+        let dispatch_seg = seg8217(src, "pub fn dispatch(", "\n#[cfg(test)]");
+        assert!(
+            dispatch_seg.contains("\"/stack-restack\" => verb_stack_restack(t, req)"),
+            "dispatch routes /stack-restack"
+        );
+        let seg = seg8217(src, "fn verb_stack_restack(", "\nfn verb_signal_count(");
+        assert!(seg.contains("plan_restack("), "restack planning comes from the core");
+        assert!(seg.contains("base_branch = ?"), "restack writes the refreshed base");
+        assert!(
+            seg.contains("stack_state("),
+            "restack answers the derived stack state"
         );
     }
 

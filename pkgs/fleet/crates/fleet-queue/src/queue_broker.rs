@@ -1283,7 +1283,7 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                 Err(e) => fail(e.exit, e.msg),
             }
         }
-        "/stack-record" | "/stack-list" => fail(
+        "/stack-record" | "/stack-list" | "/stack-restack" => fail(
             2,
             "merge-intent stack verbs require the turso queue backend (#8582)".to_string(),
         ),
