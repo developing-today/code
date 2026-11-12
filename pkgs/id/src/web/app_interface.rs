@@ -145,6 +145,8 @@ pub(crate) const HOST_RESERVED_ROUTES: &[&str] = &[
     "/api/identity/register",
     "/api/identity/me",
     "/api/identity/name",
+    "/api/seitan/invite",
+    "/api/seitan/admit",
     "/ws/collab/{doc_id}",
     "/ws/tags",
     "/assets/{*path}",
@@ -525,7 +527,15 @@ socket = "/ws/arena"
     fn host_page_routes_are_reserved() {
         // Packet cases 2-3: `route = "/"` and `route = "/files"` parsed
         // Ok and panicked on the duplicate host route (routes.rs:322).
-        for reserved in ["/", "/files", "/settings", "/peers", "/groups"] {
+        for reserved in [
+            "/",
+            "/files",
+            "/settings",
+            "/peers",
+            "/groups",
+            "/api/seitan/invite",
+            "/api/seitan/admit",
+        ] {
             let source = format!("[interfaces.web]\nroute = {reserved:?}\n");
             assert!(
                 matches!(
@@ -559,6 +569,14 @@ socket = "/ws/arena"
             web_interface_from_app_toml(source),
             Err(WebInterfaceError::SocketReserved(value)) if value == "/ws/tags"
         ));
+
+        for reserved in ["/api/seitan/invite", "/api/seitan/admit"] {
+            let source = format!("[interfaces.web]\nroute = \"/arena\"\nsocket = {reserved:?}\n");
+            assert!(matches!(
+                web_interface_from_app_toml(&source),
+                Err(WebInterfaceError::SocketReserved(value)) if value == reserved
+            ));
+        }
     }
 
     #[test]
