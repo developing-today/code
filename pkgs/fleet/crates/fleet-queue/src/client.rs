@@ -3463,9 +3463,10 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
     0
 }
 
-/// Merge-intent stack verbs (#8582 increment 3): the client surface
-/// for the broker's /stack-record and /stack-list routes (increment
-/// 2). Recording a finished branch names its authoring lane/worker
+/// Merge-intent stack verbs (#8582 increments 3-4): the client
+/// surface for the broker's /stack-record and /stack-list routes
+/// (increment 2), the /stack-transition route, and the replay
+/// executor (increment 4, `stack replay` below). Recording a finished branch names its authoring lane/worker
 /// pair; the broker validates that pair against the lane registry
 /// (the validation deferred from the CodeRabbit round on PR #8660,
 /// where the pair originates — here, at the client verbs).
@@ -3582,9 +3583,936 @@ fn cmd_stack_list(rest: &[String]) -> i32 {
     0
 }
 
+
+/// Body for the broker's /stack-transition route (#8582 increment
+/// 4), shaped and fail-fast validated here: the target state must
+/// parse in the pure core, and a move to `conflicted` must carry
+/// the detail the authoring lane will resolve against — a
+/// conflict recorded without context strands its owner.
+pub(crate) fn stack_transition_body(
+    stack_id: &str,
+    position: i64,
+    to_state: &str,
+    pr_number: Option<i64>,
+    conflict_detail: Option<&str>,
+) -> Result<Value, String> {
+    if stack_id.trim().is_empty() {
+        return Err("stack transition requires a non-empty stack_id".to_string());
+    }
+    let Some(to) = crate::merge_intent::IntentState::parse(to_state) else {
+        return Err(format!(
+            "stack transition: unknown target state {to_state:?}"
+        ));
+    };
+    if to == crate::merge_intent::IntentState::Conflicted {
+        match conflict_detail {
+            Some(d) if !d.trim().is_empty() => {}
+            _ => {
+                return Err(
+                    "stack transition: a move to conflicted requires --conflict-detail \
+                     naming what the authoring lane must resolve"
+                        .to_string(),
+                )
+            }
+        }
+    }
+    Ok(json!({
+        "stack_id": stack_id,
+        "position": position,
+        "to_state": to.as_str(),
+        "pr_number": pr_number,
+        "conflict_detail": conflict_detail,
+    }))
+}
+
+fn stack_transition(
+    stack_id: &str,
+    position: i64,
+    to_state: &str,
+    pr_number: Option<i64>,
+    conflict_detail: Option<&str>,
+) -> Value {
+    let body = match stack_transition_body(stack_id, position, to_state, pr_number, conflict_detail)
+    {
+        Ok(b) => b,
+        Err(e) => die(2, &e),
+    };
+    let resp = unwrap_ok(call("/stack-transition", &body));
+    require_row(&resp, "stack_transition")
+}
+
+/// The replay executor's transition helper: like
+/// [`stack_transition`] but it returns the broker's verdict instead
+/// of exiting on it (CodeRabbit finding, PR #8849, comment
+/// 4547592887). The broker's store/transport failures carry exit 4,
+/// which inside `stack replay` is reserved for a conflict routed to
+/// its authoring lane — a helper that dies with the envelope's code
+/// makes a store failure indistinguishable from a routed conflict,
+/// and prints no replay JSON at all. Replay maps an Err onto its
+/// transient path (exit 3, intent left `replaying`, resumable).
+fn stack_transition_result(
+    stack_id: &str,
+    position: i64,
+    to_state: &str,
+    pr_number: Option<i64>,
+    conflict_detail: Option<&str>,
+) -> Result<Value, String> {
+    let body = stack_transition_body(stack_id, position, to_state, pr_number, conflict_detail)?;
+    let resp = call("/stack-transition", &body);
+    if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+        let msg = resp
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("queue-broker error");
+        return Err(format!("stack transition to {to_state} failed: {msg}"));
+    }
+    Ok(resp.get("row").cloned().unwrap_or(Value::Null))
+}
+
+fn cmd_stack_transition(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &["stack", "position", "to", "pr", "conflict-detail", "worker"],
+        &[],
+    );
+    reject_extra_pos("stack transition", &args, 0);
+    let stack_id = args
+        .get("stack")
+        .unwrap_or_else(|| die(2, "stack transition: --stack is required"));
+    let position = args
+        .get_i64("position")
+        .unwrap_or_else(|| die(2, "stack transition: --position is required"));
+    let to = args
+        .get("to")
+        .unwrap_or_else(|| die(2, "stack transition: --to is required"));
+    let row = stack_transition(
+        &stack_id,
+        position,
+        &to,
+        args.get_i64("pr"),
+        args.get("conflict-detail").as_deref(),
+    );
+    print_json(&row);
+    0
+}
+
+/// Body for the broker's /stack-restack route (#8582; Codex P2,
+/// PR #8849, comment 4547537340): the acknowledgement that an
+/// intent's author restacked its branch off a withdrawn base, so
+/// the recorded base_branch can be refreshed. Fail-fast validated
+/// here for shape; the broker re-plans with the pure core's
+/// `plan_restack` against the stored rows, which is where the
+/// taint rules bind.
+pub(crate) fn stack_restack_body(
+    stack_id: &str,
+    position: i64,
+    new_base_branch: &str,
+    new_head_sha: Option<&str>,
+) -> Result<Value, String> {
+    if stack_id.trim().is_empty() {
+        return Err("stack restack requires a non-empty stack_id".to_string());
+    }
+    if new_base_branch.trim().is_empty() {
+        return Err(
+            "stack restack requires a non-empty --base (the branch's new base)".to_string(),
+        );
+    }
+    if let Some(sha) = new_head_sha {
+        if sha.trim().is_empty() {
+            return Err(
+                "stack restack requires a non-empty --head-sha when one is given".to_string(),
+            );
+        }
+    }
+    Ok(json!({
+        "stack_id": stack_id,
+        "position": position,
+        "new_base_branch": new_base_branch,
+        "head_sha": new_head_sha,
+    }))
+}
+
+fn cmd_stack_restack(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &["stack", "position", "base", "head-sha", "worker"],
+        &[],
+    );
+    reject_extra_pos("stack restack", &args, 0);
+    let stack_id = args
+        .get("stack")
+        .unwrap_or_else(|| die(2, "stack restack: --stack is required"));
+    let position = args
+        .get_i64("position")
+        .unwrap_or_else(|| die(2, "stack restack: --position is required"));
+    let base = args.get("base").unwrap_or_else(|| {
+        die(2, "stack restack: --base is required (the branch's new base after restacking)")
+    });
+    let body = match stack_restack_body(
+        &stack_id,
+        position,
+        &base,
+        args.get("head-sha").as_deref(),
+    ) {
+        Ok(b) => b,
+        Err(e) => die(2, &e),
+    };
+    let resp = unwrap_ok(call("/stack-restack", &body));
+    print_json(&require_row(&resp, "stack_restack"));
+    0
+}
+
+/// One recorded intent, parsed back from a /stack-list row for the
+/// replay executor (the broker's row shape is the storage shape).
+fn stack_intent_from_row(row: &Value) -> Option<crate::merge_intent::MergeIntent> {
+    Some(crate::merge_intent::MergeIntent {
+        stack_id: row.get("stack_id")?.as_str()?.to_string(),
+        position: row.get("position")?.as_i64()?,
+        repo: row.get("repo")?.as_str()?.to_string(),
+        branch: row.get("branch")?.as_str()?.to_string(),
+        base_branch: row.get("base_branch")?.as_str()?.to_string(),
+        head_sha: row
+            .get("head_sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        base_head_sha: row
+            .get("base_head_sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        issue_number: row.get("issue_number").and_then(|v| v.as_i64()),
+        pr_number: row.get("pr_number").and_then(|v| v.as_i64()),
+        owner_lane: row.get("owner_lane")?.as_str()?.to_string(),
+        owner_worker: row.get("owner_worker")?.as_str()?.to_string(),
+        owner_session: row
+            .get("owner_session")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        state: crate::merge_intent::IntentState::parse(row.get("state")?.as_str()?)?,
+    })
+}
+
+fn replay_snippet(s: &str) -> String {
+    s.chars().take(300).collect()
+}
+
+/// Run one external step of a replay (git/gh) in the repo
+/// checkout: Ok(trimmed stdout) on success, Err(a bounded
+/// stderr/stdout summary) otherwise.
+fn replay_run(dir: &str, program: &str, argv: &[String]) -> Result<String, String> {
+    match std::process::Command::new(program)
+        .args(argv)
+        .current_dir(dir)
+        .output()
+    {
+        Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            Err(replay_snippet(if err.is_empty() { &out } else { &err }))
+        }
+        Err(e) => Err(format!("{program}: {e}")),
+    }
+}
+
+/// Whether the checkout at `dir` already has a rebase in progress
+/// that this replay did NOT start (Codex P2, PR #8849). Replay must
+/// refuse that checkout state up front: `git rebase --abort` on a
+/// rebase somebody else is mid-way through would discard their
+/// conflict-resolution progress.
+fn rebase_in_progress(dir: &str) -> bool {
+    for kind in ["rebase-merge", "rebase-apply"] {
+        if let Ok(p) = replay_run(dir, "git", &replay_args(&["rev-parse", "--git-path", kind])) {
+            let path = std::path::Path::new(&p);
+            let full = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::path::Path::new(dir).join(path)
+            };
+            if full.exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn replay_args(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|s| s.to_string()).collect()
+}
+
+/// The replay executor (#8582 increment 4): walk one stack's
+/// recorded merge order bottom-up and land it — rebase onto the
+/// new main, push, open the PR, merge, mark landed, post the
+/// outcome note — one intent at a time, in the recorded order.
+/// The plan is the pure core's (`plan_for_walk` over the
+/// `resumable_walk`), so `--dry-run` prints exactly what a live
+/// pass would do. A rebase or merge conflict is never resolved
+/// here: the intent is marked `conflicted` with the detail, the
+/// walk stops, and the summary routes the conflict to the
+/// authoring lane recorded on the intent (exit 4). Any other step
+/// failure stops the pass with the intent left `replaying` — a
+/// later `stack replay` resumes it (exit 3).
+fn cmd_stack_replay(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["stack", "worker", "repo-dir"], &["dry-run"]);
+    reject_extra_pos("stack replay", &args, 0);
+    let stack_id = args
+        .get("stack")
+        .unwrap_or_else(|| die(2, "stack replay: --stack is required"));
+    let dir = args.get("repo-dir").unwrap_or_else(|| ".".to_string());
+    let resp = unwrap_ok(call("/stack-list", &json!({"stack_id": stack_id})));
+    let state = require_row(&resp, "stack_list");
+    let rows = state
+        .get("intents")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let intents: Vec<crate::merge_intent::MergeIntent> =
+        rows.iter().filter_map(stack_intent_from_row).collect();
+    let walk = crate::merge_intent::resumable_walk(&intents, &stack_id);
+    let plan = crate::merge_intent::plan_for_walk(&walk);
+    if args.has("dry-run") {
+        let steps: Vec<Value> = plan
+            .iter()
+            .map(|s| {
+                json!({
+                    "position": s.position,
+                    "branch": s.branch,
+                    "action": s.action.as_str(),
+                })
+            })
+            .collect();
+        print_json(&json!({"stack_id": stack_id, "dry_run": true, "plan": steps}));
+        return 0;
+    }
+    if plan.is_empty() {
+        print_json(&json!({
+            "stack_id": stack_id,
+            "landed": [],
+            "note": "no replayable prefix: the stack is empty, finished, or blocked at a conflicted head (see stack state)",
+            "stack": state,
+        }));
+        return 0;
+    }
+    let by_position: std::collections::HashMap<i64, &crate::merge_intent::MergeIntent> =
+        intents.iter().map(|i| (i.position, i)).collect();
+    let mut pr_numbers: std::collections::HashMap<i64, Option<i64>> =
+        intents.iter().map(|i| (i.position, i.pr_number)).collect();
+    let mut landed: Vec<i64> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    // The verified pre-rebase tip of every branch this pass rebases
+    // (position -> sha recorded immediately before its rebase ran):
+    // the Push step pins its force-with-lease to this tip and refuses
+    // to rewrite a branch whose remote moved past it (Codex P1,
+    // PR #8849, comment 4547537332).
+    // Persisted across attempts (Codex P2, PR #8849, comment
+    // 4548246124): a pass that rebases a published branch and then
+    // stops transiently at Push must not lose the verified tip --
+    // on the next invocation the intent can look like the walk's
+    // bottom and never rebase again, so the tip is stored in the
+    // checkout's git dir, keyed by stack, and cleared as intents
+    // land. A stale entry is only ever used as a force-with-lease
+    // pin after a live ls-remote confirms the remote is still
+    // exactly at that tip.
+    let tips_path = replay_run(&dir, "git", &replay_args(&["rev-parse", "--git-path", "fleet-replay-pre-rebase-tips.json"])).ok().map(|rel| {
+        let path = std::path::Path::new(&rel);
+        if path.is_absolute() { path.to_path_buf() } else { std::path::Path::new(&dir).join(path) }
+    });
+    let mut pre_rebase_tips: std::collections::HashMap<i64, String> =
+        std::collections::HashMap::new();
+    if let Some(path) = &tips_path {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(saved) = serde_json::from_str::<serde_json::Map<String, Value>>(&text) {
+                if let Some(entry) = saved.get(&stack_id) {
+                    if let Some(obj) = entry.as_object() {
+                        for (pos, sha) in obj {
+                            if let (Ok(pos), Some(sha)) = (pos.parse::<i64>(), sha.as_str()) {
+                                pre_rebase_tips.insert(pos, sha.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Err(e) = replay_run(&dir, "git", &replay_args(&["fetch", "origin", "main"])) {
+        print_json(&json!({
+            "stack_id": stack_id,
+            "landed": landed,
+            "stopped_at": {"step": "fetch", "error": e},
+        }));
+        return 3;
+    }
+    // Preflight (Codex P2, PR #8849): a checkout with somebody
+    // else's rebase already in progress is not replay's to abort
+    // or build on — refuse before any step runs.
+    if rebase_in_progress(&dir) {
+        print_json(&json!({
+            "stack_id": stack_id,
+            "landed": landed,
+            "stopped_at": {"step": "preflight", "error": "checkout already has a rebase in progress that this replay did not start; finish or abort it outside replay first"},
+        }));
+        return 3;
+    }
+    // Shared conflict exit: mark the intent conflicted (it is
+    // `replaying` by then — Begin precedes every other step in the
+    // plan), name the route to its authoring lane, and stop.
+    let conflict_exit = |position: i64, detail: String, landed: &[i64]| -> i32 {
+        // Exit 4 is earned only once the conflicted transition is
+        // recorded (CodeRabbit, PR #8849): if the store refuses it,
+        // the conflict is not routed yet — report a resumable stop
+        // (exit 3) with the conflict named, never a bare 4.
+        if let Err(e) =
+            stack_transition_result(&stack_id, position, "conflicted", None, Some(&detail))
+        {
+            print_json(&json!({
+                "stack_id": stack_id,
+                "landed": landed,
+                "stopped_at": {"position": position, "step": "conflict_transition", "error": e},
+                "conflict": {"position": position, "detail": detail},
+                "note": "the conflict could not be recorded; the intent is left replaying and a later pass resumes it",
+            }));
+            return 3;
+        }
+        let route = crate::merge_intent::route_replay_conflict(&intents, &stack_id, position);
+        print_json(&json!({
+            "stack_id": stack_id,
+            "landed": landed,
+            "conflict": {
+                "position": position,
+                "detail": detail,
+                "route": route.map(|r| json!({
+                    "owner_lane": r.owner_lane,
+                    "owner_worker": r.owner_worker,
+                    "owner_session": r.owner_session,
+                    "repo": r.repo,
+                    "branch": r.branch,
+                    "base_branch": r.base_branch,
+                    "issue_number": r.issue_number,
+                })),
+            },
+        }));
+        4
+    };
+    let transient_exit = |step: &crate::merge_intent::PlannedStep,
+                          e: String,
+                          landed: &[i64]|
+     -> i32 {
+        print_json(&json!({
+            "stack_id": stack_id,
+            "landed": landed,
+            "stopped_at": {
+                "position": step.position,
+                "action": step.action.as_str(),
+                "error": e,
+            },
+            "note": "the intent is left replaying; fix the cause and re-run stack replay to resume",
+        }));
+        3
+    };
+    for step in &plan {
+        let intent = by_position[&step.position];
+        let repo = intent.repo.clone();
+        let branch = intent.branch.clone();
+        match step.action {
+            crate::merge_intent::ReplayAction::Begin => {
+                if intent.state != crate::merge_intent::IntentState::Replaying {
+                    if let Err(e) = stack_transition_result(
+                        &stack_id,
+                        step.position,
+                        "replaying",
+                        None,
+                        None,
+                    ) {
+                        return transient_exit(step, e, &landed);
+                    }
+                }
+            }
+            crate::merge_intent::ReplayAction::RebaseOntoMain => {
+                if rebase_in_progress(&dir) {
+                    return transient_exit(
+                        step,
+                        "checkout already has a rebase in progress that this replay did not start; finish or abort it outside replay first".to_string(),
+                        &landed,
+                    );
+                }
+                if let Ok(tip) = replay_run(&dir, "git", &replay_args(&["rev-parse", &branch])) {
+                    pre_rebase_tips.insert(step.position, tip);
+                    if let Some(path) = &tips_path {
+                        let mut saved: serde_json::Map<String, Value> =
+                            std::fs::read_to_string(path)
+                                .ok()
+                                .and_then(|t| serde_json::from_str(&t).ok())
+                                .unwrap_or_default();
+                        let entry = saved
+                            .entry(stack_id.clone())
+                            .or_insert_with(|| json!({}));
+                        if let Some(obj) = entry.as_object_mut() {
+                            for (pos, sha) in &pre_rebase_tips {
+                                obj.insert(pos.to_string(), json!(sha));
+                            }
+                        }
+                        let _ = std::fs::write(path, serde_json::to_string(&saved).unwrap_or_default());
+                    }
+                }
+                // Merge-bearing histories are refused, never
+                // flattened (Codex P1, PR #8849, comment
+                // 4549335625): a plain rebase skips merge commits,
+                // so a merge commit carrying merge-only changes (a
+                // fixup or new file added while merging the base)
+                // would be silently discarded and the altered tree
+                // published as success. If the range replay would
+                // rebase contains any merge commit, route it to
+                // the authoring lane as a conflict: the author
+                // restacks preserving the merges (or merges main
+                // in) and replay resumes afterwards.
+                match replay_run(
+                    &dir,
+                    "git",
+                    &replay_args(&[
+                        "rev-list",
+                        "--merges",
+                        &format!("origin/main..{branch}"),
+                    ]),
+                ) {
+                    Ok(list) if !list.is_empty() => {
+                        return conflict_exit(
+                            step.position,
+                            format!(
+                                "branch {branch} contains merge commits ({}) in the range replay would rebase onto main; a plain rebase would discard their merge-only changes, so replay refuses to flatten this history -- the authoring lane restacks it preserving the merges and re-runs replay",
+                                list.lines().take(5).collect::<Vec<_>>().join(", ")
+                            ),
+                            &landed,
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        return transient_exit(
+                            step,
+                            format!(
+                                "checking {branch} for merge commits before its rebase failed: {e}"
+                            ),
+                            &landed,
+                        );
+                    }
+                }
+                if let Err(e) = replay_run(
+                    &dir,
+                    "git",
+                    &replay_args(&["rebase", "origin/main", &branch]),
+                ) {
+                    // Distinguish a rebase conflict from a rebase
+                    // that never started (Codex P2, PR #8849,
+                    // comment 4547537349): git refuses to START a
+                    // rebase — dirty checkout, missing branch,
+                    // spawn failure — without leaving any rebase
+                    // state behind, and that failure is transient:
+                    // the intent stays `replaying` and a later pass
+                    // resumes it once the cause is fixed. Only a
+                    // rebase this step actually started can be a
+                    // conflict — the guard above proved none was in
+                    // progress before, so state present now is ours
+                    // to abort before routing the conflict to the
+                    // authoring lane.
+                    if rebase_in_progress(&dir) {
+                        let _ = replay_run(&dir, "git", &replay_args(&["rebase", "--abort"]));
+                        return conflict_exit(
+                            step.position,
+                            format!(
+                                "rebase of {branch} onto origin/main failed at replay: {e}"
+                            ),
+                            &landed,
+                        );
+                    }
+                    return transient_exit(
+                        step,
+                        format!("rebase of {branch} onto origin/main never started: {e}"),
+                        &landed,
+                    );
+                }
+            }
+            crate::merge_intent::ReplayAction::Push => {
+                // Publishing a branch must never delete commits this
+                // pass has not accounted for (Codex P1, PR #8849,
+                // comment 4547537332). The earlier fix for
+                // already-published branches (comment 4546983376)
+                // used a bare --force-with-lease, whose expected
+                // value is the mutable remote-tracking ref: an
+                // ordinary fetch can move that ref to a tip carrying
+                // remote-only commits the local branch lacks, and
+                // the lease then passes while the push deletes them.
+                // So decide from the LIVE remote tip, read with
+                // ls-remote at push time:
+                // - no remote branch yet: plain first push;
+                // - remote tip == local tip, or an ancestor of the
+                //   local branch: a no-op or a fast-forward (the
+                //   untouched bottom branch's case) — plain push;
+                // - this pass rebased the branch and the remote tip
+                //   is still the verified pre-rebase tip: the
+                //   rewrite is this pass's alone — publish with the
+                //   lease PINNED to that tip;
+                // - anything else (the remote moved past what this
+                //   pass verified): refuse. The intent stays
+                //   `replaying`; its author reconciles the
+                //   remote-only commits and a later pass resumes.
+                let remote_tip = replay_run(
+                    &dir,
+                    "git",
+                    &replay_args(&["ls-remote", "origin", &format!("refs/heads/{branch}")]),
+                )
+                .ok()
+                .and_then(|out| out.split_whitespace().next().map(|s| s.to_string()));
+                let push = match remote_tip {
+                    None => replay_run(&dir, "git", &replay_args(&["push", "origin", &branch])),
+                    Some(remote_sha) => {
+                        // Make the remote tip's object available for
+                        // the ancestry check below.
+                        let _ =
+                            replay_run(&dir, "git", &replay_args(&["fetch", "origin", &branch]));
+                        let local_tip =
+                            replay_run(&dir, "git", &replay_args(&["rev-parse", &branch]))
+                                .unwrap_or_default();
+                        let remote_is_ancestor = replay_run(
+                            &dir,
+                            "git",
+                            &replay_args(&[
+                                "merge-base",
+                                "--is-ancestor",
+                                &remote_sha,
+                                &branch,
+                            ]),
+                        )
+                        .is_ok();
+                        if remote_sha == local_tip || remote_is_ancestor {
+                            replay_run(&dir, "git", &replay_args(&["push", "origin", &branch]))
+                        } else if pre_rebase_tips.get(&step.position) == Some(&remote_sha) {
+                            replay_run(
+                                &dir,
+                                "git",
+                                &replay_args(&[
+                                    "push",
+                                    &format!(
+                                        "--force-with-lease=refs/heads/{branch}:{remote_sha}"
+                                    ),
+                                    "origin",
+                                    &branch,
+                                ]),
+                            )
+                        } else {
+                            return transient_exit(
+                                step,
+                                format!(
+                                    "remote branch {branch} is at {remote_sha}, which is \
+                                     neither contained in the local branch nor the verified \
+                                     pre-rebase tip of this pass; refusing to force-push \
+                                     over possible remote-only commits — the authoring \
+                                     lane reconciles the remote branch first"
+                                ),
+                                &landed,
+                            );
+                        }
+                    }
+                };
+                if let Err(e) = push {
+                    return transient_exit(step, e, &landed);
+                }
+            }
+            crate::merge_intent::ReplayAction::OpenPr => {
+                if pr_numbers.get(&step.position).copied().flatten().is_none() {
+                    let title = format!("stack replay {} #{}: {}", stack_id, step.position, branch);
+                    let body = format!(
+                        "Replayed from merge-intent stack {stack_id} position {} (#8582). \
+                         Recorded author: lane {} / worker {}.",
+                        step.position, intent.owner_lane, intent.owner_worker
+                    );
+                    let created = replay_run(
+                        &dir,
+                        "gh",
+                        &replay_args(&[
+                            "pr", "create", "--repo", &repo, "--base", "main", "--head", &branch,
+                            "--title", &title, "--body", &body,
+                        ]),
+                    );
+                    let found = match &created {
+                        Ok(url) => url
+                            .rsplit('/')
+                            .next()
+                            .and_then(|n| n.trim().parse::<i64>().ok()),
+                        Err(_) => replay_run(
+                            &dir,
+                            "gh",
+                            &replay_args(&[
+                                "pr", "list", "--repo", &repo, "--head", &branch, "--state", "all",
+                                "--json", "number", "--limit", "1",
+                            ]),
+                        )
+                        .ok()
+                        .and_then(|out| serde_json::from_str::<Value>(&out).ok())
+                        .and_then(|v| {
+                            v.as_array()
+                                .and_then(|a| a.first())
+                                .and_then(|r| r.get("number"))
+                                .and_then(|n| n.as_i64())
+                        }),
+                    };
+                    match found {
+                        Some(n) => {
+                            pr_numbers.insert(step.position, Some(n));
+                        }
+                        None => {
+                            return transient_exit(
+                                step,
+                                created.err().unwrap_or_else(|| {
+                                    "PR number not parseable from gh output".to_string()
+                                }),
+                                &landed,
+                            );
+                        }
+                    }
+                }
+            }
+            crate::merge_intent::ReplayAction::Merge => {
+                let pr = pr_numbers
+                    .get(&step.position)
+                    .copied()
+                    .flatten()
+                    .unwrap_or_else(|| die(2, "stack replay: merge step without a PR number"));
+                let pr_s = pr.to_string();
+                // Resume reconciliation (Codex P1, PR #8849): if an
+                // earlier pass merged this PR but stopped before the
+                // landed transition recorded it, the intent is still
+                // `replaying` with no persisted number — the OpenPr
+                // fallback above recovered the number across all PR
+                // states, and an already-MERGED PR here is success,
+                // not a merge to re-attempt (re-attempting fails and
+                // would block the rest of the stack forever).
+                let pr_view = replay_run(
+                    &dir,
+                    "gh",
+                    &replay_args(&[
+                        "pr",
+                        "view",
+                        &pr_s,
+                        "--repo",
+                        &repo,
+                        "--json",
+                        "state,baseRefName",
+                    ]),
+                )
+                .ok()
+                .and_then(|out| serde_json::from_str::<Value>(&out).ok());
+                let pr_field = |name: &str| {
+                    pr_view
+                        .as_ref()
+                        .and_then(|v| v.get(name))
+                        .and_then(|f| f.as_str())
+                        .map(|f| f.to_string())
+                };
+                let pr_state = pr_field("state");
+                // Base validation (Codex P1, PR #8849, comment
+                // 4546983383): a reused PR recorded from the stack
+                // may still target its parent branch; merging it
+                // would land the changes into that branch, not
+                // main, while Land records success. Retarget to
+                // main before merging.
+                if pr_state.as_deref() != Some("MERGED")
+                    && pr_field("baseRefName").as_deref() != Some("main")
+                {
+                    if let Err(e) = replay_run(
+                        &dir,
+                        "gh",
+                        &replay_args(&["pr", "edit", &pr_s, "--repo", &repo, "--base", "main"]),
+                    ) {
+                        return transient_exit(
+                            step,
+                            format!("retargeting reused PR #{pr} to base main failed: {e}"),
+                            &landed,
+                        );
+                    }
+                }
+                // Abandon coordination (Codex P1, PR #8849,
+                // comment 4549335594): the plan executes a stack
+                // snapshot taken at pass start, but an author may
+                // withdraw this intent (replaying -> abandoned is a
+                // legal transition) while the pass works. Merging
+                // on the stale snapshot would land withdrawn
+                // changes on main; the Land transition afterwards
+                // would refuse, but only after the irreversible
+                // step. So re-read the intent's live state
+                // immediately before merging and honor a
+                // withdrawal: stop the pass without merging. Any
+                // state other than replaying, or a state that
+                // cannot be read at all, also stops the pass --
+                // never merge blind.
+                let mut abandon_stop: Option<String> = None;
+                if pr_state.as_deref() != Some("MERGED") {
+                    let resp = call("/stack-list", &json!({"stack_id": stack_id}));
+                    if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+                        abandon_stop = Some(
+                            "could not re-read the stack state before merging; refusing to merge on a stale snapshot".to_string(),
+                        );
+                    } else {
+                        let fresh_rows = resp
+                            .get("row")
+                            .and_then(|r| r.get("intents"))
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let fresh_state = fresh_rows
+                            .iter()
+                            .filter_map(stack_intent_from_row)
+                            .find(|i| i.position == step.position)
+                            .map(|i| i.state);
+                        match fresh_state {
+                            Some(crate::merge_intent::IntentState::Replaying) => {}
+                            Some(crate::merge_intent::IntentState::Abandoned) => {
+                                abandon_stop = Some(format!(
+                                    "intent at position {} was abandoned by its author during this replay pass; PR #{pr} was NOT merged",
+                                    step.position
+                                ));
+                            }
+                            Some(other) => {
+                                abandon_stop = Some(format!(
+                                    "intent at position {} is {} in the live stack state, not replaying; refusing to merge on a stale snapshot",
+                                    step.position,
+                                    other.as_str()
+                                ));
+                            }
+                            None => {
+                                abandon_stop = Some(format!(
+                                    "intent at position {} is missing from the live stack state; refusing to merge on a stale snapshot",
+                                    step.position
+                                ));
+                            }
+                        }
+                    }
+                }
+                if let Some(stop) = abandon_stop {
+                    return transient_exit(step, stop, &landed);
+                }
+                if pr_state.as_deref() == Some("MERGED") {
+                    // Fall through to Land: the merge already
+                    // happened; recording it is the remaining step.
+                } else if let Err(e) = replay_run(
+                    &dir,
+                    "gh",
+                    &replay_args(&["pr", "merge", &pr_s, "--repo", &repo, "--merge"]),
+                ) {
+                    let mergeable = replay_run(
+                        &dir,
+                        "gh",
+                        &replay_args(&[
+                            "pr",
+                            "view",
+                            &pr_s,
+                            "--repo",
+                            &repo,
+                            "--json",
+                            "mergeable",
+                        ]),
+                    )
+                    .ok()
+                    .and_then(|out| serde_json::from_str::<Value>(&out).ok())
+                    .and_then(|v| {
+                        v.get("mergeable")
+                            .and_then(|m| m.as_str())
+                            .map(|s| s.to_string())
+                    });
+                    if mergeable.as_deref() == Some("CONFLICTING") {
+                        return conflict_exit(
+                            step.position,
+                            format!(
+                                "PR #{pr} ({branch}) is conflicting against main at replay: {e}"
+                            ),
+                            &landed,
+                        );
+                    }
+                    return transient_exit(step, e, &landed);
+                }
+                // Refresh main after each merge (Codex P2, PR
+                // #8849, comment 4546983362): the next intent
+                // rebases onto origin/main, which must already
+                // contain this just-landed parent — rebasing onto
+                // the pre-replay tip replays the parent's commits
+                // and can conflict falsely. A fetch failure here is
+                // resumable: the PR is merged, the intent is still
+                // replaying, and the Merge arm's already-MERGED
+                // reconciliation lands it on the next pass.
+                if let Err(e) =
+                    replay_run(&dir, "git", &replay_args(&["fetch", "origin", "main"]))
+                {
+                    return transient_exit(
+                        step,
+                        format!(
+                            "PR #{pr} merged but refreshing origin/main before the next intent failed: {e}"
+                        ),
+                        &landed,
+                    );
+                }
+            }
+            crate::merge_intent::ReplayAction::Land => {
+                let pr = pr_numbers.get(&step.position).copied().flatten();
+                // A refused landing is a resumable stop, not a
+                // landed intent: the PR is merged, the intent stays
+                // `replaying`, and the Merge arm's already-MERGED
+                // reconciliation records the landing on the next
+                // pass (CodeRabbit, PR #8849).
+                if let Err(e) =
+                    stack_transition_result(&stack_id, step.position, "landed", pr, None)
+                {
+                    return transient_exit(step, e, &landed);
+                }
+                landed.push(step.position);
+                pre_rebase_tips.remove(&step.position);
+                if let Some(path) = &tips_path {
+                    if let Ok(text) = std::fs::read_to_string(path) {
+                        if let Ok(mut saved) = serde_json::from_str::<serde_json::Map<String, Value>>(&text) {
+                            if let Some(obj) = saved.get_mut(&stack_id).and_then(|e| e.as_object_mut()) {
+                                obj.remove(&step.position.to_string());
+                            }
+                            let _ = std::fs::write(path, serde_json::to_string(&saved).unwrap_or_default());
+                        }
+                    }
+                }
+                // The outcome note replays in the same pass: the
+                // intent's issue hears that its branch landed, in
+                // the recorded order, as soon as it lands.
+                if let (Some(issue), Some(pr)) = (intent.issue_number, pr) {
+                    let issue_s = issue.to_string();
+                    let note = format!(
+                        "stack replay: position {} of stack {stack_id} landed via PR #{pr} \
+                         (branch {branch}), in the recorded merge order (#8582).",
+                        step.position
+                    );
+                    if let Err(e) = replay_run(
+                        &dir,
+                        "gh",
+                        &replay_args(&[
+                            "issue", "comment", &issue_s, "--repo", &repo, "--body", &note,
+                        ]),
+                    ) {
+                        warnings.push(format!(
+                            "position {}: outcome note on issue #{issue} failed: {e}",
+                            step.position
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let resp = unwrap_ok(call("/stack-list", &json!({"stack_id": stack_id})));
+    let state = require_row(&resp, "stack_list");
+    print_json(&json!({
+        "stack_id": stack_id,
+        "landed": landed,
+        "warnings": warnings,
+        "stack": state,
+    }));
+    0
+}
+
 fn cmd_stack(rest: &[String]) -> i32 {
     if rest.is_empty() {
-        eprint("usage: repo-queue stack <record|list> ...");
+        eprint("usage: repo-queue stack <record|list|transition|restack|replay> ...");
         return 2;
     }
     let sub = rest[0].as_str();
@@ -3592,6 +4520,9 @@ fn cmd_stack(rest: &[String]) -> i32 {
     match sub {
         "record" => cmd_stack_record(tail),
         "list" => cmd_stack_list(tail),
+        "transition" => cmd_stack_transition(tail),
+        "restack" => cmd_stack_restack(tail),
+        "replay" => cmd_stack_replay(tail),
         _ => {
             eprint(&format!("repo-queue: unknown stack command {sub:?}"));
             2
@@ -3722,6 +4653,64 @@ mod tests {
         assert!(batch_count_flag(Some(0)).is_err());
         assert!(batch_count_flag(Some(-3)).is_err());
         assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
+    }
+
+
+    #[test]
+    fn stack_transition_body_carries_the_transition_shape_8582() {
+        // #8582 increment 4 oracle: the client transition body is
+        // exactly the broker's transition shape (stack, position,
+        // target state in the core's spelling, optional landing PR
+        // number and conflict detail).
+        let body = stack_transition_body("outage-2026-11-11", 2, "landed", Some(8810), None)
+            .expect("a landing transition is well-formed");
+        assert_eq!(body["stack_id"], json!("outage-2026-11-11"));
+        assert_eq!(body["position"], json!(2));
+        assert_eq!(body["to_state"], json!("landed"));
+        assert_eq!(body["pr_number"], json!(8810));
+        assert_eq!(body["conflict_detail"], Value::Null);
+        let body = stack_transition_body(
+            "outage-2026-11-11",
+            1,
+            "conflicted",
+            None,
+            Some("rebase onto main conflicts in client.rs"),
+        )
+        .expect("a conflicted transition with detail is well-formed");
+        assert_eq!(body["to_state"], json!("conflicted"));
+        assert_eq!(
+            body["conflict_detail"],
+            json!("rebase onto main conflicts in client.rs")
+        );
+    }
+
+    #[test]
+    fn stack_transition_body_rejects_unknown_state_and_bare_conflict_8582() {
+        // A state the core cannot parse, and a conflict recorded
+        // without the detail its authoring lane needs, are usage
+        // errors here — they never reach the broker.
+        assert!(stack_transition_body("s1", 0, "bogus", None, None).is_err());
+        assert!(stack_transition_body("s1", 0, "conflicted", None, None).is_err());
+        assert!(stack_transition_body("s1", 0, "conflicted", None, Some("  ")).is_err());
+        assert!(stack_transition_body(" ", 0, "replaying", None, None).is_err());
+        assert!(stack_transition_body("s1", 0, "replaying", None, None).is_ok());
+    }
+
+    #[test]
+    fn stack_restack_body_carries_the_refresh_shape_8582() {
+        // Oracle: the restack acknowledgement carries exactly the
+        // fields the broker's plan_restack consumes (#8582) — stack,
+        // position, the new base, and the restacked head when given.
+        let body = stack_restack_body("outage-2026-11-11", 2, "main", Some("deadbeef"))
+            .expect("valid restack body");
+        assert_eq!(body["stack_id"], "outage-2026-11-11");
+        assert_eq!(body["position"], 2);
+        assert_eq!(body["new_base_branch"], "main");
+        assert_eq!(body["head_sha"], "deadbeef");
+        assert!(stack_restack_body("s1", 2, "main", None).is_ok());
+        assert!(stack_restack_body(" ", 2, "main", None).is_err());
+        assert!(stack_restack_body("s1", 2, " ", None).is_err());
+        assert!(stack_restack_body("s1", 2, "main", Some(" ")).is_err());
     }
 
     #[test]

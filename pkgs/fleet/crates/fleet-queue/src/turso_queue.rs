@@ -821,6 +821,28 @@ impl TursoBackend {
                 &[],
             )?;
         }
+        // #8582: the merge_intents base-tip linkage column
+        // (base_head_sha -- the recorded head of an intent's base
+        // at stack/restack time) lands the same additive way for
+        // merge_intents tables created before it. No backfill:
+        // existing rows read NULL (no linkage recorded), which the
+        // taint derivation reads as unverified only inside stacks
+        // that hold an abandoned intent.
+        let micols = self.query_objs(
+            "SELECT name FROM pragma_table_info('merge_intents')",
+            &[],
+            &[],
+        )?;
+        if !micols.is_empty()
+            && !micols
+                .iter()
+                .any(|c| c.get("name").and_then(|v| v.as_str()) == Some("base_head_sha"))
+        {
+            self.exec(
+                "ALTER TABLE merge_intents ADD COLUMN base_head_sha TEXT",
+                &[],
+            )?;
+        }
         // #8210: the ledger's platform-limitation columns (a
         // task may be limited to one platform family, but only
         // with a good reason recorded beside it) land the same
@@ -6402,7 +6424,8 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
 // Merge-intent stack storage (#8582 increment 2) — broker endpoints
 // over the merge_intents table (DDL of record:
 // crate::merge_intent::MERGE_INTENT_DDL, applied via SCHEMA above).
-// Record/list only: the replay executor is a later increment. The
+// Record/list came first; the transition verb (increment 4) moves
+// intents through the core's lifecycle for the replay executor. The
 // append rules themselves (position, base tip) are the pure core's
 // (plan_append), so storage cannot drift from replay semantics, and
 // a stack's full state — branches, order, owners — reads back from
@@ -6410,7 +6433,7 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
 // ---------------------------------------------------------------------------
 
 const MERGE_INTENT_COLS: &str = "id, stack_id, position, repo, branch, base_branch, \
-    head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
+    head_sha, base_head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
     state, conflict_detail, created_at, updated_at";
 
 fn merge_intent_core(row: &Value) -> Option<crate::merge_intent::MergeIntent> {
@@ -6422,6 +6445,10 @@ fn merge_intent_core(row: &Value) -> Option<crate::merge_intent::MergeIntent> {
         base_branch: row.get("base_branch")?.as_str()?.to_string(),
         head_sha: row
             .get("head_sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        base_head_sha: row
+            .get("base_head_sha")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
         issue_number: row.get("issue_number").and_then(|v| v.as_i64()),
@@ -6563,8 +6590,8 @@ fn verb_stack_record(t: &TursoBackend, req: &Value) -> Value {
             let now = now_iso();
             let res = t.exec(
                 "INSERT INTO merge_intents (stack_id, position, repo, branch, base_branch, \
-                 head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
-                 state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 head_sha, base_head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
+                 state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 &[
                     Arg::Text(planned.stack_id.clone()),
                     Arg::Int(planned.position),
@@ -6572,6 +6599,7 @@ fn verb_stack_record(t: &TursoBackend, req: &Value) -> Value {
                     Arg::Text(planned.branch.clone()),
                     Arg::Text(planned.base_branch.clone()),
                     arg_str(planned.head_sha.as_deref()),
+                    arg_str(planned.base_head_sha.as_deref()),
                     planned.issue_number.map(Arg::Int).unwrap_or(Arg::Null),
                     planned.pr_number.map(Arg::Int).unwrap_or(Arg::Null),
                     Arg::Text(planned.owner_lane.clone()),
@@ -6624,6 +6652,219 @@ fn verb_stack_list(t: &TursoBackend, req: &Value) -> Value {
         Ok(v) => ok(json!({"row": v})),
         Err(e) => terr(e),
     }
+}
+
+
+/// Move one recorded intent through its lifecycle (#8582
+/// increment 4): the storage half of the replay executor. The
+/// transition rules are the pure core's (`IntentState::
+/// can_transition`) — this verb only reads the current row,
+/// refuses an illegal move, and writes the new state (plus the PR
+/// number a landing records, and the conflict detail a conflict
+/// routing carries). It performs no GitHub work: the client
+/// executor drives git/gh and reports each state change here, so
+/// the stack state stays fully visible from the database alone
+/// even mid-replay.
+fn verb_stack_transition(t: &TursoBackend, req: &Value) -> Value {
+    let Some(stack_id) = req_str(req, "stack_id") else {
+        return fail(2, "stack_id is required".to_string());
+    };
+    let stack_id = stack_id.to_string();
+    let Some(position) = req_i64(req, "position") else {
+        return fail(2, "position is required".to_string());
+    };
+    let Some(to) = req_str(req, "to_state").and_then(crate::merge_intent::IntentState::parse)
+    else {
+        return fail(
+            2,
+            format!(
+                "stack_transition: unknown to_state {:?}",
+                req_str(req, "to_state")
+            ),
+        );
+    };
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let Some(row) = rows
+        .iter()
+        .find(|r| r.get("position").and_then(|v| v.as_i64()) == Some(position))
+    else {
+        return fail(
+            2,
+            format!("stack_transition: no intent at stack {stack_id} position {position}"),
+        );
+    };
+    let Some(current) = merge_intent_core(row) else {
+        return fail(
+            2,
+            "stack_transition: stored intent row is unparseable".to_string(),
+        );
+    };
+    if !current.state.can_transition(to) {
+        return fail(
+            2,
+            format!(
+                "stack_transition: illegal move {} -> {} for stack {} position {}",
+                current.state.as_str(),
+                to.as_str(),
+                stack_id,
+                position
+            ),
+        );
+    }
+    // A landing records the PR that landed it; an explicit number
+    // wins, otherwise the recorded one (if any) is kept.
+    let pr_number = req_i64(req, "pr_number").or(current.pr_number);
+    // The conflict detail lives only while the intent is
+    // conflicted: a fresh detail replaces it, a move out of
+    // conflicted clears it.
+    let conflict_detail: Option<String> = if to == crate::merge_intent::IntentState::Conflicted {
+        req_str(req, "conflict_detail")
+            .map(|s| s.to_string())
+            .or_else(|| {
+                row.get("conflict_detail")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+    } else {
+        None
+    };
+    let now = now_iso();
+    // Condition the write on the state that was validated above
+    // (Codex P2, PR #8849): the broker serves connections
+    // concurrently, so a second transition can land between this
+    // verb's read and its UPDATE — an unconditional write would let
+    // it overwrite a terminal state the core has already sealed.
+    // With the validated state in the predicate, a lost race
+    // affects 0 rows and is refused as a concurrent change.
+    let upd = match t.exec(
+        "UPDATE merge_intents SET state = ?, pr_number = ?, conflict_detail = ?, \
+         updated_at = ? WHERE stack_id = ? AND position = ? AND state = ?",
+        &[
+            Arg::Text(to.as_str().to_string()),
+            pr_number.map(Arg::Int).unwrap_or(Arg::Null),
+            arg_str(conflict_detail.as_deref()),
+            Arg::Text(now),
+            Arg::Text(stack_id.clone()),
+            Arg::Int(position),
+            Arg::Text(current.state.as_str().to_string()),
+        ],
+    ) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    if upd.affected == 0 {
+        return fail(
+            2,
+            format!(
+                "stack_transition: intent at stack {stack_id} position {position} changed \
+                 concurrently (validated state {} is no longer current); re-read the stack \
+                 and retry",
+                current.state.as_str()
+            ),
+        );
+    }
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let updated = rows
+        .iter()
+        .find(|r| r.get("position").and_then(|v| v.as_i64()) == Some(position))
+        .cloned()
+        .unwrap_or(Value::Null);
+    ok(json!({"row": {"intent": updated, "stack": stack_state(&stack_id, &rows)}}))
+}
+
+/// Re-record one intent's base after its author restacked the
+/// branch off a withdrawn base (#8582; Codex P2, PR #8849): the
+/// storage half of the `stack restack` acknowledgement. The
+/// refresh rules are the pure core's (`plan_restack`) — this verb
+/// only reads the stack, refuses what the core refuses, and
+/// writes the new base (plus the restacked head, when the author
+/// recorded one), conditioned on the base that was validated so a
+/// concurrent change is refused rather than overwritten (the
+/// transition verb's CAS discipline).
+fn verb_stack_restack(t: &TursoBackend, req: &Value) -> Value {
+    let Some(stack_id) = req_str(req, "stack_id") else {
+        return fail(2, "stack_id is required".to_string());
+    };
+    let stack_id = stack_id.to_string();
+    let Some(position) = req_i64(req, "position") else {
+        return fail(2, "position is required".to_string());
+    };
+    let Some(new_base) = req_str(req, "new_base_branch") else {
+        return fail(2, "new_base_branch is required".to_string());
+    };
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let core: Vec<crate::merge_intent::MergeIntent> =
+        rows.iter().filter_map(merge_intent_core).collect();
+    let restack = crate::merge_intent::RestackRequest {
+        stack_id: stack_id.clone(),
+        position,
+        new_base_branch: new_base.to_string(),
+        new_head_sha: req_str(req, "head_sha").map(|s| s.to_string()),
+    };
+    let planned = match crate::merge_intent::plan_restack(&core, &restack) {
+        Ok(pl) => pl,
+        Err(e) => return fail(2, e),
+    };
+    // plan_restack found the intent; its validated base AND its
+    // validated lifecycle state are the CAS predicates for the
+    // write below. The state predicate matters (Codex P2, PR
+    // #8849, comment 4549335606): transitions do not change
+    // base_branch, so a base-only predicate would let a restack
+    // acknowledgement rewrite the recorded base/head of an intent
+    // that a concurrent transition just landed or abandoned --
+    // terminal records are sealed.
+    let (current_base, current_state) = core
+        .iter()
+        .find(|i| i.position == position)
+        .map(|i| (i.base_branch.clone(), i.state.as_str().to_string()))
+        .unwrap_or_default();
+    let now = now_iso();
+    let upd = match t.exec(
+        "UPDATE merge_intents SET base_branch = ?, head_sha = ?, base_head_sha = ?, updated_at = ? \
+         WHERE stack_id = ? AND position = ? AND base_branch = ? AND state = ?",
+        &[
+            Arg::Text(planned.base_branch.clone()),
+            arg_str(planned.head_sha.as_deref()),
+            arg_str(planned.base_head_sha.as_deref()),
+            Arg::Text(now),
+            Arg::Text(stack_id.clone()),
+            Arg::Int(position),
+            Arg::Text(current_base),
+            Arg::Text(current_state),
+        ],
+    ) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    if upd.affected == 0 {
+        return fail(
+            2,
+            format!(
+                "stack_restack: intent at stack {stack_id} position {position} changed \
+                 concurrently (validated base or lifecycle state is no longer current); \
+                 re-read the stack and retry"
+            ),
+        );
+    }
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let updated = rows
+        .iter()
+        .find(|r| r.get("position").and_then(|v| v.as_i64()) == Some(position))
+        .cloned()
+        .unwrap_or(Value::Null);
+    ok(json!({"row": {"intent": updated, "stack": stack_state(&stack_id, &rows)}}))
 }
 
 fn verb_signal_count(t: &TursoBackend, req: &Value) -> Value {
@@ -7217,6 +7458,8 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/signal-count" => verb_signal_count(t, req),
         "/stack-record" => verb_stack_record(t, req),
         "/stack-list" => verb_stack_list(t, req),
+        "/stack-transition" => verb_stack_transition(t, req),
+        "/stack-restack" => verb_stack_restack(t, req),
         "/events-append" => verb_events_append(t, req),
         "/events-seen" => verb_events_seen(t, req),
         "/events-count" => verb_events_count(t, req),
@@ -7278,6 +7521,61 @@ mod tests {
         assert!(
             list.contains("stack_state("),
             "list answers the derived stack state"
+        );
+    }
+
+
+    #[test]
+    fn stack_transition_wiring_8582() {
+        // Source oracle for increment 4 of #8582: dispatch routes
+        // the transition verb, and the verb decides legality in the
+        // pure core's transition table (never in SQL), recording
+        // the landing PR number and the conflict detail.
+        let src = include_str!("turso_queue.rs");
+        let dispatch_seg = seg8217(src, "pub fn dispatch(", "\n#[cfg(test)]");
+        assert!(
+            dispatch_seg.contains("\"/stack-transition\" => verb_stack_transition(t, req)"),
+            "dispatch routes /stack-transition"
+        );
+        let seg = seg8217(src, "fn verb_stack_transition(", "\nfn verb_signal_count(");
+        assert!(
+            seg.contains("can_transition("),
+            "transition legality comes from the core table"
+        );
+        assert!(
+            seg.contains("illegal move"),
+            "an illegal move is a refusal, not a write"
+        );
+        assert!(seg.contains("pr_number"), "a landing records its PR number");
+        assert!(
+            seg.contains("conflict_detail"),
+            "a conflict records its routing detail"
+        );
+        assert!(
+            seg.contains("stack_state("),
+            "transition answers the derived stack state"
+        );
+    }
+
+    #[test]
+    fn stack_restack_wiring_8582() {
+        // Source oracle for the restack acknowledgement (#8582;
+        // Codex P2, PR #8849): dispatch routes the restack verb,
+        // and the verb decides the refresh in the pure core
+        // (plan_restack) — never in SQL — and answers the derived
+        // stack state.
+        let src = include_str!("turso_queue.rs");
+        let dispatch_seg = seg8217(src, "pub fn dispatch(", "\n#[cfg(test)]");
+        assert!(
+            dispatch_seg.contains("\"/stack-restack\" => verb_stack_restack(t, req)"),
+            "dispatch routes /stack-restack"
+        );
+        let seg = seg8217(src, "fn verb_stack_restack(", "\nfn verb_signal_count(");
+        assert!(seg.contains("plan_restack("), "restack planning comes from the core");
+        assert!(seg.contains("base_branch = ?"), "restack writes the refreshed base");
+        assert!(
+            seg.contains("stack_state("),
+            "restack answers the derived stack state"
         );
     }
 
