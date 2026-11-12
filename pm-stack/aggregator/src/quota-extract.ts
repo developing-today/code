@@ -42,6 +42,7 @@ function monthDayTime(mon: string, day: string, hhmm: string, now: Date): string
   if (month === undefined) return null;
 
   const [h, m] = hhmm.split(":").map(Number);
+  if (!Number.isInteger(h) || h < 0 || h > 23 || !Number.isInteger(m) || m < 0 || m > 59) return null;
   const dayNumber = Number(day);
   const dateInYear = (year: number) => new Date(Date.UTC(year, month, dayNumber, h, m));
   const isRequestedDate = (date: Date) => date.getUTCMonth() === month && date.getUTCDate() === dayNumber;
