@@ -887,6 +887,47 @@ test("unknown route and malformed bodies are rejected", async () => {
   }
 });
 
+test("chunk boundary inside a multibyte character arrives intact (#4335)", async () => {
+  const p = await startProxy();
+  try {
+    const text = "café ☃ fin";
+    const payload = JSON.stringify({ model: "opencode-route/t-ordered", messages: [{ role: "user", content: text }] });
+    const bytes = Buffer.from(payload, "utf8");
+    // Split inside the é bytes (0xC3 0xA9) and inside the ☃ bytes
+    // (0xE2 0x98 0x83): per-chunk string coercion would emit U+FFFD here.
+    const eAcute = bytes.indexOf(Buffer.from("é", "utf8"));
+    const snowman = bytes.indexOf(Buffer.from("☃", "utf8"));
+    assert.ok(eAcute > 0 && snowman > eAcute);
+    const parts = [bytes.subarray(0, eAcute + 1), bytes.subarray(eAcute + 1, snowman + 2), bytes.subarray(snowman + 2)];
+    const res = await fetch(`${p.base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new ReadableStream({
+        start(c) {
+          for (const part of parts) c.enqueue(part);
+          c.close();
+        },
+      }),
+      duplex: "half",
+    });
+    assert.equal(res.status, 200);
+    assert.equal(p.leafA.last.body.messages[0].content, text);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("oversize body is rejected with 413 (#4335)", async () => {
+  const p = await startProxy();
+  try {
+    const big = "x".repeat(51 * 1024 * 1024);
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: [{ role: "user", content: big }] });
+    assert.equal(res.status, 413);
+  } finally {
+    await p.cleanup();
+  }
+});
+
 // Window gates (#3225): the fixture "peak" window is Mon-Fri
 // 01:00-04:00 UTC. 2026-11-04 is a Wednesday.
 const IN_PEAK = Date.UTC(2026, 10, 4, 2, 30);

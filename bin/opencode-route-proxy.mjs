@@ -59,6 +59,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
+import { createRequestBodyCollector } from "./request-body.mjs";
 
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
 const HOST = process.env.OPENCODE_ROUTE_PROXY_HOST || "127.0.0.1";
@@ -1616,15 +1617,29 @@ const server = createServer(async (req, res) => {
       });
     }
     if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
-      let raw = "";
-      for await (const part of req) raw += part;
-      let body = {};
-      try {
-        body = JSON.parse(raw || "{}");
-      } catch {
-        return sendError(res, 400, "invalid JSON body");
-      }
-      return await handleChatCompletions(req, res, body);
+      // Collect the body as bytes and decode UTF-8 once, after the full
+      // body arrives (#4335): per-chunk string coercion corrupts multibyte
+      // characters split across TCP chunks. Cap 50 MB like the sibling
+      // proxies (bin/request-body.mjs collector) with a 413 past the cap.
+      const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
+      req.on("data", (chunk) => {
+        if (bodyCollector.tooLarge) return;
+        if (!bodyCollector.push(chunk)) {
+          sendError(res, 413, "request body too large");
+          req.destroy();
+        }
+      });
+      req.on("end", async () => {
+        if (bodyCollector.tooLarge) return;
+        let body = {};
+        try {
+          body = JSON.parse(bodyCollector.text() || "{}");
+        } catch {
+          return sendError(res, 400, "invalid JSON body");
+        }
+        await handleChatCompletions(req, res, body);
+      });
+      return;
     }
     return sendError(res, 404, `no route for ${req.method} ${url.pathname}`);
   } catch (err) {
