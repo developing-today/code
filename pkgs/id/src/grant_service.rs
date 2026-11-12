@@ -331,7 +331,16 @@ impl GrantStore {
     /// snapshotted store: first-wins rows, key states, family
     /// membership (including its freeze), and grant states all
     /// carry over.
-    pub fn restore(snapshot: StoreSnapshot) -> Self {
+    pub fn restore(snapshot: StoreSnapshot) -> Result<Self, RestoreError> {
+        let mut seen = std::collections::HashSet::with_capacity(snapshot.grants.len());
+        for grant in &snapshot.grants {
+            if !seen.insert(grant.grant_id.as_str()) {
+                return Err(RestoreError::DuplicateGrantId {
+                    grant_id: grant.grant_id.clone(),
+                });
+            }
+        }
+
         let registry = KeyRegistry::restore(snapshot.families, snapshot.registry_rows);
         let order: Vec<String> = snapshot.grants.iter().map(|g| g.grant_id.clone()).collect();
         let grants = snapshot
@@ -339,12 +348,19 @@ impl GrantStore {
             .into_iter()
             .map(|g| (g.grant_id.clone(), g))
             .collect();
-        Self {
+        Ok(Self {
             registry,
             grants,
             order,
-        }
+        })
     }
+}
+
+/// Why a persisted grant store snapshot could not be restored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreError {
+    /// The snapshot contains multiple records with the same grant ID.
+    DuplicateGrantId { grant_id: String },
 }
 
 /// Why an intent write did not happen.
@@ -1352,7 +1368,14 @@ mod tests {
         // round-trip, not a clone.
         let bytes = serde_json::to_vec(&svc.store().snapshot()).unwrap();
         let snapshot: StoreSnapshot = serde_json::from_slice(&bytes).unwrap();
-        let restored = GrantStore::restore(snapshot);
+        let mut duplicate_snapshot = snapshot.clone();
+        duplicate_snapshot.grants.push(snapshot.grants[0].clone());
+        assert!(matches!(
+            GrantStore::restore(duplicate_snapshot),
+            Err(RestoreError::DuplicateGrantId { grant_id }) if grant_id == "grant-1"
+        ));
+
+        let restored = GrantStore::restore(snapshot).unwrap();
         assert_eq!(restored.grant_count(), 1);
         assert_eq!(restored.registry().len(), 1);
         assert_eq!(
