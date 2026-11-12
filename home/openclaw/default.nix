@@ -102,12 +102,20 @@ in
     ".openclaw/acpx/bin/codex-acp.mjs".source =
       "${acpxPlugin}/node_modules/@agentclientprotocol/codex-acp/dist/index.js";
     ".openclaw/acpx/managed-codex-acp-wrapper.mjs".source = ./acpx/codex-acp-wrapper.mjs;
+    ".openclaw/acpx/managed-muse-agent-acp-wrapper.mjs".source =
+      ./acpx/muse-agent-acp-wrapper.mjs;
   };
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
       opencode.command = "/home/user/code/bin/opencode-acp-adapter.mjs --server http://127.0.0.1:13420";
       codex.command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
       agy.command = "/run/current-system/sw/bin/agy_acp_server";
+      # muse (#2012, Drew GO 2026-10-28): the ACP<->MSP adapter in this
+      # repo (home/openclaw/acpx/muse-agent-acp-wrapper.mjs) driving the
+      # laptop Muse CLI's `muse serve`. Not a model route: the agent
+      # loop is the muse program itself, auth is its own OAuth login,
+      # and the adapter deletes META_API_KEY from the child env.
+      muse.command = "/home/user/.openclaw/acpx/managed-muse-agent-acp-wrapper.mjs";
     };
   };
 
@@ -608,6 +616,7 @@ in
           "opencode"
           "codex"
           "agy"
+          "muse"
         ];
         dispatch.enabled = true;
       };
@@ -647,6 +656,9 @@ in
               };
               agents.codex = {
                 command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
+              };
+              agents.muse = {
+                command = "/home/user/.openclaw/acpx/managed-muse-agent-acp-wrapper.mjs";
               };
               agents.agy = {
                 command = "/run/current-system/sw/bin/agy_acp_server";
