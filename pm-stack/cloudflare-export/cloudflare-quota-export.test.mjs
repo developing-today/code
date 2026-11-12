@@ -17,6 +17,7 @@ import {
   cycleStartUtc,
   API_REQUEST_TIMEOUT_MS,
   ExportError,
+  parseArgs,
   failureDocument,
   foldKv,
   listR2Buckets,
@@ -764,4 +765,56 @@ test("run: 401/403 on buckets still throws the token-scope contract (#2574)", as
     assert.equal(e.exitCode, 3);
     return true;
   });
+});
+
+// Strict argv validation (#3469): a value flag followed by another flag
+// (or by nothing) is a usage error naming the flag, raised before any
+// directory creation or API call; no token is consumed twice.
+function expectUsage(argv, flag) {
+  assert.throws(
+    () => parseArgs(argv),
+    (error) => {
+      assert.ok(error instanceof ExportError, `expected ExportError, got ${error}`);
+      assert.equal(error.status, "usage");
+      assert.equal(error.exitCode, 2);
+      assert.match(error.message, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      return true;
+    },
+    `parseArgs(${JSON.stringify(argv)}) should be a usage error naming ${flag}`,
+  );
+}
+
+test("parseArgs: the control invocation parses, account-id optional (#3469)", () => {
+  assert.deepEqual(parseArgs(["--out-dir", "out", "--account-id", "probeacct"]), {
+    outDir: "out",
+    accountId: "probeacct",
+  });
+  const def = parseArgs([]);
+  assert.match(def.outDir, /cloudflare-export$/);
+  assert.equal(def.accountId, undefined);
+});
+
+test("parseArgs: flag-as-value is a usage error naming the flag (#3469)", () => {
+  // The exact probe from the issue: --account-id must not double as the
+  // out-dir value and the account flag.
+  expectUsage(["--out-dir", "--account-id", "probeacct"], "--out-dir");
+  expectUsage(["--account-id", "--out-dir", "out"], "--account-id");
+});
+
+test("parseArgs: a trailing flag with no value is a usage error, not a silent fallback (#3469)", () => {
+  expectUsage(["--out-dir"], "--out-dir");
+  expectUsage(["--out-dir", "out", "--account-id"], "--account-id");
+});
+
+test("parseArgs: no token is consumed twice (#3469)", () => {
+  // Old opt() returned "--account-id" as the out-dir AND "probeacct" as
+  // the account. Now the single-pass parse refuses outright instead of
+  // splitting the token stream two ways.
+  expectUsage(["--out-dir", "--account-id", "probeacct"], "--out-dir");
+});
+
+test("parseArgs: unknown flags and bare positionals are usage errors (#3469)", () => {
+  expectUsage(["--bogus", "x"], "--bogus");
+  expectUsage(["--out-dir=out"], "--out-dir=out");
+  expectUsage(["out"], "out");
 });

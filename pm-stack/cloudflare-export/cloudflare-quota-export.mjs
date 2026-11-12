@@ -666,17 +666,62 @@ async function writeOutputs(outDir, doc) {
   await appendFile(join(outDir, "history.jsonl"), `${JSON.stringify(doc)}\n`, "utf8");
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  const opt = (name, fallback) => {
-    const i = args.indexOf(name);
-    return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
+/** Strict single-pass argv parsing (#3469). Every value-taking flag must be
+ * followed by a value token that is not itself a flag: a flag token (or
+ * nothing) where a value belongs is a usage error naming the flag, raised
+ * before any directory is created or any API call is made. The parse is
+ * single-pass — each value token is consumed once — so a flag token can
+ * never double as both a value and a flag. Unknown flags and bare
+ * positionals are usage errors too: silently ignoring them is what used
+ * to redirect output into a directory named after a flag. Throws
+ * ExportError("usage", 2); main() turns it into stderr + exit 2. */
+const VALUE_FLAGS = new Set(["--out-dir", "--account-id"]);
+
+function usageError(message) {
+  throw new ExportError("usage", 2, message);
+}
+
+export function parseArgs(argv) {
+  const values = {};
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    if (!VALUE_FLAGS.has(token)) {
+      if (token.startsWith("--")) usageError(`unknown flag ${JSON.stringify(token)}`);
+      else usageError(`unexpected argument ${JSON.stringify(token)} (this exporter takes only --flag value pairs)`);
+    }
+    const value = argv[i + 1];
+    if (typeof value !== "string" || value === "" || value.startsWith("--")) {
+      usageError(
+        `${token} requires a value that is not another flag (got ${value === undefined ? "nothing" : JSON.stringify(value)})`,
+      );
+    }
+    values[token] = value;
+    i++; // consume the value: no token is read twice
+  }
+  return {
+    outDir: values["--out-dir"] ?? join(homedir(), "atlas", "cloudflare-export"),
+    accountId: values["--account-id"],
   };
-  const outDir = opt("--out-dir", join(homedir(), "atlas", "cloudflare-export"));
+}
+
+async function main() {
+
+async function main() {
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    if (error instanceof ExportError && error.status === "usage") {
+      console.error(`cloudflare-quota-export: ${error.message}; refusing to run, no output written`);
+      process.exit(2);
+    }
+    throw error;
+  }
+  const outDir = options.outDir;
   try {
     const doc = await run({
       token: process.env.CLOUDFLARE_API_TOKEN,
-      accountId: opt("--account-id", undefined),
+      accountId: options.accountId,
     });
     await writeOutputs(outDir, doc);
     console.log(JSON.stringify({ status: doc.status, measuredAt: doc.measuredAt, metrics: doc.metrics.length, outDir }));

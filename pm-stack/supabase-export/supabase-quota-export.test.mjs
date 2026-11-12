@@ -9,6 +9,7 @@ import {
   billedFromAddons,
   buildMetrics,
   failureDocument,
+  parseArgs,
   parseDbSize,
   parseRequestCount,
   resolveProjectRef,
@@ -177,5 +178,59 @@ describe("supabase-quota-export", () => {
   test("buildMetrics never emits a paid trigger for an unmeasured metric", () => {
     const metrics = buildMetrics({ dbBytes: null, bucketCount: null, requestTotal: null });
     expect(metrics.every((m) => m.flag === undefined)).toBe(true);
+  });
+});
+
+describe("parseArgs strict argv (#3469)", () => {
+  // Strict argv validation (#3469): a value flag followed by another
+  // flag (or by nothing) is a usage error naming the flag, raised before
+  // any directory creation, token resolution, or API call; no token is
+  // consumed twice.
+  function expectUsage(argv, flag) {
+    let error = null;
+    try {
+      parseArgs(argv);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(ExportError);
+    expect(error.status).toBe("usage");
+    expect(error.exitCode).toBe(2);
+    expect(error.message).toContain(flag);
+  }
+
+  test("parseArgs: the control invocation parses, project-ref override (#3469)", () => {
+    expect(parseArgs(["--out-dir", "out", "--project-ref", "proberef"])).toEqual({
+      outDir: "out",
+      refOverride: "proberef",
+    });
+    const def = parseArgs([]);
+    expect(def.outDir).toMatch(/supabase-export$/);
+    expect(def.refOverride).toBeUndefined();
+  });
+
+  test("parseArgs: flag-as-value is a usage error naming the flag (#3469)", () => {
+    // The exact probe from the issue: --project-ref must not double as
+    // the out-dir value and the ref flag.
+    expectUsage(["--out-dir", "--project-ref", "proberef"], "--out-dir");
+    expectUsage(["--project-ref", "--out-dir", "out"], "--project-ref");
+  });
+
+  test("parseArgs: a trailing flag with no value is a usage error, not a silent fallback (#3469)", () => {
+    expectUsage(["--out-dir"], "--out-dir");
+    expectUsage(["--out-dir", "out", "--project-ref"], "--project-ref");
+  });
+
+  test("parseArgs: no token is consumed twice (#3469)", () => {
+    // Old opt() returned "--project-ref" as the out-dir while the API
+    // call still used proberef. Now the single-pass parse refuses
+    // outright instead of splitting the token stream two ways.
+    expectUsage(["--out-dir", "--project-ref", "proberef"], "--out-dir");
+  });
+
+  test("parseArgs: unknown flags and bare positionals are usage errors (#3469)", () => {
+    expectUsage(["--bogus", "x"], "--bogus");
+    expectUsage(["--out-dir=out"], "--out-dir=out");
+    expectUsage(["out"], "out");
   });
 });

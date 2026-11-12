@@ -14,6 +14,7 @@ import {
   ExportError,
   attemptBoundedRestart,
   failureDocument,
+  parseArgs,
   PAGE_NOT_READY_EXIT,
   probeCdpReadiness,
   restartAllowed,
@@ -418,4 +419,65 @@ test("parseSubscriptionQuota: epoch window endpoints are inclusive", () => {
     payload.subscription_quota.as_of = epoch;
     assert.equal(parseSubscriptionQuota(payload).consoleAsOf, expected);
   }
+});
+
+// Strict argv validation (#3469): a value flag followed by another flag
+// (or by nothing) is a usage error naming the flag, raised before any
+// directory creation or CDP call; no token is consumed twice; --cdp-port
+// is a decimal integer in 1-65535; the control still parses.
+function expectUsage(argv, flag) {
+  assert.throws(
+    () => parseArgs(argv),
+    (error) => {
+      assert.ok(error instanceof ExportError, `expected ExportError, got ${error}`);
+      assert.equal(error.status, "usage");
+      assert.equal(error.exitCode, 2);
+      assert.match(error.message, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      return true;
+    },
+    `parseArgs(${JSON.stringify(argv)}) should be a usage error naming ${flag}`,
+  );
+}
+
+test("parseArgs: the control invocation parses, defaults intact", () => {
+  const full = parseArgs(["--out-dir", "out", "--cdp-port", "19222", "--team-id", "team1"]);
+  assert.deepEqual(full, { outDir: "out", cdpPort: 19222, teamId: "team1" });
+  const def = parseArgs([]);
+  assert.equal(def.cdpPort, 19222);
+  assert.match(def.outDir, /meta-quota-export$/);
+});
+
+test("parseArgs: flag-as-value is a usage error naming the flag (#3469)", () => {
+  // The exact probe from the issue: --cdp-port must not double as the
+  // out-dir value and the port flag.
+  expectUsage(["--out-dir", "--cdp-port", "19222"], "--out-dir");
+  expectUsage(["--cdp-port", "--team-id", "x"], "--cdp-port");
+  expectUsage(["--team-id", "--out-dir", "out"], "--team-id");
+});
+
+test("parseArgs: a trailing flag with no value is a usage error, not a silent fallback (#3469)", () => {
+  expectUsage(["--out-dir"], "--out-dir");
+  expectUsage(["--out-dir", "out", "--cdp-port"], "--cdp-port");
+  expectUsage(["--team-id"], "--team-id");
+});
+
+test("parseArgs: no token is consumed twice (#3469)", () => {
+  // Old opt() returned "--cdp-port" as the out-dir AND 19222 as the port.
+  // Now the single-pass parse refuses outright instead of splitting the
+  // token stream two ways.
+  expectUsage(["--out-dir", "--cdp-port", "19222"], "--out-dir");
+});
+
+test("parseArgs: --cdp-port must be a decimal integer in 1-65535 (#3469)", () => {
+  for (const bad of ["banana", "", "0", "-1", "65536", "99999", "0x10", "1e2", "12.5", " 19222", "19222 "]) {
+    expectUsage(["--cdp-port", bad], "--cdp-port");
+  }
+  assert.equal(parseArgs(["--cdp-port", "1"]).cdpPort, 1);
+  assert.equal(parseArgs(["--cdp-port", "65535"]).cdpPort, 65535);
+});
+
+test("parseArgs: unknown flags and bare positionals are usage errors (#3469)", () => {
+  expectUsage(["--bogus", "x"], "--bogus");
+  expectUsage(["--out-dir=out"], "--out-dir=out");
+  expectUsage(["out"], "out");
 });
