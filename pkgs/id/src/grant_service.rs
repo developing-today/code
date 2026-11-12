@@ -331,7 +331,22 @@ impl GrantStore {
     /// snapshotted store: first-wins rows, key states, family
     /// membership (including its freeze), and grant states all
     /// carry over.
-    pub fn restore(snapshot: StoreSnapshot) -> Self {
+    pub fn restore(snapshot: StoreSnapshot) -> Result<Self, RestoreError> {
+        // Reject duplicate grant IDs before rebuilding any index
+        // (#8913): collecting the grants into a map would silently
+        // overwrite the earlier record while the insertion order
+        // still walks both entries, losing one record and
+        // reconciling the survivor repeatedly. A malformed or
+        // imported snapshot is refused whole -- no partially
+        // restored store is ever exposed.
+        let mut seen = std::collections::HashSet::new();
+        for grant in &snapshot.grants {
+            if !seen.insert(grant.grant_id.clone()) {
+                return Err(RestoreError::DuplicateGrantId {
+                    grant_id: grant.grant_id.clone(),
+                });
+            }
+        }
         let registry = KeyRegistry::restore(snapshot.families, snapshot.registry_rows);
         let order: Vec<String> = snapshot.grants.iter().map(|g| g.grant_id.clone()).collect();
         let grants = snapshot
@@ -339,12 +354,21 @@ impl GrantStore {
             .into_iter()
             .map(|g| (g.grant_id.clone(), g))
             .collect();
-        Self {
+        Ok(Self {
             registry,
             grants,
             order,
-        }
+        })
     }
+}
+
+/// Why a snapshot restore did not happen (#8913).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreError {
+    /// Two snapshot records share a grant_id. Restoring would
+    /// silently drop one of them, so the snapshot is rejected
+    /// before any index is rebuilt.
+    DuplicateGrantId { grant_id: String },
 }
 
 /// Why an intent write did not happen.
@@ -1319,6 +1343,36 @@ mod tests {
     }
 
     #[test]
+    fn restore_rejects_a_snapshot_with_duplicate_grant_ids() {
+        // Oracle (#8913): a snapshot whose grants vector carries two
+        // records sharing a grant_id is malformed; restore must
+        // reject it naming the duplicated id, not silently keep the
+        // last record while the insertion order walks both.
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = RegistrationService::new(
+            GrantStore::new(),
+            InMemoryLedger::new(),
+            config(),
+            &v,
+            &adverse,
+        );
+        svc.register(&request("grant-1", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        let mut snapshot = svc.store().snapshot();
+        assert_eq!(snapshot.grants.len(), 1);
+        let duplicate = snapshot.grants[0].clone();
+        snapshot.grants.push(duplicate);
+        let err = GrantStore::restore(snapshot).unwrap_err();
+        assert_eq!(
+            err,
+            RestoreError::DuplicateGrantId {
+                grant_id: "grant-1".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn restart_restores_intents_and_reconcile_completes_without_double_issuance() {
         // The §2.5 recovery property across a process restart
         // (Codex P1 on PR #8614): intent written, ledger transfer
@@ -1352,7 +1406,7 @@ mod tests {
         // round-trip, not a clone.
         let bytes = serde_json::to_vec(&svc.store().snapshot()).unwrap();
         let snapshot: StoreSnapshot = serde_json::from_slice(&bytes).unwrap();
-        let restored = GrantStore::restore(snapshot);
+        let restored = GrantStore::restore(snapshot).unwrap();
         assert_eq!(restored.grant_count(), 1);
         assert_eq!(restored.registry().len(), 1);
         assert_eq!(
