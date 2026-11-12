@@ -2745,9 +2745,16 @@ func (c *Conn) cancel(params json.RawMessage) {
 	// On stdio this is how a client ends a subscriptions/listen: there is
 	// no per-request stream to close.
 	c.cancelListen(p.RequestID)
+	// The record is keyed by the canonical JSON id, so a numeric 7 and
+	// a string "7" stay the different requests JSON-RPC says they are:
+	// unquoting here would collapse the two into one key, and a later
+	// lookup for the string request would read the numeric request's
+	// cancellation as its own. The hook still hears the id's string
+	// value, which is the form its consumers compare against.
 	id := listenKey(p.RequestID)
+	hookID := id
 	if unq, err := strconv.Unquote(id); err == nil {
-		id = unq // a string id is recorded as the string, not its JSON
+		hookID = unq // a string id is reported as the string, not its JSON
 	}
 	c.mu.Lock()
 	if c.cancelled == nil {
@@ -2756,7 +2763,7 @@ func (c *Conn) cancel(params json.RawMessage) {
 	c.cancelled[id] = p.Reason
 	c.mu.Unlock()
 	if c.s.OnCancel != nil {
-		c.s.OnCancel(id, p.Reason)
+		c.s.OnCancel(hookID, p.Reason)
 	}
 	// And acted on: the request's context is cancelled, which is what
 	// reaches the upstream call, and its response is withheld.
@@ -2764,7 +2771,9 @@ func (c *Conn) cancel(params json.RawMessage) {
 }
 
 // Cancelled reports whether a request was cancelled on the default
-// connection, and why.
+// connection, and why. The id is matched in the canonical JSON form
+// Conn.cancel recorded, so "42" the string names the numeric request
+// 42 and a string-id request is named by its JSON (`"42"`).
 func (s *Server) Cancelled(id string) (string, bool) {
 	c := s.conn()
 	c.mu.Lock()

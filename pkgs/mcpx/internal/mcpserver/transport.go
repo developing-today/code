@@ -95,6 +95,21 @@ func (c *Conn) cancelInflight(requestID any) {
 	}
 }
 
+// cancelledFor reports whether the client sent notifications/cancelled
+// naming this request id, and the reason it gave. The key is the
+// canonical JSON id Conn.cancel recorded, so "7" and 7 stay different
+// requests, exactly as idKey keeps them for the in-flight contexts. A
+// cancelled context alone does not prove the client asked for the
+// cancellation -- the transport may have died instead -- which is why
+// the ask path consults this record before stopping work the client
+// may still mean to collect (§6, #1864 item 2).
+func (c *Conn) cancelledFor(id json.RawMessage) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	reason, ok := c.cancelled[idKey(id)]
+	return reason, ok
+}
+
 // ---- batching ----
 
 // isBatch reports whether a frame is a JSON-RPC batch.
