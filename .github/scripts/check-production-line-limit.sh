@@ -34,15 +34,18 @@ declare -A GRANDFATHERED=(
   # Grandfathered 2026-11-11 in the #7089 re-arm landing: each file
   # below was already over the limit when the guard's triggers were
   # restored, so it is grandfathered with a linked split issue,
-  # per this guard's convention. The entry is deleted in the same
-  # PR that lands the split.
+  # per this guard's convention. The four id-worlds files moved from
+  # pkgs/id/src/ in #4408; keep their exact current paths here or the
+  # path-keyed exemptions stop matching. The boards file is separately
+  # tracked by #8891. Delete each entry in the PR that lands its split.
   ["pkgs/fleet/crates/fleet-queue/src/client.rs"]="#8588"
   ["pkgs/fleet/crates/fleet-queue/src/turso_queue.rs"]="#8589"
   ["pkgs/id/src/commands/serve.rs"]="#8590"
-  ["pkgs/id/src/directory.rs"]="#8591"
-  ["pkgs/id/src/world/actor.rs"]="#8592"
-  ["pkgs/id/src/world/core.rs"]="#8593"
-  ["pkgs/id/src/world_session/mod.rs"]="#8594"
+  ["pkgs/id/crates/id-worlds/src/directory.rs"]="#8591"
+  ["pkgs/id/crates/id-worlds/src/world/actor.rs"]="#8592"
+  ["pkgs/id/crates/id-worlds/src/world/core.rs"]="#8593"
+  ["pkgs/id/crates/id-worlds/src/world_session/mod.rs"]="#8594"
+  ["pkgs/id/src/boards.rs"]="#8891"
 )
 
 # Count production lines of one file: every line that is not part of

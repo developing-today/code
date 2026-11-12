@@ -37,6 +37,29 @@ bash "$SCRIPT" "$TMP/ok" >"$TMP/ok.out"
 grep -q "production-line-guard: OK" "$TMP/ok.out"
 echo "pass: compliant tree passes"
 
+# The four split-tracked id-worlds modules were moved by #4408 after
+# their grandfather entries were added, and boards.rs has its own split
+# issue (#8891). Exact current paths stay grandfathered; a nearby
+# untracked module must still fail under the unchanged 2500-line limit.
+mkdir -p "$TMP/grandfathered/pkgs/id/crates/id-worlds/src/world" "$TMP/grandfathered/pkgs/id/crates/id-worlds/src/world_session" "$TMP/grandfathered/pkgs/id/src"
+gen "$TMP/grandfathered/pkgs/id/crates/id-worlds/src/directory.rs" 2501
+gen "$TMP/grandfathered/pkgs/id/crates/id-worlds/src/world/actor.rs" 2501
+gen "$TMP/grandfathered/pkgs/id/crates/id-worlds/src/world/core.rs" 2501
+gen "$TMP/grandfathered/pkgs/id/crates/id-worlds/src/world_session/mod.rs" 2501
+gen "$TMP/grandfathered/pkgs/id/src/boards.rs" 2501
+gen "$TMP/grandfathered/pkgs/id/crates/id-worlds/src/world/actor_extra.rs" 2501
+if bash "$SCRIPT" "$TMP/grandfathered" >"$TMP/grandfathered.out" 2>&1; then
+  echo "FAIL: guard accepted an untracked over-limit module" >&2
+  exit 1
+fi
+grep -q "GRANDFATHERED pkgs/id/crates/id-worlds/src/directory.rs: 2501 production lines.*#8591" "$TMP/grandfathered.out"
+grep -q "GRANDFATHERED pkgs/id/crates/id-worlds/src/world/actor.rs: 2501 production lines.*#8592" "$TMP/grandfathered.out"
+grep -q "GRANDFATHERED pkgs/id/crates/id-worlds/src/world/core.rs: 2501 production lines.*#8593" "$TMP/grandfathered.out"
+grep -q "GRANDFATHERED pkgs/id/crates/id-worlds/src/world_session/mod.rs: 2501 production lines.*#8594" "$TMP/grandfathered.out"
+grep -q "GRANDFATHERED pkgs/id/src/boards.rs: 2501 production lines.*#8891" "$TMP/grandfathered.out"
+grep -q "OVER LIMIT pkgs/id/crates/id-worlds/src/world/actor_extra.rs: 2501 production lines" "$TMP/grandfathered.out"
+echo "pass: moved split-tracked paths are grandfathered narrowly"
+
 # Violating tree: one synthetic over-limit production file.
 mkdir -p "$TMP/bad/pkgs/id/src"
 gen "$TMP/bad/pkgs/id/src/huge.rs" 2501
