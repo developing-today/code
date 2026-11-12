@@ -291,6 +291,10 @@ export interface QuotaPool {
   windows: QuotaWindow[];
   /** tokens/min over the recent window, when measurable. */
   burnTokensPerMin?: number;
+  /** Per-window exhaustion interval forecasts (#3983), set by the
+   * collector from the measured burn history. Additive for existing
+   * consumers; absent when the collector did not derive them. */
+  exhaustion?: ExhaustionForecast[];
   /** Sessions currently burning this pool, with cumulative tokens. */
   activeSessions?: { session: string; model: string; tokens: number }[];
   /** Gatherer freshness for this pool (#1151), set when
@@ -302,6 +306,42 @@ export interface QuotaPool {
    * share one pool read — never a fake split. The pool's own windows
    * stay the headline. */
   credentials?: QuotaCredentialRow[];
+}
+
+/** One window's time-to-exhaustion forecast (#3983): an interval
+ * projected from the measured burn-rate distribution of the #3933
+ * contract, or an explicit unknown — never a fabricated date. */
+export interface ExhaustionForecast {
+  pool: string;
+  provider: string;
+  window: string;
+  unit: string;
+  state: "forecast" | "unknown" | "exhausted";
+  /** Why no forecast exists, when state is "unknown". */
+  reason?:
+    | "missing_limit"
+    | "missing_reset"
+    | "reset_passed"
+    | "stale_source"
+    | "no_measured_burn"
+    | "insufficient_observations"
+    | "zero_rate";
+  /** limit - used for the window; null when the limit is unknown. */
+  remaining: number | null;
+  resetsAt: string | null;
+  /** The named measurement window pair rates must fit inside. */
+  rateWindowMs: number;
+  /** Gatherer source for the pool read, when freshness is known. */
+  source: string | null;
+  /** Same-period pair rates behind the percentiles, when forecast. */
+  sampleRates?: number;
+  ratesPerMin?: { p50: number; p80: number };
+  p50ExhaustsAt?: string;
+  p80ExhaustsAt?: string;
+  p50VsReset?: "before" | "after";
+  p80VsReset?: "before" | "after";
+  /** When state is "exhausted": the collection instant (already there). */
+  exhaustsAt?: string;
 }
 
 /** One credential's own quota read within a pool (#1113). */
