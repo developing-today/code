@@ -119,6 +119,20 @@ expect_rejected "run document with a mismatched runId" "INSERT INTO public.orch_
 expect_rejected "run document with a mismatched version" "INSERT INTO public.orch_runs
   (run_id, generated_at, document_version, provenance, document, item_count)
   VALUES ('orch-x', now(), 2, '{}', '{\"version\": 1, \"runId\": \"orch-x\"}', 0)"
+
+# Identity fields must be present and non-null (#8857): a missing or
+# JSON-null runId/version extracts SQL NULL for that field, and a bare
+# CHECK accepts a NULL result — these probes pin the IS TRUE form of
+# the identity checks.
+expect_rejected "run document with no identity fields" "INSERT INTO public.orch_runs
+  (run_id, generated_at, document_version, provenance, document, item_count)
+  VALUES ('orch-x', now(), 1, '{}', '{}', 0)"
+expect_rejected "run document with a JSON-null runId" "INSERT INTO public.orch_runs
+  (run_id, generated_at, document_version, provenance, document, item_count)
+  VALUES ('orch-x', now(), 1, '{}', '{\"version\": 1, \"runId\": null}', 0)"
+expect_rejected "run document with a JSON-null version" "INSERT INTO public.orch_runs
+  (run_id, generated_at, document_version, provenance, document, item_count)
+  VALUES ('orch-x', now(), 1, '{}', '{\"version\": null, \"runId\": \"orch-x\"}', 0)"
 expect_rejected "item in an unknown tier" "INSERT INTO public.orch_items
   (id, tier, kind, title, source, state, reason, since, last_seen_at,
    item, first_seen_run_id, last_seen_run_id)
@@ -130,6 +144,20 @@ expect_rejected "item whose document id differs from its key" "INSERT INTO publi
    item, first_seen_run_id, last_seen_run_id)
   VALUES ('item-a', 'needsDrew', 'decision', 't', 'test', 'open', 'r',
     now(), now(), '{\"id\": \"item-b\"}',
+    'orch-2026-11-11T00:00:00Z', 'orch-2026-11-11T00:00:00Z')"
+# Same NULL pass on the item side (#8857): item = '{}' or a JSON-null
+# id extracts SQL NULL and must be rejected, not accepted.
+expect_rejected "item with no identity field" "INSERT INTO public.orch_items
+  (id, tier, kind, title, source, state, reason, since, last_seen_at,
+   item, first_seen_run_id, last_seen_run_id)
+  VALUES ('item-noid', 'needsDrew', 'decision', 't', 'test', 'open', 'r',
+    now(), now(), '{}',
+    'orch-2026-11-11T00:00:00Z', 'orch-2026-11-11T00:00:00Z')"
+expect_rejected "item with a JSON-null id" "INSERT INTO public.orch_items
+  (id, tier, kind, title, source, state, reason, since, last_seen_at,
+   item, first_seen_run_id, last_seen_run_id)
+  VALUES ('item-nullid', 'needsDrew', 'decision', 't', 'test', 'open', 'r',
+    now(), now(), '{\"id\": null}',
     'orch-2026-11-11T00:00:00Z', 'orch-2026-11-11T00:00:00Z')"
 expect_rejected "item pointing at a run that does not exist" "INSERT INTO public.orch_items
   (id, tier, kind, title, source, state, reason, since, last_seen_at,

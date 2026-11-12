@@ -18,10 +18,16 @@ CREATE TABLE public.orch_runs (
   provenance jsonb NOT NULL CHECK (jsonb_typeof(provenance) = 'object'),
   document jsonb NOT NULL CHECK (jsonb_typeof(document) = 'object'),
   item_count integer NOT NULL CHECK (item_count >= 0),
+  -- The comparison must be IS TRUE (#8857): a document missing runId
+  -- or version (or carrying one as JSON null) extracts SQL NULL for
+  -- that field, the conjunction evaluates to NULL, and PostgreSQL
+  -- accepts NULL in a CHECK — the row would pass with no identity.
   CONSTRAINT orch_runs_document_identity_check CHECK (
-    document ->> 'runId' = run_id
-    AND document ->> 'version' ~ '^[0-9]+$'
-    AND (document ->> 'version')::integer = document_version
+    (
+      document ->> 'runId' = run_id
+      AND document ->> 'version' ~ '^[0-9]+$'
+      AND (document ->> 'version')::integer = document_version
+    ) IS TRUE
   )
 );
 
@@ -46,7 +52,9 @@ CREATE TABLE public.orch_items (
   last_seen_run_id text NOT NULL
     REFERENCES public.orch_runs (run_id) ON DELETE RESTRICT,
   CONSTRAINT orch_items_seen_order_check CHECK (last_seen_at >= since),
-  CONSTRAINT orch_items_document_identity_check CHECK (item ->> 'id' = id)
+  -- IS TRUE for the same reason as the runs identity check (#8857):
+  -- item = '{}' or a JSON-null id extracts SQL NULL and would pass.
+  CONSTRAINT orch_items_document_identity_check CHECK ((item ->> 'id' = id) IS TRUE)
 );
 
 CREATE INDEX orch_items_tier_state_idx
