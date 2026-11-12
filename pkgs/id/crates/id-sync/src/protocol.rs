@@ -156,6 +156,15 @@ mod archive_reference_behavior_tests {
         )
         .await
         .unwrap();
+        tags.set_tag(
+            &tags.global,
+            b"my-file",
+            b"archive.replace",
+            Some(b"my-file.archive.124"),
+            b"",
+        )
+        .await
+        .unwrap();
 
         let rejected_set = server
             .handle(
