@@ -266,7 +266,15 @@ func (d daemonAsker) Poll(ctx context.Context, callID string, wait time.Duration
 		out.Text, out.IsError = reply.Error, true
 		// The protocol layer relays this as the error itself when the
 		// tool is a pass-through upstream's, and ignores it otherwise.
-		out.Upstream = upstreamError(errors.New(reply.Error))
+		// Prefer the daemon's structured carriage of the upstream
+		// error: it keeps the code, message and data (a -32021's
+		// requiredCapabilities) intact. The text parse is the fallback
+		// for a reply from a daemon too old to send the field.
+		if reply.Upstream != nil {
+			out.Upstream = &mcpserver.UpstreamError{Code: reply.Upstream.Code, Message: reply.Upstream.Message, Data: reply.Upstream.Data}
+		} else {
+			out.Upstream = upstreamError(errors.New(reply.Error))
+		}
 		// Classified for the two methods whose failure is a protocol
 		// error; which one applies is the caller's to pick, since the
 		// same upstream -32602 means not-found for a read and a bad

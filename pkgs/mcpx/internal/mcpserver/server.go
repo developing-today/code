@@ -443,6 +443,11 @@ type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
+	// relayed marks an error that arrived from an upstream peer and is
+	// being relayed verbatim; locally minted errors leave it false and
+	// are stamped with the local origin marker when marshalled (see
+	// local_error.go).
+	relayed bool
 }
 
 // Error codes from the JSON-RPC specification. Using the standard ones means
@@ -484,14 +489,12 @@ var ErrInvalidParams = errors.New("invalid params")
 // the modern era reaches here -- a legacy initialize with an unknown version
 // is answered with a version, not refused (see negotiate).
 func unsupportedVersion(id json.RawMessage, params json.RawMessage) *response {
-	return &response{JSONRPC: "2.0", ID: id, Error: &rpcError{
-		Code:    codeUnsupportedVersion,
-		Message: "Unsupported protocol version",
-		Data: map[string]any{
+	return &response{JSONRPC: "2.0", ID: id, Error: mintLocalError(
+		codeUnsupportedVersion, "Unsupported protocol version",
+		map[string]any{
 			"supported": Supported,
 			"requested": requestVersion(params),
-		},
-	}}
+		})}
 }
 
 // Tool is one exposed function.
