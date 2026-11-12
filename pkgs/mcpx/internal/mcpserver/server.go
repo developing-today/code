@@ -443,6 +443,42 @@ type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
+
+	// relayed marks an error that is a peer's, carried verbatim
+	// (UpstreamError.relay). It is never serialized; it exists so the
+	// local-origin marker below is stamped only on errors mcpx minted
+	// itself (#2435).
+	relayed bool
+}
+
+// withLocalOrigin stamps e's data with the local-origin marker,
+// "mcpx": {"origin": "local"}, merged into whatever data the error
+// already carries (#2435). It answers the client's first diagnostic
+// question -- did mcpx mint this error, or is it relaying a peer's? --
+// for every error mcpx mints itself on the MCP surface: its name
+// checks, its internal failures, its policy refusals. A peer's error
+// is relayed untouched and never marked (see relayed above). Data
+// that is not a JSON object has nowhere to merge a key into and is
+// left as it is; every current local mint carries nil or object data.
+func withLocalOrigin(e *rpcError) *rpcError {
+	marker := map[string]any{"origin": "local"}
+	switch d := e.Data.(type) {
+	case nil:
+		e.Data = map[string]any{"mcpx": marker}
+	case map[string]any:
+		if inner, ok := d["mcpx"].(map[string]any); ok {
+			inner["origin"] = "local"
+		} else if _, taken := d["mcpx"]; !taken {
+			d["mcpx"] = marker
+		}
+	case json.RawMessage:
+		var m map[string]any
+		if len(d) > 0 && json.Unmarshal(d, &m) == nil && m != nil {
+			e.Data = m
+			return withLocalOrigin(e)
+		}
+	}
+	return e
 }
 
 // Error codes from the JSON-RPC specification. Using the standard ones means
@@ -749,6 +785,12 @@ func (s *Server) HandleOn(ctx context.Context, c *Conn, req request) *response {
 	ctx = withIdentity(ctx, c.identityFor(req.Params))
 	resp := s.handle(ctx, c, req)
 	if resp == nil || resp.Error != nil {
+		if resp != nil && resp.Error != nil && !resp.Error.relayed {
+			// An error mcpx minted itself, anywhere in the dispatch
+			// below: stamp its local origin (#2435). A relayed peer
+			// error keeps the peer's data exactly as it arrived.
+			resp.Error = withLocalOrigin(resp.Error)
+		}
 		return resp
 	}
 	if peer.Modern {
@@ -1871,12 +1913,12 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 		var req request
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
 			_ = enc.Encode(response{JSONRPC: "2.0",
-				Error: &rpcError{Code: codeParse, Message: err.Error()}})
+				Error: withLocalOrigin(&rpcError{Code: codeParse, Message: err.Error()})})
 			continue
 		}
 		if req.JSONRPC != "" && req.JSONRPC != "2.0" {
 			_ = enc.Encode(response{JSONRPC: "2.0", ID: req.ID,
-				Error: &rpcError{Code: codeInvalidRequest, Message: "unsupported jsonrpc version"}})
+				Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest, Message: "unsupported jsonrpc version"})})
 			continue
 		}
 		if len(req.ID) == 0 || req.Method == "initialize" {
@@ -1936,11 +1978,11 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 func (s *Server) stdioBatch(ctx context.Context, c *Conn, line []byte) any {
 	var elems []json.RawMessage
 	if err := json.Unmarshal(line, &elems); err != nil {
-		return response{JSONRPC: "2.0", Error: &rpcError{Code: codeParse, Message: err.Error()}}
+		return response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{Code: codeParse, Message: err.Error()})}
 	}
 	if len(elems) == 0 {
-		return response{JSONRPC: "2.0", Error: &rpcError{Code: codeInvalidRequest,
-			Message: "an empty batch is not a request"}}
+		return response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest,
+			Message: "an empty batch is not a request"})}
 	}
 	v := c.Version()
 	if v == "" {
@@ -2053,14 +2095,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// goroutine with its stream still open.
 	if id, result, rerr, ok := replyOf(body); ok {
 		if modernHeaderVersion(hv) {
-			writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: &rpcError{
-				Code: codeInvalidRequest, Message: "2026-07-28 clients send no responses"}})
+			writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{
+				Code: codeInvalidRequest, Message: "2026-07-28 clients send no responses"})})
 			return
 		}
 		c, found := s.session(r.Header.Get(sessionHeader))
 		if !found || !c.deliver(id, result, rerr) {
-			writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: &rpcError{
-				Code: codeInvalidRequest, Message: "no request is waiting for that id on this session"}})
+			writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{
+				Code: codeInvalidRequest, Message: "no request is waiting for that id on this session"})})
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
@@ -2070,7 +2112,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req request
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0",
-			Error: &rpcError{Code: codeParse, Message: err.Error()}})
+			Error: withLocalOrigin(&rpcError{Code: codeParse, Message: err.Error()})})
 		return
 	}
 	if requestVersion(req.Params) != "" || modernHeaderVersion(hv) {
@@ -2083,10 +2125,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // serveModern answers one 2026-07-28 POST.
 func (s *Server) serveModern(w http.ResponseWriter, r *http.Request, req request) {
 	if bad := checkModernHeaders(r, req); bad != nil {
+		bad.Error = withLocalOrigin(bad.Error)
 		writeJSON(w, http.StatusBadRequest, bad)
 		return
 	}
 	if bad := s.checkParamHeaders(r, req); bad != nil {
+		bad.Error = withLocalOrigin(bad.Error)
 		writeJSON(w, http.StatusBadRequest, bad)
 		return
 	}
@@ -2114,6 +2158,7 @@ func (s *Server) serveLegacy(w http.ResponseWriter, r *http.Request, req request
 	if hv != "" && (!supports(hv) || Modern(hv)) {
 		bad := unsupportedVersion(req.ID, nil)
 		bad.Error.Data = map[string]any{"supported": LegacySupported(), "requested": hv}
+		bad.Error = withLocalOrigin(bad.Error)
 		writeJSON(w, http.StatusBadRequest, bad)
 		return
 	}
@@ -2122,8 +2167,8 @@ func (s *Server) serveLegacy(w http.ResponseWriter, r *http.Request, req request
 			// Unknown, expired or DELETEd. The client MUST then start a new
 			// session with an initialize that carries no session id.
 			writeJSON(w, http.StatusNotFound, response{JSONRPC: "2.0", ID: req.ID,
-				Error: &rpcError{Code: codeInvalidRequest,
-					Message: "no such session; send initialize without " + sessionHeader + " to start one"}})
+				Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest,
+					Message: "no such session; send initialize without " + sessionHeader + " to start one"})})
 			return
 		}
 	}
@@ -2200,7 +2245,7 @@ func (s *Server) serveBatch(w http.ResponseWriter, r *http.Request, body []byte,
 	var elems []json.RawMessage
 	if err := json.Unmarshal(body, &elems); err != nil {
 		writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0",
-			Error: &rpcError{Code: codeParse, Message: err.Error()}})
+			Error: withLocalOrigin(&rpcError{Code: codeParse, Message: err.Error()})})
 		return
 	}
 	if len(elems) == 0 {
