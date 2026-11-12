@@ -1028,7 +1028,9 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused(
             "http://xn--mnchen-3ya5364d.com/"
         )  # m\u00fcn\u2000chen (space class)
-        # DISALLOWED class (survive NFKC, assigned, not format chars):
+        # DISALLOWED class (survive NFKC, assigned, not format chars).
+        # UTS-46 refuses these per codepoint, so the container does
+        # too — the #588 cases stay refused (#5947):
         self.assertRefused(
             "http://xn--example-hja.com/"
         )  # ex\u00a8ample (diaeresis, Sk)
@@ -1038,10 +1040,14 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused(
             "http://xn--example-f9e.com/"
         )  # ex\u037eample (Greek question mark, Po)
-        self.assertRefused(
+        # ...but the currency symbols are UTS-46 *valid*, not
+        # disallowed: the Worker's WHATWG parser accepts and
+        # re-encodes them, so the container must not refuse them
+        # (#5947). The old blanket P/S/Z arm refused both.
+        self.assertAccepted(
             "http://xn--example-3ha.com/"
         )  # ex\u00a2ample (cent sign, Sc)
-        self.assertRefused(
+        self.assertAccepted(
             "http://xn--example-u17c.com/"
         )  # ex\u20acample (euro sign, Sc)
         # The raw spellings of the DISALLOWED class are refused too
@@ -1057,6 +1063,46 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertAccepted("http://xn--bcher-kva.de/")  # b\u00fccher.de
         self.assertAccepted("http://xn--fsq.com/")  # \u4f8b.com
         self.assertAccepted("http://xn--al-0ea.com/")  # a\u00b7l (Catalan middle dot)
+
+    def test_judges_uts46_symbols_per_codepoint(self):
+        # #5947: UTS-46 judges punctuation, symbol and separator
+        # codepoints one by one, not by Unicode category. The Worker's
+        # WHATWG new URL accepts and A-label-encodes the great majority
+        # of them (each expected return below was checked against Node
+        # and Bun on the laptop), while the old blanket "any non-ASCII
+        # P/S/Z" arm refused them all and left
+        # test_returns_idn_hosts_in_alabel_form red on main.
+        accepted = {
+            "http://\U0001f600.com/": "http://xn--e28h.com/",  # 😀 So
+            "http://\u00a9.com/": "http://xn--gba.com/",  # © So
+            "http://\u2603.com/": "http://xn--n3h.com/",  # ☃ So
+            "http://\u20ac.com/": "http://xn--lzg.com/",  # € Sc
+            "http://\u2665.com/": "http://xn--g6h.com/",  # ♥ So
+            "http://\u00a7.com/": "http://xn--eba.com/",  # § Po
+            "http://\u00a2.com/": "http://xn--8a.com/",  # ¢ Sc
+        }
+        for raw, expected in accepted.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # The residual UTS-46-disallowed punctuation / symbol /
+        # separator codepoints stay refused, and the #588 refusal
+        # cases (U+00A8 / U+00B4 class, which WHATWG genuinely
+        # refuses) stay refused too — the alignment is per codepoint,
+        # not a blanket removal of the check.
+        for ch in (
+            "\u00a8",  # diaeresis (Sk, #588)
+            "\u00b4",  # acute accent (Sk, #588)
+            "\u2024",  # one dot leader
+            "\u2025",  # two dot leader
+            "\u2026",  # horizontal ellipsis
+            "\u2488",  # digit one full stop
+            "\u2ff0",  # ideographic description character
+            "\u31ef",  # ideographic description character subtraction
+            "\u33c2",  # square am
+            "\ufffc",  # object replacement character
+            "\ufffd",  # replacement character
+            "\U0001f100",  # digit zero full stop
+        ):
+            self.assertRefused("http://example" + ch + ".com/")
 
     def test_judges_length_and_blocked_names_on_the_mapped_form(self):
         # UTS-46 mapping deletes the "ignored" codepoints before any
