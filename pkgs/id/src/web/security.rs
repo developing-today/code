@@ -125,12 +125,28 @@ fn host_only(authority: &str) -> String {
 fn authority_normalized(authority: &str) -> String {
     let a = authority.trim().to_lowercase();
     if let Some(rest) = a.strip_prefix('[') {
-        // IPv6 literal: [::1]:3000 or [::1]
-        let mut parts = rest.splitn(2, ']');
-        let host = parts.next().unwrap_or("");
-        return match parts.next().and_then(|tail| tail.strip_prefix(':')) {
-            Some(port) if !port.is_empty() => format!("[{host}]:{port}"),
-            _ => format!("[{host}]"),
+        // IPv6 literal: [::1]:3000 or [::1] -- validate the WHOLE bracketed
+        // authority before normalizing (#8880), exactly as host_only does
+        // for the Host side (#8776). Only an empty tail or a colon +
+        // numeric port may follow the closing bracket; anything else
+        // (trailing host text, a non-numeric or empty port, a missing
+        // bracket) is malformed and must not reduce to the bracketed
+        // authority, or a malformed Origin such as
+        // http://[::1]attacker.example would normalize to [::1] and pass
+        // the guard against Host [::1]. Malformed authorities return the
+        // full text, which matches no valid normalized authority.
+        let Some((host, tail)) = rest.split_once(']') else {
+            return a.clone();
+        };
+        if tail.is_empty() {
+            return format!("[{host}]");
+        }
+        return match tail
+            .strip_prefix(':')
+            .filter(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+        {
+            Some(port) => format!("[{host}]:{port}"),
+            None => a.clone(),
         };
     }
     match a
@@ -372,6 +388,31 @@ mod tests {
         assert_eq!(host_only("[::1]:3000"), "::1");
     }
 
+    #[test]
+    fn authority_normalized_rejects_malformed_bracketed_authorities() {
+        // Oracle (#8880): a bracketed authority normalizes to the bracketed
+        // form ONLY when it is well-formed -- bracketed host, optionally
+        // followed by a colon and a numeric port. A malformed authority
+        // must NOT reduce to the bracketed authority, or the Origin guard
+        // would trust a mere prefix (Origin http://[::1]attacker.example
+        // vs Host [::1]).
+        for malformed in [
+            "[::1]attacker.example",
+            "[::1]attacker.example:3000",
+            "[::1]:abc",
+            "[::1]:",
+            "[::1",
+            "[::1]]",
+        ] {
+            assert_ne!(authority_normalized(malformed), "[::1]", "{malformed}");
+            assert_ne!(authority_normalized(malformed), "[::1]:3000", "{malformed}");
+        }
+        // Valid controls still normalize, port included (#814).
+        assert_eq!(authority_normalized("[::1]"), "[::1]");
+        assert_eq!(authority_normalized("[::1]:3000"), "[::1]:3000");
+        assert_eq!(authority_normalized("[::1]:9999"), "[::1]:9999");
+    }
+
     use proptest::prelude::*;
 
     proptest! {
@@ -400,6 +441,43 @@ mod tests {
                 prop_assert_eq!(host_only(&authority), host.to_owned(), "{}", authority);
             } else {
                 prop_assert_ne!(host_only(&authority), host.to_owned(), "{}", authority);
+            }
+        }
+
+        #[test]
+        fn bracketed_authority_normalizes_only_for_valid_tails(
+            host in proptest::sample::select(vec!["::1", "::", "fe80::1", "2001:db8::1"]),
+            tail in "[!-~]{0,12}",
+        ) {
+            // Oracle (#8880): authority_normalized of a bracketed authority
+            // returns the bracketed normalized form ONLY when the tail
+            // after the closing bracket is empty or a colon followed by a
+            // non-empty all-digit port. Every other tail leaves the
+            // authority unreduced, so it can never equal a valid Host
+            // authority. The fixed examples in
+            // authority_normalized_rejects_malformed_bracketed_authorities
+            // are the regression smoke tests for this invariant.
+            let authority = format!("[{host}]{tail}");
+            let valid_tail = tail.is_empty()
+                || tail
+                    .strip_prefix(':')
+                    .is_some_and(|port| {
+                        !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+                    });
+            if valid_tail {
+                prop_assert_eq!(
+                    authority_normalized(&authority),
+                    authority.to_lowercase(),
+                    "{}",
+                    authority
+                );
+            } else {
+                prop_assert_ne!(
+                    authority_normalized(&authority),
+                    format!("[{host}]"),
+                    "{}",
+                    authority
+                );
             }
         }
 
@@ -647,6 +725,43 @@ mod tests {
         )
         .await;
         assert_eq!(bad.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn malformed_bracketed_origin_is_refused() {
+        // #8880 regression: a malformed bracketed Origin authority must
+        // not normalize to the bracketed host and pass against Host [::1].
+        for origin in [
+            "http://[::1]attacker.example",
+            "http://[::1]attacker.example:3000",
+            "http://[::1]:abc",
+            "http://[::1",
+        ] {
+            let r = call(
+                app(loopback()),
+                get_req("[::1]")
+                    .header(header::ORIGIN, origin)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(r.status(), StatusCode::FORBIDDEN, "{origin}");
+        }
+        // Valid bracketed controls still pass the Origin guard (#814).
+        for (host, origin) in [
+            ("[::1]", "http://[::1]"),
+            ("[::1]:3000", "http://[::1]:3000"),
+        ] {
+            let r = call(
+                app(loopback()),
+                get_req(host)
+                    .header(header::ORIGIN, origin)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(r.status(), StatusCode::OK, "{origin} vs {host}");
+        }
     }
 
     fn with_token() -> WebSecurity {
