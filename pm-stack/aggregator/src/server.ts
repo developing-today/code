@@ -32,6 +32,7 @@ import { EventsStore, emitEvent, pageEvents } from "./events.ts";
 import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
 import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
+import { fleetFeedRevisionReader, FreshnessReconciler } from "./freshness-reconcile.ts";
 import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
@@ -317,6 +318,15 @@ const actionsStore = new ActionsStore(cfg.actionsFile);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
+
+/** #3976: the 5-minute anti-entropy reconciler over the freshness
+ *  journal. Its one wired canonical reader is the fleet feed — the
+ *  aggregator's own canonical source, fingerprinted exactly as the
+ *  collector's notice identity (generatedAt + sha256 of the file).
+ *  Its health view feeds /health + /api/health via healthContext. */
+const freshnessReconciler = new FreshnessReconciler(freshnessStore, [
+  fleetFeedRevisionReader(cfg.feedFile),
+]);
 const activityStore = new IngestionStore(cfg.activityFile);
 
 /** #1739: the event log's fire-and-forget sink for source-side
@@ -505,6 +515,7 @@ async function healthContext(prime = true): Promise<HealthView> {
     itemsCoverage: lastItemsCoverage,
     comments: await commentsStore.pendingCounts().catch(() => undefined),
     conflicts: await assembleConflicts().catch(() => null),
+    pushHealth: cfg.source === "fixtures" ? null : freshnessReconciler.health(new Date()),
   });
 }
 
@@ -2904,6 +2915,13 @@ async function handler(req: Request): Promise<Response> {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
     });
   }
+  if (path === "/assets/freshness-client.js") {
+    const file = Bun.file(new URL("./assets/freshness-client.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
   if (path === "/api/sw-probe") {
     // Design §6 step 2: pages report the registrations they see
     // (counted, no content); GET exposes the running summary.
@@ -3388,6 +3406,9 @@ async function handler(req: Request): Promise<Response> {
     // repository settings, work-item counts and GraphQL errors reach the
     // machine surface too, not only the rendered page.
     body.rfa = view.rfa;
+    // #3976: push health (journal + reconciler state) reaches the
+    // machine surface too, from the same assembly /health renders.
+    body.push = view.push;
     body.degraded = view.degraded;
     return json(body);
   }
@@ -3549,6 +3570,13 @@ const freshnessIpcServer = Bun.serve({
   fetch: createFreshnessIpcHandler(freshnessStore),
 });
 console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
+
+// #3976: start the anti-entropy loop in live mode — one pass now,
+// then the 5-minute cadence. Fixtures mode has no journal to reconcile.
+if (cfg.source === "live") {
+  void freshnessReconciler.reconcile().catch(() => undefined);
+  freshnessReconciler.start();
+}
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their
 // snapshot records from a server-owned writer tick rather than from

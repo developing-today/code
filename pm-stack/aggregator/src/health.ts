@@ -29,6 +29,7 @@ import {
   type SectionDiagnosis,
 } from "./feed.ts";
 import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
+import type { PushHealthView } from "./freshness-reconcile.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
 import {
@@ -219,6 +220,14 @@ export interface HealthView {
    *  probe's HTTP 200. "down" with the error when the harness cannot
    *  be read; never an invented state. */
   rfa: RfaHealthFacet;
+  /** #3976: push health — the freshness journal + 5-minute reconciler
+   *  state (push up/degraded/down, last event, last successful
+   *  reconcile, per-source age/lag, open/reset gaps), assembled by
+   *  src/freshness-reconcile.ts. Separate from source freshness on
+   *  purpose: a connected stream is not proof of fresh data, and a
+   *  quiet source is not an outage. Null when the caller did not
+   *  assemble it (fixtures mode, older call sites) — never invented. */
+  push: PushHealthView | null;
 }
 
 // --- Render registry -------------------------------------------------------
@@ -336,6 +345,9 @@ export interface HealthInputs {
   /** Source-conflict inbox (#1282 slice 1) — counted on the stack health
    *  surface so the backlog is visible where the stack's state already is. */
   conflicts?: ConflictInbox | null;
+  /** #3976: the reconciler's current push-health view (server.ts
+   *  supplies it in live mode); absent/null renders as unassembled. */
+  pushHealth?: PushHealthView | null;
 }
 
 export interface HealthDeps {
@@ -465,6 +477,9 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     (services.some((s) => s.ok === false) ||
       (feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS) ||
       checkout.state === "behind" ||
+      // #3976: an unreadable freshness journal means push state
+      // cannot be proven — that is degraded, never silently ok.
+      (inputs.pushHealth != null && inputs.pushHealth.state === "down") ||
       // #1203: a harness whose GraphQL cannot be read (or whose backend
       // is not READY) is a degraded dependency, not an invisible one.
       rfa.state === "down" ||
@@ -504,6 +519,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     },
     pages: pageHealth(now),
     rfa,
+    push: inputs.pushHealth ?? null,
     facets: inputs.detail ?? null,
     itemsCoverage: inputs.itemsCoverage ?? null,
     comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },
