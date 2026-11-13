@@ -1,0 +1,20 @@
+{
+  "canonical_specs_with_mapping_gaps": [],
+  "complete_package_verdict": true,
+  "counts": {
+    "canonical_specs": 91,
+    "command_slices": 215,
+    "commands": 215,
+    "dispositions": 3571,
+    "requirements": 389,
+    "specs": 115
+  },
+  "live_verification": "not run; no publication approval/notification received",
+  "mode": "offline",
+  "ok": true,
+  "problems": [],
+  "publication_pending": [],
+  "scope": "offline-package-audit",
+  "unmapped_command_keys": [],
+  "unmapped_requirements": []
+}
