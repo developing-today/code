@@ -8,7 +8,7 @@
 // apply actions; the dashboard only records them.
 import { readFile, stat } from "node:fs/promises";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
-import { buildQuotaAnalytics, type QuotaAnalytics } from "./analytics-store.ts";
+import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
@@ -4059,28 +4059,29 @@ for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
 }
 
-// #5082: warm the quota-analytics aggregates once at boot. The first
-// build pays the route_attempt scans synchronously (~10 s over the
-// 21 GB ledger); paying it here, off the request path, means no
-// /quota or /api/quota-analytics.json request ever waits on them —
-// later builds ride the stale-while-revalidate cache in
-// analytics-store.ts.
+// #5082: warm the quota-analytics aggregates once at boot, and the
+// page assemblies with them. The aggregates warm-up no longer calls
+// buildQuotaAnalytics synchronously: the first build's unsliced scans
+// measure ~12 s of uninterrupted event-loop time over the 21 GB
+// ledger, and a request that arrived during the old warm-up queued
+// behind the whole window — the first /api/program.json after a
+// restart measured 26.4 s against ~0.03 s warm (2026-11-13
+// follow-up). primeAttemptAggregates fills the same cache through
+// the day-sliced stale-while-revalidate refresh instead, so the loop
+// stays responsive; later builds ride that cache as before, and a
+// /quota request landing before the prime settles still pays the
+// synchronous cold build on its own path (unchanged semantics).
+// programSources joins the warmed assemblies in the same follow-up:
+// it was the one major assembly left out, so /program's first
+// post-restart request always paid its cold fan-out on the request
+// path, inside whatever loop backlog the boot window left behind.
 setTimeout(() => {
   void (async () => {
     try {
-      const [quota, usage] = await Promise.all([
-        source.quota().catch(() => emptyQuotaView()),
-        source.usage().catch(() => emptyUsageView()),
-      ]);
-      buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile });
-      // #5082 follow-up: warm the page assemblies too, so the first
-      // request after a restart never pays a cold board/overview/today
-      // fan-out either. With the caches now stale-while-revalidate,
-      // later expiries refresh behind the stale copy instead of on
-      // the request path.
-      await Promise.allSettled([boardContext(), overviewContext(), todayContext()]);
+      primeAttemptAggregates();
+      await Promise.allSettled([boardContext(), overviewContext(), todayContext(), programSources()]);
     } catch {
-      // fail-soft: the first real /quota request retries the build
+      // fail-soft: the first real request retries its own assembly
     }
   })();
 }, 0);
