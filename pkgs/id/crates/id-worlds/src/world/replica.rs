@@ -12,10 +12,14 @@
 //!
 //! What phase 4 deliberately does not do (phase 5 owns it): the operator
 //! CLI/configuration that fetches the stream and the directory facts into
-//! a replica directory, the resilience exercises, and the offline-admission
-//! policy choice for NEW spectators after a writer outage (design §8). A
-//! replica serves whoever its verified journal already authorizes; it never
-//! admits anyone the journal does not know.
+//! a replica directory, and the resilience exercises. The offline-admission
+//! policy choice for NEW spectators after a writer outage (design §8) is
+//! settled: policy B — a writer-signed admission lease — was adopted by
+//! the ruling on #806, and the lease primitive now lives in
+//! [`super::admission_lease`]. Until the session-admission path checks
+//! that lease, behavior here is unchanged: a replica serves whoever its
+//! verified journal already authorizes; it never admits anyone the
+//! journal does not know.
 
 use std::collections::BTreeSet;
 
