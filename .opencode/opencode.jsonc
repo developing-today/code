@@ -3359,7 +3359,7 @@
         "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse-last-resort": {
-        "name": "Workhorse last resort - Sonnet #medium from Claude first, then Fable #low, only if all else is down",
+        "name": "Workhorse last resort - Haiku #high from Claude first, then Fable #low, only if all else is down",
         // NEW 2026-11-10 (Drew, direct order): the fourth and final
         // stage of the workhorse chain, reached only when
         // workhorse-ordered, workhorse-primary, and
@@ -3381,8 +3381,19 @@
         // case is the point: when every other pool is walled at
         // once (the 2026-11-09/10 pattern, code#8086), workhorse
         // sessions land here instead of dying on no-candidates.
+        // 2026-11-12 (Drew, direct order): the head leaf SWAPS
+        // from Sonnet #medium to Haiku #high. Why: this leg
+        // drained Claude's 5h window 39%->100% in one hour
+        // (2026-11-12) at ~180k input tokens per call. AA v5:
+        // Haiku #high II 30 vs Sonnet #medium II 30.8 - a wash -
+        // and Haiku costs ~1/3 per token against the shared
+        // Claude Max allowance, so the same traffic drains the
+        // window ~3x slower. Fable #low behind it is unchanged.
+        // This edit lived uncommitted in the laptop primary
+        // checkout from 2026-11-12 until the 2026-11-13
+        // primary-checkout reconcile (Drew's order) landed it.
         "targets": [
-          "_claude/claude-sonnet-5-5#medium",
+          "_claude/claude-haiku-5-5#high",
           "opencode-route/fable-plan#low"
         ],
         "selection": "ordered",
