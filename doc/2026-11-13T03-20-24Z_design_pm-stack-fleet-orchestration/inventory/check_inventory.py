@@ -67,11 +67,25 @@ def domain_for(s):
     return hits or ["crosscutting"]
 
 def source_section(text, offset, source_id):
-    pattern = r"(?m)^\s{0,3}#{1,6}\s+([^\n]+)"
     if source_id == "O":
-        pattern = r"(?<!\S)#{1,6}\s+([^\n]+)"
+        # This export is one flattened physical line. A heading boundary is
+        # useful as a hint but its title/body boundary cannot be reconstructed
+        # reliably. Keep only a short, explicitly provisional excerpt.
+        pattern = r"(?<!\S)#{1,6}\s+"
+        found = list(re.finditer(pattern, text[:offset]))
+        if not found:
+            return "flattened source; no heading anchor (provisional)"
+        start = found[-1].start()
+        excerpt = re.sub(r"\s+", " ", text[start:min(offset, start + 140)]).strip()
+        suffix = "…" if start + 140 < offset else ""
+        label = "flattened heading context (provisional): "
+        return (label + excerpt[:160-len(label)-len(suffix)] + suffix)[:160]
+    pattern = r"(?m)^\s{0,3}#{1,6}\s+([^\n]+)"
     found = list(re.finditer(pattern, text[:offset]))
-    return found[-1].group(1).strip() if found else "front matter / unsectioned source text"
+    if not found:
+        return "front matter / unsectioned source text"
+    title = re.sub(r"\s+", " ", found[-1].group(1).strip())
+    return title if len(title) <= 160 else title[:157].rstrip() + "…"
 
 def conflicts_for(s):
     low=s.lower(); refs=[]
@@ -135,12 +149,14 @@ def main():
         OUT.mkdir(parents=True,exist_ok=True)
         (OUT/"statements.jsonl").write_text(jsonl)
         (OUT/"source-coverage.json").write_text(json.dumps(coverage_doc,indent=2,ensure_ascii=False)+"\n")
-        (OUT/"README.md").write_text("\n".join(md))
+        def write_markdown(path, lines):
+            path.write_text("\n".join(line.rstrip(" \t") for line in lines).rstrip()+"\n")
+        write_markdown(OUT/"README.md", md)
         human=["# Source-occurrence ledger (mechanical preservation layer)","", "Not an atomic requirement inventory. Repetitions remain separate. Each occurrence is verbatim source text with a stable ID and heuristic planned design destination.",""]
         for r in rows:
             loc=r["locator"]
-            human += [f"## {r['id']} — {r['source_file']}:{loc['line']}","",f"**Domains:** {', '.join(r['domains'])}  ",f"**Modality:** {r['modality']}  ",f"**Design targets:** {'; '.join(t['filename']+' '+t['section'] for t in r['design_targets'])}","",r["statement"],""]
-        (OUT/"statements.md").write_text("\n".join(human))
+            human += [f"## {r['id']} — {r['source_file']}:{loc['line']}","",f"**Domains:** {', '.join(r['domains'])}",f"**Modality:** {r['modality']}",f"**Design targets:** {'; '.join(t['filename']+' '+t['section'] for t in r['design_targets'])}","",r["statement"],""]
+        write_markdown(OUT/"statements.md", human)
         print(f"built {len(rows)} rows")
         return 0
     errors=[]
@@ -160,6 +176,8 @@ def main():
         if not isinstance(ba,int) or not isinstance(bb,int) or (ba,bb)!=(expected_ba,expected_bb) or raw[ba:bb]!=r["statement"].encode("utf-8"): errors.append(f"bad byte span {r.get('id')}")
         if not r.get("domains"): errors.append(f"missing domains {r.get('id')}")
         if not r.get("design_targets"): errors.append(f"missing design target {r.get('id')}")
+        if not isinstance(loc.get("section"),str) or len(loc["section"])>160: errors.append(f"unbounded/missing section hint {r.get('id')}")
+        if str(r.get("id","")).startswith("O-") and "provisional" not in loc.get("section",""): errors.append(f"flattened section hint not marked provisional {r.get('id')}")
     for _,name in SOURCES:
         raw=(ROOT/"sources"/name).read_bytes()
         expected=saved_coverage.get("source_coverage",{}).get(name,{})
