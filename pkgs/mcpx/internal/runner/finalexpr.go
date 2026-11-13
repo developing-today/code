@@ -159,9 +159,25 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 	lastEnd := -1  // offset just past its last code token
 	head := ""     // first word of the current statement
 	stmtTokens := 0
-	condGroup := false // the statement so far is a control head + its condition group
+	condGroup := false   // the statement so far is a control head + its condition group
 	lastOperand := false // the last significant token can end an expression
 	prevOperand := false
+	// Function/class expression tracking (CODE-19 review, PR #9344):
+	// a body brace owned by an expression must not be mistaken for a
+	// statement block. parenOrigin records the word (and its offset)
+	// that opened each paren group; closedOrigin is the group most
+	// recently closed, valid only until the next token. lastWord /
+	// lastWordAt track the most recent identifier or keyword, and
+	// classAt the most recent `class` keyword's offset.
+	type parenOrigin struct {
+		word string
+		at   int
+	}
+	var parenStack []parenOrigin
+	var closedOrigin *parenOrigin
+	lastWord := ""
+	lastWordAt := -1
+	classAt := -1
 
 	i := 0
 	if strings.HasPrefix(src, "#!") {
@@ -182,11 +198,13 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 		start, lastEnd, head = -1, -1, ""
 		stmtTokens, condGroup = 0, false
 		lastOperand = false
+		classAt = -1
 		// A completed statement resets the operand context: a /
 		// that opens the next statement is a regex, not division.
 		prevOperand = false
 	}
 	markToken := func(pos, end int) {
+		closedOrigin = nil
 		if start < 0 {
 			start = pos
 		}
@@ -340,6 +358,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			continue
 		case c == '(':
 			markToken(i, i+1)
+			parenStack = append(parenStack, parenOrigin{word: lastWord, at: lastWordAt})
 			lastOperand = false
 			if paren == 0 && stmtTokens == 2 && controlHeads[head] {
 				condGroup = true
@@ -350,6 +369,11 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			continue
 		case c == ')':
 			markToken(i, i+1)
+			if len(parenStack) > 0 {
+				o := parenStack[len(parenStack)-1]
+				parenStack = parenStack[:len(parenStack)-1]
+				closedOrigin = &o
+			}
 			paren--
 			prevOperand = true
 			lastOperand = true
@@ -381,9 +405,22 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			// a control head is its block, and the body token
 			// itself clears condGroup.
 			wasCond := condGroup
+			// A function or class expression in expression
+			// position owns its body: `x = function() {} || 42`
+			// in an unbraced control body is one expression, and
+			// the body's close must not split it (CODE-19
+			// review, PR #9344). A function/class keyword at
+			// the statement's own start is a declaration and
+			// keeps the block reading.
+			exprBody := closedOrigin != nil && closedOrigin.word == "function" && closedOrigin.at > start && start >= 0
+			if lastWord == "class" && classAt > start && start >= 0 {
+				exprBody = true
+			}
 			markToken(i, i+1)
 			lastOperand = false
-			if prevOperand || wasCond {
+			if exprBody {
+				braces = append(braces, 'o')
+			} else if prevOperand || wasCond {
 				// After a value or a condition group, { opens a
 				// block.
 				braces = append(braces, '{')
@@ -427,7 +464,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			// can end one and what follows plainly does not continue
 			// it (a chained call, a binary operator, an else/catch
 			// belonging to the statement above).
-			if (canEndAtNewline(src, lastEnd) || lastOperand) && !condGroup && !operandKeywords[lastWordOf(src, lastEnd)] && !continuesOnNextLine(src, i+1) {
+			if (canEndAtNewline(src, lastEnd) || lastOperand) && !condGroup && !operandKeywordSuppresses(src, lastEnd) && !continuesOnNextLine(src, i+1) {
 				boundary()
 			}
 			i++
@@ -447,6 +484,10 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 		if j > i {
 			word := src[i:j]
 			markToken(i, j)
+			lastWord, lastWordAt = word, i
+			if word == "class" {
+				classAt = i
+			}
 			if head == "" && start == i {
 				head = word
 			}
@@ -483,6 +524,25 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 	}
 	boundary()
 	return spans, hasDefault, true
+}
+
+// operandKeywordSuppresses reports whether the word the code up to
+// end finishes with is an operand keyword that makes a newline a
+// continuation rather than a boundary. A word reached through a
+// property dot is a property name, never an operator: in
+// `obj.as\n42` the `as` is a member name and the newline separates
+// two statements (CODE-19 review, PR #9344).
+func operandKeywordSuppresses(src string, end int) bool {
+	word := lastWordOf(src, end)
+	if !operandKeywords[word] {
+		return false
+	}
+	if word == "as" || word == "satisfies" {
+		if at := end - len(word); at > 0 && src[at-1] == '.' {
+			return false
+		}
+	}
+	return true
 }
 
 // lastWordOf returns the identifier the code up to end finishes

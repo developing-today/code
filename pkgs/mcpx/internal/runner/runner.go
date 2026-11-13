@@ -516,7 +516,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// so hits the runtime's type-check cache, and a different program
 		// cannot be mistaken for it.
 		source := opts.Source
-		if opts.Export == "" && strings.TrimSpace(opts.Launcher) != LauncherNone && opts.Log != nil && opts.OnFinal != nil && strings.Contains(opts.ClientSource, "__mcpxFinal") {
+		if opts.Export == "" && strings.TrimSpace(opts.Launcher) != LauncherNone && opts.Log != nil && opts.OnFinal != nil && strings.Contains(opts.ClientSource, "__mcpxFinal") && launcherInstallsCaptureGlobal(opts) {
 			// CODE-19: a snippet's final top-level expression is
 			// its result; rewrite it to report through the client
 			// (whose capture global exists only when the client
@@ -1159,6 +1159,30 @@ func textScanSource(opts Options, scriptPath string) string {
 		scan += "\n" + string(b)
 	}
 	return scan
+}
+
+// launcherInstallsCaptureGlobal reports whether the selected
+// launcher actually installs the globals (installGlobals), which is
+// what defines __mcpxFinal at run time. The built-in launcher always
+// does. A custom template does only when it reaches the globals --
+// through the @globals placeholder or by calling installGlobals
+// itself; a template that references @import or @entry but never
+// @globals leaves __mcpxFinal undefined, so the CODE-19 rewrite must
+// not run for it (CODE-19 review, PR #9344).
+func launcherInstallsCaptureGlobal(opts Options) bool {
+	custom := strings.TrimSpace(opts.Launcher)
+	if custom == "" {
+		return true
+	}
+	if strings.Contains(custom, "installGlobals(") {
+		return true
+	}
+	for _, p := range launcher.Used(launcher.Template{Text: custom}) {
+		if p == launcher.Globals {
+			return true
+		}
+	}
+	return false
 }
 
 // LauncherNone given as the launcher means no shim at all: the script is

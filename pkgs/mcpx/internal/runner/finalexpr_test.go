@@ -68,6 +68,12 @@ func TestRewriteFinalExpressionReviewCases(t *testing.T) {
 		{"ts interface tail abstains", "interface Answer { value: number }", "", false},
 		{"ts enum tail abstains", "enum Colour { Red, Green }", "", false},
 		{"new across a newline", "class C {}\nnew\nC()", "class C {}\n__mcpxFinal(await (new\nC()));", true},
+		{"property named as splits at newline", "const obj = { as: 1 };\nobj.as\n42", "const obj = { as: 1 };\nobj.as\n__mcpxFinal(await (42));", true},
+		{"property named satisfies splits at newline", "const obj = { satisfies: 1 };\nobj.satisfies\n42", "const obj = { satisfies: 1 };\nobj.satisfies\n__mcpxFinal(await (42));", true},
+		{"as assertion across a newline still one expression", "const v = 1 as\nnumber;\nv", "const v = 1 as\nnumber;\n__mcpxFinal(await (v));", true},
+		{"function expression body in unbraced if is not split", "let x;\nif (true) x = function() {} || 42", "", false},
+		{"class expression body in unbraced if is not split", "let x;\nif (true) x = class {} || 42", "", false},
+		{"function expression is the final expression", "const f = function() { return 1; };\nf()", "const f = function() { return 1; };\n__mcpxFinal(await (f()));", true},
 		{"typeof across a newline", "typeof\nfoo", "__mcpxFinal(await (typeof\nfoo));", true},
 	}
 	for _, tc := range cases {
@@ -212,5 +218,29 @@ func TestRewriteFinalExpressionReview5Cases(t *testing.T) {
 	src := "console.log(await f()); async /* helper */ function f() { return 42 }"
 	if got, ok := rewriteFinalExpression(src); ok || got != src {
 		t.Errorf("async comment declaration: got %q, %v; want untouched", got, ok)
+	}
+}
+
+// launcherInstallsCaptureGlobal (CODE-19 review, PR #9344): the
+// rewrite gate must not fire for a custom launcher that never
+// installs the capture global.
+func TestLauncherInstallsCaptureGlobal(t *testing.T) {
+	cases := []struct {
+		name     string
+		launcher string
+		want     bool
+	}{
+		{"built-in launcher", "", true},
+		{"custom with globals placeholder", "@globals\n@entry", true},
+		{"custom calling installGlobals itself", "installGlobals();\n@entry", true},
+		{"custom entry only", "@entry", false},
+		{"custom import only", "@import", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := launcherInstallsCaptureGlobal(Options{Launcher: tc.launcher}); got != tc.want {
+				t.Errorf("launcherInstallsCaptureGlobal(%q) = %v, want %v", tc.launcher, got, tc.want)
+			}
+		})
 	}
 }
