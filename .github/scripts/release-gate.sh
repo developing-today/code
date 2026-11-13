@@ -15,17 +15,29 @@
 #   1. The release SHA must be the current head of main. Tag pushes that
 #      point anywhere else are refused — a tag on a stale or detached SHA
 #      has no main-tier runs to judge it by.
-#   2. Every watched workflow must report a completed `success` verdict:
-#      its latest push-to-main run on that exact SHA when one exists, else
-#      its latest push-to-main run on main. Path-filtered workflows (id,
-#      id bench, mcpx, mcpx conformance) legitimately have no run on SHAs
-#      outside their paths — requiring an exact-SHA run from every workflow
-#      would refuse every ordinary component release — so the fallback
-#      judges main health for exactly those workflows. Missing (no runs at
-#      all), in-progress, or non-success verdicts refuse the release.
-#      Residual risk: a path-filter gap (a commit that should have triggered
-#      a watched workflow but did not) is judged on an older run. Keep the
-#      path filters in the watched workflows accurate.
+#   2. Every watched workflow must report a completed `success` verdict,
+#      judged by trigger class (verified against the workflow files on
+#      main, 2026-11-13):
+#      - Unfiltered push workflows (id): latest push-to-main run on the
+#        exact release SHA. No fallback — an older run never judges
+#        newer code.
+#      - Path-filtered push workflows (mcpx, mcpx conformance, mcpx nix
+#        build, go modules build, identity build, map build, id bench):
+#        exact-SHA push run when one exists, else their latest push-to-main
+#        run. A commit outside their paths legitimately never triggered
+#        them; requiring an exact-SHA run would refuse every ordinary
+#        component release. Residual risk: a path-filter gap (a commit
+#        that should have triggered a watched workflow but did not) is
+#        judged on an older run. Keep the path filters accurate.
+#      - Non-push workflows (nix ci — schedule/workflow_dispatch only):
+#        their latest completed run on main, of any event, whose head
+#        SHA is the release SHA or an ancestor of it (decision on #1782,
+#        2026-11-13, option (b) from issue note 6782949534). The judged
+#        code is therefore always contained in the release. They have
+#        no push runs at all, so the push rules above could never pass
+#        them and every tag release would be refused permanently.
+#      Missing (no runs at all), in-progress, or non-success verdicts
+#      refuse the release.
 #
 # There is deliberately NO bypass flag on the tag path. The override path
 # is procedural (fix forward on main, wait for green, re-tag; a genuine
@@ -60,23 +72,51 @@ WATCHED_WORKFLOWS=(
 )
 
 # Watched workflows whose push-to-main trigger is path-filtered (verified
-# against the workflow files on main, 2026-11-10: mcpx.yml,
-# mcpx-conformance.yml, id-bench.yml). Only these may fall back to their
-# latest push-to-main run when the release SHA has no run of their own:
-# a commit outside their paths legitimately never triggered them. Every
-# other watched workflow must produce a push run on the exact release
-# SHA — accepting an older run for an unfiltered workflow would let a
-# release through on a verdict that predates the tagged code (CodeRabbit
-# finding on PR #4636). Keep this list in sync with the push triggers.
+# against the workflow files on main, 2026-11-13: mcpx.yml,
+# mcpx-conformance.yml, mcpx-nixbuild.yml, go-modules-build.yml,
+# identity-build.yml, map-build.yml, id-bench.yml — each is
+# push: branches: [main] with a paths: filter). Only these may fall back
+# to their latest push-to-main run when the release SHA has no run of
+# their own: a commit outside their paths legitimately never triggered
+# them. Every other push workflow must produce a push run on the exact
+# release SHA — accepting an older run for an unfiltered workflow would
+# let a release through on a verdict that predates the tagged code
+# (CodeRabbit finding on PR #4636). Keep this list in sync with the
+# push triggers.
 PATH_FILTERED_WORKFLOWS=(
   "mcpx"
   "mcpx conformance"
+  "mcpx nix build"
+  "go modules build"
+  "identity build"
+  "map build"
   "id bench"
 )
 
 is_path_filtered() {
   local candidate="$1" wf
   for wf in "${PATH_FILTERED_WORKFLOWS[@]}"; do
+    [ "$wf" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+# Watched workflows with NO push trigger at all (verified against the
+# workflow files on main, 2026-11-13: nix-ci.yml declares schedule +
+# workflow_dispatch only). These can never produce a push run, on any
+# SHA; they are judged by their latest completed run on main — any
+# event — whose head SHA is the release SHA or an ancestor of it
+# (decision on #1782, 2026-11-13, option (b)). Keep this list in sync
+# with the workflow triggers: a workflow that gains a push trigger
+# leaves this list (and joins the path-filtered list instead if that
+# trigger is path-filtered).
+NON_PUSH_WORKFLOWS=(
+  "nix ci"
+)
+
+is_non_push() {
+  local candidate="$1" wf
+  for wf in "${NON_PUSH_WORKFLOWS[@]}"; do
     [ "$wf" = "$candidate" ] && return 0
   done
   return 1
@@ -97,6 +137,19 @@ verdict_for_event() {
 # Pure logic for one workflow's latest run; exit 0 = green.
 verdict_for_conclusion() {
   [ "$2" = "completed" ] && [ "$1" = "success" ]
+}
+
+# is_ancestor_or_equal <run_sha> <release_sha>
+# Exit 0 when the run's SHA is the release SHA or provably an ancestor
+# of it in the local checkout. The gate jobs checkout with
+# fetch-depth: 0, so full history is present there. A SHA that cannot
+# be proven — object missing locally — is NOT at-or-before: fail
+# closed rather than judge a release on an unverifiable verdict.
+is_ancestor_or_equal() {
+  [ "$1" = "$2" ] && return 0
+  git cat-file -e "$1^{commit}" 2>/dev/null || return 1
+  git cat-file -e "$2^{commit}" 2>/dev/null || return 1
+  git merge-base --is-ancestor "$1" "$2" 2>/dev/null
 }
 
 self_test() {
@@ -137,7 +190,7 @@ set -euo pipefail
 endpoint="${2:-}"
 case "$endpoint" in
   */branches/main)
-    printf '{"commit":{"sha":"success-sha"}}\n'
+    printf '{"commit":{"sha":"%s"}}\n' "${RELEASE_GATE_FAKE_MAIN_SHA:-success-sha}"
     ;;
   */actions/workflows\?per_page=100)
     cat <<'JSON'
@@ -158,7 +211,11 @@ JSON
         printf '{"workflow_runs":[{"head_sha":"older-sha","conclusion":"success","status":"completed","created_at":"2026-11-01T00:00:00Z","html_url":"https://example.invalid/run/2"}]}\n' ;;
       fallback-red:3)
         printf '{"workflow_runs":[{"head_sha":"older-sha","conclusion":"success","status":"completed","created_at":"2026-11-01T00:00:00Z","html_url":"https://example.invalid/run/2a"},{"head_sha":"older-sha-2","conclusion":"failure","status":"completed","created_at":"2026-11-01T12:00:00Z","html_url":"https://example.invalid/run/2b"}]}\n' ;;
-      *) printf '{"workflow_runs":[{"head_sha":"success-sha","conclusion":"success","status":"completed","created_at":"2026-11-02T00:00:00Z","html_url":"https://example.invalid/run/%s"}]}\n' "$id" ;;
+      nonpush:1)
+        printf '{"workflow_runs":[{"head_sha":"%s","conclusion":"success","status":"completed","created_at":"2026-11-02T00:00:00Z","html_url":"https://example.invalid/run/1a"}]}\n' "${RELEASE_GATE_FAKE_ANCESTOR_SHA:-missing-sha}" ;;
+      nonpush-red:1)
+        printf '{"workflow_runs":[{"head_sha":"%s","conclusion":"failure","status":"completed","created_at":"2026-11-02T00:00:00Z","html_url":"https://example.invalid/run/1b"}]}\n' "${RELEASE_GATE_FAKE_ANCESTOR_SHA:-missing-sha}" ;;
+      *) printf '{"workflow_runs":[{"head_sha":"%s","conclusion":"success","status":"completed","created_at":"2026-11-02T00:00:00Z","html_url":"https://example.invalid/run/%s"}]}\n' "${RELEASE_GATE_FAKE_MAIN_SHA:-success-sha}" "$id" ;;
     esac
     exit 0
     ;;
@@ -186,6 +243,50 @@ FAKE_GH
   run_gate_case fallback 0
   run_gate_case fallback-red 1
   run_gate_case success 1 stale-sha
+
+  # Ancestor logic against a real tiny git history: a run at the
+  # release SHA or at a parent commit is at-or-before; a run at a
+  # descendant, or a SHA that does not exist locally, is not.
+  local gtmp parent_sha child_sha
+  gtmp="$(mktemp -d)"
+  git init -q "$gtmp"
+  git -C "$gtmp" config user.email gate@example.invalid
+  git -C "$gtmp" config user.name gate
+  echo a >"$gtmp/a" && git -C "$gtmp" add a && git -C "$gtmp" commit -qm one
+  parent_sha="$(git -C "$gtmp" rev-parse HEAD)"
+  echo b >"$gtmp/b" && git -C "$gtmp" add b && git -C "$gtmp" commit -qm two
+  child_sha="$(git -C "$gtmp" rev-parse HEAD)"
+  in_repo_ancestor() { ( cd "$gtmp" && is_ancestor_or_equal "$1" "$2" ); }
+  check "run at release SHA is at-or-before" 0 -- in_repo_ancestor "$child_sha" "$child_sha"
+  check "run at parent commit is at-or-before" 0 -- in_repo_ancestor "$parent_sha" "$child_sha"
+  check "run at child is NOT at-or-before parent" 1 -- in_repo_ancestor "$child_sha" "$parent_sha"
+  check "unknown SHA is NOT at-or-before" 1 -- in_repo_ancestor "0000000000000000000000000000000000000000" "$child_sha"
+
+  # Full gate, non-push workflow judged on an ancestor run: nix ci's
+  # latest completed main run sits at the parent commit, everything
+  # else is exact-SHA green at the child (the release SHA) — passes.
+  # The same ancestor run red refuses; a descendant run (not yet in
+  # the release) also refuses.
+  run_gate_ancestor_case() {
+    local fixture="$1" expected="$2" main_sha="$3" anc_sha="$4" release_sha="$5" got=0
+    local script_path
+    script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    ( cd "$gtmp" && GH_FIXTURE="$fixture" RELEASE_GATE_FAKE_MAIN_SHA="$main_sha" \
+        RELEASE_GATE_FAKE_ANCESTOR_SHA="$anc_sha" GH_TOKEN=fake-token GH_REPO=owner/repo \
+        GITHUB_EVENT_NAME=push PATH="$tmp/bin:$PATH" bash "$script_path" "$release_sha" ) \
+      >"$tmp/output" 2>&1 || got=$?
+    if [ "$got" = "$expected" ]; then
+      echo "ok: full gate non-push fixture $fixture (exit $got)"
+    else
+      echo "NOT OK: full gate non-push fixture $fixture (expected exit $expected, got $got)"
+      cat "$tmp/output"
+      failures=$((failures + 1))
+    fi
+  }
+  run_gate_ancestor_case nonpush 0 "$child_sha" "$parent_sha" "$child_sha"
+  run_gate_ancestor_case nonpush-red 1 "$child_sha" "$parent_sha" "$child_sha"
+  run_gate_ancestor_case nonpush 1 "$parent_sha" "$child_sha" "$parent_sha"
+  rm -rf "$gtmp"
 
   # Argument handling (no network): unknown flags fail fast.
   local arg_status=0
@@ -260,6 +361,38 @@ for wf in "${WATCHED_WORKFLOWS[@]}"; do
   if [ -z "${wid:-}" ]; then
     verdict_fail "$wf: no workflow with that name (renamed? update release-gate.sh AND main-broken.yml together)"
     failures=$((failures + 1))
+    continue
+  fi
+  if is_non_push "$wf"; then
+    # No push trigger: judge the latest completed run on main (any
+    # event) whose head SHA is the release SHA or an ancestor of it.
+    runs_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&per_page=100")" \
+      || die "could not list runs for $wf"
+    run_json=""
+    while IFS= read -r cand; do
+      [ -n "$cand" ] || continue
+      cand_sha="$(jq -r '.head_sha // empty' <<<"$cand")"
+      if [ -n "$cand_sha" ] && is_ancestor_or_equal "$cand_sha" "$SHA"; then
+        run_json="$cand"
+        break
+      fi
+    done < <(jq -c '[.workflow_runs[] | select(.status == "completed")] | sort_by(.created_at) | reverse | .[]' <<<"$runs_json")
+    basis="latest completed main run at-or-before the release SHA (non-push workflow)"
+    if [ -z "$run_json" ]; then
+      verdict_fail "$wf: no completed run on $MAIN_BRANCH at or before $SHA (missing main-gate signal)"
+      failures=$((failures + 1))
+      continue
+    fi
+    conclusion="$(jq -r '.conclusion // empty' <<<"$run_json")"
+    status="$(jq -r '.status // empty' <<<"$run_json")"
+    url="$(jq -r '.html_url // empty' <<<"$run_json")"
+    run_sha="$(jq -r '.head_sha // empty' <<<"$run_json")"
+    if verdict_for_conclusion "$conclusion" "$status"; then
+      echo "release-gate: green ($basis): $wf ($url)"
+    else
+      verdict_fail "$wf: conclusion=${conclusion:-none} status=${status:-none} run-sha=${run_sha:-none} [$basis] ($url)"
+      failures=$((failures + 1))
+    fi
     continue
   fi
   runs_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&event=push&per_page=100")" \
