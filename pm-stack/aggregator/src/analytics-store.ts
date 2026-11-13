@@ -220,10 +220,12 @@ interface AttemptAggregates {
   daily21d: { day: string; calls: number; tokens: number }[];
 }
 
-function queryLegRows(db: Database, now: number): DayLegRow[] {
+const DAY_SELECT = `date(time_started/1000, 'unixepoch', 'localtime')`;
+
+function queryLegRowsRange(db: Database, from: number, to: number | null): DayLegRow[] {
   return db
     .query(
-      `SELECT date(time_started/1000, 'unixepoch', 'localtime') AS day,
+      `SELECT ${DAY_SELECT} AS day,
               provider_id, credential_id,
               COUNT(*) AS calls,
               SUM(outcome = 'success') AS success,
@@ -235,16 +237,20 @@ function queryLegRows(db: Database, now: number): DayLegRow[] {
               COALESCE(SUM(cost_usd), 0) AS cost,
               COUNT(cost_usd) AS cost_rows
          FROM route_attempt
-        WHERE time_started >= ? 
+        WHERE time_started >= ? AND (? IS NULL OR time_started < ?)
         GROUP BY day, provider_id, credential_id`,
     )
-    .all(now - 15 * DAY_MS) as DayLegRow[];
+    .all(from, to, to) as DayLegRow[];
 }
 
-function queryModelRows(db: Database, now: number): DayModelRow[] {
+function queryLegRows(db: Database, now: number): DayLegRow[] {
+  return queryLegRowsRange(db, now - 15 * DAY_MS, null);
+}
+
+function queryModelRowsRange(db: Database, from: number, to: number | null): DayModelRow[] {
   return db
     .query(
-      `SELECT date(time_started/1000, 'unixepoch', 'localtime') AS day,
+      `SELECT ${DAY_SELECT} AS day,
               model_id, variant,
               COUNT(*) AS calls,
               SUM(outcome = 'success') AS success,
@@ -256,10 +262,14 @@ function queryModelRows(db: Database, now: number): DayModelRow[] {
               COALESCE(SUM(cost_usd), 0) AS cost,
               COUNT(cost_usd) AS cost_rows
          FROM route_attempt
-        WHERE time_started >= ?
+        WHERE time_started >= ? AND (? IS NULL OR time_started < ?)
         GROUP BY day, model_id, variant`,
     )
-    .all(now - 15 * DAY_MS) as DayModelRow[];
+    .all(from, to, to) as DayModelRow[];
+}
+
+function queryModelRows(db: Database, now: number): DayModelRow[] {
+  return queryModelRowsRange(db, now - 15 * DAY_MS, null);
 }
 
 function queryCoverage(db: Database): { f: number; t: number } {
@@ -278,22 +288,41 @@ function queryHourRows(db: Database, now: number): DayModelRow[] {
     .all(now - HOUR_MS) as DayModelRow[];
 }
 
+function queryCredentialCoverageRange(db: Database, from: number, to: number | null): { n: number; c: number } {
+  return db
+    .query(`SELECT COUNT(*) AS n, COUNT(credential_id) AS c FROM route_attempt WHERE time_started >= ? AND (? IS NULL OR time_started < ?)`)
+    .get(from, to, to) as { n: number; c: number };
+}
+
 function queryCredentialCoveragePct(db: Database, now: number): number | null {
-  const credCov = db
-    .query(`SELECT COUNT(*) AS n, COUNT(credential_id) AS c FROM route_attempt WHERE time_started >= ?`)
-    .get(now - 7 * DAY_MS) as { n: number; c: number };
+  const credCov = queryCredentialCoverageRange(db, now - 7 * DAY_MS, null);
   return credCov.n > 0 ? (credCov.c / credCov.n) * 100 : null;
 }
 
-function queryHourly7d(db: Database, now: number): { hour: number; calls: number; tokens: number }[] {
+function queryHourly7dRange(db: Database, from: number, to: number | null): { hour: number; calls: number; tokens: number }[] {
   return db
     .query(
       `SELECT CAST(strftime('%H', time_started/1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
               COUNT(*) AS calls,
               COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
-         FROM route_attempt WHERE time_started >= ? GROUP BY hour ORDER BY hour`,
+         FROM route_attempt WHERE time_started >= ? AND (? IS NULL OR time_started < ?) GROUP BY hour ORDER BY hour`,
     )
-    .all(now - 7 * DAY_MS) as { hour: number; calls: number; tokens: number }[];
+    .all(from, to, to) as { hour: number; calls: number; tokens: number }[];
+}
+
+function queryHourly7d(db: Database, now: number): { hour: number; calls: number; tokens: number }[] {
+  return queryHourly7dRange(db, now - 7 * DAY_MS, null);
+}
+
+function queryDowHistoryRange(db: Database, from: number, to: number): { dow: number; calls: number; tokens: number }[] {
+  return db
+    .query(
+      `SELECT CAST(strftime('%w', time_started/1000, 'unixepoch', 'localtime') AS INTEGER) AS dow,
+              COUNT(*) AS calls,
+              COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
+         FROM route_attempt WHERE time_started >= ? AND time_started < ? GROUP BY dow ORDER BY dow`,
+    )
+    .all(from, to) as { dow: number; calls: number; tokens: number }[];
 }
 
 function queryDowHistory(db: Database): { dow: number; calls: number; tokens: number }[] {
@@ -307,15 +336,43 @@ function queryDowHistory(db: Database): { dow: number; calls: number; tokens: nu
     .all() as { dow: number; calls: number; tokens: number }[];
 }
 
-function queryDaily21d(db: Database, now: number): { day: string; calls: number; tokens: number }[] {
+function queryDaily21dRange(db: Database, from: number, to: number | null): { day: string; calls: number; tokens: number }[] {
   return db
     .query(
-      `SELECT date(time_started/1000, 'unixepoch', 'localtime') AS day,
+      `SELECT ${DAY_SELECT} AS day,
               COUNT(*) AS calls,
               COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
-         FROM route_attempt WHERE time_started >= ? GROUP BY day ORDER BY day`,
+         FROM route_attempt WHERE time_started >= ? AND (? IS NULL OR time_started < ?) GROUP BY day ORDER BY day`,
     )
-    .all(now - 21 * DAY_MS) as { day: string; calls: number; tokens: number }[];
+    .all(from, to, to) as { day: string; calls: number; tokens: number }[];
+}
+
+function queryDaily21d(db: Database, now: number): { day: string; calls: number; tokens: number }[] {
+  return queryDaily21dRange(db, now - 21 * DAY_MS, null);
+}
+
+/** [start, end) slice bounds covering [from, to): the first slice ends
+ * at the next local midnight after `from`, the rest are whole local
+ * days, the last is clipped at `to`. Day-aligned slices keep every
+ * day-grouped query exact under plain concatenation. */
+function daySliceBounds(from: number, to: number): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  let start = from;
+  while (start < to) {
+    const d = new Date(start);
+    d.setHours(24, 0, 0, 0);
+    const end = Math.min(d.getTime(), to);
+    out.push([start, end]);
+    start = end;
+  }
+  return out;
+}
+
+/** [start, end) bounds covering [from, to) in fixed-width chunks. */
+function chunkBounds(from: number, to: number, widthMs: number): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let start = from; start < to; start += widthMs) out.push([start, Math.min(start + widthMs, to)]);
+  return out;
 }
 
 function computeAttemptAggregates(db: Database, now: number): AttemptAggregates {
@@ -342,6 +399,15 @@ function computeAttemptAggregates(db: Database, now: number): AttemptAggregates 
 // so a refresh never monopolizes the loop either. The first build in
 // a process computes synchronously — server.ts warms it at boot, off
 // the request path.
+//
+// #5082 follow-up (same day): one query per macrotask was not enough —
+// the widest single scans (leg/model rows over 15d, the unbounded
+// day-of-week history) still blocked the loop for ~2.6 s each. The
+// refresh now runs every windowed scan in day slices (30-day chunks
+// for the day-of-week history, whose span is set by the coverage
+// read): the widest measured slice is ~0.2 s, and slices merge
+// exactly — day-grouped rows are disjoint across day-aligned slices,
+// hour/day-of-week buckets merge by summation.
 const AGGREGATES_TTL_MS = 300_000;
 let aggregatesCache: { path: string; at: number; data: AttemptAggregates } | null = null;
 let aggregatesRefreshing = false;
@@ -350,24 +416,64 @@ function refreshAttemptAggregates(db: Database, path: string): void {
   if (aggregatesRefreshing) return;
   aggregatesRefreshing = true;
   const now = Date.now();
-  const data: Partial<AttemptAggregates> = {};
-  const steps: Array<() => void> = [
-    () => { data.legRows = queryLegRows(db, now); },
-    () => { data.modelRows = queryModelRows(db, now); },
-    () => { data.coverage = queryCoverage(db); },
-    () => { data.hourRows = queryHourRows(db, now); },
-    () => { data.credentialCoveragePct = queryCredentialCoveragePct(db, now); },
-    () => { data.hourly7d = queryHourly7d(db, now); },
-    () => { data.dowHistory = queryDowHistory(db); },
-    () => { data.daily21d = queryDaily21d(db, now); },
-  ];
+  const until = now + 1;
+  const data: Partial<AttemptAggregates> = { legRows: [], modelRows: [], daily21d: [] };
+  const hourlyByHour = new Map<number, { hour: number; calls: number; tokens: number }>();
+  const dowByDow = new Map<number, { dow: number; calls: number; tokens: number }>();
+  const cred = { n: 0, c: 0 };
+  const steps: Array<() => void> = [];
+  for (const [from, to] of daySliceBounds(now - 15 * DAY_MS, until)) {
+    steps.push(() => { data.legRows!.push(...queryLegRowsRange(db, from, to)); });
+    steps.push(() => { data.modelRows!.push(...queryModelRowsRange(db, from, to)); });
+  }
+  steps.push(() => { data.hourRows = queryHourRows(db, now); });
+  for (const [from, to] of daySliceBounds(now - 7 * DAY_MS, until)) {
+    steps.push(() => {
+      const part = queryCredentialCoverageRange(db, from, to);
+      cred.n += part.n;
+      cred.c += part.c;
+    });
+    steps.push(() => {
+      for (const r of queryHourly7dRange(db, from, to)) {
+        const acc = hourlyByHour.get(r.hour) ?? { hour: r.hour, calls: 0, tokens: 0 };
+        acc.calls += r.calls;
+        acc.tokens += r.tokens;
+        hourlyByHour.set(r.hour, acc);
+      }
+    });
+  }
+  for (const [from, to] of daySliceBounds(now - 21 * DAY_MS, until)) {
+    steps.push(() => { data.daily21d!.push(...queryDaily21dRange(db, from, to)); });
+  }
+  steps.push(() => {
+    data.coverage = queryCoverage(db);
+    // The day-of-week history is unbounded; slice its full span (set
+    // by the coverage read) into 30-day chunks merged by summation.
+    const from = data.coverage.f ?? until;
+    for (const [cf, ct] of chunkBounds(from, until, 30 * DAY_MS)) {
+      steps.push(() => {
+        for (const r of queryDowHistoryRange(db, cf, ct)) {
+          const acc = dowByDow.get(r.dow) ?? { dow: r.dow, calls: 0, tokens: 0 };
+          acc.calls += r.calls;
+          acc.tokens += r.tokens;
+          dowByDow.set(r.dow, acc);
+        }
+      });
+    }
+    steps.push(() => {
+      data.credentialCoveragePct = cred.n > 0 ? (cred.c / cred.n) * 100 : null;
+      data.hourly7d = [...hourlyByHour.values()].sort((a, b) => a.hour - b.hour);
+      data.dowHistory = [...dowByDow.values()].sort((a, b) => a.dow - b.dow);
+    });
+  });
+  let idx = 0;
   const step = (): void => {
-    const next = steps.shift();
-    if (!next) {
+    if (idx >= steps.length) {
       aggregatesCache = { path, at: Date.now(), data: data as AttemptAggregates };
       aggregatesRefreshing = false;
       return;
     }
+    const next = steps[idx++];
     try {
       next();
     } catch {
@@ -419,107 +525,170 @@ function dayRange(now: number, daysBack: number): Set<string> {
 
 // ---------------------------------------------------------------------------
 // Activity scan (tool calls / skills / mcpx / fleet) — slow over the
-// transcript store (~30s for 7d), so it runs on a stale-while-
-// revalidate cache: the first caller gets null + a background
-// computation; later callers get the last computed value.
+// transcript store, so it runs on a stale-while-revalidate cache: the
+// first caller gets null + a background computation; later callers
+// get the last computed value.
+//
+// #5082 follow-up (2026-11-13): the background computation used to be
+// ONE synchronous block — measured 15.5 s of json_each scans over
+// session_message for the 7d window (tool rows 7.4 s, skill rows
+// 3.8 s, shell rows 4.0 s) — executed in a single setTimeout callback
+// on the server's only event loop. Every request that arrived during
+// the block stalled behind it: the hourly watch measured / at 17.5 s
+// and /today at 9.7 s on its first pass (the no-await / shell has no
+// other way to be slow), clean on the second pass. The computation
+// now runs in 12-hour slices, one query per macrotask (the widest
+// measured slice is ~0.1-0.5 s): range bounds let SQLite use the
+// time_created index per slice, and per-slice counts merge by
+// summation, so the totals are exactly the whole-window counts.
 // ---------------------------------------------------------------------------
 
 const ACTIVITY_TTL_MS = 600_000;
+const ACTIVITY_SLICE_MS = 12 * HOUR_MS;
 let activityCache: { at: number; data: ActivityCounts } | null = null;
 let activityComputing = false;
 
-function computeActivity(db: Database, now: number): ActivityCounts {
+/** Build the chunked activity computation: a list of single-query
+ * steps (run one per macrotask by startActivityCompute) plus the
+ * assembler that folds the accumulated slices into ActivityCounts. */
+function activityComputePlan(db: Database, now: number): { steps: Array<() => void>; assemble: () => ActivityCounts } {
   const since = now - 7 * DAY_MS;
-  const toolRows = db
-    .query(
-      `SELECT json_extract(j.value, '$.name') AS name, COUNT(*) AS c
-         FROM session_message sm, json_each(sm.data, '$.content') j
-        WHERE sm.type = 'assistant' AND sm.time_created >= ?
-          AND json_extract(j.value, '$.type') = 'tool'
-        GROUP BY name ORDER BY c DESC`,
-    )
-    .all(since) as { name: string | null; c: number }[];
-  const named = toolRows.filter((r) => r.name);
-  const total = named.reduce((s, r) => s + r.c, 0);
-  const byName = new Map(named.map((r) => [r.name as string, r.c]));
-  const skillRows = db
-    .query(
+  const until = now + 1;
+  const toolCounts = new Map<string, number>();
+  const skillCounts = new Map<string, number>();
+  const fleet = new Map<string, number>();
+  let fleetTotal = 0;
+  let sessionRow: { total: number; roots: number; subs: number } = { total: 0, roots: 0, subs: 0 };
+  let turnCount = 0;
+  const steps: Array<() => void> = [];
+  for (const [from, to] of chunkBounds(since, until, ACTIVITY_SLICE_MS)) {
+    steps.push(() => {
+      const rows = db
+        .query(
+          `SELECT json_extract(j.value, '$.name') AS name, COUNT(*) AS c
+             FROM session_message sm, json_each(sm.data, '$.content') j
+            WHERE sm.type = 'assistant' AND sm.time_created >= ? AND sm.time_created < ?
+              AND json_extract(j.value, '$.type') = 'tool'
+            GROUP BY name`,
+        )
+        .all(from, to) as { name: string | null; c: number }[];
+      for (const r of rows) if (r.name) toolCounts.set(r.name, (toolCounts.get(r.name) ?? 0) + r.c);
+    });
+    steps.push(() => {
       // Skill name rides at state.input.id on live parts (verified
       // 2026-11-13: {"input":{"id":"diagnosing-bugs"}}); input.name
       // kept as a fallback for other part generations.
-      `SELECT COALESCE(json_extract(j.value, '$.state.input.id'), json_extract(j.value, '$.state.input.name')) AS name, COUNT(*) AS c
-         FROM session_message sm, json_each(sm.data, '$.content') j
-        WHERE sm.type = 'assistant' AND sm.time_created >= ?
-          AND json_extract(j.value, '$.type') = 'tool'
-          AND json_extract(j.value, '$.name') = 'skill'
-        GROUP BY name ORDER BY c DESC`,
-    )
-    .all(since) as { name: string | null; c: number }[];
-  // INFERRED fleet use: shell inputs mentioning the fleet binary.
-  const shellRows = db
-    .query(
-      `SELECT json_extract(j.value, '$.state.input.command') AS command
-         FROM session_message sm, json_each(sm.data, '$.content') j
-        WHERE sm.type = 'assistant' AND sm.time_created >= ?
-          AND json_extract(j.value, '$.type') = 'tool'
-          AND json_extract(j.value, '$.name') = 'shell'
-          AND json_extract(j.value, '$.state.input.command') LIKE '%fleet%'`,
-    )
-    .all(since) as { command: string | null }[];
-  const fleet = new Map<string, number>();
-  let fleetTotal = 0;
-  for (const row of shellRows) {
-    if (!row.command) continue;
-    for (const m of row.command.matchAll(/(?:^|[\s;|&\/])fleet\s+([a-z][a-z0-9-]*)/g)) {
-      fleet.set(m[1], (fleet.get(m[1]) ?? 0) + 1);
-      fleetTotal++;
-    }
+      const rows = db
+        .query(
+          `SELECT COALESCE(json_extract(j.value, '$.state.input.id'), json_extract(j.value, '$.state.input.name')) AS name, COUNT(*) AS c
+             FROM session_message sm, json_each(sm.data, '$.content') j
+            WHERE sm.type = 'assistant' AND sm.time_created >= ? AND sm.time_created < ?
+              AND json_extract(j.value, '$.type') = 'tool'
+              AND json_extract(j.value, '$.name') = 'skill'
+            GROUP BY name`,
+        )
+        .all(from, to) as { name: string | null; c: number }[];
+      for (const r of rows) if (r.name) skillCounts.set(r.name, (skillCounts.get(r.name) ?? 0) + r.c);
+    });
+    steps.push(() => {
+      // INFERRED fleet use: shell inputs mentioning the fleet binary.
+      const rows = db
+        .query(
+          `SELECT json_extract(j.value, '$.state.input.command') AS command
+             FROM session_message sm, json_each(sm.data, '$.content') j
+            WHERE sm.type = 'assistant' AND sm.time_created >= ? AND sm.time_created < ?
+              AND json_extract(j.value, '$.type') = 'tool'
+              AND json_extract(j.value, '$.name') = 'shell'
+              AND json_extract(j.value, '$.state.input.command') LIKE '%fleet%'`,
+        )
+        .all(from, to) as { command: string | null }[];
+      for (const row of rows) {
+        if (!row.command) continue;
+        for (const m of row.command.matchAll(/(?:^|[\s;|&\/])fleet\s+([a-z][a-z0-9-]*)/g)) {
+          fleet.set(m[1], (fleet.get(m[1]) ?? 0) + 1);
+          fleetTotal++;
+        }
+      }
+    });
   }
-  const sessionRow = db
-    .query(
-      `SELECT COUNT(*) AS total,
-              SUM(parent_id IS NULL) AS roots,
-              SUM(parent_id IS NOT NULL) AS subs
-         FROM session_v2 WHERE time_created >= ?`,
-    )
-    .get(since) as { total: number; roots: number; subs: number };
-  const turnRow = db
-    .query(`SELECT COUNT(*) AS c FROM session_message WHERE type = 'user' AND time_created >= ?`)
-    .get(since) as { c: number };
-  return {
-    rangeLabel: "last 7 days",
-    sessions: sessionRow.total,
-    rootSessions: sessionRow.roots,
-    subSessions: sessionRow.subs,
-    turns: turnRow.c,
-    toolCallsTotal: total,
-    topTools: named.slice(0, 12).map((r) => ({ name: r.name as string, count: r.c })),
-    skillTotal: byName.get("skill") ?? 0,
-    topSkills: skillRows.filter((r) => r.name).slice(0, 10).map((r) => ({ name: r.name as string, count: r.c })),
-    mcpx: ["mcpx_discover", "mcpx_exec", "mcpx_project"]
-      .filter((n) => byName.has(n))
-      .map((n) => ({ name: n, count: byName.get(n) as number })),
-    executeGateway: byName.get("execute") ?? 0,
-    fleetInferred: [...fleet.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([subcommand, count]) => ({ subcommand, count })),
-    fleetInferredTotal: fleetTotal,
+  steps.push(() => {
+    sessionRow = db
+      .query(
+        `SELECT COUNT(*) AS total,
+                SUM(parent_id IS NULL) AS roots,
+                SUM(parent_id IS NOT NULL) AS subs
+           FROM session_v2 WHERE time_created >= ?`,
+      )
+      .get(since) as { total: number; roots: number; subs: number };
+  });
+  steps.push(() => {
+    const row = db
+      .query(`SELECT COUNT(*) AS c FROM session_message WHERE type = 'user' AND time_created >= ?`)
+      .get(since) as { c: number };
+    turnCount = row.c;
+  });
+  const assemble = (): ActivityCounts => {
+    const byName = toolCounts;
+    const total = [...byName.values()].reduce((s, c) => s + c, 0);
+    const topTools = [...byName.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 12);
+    const topSkills = [...skillCounts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+    return {
+      rangeLabel: "last 7 days",
+      sessions: sessionRow.total,
+      rootSessions: sessionRow.roots,
+      subSessions: sessionRow.subs,
+      turns: turnCount,
+      toolCallsTotal: total,
+      topTools,
+      skillTotal: byName.get("skill") ?? 0,
+      topSkills,
+      mcpx: ["mcpx_discover", "mcpx_exec", "mcpx_project"]
+        .filter((n) => byName.has(n))
+        .map((n) => ({ name: n, count: byName.get(n) as number })),
+      executeGateway: byName.get("execute") ?? 0,
+      fleetInferred: [...fleet.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([subcommand, count]) => ({ subcommand, count })),
+      fleetInferredTotal: fleetTotal,
+    };
   };
+  return { steps, assemble };
+}
+
+function startActivityCompute(db: Database): void {
+  activityComputing = true;
+  const { steps, assemble } = activityComputePlan(db, Date.now());
+  let idx = 0;
+  const step = (): void => {
+    if (idx >= steps.length) {
+      try {
+        activityCache = { at: Date.now(), data: assemble() };
+      } catch {
+        // fail-soft: leave the cache as-is; a later call retries
+      } finally {
+        activityComputing = false;
+      }
+      return;
+    }
+    const next = steps[idx++];
+    try {
+      next();
+    } catch {
+      activityComputing = false;
+      return;
+    }
+    setTimeout(step, 0);
+  };
+  setTimeout(step, 0);
 }
 
 function loadActivity(db: Database, now: number): ActivityCounts | null {
   if (activityCache && now - activityCache.at < ACTIVITY_TTL_MS) return activityCache.data;
-  if (!activityComputing) {
-    activityComputing = true;
-    setTimeout(() => {
-      try {
-        const data = computeActivity(db, Date.now());
-        activityCache = { at: Date.now(), data };
-      } catch {
-        // fail-soft: leave the cache unset; a later call retries
-      } finally {
-        activityComputing = false;
-      }
-    }, 0);
-  }
+  if (!activityComputing) startActivityCompute(db);
   return activityCache?.data ?? null;
 }
 

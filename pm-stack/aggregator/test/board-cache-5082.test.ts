@@ -56,7 +56,7 @@ describe("board assembly cache contract (#5082)", () => {
     expect(calls).toBe(1);
   });
 
-  test("a warm hit inside the TTL does not re-run the assembly; expiry reloads", async () => {
+  test("a warm hit inside the TTL does not re-run the assembly; expiry serves stale + refreshes", async () => {
     let now = 1_000_000;
     let calls = 0;
     const cache = new TodayCache<BoardContextShape>(TODAY_CACHE_TTL_MS, () => now);
@@ -69,8 +69,14 @@ describe("board assembly cache contract (#5082)", () => {
     now += TODAY_CACHE_TTL_MS - 1;
     expect(await cache.get(loader)).toBe(first);
     expect(calls).toBe(1);
-    // Exactly at the TTL the entry is stale — a fresh assembly runs.
+    // Exactly at the TTL the entry is stale: the caller is served the
+    // stale assembly immediately and one background refresh re-runs
+    // the assembly behind it (#5082 SWR — the first-pass latency fix).
     now += 1;
+    const served = await cache.get(loader);
+    expect(served).toBe(first);
+    expect(calls).toBe(2);
+    await Bun.sleep(10);
     const reloaded = await cache.get(loader);
     expect(reloaded).not.toBe(first);
     expect(calls).toBe(2);

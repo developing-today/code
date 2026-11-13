@@ -1722,8 +1722,9 @@ async function loadTodayContext() {
 
 // #1179: /today?full=1, /frag/today, and /api/today.json all render
 // from this one assembly. Same short-TTL + coalescing contract as the
-// signals cache above; a throwing load is never cached (the fetch
-// error boundary still 500s) and expiry triggers a fresh read.
+// signals cache above; a throwing cold load is never cached (the
+// fetch error boundary still 500s) and expiry serves the stale copy
+// while one background refresh re-reads (#5082 SWR).
 const todayContextCache = new TodayCache<Awaited<ReturnType<typeof loadTodayContext>>>(TODAY_CACHE_TTL_MS);
 async function todayContext(): Promise<Awaited<ReturnType<typeof loadTodayContext>>> {
   return todayContextCache.get(loadTodayContext);
@@ -4072,6 +4073,12 @@ setTimeout(() => {
         source.usage().catch(() => emptyUsageView()),
       ]);
       buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile });
+      // #5082 follow-up: warm the page assemblies too, so the first
+      // request after a restart never pays a cold board/overview/today
+      // fan-out either. With the caches now stale-while-revalidate,
+      // later expiries refresh behind the stale copy instead of on
+      // the request path.
+      await Promise.allSettled([boardContext(), overviewContext(), todayContext()]);
     } catch {
       // fail-soft: the first real /quota request retries the build
     }
