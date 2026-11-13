@@ -185,7 +185,7 @@ tokio-tungstenite = "0.29"
 # The CLI integration tests drive an SSH client against the world SSH
 # server; the server side (and its russh) lives in id-worlds since
 # step 5c, so the facade keeps russh for its tests only.
-russh = "=0.65.0"
+russh = "=0.65.1"
 proptest = "1.12"
 # Interop vectors for the canonical CBOR of event headers. Dev only.
 dcbor = "=0.25.2"
