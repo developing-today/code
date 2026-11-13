@@ -1,6 +1,7 @@
 // Pure HTML rendering. Every view function takes already-assembled data and
 // returns a full HTML string — nothing here does I/O, which keeps the smoke
 // tests cheap (render from fixtures and assert on output).
+import { analyticsSectionHtml } from "./quota-analytics-view.ts";
 import {
   type AttentionView,
   type RoadmapGrain,
@@ -2329,6 +2330,10 @@ export function renderQuota(
   /** Lazy-refresh state (#1171): renders the "refreshing" marker and the
    *  manual refresh-now control. Absent means no request was made. */
   refresh?: import("./quota-refresh.ts").RefreshStatus,
+  /** Analytics & projection model (2026-11-13): built by the server
+   *  from the route ledger + snapshot store; absent/null renders no
+   *  section (older callers and tests are unaffected). */
+  analytics?: import("./analytics-store.ts").QuotaAnalytics | null,
 ): string {
   // "-direct" display rule (#6125): judged over every provider name/id
   // this surface renders — pool providers, pool ids, burn rows, the
@@ -2421,7 +2426,7 @@ export function renderQuota(
     .join("");
   const choices = (list: string[]) => (list.length ? list.map((id) => esc(display(id))).join(", ") : "—");
   const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table class="table table-zebra"><caption>Burn between resets</caption><tr><th scope="col">Provider</th><th scope="col">Pool</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
-<h2>Model choice</h2><div class="tblwrap"><table class="table table-zebra"><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
+<h2 id="model-choice">Model choice</h2><div class="tblwrap"><table class="table table-zebra"><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
 <tr><td>Headroom for a new session</td><td>${choices(view.choices.hasHeadroom)}</td></tr>
 <tr><td>Burn-it-before-reset (unused headroom)</td><td>${choices(view.choices.burnBeforeReset)}</td></tr>
 <tr><td>Do not start a second session</td><td>${choices(view.choices.doNotStart)}</td></tr></table></div>`;
@@ -2433,6 +2438,7 @@ ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Pools</h2>${pools}
+${analytics ? analyticsSectionHtml(analytics, display) : ""}
 ${burnAndChoices}`,
       provenance,
       "/quota",
@@ -2477,6 +2483,7 @@ ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Token quotas</h2>${pools}
+${analytics ? analyticsSectionHtml(analytics, display) : ""}
 ${paygCardHtml(usage)}
 <h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}${uninstrumentedServicesHtml(usage.uninstrumentedServices ?? [])}
 ${chargesStripHtml(usage)}
