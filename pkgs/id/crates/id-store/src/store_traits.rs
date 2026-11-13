@@ -37,9 +37,10 @@ use p2panda_store::topics::TopicStore;
 use serde::{Deserialize, Serialize};
 
 use crate::chain::Event;
-use crate::event_types::{BlockKind, BlockList, Ingest, StoreError};
+use crate::event_types::{
+    BlockKind, BlockList, BlockLookup, BlockLookupFailure, Ingest, StoreError,
+};
 use id_core::waiting::AuthorKey;
-
 
 /// The event-store surface [`SharedEventStore`] wraps.
 ///
@@ -63,14 +64,18 @@ pub trait EventStoreBackend: std::fmt::Debug + Send + Sync + 'static {
         now_ms: u64,
     ) -> Result<Ingest, StoreError>;
     /// See `EventStore::ingest_batch`.
-    fn ingest_batch(&mut self, batch: &[Vec<u8>], now_ms: u64)
-        -> Result<Vec<Ingest>, StoreError>;
+    fn ingest_batch(&mut self, batch: &[Vec<u8>], now_ms: u64) -> Result<Vec<Ingest>, StoreError>;
     /// See `EventStore::ingest_events`.
-    fn ingest_events(
+    fn ingest_events(&mut self, events: Vec<Event>, now_ms: u64)
+    -> Result<Vec<Ingest>, StoreError>;
+    /// See `EventStore::ingest_events_with_bodies`.
+    fn ingest_events_with_bodies(
         &mut self,
-        events: Vec<Event>,
+        events: Vec<(Event, Option<Vec<u8>>)>,
         now_ms: u64,
     ) -> Result<Vec<Ingest>, StoreError>;
+    /// See `EventStore::stored_body`.
+    fn stored_body(&self, id: &Hash) -> Result<Option<Vec<u8>>, StoreError>;
     /// See `EventStore::sync_entries`.
     fn sync_entries(&self) -> Result<Vec<(crate::range::Key, crate::range::Id)>, StoreError>;
     /// See `EventStore::sync_bytes`.
@@ -92,12 +97,8 @@ pub trait EventStoreBackend: std::fmt::Debug + Send + Sync + 'static {
     /// See `EventStore::chain`.
     fn chain(&self, author: &AuthorKey) -> Result<Option<crate::event_types::Chain>, StoreError>;
     /// See `EventStore::is_blocked` (the inherent method, which takes the clock).
-    fn is_blocked_at(
-        &self,
-        kind: BlockKind,
-        value: &[u8],
-        now_ms: u64,
-    ) -> Result<bool, StoreError>;
+    fn is_blocked_at(&self, kind: BlockKind, value: &[u8], now_ms: u64)
+    -> Result<bool, StoreError>;
     /// See `EventStore::tag_claims`.
     fn tag_claims(&self) -> Result<Vec<crate::tag_claims::Claim>, StoreError>;
     /// See `EventStore::event_by_id`.
@@ -228,13 +229,7 @@ impl<S: EventStoreBackend> SharedEventStore<S> {
     /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
     pub fn range_entries(
         &self,
-    ) -> Result<
-        Vec<(
-            crate::range::Key,
-            crate::range::Id,
-        )>,
-        TraitStoreError,
-    > {
+    ) -> Result<Vec<(crate::range::Key, crate::range::Id)>, TraitStoreError> {
         self.read(|store| Ok(store.sync_entries()?))
     }
 
@@ -245,30 +240,39 @@ impl<S: EventStoreBackend> SharedEventStore<S> {
     ///
     /// Returns [`TraitStoreError::Store`] for a redb or corruption error, and
     /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
-    pub fn range_bytes(
-        &self,
-        id: &crate::range::Id,
-    ) -> Result<Option<Vec<u8>>, TraitStoreError> {
+    pub fn range_bytes(&self, id: &crate::range::Id) -> Result<Option<Vec<u8>>, TraitStoreError> {
         self.read(|store| Ok(store.sync_bytes(id)?))
     }
 
-    /// Decides a batch of received events in one write transaction, under the write
-    /// lock, taken for this one call. See [`EventStore::ingest_events`].
+    /// The stored body of the event with this ID, under the read lock, taken for this
+    /// one call. See [`EventStore::stored_body`].
     ///
     /// # Errors
     ///
-    /// Returns [`TraitStoreError::Store`] for the first mismatch, or a redb error, and
+    /// Returns [`TraitStoreError::Store`] for a redb or corruption error, and
     /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
-    pub fn range_ingest_events(
+    pub fn range_body(&self, id: &crate::range::Id) -> Result<Option<Vec<u8>>, TraitStoreError> {
+        self.read(|store| Ok(store.stored_body(&Hash::from_bytes(*id))?))
+    }
+
+    /// Decides a batch of received events with their bodies in one write transaction,
+    /// under the write lock, taken for this one call. See
+    /// [`EventStore::ingest_events_with_bodies`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraitStoreError::Store`] for a redb error or corruption error, and
+    /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
+    pub fn range_ingest_with_bodies(
         &self,
-        events: Vec<Event>,
+        events: Vec<(Event, Option<Vec<u8>>)>,
         now_ms: u64,
     ) -> Result<Vec<Ingest>, TraitStoreError> {
         let mut store = self
             .inner
             .write()
             .map_err(|_err| TraitStoreError::Poisoned)?;
-        Ok(store.ingest_events(events, now_ms)?)
+        Ok(store.ingest_events_with_bodies(events, now_ms)?)
     }
 
     /// Checks the store's own rows. See [`EventStore::check_invariants`].
@@ -393,15 +397,41 @@ impl<S: EventStoreBackend> BlockList for SharedEventStore<S> {
     /// The wall clock judges expiry, and a read error or a poisoned lock
     /// invents no block.
     fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
-        self.read(|store| {
-            Ok(store.is_blocked_at(kind, value, id_core::time::unix_ms()).unwrap_or(false))
-        })
-        .unwrap_or(false)
+        // The bool seam fails open (see the trait docs): a read error
+        // or a poisoned lock invents no block. `lookup` preserves the
+        // failure for the seams that distinguish it (#8750).
+        self.lookup(kind, value).is_blocked()
+    }
+
+    fn lookup(&self, kind: BlockKind, value: &[u8]) -> BlockLookup {
+        let answered =
+            self.read(|store| Ok(store.is_blocked_at(kind, value, id_core::time::unix_ms())?));
+        match answered {
+            Ok(true) => BlockLookup::Blocked,
+            Ok(false) => BlockLookup::Unblocked,
+            Err(TraitStoreError::Store(err)) => {
+                let failure = if matches!(err, StoreError::Corrupt(_)) {
+                    BlockLookupFailure::Corrupt
+                } else {
+                    BlockLookupFailure::Storage
+                };
+                tracing::warn!("block-list lookup failed ({}): {err}", failure.as_str());
+                BlockLookup::Indeterminate(failure)
+            }
+            Err(err) => {
+                let failure = BlockLookupFailure::Unavailable;
+                tracing::warn!("block-list lookup failed ({}): {err}", failure.as_str());
+                BlockLookup::Indeterminate(failure)
+            }
+        }
     }
 }
 
 /// The sequence number of the author's last applied event, or `None` when none applies.
-fn applied_height<S: EventStoreBackend>(store: &S, author: &AuthorKey) -> Result<Option<SeqNum>, StoreError> {
+fn applied_height<S: EventStoreBackend>(
+    store: &S,
+    author: &AuthorKey,
+) -> Result<Option<SeqNum>, StoreError> {
     let Some(chain) = store.chain(author)? else {
         return Ok(None);
     };
@@ -503,7 +533,9 @@ impl<S: EventStoreBackend> Stream for LogEntries<S> {
     }
 }
 
-impl<S: EventStoreBackend> LogStore<AnyOperation, VerifyingKey, ChainLog, SeqNum, Hash> for SharedEventStore<S> {
+impl<S: EventStoreBackend> LogStore<AnyOperation, VerifyingKey, ChainLog, SeqNum, Hash>
+    for SharedEventStore<S>
+{
     type Error = TraitStoreError;
 
     /// The newest applied entry. The log id is ignored: an author has one log.

@@ -7,6 +7,8 @@
 //!   accepted event is here, including events past a fork point, which are kept
 //!   but not applied.
 //! - `hashes`: an event's ID to its position.
+//! - `bodies`: an event's ID to its body bytes, for the events whose headers commit to a
+//!   body (see [`EventStore::event_body`]). A header-only event has no row.
 //! - `chains`: an author to the applied prefix of their chain: the next sequence
 //!   number, the hash of the last applied event, and the frozen flag.
 //! - `forks`: a fork proof, keyed by its fork point's position: the two headers that conflict at
@@ -73,11 +75,13 @@ mod waiting_rows;
 mod writer_set;
 
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
+pub use id_store::event_types::{
+    Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Chain, FILE_NAME, StoreError,
+};
 pub use id_store::event_types::{Ingest, Refusal};
 use ingest::{is_present, is_proof_header, present_in};
 use waiting_rows::{Mirror, Row};
 pub use writer_set::{DiscoveredWriterSet, WriterSetStoreError};
-pub use id_store::event_types::{Block, BlockKind, BlockList, Chain, StoreError, FILE_NAME};
 
 impl EventStore {
     /// Adds `block` to the operator block list, replacing any row that names
@@ -172,13 +176,12 @@ impl EventStore {
 }
 use id_store::event_types::{be_u64, corrupt, hash_of, seq_num};
 
-
 /// Where a store is built before it is renamed to [`FILE_NAME`]. A file under
 /// this name is never trusted: it is removed and built again.
 pub const TEMP_NAME: &str = "events.redb.tmp";
 
 /// The format row in `meta`. A store with another format is refused.
-const FORMAT: &[u8] = b"id.events.store.v8";
+const FORMAT: &[u8] = b"id.events.store.v9";
 const FORMAT_KEY: &[u8] = b"format";
 
 const EVENTS: TableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -226,10 +229,15 @@ const DEVICE_OPS: TableDefinition<'static, &'static [u8], &'static [u8]> =
 /// The IDs of the applied events, with an empty value. Written by the resolution.
 const APPLIED: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("applied");
+/// The body of each event whose header commits to one, by event ID. Written at ingest,
+/// when the body is present and verified against the header; read back by
+/// [`EventStore::event_body`] and carried by range sync. A header-only event, and an
+/// event whose body never arrived, has no row.
+const BODIES: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("bodies");
 
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
-
 
 /// Where a store's files live. [`FileStorage`] is a directory on disk. The crash
 /// model implements this trait over a simulated directory, so every step of
@@ -368,9 +376,30 @@ pub struct EventStore {
 
 impl BlockList for EventStore {
     fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
-        // A read error invents no block: the seam fails open, and the
-        // store's error still surfaces on the store's own read paths.
-        EventStore::is_blocked(self, kind, value, id_core::time::unix_ms()).unwrap_or(false)
+        // The bool seam fails open (see the trait docs): a read error
+        // invents no block. `lookup` preserves the failure for the
+        // seams that distinguish it (#8750).
+        self.lookup(kind, value).is_blocked()
+    }
+
+    fn lookup(&self, kind: BlockKind, value: &[u8]) -> BlockLookup {
+        match EventStore::is_blocked(self, kind, value, id_core::time::unix_ms()) {
+            Ok(true) => BlockLookup::Blocked,
+            Ok(false) => BlockLookup::Unblocked,
+            Err(err) => {
+                let failure = if matches!(err, StoreError::Corrupt(_)) {
+                    BlockLookupFailure::Corrupt
+                } else {
+                    BlockLookupFailure::Storage
+                };
+                // The operator-visible diagnostic (#8750): the failure
+                // category and the store error stay on this side of the
+                // seam; a remote peer only ever sees the fail-open
+                // verdict the caller's policy chooses.
+                tracing::warn!("block-list lookup failed ({}): {err}", failure.as_str());
+                BlockLookup::Indeterminate(failure)
+            }
+        }
     }
 }
 
@@ -533,6 +562,33 @@ impl EventStore {
         };
         let stored = events.get(position.value())?;
         stored.map(|bytes| decode_stored(bytes.value())).transpose()
+    }
+
+    /// The stored body of the event with this ID, byte-identical to the body the author's
+    /// header commits to. Bodies are stored at ingest when present (see
+    /// [`EventStore::ingest_with_body`]) and carried by range sync.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::MissingBody`] when the event is header-only, its body never
+    /// arrived, or no event with this ID is stored; a redb error if the read fails.
+    pub fn event_body(&self, id: &Hash) -> Result<Vec<u8>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let bodies = txn.open_table(BODIES)?;
+        match bodies.get(id.as_bytes().as_slice())? {
+            Some(body) => Ok(body.value().to_vec()),
+            None => Err(StoreError::MissingBody { id: *id }),
+        }
+    }
+
+    /// The stored body of the event with this ID, or `None` when there is none. The range
+    /// sync sender's view of [`EventStore::event_body`]: a missing body is not an error
+    /// there, the event simply travels without one, as it did before bodies were carried.
+    pub(crate) fn stored_body(&self, id: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let bodies = txn.open_table(BODIES)?;
+        let stored = bodies.get(id.as_bytes().as_slice())?;
+        Ok(stored.map(|body| body.value().to_vec()))
     }
 
     /// The fork proof that freezes `author`'s chain: the one at the author's lowest fork point, if
@@ -1178,6 +1234,7 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     txn.open_multimap_table(WAITING_BY_DEP)?;
     txn.open_table(ACTIONS)?;
     txn.open_table(APPLIED)?;
+    txn.open_table(BODIES)?;
     txn.open_table(BLOCKS)?;
     let mut meta = txn.open_table(META)?;
     meta.insert(FORMAT_KEY, FORMAT)?;
@@ -1201,6 +1258,7 @@ fn verify_schema(db: &Database) -> Result<(), StoreError> {
     txn.open_multimap_table(WAITING_BY_DEP).map_err(missing)?;
     txn.open_table(ACTIONS).map_err(missing)?;
     txn.open_table(APPLIED).map_err(missing)?;
+    txn.open_table(BODIES).map_err(missing)?;
     let meta = txn.open_table(META).map_err(missing)?;
     match meta.get(FORMAT_KEY)? {
         Some(found) if found.value() == FORMAT => Ok(()),
@@ -1320,6 +1378,15 @@ pub(crate) fn store_event(txn: &WriteTransaction, event: &Event) -> Result<(), S
         let mut groups = txn.open_multimap_table(GROUPS)?;
         groups.insert(group.as_bytes().as_slice(), key.as_slice())?;
     }
+    Ok(())
+}
+
+/// Stores the verified body of an event, by event ID. The caller has checked the body
+/// against the header's commitment (hash and size); a body already stored is replaced by
+/// the same bytes, because only the committed body ever passes that check.
+pub(crate) fn store_body(txn: &WriteTransaction, id: &Hash, body: &[u8]) -> Result<(), StoreError> {
+    let mut bodies = txn.open_table(BODIES)?;
+    bodies.insert(id.as_bytes().as_slice(), body)?;
     Ok(())
 }
 
@@ -1824,6 +1891,50 @@ mod tests {
         assert_eq!(store.blocks().unwrap().len(), 4);
     }
 
+    /// #8750 error oracle: a block row that cannot decode is a failed
+    /// lookup, and the trait must say so — `Indeterminate(Corrupt)` —
+    /// instead of erasing it to the same `false` an ordinary unblocked
+    /// answer returns. The bool seam keeps its fail-open meaning.
+    #[test]
+    fn test_block_list_lookup_reports_a_corrupt_row_as_indeterminate() {
+        let (_dir, store) = open_temp();
+        store
+            .add_block(&block(BlockKind::PeerKey, &[7u8; 32], None))
+            .unwrap();
+        // A row whose value cannot decode, written raw under a second
+        // peer's key, exactly as a damaged store file would hold it.
+        {
+            let mut key = vec![BlockKind::PeerKey.tag()];
+            key.extend_from_slice(&[9u8; 32]);
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut blocks = txn.open_table(BLOCKS).unwrap();
+                blocks.insert(key.as_slice(), b"x".as_slice()).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        let list: &dyn BlockList = &store;
+        assert_eq!(
+            list.lookup(BlockKind::PeerKey, &[7u8; 32]),
+            BlockLookup::Blocked
+        );
+        assert_eq!(
+            list.lookup(BlockKind::PeerKey, &[8u8; 32]),
+            BlockLookup::Unblocked
+        );
+        assert_eq!(
+            list.lookup(BlockKind::PeerKey, &[9u8; 32]),
+            BlockLookup::Indeterminate(BlockLookupFailure::Corrupt),
+            "a failed lookup must not read as an ordinary unblocked result"
+        );
+        assert_eq!(
+            list.peer_lookup(&[9u8; 32]),
+            BlockLookup::Indeterminate(BlockLookupFailure::Corrupt)
+        );
+        // The bool seam keeps its documented fail-open meaning.
+        assert!(!list.peer_blocked(&[9u8; 32]));
+    }
+
     /// The #2245 invariant: a block changes serving and subscribing only.
     /// Signed events from a blocked author are ingested and applied by the
     /// ordinary rules — if ingest ever consulted the block list, the graph
@@ -1884,11 +1995,7 @@ impl id_store::store_traits::EventStoreBackend for EventStore {
         self.ingest_with_body(bytes, body, now_ms)
     }
 
-    fn ingest_batch(
-        &mut self,
-        batch: &[Vec<u8>],
-        now_ms: u64,
-    ) -> Result<Vec<Ingest>, StoreError> {
+    fn ingest_batch(&mut self, batch: &[Vec<u8>], now_ms: u64) -> Result<Vec<Ingest>, StoreError> {
         self.ingest_batch(batch, now_ms)
     }
 
@@ -1900,14 +2007,23 @@ impl id_store::store_traits::EventStoreBackend for EventStore {
         self.ingest_events(events, now_ms)
     }
 
+    fn ingest_events_with_bodies(
+        &mut self,
+        events: Vec<(Event, Option<Vec<u8>>)>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, StoreError> {
+        self.ingest_events_with_bodies(events, now_ms)
+    }
+
+    fn stored_body(&self, id: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
+        self.stored_body(id)
+    }
+
     fn sync_entries(&self) -> Result<Vec<(id_store::range::Key, id_store::range::Id)>, StoreError> {
         self.sync_entries()
     }
 
-    fn sync_bytes(
-        &self,
-        id: &id_store::range::Id,
-    ) -> Result<Option<Vec<u8>>, StoreError> {
+    fn sync_bytes(&self, id: &id_store::range::Id) -> Result<Option<Vec<u8>>, StoreError> {
         self.sync_bytes(id)
     }
 

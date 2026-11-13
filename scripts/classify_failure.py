@@ -61,11 +61,21 @@ RULES: list[tuple[str, str, list[re.Pattern[str]]]] = [
         "escalate",
         [
             re.compile(r"bad credentials", re.I),
-            re.compile(r"http\.?error:? 401|status code 401|\b401 unauthorized\b", re.I),
-            re.compile(r"(secret|token|api[_-]?key|password)[^\n]{0,40}?\b(not set|missing|invalid|expired|not found)\b", re.I),
+            re.compile(
+                r"http\.?error:? 401|status code 401|\b401 unauthorized\b", re.I
+            ),
+            re.compile(
+                r"(secret|token|api[_-]?key|password)[^\n]{0,40}?\b(not set|missing|invalid|expired|not found)\b",
+                re.I,
+            ),
             re.compile(r"context access might be invalid", re.I),
-            re.compile(r"(api )?rate limit (exceeded|reached)|secondary rate limit", re.I),
-            re.compile(r"(spending limit|billing (is )?(disabled|required)|payment required|quota (exceeded|reached))", re.I),
+            re.compile(
+                r"(api )?rate limit (exceeded|reached)|secondary rate limit", re.I
+            ),
+            re.compile(
+                r"(spending limit|billing (is )?(disabled|required)|payment required|quota (exceeded|reached))",
+                re.I,
+            ),
             re.compile(r"error: (the )?secret \S+ (does not exist|not found)", re.I),
         ],
     ),
@@ -74,7 +84,10 @@ RULES: list[tuple[str, str, list[re.Pattern[str]]]] = [
         "rerun",
         [
             re.compile(r"the runner has received a shutdown signal", re.I),
-            re.compile(r"(self-hosted )?runner (lost communication|went offline|not found|was lost)", re.I),
+            re.compile(
+                r"(self-hosted )?runner (lost communication|went offline|not found|was lost)",
+                re.I,
+            ),
             re.compile(r"no runner found|no available runner", re.I),
             re.compile(r"job was abandoned|the job was abandoned", re.I),
             re.compile(r"no space left on device", re.I),
@@ -85,13 +98,18 @@ RULES: list[tuple[str, str, list[re.Pattern[str]]]] = [
         "infra-network",
         "rerun",
         [
-            re.compile(r"could not resolve host|temporary failure in name resolution|name or service not known", re.I),
+            re.compile(
+                r"could not resolve host|temporary failure in name resolution|name or service not known",
+                re.I,
+            ),
             re.compile(r"failed to connect to \S+ port \d+", re.I),
             re.compile(r"connection (timed out|reset by peer|refused)", re.I),
             re.compile(r"\bEAI_AGAIN\b|\bECONNRESET\b|\bETIMEDOUT\b", re.I),
             re.compile(r"error sending request for url", re.I),
             re.compile(r"(tls|ssl) handshake (failure|failed|error)", re.I),
-            re.compile(r"502 bad gateway|503 service unavailable|504 gateway time-?out", re.I),
+            re.compile(
+                r"502 bad gateway|503 service unavailable|504 gateway time-?out", re.I
+            ),
         ],
     ),
     (
@@ -110,7 +128,9 @@ RULES: list[tuple[str, str, list[re.Pattern[str]]]] = [
         "rerun",
         [
             re.compile(r"test timed out|panic: test timed out", re.I),
-            re.compile(r"timeout of \d+ ?(ms|s|sec).*exceeded|exceeded timeout of", re.I),
+            re.compile(
+                r"timeout of \d+ ?(ms|s|sec).*exceeded|exceeded timeout of", re.I
+            ),
             re.compile(r"\bflaky\b|\bflaked\b|intermittent(ly)? fail", re.I),
             re.compile(r"waiting for .* timed out", re.I),
             re.compile(r"deadline exceeded.*(test|spec|case)", re.I),

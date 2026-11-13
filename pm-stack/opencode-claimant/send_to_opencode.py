@@ -80,8 +80,7 @@ def _load_sibling(name):
     """Load poll.py / claimant.py / launch_one.py from this file's
     own directory — the sibling in THIS checkout, as launch_one
     loads its siblings."""
-    spec = importlib.util.spec_from_file_location(
-        f"send_{name}", HERE / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"send_{name}", HERE / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -110,8 +109,9 @@ def log(rec):
 def journal(rec):
     claimant.ensure_state_dir()
     with open(STATE_DIR / "inflight.jsonl", "a") as f:
-        f.write(json.dumps(
-            {"at": datetime.now(timezone.utc).isoformat(), **rec}) + "\n")
+        f.write(
+            json.dumps({"at": datetime.now(timezone.utc).isoformat(), **rec}) + "\n"
+        )
 
 
 def queue_json(*args, timeout=120):
@@ -130,14 +130,17 @@ def queue_json(*args, timeout=120):
 
 # --- Sender / task facts ------------------------------------------------
 
+
 def sender_row(queue_name, task_id, worker):
     """The claimed row for task_id when the sender holds it, else
     (None, error). Read through poll.py's broker fetch helpers."""
     for row in poll.fetch_claimed_rows(queue_name):
         if row.get("id") == task_id:
             if row.get("worker_id") != worker:
-                return None, (f"task {task_id} is claimed by "
-                              f"{row.get('worker_id')!r}, not by sender {worker!r}")
+                return None, (
+                    f"task {task_id} is claimed by "
+                    f"{row.get('worker_id')!r}, not by sender {worker!r}"
+                )
             return row, None
     return None, f"task {task_id} is not claimed (by anyone) in {queue_name}"
 
@@ -155,17 +158,26 @@ def resolve_task_by_issue(queue_name, issue_number, worker):
     if len(hits) == 1:
         return hits[0], None
     if not hits:
-        return None, (f"sender {worker} holds no claimed task for "
-                      f"issue #{issue_number} in {queue_name}")
-    return None, (f"sender holds {len(hits)} tasks for issue "
-                  f"#{issue_number} ({hits}); name one with --task")
+        return None, (
+            f"sender {worker} holds no claimed task for "
+            f"issue #{issue_number} in {queue_name}"
+        )
+    return None, (
+        f"sender holds {len(hits)} tasks for issue "
+        f"#{issue_number} ({hits}); name one with --task"
+    )
 
 
 # --- Worktree --------------------------------------------------------------
 
+
 def _git(primary, *args, timeout=120):
-    p = subprocess.run(["git", "-C", str(primary), *args],
-                       capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(
+        ["git", "-C", str(primary), *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
     return p.returncode, p.stdout, p.stderr
 
 
@@ -180,7 +192,7 @@ def is_worktree_of(primary, path):
     want = os.path.realpath(path)
     for line in out.splitlines():
         if line.startswith("worktree "):
-            if os.path.realpath(line[len("worktree "):].strip()) == want:
+            if os.path.realpath(line[len("worktree ") :].strip()) == want:
                 return want != os.path.realpath(primary)
     return False
 
@@ -201,34 +213,41 @@ def create_worktree(primary, task_id, ref):
         # A leftover branch with no worktree: attach it instead.
         rc2, _o2, err2 = _git(primary, "worktree", "add", str(path), branch)
         if rc2 != 0:
-            return None, (f"git worktree add failed: {err.strip()[:200]} / "
-                          f"{err2.strip()[:200]}")
+            return None, (
+                f"git worktree add failed: {err.strip()[:200]} / {err2.strip()[:200]}"
+            )
     return str(path), None
 
 
 def write_notes_file(worktree, notes, task_id, from_session, reason):
     path = Path(worktree) / NOTES_FILE_NAME
-    header = (f"# Sender notes — queue task {task_id}\n\n"
-              f"Sent by Muse session `{from_session}` via "
-              f"send_to_opencode.py (#8210).\n"
-              f"Pass-off reason: {reason}\n\n---\n\n")
+    header = (
+        f"# Sender notes — queue task {task_id}\n\n"
+        f"Sent by Muse session `{from_session}` via "
+        f"send_to_opencode.py (#8210).\n"
+        f"Pass-off reason: {reason}\n\n---\n\n"
+    )
     path.write_text(header + notes.rstrip() + "\n")
     return str(path)
 
 
 # --- Queue steps -----------------------------------------------------------
 
+
 def assign_opencode(task_id, worker, reason):
     """Record the opencode assignment with the sender's reason.
     Returns (ledger_row, None) or (None, error)."""
-    rc, data, err = queue_json("lane", str(task_id), "--worker", worker,
-                               "--opencode-reason", reason)
+    rc, data, err = queue_json(
+        "lane", str(task_id), "--worker", worker, "--opencode-reason", reason
+    )
     row = data.get("row") if isinstance(data, dict) and "row" in data else data
     if rc != 0 or not isinstance(row, dict):
         return None, f"lane assignment failed: {(err.strip() or 'no row')[:300]}"
     if row.get("assigned_lane") != "opencode":
-        return None, (f"lane assignment did not record opencode: "
-                      f"assigned_lane={row.get('assigned_lane')!r}")
+        return None, (
+            f"lane assignment did not record opencode: "
+            f"assigned_lane={row.get('assigned_lane')!r}"
+        )
     return row, None
 
 
@@ -243,16 +262,24 @@ def ledger_row(task_id, worker):
 def flip_back_direct(task_id, worker, why):
     """Roll the assignment back to direct (the #8187 flip). Returns
     True when the ledger reads direct afterwards."""
-    rc, data, _err = queue_json("lane", str(task_id), "--worker", worker,
-                                "--exclusion-reason", why)
+    rc, data, _err = queue_json(
+        "lane", str(task_id), "--worker", worker, "--exclusion-reason", why
+    )
     row = data.get("row") if isinstance(data, dict) and "row" in data else data
     return rc == 0 and isinstance(row, dict) and row.get("assigned_lane") == "direct"
 
 
 def sender_checkpoint(task_id, worker, stage, progress):
     rc, _data, err = queue_json(
-        "checkpoint", str(task_id), "--worker", worker, "--stage", stage,
-        "--progress", json.dumps(progress))
+        "checkpoint",
+        str(task_id),
+        "--worker",
+        worker,
+        "--stage",
+        stage,
+        "--progress",
+        json.dumps(progress),
+    )
     return rc == 0, (None if rc == 0 else err.strip()[:300])
 
 
@@ -261,29 +288,53 @@ def transfer_claim(queue_name, task_id, from_session, sid, prov, mdl):
     (None, error): the row must show the claimant as worker and
     the new session bound."""
     rc, data, err = queue_json(
-        "claim", "--queue", queue_name, "--worker", CLAIMANT_WORKER,
-        "--platform", "openchamber", "--task", str(task_id),
-        "--from-session", from_session, "--session-id", sid,
-        "--model-provider", prov, "--model-id", mdl)
+        "claim",
+        "--queue",
+        queue_name,
+        "--worker",
+        CLAIMANT_WORKER,
+        "--platform",
+        "openchamber",
+        "--task",
+        str(task_id),
+        "--from-session",
+        from_session,
+        "--session-id",
+        sid,
+        "--model-provider",
+        prov,
+        "--model-id",
+        mdl,
+    )
     row = data.get("task") if isinstance(data, dict) and "task" in data else data
     if rc != 0 or not isinstance(row, dict) or row.get("id") != task_id:
-        detail = (err.strip() or (json.dumps(data)[:300] if data else "no row"))
+        detail = err.strip() or (json.dumps(data)[:300] if data else "no row")
         return None, f"transfer claim failed: {detail[:300]}"
     if row.get("worker_id") != CLAIMANT_WORKER:
-        return None, (f"transfer returned the row under worker "
-                      f"{row.get('worker_id')!r}, not {CLAIMANT_WORKER!r}")
+        return None, (
+            f"transfer returned the row under worker "
+            f"{row.get('worker_id')!r}, not {CLAIMANT_WORKER!r}"
+        )
     bound = (row.get("progress") or {}).get("session_id")
     if bound != sid:
-        return None, (f"transfer did not bind the session: "
-                      f"progress.session_id={bound!r}, want {sid!r}")
+        return None, (
+            f"transfer did not bind the session: "
+            f"progress.session_id={bound!r}, want {sid!r}"
+        )
     return row, None
 
 
 # --- The send ----------------------------------------------------------------
 
+
 def fail_record(base, phase, reason, rolled_back=None, flipped=None, sid=None):
-    rec = {**base, "kind": "send_to_opencode", "ok": False,
-           "phase": phase, "reason": reason}
+    rec = {
+        **base,
+        "kind": "send_to_opencode",
+        "ok": False,
+        "phase": phase,
+        "reason": reason,
+    }
     if sid:
         rec["session_id"] = sid
     if rolled_back is not None:
@@ -293,23 +344,44 @@ def fail_record(base, phase, reason, rolled_back=None, flipped=None, sid=None):
     return log(rec)
 
 
-def send(queue_name, task_id, sender_worker, from_session, reason,
-         notes, worktree_arg, dry_run=False):
-    base = {"task": task_id, "queue": queue_name, "sender_worker": sender_worker,
-            "from_session": from_session}
+def send(
+    queue_name,
+    task_id,
+    sender_worker,
+    from_session,
+    reason,
+    notes,
+    worktree_arg,
+    dry_run=False,
+):
+    base = {
+        "task": task_id,
+        "queue": queue_name,
+        "sender_worker": sender_worker,
+        "from_session": from_session,
+    }
     # Input gates — before anything is read or mutated.
     if not reason or not reason.strip():
-        return fail_record(base, "validate",
-                           "a stated --reason is required (#8187: pass-off "
-                           "only with a reason); without one, work the item direct")
+        return fail_record(
+            base,
+            "validate",
+            "a stated --reason is required (#8187: pass-off "
+            "only with a reason); without one, work the item direct",
+        )
     if not notes or not notes.strip():
-        return fail_record(base, "validate",
-                           "sender --notes are required: the opencode session "
-                           "must receive what to do, not just the task id")
+        return fail_record(
+            base,
+            "validate",
+            "sender --notes are required: the opencode session "
+            "must receive what to do, not just the task id",
+        )
     if not from_session or not from_session.strip():
-        return fail_record(base, "validate",
-                           "--from-session (the sending Muse session id) is "
-                           "required: the transfer guard names the holder by it")
+        return fail_record(
+            base,
+            "validate",
+            "--from-session (the sending Muse session id) is "
+            "required: the transfer guard names the holder by it",
+        )
 
     mode = claimant.read_mode()
     if mode != "live":
@@ -324,9 +396,11 @@ def send(queue_name, task_id, sender_worker, from_session, reason,
     if row is None:
         return fail_record(base, "verify_claim", err)
     if launch_one.exhausted(row):
-        return fail_record(base, "verify_claim",
-                           f"attempts exhausted ({row.get('attempts')}/"
-                           f"{row.get('max_attempts')})")
+        return fail_record(
+            base,
+            "verify_claim",
+            f"attempts exhausted ({row.get('attempts')}/{row.get('max_attempts')})",
+        )
     repo = launch_one.repo_for(row, queue_name)
     primary = REPOS[queue_name][1]
     ref = launch_one.ref_for(row)
@@ -338,11 +412,13 @@ def send(queue_name, task_id, sender_worker, from_session, reason,
     # Worktree: sender-provided (validated) or created.
     if worktree_arg:
         if os.path.realpath(worktree_arg) == os.path.realpath(primary):
-            return fail_record(base, "worktree",
-                               "the worktree must not be the primary checkout itself")
+            return fail_record(
+                base, "worktree", "the worktree must not be the primary checkout itself"
+            )
         if not is_worktree_of(primary, worktree_arg):
-            return fail_record(base, "worktree",
-                               f"{worktree_arg} is not a git worktree of {primary}")
+            return fail_record(
+                base, "worktree", f"{worktree_arg} is not a git worktree of {primary}"
+            )
         worktree, created = worktree_arg, False
     else:
         worktree, werr = create_worktree(primary, task_id, ref)
@@ -351,20 +427,29 @@ def send(queue_name, task_id, sender_worker, from_session, reason,
         created = True
 
     if dry_run:
-        return log({**base, "kind": "send_to_opencode", "ok": True,
-                    "dry_run": True, "repo": repo, "ref": ref,
-                    "route": f"{prov}/{mdl}", "worktree": worktree,
-                    "worktree_created": created,
-                    "would": [
-                        f"repo-queue lane {task_id} --opencode-reason <reason>",
-                        "checkpoint handoff_offered as the sender "
-                        "(from_session + reason + worktree into progress)",
-                        f"create an opencode session in {worktree}",
-                        f"repo-queue claim --task {task_id} --from-session "
-                        f"{from_session} --session-id <new> --worker {CLAIMANT_WORKER}",
-                        "checkpoint launched; send prompt with SENDER NOTES; "
-                        "post the agent note",
-                    ]})
+        return log(
+            {
+                **base,
+                "kind": "send_to_opencode",
+                "ok": True,
+                "dry_run": True,
+                "repo": repo,
+                "ref": ref,
+                "route": f"{prov}/{mdl}",
+                "worktree": worktree,
+                "worktree_created": created,
+                "would": [
+                    f"repo-queue lane {task_id} --opencode-reason <reason>",
+                    "checkpoint handoff_offered as the sender "
+                    "(from_session + reason + worktree into progress)",
+                    f"create an opencode session in {worktree}",
+                    f"repo-queue claim --task {task_id} --from-session "
+                    f"{from_session} --session-id <new> --worker {CLAIMANT_WORKER}",
+                    "checkpoint launched; send prompt with SENDER NOTES; "
+                    "post the agent note",
+                ],
+            }
+        )
 
     # Platform limitation (#8210): a recorded limitation with a
     # reason binds this send — a task limited to muse refuses an
@@ -376,13 +461,19 @@ def send(queue_name, task_id, sender_worker, from_session, reason,
     if led:
         limit = led.get("platform_limit")
         limit_reason = led.get("platform_limit_reason")
-        if limit and limit_reason and str(limit_reason).strip() \
-                and limit != "openchamber":
+        if (
+            limit
+            and limit_reason
+            and str(limit_reason).strip()
+            and limit != "openchamber"
+        ):
             return fail_record(
-                base, "platform_limit",
+                base,
+                "platform_limit",
                 f"task is limited to platform '{limit}' "
                 f"(reason: {limit_reason}); an opencode send is "
-                f"refused — the sender keeps the item (#8210)")
+                f"refused — the sender keeps the item (#8210)",
+            )
     notes_path = write_notes_file(worktree, notes, task_id, from_session, reason)
 
     # Assignment, with the reason recorded (#8187).
@@ -392,98 +483,166 @@ def send(queue_name, task_id, sender_worker, from_session, reason,
 
     def rollback(phase, why, sid=None):
         flipped = flip_back_direct(
-            task_id, sender_worker,
+            task_id,
+            sender_worker,
             f"muse send to opencode failed ({phase}: {why}); "
-            f"sender keeps the item (#8210)")
+            f"sender keeps the item (#8210)",
+        )
         if sid:
             claimant._delete_session(sid)
-        return fail_record(base, phase, why, rolled_back=True,
-                           flipped=flipped, sid=sid)
+        return fail_record(base, phase, why, rolled_back=True, flipped=flipped, sid=sid)
 
     # The sender's pass mark: from_session + reason + worktree
     # into progress, under the sender's own claim.
     ok_cp, cp_err = sender_checkpoint(
-        task_id, sender_worker, "handoff_offered",
-        {"from_session": from_session, "handoff_reason": reason,
-         "worktree": worktree, "notes_file": NOTES_FILE_NAME,
-         "sent_by": sender_worker})
+        task_id,
+        sender_worker,
+        "handoff_offered",
+        {
+            "from_session": from_session,
+            "handoff_reason": reason,
+            "worktree": worktree,
+            "notes_file": NOTES_FILE_NAME,
+            "sent_by": sender_worker,
+        },
+    )
     if not ok_cp:
         return rollback("checkpoint", f"sender checkpoint failed: {cp_err}")
 
     # Create the session IN the worktree (claimant transport).
-    title = f"queue task {task_id}" + (f" · {ref[0]} #{ref[1]}" if ref else "") \
+    title = (
+        f"queue task {task_id}"
+        + (f" · {ref[0]} #{ref[1]}" if ref else "")
         + f" · {str(row.get('title'))[:70]}"
-    body = {"title": title, "location": {"directory": worktree},
-            "model": {"id": mdl, "providerID": prov}, "agent": "build"}
+    )
+    body = {
+        "title": title,
+        "location": {"directory": worktree},
+        "model": {"id": mdl, "providerID": prov},
+        "agent": "build",
+    }
     status_code, payload = claimant._server_request(
-        "POST", "/api/session", body=body, timeout=15)
+        "POST", "/api/session", body=body, timeout=15
+    )
     if not claimant._is_2xx(status_code):
-        return rollback("create",
-                        f"session creation failed: http status "
-                        f"{status_code if status_code is not None else 'unknown'}")
+        return rollback(
+            "create",
+            f"session creation failed: http status "
+            f"{status_code if status_code is not None else 'unknown'}",
+        )
     sess = claimant._unwrap_envelope(payload)
     sid = sess.get("id") if isinstance(sess, dict) else None
     if not sid:
         return rollback("create", "no session id in create response")
-    journal({"task": task_id, "queue": queue_name, "session_id": sid,
-             "phase": "created", "via": "send_to_opencode"})
+    journal(
+        {
+            "task": task_id,
+            "queue": queue_name,
+            "session_id": sid,
+            "phase": "created",
+            "via": "send_to_opencode",
+        }
+    )
     got = ((sess or {}).get("location") or {}).get("directory")
     if not got or os.path.realpath(got) != os.path.realpath(worktree):
-        return rollback("location",
-                        f"session location mismatch: want {worktree}, got {got}",
-                        sid=sid)
+        return rollback(
+            "location",
+            f"session location mismatch: want {worktree}, got {got}",
+            sid=sid,
+        )
 
     # THE TRANSFER — holder -> claimer, binding in the same op.
     trow, terr = transfer_claim(queue_name, task_id, from_session, sid, prov, mdl)
     if trow is None:
         return rollback("transfer", terr, sid=sid)
-    journal({"task": task_id, "queue": queue_name, "session_id": sid,
-             "phase": "transferred", "via": "send_to_opencode"})
+    journal(
+        {
+            "task": task_id,
+            "queue": queue_name,
+            "session_id": sid,
+            "phase": "transferred",
+            "via": "send_to_opencode",
+        }
+    )
 
     # Checkpoint launched, as the claiming worker.
     rc2, _o2, err2 = launch_one.queue(
-        "checkpoint", str(task_id), "--worker", CLAIMANT_WORKER,
-        "--stage", "launched",
-        "--progress", json.dumps({"lane": "opencode", "session_id": sid,
-                                  "launched_by": CLAIMANT_WORKER,
-                                  "worktree": worktree,
-                                  "sent_by": from_session,
-                                  "sender_worker": sender_worker}))
+        "checkpoint",
+        str(task_id),
+        "--worker",
+        CLAIMANT_WORKER,
+        "--stage",
+        "launched",
+        "--progress",
+        json.dumps(
+            {
+                "lane": "opencode",
+                "session_id": sid,
+                "launched_by": CLAIMANT_WORKER,
+                "worktree": worktree,
+                "sent_by": from_session,
+                "sender_worker": sender_worker,
+            }
+        ),
+    )
 
     # Prompt: sender header + the standard launch prompt (which
     # names the worktree as the session directory) + the notes.
-    prompt = build_send_prompt(trow, ref, repo, worktree, sid, notes,
-                               from_session, sender_worker, reason)
+    prompt = build_send_prompt(
+        trow, ref, repo, worktree, sid, notes, from_session, sender_worker, reason
+    )
     prompt_ok = claimant._send_prompt(sid, prompt)
 
     note_ok, note_err = (None, None)
     if ref:
         note_ok, note_err = launch_one.post_agent_note(trow, ref, repo, sid)
 
-    rec = {**base, "kind": "send_to_opencode", "session_id": sid,
-           "repo": repo, "ref": ref, "route": f"{prov}/{mdl}",
-           "worktree": worktree, "worktree_created": created,
-           "notes_file": notes_path, "reason": reason,
-           "checkpoint_rc": rc2,
-           "checkpoint_err": err2.strip()[:200] if rc2 != 0 else None,
-           "prompt_ok": prompt_ok, "note_ok": note_ok,
-           "note_error": note_err, "ok": prompt_ok}
+    rec = {
+        **base,
+        "kind": "send_to_opencode",
+        "session_id": sid,
+        "repo": repo,
+        "ref": ref,
+        "route": f"{prov}/{mdl}",
+        "worktree": worktree,
+        "worktree_created": created,
+        "notes_file": notes_path,
+        "reason": reason,
+        "checkpoint_rc": rc2,
+        "checkpoint_err": err2.strip()[:200] if rc2 != 0 else None,
+        "prompt_ok": prompt_ok,
+        "note_ok": note_ok,
+        "note_error": note_err,
+        "ok": prompt_ok,
+    }
     log(rec)
-    journal({"task": task_id, "queue": queue_name, "session_id": sid,
-             "phase": "prompted", "prompt_ok": prompt_ok,
-             "via": "send_to_opencode"})
+    journal(
+        {
+            "task": task_id,
+            "queue": queue_name,
+            "session_id": sid,
+            "phase": "prompted",
+            "prompt_ok": prompt_ok,
+            "via": "send_to_opencode",
+        }
+    )
     if not prompt_ok:
-        rec = {**rec, "ok": False, "rolled_back": False,
-               "reason": "prompt_failed: the session is bound and the "
-                         "transfer stands; supervision owns the bound "
-                         "session (claimant rule) — the send did NOT "
-                         "roll back"}
+        rec = {
+            **rec,
+            "ok": False,
+            "rolled_back": False,
+            "reason": "prompt_failed: the session is bound and the "
+            "transfer stands; supervision owns the bound "
+            "session (claimant rule) — the send did NOT "
+            "roll back",
+        }
         print(json.dumps(rec, indent=1))
     return rec
 
 
-def build_send_prompt(row, ref, repo, worktree, sid, notes,
-                      from_session, sender_worker, reason):
+def build_send_prompt(
+    row, ref, repo, worktree, sid, notes, from_session, sender_worker, reason
+):
     header = f"""SENDER HANDOFF — this task was sent to you directly by a Muse session (#8210), not picked from the queue.
 - Sent by: session {from_session} (worker {sender_worker})
 - Pass-off reason: {reason}
@@ -492,28 +651,42 @@ def build_send_prompt(row, ref, repo, worktree, sid, notes,
 
 """
     return header + launch_one.build_prompt(
-        row, ref, repo, worktree, sid, CLAIMANT_WORKER, sender_notes=notes)
+        row, ref, repo, worktree, sid, CLAIMANT_WORKER, sender_notes=notes
+    )
 
 
 # --- CLI ---------------------------------------------------------------------
 
+
 def main(argv):
     ap = argparse.ArgumentParser(
-        description="Send a task you hold to an opencode session (#8210).")
+        description="Send a task you hold to an opencode session (#8210)."
+    )
     ap.add_argument("--queue", required=True, choices=sorted(REPOS))
     ap.add_argument("--task", type=int)
     ap.add_argument("--issue", type=int)
-    ap.add_argument("--worker", required=True,
-                    help="the sender's queue worker id (its claim must hold the task)")
-    ap.add_argument("--from-session", required=True,
-                    help="the sending Muse session id (the holder mark)")
-    ap.add_argument("--reason", required=True,
-                    help="the stated pass-off reason, recorded on the assignment")
+    ap.add_argument(
+        "--worker",
+        required=True,
+        help="the sender's queue worker id (its claim must hold the task)",
+    )
+    ap.add_argument(
+        "--from-session",
+        required=True,
+        help="the sending Muse session id (the holder mark)",
+    )
+    ap.add_argument(
+        "--reason",
+        required=True,
+        help="the stated pass-off reason, recorded on the assignment",
+    )
     ap.add_argument("--notes")
     ap.add_argument("--notes-file")
-    ap.add_argument("--worktree",
-                    help="existing worktree dir for the target repo; "
-                         "created per convention when omitted")
+    ap.add_argument(
+        "--worktree",
+        help="existing worktree dir for the target repo; "
+        "created per convention when omitted",
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv[1:])
 
@@ -522,22 +695,43 @@ def main(argv):
         try:
             notes = Path(args.notes_file).read_text()
         except OSError as e:
-            print(json.dumps({"ok": False, "phase": "validate",
-                              "reason": f"cannot read --notes-file: {e}"}))
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "phase": "validate",
+                        "reason": f"cannot read --notes-file: {e}",
+                    }
+                )
+            )
             return 2
     task_id = args.task
     if task_id is None:
         if args.issue is None:
-            print(json.dumps({"ok": False, "phase": "validate",
-                              "reason": "--task or --issue is required"}))
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "phase": "validate",
+                        "reason": "--task or --issue is required",
+                    }
+                )
+            )
             return 2
         task_id, err = resolve_task_by_issue(args.queue, args.issue, args.worker)
         if task_id is None:
             print(json.dumps({"ok": False, "phase": "validate", "reason": err}))
             return 2
-    rec = send(args.queue, task_id, args.worker, args.from_session,
-               args.reason, notes or "", args.worktree,
-               dry_run=args.dry_run)
+    rec = send(
+        args.queue,
+        task_id,
+        args.worker,
+        args.from_session,
+        args.reason,
+        notes or "",
+        args.worktree,
+        dry_run=args.dry_run,
+    )
     return 0 if rec.get("ok") else 1
 
 

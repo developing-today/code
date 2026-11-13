@@ -12,20 +12,27 @@
 // PM_AGG_STACK_SENTINEL_STATE_FILE (default
 // ~/.local/state/pm-aggregator/stack-sentinel-state.json).
 //
-// The intake bearer is resolved BY NAME from Bitwarden Secrets
+// The intake bearer <redacted> is resolved BY NAME from Bitwarden Secrets
 // Manager (`pm-aggregator.alerts-intake-token`, via src/secrets.ts)
 // and is only ever sent to the aggregator as the Authorization
 // header. It is never printed.
 //
-// Baseline rule: the first run records current states WITHOUT posting
-// (no false transitions at startup) — unless a service is actually
-// down at first probe, which is a real state and does post. A recorded
-// transition whose post has not yet succeeded (postedState !== state)
-// is retried every round; the throat dedupes by (source, key).
+// Flap damping (#9049, src/sentinel-damping.ts): a service flips to
+// "down" only after 3 consecutive failed probes (~90s at this
+// cadence) — a single slow probe under load never flips state and
+// never posts. A recovery posts only after the corresponding down
+// was actually posted. Baseline rule: the first run records current
+// states WITHOUT posting (no false transitions at startup); a failed
+// first probe starts the failure streak like any other, so a service
+// that is genuinely down at startup is declared after 3 probes. A
+// recorded transition whose post has not yet succeeded
+// (postedState !== state) is retried every round; the throat dedupes
+// by (source, key).
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolveBwsSecret } from "../src/secrets.ts";
+import { applySentinelProbe, normalizeSentinelEntry, type SentinelServiceEntry } from "../src/sentinel-damping.ts";
 
 const LOOP_MS = 30_000;
 
@@ -45,27 +52,24 @@ interface Probe {
 //   It answers 401 (auth required) on /; any HTTP response = alive,
 //   a connection failure = down.
 // - aggregator /board took ~5s when sick, hence the 15s timeout.
+// Timeouts raised 3s -> 10s (#9049): at load average 8-10 a healthy
+// service answers far slower than 3s, and the 3s timeout turned that
+// slowness into down/up flapping. 10s gives a slow-but-alive service
+// room to answer; the 3-consecutive-failure damping in
+// src/sentinel-damping.ts is the primary flap guard.
 const PROBES: Probe[] = [
   { id: "aggregator", name: "Aggregator", url: "http://127.0.0.1:4870/board", expect: [200], timeoutMs: 15_000 },
-  { id: "projector", name: "Projector", url: "http://127.0.0.1:7801/health", expect: [200], timeoutMs: 3_000 },
-  { id: "kaneo", name: "Kaneo", url: "http://127.0.0.1:5173/api/health", expect: [200], timeoutMs: 3_000 },
-  { id: "dispatch", name: "Dispatch", url: "http://127.0.0.1:4879/", expect: [200, 401, 403, 404], timeoutMs: 3_000 },
-  { id: "opencode", name: "OpenCode", url: "http://127.0.0.1:13420/global/health", expect: [200], timeoutMs: 3_000 },
-  { id: "queue-broker", name: "Queue Broker", url: "http://100.99.113.103:4801/", expect: "any", timeoutMs: 3_000 },
+  { id: "projector", name: "Projector", url: "http://127.0.0.1:7801/health", expect: [200], timeoutMs: 10_000 },
+  { id: "kaneo", name: "Kaneo", url: "http://127.0.0.1:5173/api/health", expect: [200], timeoutMs: 10_000 },
+  { id: "dispatch", name: "Dispatch", url: "http://127.0.0.1:4879/", expect: [200, 401, 403, 404], timeoutMs: 10_000 },
+  { id: "opencode", name: "OpenCode", url: "http://127.0.0.1:13420/global/health", expect: [200], timeoutMs: 10_000 },
+  { id: "queue-broker", name: "Queue Broker", url: "http://100.99.113.103:4801/", expect: "any", timeoutMs: 10_000 },
 ];
 
 type ServiceState = "down" | "up";
 
-interface SentinelServiceState {
-  state: ServiceState;
-  since: string;
-  /** The state last successfully posted to the throat (null = never). */
-  postedState: ServiceState | null;
-  detail?: string;
-}
-
 interface SentinelStateFile {
-  services: Record<string, SentinelServiceState>;
+  services: Record<string, SentinelServiceEntry>;
 }
 
 const STATE_FILE =
@@ -78,7 +82,15 @@ async function loadState(): Promise<SentinelStateFile> {
   try {
     const parsed: unknown = JSON.parse(await readFile(STATE_FILE, "utf8"));
     if (parsed && typeof parsed === "object" && (parsed as SentinelStateFile).services) {
-      return parsed as SentinelStateFile;
+      const services: Record<string, SentinelServiceEntry> = {};
+      for (const [id, raw] of Object.entries((parsed as SentinelStateFile).services)) {
+        // Entries persisted before #9049 lack the streak fields;
+        // normalize fills them in (an unparseable entry is dropped,
+        // which re-baselines that service on the next probe).
+        const entry = normalizeSentinelEntry(raw);
+        if (entry) services[id] = entry;
+      }
+      return { services };
     }
   } catch {
     // no state yet — first run
@@ -109,7 +121,7 @@ async function probeOne(probe: Probe): Promise<{ state: ServiceState; detail: st
 
 async function postTransition(
   probe: Probe,
-  entry: SentinelServiceState,
+  entry: SentinelServiceEntry,
   base: string,
   token: string,
 ): Promise<boolean> {
@@ -117,8 +129,7 @@ async function postTransition(
     source: "stack-sentinel",
     key: `service:${probe.id}`,
     severity: "warning",
-    title:
-      entry.state === "down" ? `Stack health: ${probe.name} is down` : `Stack health: ${probe.name} recovered`,
+    title: entry.state === "down" ? `Stack health: ${probe.name} is down` : `Stack health: ${probe.name} recovered`,
     body: entry.detail ?? "",
     stackHealth: {
       serviceId: probe.id,
@@ -147,20 +158,13 @@ async function round(state: SentinelStateFile): Promise<void> {
   let token: string | null = null;
   let tokenResolved = false;
   for (const probe of PROBES) {
-    const { state: current, detail } = await probeOne(probe);
+    const verdict = await probeOne(probe);
     const now = new Date().toISOString();
-    let entry = state.services[probe.id];
-    if (!entry) {
-      // First sighting: baseline without posting when up; a down
-      // service at first probe is a real state and does post.
-      entry = { state: current, since: now, postedState: current === "up" ? "up" : null, detail };
-      state.services[probe.id] = entry;
-    } else if (entry.state !== current) {
-      entry = { state: current, since: now, postedState: entry.postedState, detail };
-      state.services[probe.id] = entry;
-    } else {
-      entry.detail = detail;
-    }
+    // #9049: the damping fold decides whether this verdict changes
+    // the service's state at all — a lone failed probe only advances
+    // the failure streak recorded on the entry.
+    const entry = applySentinelProbe(state.services[probe.id], verdict, now);
+    state.services[probe.id] = entry;
     if (entry.postedState !== entry.state) {
       if (!tokenResolved) {
         token = await resolveBwsSecret("pm-aggregator.alerts-intake-token");

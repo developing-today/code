@@ -602,7 +602,11 @@ export function initCollab(
         // stored token — and re-sent on every reconnect. A malformed
         // refresh is logged and dropped, leaving the current token
         // and the stored identity untouched.
-        if (refreshedToken !== undefined && refreshedToken !== null && (typeof refreshedToken !== "string" || refreshedToken === "")) {
+        if (
+          refreshedToken !== undefined &&
+          refreshedToken !== null &&
+          (typeof refreshedToken !== "string" || refreshedToken === "")
+        ) {
           console.error("[collab] Dropping malformed AuthOk message: refreshed token must be a non-empty string");
           break;
         }

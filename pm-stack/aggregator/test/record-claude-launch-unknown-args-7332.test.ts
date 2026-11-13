@@ -16,10 +16,7 @@ import { join } from "node:path";
 
 const script = join(import.meta.dir, "../scripts/record-claude-launch.ts");
 
-async function runScript(
-  args: string[],
-  home: string,
-): Promise<{ code: number; stderr: string; stdout: string }> {
+async function runScript(args: string[], home: string): Promise<{ code: number; stderr: string; stdout: string }> {
   const proc = Bun.spawn([process.execPath, script, ...args], {
     env: { ...process.env, HOME: home },
     stdout: "pipe",
@@ -36,14 +33,22 @@ describe("record-claude-launch unknown arguments (#7332)", () => {
       const out = join(dir, "records.jsonl");
       const { code } = await runScript(
         [
-          "--label", "Control",
-          "--id", "claude-ctrl",
-          "--parent", "sess-1",
-          "--model", "sonnet",
-          "--status", "done",
-          "--task", "developing-today/code#123",
-          "--task", "developing-today/code#456",
-          "--file", out,
+          "--label",
+          "Control",
+          "--id",
+          "claude-ctrl",
+          "--parent",
+          "sess-1",
+          "--model",
+          "sonnet",
+          "--status",
+          "done",
+          "--task",
+          "developing-today/code#123",
+          "--task",
+          "developing-today/code#456",
+          "--file",
+          out,
         ],
         dir,
       );
@@ -74,7 +79,10 @@ describe("record-claude-launch unknown arguments (#7332)", () => {
         // typo --task used to drop the task linkage silently
         { args: ["--label", "X", "--tas", "developing-today/code#123", "--file", out], names: "--tas" },
         // joined --task= used to drop the task linkage silently
-        { args: ["--label", "X", "--task=developing-today/code#123", "--file", out], names: "--task=developing-today/code#123" },
+        {
+          args: ["--label", "X", "--task=developing-today/code#123", "--file", out],
+          names: "--task=developing-today/code#123",
+        },
         // typo --fil used to write the record to the default registry file
         { args: ["--label", "X", "--fil", out], names: "--fil" },
         // typo --stats used to record the default status

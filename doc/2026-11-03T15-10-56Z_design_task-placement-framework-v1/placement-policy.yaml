@@ -224,7 +224,7 @@ burn_rules:
     name: "OpenAI is the final reserve"
     rule: "The ChatGPT plan burns last among plan routes, because it is the sole door for O6-class review depth and is shared with O7."
     mechanical:
-      burn_order_position: {chatgpt-plan: last}
+      burn_order_position: { chatgpt-plan: last }
   - id: B3
     name: "A pool at a known 100% is CLOSED"
     rule: "Closed until its reset time or until a fresh read shows it dropped below 100% (providers sometimes reset early). No placements, no continued calls on a closed pool."
@@ -280,7 +280,16 @@ placement_record:
   fields:
     - name: option
       type: enum
-      values: [Muse, github-action, github-action-jules, opencode-session, opencode-scheduled, aster-codex, openclaw]
+      values:
+        [
+          Muse,
+          github-action,
+          github-action-jules,
+          opencode-session,
+          opencode-scheduled,
+          aster-codex,
+          openclaw,
+        ]
       note: "One of the seven options above."
     - name: rule
       type: string

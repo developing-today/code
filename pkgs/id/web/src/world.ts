@@ -1,7 +1,7 @@
 /** Browser presentation for the server-authoritative world session. */
 
 import { terminalBytesForKey } from "./world-keyboard";
-import { parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
+import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
 import { parseWorldSeed } from "./world-seed";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 
@@ -467,11 +467,13 @@ function initWorld(): void {
     renderedViewRevision = null;
     const world = selectedWorld();
     let after: string | null = null;
+    let pages = 0;
     let recordsSequence: number | null = null;
     const allRecords: Record<string, unknown> = {};
     let firstPage = true;
     try {
       do {
+        pages += 1;
         const params = new URLSearchParams();
         if (world) params.set("world", world);
         if (after) params.set("after", after);
@@ -518,7 +520,7 @@ function initWorld(): void {
           }
           appendLine(log, `Viewing ${result.snapshot?.world_id ?? world ?? "default world"} as host (read-only)`);
         }
-        after = result.next_after;
+        after = advanceHostViewCursor({ previous: after, next: result.next_after, page: pages });
       } while (after !== null);
       recordsView.textContent = JSON.stringify(allRecords, null, 2);
       setStatus("Read-only host view", "good");

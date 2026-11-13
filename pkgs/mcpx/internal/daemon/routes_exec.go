@@ -139,6 +139,16 @@ func (s *Server) collectArtifacts(every time.Duration) {
 type registrySource struct {
 	reg      *Registry
 	endpoint string
+	// recipes supplies the saved scripts search() surfaces inside a
+	// script (CODE-36); nil means none are offered.
+	recipes func() []codegen.RecipeMeta
+}
+
+func (r registrySource) recipeMetas() []codegen.RecipeMeta {
+	if r.recipes == nil {
+		return nil
+	}
+	return r.recipes()
 }
 
 func (r registrySource) ClientModule(_ context.Context, ns []string) (string, error) {
@@ -149,7 +159,7 @@ func (r registrySource) ClientModule(_ context.Context, ns []string) (string, er
 	// No session baked in: several concurrent runs share one generated file
 	// and each must keep its own, which is what gives them separate pooled
 	// instances. The runner passes it through the environment instead.
-	return codegen.Module(nss, r.endpoint, ""), nil
+	return codegen.ModuleWithRecipes(nss, r.endpoint, "", r.recipeMetas()), nil
 }
 
 func (r registrySource) Globals(_ context.Context, ns []string) (string, error) {
@@ -172,6 +182,9 @@ func (r registrySource) ClientModuleFor(_ context.Context, language string, ns [
 	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
 	if err != nil {
 		return "", "", err
+	}
+	if lang.Name == codegen.TypeScript.Name {
+		return codegen.ModuleWithRecipes(nss, r.endpoint, "", r.recipeMetas()), lang.EmitGlobals(nss), nil
 	}
 	return lang.EmitModule(nss, r.endpoint, ""), lang.EmitGlobals(nss), nil
 }
@@ -231,7 +244,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	}
 
 	svc := &execsvc.Service{
-		Src: registrySource{reg: s.reg, endpoint: s.endpoint},
+		Src: registrySource{reg: s.reg, endpoint: s.endpoint, recipes: s.recipeMetas},
 		// Daemon-side script resolution (#2168) reads the same
 		// paths.scripts setting the CLI reads, resolved from this
 		// daemon's configuration file and environment — there is no
@@ -270,10 +283,37 @@ func (s *Server) ExecService() *execsvc.Service {
 	// and are not governed by the gate.
 	if s.cfg != nil && settings.AutonomyAtLeast(set.String("hooks.autonomy"), "run") {
 		for _, h := range s.cfg.ScriptHooks() {
-			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Name: h.Name})
+			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Prompt: h.Prompt, Effect: h.Effect, Model: h.Model, Name: h.Name})
 		}
 	}
 	return svc
+}
+
+// modelLayerForExec resolves this request's model layer onto an
+// exec service: the provider a prompt hook asks, the build error
+// when one was configured but could not be built, and the token cap
+// prompt generation runs under (the request policy's
+// prompt.maxTokens bounded by model.budget).
+//
+// Every entry point that can run config-declared prompt hooks goes
+// through it. /v1/exec did from the start; /v1/ask with kind: exec
+// (routes_proto.go runAsk) and script-backed tools (scriptview.go)
+// built their service bare, so a prompt hook on those routes always
+// reported no provider configured even with valid model.* settings
+// (Codex review, PR #9021).
+func (s *Server) modelLayerForExec(ctx context.Context, svc *execsvc.Service, session string) {
+	pol := s.policyFor(ctx)
+	svc.ModelMaxTokens = modelMaxTokens(pol.PromptMaxTokens, pol.ModelBudget)
+	svc.ModelDefault = pol.ModelDefault
+	// (nil, nil) — no layer configured — leaves ModelProvider nil,
+	// and a prompt hook reports its advice unavailable in its frame;
+	// a build error is kept on the service so the frame can name it
+	// instead of looking like no provider was configured.
+	if prov, merr := s.modelLayer(ctx, session); merr != nil {
+		svc.ModelProviderErr = merr
+	} else {
+		svc.ModelProvider = prov
+	}
 }
 
 // ---- POST /v1/exec ----
@@ -307,6 +347,8 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	// from the daemon's cached startup settings and cannot see it; apply
 	// the request-resolved value to the service this request runs through.
 	svc.Limits.StdoutLimit = s.callSettings(r).Bytes("exec.maxOutputBytes")
+	// Prompt hooks (#5276) resolve through this request's model layer.
+	s.modelLayerForExec(r.Context(), svc, req.Options.Session)
 
 	// A task is a handle now and the result later, which is the right shape
 	// for a script that takes minutes: holding a request open that long

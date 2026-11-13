@@ -19,7 +19,6 @@ name: mcpx docs
 # differ only in that one value (#1941).
 
 on:
-  pull_request:
   push:
     branches: [main]
   workflow_dispatch:

@@ -21,6 +21,7 @@ Staging mode: RDE_TURSO_URL=file:/path/to.db runs the identical SQL
 generation path against a local SQLite file, no token involved.
 RDE_PRINT_SQL=1 prints the generated statements instead of executing.
 """
+
 import base64
 import json
 import os
@@ -238,8 +239,12 @@ def _last_line(text):
 
 
 def token_from_fleet():
-    out = subprocess.run([FLEET, "secrets", "get", TOKEN_NAME],
-                         capture_output=True, text=True, timeout=60)
+    out = subprocess.run(
+        [FLEET, "secrets", "get", TOKEN_NAME],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
     if out.returncode != 0:
         raise RuntimeError(f"fleet secrets get failed rc={out.returncode}")
     return _last_line(out.stdout)
@@ -252,10 +257,11 @@ def token_from_bws():
         f"source {helper} >/dev/null 2>&1; "
         "SID=$(bws secret list 2>/dev/null | jq -r "
         f"'.[] | select(.key==\"{TOKEN_NAME}\") | .id'); "
-        "bws secret get \"$SID\" | jq -r .value"
+        'bws secret get "$SID" | jq -r .value'
     )
-    out = subprocess.run(["bash", "-c", script], capture_output=True,
-                         text=True, timeout=60, env=env)
+    out = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
+    )
     if out.returncode != 0:
         raise RuntimeError(f"bws fallback failed rc={out.returncode}")
     return _last_line(out.stdout)
@@ -305,14 +311,20 @@ class Turso:
 
     # -- remote ------------------------------------------------------
     def _pipeline(self, statements):
-        reqs = [{"type": "execute", "stmt": {"sql": sql, "args": [_typed(v) for v in args]}}
-                for sql, args in statements]
+        reqs = [
+            {"type": "execute", "stmt": {"sql": sql, "args": [_typed(v) for v in args]}}
+            for sql, args in statements
+        ]
         reqs.append({"type": "close"})
         body = json.dumps({"requests": reqs}).encode()
         r = urllib.request.Request(
-            DB_HTTP_URL, data=body,
-            headers={"Authorization": f"Bearer {self._token}",
-                     "Content-Type": "application/json"})
+            DB_HTTP_URL,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Content-Type": "application/json",
+            },
+        )
         try:
             with urllib.request.urlopen(r, timeout=180) as resp:
                 data = json.load(resp)
@@ -363,7 +375,7 @@ class Turso:
         # chunk into pipeline calls of at most 100 statements
         out = []
         for i in range(0, len(statements), 100):
-            chunk = statements[i:i + 100]
+            chunk = statements[i : i + 100]
             if self._token is None:
                 self._token_source = "fleet"
                 self._token = self._get_token("fleet")
@@ -380,10 +392,19 @@ class Turso:
                 cols = [c.get("name") for c in res.get("cols", [])]
                 rows = []
                 for row in res.get("rows", []):
-                    rows.append({c: (cell.get("value") if isinstance(cell, dict) else cell)
-                                 for c, cell in zip(cols, row)})
-                out.append({"cols": cols, "rows": rows,
-                            "rows_affected": res.get("affected_row_count")})
+                    rows.append(
+                        {
+                            c: (cell.get("value") if isinstance(cell, dict) else cell)
+                            for c, cell in zip(cols, row)
+                        }
+                    )
+                out.append(
+                    {
+                        "cols": cols,
+                        "rows": rows,
+                        "rows_affected": res.get("affected_row_count"),
+                    }
+                )
         return out
 
     def note_token_source(self):

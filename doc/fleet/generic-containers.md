@@ -14,11 +14,11 @@ Dockerfiles.
 
 Derived from the three service-specific Nix images that exist today:
 
-| Existing image | Runtime | Userspace beyond the service | CA / tz | Writable dirs | Ports / notes |
-| --- | --- | --- | --- | --- | --- |
-| `mcpx` (`pkgs/mcpx/container-image.nix`) | bun (JS) | none — deliberately no shell | cacert via `SSL_CERT_FILE` | `/work`, `/tmp` (1777) | runs as `1000:1000`, `HOME=/tmp`, state/cache under `/tmp` |
-| `identity` (`pkgs/identity/container-image.nix`) | none (compiled Go binary, `charm serve`) | none | cacert via `SSL_CERT_FILE` | `/data` (volume) | ports 35353–35356 |
-| `lab-ops-hub-crawlercontainer` (`pkgs/lab-ops-hub/container-image.nix`) | python3 + `idna` | bash, coreutils, `/bin/sh` linked | cacert via `SSL_CERT_FILE` (Nix python ships no CA config) | `/app` | port 8080; absolute interpreter path + explicit `PATH` (shape lesson from Cloudflare's 2026-10-20 platform changes) |
+| Existing image                                                          | Runtime                                  | Userspace beyond the service      | CA / tz                                                    | Writable dirs          | Ports / notes                                                                                                       |
+| ----------------------------------------------------------------------- | ---------------------------------------- | --------------------------------- | ---------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `mcpx` (`pkgs/mcpx/container-image.nix`)                                | bun (JS)                                 | none — deliberately no shell      | cacert via `SSL_CERT_FILE`                                 | `/work`, `/tmp` (1777) | runs as `1000:1000`, `HOME=/tmp`, state/cache under `/tmp`                                                          |
+| `identity` (`pkgs/identity/container-image.nix`)                        | none (compiled Go binary, `charm serve`) | none                              | cacert via `SSL_CERT_FILE`                                 | `/data` (volume)       | ports 35353–35356                                                                                                   |
+| `lab-ops-hub-crawlercontainer` (`pkgs/lab-ops-hub/container-image.nix`) | python3 + `idna`                         | bash, coreutils, `/bin/sh` linked | cacert via `SSL_CERT_FILE` (Nix python ships no CA config) | `/app`                 | port 8080; absolute interpreter path + explicit `PATH` (shape lesson from Cloudflare's 2026-10-20 platform changes) |
 
 What the inventory says generic must cover:
 
@@ -43,10 +43,10 @@ What the inventory says generic must cover:
 
 Defined in `pkgs/generic-containers/`, wired as flake packages:
 
-| Flake package | Image | Contents |
-| --- | --- | --- |
-| `.#generic-runtime` | `generic-runtime:v1` | bash, coreutils, cacert, tzdata — the base userspace for compiled-binary (ID) services |
-| `.#generic-js-runtime` | `generic-js-runtime:v1` | generic base + bun — for bun-based ID/fleet services |
+| Flake package              | Image                       | Contents                                                                                                                            |
+| -------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `.#generic-runtime`        | `generic-runtime:v1`        | bash, coreutils, cacert, tzdata — the base userspace for compiled-binary (ID) services                                              |
+| `.#generic-js-runtime`     | `generic-js-runtime:v1`     | generic base + bun — for bun-based ID/fleet services                                                                                |
 | `.#generic-python-runtime` | `generic-python-runtime:v1` | generic base + python3 (default library set: the crawler's `idna`; override with `extraPythonPackages`) — for Python fleet services |
 
 The `container-images` workflow builds all three alongside the

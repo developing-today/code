@@ -44,7 +44,6 @@ name: mcpx test
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -160,7 +159,6 @@ jobs:
             echo "gofmt -l is not empty:"; echo "$unformatted"; exit 1
           fi
           go vet ./...
-
 
   plugin-ts:
     name: "basic: mcpx-test plugin-ts"

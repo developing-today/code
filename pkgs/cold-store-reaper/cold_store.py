@@ -14,6 +14,16 @@ to it and are never used.
 
 Secrets: client_id / client_secret / refresh_token live in credentials.json
 (mode 600) under the cold-store home. They are loaded, never printed.
+
+Pagination contract (#6622): a paged read is complete, bounded, or
+says so. (1) The cursor/token is validated where read — type and
+progress (a truncated page must hand back a usable, advancing
+token). (2) The volume is bounded: every listing loop carries the
+LIST_MAX_PAGES / LIST_MAX_RESULTS bound, whose breach is an error
+naming the listing. (3) Truncation is never silent: a listing
+either completes, fails closed, or says it stopped. The closing
+inventory that dispositioned every paginated loop in the repo is
+on issue #6623.
 """
 
 from __future__ import annotations
@@ -1584,9 +1594,7 @@ class ColdStore:
         if status != 200:
             raise ColdStoreError(f"files.list for get-backup failed (HTTP {status})")
         what = "files.list for get-backup"
-        files = _drive_files(
-            _drive_parse_object(resp, what), what, require_size=True
-        )
+        files = _drive_files(_drive_parse_object(resp, what), what, require_size=True)
         if not files:
             raise ColdStoreError(f"backup not found: {db_name}/{name}")
         file_id = files[0]["id"]

@@ -16,12 +16,12 @@ use iroh::{
 };
 use serde::{Deserialize, Serialize};
 
-use id_core::connectivity::connect;
 use id_core::Refusal;
+use id_core::connectivity::connect;
 
 use crate::envelope::Envelope;
-use crate::host::{Availability, EnvelopeReceived, SessionHost};
 use crate::envelope_outbox::Outcome;
+use crate::host::{Availability, EnvelopeReceived, SessionHost};
 use id_core::frames::{read_frame, write_frame};
 
 /// ALPN for friend envelopes. Within version 1 fields may be added; removing or
@@ -222,9 +222,7 @@ mod tests {
         endpoint::{RelayMode, presets},
         protocol::Router,
     };
-    use iroh_blobs::{
-        BlobFormat, Hash, api::blobs::AddBytesOptions, store::mem::MemStore,
-    };
+    use iroh_blobs::{BlobFormat, Hash, api::blobs::AddBytesOptions, store::mem::MemStore};
     use tokio::sync::Mutex;
 
     use super::*;

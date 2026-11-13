@@ -31,6 +31,7 @@ Usage:
   eval3.py --mode vector --vecdb VDB --table vec_x --framework st --model M [--trunc 384]
   eval3.py --mode hybrid (same vector args; FTS fused in)
 """
+
 import argparse, hashlib, json, os, re, sqlite3, sys, time
 from pathlib import Path
 import numpy as np
@@ -42,13 +43,36 @@ for _k in ("NO_PROXY", "no_proxy"):
 EXPECTED_CHUNKS = 101471
 EXPECTED_SHA = "07b3e17b88c07e8b46e466feb58f0da64c9e1f4213b0292eb253ff6f8c214075"
 QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
-STOP = {"what", "when", "where", "which", "that", "this", "with", "from", "have",
-        "does", "did", "the", "and", "for", "how", "many", "much", "were", "was",
-        "are", "you", "your"}
+STOP = {
+    "what",
+    "when",
+    "where",
+    "which",
+    "that",
+    "this",
+    "with",
+    "from",
+    "have",
+    "does",
+    "did",
+    "the",
+    "and",
+    "for",
+    "how",
+    "many",
+    "much",
+    "were",
+    "was",
+    "are",
+    "you",
+    "your",
+}
 
 
 def fts_query_baseline(q):
-    words = [w for w in re.findall(r"[a-z0-9]+", q.lower()) if len(w) > 3 and w not in STOP]
+    words = [
+        w for w in re.findall(r"[a-z0-9]+", q.lower()) if len(w) > 3 and w not in STOP
+    ]
     return " OR ".join(f'"{w}"' for w in words) or '""'
 
 
@@ -60,19 +84,26 @@ def fts_query_hybrid(q):
 def check_corpus(con):
     n = con.execute("SELECT count(*) FROM chunks").fetchone()[0]
     h = hashlib.sha256()
-    for (ch,) in con.execute("SELECT content_hash FROM chunks WHERE id % 997 = 0 ORDER BY id"):
+    for (ch,) in con.execute(
+        "SELECT content_hash FROM chunks WHERE id % 997 = 0 ORDER BY id"
+    ):
         h.update(ch.encode())
     sha = h.hexdigest()
     print(f"[eval3] corpus chunks={n} fingerprint={sha}")
     if n != EXPECTED_CHUNKS or sha != EXPECTED_SHA:
-        print("[eval3] FATAL: corpus does not match the frozen v3 fingerprint", file=sys.stderr)
+        print(
+            "[eval3] FATAL: corpus does not match the frozen v3 fingerprint",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
 
 def load_matrix(vecdb, table, trunc):
     con = sqlite3.connect(vecdb)
     ids, vecs = [], []
-    for cid, blob in con.execute(f"SELECT chunk_id, vec FROM {table} ORDER BY chunk_id"):
+    for cid, blob in con.execute(
+        f"SELECT chunk_id, vec FROM {table} ORDER BY chunk_id"
+    ):
         v = np.frombuffer(blob, dtype=np.float32)
         if trunc:
             v = v[:trunc]
@@ -92,14 +123,21 @@ def embed_queries(framework, model, texts, qcache):
             return Q
     if framework == "fastembed":
         from fastembed import TextEmbedding
+
         emb = TextEmbedding(model_name=model)
         qs = [(QUERY_PREFIX + t) if "bge" in model.lower() else t for t in texts]
         Q = np.stack([np.asarray(v, dtype=np.float32) for v in emb.embed(qs)])
     elif framework == "st":
         from sentence_transformers import SentenceTransformer
+
         m = SentenceTransformer(model)
-        Q = m.encode(texts, prompt_name="query", batch_size=32,
-                     convert_to_numpy=True, show_progress_bar=False).astype(np.float32)
+        Q = m.encode(
+            texts,
+            prompt_name="query",
+            batch_size=32,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        ).astype(np.float32)
     else:
         raise ValueError(framework)
     Q = Q / np.linalg.norm(Q, axis=1, keepdims=True)
@@ -133,7 +171,9 @@ def main():
     ids = M = Q = None
     if args.mode in ("vector", "hybrid"):
         ids, M = load_matrix(args.vecdb, args.table, args.trunc)
-        Q = embed_queries(args.framework, args.model, [q["query"] for q in queries], args.qcache)
+        Q = embed_queries(
+            args.framework, args.model, [q["query"] for q in queries], args.qcache
+        )
         print(f"[eval3] matrix {M.shape} queries {Q.shape}")
 
     per_q = []
@@ -143,26 +183,36 @@ def main():
     for qi, q in enumerate(queries):
         gold = set(q["chunk_ids"])
         if args.mode == "fts":
-            ranked = [r[0] for r in con.execute(
-                "SELECT c.id FROM chunks c JOIN chunks_fts f ON f.rowid = c.id "
-                "WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT ?",
-                (fts_query_baseline(q["query"]), args.k))]
+            ranked = [
+                r[0]
+                for r in con.execute(
+                    "SELECT c.id FROM chunks c JOIN chunks_fts f ON f.rowid = c.id "
+                    "WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT ?",
+                    (fts_query_baseline(q["query"]), args.k),
+                )
+            ]
         else:
             sims = M @ Q[qi]
             order = np.argsort(-sims)[: args.k * 3]
             ranked = [ids[i] for i in order]
             if args.mode == "hybrid":
-                fts_ids = [r[0] for r in con.execute(
-                    "SELECT c.id FROM chunks c JOIN chunks_fts f ON f.rowid = c.id "
-                    "WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT 30",
-                    (fts_query_hybrid(q["query"]),))]
+                fts_ids = [
+                    r[0]
+                    for r in con.execute(
+                        "SELECT c.id FROM chunks c JOIN chunks_fts f ON f.rowid = c.id "
+                        "WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT 30",
+                        (fts_query_hybrid(q["query"]),),
+                    )
+                ]
                 score = {}
                 for r, cid in enumerate(ranked):
                     score[cid] = score.get(cid, 0) + 1.0 / (60 + r)
                 for r, cid in enumerate(fts_ids):
                     score[cid] = score.get(cid, 0) + 1.0 / (60 + r)
                 ranked = [cid for cid, _ in sorted(score.items(), key=lambda x: -x[1])]
-        rank = next((i + 1 for i, cid in enumerate(ranked[: args.k]) if cid in gold), None)
+        rank = next(
+            (i + 1 for i, cid in enumerate(ranked[: args.k]) if cid in gold), None
+        )
         if rank:
             mrr_sum += 1.0 / rank
             if rank <= 5:
@@ -174,20 +224,33 @@ def main():
         c[0] += 1 if rank else 0
         c[2] += (1.0 / rank) if rank else 0.0
         per_q.append({"id": q["id"], "category": q["category"], "rank": rank})
-        print("%-8s %-16s %5s  %s" % (q["id"], q["category"], str(rank or "-"), q["query"][:60]))
+        print(
+            "%-8s %-16s %5s  %s"
+            % (q["id"], q["category"], str(rank or "-"), q["query"][:60])
+        )
 
     n = len(queries)
     summary = {
-        "tag": args.tag, "mode": args.mode, "table": args.table, "model": args.model,
-        "trunc": args.trunc, "n": n,
-        "recall@5": hits5, "recall@10": hits10, "mrr": round(mrr_sum / n, 4),
-        "per_category": {cat: {"recall@10": h, "n": t, "mrr": round(ms / t, 4)}
-                         for cat, (h, t, ms) in sorted(per_cat.items())},
+        "tag": args.tag,
+        "mode": args.mode,
+        "table": args.table,
+        "model": args.model,
+        "trunc": args.trunc,
+        "n": n,
+        "recall@5": hits5,
+        "recall@10": hits10,
+        "mrr": round(mrr_sum / n, 4),
+        "per_category": {
+            cat: {"recall@10": h, "n": t, "mrr": round(ms / t, 4)}
+            for cat, (h, t, ms) in sorted(per_cat.items())
+        },
         "seconds": round(time.time() - t0, 1),
     }
     print("\n[eval3] SUMMARY " + json.dumps(summary, indent=1))
     if args.out:
-        json.dump({"summary": summary, "per_question": per_q}, open(args.out, "w"), indent=1)
+        json.dump(
+            {"summary": summary, "per_question": per_q}, open(args.out, "w"), indent=1
+        )
         print(f"[eval3] wrote {args.out}")
 
 

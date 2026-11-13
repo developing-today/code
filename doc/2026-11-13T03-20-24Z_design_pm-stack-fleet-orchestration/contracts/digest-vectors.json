@@ -1,0 +1,31 @@
+{
+  "schema_version": "fleet.digest-framing-fixtures/v1",
+  "scope": "Byte-framing vectors only. The empty object is not a valid application command, manifest or order DTO; application schema validation remains separate.",
+  "framing": "ASCII(domain) || one byte 0x00 || UTF8(RFC8785-JCS(dto)); no BOM, newline or length prefix",
+  "wire_digest": "sha256: followed by exactly 64 lowercase hexadecimal characters",
+  "vectors": [
+    {
+      "domain": "fleet.command-intent/v1",
+      "canonical_json": "{}",
+      "framed_hex": "666c6565742e636f6d6d616e642d696e74656e742f7631007b7d",
+      "digest": "sha256:7b4e8eded8bf04b8fb33a201535a59259bbcca6f006cadd124b492b12539b327"
+    },
+    {
+      "domain": "fleet.context-manifest/v1",
+      "canonical_json": "{}",
+      "framed_hex": "666c6565742e636f6e746578742d6d616e69666573742f7631007b7d",
+      "digest": "sha256:981087fc35a1ca949810f8b8ec64c0448e47bfedad36904fc3ba89874e22faa6"
+    },
+    {
+      "domain": "fleet.selection-order/v1",
+      "canonical_json": "{}",
+      "framed_hex": "666c6565742e73656c656374696f6e2d6f726465722f7631007b7d",
+      "digest": "sha256:67bc22ebc065c180c2b3981f7c1e7f96c54dc3fabf66c915fcb3e222bcc20de5"
+    }
+  ],
+  "validation_limits": [
+    "These vectors validate framing and SHA-256 independently of a JCS implementation because {} has an unambiguous canonical encoding.",
+    "Rust/TypeScript RFC numeric/Unicode/key-order vectors and complete application DTO positive/negative fixtures are future implementation acceptance, not claimed passing here.",
+    "No legacy creation-outbox digest or production payload is changed."
+  ]
+}

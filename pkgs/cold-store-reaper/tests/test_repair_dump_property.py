@@ -59,8 +59,7 @@ FAKE_COMPLETE = (
     b" VALUES(1,2,3,4," + b"'" * 4 + b");"
 )
 FAKE_CANDIDATE = (
-    b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
-    b" VALUES(1,2,3,4,''X'');"
+    b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql) VALUES(1,2,3,4,''X'');"
 )
 
 # Interior fragments for the over-cap statement's final literal, in
@@ -149,4 +148,3 @@ class TestRepairDumpProperty(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

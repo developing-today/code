@@ -28,7 +28,9 @@ export async function migrate(db: Client, schemaPath?: string): Promise<void> {
   if (columns.rows.length > 0) {
     const pk = columns.rows.filter((row) => Number(row.pk) > 0).sort((a, b) => Number(a.pk) - Number(b.pk));
     if (pk.length !== 2 || pk[0].name !== "id" || pk[1].name !== "kind") {
-      throw new Error("Legacy pmp_comments schema: rebuild the comment projection before starting; preserve pmp_links and other tables. See the projector README.");
+      throw new Error(
+        "Legacy pmp_comments schema: rebuild the comment projection before starting; preserve pmp_links and other tables. See the projector README.",
+      );
     }
   }
   const path = schemaPath ?? new URL("../schema.sql", import.meta.url).pathname;

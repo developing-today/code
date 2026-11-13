@@ -12,7 +12,17 @@ import json, os, shutil, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, mirror_path, valid_mirror, disk_kb, load_plan, report_problems, clone_status_record, is_skeleton_mirror
+from ghb_common import (
+    load_config,
+    backup_root,
+    mirror_path,
+    valid_mirror,
+    disk_kb,
+    load_plan,
+    report_problems,
+    clone_status_record,
+    is_skeleton_mirror,
+)
 
 PAR = 4
 TIMEOUT = 5400

@@ -39,6 +39,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/deps"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
 	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 	"github.com/developing-today/code/pkgs/mcpx/internal/scriptresolve"
 )
@@ -490,11 +491,16 @@ type LogRecord struct {
 
 // Result is the structured answer.
 type Result struct {
-	RunID  string            `json:"runId"`
-	Result any               `json:"result,omitempty"`
-	Emits  []json.RawMessage `json:"emits"`
-	Logs   []LogRecord       `json:"logs"`
-	Stdout string            `json:"stdout"`
+	RunID  string `json:"runId"`
+	Result any    `json:"result,omitempty"`
+	// ResultPresent records that the run produced a result even
+	// when its value is null (CODE-19): a snippet whose final
+	// expression is `null` answered deliberately, which the value
+	// alone cannot distinguish from a run with no result at all.
+	ResultPresent bool              `json:"resultPresent,omitempty"`
+	Emits         []json.RawMessage `json:"emits"`
+	Logs          []LogRecord       `json:"logs"`
+	Stdout        string            `json:"stdout"`
 	// StdoutTruncated is set when Stdout was capped at
 	// Limits.StdoutLimit (exec.maxOutputBytes, CODE-16); the end of
 	// Stdout itself carries the marker naming the dropped byte count.
@@ -505,6 +511,12 @@ type Result struct {
 	Runtime         string     `json:"runtime,omitempty"`
 	TimedOut        bool       `json:"timedOut,omitempty"`
 	Error           string     `json:"error,omitempty"`
+	// ErrorKind is the typed failure kind (CODE-30): one of the
+	// Failure* values below, set exactly when Error is. It lets a
+	// caller branch -- retry a timeout, fix the code on an execution
+	// failure, repair the environment on a not-started failure --
+	// without parsing the message.
+	ErrorKind string `json:"errorKind,omitempty"`
 	// Notice carries the runner's one-line statement of what a
 	// dispatched (non-JavaScript) run does not have: no generated
 	// client, no enforced permission profiles.
@@ -513,6 +525,44 @@ type Result struct {
 	// call was intercepted and answered synthetically, so nothing
 	// the script "did" happened.
 	DryRun bool `json:"dryRun,omitempty"`
+	// Hooks retains every hook frame the run produced, in run order.
+	// The frames are also streamed to the sink as they happen, but a
+	// caller that asked for the structured result (the /v1/exec
+	// default, with a nil sink) had nowhere for them to land: a
+	// prompt hook's advice — its entire output — was generated and
+	// then discarded (Codex review, PR #9021). Retaining them here
+	// changes neither the script's result nor its error.
+	Hooks []HookFrame `json:"hooks,omitempty"`
+}
+
+// Typed failure kinds (CODE-30), the values Result.ErrorKind takes.
+const (
+	// FailureTimeout: the run exceeded its time bound.
+	FailureTimeout = "timeout"
+	// FailureNotStarted: the script never started -- a missing
+	// runtime, an unreadable launcher, a type error found before
+	// execution.
+	FailureNotStarted = "not_started"
+	// FailureExecution: the script started and failed -- it threw,
+	// exited non-zero, or the runner reported the failure.
+	FailureExecution = "execution"
+)
+
+// failureKind classifies a finished run's failure from the signals
+// the runner already reports, in the order that separates them: a
+// timeout is its own kind even though it also leaves an error
+// string, and a failure with no run behind it never started.
+func failureKind(res *Result, started bool) string {
+	if res.Error == "" {
+		return ""
+	}
+	if res.TimedOut {
+		return FailureTimeout
+	}
+	if !started {
+		return FailureNotStarted
+	}
+	return FailureExecution
 }
 
 // Source supplies the generated client the script is run against.
@@ -617,6 +667,35 @@ type Service struct {
 	// Hooks run at the edges of every run this service performs. They are the
 	// config-declared list; a caller's Options.Hooks append to them.
 	Hooks []Hook
+	// ModelProvider is the configured model layer (internal/model) a
+	// prompt hook asks for advice. Nil means no provider is configured:
+	// a prompt hook then reports its advice as unavailable in its frame
+	// and the run continues deterministically (prompt_hooks.go).
+	ModelProvider model.Provider
+	// ModelProviderErr, when set, is why a configured provider could not
+	// be built; a prompt hook's unavailable message names it, so a
+	// misconfigured provider is distinguishable from none configured.
+	ModelProviderErr error
+	// ModelMaxTokens is the resolved token cap a prompt hook's
+	// generation runs under: the per-call ask (prompt.maxTokens)
+	// capped by the global budget (model.budget), resolved by whoever
+	// built this service (execsvc.ModelTokenCap) because the policy
+	// lives on their side of the boundary. Zero means no cap was
+	// resolved, and the provider's own limit applies — which must
+	// never be how a CONFIGURED budget ends up (Codex review,
+	// PR #9021): the daemon and the CLI both resolve it whenever
+	// they resolve the provider.
+	ModelMaxTokens int
+	// ModelDefault is the configured default model (model.default) a
+	// prompt hook's generation uses when the hook names no model of
+	// its own. The OpenAI provider and the profile router already
+	// fall back to their configured default, but the sampling and
+	// plugin providers forward the request as given, so an empty
+	// hook model reached them empty and the configured default was
+	// lost (Codex review, PR #9021). Whoever resolves the provider
+	// (daemon policy, CLI settings) stamps it here, the same way
+	// ModelMaxTokens is stamped.
+	ModelDefault string
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)
@@ -946,8 +1025,26 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// exactly where it happened.
 	unregisterCalls := func() {}
 	unregisterDryRun := func() {}
+	// Call frames are also retained for this run, so an outcome hook's
+	// context can name the calls the script made (@calls for a prompt
+	// hook, the calls field of a script hook's stdin context). Only the
+	// hashed-arguments CallInfo is kept, never the arguments.
+	var callsMu sync.Mutex
+	var runCalls []CallInfo
+	snapshotCalls := func() []CallInfo {
+		callsMu.Lock()
+		defer callsMu.Unlock()
+		return append([]CallInfo(nil), runCalls...)
+	}
 	if s.Calls != nil {
-		unregisterCalls = s.Calls.Register(runID, emitFrame)
+		unregisterCalls = s.Calls.Register(runID, func(f Frame) {
+			if f.Call != nil {
+				callsMu.Lock()
+				runCalls = append(runCalls, *f.Call)
+				callsMu.Unlock()
+			}
+			emitFrame(f)
+		})
 		if opts.DryRun {
 			// Marked for the whole run: the daemon's call path
 			// checks the registry before dispatching a call that
@@ -1015,6 +1112,15 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			priorLogs(r)
 		}
 	}
+	var finalValue json.RawMessage
+	var finalCaptured bool
+	priorFinal := ropts.OnFinal
+	ropts.OnFinal = func(v logging.Streamed) {
+		finalValue, finalCaptured = v.Value, true
+		if priorFinal != nil {
+			priorFinal(v)
+		}
+	}
 	priorResult := ropts.OnResult
 	ropts.OnResult = func(v logging.Streamed) {
 		res.Emits = append(res.Emits, v.Value)
@@ -1029,6 +1135,11 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		hookCtx.Phase = HookBefore
 		s.runHooks(runCtx, HookBefore, before, hookCtx, ropts, res, emitFrame)
 	}
+	// A before hook is a snippet too, and the runner rewrote its
+	// final expression like any other: its capture must not become
+	// the main script's answer (CODE-19). The main run starts from
+	// a clean capture.
+	finalValue, finalCaptured = nil, false
 	priorArtifact := ropts.OnArtifact
 	ropts.OnArtifact = func(a logging.Artifacted) {
 		// Re-read from the store so the frame carries what the daemon
@@ -1098,6 +1209,17 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			msg = rerr.Error()
 		}
 		res.Error = msg
+		res.ErrorKind = FailureNotStarted
+		if errors.Is(rerr, context.DeadlineExceeded) {
+			// The run's bound expired before the script started -- a
+			// dependency install or a directory-lock wait in runner
+			// preflight: a timeout, not a startup failure, so a caller
+			// deciding whether to retry sees the true kind (Codex
+			// review, PR #9205). The runner preserves the deadline
+			// signal on those preflight errors for exactly this check.
+			res.ErrorKind = FailureTimeout
+			res.TimedOut = true
+		}
 		res.ExitCode = 1
 		emitFrame(Frame{Type: FrameError, Error: msg})
 		// Suffix is documented as running on both paths: a `before` hook
@@ -1159,7 +1281,23 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		var parsed any
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			res.Result = parsed
+			res.ResultPresent = true
 			stdoutParsed, haveStdoutParsed = parsed, true
+		}
+	}
+
+	// A snippet's final top-level expression is its result
+	// (CODE-19): the runner rewrote it to report through the record
+	// channel, and what it reported outranks the stdout parse --
+	// the expression is the deliberate answer, stdout is what the
+	// script printed along the way. The outcome hooks below still
+	// see (and may replace) this result.
+	if finalCaptured {
+		var v any
+		if err := json.Unmarshal(finalValue, &v); err == nil {
+			res.Result = v
+			res.ResultPresent = true
+			stdoutParsed, haveStdoutParsed = nil, false
 		}
 	}
 
@@ -1170,6 +1308,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	hookCtx.Diagnostic = hookDiagnostic(res.Error)
 	hookCtx.ExitCode, hookCtx.DurationMs = res.ExitCode, res.DurationMs
 	hookCtx.Artifacts = res.Artifacts
+	hookCtx.Calls = snapshotCalls()
 	phase := HookOnSuccess
 	if res.Error != "" {
 		phase = HookOnError
@@ -1199,9 +1338,15 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		hookCtx.Error = res.Error
 	}
 
+	// The kind is classified last, from the final outcome: an onError
+	// hook may have replaced the error with a result (then there is
+	// no kind), and the delivery step may have added its own failure
+	// to the text.
+	res.ErrorKind = failureKind(res, true)
+
 	if res.Error != "" {
 		emitFrame(Frame{Type: FrameError, Error: res.Error})
-	} else if res.Result != nil {
+	} else if res.Result != nil || res.ResultPresent {
 		b, merr := json.Marshal(res.Result)
 		if merr == nil {
 			emitFrame(Frame{Type: FrameResult, Value: b})
@@ -1214,6 +1359,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	if hs := phaseHooks(hooks, HookSuffix); len(hs) > 0 {
 		hookCtx.Phase = HookSuffix
 		hookCtx.Result, hookCtx.Error = res.Result, res.Error
+		hookCtx.Calls = snapshotCalls()
 		s.runHooks(runCtx, HookSuffix, hs, hookCtx, ropts, res, emitFrame)
 	}
 
@@ -1248,6 +1394,11 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			if rb, err := json.Marshal(res.Result); err == nil {
 				if pb, err := json.Marshal(stdoutParsed); err == nil && string(rb) == string(pb) {
 					res.Result = nil
+					// Presence described the discarded result; it
+					// must not survive it, or consumers would
+					// present the discard as a deliberate null
+					// (CODE-19 review, PR #9344).
+					res.ResultPresent = false
 				}
 			}
 		}

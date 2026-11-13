@@ -4,10 +4,7 @@
  * queue broker's Turso backend). Statements use typed args, never
  * string interpolation.
  */
-export type TursoArg =
-  | { type: "null" }
-  | { type: "text"; value: string }
-  | { type: "integer"; value: string };
+export type TursoArg = { type: "null" } | { type: "text"; value: string } | { type: "integer"; value: string };
 
 export const tArg = (v: string | null | undefined): TursoArg =>
   v === null || v === undefined ? { type: "null" } : { type: "text", value: v };

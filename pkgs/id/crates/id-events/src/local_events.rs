@@ -21,11 +21,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use p2panda_core::{Hash, SigningKey};
 
+use crate::event_store::{Block, BlockKind, BlockLookup, EventStore, Ingest};
+use crate::local_claims::LocalClaims;
+use id_core::waiting::{AuthorKey, WaitingLimits};
 use id_store::chain::{ChainExt, Event, MAX_AFTER, sign};
 use id_store::chat::{CHAT_MESSAGE_KIND, ChatMessage, ChatRecord, SendRate};
 use id_store::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
-use crate::event_store::{Block, BlockKind, EventStore, Ingest};
-use crate::local_claims::LocalClaims;
 use id_store::notes::{
     AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteFoldError, NoteOp, NoteRecord,
     REVISE_KIND as NOTE_REVISE_KIND, check_note_op, fold_notes,
@@ -34,7 +35,6 @@ use id_store::search::{Hit, ValueMatch, search_store};
 use id_store::tag_claims::{
     CLEAR_KIND, Claim, LocalClaim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, TagScope, check_op,
 };
-use id_core::waiting::{AuthorKey, WaitingLimits};
 
 /// The directory the event store lives in, under the data directory, unless `--event-store` names
 /// another.
@@ -320,6 +320,15 @@ impl LocalEvents {
     #[must_use]
     pub fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
         crate::event_store::BlockList::is_blocked(&self.store, kind, value)
+    }
+
+    /// The distinguishing form of [`LocalEvents::is_blocked`] (#8750):
+    /// a failed lookup is preserved as
+    /// [`BlockLookup::Indeterminate`] for the operator surfaces,
+    /// instead of erased to "not blocked".
+    #[must_use]
+    pub fn lookup_block(&self, kind: BlockKind, value: &[u8]) -> BlockLookup {
+        crate::event_store::BlockList::lookup(&self.store, kind, value)
     }
 
     /// Publishes `content` as a document of `media_type`, with a tag for each of `tags`. The event

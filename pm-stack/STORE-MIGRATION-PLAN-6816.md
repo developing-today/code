@@ -14,11 +14,11 @@ Method: `docker ps`, `docker volume ls`, `du` over read-only volume mounts,
 `psql` against the running Kaneo database. Every figure below was read from
 the live stack at execution time, not copied from an earlier report.
 
-| Store | Runtime (healthy, up 3 days) | Volume | Volume size | Canonical content |
-| --- | --- | --- | --- | --- |
-| Kaneo | `pm-stack-kaneo-1`, `ghcr.io/usekaneo/kaneo:2.47.0`; `pm-stack-postgres-1`, `postgres:16-alpine` | `pm-stack_postgres_data` | 197.9 MB | Database `kaneo` (role `kaneo`), **80 MB** logical size, 46 user tables; the rest of the volume is WAL + base overhead |
-| Grist | `pm-grist`, `gristlabs/grist-oss` (digest-pinned, v1.7.21) | `grist_grist_data` | 2.4 MB | `home.sqlite3` 380 KB (doc metadata/registry), `grist-sessions.db` 1.8 MB (sessions), `docs/` 228 KB (document storage) |
-| Pad | `pm-pad`, `ghcr.io/perpetualsoftware/pad:0.18.1` (digest-pinned) | `pad_pad_data` | 1.8 MB | `pad.db` 1.7 MB SQLite (WAL mode; `pad.db-wal` 0 B at read time), plus `encryption.key`, `config.toml`, `attachments/` (~empty) |
+| Store | Runtime (healthy, up 3 days)                                                                     | Volume                   | Volume size | Canonical content                                                                                                               |
+| ----- | ------------------------------------------------------------------------------------------------ | ------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Kaneo | `pm-stack-kaneo-1`, `ghcr.io/usekaneo/kaneo:2.47.0`; `pm-stack-postgres-1`, `postgres:16-alpine` | `pm-stack_postgres_data` | 197.9 MB    | Database `kaneo` (role `kaneo`), **80 MB** logical size, 46 user tables; the rest of the volume is WAL + base overhead          |
+| Grist | `pm-grist`, `gristlabs/grist-oss` (digest-pinned, v1.7.21)                                       | `grist_grist_data`       | 2.4 MB      | `home.sqlite3` 380 KB (doc metadata/registry), `grist-sessions.db` 1.8 MB (sessions), `docs/` 228 KB (document storage)         |
+| Pad   | `pm-pad`, `ghcr.io/perpetualsoftware/pad:0.18.1` (digest-pinned)                                 | `pad_pad_data`           | 1.8 MB      | `pad.db` 1.7 MB SQLite (WAL mode; `pad.db-wal` 0 B at read time), plus `encryption.key`, `config.toml`, `attachments/` (~empty) |
 
 Deployment definitions: `pm-stack/compose.yml` (Kaneo + Postgres),
 `pm-stack/grist/compose.yml`, `pm-stack/pad/compose.yml`. Public reach is
@@ -40,7 +40,7 @@ Access hostname and policy do not change in any step.**
   data directory on a Supabase-backed sync home — `home.sqlite3` and `docs/`
   replicated to `muse-dev2` Storage with a scheduled sync, and the location +
   sync shape recorded in the ownership map on #3989 (acceptance on #6816).
-  Grist keeps its file runtime; the *canonical, restorable copy* stops being
+  Grist keeps its file runtime; the _canonical, restorable copy_ stops being
   laptop-only.
 - **Pad → Supabase-backed home, file-shaped.** Same pattern as Grist:
   `pad.db` (SQLite, WAL) plus `encryption.key` and `config.toml` replicated

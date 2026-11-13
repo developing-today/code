@@ -155,9 +155,7 @@ class MissingAlarmTests(unittest.TestCase):
     def test_missing_days_accumulate_on_the_failure_streak(self):
         state = {}
         for day in ("2026-01-05", "2026-01-06", "2026-01-07"):
-            self.assertEqual(
-                self.run_fetch_repo(state, day, valid=False), "missing"
-            )
+            self.assertEqual(self.run_fetch_repo(state, day, valid=False), "missing")
         self.assertEqual(
             state["owner/repo"]["fail_days"],
             ["2026-01-05", "2026-01-06", "2026-01-07"],
@@ -186,9 +184,7 @@ class MissingAlarmTests(unittest.TestCase):
             ):
                 for d in ("2026-01-05", "2026-01-06", "2026-01-07"):
                     day[0] = d
-                    codes.append(
-                        fetch_mirrors.main(["fetch_mirrors.py", "owner/repo"])
-                    )
+                    codes.append(fetch_mirrors.main(["fetch_mirrors.py", "owner/repo"]))
             self.assertEqual(codes, [0, 0, 1])
 
     def test_return_to_ok_clears_the_missing_record(self):
@@ -241,9 +237,7 @@ class AtomicStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "state.json")
             ghb_common.save_json(path, {"v": 1})
-            with patch.object(
-                ghb_common.os, "replace", side_effect=OSError("killed")
-            ):
+            with patch.object(ghb_common.os, "replace", side_effect=OSError("killed")):
                 with self.assertRaises(OSError):
                     ghb_common.save_json(path, {"v": 2})
             with open(path) as f:

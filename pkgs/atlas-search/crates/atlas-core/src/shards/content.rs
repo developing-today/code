@@ -143,12 +143,7 @@ impl ContentStores {
     /// Same-message neighbor rows around (`message_id`, any
     /// `chunk_idx` in the window), ordered by chunk_idx — the
     /// shipped `--expand` query, answered from the content stores.
-    pub fn neighbors(
-        &self,
-        message_id: &str,
-        chunk_idx: i64,
-        n: i64,
-    ) -> Result<Vec<NeighborRow>> {
+    pub fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>> {
         for store in &self.stores {
             let rows = store.run(&Stmt::new(
                 NEIGHBORS_SQL,
@@ -218,10 +213,7 @@ pub fn discover_content_stores(
         }
         match connector.connect(&ep, tier) {
             Ok(t) => {
-                let probe = t.pipeline(&[Stmt::new(
-                    "SELECT COUNT(*) AS n FROM messages",
-                    vec![],
-                )]);
+                let probe = t.pipeline(&[Stmt::new("SELECT COUNT(*) AS n FROM messages", vec![])]);
                 match probe {
                     Ok(_) => stores.push(ContentStore {
                         name: ep.name.clone(),

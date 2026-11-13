@@ -911,7 +911,7 @@ var BundleFlight = class {
   }
   async accessToken() {
     const cached = await this.state.storage.get("google_token");
-    if (cached && cached.expires_at_ms > Date.now() + 6e4) {
+    if (cached && typeof cached.token === "string" && cached.token !== "" && cached.expires_at_ms > Date.now() + 6e4) {
       return cached.token;
     }
     const form = new URLSearchParams({
@@ -928,10 +928,25 @@ var BundleFlight = class {
     if (!resp.ok) {
       throw new HttpError(502, `google token exchange failed (HTTP ${resp.status})`);
     }
-    const payload = await resp.json();
+    let payload;
+    try {
+      payload = await resp.json();
+    } catch {
+      throw new HttpError(
+        502,
+        "google token exchange failed (response body was not JSON)"
+      );
+    }
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload) || typeof payload.access_token !== "string" || payload.access_token === "") {
+      throw new HttpError(
+        502,
+        "google token exchange failed (response did not contain an access_token)"
+      );
+    }
+    const expiresIn = typeof payload.expires_in === "number" && Number.isFinite(payload.expires_in) && payload.expires_in > 0 ? payload.expires_in : 3600;
     const entry = {
       token: payload.access_token,
-      expires_at_ms: Date.now() + (payload.expires_in ?? 3600) * 1e3
+      expires_at_ms: Date.now() + expiresIn * 1e3
     };
     await this.state.storage.put("google_token", entry);
     return entry.token;

@@ -207,7 +207,9 @@ class Broker:
         return [self._row(r) for r in rows]
 
     def all_rows(self) -> list[DirRow]:
-        rows = self.db.execute("SELECT * FROM dirs ORDER BY key, last_used_at").fetchall()
+        rows = self.db.execute(
+            "SELECT * FROM dirs ORDER BY key, last_used_at"
+        ).fetchall()
         return [self._row(r) for r in rows]
 
     @staticmethod
@@ -239,9 +241,7 @@ class Broker:
             if not child.is_dir():
                 continue
             name = child.name
-            if name != prefix and not re.fullmatch(
-                re.escape(prefix) + r"\.\d+", name
-            ):
+            if name != prefix and not re.fullmatch(re.escape(prefix) + r"\.\d+", name):
                 continue
             if str(child) in known:
                 continue
@@ -323,9 +323,7 @@ class Broker:
                     path = self.pool_root / name
                     # A same-named stray may exist with different key
                     # bookkeeping; only create when truly absent.
-                    if path.exists() and str(path) not in {
-                        str(r.path) for r in rows
-                    }:
+                    if path.exists() and str(path) not in {str(r.path) for r in rows}:
                         self.adopt_strays(key, now)
                         continue
                     path.mkdir(parents=True, exist_ok=True)
@@ -401,8 +399,7 @@ class Broker:
         now = time.time()
         self.reap_expired(now)
         leased = {
-            r["dir_id"]: r
-            for r in self.db.execute("SELECT * FROM leases").fetchall()
+            r["dir_id"]: r for r in self.db.execute("SELECT * FROM leases").fetchall()
         }
         by_key: dict[str, list[dict]] = {}
         total = 0
@@ -458,15 +455,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pool-root", default=str(DEFAULT_POOL_ROOT))
     parser.add_argument("--state-dir", default=str(DEFAULT_STATE_DIR))
     parser.add_argument(
-        "--cap-gib", type=float, default=DEFAULT_CAP_BYTES / GIB,
+        "--cap-gib",
+        type=float,
+        default=DEFAULT_CAP_BYTES / GIB,
         help="total pool size cap in GiB (default 300)",
     )
     parser.add_argument(
-        "--per-key", type=int, default=DEFAULT_PER_KEY,
+        "--per-key",
+        type=int,
+        default=DEFAULT_PER_KEY,
         help="max pooled dirs per key (default 3)",
     )
     parser.add_argument(
-        "--ttl-secs", type=int, default=DEFAULT_TTL_SECS,
+        "--ttl-secs",
+        type=int,
+        default=DEFAULT_TTL_SECS,
         help="lease TTL in seconds (default 21600 = 6h)",
     )
     sub = parser.add_subparsers(dest="verb", required=True)
@@ -474,12 +477,17 @@ def main(argv: list[str] | None = None) -> int:
     p_co = sub.add_parser("checkout")
     p_co.add_argument("--repo", required=True, help="repo name or path")
     p_co.add_argument(
-        "--profile", default="dev",
+        "--profile",
+        default="dev",
         help="build profile label: dev | test | release | <custom>",
     )
     p_co.add_argument("--holder", default=None)
-    p_co.add_argument("--wait", type=int, default=0,
-                      help="seconds to wait for a free dir before failing")
+    p_co.add_argument(
+        "--wait",
+        type=int,
+        default=0,
+        help="seconds to wait for a free dir before failing",
+    )
     p_co.add_argument("--json", action="store_true")
 
     p_ci = sub.add_parser("checkin")
@@ -505,8 +513,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.json:
             print(json.dumps(st, indent=2))
         else:
-            print(f"pool: {st['pool_root']}  total {st['total_gib']} GiB"
-                  f" / cap {st['cap_gib']} GiB")
+            print(
+                f"pool: {st['pool_root']}  total {st['total_gib']} GiB"
+                f" / cap {st['cap_gib']} GiB"
+            )
             for key, dirs in st["dirs"].items():
                 for d in dirs:
                     state = f"leased by {d['holder']}" if d["leased"] else "idle"
@@ -514,9 +524,11 @@ def main(argv: list[str] | None = None) -> int:
             c = st["counters"]
             warm, cold = c["checkouts_warm"], c["checkouts_cold"]
             rate = (100.0 * warm / (warm + cold)) if (warm + cold) else 0.0
-            print(f"checkouts: {warm} warm / {cold} cold ({rate:.0f}% warm),"
-                  f" evictions: {c['evictions']},"
-                  f" expired leases: {c['leases_expired']}")
+            print(
+                f"checkouts: {warm} warm / {cold} cold ({rate:.0f}% warm),"
+                f" evictions: {c['evictions']},"
+                f" expired leases: {c['leases_expired']}"
+            )
         return 0
 
     if args.verb == "checkin":
@@ -545,16 +557,22 @@ def main(argv: list[str] | None = None) -> int:
         row, lease_id, warm = got
         if args.verb == "checkout":
             if args.json:
-                print(json.dumps({
-                    "path": str(row.path),
-                    "lease": lease_id,
-                    "key": key,
-                    "warm": warm,
-                }))
+                print(
+                    json.dumps(
+                        {
+                            "path": str(row.path),
+                            "lease": lease_id,
+                            "key": key,
+                            "warm": warm,
+                        }
+                    )
+                )
             else:
                 print(str(row.path))
-            eprint(f"target-broker: lease {lease_id} on {row.path}"
-                   f" ({'warm' if warm else 'cold'})")
+            eprint(
+                f"target-broker: lease {lease_id} on {row.path}"
+                f" ({'warm' if warm else 'cold'})"
+            )
             return 0
         # exec
         cmd = args.cmd
@@ -566,8 +584,10 @@ def main(argv: list[str] | None = None) -> int:
         env = dict(os.environ)
         env["CARGO_TARGET_DIR"] = str(row.path)
         env["CARGO_TARGET_BROKER_LEASE"] = lease_id
-        eprint(f"target-broker: lease {lease_id} on {row.path}"
-               f" ({'warm' if warm else 'cold'}); running {cmd}")
+        eprint(
+            f"target-broker: lease {lease_id} on {row.path}"
+            f" ({'warm' if warm else 'cold'}); running {cmd}"
+        )
         try:
             proc = subprocess.run(cmd, env=env)
             rc = proc.returncode

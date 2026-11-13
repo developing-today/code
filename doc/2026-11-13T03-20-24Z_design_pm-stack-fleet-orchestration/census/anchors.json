@@ -1,0 +1,209 @@
+{
+  "evidenceSnapshot": "2026-11-13T04:00:00Z",
+  "pinnedCommit": "a038f084dbeb525494d7bb928ad91f597db2ac51",
+  "pinnedCommitDate": "2026-11-13T03:21:36Z",
+  "liveRefs": [
+    {
+      "ref": "refs/heads/main",
+      "remote": "origin",
+      "sha": "a0f3a529d3e167df0f614a598dc0c9f7aa532b0c",
+      "observedAt": "2026-11-13T04:00:00Z",
+      "note": "git ls-remote; two commits ahead of pinned checkout; parent reports intervening changes unrelated to this census"
+    }
+  ],
+  "queueTableImprovementsDiscovery": {
+    "observedAt": "2026-11-13T03:40:00Z",
+    "exactName": "Queue Table Improvements",
+    "searches": [
+      {
+        "surface": "repository text",
+        "terms": "case-insensitive exact-phrase and hyphen variants across doc, planning, pkgs, pm-stack and tracked tree; git log --all -S and --grep",
+        "result": "Only current intake/charter/handoff copies and intake commits; no historical named artifact"
+      },
+      {
+        "surface": "git history",
+        "terms": "git log --all --oneline --regexp-ignore-case --grep='Queue Table Improvements'",
+        "result": "No commit subject hits"
+      },
+      {
+        "surface": "GitHub issues",
+        "terms": "Queue Table Improvements; \"Queue Table\"; \"Queue Table Improvements\" in:body; queue table in:body; queue-table in:body",
+        "result": "No original exact-title issue; #9196/#9198 and fuzzy/unrelated results. #3424/#8579 are separate later schema candidates, not evidence of QTI identity"
+      },
+      {
+        "surface": "GitHub PRs",
+        "terms": "\"Queue Table Improvements\"",
+        "result": "No PR result"
+      },
+      {
+        "surface": "staged intake sources",
+        "terms": "list ~/.local/share/fleet/intake/pm-orchestration-20261112 and read all available source exports/manifests",
+        "result": "Five intake sources plus intake/launch manifests; no distinct QTI source export or pointer"
+      }
+    ],
+    "disposition": "unlocated-unverified",
+    "crosswalk": "#3424/#8180 durable queue data-model brief, #3418 budget-aware claiming, #8575/#8579/#8602 queue data authority/schema audit, #8580-#8585 follow-ons, current fleet-queue, PM projections, and #7030 are concrete candidates or overlapping surfaces only; QTI equivalence is not established.",
+    "fileableResearchSlice": {
+      "localAlias": "QTI-RECON-01",
+      "issue": 9241,
+      "issueState": "OPEN",
+      "title": "research(pm-orchestration): recover Queue Table Improvements provenance and schema crosswalk",
+      "url": "https://github.com/developing-today/code/issues/9241",
+      "parentIssue": 9198,
+      "taskId": "15480",
+      "queue": "repo-health-code-pilot",
+      "priority": "30",
+      "coverageReadback": {"status": "claimed", "observedAt": "2026-11-13T03:51:03Z", "verified": true},
+      "receipt": "issues/seed/receipt.json",
+      "deliverable": "Search authorized issue/project/PR indexes, all reachable repository refs and named source archives; produce identity or enumerated-accessible-surfaces absence receipt, candidate consume/extend/supersede/no-overlap matrix and explicit schema compatibility gates.",
+      "blockingPolicy": "V3 schema-coupled implementation slices only; V1/V2 designs and read-only/control-surface work proceed on compatibility contracts.",
+      "writeScope": "Research/design only; no queue or schema mutation; no blocker edge filed in seed pass"
+    }
+  },
+  "componentStates": [
+    {
+      "id": "A-queue-broker",
+      "status": "verified-existing",
+      "evidence": [
+        "pkgs/fleet/crates/fleet-queue/src/turso_queue.rs:3110-3129",
+        "pkgs/fleet/crates/fleet-queue/src/turso_queue.rs:4210-4272",
+        "pkgs/fleet/crates/fleet-queue/src/turso_queue.rs:6454-6457"
+      ],
+      "summary": "Single queue, empty-by-default task-requirement matching, atomic conditional claim. Claim order is priority ASC then created_at ASC with NO explicit id tiebreak; list adds id ASC, so equal-priority/equal-time total stability is not established and list/claim ordering differ at that tie."
+    },
+    {
+      "id": "A-priority-taxonomy",
+      "status": "partially-implemented",
+      "evidence": [
+        "pm-stack/dispatch/src/validate.ts:11-27",
+        "pm-stack/design-reprioritization-2026-11-12.md:22,172-209",
+        "issue:#7030"
+      ],
+      "summary": "Discrete lower-is-sooner scale exists, but dispatch parser snaps 15 to 10 and 25 to 20 while #7030 ratifies 15/25; resolve this adapter incompatibility without renumbering. Importance/effective pressure/aging/hysteresis are not established."
+    },
+    {
+      "id": "A-distributed-priority",
+      "status": "design-only",
+      "issues": [9199, 9200],
+      "summary": "Producer-consumer authority, provenance/versioning and replay/reconciliation contract remain to design."
+    },
+    {
+      "id": "A-project4-authority",
+      "status": "verified-existing-documented-contract",
+      "evidence": ["pm-stack/README.md:94-112"],
+      "summary": "Project Kind=Epic canonical; label maintained mirror; sub-issue hierarchy differs from blockedBy; orchestrator is single writer. Deployment/live writes not freshly verified."
+    },
+    {
+      "id": "A-pm-projection-mobile",
+      "status": "partially-implemented",
+      "evidence": [
+        "pm-stack/aggregator/src/queue-view.ts:1-4,10-34,99-220",
+        "pm-stack/aggregator/src/actions.ts:1-44",
+        "pm-stack/aggregator/src/board-policy.ts:1-17",
+        "pm-stack/projector/README.md:3-8,113-133",
+        "pm-stack/projector/src/queue-view.ts:1-20,104-140"
+      ],
+      "issues": [9201],
+      "summary": "Existing PM projections and action request store; projector queue view joins externally exported task JSON, not live broker fetch. Projector hot feed is partial remote activity with bounded ACK, not a generic work journal. Neither is command authority; Project writes remain orchestrator-owned; full mobile controls are not established."
+    },
+    {
+      "id": "A-projector-webhook-hot-ledger",
+      "status": "partially-implemented-code-tests-deployment-unverified",
+      "commandDedupBoundary": "Projector pmp_deliveries dedup/apply is only disposable projection state. Command intake needs separate canonical Fleet idempotency/receipt; even if projector delivery is already applied, an actionable comment must forward/reconcile its Fleet receipt. No duplicate webhook listener; reuse projector raw-body HMAC ingress/fanout where approved.",
+      "evidence": [
+        "pm-stack/projector/README.md:3-8,23-30,145-179",
+        "pm-stack/projector/src/webhook.ts:1-58",
+        "pm-stack/projector/src/server.ts:146-201",
+        "pm-stack/projector/src/store.ts:499-538,602-739",
+        "pm-stack/projector/test/webhook-delivery-id.test.ts",
+        "pm-stack/projector/test/hot.test.ts"
+      ],
+      "summary": "Existing bounded HMAC-SHA256 signed webhook, delivery replay dedupe, projection reconciliation cursors, disposable hot ledger with server-pinned high-water and monotone consumer ACK. It is read/projection glue and never writes source truth; its applied/ignored delivery state is not Fleet command acceptance, per-actor authorization, generic work journal or lifecycle outbox. Deployment/fanout liveness unverified."
+    },
+    {
+      "id": "A-dispatch",
+      "status": "partially-implemented-live-proof-open",
+      "evidence": [
+        "pkgs/fleet/crates/fleet-dispatch/src/lib.rs",
+        "pm-stack/dispatch/src/server.ts:215-250",
+        "issue:#8187",
+        "issue:#6533"
+      ],
+      "issues": [9203, 6533],
+      "summary": "Fleet/PM dispatch path and handoff baseline exist, but pinned pm-stack/dispatch QueueClient is Supabase-backed, not the Turso broker; #9028 tracks the direct PostgREST bypass. #6533 still requires current live launch-and-bind proof. No fresh deployment test in census."
+    },
+    {
+      "id": "A-slash-webhook-routing",
+      "status": "open-implementation-unverified",
+      "issues": [9203],
+      "evidence": ["pm-stack/projector/src/webhook.ts:1-58", "pm-stack/projector/src/server.ts:146-201", "pm-stack/projector/src/store.ts:499-538"],
+      "summary": "Reuse Projector's existing signed ingress/HMAC helper and forwarder seam; no full per-actor/per-verb authorization, canonical Fleet operation acceptance, parked direct launch or task/session receipt pipeline established. Projection delivery dedupe is not operational command durability."
+    },
+    {
+      "id": "A-bounded-exploration",
+      "status": "design-only",
+      "issues": [9204],
+      "summary": "Weighted bounded exploration and persisted dispositions not found in pinned claim path; proposed constants remain suggestions."
+    }
+  ],
+  "issues": [
+    {"number": 9196, "state": "OPEN", "updatedAt": "2026-11-13T04:00:20Z", "url": "https://github.com/developing-today/code/issues/9196", "note": "Was bot-closed at 03:21:43Z, reopened before census completion; launch receipt comment 6842912128 at 03:28:07Z. Epic state is not child completion."},
+    {"number": 9198, "state": "OPEN", "updatedAt": "2026-11-13T03:18:36Z", "url": "https://github.com/developing-today/code/issues/9198"},
+    {"number": 9199, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9199"},
+    {"number": 9200, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9200"},
+    {"number": 9201, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9201"},
+    {"number": 9203, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9203"},
+    {"number": 9204, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9204"},
+    {"number": 1184, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/1184", "note": "Issue body records the 100 native-subissue cap at intake; mill is grouped via #8990 and cross-linked."},
+    {"number": 9060, "state": "CLOSED", "url": "https://github.com/developing-today/code/issues/9060", "note": "Design substrate; open children remain open."},
+    {"number": 9062, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9062"},
+    {"number": 9070, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9070"},
+    {"number": 9073, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9073"},
+    {"number": 9074, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9074"},
+    {"number": 9075, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9075"},
+    {"number": 9076, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9076"},
+    {"number": 9078, "state": "CLOSED", "url": "https://github.com/developing-today/code/issues/9078", "note": "Hosted design epic closed; component issues remain open."},
+    {"number": 9079, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9079"},
+    {"number": 9080, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9080"},
+    {"number": 9081, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9081"},
+    {"number": 9082, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9082"},
+    {"number": 9083, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9083"},
+    {"number": 9084, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9084"},
+    {"number": 9085, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9085"},
+    {"number": 9086, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9086"},
+    {"number": 9087, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9087"},
+    {"number": 9178, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9178"},
+    {"number": 9180, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9180", "note": "FDR-0001..0010 reserved; use proposed program-specific namespace pending shared convention."},
+    {"number": 9179, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9179"},
+    {"number": 9016, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9016"},
+    {"number": 8887, "state": "CLOSED", "url": "https://github.com/developing-today/code/issues/8887"},
+    {"number": 8187, "state": "CLOSED", "url": "https://github.com/developing-today/code/issues/8187"},
+    {"number": 6533, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/6533", "note": "Fix PRs merged per issue comments; live launch/bind acceptance remains outstanding."},
+    {"number": 7030, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/7030", "note": "Priority brief ratified; current complete staffing/coverage acceptance not established."},
+    {"number": 9091, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9091"},
+    {"number": 9102, "state": "MERGED", "url": "https://github.com/developing-today/code/pull/9102"},
+    {"number": 9106, "state": "CLOSED", "url": "https://github.com/developing-today/code/issues/9106", "note": "Closed epic; child issues remain open."},
+    {"number": 9241, "state": "OPEN", "updatedAt": "2026-11-13T03:59:58Z", "url": "https://github.com/developing-today/code/issues/9241", "note": "Exact-name QTI provenance/schema crosswalk research; native child #9198. Task #15480 has live claimed-coverage readback per issues/seed/receipt.json at 03:51:03Z; no blocker edge filed."}
+    ,{"number": 9028, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/9028", "note": "PM dispatch is tracked as direct PostgREST producer bypassing packet validator/broker; resolve as an integration collision before claiming one broker."}
+    ,{"number": 3424, "state": "CLOSED", "url": "https://github.com/developing-today/code/issues/3424", "note": "Durable queue data model brief; six pieces; issue closed after intake brief and decomposition, not evidence all model work implemented."}
+    ,{"number": 3418, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/3418", "note": "Budget-aware claiming candidate; claim-side companion for typed blockers and budget matching."}
+    ,{"number": 8575, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/8575", "note": "One-home-per-fact fleet design; schema authority constraint and umbrella for #8579/#8580-8585."}
+    ,{"number": 8579, "state": "CLOSED", "url": "https://github.com/developing-today/code/issues/8579", "note": "Schema wipe-test audit only, no schema changes in slice; merged PR #8602."}
+    ,{"number": 8180, "state": "MERGED", "url": "https://github.com/developing-today/code/pull/8180", "note": "Design-mill intake brief for #3424."}
+    ,{"number": 8178, "state": "MERGED", "url": "https://github.com/developing-today/code/pull/8178", "note": "Claim-session model stamp, partial provenance evidence."}
+    ,{"number": 8602, "state": "MERGED", "url": "https://github.com/developing-today/code/pull/8602", "note": "#8579 queue schema audit artifact."}
+    ,{"number": 8580, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/8580"}
+    ,{"number": 8581, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/8581"}
+    ,{"number": 8582, "state": "CLOSED", "url": "https://github.com/developing-today/code/issues/8582"}
+    ,{"number": 8583, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/8583"}
+    ,{"number": 8584, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/8584"}
+    ,{"number": 8585, "state": "OPEN", "url": "https://github.com/developing-today/code/issues/8585"}
+  ],
+  "fdrNaming": {
+    "authority": "https://github.com/developing-today/code/issues/9180",
+    "reservedIDs": "FDR-0001 through FDR-0010",
+    "recommendation": "Propose FDR-PMO-001-<slug> or another formally adopted namespace; do not allocate an unprefixed reserved seed ID.",
+    "status": "proposed",
+    "mustReconcileWithCanonicalIndex": true
+  }
+}

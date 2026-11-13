@@ -303,7 +303,9 @@ class GoTestReportTests(unittest.TestCase):
             "widgets_test.go:42: quarantined until 2000-01-01 (https://github.com/developing-today/code/issues/1973)",
             "widgets_test.go:42: this mentions quarantined until 2027-01-01 (https://github.com/developing-today/code/issues/1973)",
         ]
-        empty_record = json.dumps({"skipped_count": 0, "skipped": [], "run": "previous"})
+        empty_record = json.dumps(
+            {"skipped_count": 0, "skipped": [], "run": "previous"}
+        )
 
         for reason in invalid_notices:
             with self.subTest(reason=reason):
@@ -328,7 +330,6 @@ class GoTestReportTests(unittest.TestCase):
                 self.assertNotIn("quarantined under #1973", summary)
                 self.assertIsNone(record)
 
-
     def run_report_raw(self, event_lines, stored=STORED):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -337,16 +338,36 @@ class GoTestReportTests(unittest.TestCase):
             record = root / "record.json"
             event_file.write_text("".join(line + "\n" for line in event_lines))
             result = subprocess.run(
-                ["python3", str(REPORTER), str(event_file), stored, "run/1",
-                 "2026-11-02T00:00:00Z", str(summary), str(record)],
-                capture_output=True, text=True, check=False,
+                [
+                    "python3",
+                    str(REPORTER),
+                    str(event_file),
+                    stored,
+                    "run/1",
+                    "2026-11-02T00:00:00Z",
+                    str(summary),
+                    str(record),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
             )
             return result
 
     def test_non_object_event_lines_are_skipped_and_counted(self):
         result = self.run_report_raw(
-            ["123", '"hello"', "[1, 2]",
-             json.dumps({"Action": "pass", "Package": "example.test/mcpx/widgets", "Test": "TestGood"})],
+            [
+                "123",
+                '"hello"',
+                "[1, 2]",
+                json.dumps(
+                    {
+                        "Action": "pass",
+                        "Package": "example.test/mcpx/widgets",
+                        "Test": "TestGood",
+                    }
+                ),
+            ],
             stored="",
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -355,9 +376,24 @@ class GoTestReportTests(unittest.TestCase):
 
     def test_non_string_event_fields_are_skipped_never_crash(self):
         result = self.run_report_raw(
-            [json.dumps({"Action": "pass", "Package": None, "Test": "TestX"}),
-             json.dumps({"Action": "output", "Package": "example.test/mcpx/widgets", "Test": "TestY", "Output": 42}),
-             json.dumps({"Action": "pass", "Package": "example.test/mcpx/widgets", "Test": "TestGood"})],
+            [
+                json.dumps({"Action": "pass", "Package": None, "Test": "TestX"}),
+                json.dumps(
+                    {
+                        "Action": "output",
+                        "Package": "example.test/mcpx/widgets",
+                        "Test": "TestY",
+                        "Output": 42,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "Action": "pass",
+                        "Package": "example.test/mcpx/widgets",
+                        "Test": "TestGood",
+                    }
+                ),
+            ],
             stored="",
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -365,7 +401,13 @@ class GoTestReportTests(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
 
     def test_stored_record_wrong_shapes_are_named_errors(self):
-        good_event = json.dumps({"Action": "pass", "Package": "example.test/mcpx/widgets", "Test": "TestGood"})
+        good_event = json.dumps(
+            {
+                "Action": "pass",
+                "Package": "example.test/mcpx/widgets",
+                "Test": "TestGood",
+            }
+        )
         cases = [
             ("[]", "top level"),
             ('"hello"', "top level"),
@@ -386,7 +428,13 @@ class GoTestReportTests(unittest.TestCase):
 
     def test_first_run_empty_stored_still_works(self):
         result, _, record = self.run_report(
-            [{"Action": "pass", "Package": "example.test/mcpx/widgets", "Test": "TestGood"}],
+            [
+                {
+                    "Action": "pass",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestGood",
+                }
+            ],
             stored="",
         )
         self.assertEqual(result.returncode, 0)

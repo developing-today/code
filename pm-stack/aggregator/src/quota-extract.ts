@@ -42,6 +42,7 @@ function monthDayTime(mon: string, day: string, hhmm: string, now: Date): string
   if (month === undefined) return null;
 
   const [h, m] = hhmm.split(":").map(Number);
+  if (!Number.isInteger(h) || h < 0 || h > 23 || !Number.isInteger(m) || m < 0 || m > 59) return null;
   const dayNumber = Number(day);
   const dateInYear = (year: number) => new Date(Date.UTC(year, month, dayNumber, h, m));
   const isRequestedDate = (date: Date) => date.getUTCMonth() === month && date.getUTCDate() === dayNumber;
@@ -637,7 +638,9 @@ const SHELL_POOLS: QuotaPool[] = [
     plan: "Go",
     state: "healthy",
     windows: [],
+
     note: "No dated read. Live windows arrive through the quota gatherer (the OpenCode opendesign credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent.",
+    extractionHealth: { status: "intentional", matched: null, reason: "uninstrumented", count: 0 },
   },
   {
     id: "deepseek",
@@ -646,6 +649,7 @@ const SHELL_POOLS: QuotaPool[] = [
     state: "healthy",
     windows: [],
     note: "PAYG balance ¥44.63 (2026-10-25 read), parked. Not a plan pool — never a fallback for supervised sessions; plan-covered Flash routes are preferred.",
+    extractionHealth: { status: "intentional", matched: null, reason: "uninstrumented", count: 0 },
   },
   {
     id: "mistral",
@@ -691,10 +695,24 @@ export function extractQuotaPools(quotaViewText: string, now = new Date()): Quot
   const pools: QuotaPool[] = [];
   for (const spec of POOL_SPECS) {
     const section = sectionOf(quotaViewText, spec.heading);
+    if (!section) {
+      pools.push({
+        id: spec.id,
+        provider: spec.provider,
+        plan: spec.plan,
+        state: "healthy",
+        windows: [],
+        note: spec.shellNote,
+        extractionHealth: { status: "gap", matched: false, reason: "section-missing", count: 0 },
+      });
+      continue;
+    }
     let raw: Raw | null = null;
+    let threw = false;
     try {
-      raw = section ? spec.extract(section, now) : null;
+      raw = spec.extract(section, now);
     } catch {
+      threw = true;
       raw = null;
     }
     if (!raw) {
@@ -705,6 +723,12 @@ export function extractQuotaPools(quotaViewText: string, now = new Date()): Quot
         state: "healthy",
         windows: [],
         note: spec.shellNote,
+        extractionHealth: {
+          status: "gap",
+          matched: false,
+          reason: threw ? "extractor-threw" : "extractor-null",
+          count: 0,
+        },
       });
       continue;
     }
@@ -716,6 +740,7 @@ export function extractQuotaPools(quotaViewText: string, now = new Date()): Quot
       windows: raw.windows,
       note: raw.note,
       wallLiftsAt: raw.wallLiftsAt,
+      extractionHealth: { status: "matched", matched: true, count: raw.windows.length },
     };
     pool.state = raw.wallLiftsAt ? "walled" : poolState(pool);
     if (pool.state === "walled" && !pool.wallLiftsAt) {

@@ -468,8 +468,11 @@ fn discovery_refuses_missing_and_mismatched_embedding_model() {
 
     // Missing key.
     let con = rusqlite::Connection::open(c.dir.join("atlas-core-internal-misc-01.db")).unwrap();
-    con.execute("DELETE FROM atlas_manifest WHERE \"key\" = 'embedding_model'", [])
-        .unwrap();
+    con.execute(
+        "DELETE FROM atlas_manifest WHERE \"key\" = 'embedding_model'",
+        [],
+    )
+    .unwrap();
     drop(con);
     let err = c
         .discover(&LogConnector::new(vec![]), Tier::Internal)

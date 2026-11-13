@@ -48,15 +48,15 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 
-use id_store::chain::ChainExt;
 use id_core::connectivity::connect;
-use id_events::event_store::Ingest;
 use id_core::frames::{read_frame, write_frame};
-use id_events::pull_policy::PullGate;
-use id_events::event_store::sync::RangeStore;
-use id_store::store_traits::{ChainLog, EventStoreBackend, SharedEventStore};
 use id_core::sync_method::{Answer, Request, SyncMethod, SyncStats, SyncSupport, choose};
 use id_core::time::unix_ms;
+use id_events::event_store::sync::RangeStore;
+use id_events::event_store::{BlockLookup, Ingest};
+use id_events::pull_policy::PullGate;
+use id_store::chain::ChainExt;
+use id_store::store_traits::{ChainLog, EventStoreBackend, SharedEventStore};
 
 /// The ALPN for sync sessions. Range sync joins as a method of the same session, and the
 /// first frame of every session is the [`Request`]: one session shape on this ALPN.
@@ -320,7 +320,18 @@ where
         // is also checked against the requested topic's hash bytes, the
         // form this seam names a topic in. Refused exactly as a pull
         // refusal, before the method is agreed.
-        if gate.topic_tag_blocked(request.topic.as_bytes()) {
+        let topic_lookup = gate.topic_tag_lookup(request.topic.as_bytes());
+        if let Some(BlockLookup::Indeterminate(failure)) = topic_lookup {
+            // Explicit indeterminate-result policy (#8750): this seam
+            // fails open, like the gate itself, and logs the failure
+            // for the operator instead of treating it as a clean
+            // "tag not blocked".
+            tracing::warn!(
+                "log sync: block-list lookup for the requested topic failed ({}); failing open",
+                failure.as_str()
+            );
+        }
+        if topic_lookup == Some(BlockLookup::Blocked) {
             send_message(&mut send, &Answer::Refuse).await?;
             finish_stream(&mut send, &mut recv).await;
             return Err(SyncError::PullRefused);
@@ -727,8 +738,10 @@ pub(crate) mod testing {
     impl Live {
         /// Replaces the membership, as the fold of a newer log does.
         pub(crate) fn set(&self, folded: Self) {
-            *self.0.lock().expect("the fixture lock is not poisoned") =
-                folded.0.into_inner().expect("the fixture lock is not poisoned");
+            *self.0.lock().expect("the fixture lock is not poisoned") = folded
+                .0
+                .into_inner()
+                .expect("the fixture lock is not poisoned");
         }
     }
 
@@ -821,11 +834,11 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use id_store::chain::{Event, sign};
-    use id_events::event_store::EventStore;
-    use id_events::pull_policy::{PullGate, PullPolicy};
     use id_core::sync_method::{Estimate, LogAndRange, LogSyncOnly};
     use id_core::waiting::WaitingLimits;
+    use id_events::event_store::EventStore;
+    use id_events::pull_policy::{PullGate, PullPolicy};
+    use id_store::chain::{Event, sign};
     use iroh_base::SecretKey;
 
     // Keep test sessions aligned with production; CI can run the bulk page-transfer test under

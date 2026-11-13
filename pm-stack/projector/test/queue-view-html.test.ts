@@ -64,7 +64,12 @@ const tasks = [
     platform: "muse",
     payload: { repo: "developing-today/code", kind: "small_fix", issue: { number: 300 } },
   }),
-  task({ id: 15, title: "finished work", status: "done", payload: { repo: "developing-today/code", kind: "small_fix", issue: { number: 500 } } }),
+  task({
+    id: 15,
+    title: "finished work",
+    status: "done",
+    payload: { repo: "developing-today/code", kind: "small_fix", issue: { number: 500 } },
+  }),
 ];
 const events = [hotRow({ seq: 7, ref: "developing-today/code#100" })];
 
@@ -151,17 +156,15 @@ describe("queue-view human face: trend panels link the machine face's stores", (
 
 describe("queue-view human face: escaping", () => {
   test("escapeHtml escapes markup-significant characters", () => {
-    expect(escapeHtml(`<a href="x">&'</a>`)).toBe(
-      "&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;",
-    );
+    expect(escapeHtml(`<a href="x">&'</a>`)).toBe("&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;");
   });
 
   test("task titles are data, not markup: a script-shaped title renders escaped", () => {
-    const evil = buildQueueView(
-      [task({ id: 99, title: "<script>alert(1)</script>" })],
-      [],
-      { since: SINCE, until: UNTIL, now: UNTIL },
-    );
+    const evil = buildQueueView([task({ id: 99, title: "<script>alert(1)</script>" })], [], {
+      since: SINCE,
+      until: UNTIL,
+      now: UNTIL,
+    });
     const page = renderQueueViewHtml(evil);
     expect(page).not.toContain("<script>alert(1)</script>");
     expect(page).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");

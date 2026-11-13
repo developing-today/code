@@ -16,14 +16,14 @@ categories = ["command-line-utilities", "network-programming"]
 # id-core sub-crate under crates/; this package is the workspace root.
 
 [workspace]
-members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-sync", "crates/id-native-shell"]
+members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync", "crates/id-worlds", "crates/id-directory", "crates/id-web", "crates/id-native-shell", "crates/id-cli"]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
 # feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
 # forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
 # into Cargo.lock even though no build here enables it (see vendor/README.md).
 exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
-default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-sync"]
+default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync", "crates/id-worlds", "crates/id-directory", "crates/id-web", "crates/id-cli"]
 
 # =============================================================================
 # Features
@@ -31,33 +31,20 @@ default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "
 
 [features]
 default = ["sandbox", "world"]
-sandbox = ["dep:wasmtime", "world", "id-core/sandbox", "id-caps/sandbox"]
+sandbox = ["world", "id-core/sandbox", "id-caps/sandbox", "id-worlds/sandbox", "id-cli/sandbox"]
 world = [
-  "dep:subtle",
-  "dep:hmac",
-  "dep:scrypt",
-  "dep:rmp-serde",
   "id-core/world",
+  "id-cli/world",
 ]
-ssh = ["world", "dep:russh"]
+ssh = ["world", "id-worlds/ssh", "id-cli/ssh"]
 web = [
   "world",
-  "dep:axum",
-  "dep:tower",
-  "dep:tower-http",
-  "dep:rust-embed",
-  "dep:mime_guess",
-  "dep:futures",
-  "dep:rmp-serde",
-  "dep:comrak",
-  "dep:urlencoding",
-  "dep:aes-gcm",
-  "dep:hkdf",
-  "dep:qrcode",
+  "dep:id-web",
   "id-core/web",
+  "id-cli/web",
 ]
 # Mainline DHT address lookup (P7.3, decision 15). Off in the default build; src/dht.rs decides per server.
-dht = ["id-sync/dht"]
+dht = ["id-sync/dht", "id-cli/dht"]
 # Live-cluster binding for the currency PoC (#2289): the official TigerBeetle
 # Rust client, pinned to the harness server version (harness.rs). Off by
 # default so normal builds do not link the client native tb_client library.
@@ -80,6 +67,23 @@ id-events = { path = "crates/id-events", default-features = false }
 # Sync-family modules extracted in step 3 of the crate split (#4406).
 # Re-exported at their historical crate:: paths in src/lib.rs.
 id-sync = { path = "crates/id-sync", default-features = false }
+# Groups-family modules extracted in step 4 of the crate split (#4407).
+# Re-exported at their historical crate:: paths in src/lib.rs.
+id-groups = { path = "crates/id-groups", default-features = false }
+# Worlds-family modules extracted in step 5 of the crate split (#4408).
+# Re-exported at their historical crate:: paths in src/lib.rs.
+id-worlds = { path = "crates/id-worlds", default-features = false }
+# Web layer extracted in step 6c of the crate split (#4409). Optional:
+# only the `web` feature links it, and src/lib.rs re-exports it as
+# `id::web` under that feature.
+id-web = { path = "crates/id-web", default-features = false, optional = true }
+# Application layer extracted in step 7b of the crate split (#4411).
+# Re-exported at their historical crate:: paths in src/lib.rs; the
+# binary entry point (src/main.rs) stays in this package.
+id-cli = { path = "crates/id-cli", default-features = false }
+# Directory-family modules extracted in step 6b of the crate split
+# (#4409). Re-exported at their historical crate:: paths in src/lib.rs.
+id-directory = { path = "crates/id-directory", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 # Calendar arithmetic and the IANA time-zone database for the did-it tracker's
@@ -111,11 +115,9 @@ p2panda-sync = { path = "vendor/p2panda-sync" }
 p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [
   "serde",
 ] }
-# DataScheme group encryption (P4.1, src/encryption/). `data_scheme` is on because the adapter is the
-# scheme. `test_utils` and `message_scheme` stay off: the adapter brings its own orderer and membership.
-p2panda-encryption = { path = "vendor/p2panda-encryption", default-features = false, features = [
-  "data_scheme",
-] }
+# DataScheme group encryption (P4.1) moved to id-groups in step 4 of the
+# crate split (#4407): the vendored p2panda-encryption dependency is
+# declared there now, with the same features.
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
 redb = "=4.3.0"
@@ -135,23 +137,6 @@ unicode-segmentation = "1.13"
 unicode-width = "0.2"
 
 # Web feature dependencies (optional)
-axum = { version = "0.8", features = ["ws", "multipart"], optional = true }
-tower = { version = "0.5", features = ["util"], optional = true }
-tower-http = { version = "0.7", features = [
-  "fs",
-  "cors",
-  "compression-gzip",
-], optional = true }
-rust-embed = { version = "8", optional = true }
-mime_guess = { version = "2", optional = true }
-futures = { version = "0.3.32", optional = true }
-rmp-serde = { version = "1", optional = true }
-comrak = { version = "0.56", default-features = false, optional = true }
-urlencoding = { version = "2", optional = true }
-aes-gcm = { version = "0.11", default-features = false, features = [
-  "aes",
-  "alloc",
-], optional = true }
 argon2 = "0.6"
 chacha20poly1305 = "0.10"
 zeroize = "1"
@@ -165,22 +150,15 @@ blake3 = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "1"
-qrcode = { version = "0.14.1", default-features = false, optional = true }
-hkdf = { version = "0.13", optional = true }
 # SHA-256 for the hosted binding ceremony's service attestation (slice 1,
 # #3808): required in every build variant, not only `world`/`web`.
 sha2 = "0.11"
 # HMAC-SHA512 for the Seitan V2 invite ID and Ed25519 seed (P6.1, src/seitan/derive.rs). Already in the lock.
-hmac = { version = "0.13", optional = true }
 # scrypt for the Seitan V2 stretch (P6.1). Already in the lock as a transitive dependency.
-scrypt = { version = "0.12", optional = true }
-subtle = { version = "2", optional = true }
-wasmtime = { version = "=48.0.7", default-features = false, features = [
-  "cranelift",
-  "runtime",
-  "std",
-], optional = true }
-russh = { version = "=0.65.0", optional = true }
+# wasmtime moved to id-worlds in step 5b of the crate split (#4408):
+# the `sandbox` feature above forwards to `id-worlds/sandbox`.
+# russh moved to id-worlds in step 5c of the crate split (#4408):
+# the `ssh` feature above forwards to `id-worlds/ssh`.
 
 [dev-dependencies]
 # Paused-time session-driver tests. Dev only.
@@ -203,7 +181,11 @@ id-sync = { path = "crates/id-sync", default-features = false, features = [
 rusqlite = { version = "0.32", features = ["bundled"] }
 wat = "=1.261.0"
 tokio-tungstenite = "0.29"
-vt100 = "=0.16.2"
+# vt100 moved to id-worlds (dev) with world_ssh in step 5c (#4408).
+# The CLI integration tests drive an SSH client against the world SSH
+# server; the server side (and its russh) lives in id-worlds since
+# step 5c, so the facade keeps russh for its tests only.
+russh = "=0.65.0"
 proptest = "1.12"
 # Interop vectors for the canonical CBOR of event headers. Dev only.
 dcbor = "=0.25.2"

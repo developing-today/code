@@ -91,9 +91,7 @@ class WatchdogRenameTests(unittest.TestCase):
             ]
         )
         self.assertTrue(
-            any(
-                v.startswith("_openai.main:") and "banned" in v for v in violations
-            ),
+            any(v.startswith("_openai.main:") and "banned" in v for v in violations),
             f"expected a banned-method violation for _openai.main, got {violations}",
         )
 

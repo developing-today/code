@@ -97,6 +97,8 @@ pub const MAX_NAME_BYTES: usize = 64;
 pub const MAX_ARGS_BYTES: usize = 8 * 1024;
 /// Largest event the host delivers to a program, in bytes.
 pub const MAX_EVENT_BYTES: usize = 64 * 1024;
+/// Maximum number of forms an actor may hold open for trusted device adapters.
+pub const MAX_PENDING_FORMS: usize = 64;
 /// Most distinct tick intervals one program may subscribe to.
 pub const MAX_TICK_INTERVALS: usize = 4;
 /// Most concurrent `loc.watch` subscriptions one program may hold (#2341).
@@ -147,6 +149,8 @@ pub enum ProviderKind {
     Request,
     /// A server event subscription.
     Subscription,
+    /// An asynchronous event emitted by a host for a registered capability.
+    Event,
     /// A Roc platform module, checked by the compile gate rather than called
     /// as a host request.
     PlatformModule,
@@ -159,6 +163,8 @@ pub enum ArgumentType {
     String,
     /// Non-negative JSON integer.
     UnsignedInteger,
+    /// JSON object payload.
+    Object,
 }
 
 /// A recognized field in a provider's request arguments.
@@ -363,12 +369,36 @@ const DEVICE_INFO_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
     value_type: ArgumentType::UnsignedInteger,
     required: false,
 }];
+/// `form.present` registers a validated form for the host's trusted presenter.
+const FORM_PRESENT_ARGUMENTS: &[ProviderArgument] = &[
+    ProviderArgument {
+        name: "form_id",
+        value_type: ArgumentType::String,
+        required: true,
+    },
+    ProviderArgument {
+        name: "form",
+        value_type: ArgumentType::Object,
+        required: true,
+    },
+];
+/// `form.cancel` cancels one pending presentation.
+const FORM_CANCEL_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "form_id",
+    value_type: ArgumentType::String,
+    required: true,
+}];
 /// Bounds for `loc.position`: the argument byte cap.
 const LOC_POSITION_BOUNDS: &[ProviderBound] = &[ProviderBound::ArgsBytes(MAX_ARGS_BYTES)];
 /// Bounds for `loc.watch`: the concurrent-watch cap. The interval
 /// floor ([`MIN_LOC_WATCH_INTERVAL_MS`]) is enforced by
 /// [`parse_loc_watch_interval_ms`].
 const LOC_WATCH_BOUNDS: &[ProviderBound] = &[ProviderBound::Items(MAX_LOC_WATCHES)];
+/// Forms share the request argument bound and have a bounded pending set.
+const FORM_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::Items(MAX_PENDING_FORMS),
+];
 
 define_provider_registry! {
     "time.now" => {
@@ -464,6 +494,30 @@ define_provider_registry! {
         kind: ProviderKind::Request,
         argument_schema: ArgumentSchema::JsonObject(DEVICE_INFO_ARGUMENTS),
         bounds: COMMON_REQUEST_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "form.present" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(FORM_PRESENT_ARGUMENTS),
+        bounds: FORM_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "form.result" => {
+        version: 1,
+        kind: ProviderKind::Event,
+        argument_schema: ArgumentSchema::NotApplicable,
+        bounds: &[ProviderBound::ResponseBytes(MAX_EVENT_BYTES)],
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "form.cancel" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(FORM_CANCEL_ARGUMENTS),
+        bounds: FORM_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
     },
@@ -758,6 +812,9 @@ pub enum Subscription {
     Players,
     /// A tick event every this many milliseconds while someone is connected.
     Tick(u64),
+    /// A location reading every this many milliseconds while someone
+    /// is connected and consent stands (#2341).
+    LocWatch(u64),
     /// A spec the host does not understand.
     Unknown(String),
 }
@@ -775,6 +832,11 @@ impl Subscription {
         {
             return Self::Tick(ms);
         }
+        if (spec == "loc.watch" || spec.starts_with("loc.watch:"))
+            && let Ok(ms) = parse_loc_watch_interval_ms(spec)
+        {
+            return Self::LocWatch(ms);
+        }
         Self::Unknown(spec.to_owned())
     }
 
@@ -784,6 +846,7 @@ impl Subscription {
         match self {
             Self::Players => "players",
             Self::Tick(_) => "time.tick",
+            Self::LocWatch(_) => "loc.watch",
             Self::Unknown(spec) => spec,
         }
     }
@@ -794,6 +857,7 @@ impl Subscription {
         match self {
             Self::Players => "players".to_owned(),
             Self::Tick(ms) => format!("time.tick:{ms}"),
+            Self::LocWatch(ms) => format!("loc.watch:{ms}"),
             Self::Unknown(spec) => spec.clone(),
         }
     }
@@ -929,6 +993,20 @@ pub fn parse_wants(text: &str) -> Result<Wants> {
     ensure!(
         ticks <= MAX_TICK_INTERVALS,
         "at most {MAX_TICK_INTERVALS} tick intervals"
+    );
+    // The location-watch bound is enforced here, at parse time,
+    // exactly like the tick bound above: the registry's
+    // ProviderBound::Items(MAX_LOC_WATCHES) is the advertised
+    // sampling/delivery budget, not a description (#2341, PR #8643
+    // Codex P2).
+    let loc_watches = wants
+        .subscribe
+        .iter()
+        .filter(|sub| matches!(sub, Subscription::LocWatch(_)))
+        .count();
+    ensure!(
+        loc_watches <= MAX_LOC_WATCHES,
+        "at most {MAX_LOC_WATCHES} location watches"
     );
     Ok(wants)
 }
@@ -1787,6 +1865,14 @@ mod tests {
             "x".repeat(MAX_ARGS_BYTES)
         );
         assert!(parse_wants(&args).is_err());
+        let form_args = format!(
+            r#"{{"requests":[{{"id":"f1","cap":"form.present","args":{{"form_id":"f1","form":{{"version":1,"title":"{}"}}}}}}]}}"#,
+            "x".repeat(MAX_ARGS_BYTES)
+        );
+        assert!(
+            parse_wants(&form_args).is_err(),
+            "form args share MAX_ARGS_BYTES"
+        );
         assert!(parse_wants(&" ".repeat(MAX_WANTS_BYTES + 1)).is_err());
     }
 
@@ -2067,6 +2153,9 @@ mod tests {
                 "schedule.cancel",
                 "world.info",
                 "device.info",
+                "form.present",
+                "form.result",
+                "form.cancel",
                 "loc.position",
                 "loc.watch",
                 "Key",
@@ -2076,7 +2165,7 @@ mod tests {
                 "RocCap",
                 "RocText",
             ],
-            "registry retains the catalog names and order (17 pre-#2341 names plus loc.position/loc.watch and device.info)"
+            "registry retains the catalog names and order (plus form.* and loc.*)"
         );
         assert_eq!(
             PROVIDER_REGISTRY.entries().len(),
@@ -2093,6 +2182,7 @@ mod tests {
                 (entry.kind, entry.argument_schema),
                 (ProviderKind::Request, ArgumentSchema::JsonObject(_))
                     | (ProviderKind::Subscription, ArgumentSchema::Subscription(_))
+                    | (ProviderKind::Event, ArgumentSchema::NotApplicable)
                     | (ProviderKind::PlatformModule, ArgumentSchema::NotApplicable)
             )
         }));

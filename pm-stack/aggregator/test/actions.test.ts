@@ -427,6 +427,38 @@ describe("dashboard actions validation", () => {
     }
   });
 
+  test("refuses impossible calendar days for until and proposalUpdatedAt (#3393)", () => {
+    for (const bad of ["2026-02-29", "2026-02-30", "2026-04-31"]) {
+      const rUntil = v({ verb: "snooze", payload: { until: bad } });
+      expect(rUntil.ok).toBe(false);
+      if (!rUntil.ok) expect(rUntil.error).toBe("payload.until must be an ISO date/time");
+      const rProposal = v({
+        verb: "approve-proposal",
+        payload: { proposalRunId: "run-1", proposalUpdatedAt: bad },
+      });
+      expect(rProposal.ok).toBe(false);
+      if (!rProposal.ok) expect(rProposal.error).toBe("payload.proposalUpdatedAt must be an ISO date/time");
+    }
+    // Leap-year control: 2024-02-29 exists, so date-only and full ISO
+    // datetimes on that day are accepted for both fields.
+    expect(v({ verb: "snooze", payload: { until: "2024-02-29" } }).ok).toBe(true);
+    expect(v({ verb: "snooze", payload: { until: "2024-02-29T12:00:00Z" } }).ok).toBe(true);
+    expect(
+      v({
+        verb: "approve-proposal",
+        payload: { proposalRunId: "run-1", proposalUpdatedAt: "2024-02-29" },
+      }).ok,
+    ).toBe(true);
+    expect(
+      v({
+        verb: "approve-proposal",
+        payload: { proposalRunId: "run-1", proposalUpdatedAt: "2024-02-29T12:00:00Z" },
+      }).ok,
+    ).toBe(true);
+    // Full ISO datetimes on real days still pass.
+    expect(v({ verb: "snooze", payload: { until: "2026-03-15T12:30:00Z" } }).ok).toBe(true);
+  });
+
   test("status-request: gh object, status required, targetRef derived", () => {
     const ok = validateNewAction({
       clientToken: "ct-valid-token-2",
@@ -857,8 +889,9 @@ describe("actions HTTP round-trip (fixture consumer)", () => {
     expect(result.status).toBe(200);
 
     const listFor = async (qs: string) =>
-      ((await (await fetch(`http://127.0.0.1:${port}/api/actions.json?${qs}`)).json()) as { actions: DashAction[] })
-        .actions.map((a) => a.id);
+      (
+        (await (await fetch(`http://127.0.0.1:${port}/api/actions.json?${qs}`)).json()) as { actions: DashAction[] }
+      ).actions.map((a) => a.id);
 
     // The regression: state=all must return the applied record, not [].
     expect(await listFor("state=all")).toContain(action.id);

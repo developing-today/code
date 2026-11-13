@@ -261,10 +261,22 @@ describe("store: item deletion marker (#6782)", () => {
 describe("store: comments + links + subject view", () => {
   test("same GitHub id is independent across comment kinds and deletion is scoped", async () => {
     const base: Omit<CommentRow, "fetched_at"> = {
-      id: "collision", ref: "test/collision#1", kind: "issue_comment", author: null,
-      body: "issue", created_at: "2026-01-01", updated_at: null, url: null,
-      path: null, line: null, diff_hunk: null, review_state: null, submitted_at: null,
-      commit_id: null, deleted: 0, source_updated_at: "2026-01-01",
+      id: "collision",
+      ref: "test/collision#1",
+      kind: "issue_comment",
+      author: null,
+      body: "issue",
+      created_at: "2026-01-01",
+      updated_at: null,
+      url: null,
+      path: null,
+      line: null,
+      diff_hunk: null,
+      review_state: null,
+      submitted_at: null,
+      commit_id: null,
+      deleted: 0,
+      source_updated_at: "2026-01-01",
     };
     await upsertComment(db, base);
     await upsertComment(db, { ...base, kind: "review", body: "review" });
@@ -272,7 +284,9 @@ describe("store: comments + links + subject view", () => {
     await upsertComment(db, { ...base, body: "updated issue" });
     let rows = await getComments(db, [base.ref]);
     expect(rows.map((r) => [r.kind, r.body]).sort()).toEqual([
-      ["issue_comment", "updated issue"], ["review", "review"], ["review_comment", "line"],
+      ["issue_comment", "updated issue"],
+      ["review", "review"],
+      ["review_comment", "line"],
     ]);
     await markCommentDeleted(db, base);
     rows = await getComments(db, [base.ref]);

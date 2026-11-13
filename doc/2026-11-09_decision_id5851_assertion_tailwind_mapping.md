@@ -38,7 +38,7 @@
   is open in review (PR #7921) at the time of writing, owns the
   five-stage pipeline (parse→validate→compose→lower→emit), the
   compile-time-dominant split, and the conformance corpus shape. Mapping
-  tables are *data* to its lowering stage. This record defines that
+  tables are _data_ to its lowering stage. This record defines that
   data for the web target; it does not redefine the pipeline, the
   report format, or the corpus gates (§1, assumption A4).
 - **Evidence baseline:** `origin/main` at `1cd22df899`, worktree
@@ -54,17 +54,17 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| What a semantic element becomes on web | A fixed DOM element per registry kind (§2) — the element's own tag carries semantics; styling never changes the tag |
-| What an assertion becomes on web | Tailwind utility classes generated from theme keys, one source of truth in the theme file (§3). Content never names a utility, colour, or size (§7.1) |
-| Which theme keys must exist | The §3.7 key list under `theme.extend` (colours, type steps, spacing, radii, shadows); missing keys are coverage warnings, never silent fallbacks (§7.6) |
-| How generated classes reach Tailwind | The build emits the generated class set explicitly (safelist/data path, §3.8) — content-scanning alone cannot see classes no author wrote |
-| Cascade position of everything | Adopted verbatim from #5854: platform defaults → theme/token values → semantic assertions → override map → raw CSS web-only, per-property (§4). Nothing here re-orders it |
-| Raw CSS on web | Layer 5, wins per-property over assertion-derived utilities, every override listed in the composition report; cascade layering, never `!important` escalation (§5) |
-| Raw HTML on web | `<raw kind="html">` passes through verbatim inside the web artefact, sanitised per #5785 contexts; `<raw kind="css">` is appended as layer 5. Both are greppable and enumerated in the coverage report (§6) |
-| States | #5850 §5 state set and precedence, composed as Tailwind variants; focus-visible is never suppressible (§3.6) |
-| Dark / high-contrast | `dark:` variant plus forced-colors variants keyed to the #5850 §10.8 variant requirement (§3.1) |
+| Question                               | Decision                                                                                                                                                                                                    |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| What a semantic element becomes on web | A fixed DOM element per registry kind (§2) — the element's own tag carries semantics; styling never changes the tag                                                                                         |
+| What an assertion becomes on web       | Tailwind utility classes generated from theme keys, one source of truth in the theme file (§3). Content never names a utility, colour, or size (§7.1)                                                       |
+| Which theme keys must exist            | The §3.7 key list under `theme.extend` (colours, type steps, spacing, radii, shadows); missing keys are coverage warnings, never silent fallbacks (§7.6)                                                    |
+| How generated classes reach Tailwind   | The build emits the generated class set explicitly (safelist/data path, §3.8) — content-scanning alone cannot see classes no author wrote                                                                   |
+| Cascade position of everything         | Adopted verbatim from #5854: platform defaults → theme/token values → semantic assertions → override map → raw CSS web-only, per-property (§4). Nothing here re-orders it                                   |
+| Raw CSS on web                         | Layer 5, wins per-property over assertion-derived utilities, every override listed in the composition report; cascade layering, never `!important` escalation (§5)                                          |
+| Raw HTML on web                        | `<raw kind="html">` passes through verbatim inside the web artefact, sanitised per #5785 contexts; `<raw kind="css">` is appended as layer 5. Both are greppable and enumerated in the coverage report (§6) |
+| States                                 | #5850 §5 state set and precedence, composed as Tailwind variants; focus-visible is never suppressible (§3.6)                                                                                                |
+| Dark / high-contrast                   | `dark:` variant plus forced-colors variants keyed to the #5850 §10.8 variant requirement (§3.1)                                                                                                             |
 
 ## 1. Assumptions against unsettled inputs (stated, not silent)
 
@@ -116,35 +116,35 @@ role; classes carry only the assertion rendering from §3. Interactive
 kinds keep their native element (never a `<div>` with handlers) so
 keyboard behaviour and the #5849 §6 contracts come from the platform.
 
-| Element | DOM | Notes |
-| --- | --- | --- |
-| `document` | `<html>` shell (head + body) | Host page; theme/dark-mode hooks live here |
-| `page` | `<main>` | One per routable screen |
-| `section` | `<section>` + `aria-labelledby` | Title element provides the label |
-| `nav` | `<nav>` | |
-| `heading` (`level` 1–6) | `<h1>`–`<h6>` | Level maps 1:1; no level-skipping fixups |
-| `card` | `<section>` | Distinguished from `section` by card surface role, not tag |
-| `list` (`unordered`/`ordered`/`description`) | `<ul>` / `<ol>` / `<dl>` | |
-| `item` | `<li>` (or `<dt>`+`<dd>` under `description`) | `selected` → `aria-selected` |
-| `table` / `row` / `cell` (`header`/`data`) | `<table>` / `<tr>` / `<th scope>` / `<td>` | |
-| `image` | `<img>` | `src`/`alt` pass through; decorative `alt=""` kept |
-| `link` | `<a href>` | `visited` state is `:visited`-limited by the platform (A6) |
-| `master-detail` / `detail` | `<div>` regions with labels | Layout between panes is structural, not an assertion |
-| `text` | `<p>` | |
-| `strong` / `emphasis` | `<strong>` / `<em>` | Never `<b>`/`<i>`; meaning, not pixels |
-| `form` | `<form>` | `invalid` → `aria-invalid` on the form; `submitting` → `aria-busy` |
-| `field` (`text`/`password`/`number`/`date`) | `<input type=…>` + `<label>` | Label association is structural and mandatory |
-| `field` (`checkbox`) | `<input type=checkbox>` + `<label>` | |
-| `field` (`choice`) | `<select>` (+ `<option>`) or radio group for small fixed option sets | Single vs multiple from `multiple` |
-| `field` (`file`) | `<input type=file>` | `accept` passes through |
-| `alert` (`error`/`warning`/`info`/`success`) | `<div role=alert>` (assertive) for `error`; `<div role=status>` otherwise | Live-region politeness follows the kind |
-| `button` | `<button type>` | `disabled`/`busy` → `disabled` + `aria-disabled`; never an `<a>` styled as a button |
-| `dialog` (`open`/`closed`) | `<dialog>` | Closed renders nothing; open uses modal semantics |
-| `menu` / `menu-item` | `<div role=menu>` / `<div role=menuitem>` | `checked` → `aria-checked` on toggling items |
-| `toolbar` | `<div role=toolbar>` | |
-| `sidebar` (`collapsed`/`expanded`) | `<aside>` | `aria-expanded` on the toggle; collapsed keeps content in the accessibility tree unless the design says otherwise |
-| `tabs` / `tab` | `<div role=tablist>` / `<button role=tab>` + panel | `selected` → `aria-selected` + `tabindex` management |
-| `settings` / `preference` | `<section>` / labelled control per `kind` | Same control mapping as `field` kinds |
+| Element                                      | DOM                                                                       | Notes                                                                                                             |
+| -------------------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `document`                                   | `<html>` shell (head + body)                                              | Host page; theme/dark-mode hooks live here                                                                        |
+| `page`                                       | `<main>`                                                                  | One per routable screen                                                                                           |
+| `section`                                    | `<section>` + `aria-labelledby`                                           | Title element provides the label                                                                                  |
+| `nav`                                        | `<nav>`                                                                   |                                                                                                                   |
+| `heading` (`level` 1–6)                      | `<h1>`–`<h6>`                                                             | Level maps 1:1; no level-skipping fixups                                                                          |
+| `card`                                       | `<section>`                                                               | Distinguished from `section` by card surface role, not tag                                                        |
+| `list` (`unordered`/`ordered`/`description`) | `<ul>` / `<ol>` / `<dl>`                                                  |                                                                                                                   |
+| `item`                                       | `<li>` (or `<dt>`+`<dd>` under `description`)                             | `selected` → `aria-selected`                                                                                      |
+| `table` / `row` / `cell` (`header`/`data`)   | `<table>` / `<tr>` / `<th scope>` / `<td>`                                |                                                                                                                   |
+| `image`                                      | `<img>`                                                                   | `src`/`alt` pass through; decorative `alt=""` kept                                                                |
+| `link`                                       | `<a href>`                                                                | `visited` state is `:visited`-limited by the platform (A6)                                                        |
+| `master-detail` / `detail`                   | `<div>` regions with labels                                               | Layout between panes is structural, not an assertion                                                              |
+| `text`                                       | `<p>`                                                                     |                                                                                                                   |
+| `strong` / `emphasis`                        | `<strong>` / `<em>`                                                       | Never `<b>`/`<i>`; meaning, not pixels                                                                            |
+| `form`                                       | `<form>`                                                                  | `invalid` → `aria-invalid` on the form; `submitting` → `aria-busy`                                                |
+| `field` (`text`/`password`/`number`/`date`)  | `<input type=…>` + `<label>`                                              | Label association is structural and mandatory                                                                     |
+| `field` (`checkbox`)                         | `<input type=checkbox>` + `<label>`                                       |                                                                                                                   |
+| `field` (`choice`)                           | `<select>` (+ `<option>`) or radio group for small fixed option sets      | Single vs multiple from `multiple`                                                                                |
+| `field` (`file`)                             | `<input type=file>`                                                       | `accept` passes through                                                                                           |
+| `alert` (`error`/`warning`/`info`/`success`) | `<div role=alert>` (assertive) for `error`; `<div role=status>` otherwise | Live-region politeness follows the kind                                                                           |
+| `button`                                     | `<button type>`                                                           | `disabled`/`busy` → `disabled` + `aria-disabled`; never an `<a>` styled as a button                               |
+| `dialog` (`open`/`closed`)                   | `<dialog>`                                                                | Closed renders nothing; open uses modal semantics                                                                 |
+| `menu` / `menu-item`                         | `<div role=menu>` / `<div role=menuitem>`                                 | `checked` → `aria-checked` on toggling items                                                                      |
+| `toolbar`                                    | `<div role=toolbar>`                                                      |                                                                                                                   |
+| `sidebar` (`collapsed`/`expanded`)           | `<aside>`                                                                 | `aria-expanded` on the toggle; collapsed keeps content in the accessibility tree unless the design says otherwise |
+| `tabs` / `tab`                               | `<div role=tablist>` / `<button role=tab>` + panel                        | `selected` → `aria-selected` + `tabindex` management                                                              |
+| `settings` / `preference`                    | `<section>` / labelled control per `kind`                                 | Same control mapping as `field` kinds                                                                             |
 
 ## 3. Assertion role → Tailwind utilities
 
@@ -154,13 +154,13 @@ write them.
 
 ### 3.1 Colour roles → `theme.extend.colors`
 
-| Role(s) | Colour key(s) | Utilities |
-| --- | --- | --- |
-| `surface-base/raised/sunken/overlay/inverse` | `surface-*` (6 keys) | `bg-surface-raised` etc. |
-| `content-primary/secondary/muted/inverse/link` | `content-*` (5 keys) | `text-content-primary` etc. |
-| `accent`, `accent-content` | `accent`, `accent-content` | `bg-accent text-accent-content` |
-| status `success/warning/danger/info` | 4 pairs (`<name>`, `<name>-surface`) | `text-danger`, `bg-danger-surface`, `border-danger` |
-| `border-subtle/strong/focus` | `border-*` (3 keys) | `border-border-subtle`, `focus-visible:outline-border-focus` |
+| Role(s)                                        | Colour key(s)                        | Utilities                                                    |
+| ---------------------------------------------- | ------------------------------------ | ------------------------------------------------------------ |
+| `surface-base/raised/sunken/overlay/inverse`   | `surface-*` (6 keys)                 | `bg-surface-raised` etc.                                     |
+| `content-primary/secondary/muted/inverse/link` | `content-*` (5 keys)                 | `text-content-primary` etc.                                  |
+| `accent`, `accent-content`                     | `accent`, `accent-content`           | `bg-accent text-accent-content`                              |
+| status `success/warning/danger/info`           | 4 pairs (`<name>`, `<name>-surface`) | `text-danger`, `bg-danger-surface`, `border-danger`          |
+| `border-subtle/strong/focus`                   | `border-*` (3 keys)                  | `border-border-subtle`, `focus-visible:outline-border-focus` |
 
 Each key carries light, dark, and high-contrast values or an explicit
 `inherit` marker visible to coverage tooling (#5850 §10.8). Dark mode
@@ -171,16 +171,16 @@ the value binding, never the class the assertion emits.
 
 ### 3.2 Type roles → `fontSize` / `fontWeight` / `lineHeight`
 
-| Role | Utilities (from theme keys) |
-| --- | --- |
-| `display` | `text-step-plus-5 leading-tight font-bold` |
-| `heading` | `text-step-plus-2 leading-tight font-semibold` |
-| `body` | `text-step-0 leading-normal` |
-| `body-small` | `text-step-minus-1 leading-normal` |
-| `caption` | `text-step-minus-1 leading-tight text-content-secondary` |
-| `label` | `text-step-0 leading-tight font-medium` |
-| `code` | `font-mono text-step-minus-1 leading-normal` |
-| `link` (delta over surrounding text) | `text-content-link underline` |
+| Role                                 | Utilities (from theme keys)                              |
+| ------------------------------------ | -------------------------------------------------------- |
+| `display`                            | `text-step-plus-5 leading-tight font-bold`               |
+| `heading`                            | `text-step-plus-2 leading-tight font-semibold`           |
+| `body`                               | `text-step-0 leading-normal`                             |
+| `body-small`                         | `text-step-minus-1 leading-normal`                       |
+| `caption`                            | `text-step-minus-1 leading-tight text-content-secondary` |
+| `label`                              | `text-step-0 leading-tight font-medium`                  |
+| `code`                               | `font-mono text-step-minus-1 leading-normal`             |
+| `link` (delta over surrounding text) | `text-content-link underline`                            |
 
 Face categories are `font-sans` / `font-serif` / `font-mono` theme
 bindings; `text-step-*` are `fontSize` keys (`minus-1`…`plus-5`);
@@ -210,12 +210,12 @@ rendering is the theme's).
 Emphasis composes existing role bindings; it never introduces new
 colours or sizes:
 
-| Emphasis | Bundle |
-| --- | --- |
-| `primary` | `bg-accent text-accent-content` |
-| `destructive` | `text-danger border-danger` (+ `bg-danger-surface` tint where the element has a surface) |
-| `subtle` | `bg-transparent` (inherits surrounding content roles) |
-| default (none asserted) | element's base roles only |
+| Emphasis                | Bundle                                                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------- |
+| `primary`               | `bg-accent text-accent-content`                                                          |
+| `destructive`           | `text-danger border-danger` (+ `bg-danger-surface` tint where the element has a surface) |
+| `subtle`                | `bg-transparent` (inherits surrounding content roles)                                    |
+| default (none asserted) | element's base roles only                                                                |
 
 ### 3.6 States → variant composition
 

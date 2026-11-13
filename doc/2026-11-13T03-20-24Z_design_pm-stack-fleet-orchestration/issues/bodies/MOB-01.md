@@ -1,0 +1,88 @@
+# MOB-01 — Versioned canonical work read model and provenance
+
+<!-- pmo-9196:MOB-01 -->
+
+**Issue title:** `design(pm-orchestration): Versioned canonical work read model and provenance`  
+**Design parent:** #9201 · **Scope:** #9201 PM projection/mobile · **Version:** V3 proposal; not an authorization to implement. **Requirement IDs (ALLOCATED):** C-R080, H-R011, O-R017. **Slice status:** curated implementation/research slice. **Pinned baseline:** `a038f084dbeb525494d7bb928ad91f597db2ac51`.
+
+This batch creates design/research/validation handoff issues only. After PR #9225 is merged and this slice's granular prerequisites are resolved, a separately scoped implementation issue may be filed; production adoption, migration, deployment, and live acceptance remain separately authorized stages. The local FDR decisions are accepted design defaults; global #9180 registration is pending and is not a blocker to this bounded design work.
+
+## Goal and deliverable
+
+project per-fact authority/revision/freshness and queue/Project/GitHub/session state without a new DB. -
+
+## Curated requirement trace
+
+- **C-R080 — design-only (requirement)**; basis: exact frozen implementation_slice_keys inverse join; support rationale: none; occurrences `C-108`; citations: 02_charter_v1_1.md#C-108:76; design: components/9201-pm-projection-mobile-control.md#31-read-model-one-projection-provenance-per-fact; outcome: Mobile-first interactive operations; residual: See status reason and missing_evidence; implementation slices are local keys, not issue IDs.; missing evidence: exact implementation/parser tests for the full behavior, deployment/live acceptance unless separately cited
+- **H-R011 — design-only (requirement)**; basis: exact frozen implementation_slice_keys inverse join; support rationale: none; occurrences `H-138`; citations: 01_handoff_pm_stack_fleet_orchestration.md#H-138:103; design: components/9199-distributed-priority.md#independent-dimensions, components/9201-pm-projection-mobile-control.md#31-read-model-one-projection-provenance-per-fact; outcome: Account for project/epic lifecycle and strategic urgency with manual intervention and owner escalation, not arithmetic sorting alone.; residual: See status reason and missing_evidence; implementation slices are local keys, not issue IDs.; missing evidence: exact implementation/parser tests for the full behavior, deployment/live acceptance unless separately cited
+- **O-R017 — design-only (candidate)**; basis: exact frozen implementation_slice_keys inverse join; support rationale: none; occurrences `O-688, O-689, O-690, O-691, O-692, O-693, O-694, O-695, O-696, O-697, O-698`; citations: 04_recovered_original_combined_design.md#O-688:13, 04_recovered_original_combined_design.md#O-689:13, 04_recovered_original_combined_design.md#O-690:13, 04_recovered_original_combined_design.md#O-691:13, 04_recovered_original_combined_design.md#O-692:13, 04_recovered_original_combined_design.md#O-693:13, 04_recovered_original_combined_design.md#O-694:13, 04_recovered_original_combined_design.md#O-695:13, 04_recovered_original_combined_design.md#O-696:13, 04_recovered_original_combined_design.md#O-697:13, 04_recovered_original_combined_design.md#O-698:13; design: components/9199-distributed-priority.md#candidate-order-and-rank-semantics, components/9201-pm-projection-mobile-control.md#31-read-model-one-projection-provenance-per-fact; outcome: Let project/epic phase, deadlines and dependencies influence effective order selectively; prioritize critical path/unblockers, avoid escalating unrelated children, and expose project plus item urgency.; residual: See status reason and missing_evidence; implementation slices are local keys, not issue IDs.; missing evidence: exact implementation/parser tests for the full behavior, deployment/live acceptance unless separately cited
+
+Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
+## Owned files and boundaries
+
+- `pm-stack/aggregator/src/model.ts`
+- `pm-stack/aggregator/src/work-projection.ts`
+- `pm-stack/aggregator/test/work-projection.test.ts`
+
+Explicit read-only consumers (not writable ownership): none declared.
+
+Use the existing Fleet queue/PM Stack/adapter owners named in the design; do not add a queue, database, scheduler, service, resolver, executable, GitHub client, or general creation-outbox producer. Shared CLI glue remains owned by the single CLI-13 registration slice. Do not edit #6533 or duplicate its live acceptance; consume #9028/#9073–#9076/#9079/#9081/#9178/#9179/#3424/#8575/#8579 as applicable, not as replacement work.
+
+## Prerequisites and sequencing
+
+Hard blockers named by the source slice, after granular-key normalization: #9070, #9062, #9073, #9076
+File-collision sequencing edges added by stable topological serialization: none.
+Existing issue references retained as non-blocking runtime/evidence gates: none.
+Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
+
+
+
+
+Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
+
+## Starting failing test, oracle, and done check
+
+- **First failing test:** `Done`
+- **Oracle:** deterministic model-based matrix over independent GitHub/Project/queue/session states; output equals golden `pm-work-view/v1` fixtures, each fact has a source/revision/freshness; unknown remains absent; stale/errors are not zero. Command: `cd pm-stack/aggregator && bun test test/work-projection.test.ts` (`package.json` declares `test: bun test`). -
+- **Done command:** `deterministic model-based matrix over independent GitHub/Project/queue/session states; output equals golden `pm-work-view/v1` fixtures, each fact has a source/revision/freshness; unknown remains absent; stale/errors are not zero. Command: `cd pm-stack/aggregator && bun test test/work-projection.test.ts` (`package.json` declares `test: bun test`). -`
+- Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
+
+## Acceptance and negative cases
+
+deterministic model-based matrix over independent GitHub/Project/queue/session states; output equals golden `pm-work-view/v1` fixtures, each fact has a source/revision/freshness; unknown remains absent; stale/errors are not zero. Command: `cd pm-stack/aggregator && bun test test/work-projection.test.ts` (`package.json` declares `test: bun test`). -
+
+Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthorized actor, partial remote effect, unknown version, and no false verified/completed result where applicable.
+
+## Compatibility, migration, and runtime gates
+
+- Preserve the current queue/status/identity/Project-writer/Fleet `gh` compatibility surfaces. Do not silently change existing spellings or normalize ratified `expedite=15` / `next-up=25`; those remain distinct from `do_now`.
+- QTI remains unlocated/unverified; #9241 is the existing provenance-recovery issue. #3424/#8575/#8579/#8602 are candidates/constraints, not presumed equivalents. Any overlapping persisted field/schema change waits for the QTI crosswalk and named current owner.
+- Runtime gates: implementation starts only after the document PR is merged, the exact curated requirement IDs are integrated, and this issue's granular prerequisite edges are resolved. Schema/migration, production rollout, telemetry, authenticated remote writes, deployed behavior, and live acceptance each require their own explicit evidence and approval. Normal triage does not inherit urgency 450/Do Now.
+- Projection rows being rebuildable/disposable does not authorize deleting the PM PostgREST database or unrelated tables. Preserve unique human-authored `pmp_links`/link writes and all unrelated tables; follow the existing backup/restore requirements before any future migration or cleanup.
+- Compatibility: Additive and reversible only after existing owner/schema review; retain prior data and behavior; no silent fallback or dual authority.
+- Rollback: Disable only the new capability; preserve pending intents, artifacts, existing state, and remote effects. No broad reset, destructive cleanup, or deletion of history.
+
+## Source trail
+
+- Raw source refs: handoff `sources/01_handoff_pm_stack_fleet_orchestration.md`; charter `sources/02_charter_v1_1.md`; recovered original `sources/04_recovered_original_combined_design.md`; cited source section(s) in `sources/03_full_orchestration_proposal.md` as named by the component; exact occurrence citations are in the curated trace above when allocated.
+- Design ref: `components/9201-pm-projection-mobile-control.md`, slice `MOB-01` (proposal only).
+- Prior-art/evidence receipts: `research/track-a-state-of-art.md`, `research/track-b-state-of-art.md`, `research/track-b-sources.json`; additional exact evidence anchors for this slice: see the pinned census and component evidence links above.
+- Parent-approved support mapping (validation/expansion support only, not a direct slice-key match): none.
+- Existing external requirement refs not assigned a new curated ID: none.
+- Command allocation: `none; this is not a command-owning slice`. Full command inventory remains `census/commands.jsonl`; exact allocation source is `census/command-slice-map.jsonl` (215 rows, no wildcard). V1 baseline keys are not refiled as duplicate implementation issues.
+- Shared architecture: `architecture.md`; FDR index: `decisions/README.md` (all FDR-PMO records remain proposed, not ratified).
+
+---
+
+### Original slice text (preserved)
+
+### MOB-01 — Versioned canonical work read model and provenance
+
+- **Parent:** #9201. **Requirements:** H-SURVIVE-A, C-3/C-6/C-7, O-PART1 §18; V2 §3.1. **Goal:** project per-fact authority/revision/freshness and queue/Project/GitHub/session state without a new DB.
+- **Owned files:** `pm-stack/aggregator/src/model.ts`, new `pm-stack/aggregator/src/work-projection.ts`, corresponding `pm-stack/aggregator/test/work-projection.test.ts`; read integration only where existing source APIs already expose the fields.
+- **Enables:** shared cards/details/views and receipt previews; no mutation.
+- **Failing test to start:** add a model/golden fixture with same issue open, PR merged, queue blocked, stale Project feed and bound session; assert every facet survives and status projection reports conflict rather than `Done`/`Ready`.
+- **Named red test:** `work_projection_preserves_source_state_under_conflicting_facets` in `pm-stack/aggregator/test/work-projection.test.ts`.
+- **Done/oracle:** deterministic model-based matrix over independent GitHub/Project/queue/session states; output equals golden `pm-work-view/v1` fixtures, each fact has a source/revision/freshness; unknown remains absent; stale/errors are not zero. Command: `cd pm-stack/aggregator && bun test test/work-projection.test.ts` (`package.json` declares `test: bun test`).
+- **Edges:** soft dependency on #9070/#9062 and read contract; consume #9073–#9076. No schema migration; hard boundary that Project stays single-writer.

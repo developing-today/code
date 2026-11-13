@@ -1283,6 +1283,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                 Err(e) => fail(e.exit, e.msg),
             }
         }
+        "/stack-record" | "/stack-list" | "/stack-restack" => fail(
+            2,
+            "merge-intent stack verbs require the turso queue backend (#8582)".to_string(),
+        ),
         "/healthz" => ok(json!({"service": "queue-broker"})),
         _ => json!({"ok": false, "exit": 2, "error": format!("unknown command {path}")}),
     }
@@ -1636,20 +1640,33 @@ mod tests {
         // error text the client would replay into a second claim
         // after the first claim already committed.
         let src = include_str!("queue_broker.rs");
-        let start = src.find("\"/claim-flow\" => {").expect("claim-flow handler");
-        let end = src[start..].find("\"/lane\" =>").expect("lane handler follows") + start;
+        let start = src
+            .find("\"/claim-flow\" => {")
+            .expect("claim-flow handler");
+        let end = src[start..]
+            .find("\"/lane\" =>")
+            .expect("lane handler follows")
+            + start;
         let flow = &src[start..end];
         assert_eq!(
             flow.matches("\"claim_flow_partial\"").count(),
             2,
             "lane and bind failures both carry claim_flow_partial"
         );
-        assert!(flow.contains("\"step\": \"lane\""), "lane partial names its step");
-        assert!(flow.contains("\"step\": \"bind\""), "bind partial names its step");
+        assert!(
+            flow.contains("\"step\": \"lane\""),
+            "lane partial names its step"
+        );
+        assert!(
+            flow.contains("\"step\": \"bind\""),
+            "bind partial names its step"
+        );
         // The claim RPC's own `return fail(...)` is pre-commit and
         // legitimate; the invariant binds everything from the lane
         // RPC onward (post-commit).
-        let lane_at = flow.find("assign_repo_task_lane").expect("lane RPC present");
+        let lane_at = flow
+            .find("assign_repo_task_lane")
+            .expect("lane RPC present");
         assert!(
             !flow[lane_at..].contains("return fail(e.exit, e.msg)"),
             "no post-claim step returns the raw retryable error"

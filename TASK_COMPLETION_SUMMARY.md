@@ -38,36 +38,37 @@ The OpenCode lane claimant/executor slice 1 has been **fully implemented, tested
 
 ### Core Files (Production-Ready)
 
-| File | Lines | Status | Description |
-|------|-------|--------|-------------|
-| **claimant.py** | 530 | ✅ Complete | Main execution script with all 6 steps |
-| **poll.py** | 459 | ✅ Complete | Candidate discovery and system state reporting |
+| File            | Lines | Status      | Description                                    |
+| --------------- | ----- | ----------- | ---------------------------------------------- |
+| **claimant.py** | 530   | ✅ Complete | Main execution script with all 6 steps         |
+| **poll.py**     | 459   | ✅ Complete | Candidate discovery and system state reporting |
 
 ### Documentation & Testing
 
-| File | Status | Description |
-|------|--------|-------------|
-| **README.md** | ✅ Complete | Comprehensive user and technical documentation |
-| **Makefile** | ✅ Complete | Helper for setup and installation |
-| **IMPLEMENTATION_COMPLETE.txt** | ✅ Complete | Quick status check |
-| **SLICE1_IMPLEMENTATION_COMPLETE.md** | ✅ Complete | Detailed completion report |
-| **test_slice1.sh** | ✅ Complete | Test suite |
-| **verify_slice1.sh** | ✅ Complete | Verification script (43/43 checks) |
+| File                                  | Status      | Description                                    |
+| ------------------------------------- | ----------- | ---------------------------------------------- |
+| **README.md**                         | ✅ Complete | Comprehensive user and technical documentation |
+| **Makefile**                          | ✅ Complete | Helper for setup and installation              |
+| **IMPLEMENTATION_COMPLETE.txt**       | ✅ Complete | Quick status check                             |
+| **SLICE1_IMPLEMENTATION_COMPLETE.md** | ✅ Complete | Detailed completion report                     |
+| **test_slice1.sh**                    | ✅ Complete | Test suite                                     |
+| **verify_slice1.sh**                  | ✅ Complete | Verification script (43/43 checks)             |
 
 ### Database Migrations
 
-| File | Status | Description |
-|------|--------|-------------|
+| File                   | Status      | Description                             |
+| ---------------------- | ----------- | --------------------------------------- |
 | **migration-0021.sql** | ✅ Complete | `bind_repo_task_lane_session` migration |
-| **migration-0022.sql** | ✅ Complete | Atomic recovery operations migration |
-| **migration-0023.sql** | ✅ Complete | Additional schema updates |
-| **migration-0024.sql** | ✅ Complete | Final schema updates |
+| **migration-0022.sql** | ✅ Complete | Atomic recovery operations migration    |
+| **migration-0023.sql** | ✅ Complete | Additional schema updates               |
+| **migration-0024.sql** | ✅ Complete | Final schema updates                    |
 
 ---
 
 ## 🔧 Six-Step Process Implementation
 
 ### ✅ Step 1: Supervision
+
 - **Function**: `supervision_step()` in claimant.py (lines 157-282)
 - **Features**:
   - Zero-message recovery (#4758)
@@ -76,6 +77,7 @@ The OpenCode lane claimant/executor slice 1 has been **fully implemented, tested
   - Only runs in live mode
 
 ### ✅ Step 2: Gate
+
 - **Function**: `gate_step()` in claimant.py (lines 285-304)
 - **Features**:
   - Checks for unbound opencode-lane candidates
@@ -83,6 +85,7 @@ The OpenCode lane claimant/executor slice 1 has been **fully implemented, tested
   - Respects queue priority
 
 ### ✅ Step 3: Cap
+
 - **Function**: `cap_step()` in claimant.py (lines 307-319)
 - **Features**:
   - **36-session concurrency cap** (raised from 12→20→36 on 2026-11-05)
@@ -90,6 +93,7 @@ The OpenCode lane claimant/executor slice 1 has been **fully implemented, tested
   - Fail-closed behavior when server unreadable
 
 ### ✅ Step 4: Launch
+
 - **Function**: `launch_step()` in claimant.py (lines 322-477)
 - **Features**:
   - Session creation via OpenCode server API
@@ -99,12 +103,14 @@ The OpenCode lane claimant/executor slice 1 has been **fully implemented, tested
   - Prompt delivery infrastructure
 
 ### ✅ Step 5: Terminal States
+
 - **Handled by**: Worker sessions themselves
 - **Features**:
   - Tasks complete via CLI terminal verbs
   - Execution record contains session_id for tracking
 
 ### ✅ Step 6: Logging
+
 - **Function**: `log_fire()` in claimant.py (lines 68-82)
 - **Features**:
   - Logs to `~/.local/state/opencode-claimant/fires.jsonl`
@@ -115,11 +121,13 @@ The OpenCode lane claimant/executor slice 1 has been **fully implemented, tested
 ## 🎛️ Mode Handling
 
 ### Shadow Mode (Default) ✅
+
 - **No mutations** - read-only discovery and supervision
 - Perfect for testing and verification
 - Automatic fallback when mode file missing/unreadable
 
 ### Live Mode ✅
+
 - **Full execution** - session creation, binding, prompt delivery
 - Requires: `echo "live" > ~/.local/state/opencode-claimant/mode`
 - Atomic operations prevent race conditions
@@ -129,6 +137,7 @@ The OpenCode lane claimant/executor slice 1 has been **fully implemented, tested
 ## 📈 Verification Results
 
 ### Test Suite Results ✅
+
 ```bash
 $ bash pm-stack/opencode-claimant/test_slice1.sh
 === All Tests Passed! ===
@@ -136,6 +145,7 @@ OpenCode lane claimant/executor slice 1 is working correctly.
 ```
 
 ### Verification Results ✅
+
 ```bash
 $ bash pm-stack/opencode-claimant/verify_slice1.sh
 ==========================================
@@ -147,7 +157,7 @@ Verification Complete: 43 / 43 checks passed
 ### All 43 Verification Checks Passed:
 
 1. ✅ File Structure Verification (4 checks)
-2. ✅ Script Executability (2 checks)  
+2. ✅ Script Executability (2 checks)
 3. ✅ Mode File Handling (3 checks)
 4. ✅ Poll.py Functionality (7 checks)
 5. ✅ Fire Log Creation (6 checks)
@@ -162,11 +172,13 @@ Verification Complete: 43 / 43 checks passed
 ## 🚀 Usage
 
 ### Run in Shadow Mode (Safe Testing)
+
 ```bash
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Run in Live Mode (Full Execution)
+
 ```bash
 # Set mode to live
 echo "live" > ~/.local/state/opencode-claimant/mode
@@ -176,6 +188,7 @@ python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Test poll.py Output
+
 ```bash
 python3 pm-stack/opencode-claimant/poll.py
 ```
@@ -185,21 +198,25 @@ python3 pm-stack/opencode-claimant/poll.py
 ## 📚 Key Features Implemented
 
 ### Concurrency Control ✅
+
 - **36-session cap** (raised from 12→20→36 on 2026-11-05)
 - Active root session counting via OpenCode server API
 - Fail-closed behavior when server unreadable
 
 ### Recovery Rules (#4758, Phase 3 of #4912) ✅
+
 - **Zero-Message Recovery**: Verify zero messages → Delete session → Atomically reclaim task → Increment attempts
 - **Gone-Session Recovery**: Verify absence → Atomically reclaim task → Increment attempts
 - **Exhausted Attempts**: Terminally fail task with execution record containing session_id
 
 ### Atomic Operations ✅
+
 - Session creation and binding in single atomic operation
 - Recovery operations use compare-and-clear guards
 - Prevents double-binding and race conditions
 
 ### Session Management ✅
+
 - Creates worker sessions via OpenCode server API
 - Verifies `location.directory` matches requested directory (#4870 fix)
 - Correct request shape: `{"location": {"directory": "..."}, "model": {"id": "workhorse", "providerID": "opencode-route"}, "agent": "build"}`
@@ -207,6 +224,7 @@ python3 pm-stack/opencode-claimant/poll.py
 - Binds session atomically with `repo-queue bind`
 
 ### Hard Rules Enforced ✅
+
 - Never work tasks directly - Only claim/bind/launch/record
 - No credentials in prompts/logs - Uses broker client tokens
 - No cap violations - Never exceeds 36 sessions
@@ -250,21 +268,25 @@ The OpenCode lane claimant/executor for slice 1 (#3026) has been:
 ### If you want to use the implementation:
 
 1. **Set up the state directory**:
+
    ```bash
    mkdir -p ~/.local/state/opencode-claimant
    ```
 
 2. **Run verification** (recommended):
+
    ```bash
    bash pm-stack/opencode-claimant/verify_slice1.sh
    ```
 
 3. **Run tests** (optional):
+
    ```bash
    bash pm-stack/opencode-claimant/test_slice1.sh
    ```
 
 4. **Test in shadow mode** (safe):
+
    ```bash
    python3 pm-stack/opencode-claimant/claimant.py
    ```

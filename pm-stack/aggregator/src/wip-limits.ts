@@ -46,9 +46,11 @@ export function summarizeWipLanes(
 
   for (const item of visible) {
     const lane = item.status === "to-do" ? "to-do" : item.status;
-    const summary =
-      lanes.get(lane) ??
-      { items: [] as BoardItem[], projects: new Map<string, number>(), epics: new Map<string, number>() };
+    const summary = lanes.get(lane) ?? {
+      items: [] as BoardItem[],
+      projects: new Map<string, number>(),
+      epics: new Map<string, number>(),
+    };
     summary.items.push(item);
     const projects = new Set<string>();
     const epics = new Set<string>();

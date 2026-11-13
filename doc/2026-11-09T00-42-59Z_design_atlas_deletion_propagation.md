@@ -71,7 +71,7 @@ is §5 (question d).
   of the source items it observed for its scope.
 - **Vanished.** A source item that was present in a previous
   generation's manifest and is confirmed gone at the source under
-  the rules of §3. *Suspected* is a different, weaker state (§3.3);
+  the rules of §3. _Suspected_ is a different, weaker state (§3.3);
   the two are never conflated in records or in serving.
 - **Purge.** The irreversible removal of §4. Purge is not retirement:
   retirement (retention record §4) is reversible-in-effect — versions
@@ -113,13 +113,13 @@ under the retention record and is never a purge signal on its own.
 
 ### 3.2 What "vanished" means, per class
 
-| Source class | Delete signal | Explicitly NOT a delete signal |
-|---|---|---|
-| `repo` | Repo GET returns 404 or 410 for an id in the previous manifest. Private and deleted are indistinguishable from outside; both are the same corpus event (§3.4). | A rename or transfer: the API redirects to the new full name and the repo id persists — that is a `changed` manifest row (new name recorded), not an absence. |
-| `issue`, `pull_request` | Item GET returns 404/410 on confirmation probe. Issues and PRs are rarely hard-deleted, but a deleted fork or a removed spam PR produces exactly this. | State changes (`closed`, `merged`), label edits, locking. Those are `changed` rows. |
-| `issue_comment`, `review_comment` | Comment id absent from the parent's comment listing AND a direct GET of the comment returns 404. | **An edit.** The id persists, `edited_at` advances, the body hash changes: that is a new version under the retention record, and the previous version's fate is a retention question, not a purge question. A comment the author edited to remove its substance is handled by versioning + newest-resolution (the edited text is what serves), not by pretending it was deleted. |
-| `issue_comment`, `review_comment` (minimised) | — | A minimised/hidden comment still exists at the source. It is recorded as `suppressed_at_source` on the manifest row and excluded from the default serving view (the source has withdrawn it from public view), but it is not purged: minimisation is reversible by the source, deletion is not. |
-| `file` | Path absent from the repo tree at the synced head AND the repo itself still resolves. File deletion is an ordinary commit away, so the tree diff is the signal; no per-file probe exists or is needed. | A rename: tree diff shows delete+add; the extraction layer's existing rename handling decides lineage, and the old path's versions follow retention, not purge — the content still exists at the source under the new path. |
+| Source class                                  | Delete signal                                                                                                                                                                                          | Explicitly NOT a delete signal                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repo`                                        | Repo GET returns 404 or 410 for an id in the previous manifest. Private and deleted are indistinguishable from outside; both are the same corpus event (§3.4).                                         | A rename or transfer: the API redirects to the new full name and the repo id persists — that is a `changed` manifest row (new name recorded), not an absence.                                                                                                                                                                                                                    |
+| `issue`, `pull_request`                       | Item GET returns 404/410 on confirmation probe. Issues and PRs are rarely hard-deleted, but a deleted fork or a removed spam PR produces exactly this.                                                 | State changes (`closed`, `merged`), label edits, locking. Those are `changed` rows.                                                                                                                                                                                                                                                                                              |
+| `issue_comment`, `review_comment`             | Comment id absent from the parent's comment listing AND a direct GET of the comment returns 404.                                                                                                       | **An edit.** The id persists, `edited_at` advances, the body hash changes: that is a new version under the retention record, and the previous version's fate is a retention question, not a purge question. A comment the author edited to remove its substance is handled by versioning + newest-resolution (the edited text is what serves), not by pretending it was deleted. |
+| `issue_comment`, `review_comment` (minimised) | —                                                                                                                                                                                                      | A minimised/hidden comment still exists at the source. It is recorded as `suppressed_at_source` on the manifest row and excluded from the default serving view (the source has withdrawn it from public view), but it is not purged: minimisation is reversible by the source, deletion is not.                                                                                  |
+| `file`                                        | Path absent from the repo tree at the synced head AND the repo itself still resolves. File deletion is an ordinary commit away, so the tree diff is the signal; no per-file probe exists or is needed. | A rename: tree diff shows delete+add; the extraction layer's existing rename handling decides lineage, and the old path's versions follow retention, not purge — the content still exists at the source under the new path.                                                                                                                                                      |
 
 ### 3.3 Confirmation — the two-step rule (I1, I2)
 
@@ -150,15 +150,15 @@ would justify tightening or loosening the two-generation rule.
 
 **Detection row** (append-only, one per item per episode):
 
-| field | notes |
-|---|---|
-| `repo_id`, `source_class`, `source_item_id` | the §2 identity |
-| `zone` | copied from the item's latest provenance generation — policy (§5) reads the row, not a live lookup |
-| `author_login`, `author_is_own_account` | provenance inputs recorded at ingest (needed by §5's authorship branch); inputs, not verdicts |
-| `detection_source` | `sync_diff \| sync_probe \| manual` |
-| `first_absent_generation`, `confirmed_generation` | generation ids; equal only on a probe confirmation |
-| `detected_at`, `confirmed_at` | timestamps |
-| `state` | `suspected \| confirmed \| refuted \| purged` |
+| field                                             | notes                                                                                              |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `repo_id`, `source_class`, `source_item_id`       | the §2 identity                                                                                    |
+| `zone`                                            | copied from the item's latest provenance generation — policy (§5) reads the row, not a live lookup |
+| `author_login`, `author_is_own_account`           | provenance inputs recorded at ingest (needed by §5's authorship branch); inputs, not verdicts      |
+| `detection_source`                                | `sync_diff \| sync_probe \| manual`                                                                |
+| `first_absent_generation`, `confirmed_generation` | generation ids; equal only on a probe confirmation                                                 |
+| `detected_at`, `confirmed_at`                     | timestamps                                                                                         |
+| `state`                                           | `suspected \| confirmed \| refuted \| purged`                                                      |
 
 ### 3.4 Repo-unavailable is a bulk event, not N item events
 
@@ -185,13 +185,13 @@ the §6 tombstone is the only remainder, and it carries no content
 
 ### 4.2 How purge differs from retention retirement
 
-| | Retention retirement (sibling record) | Deletion-propagation purge (this record) |
-|---|---|---|
-| Driver | Storage policy: age, increments, access (§4.2/§4.3 of that record) | A rights signal: the source withdrew the content |
-| Gate | Conjunction — a trigger AND a class rule must both fire | §3.3 confirmation AND the §5 policy switch for the item's zone |
-| Report-first | Dry-run reporter; deletion runs are separate, logged acts | A purge manifest is written per sync (items, detection row ids, rule version) and is part of the sync's log, but purge executes in the same run after confirmation — the two-generation rule and the serving exclusion (I2) are the delay a report-first gate would exist to provide, and a human approval gate cannot scale to per-comment volume |
-| Remainder | Tombstone with content hash; versions retained until retired | Tombstone with content hash (§6); **no versions retained** |
-| Reversibility | Retired versions are gone, but un-retired history is addressable (§5.3 of that record) | None. Reappearance means fresh ingest (I5), never un-purge |
+|               | Retention retirement (sibling record)                                                  | Deletion-propagation purge (this record)                                                                                                                                                                                                                                                                                                           |
+| ------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Driver        | Storage policy: age, increments, access (§4.2/§4.3 of that record)                     | A rights signal: the source withdrew the content                                                                                                                                                                                                                                                                                                   |
+| Gate          | Conjunction — a trigger AND a class rule must both fire                                | §3.3 confirmation AND the §5 policy switch for the item's zone                                                                                                                                                                                                                                                                                     |
+| Report-first  | Dry-run reporter; deletion runs are separate, logged acts                              | A purge manifest is written per sync (items, detection row ids, rule version) and is part of the sync's log, but purge executes in the same run after confirmation — the two-generation rule and the serving exclusion (I2) are the delay a report-first gate would exist to provide, and a human approval gate cannot scale to per-comment volume |
+| Remainder     | Tombstone with content hash; versions retained until retired                           | Tombstone with content hash (§6); **no versions retained**                                                                                                                                                                                                                                                                                         |
+| Reversibility | Retired versions are gone, but un-retired history is addressable (§5.3 of that record) | None. Reappearance means fresh ingest (I5), never un-purge                                                                                                                                                                                                                                                                                         |
 
 Reconciliation with the keep-all rule (#3125, as evolved by the
 retention record §4.1): keep-all governs content we hold at the
@@ -260,17 +260,17 @@ is involved.
 
 ### 5.2 Defaults (interim, pending #6024's D.6 conclusion)
 
-| zone | own-authored item | third-party-authored item |
-|---|---|---|
-| `own` | **keep** — Drew may keep his own deleted comments in his own repos; the item leaves the default serving view (it was deleted at the source) but text and vectors are retained under the retention record's rules | **purge** — third-party comments in our repos follow the external rule (the #6054 scope statement) |
-| `participated_external` | **purge** — a deletion at the source is the author's or the repo owner's act; honouring it costs nothing and the corpus has no claim | **purge** |
-| `general_external` | **purge** | **purge** |
-| `github_docs` | **purge** | **purge** |
+| zone                    | own-authored item                                                                                                                                                                                                | third-party-authored item                                                                          |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `own`                   | **keep** — Drew may keep his own deleted comments in his own repos; the item leaves the default serving view (it was deleted at the source) but text and vectors are retained under the retention record's rules | **purge** — third-party comments in our repos follow the external rule (the #6054 scope statement) |
+| `participated_external` | **purge** — a deletion at the source is the author's or the repo owner's act; honouring it costs nothing and the corpus has no claim                                                                             | **purge**                                                                                          |
+| `general_external`      | **purge**                                                                                                                                                                                                        | **purge**                                                                                          |
+| `github_docs`           | **purge**                                                                                                                                                                                                        | **purge**                                                                                          |
 
 Two clarifications:
 
-- `keep` in the `own` row means *exempt from purge*, not *immune
-  from everything*: the item is still excluded from the default
+- `keep` in the `own` row means _exempt from purge_, not _immune
+  from everything_: the item is still excluded from the default
   serving view from first suspicion onward (I2 applies to every
   zone), and its retained versions age under the retention record
   like any other version. The switch decides storage fate, never
@@ -305,14 +305,14 @@ and not retained content. The mechanism is the tombstone — the same
 discipline as the retention record §4.4, with fields narrowed to
 what a rights-driven removal may keep:
 
-| field | notes |
-|---|---|
-| `corpus_item_id`, `version_ids` | every purged version id of the item |
-| `content_hash` | hash of the head version at purge time — proves what was there without retaining it (I4); per-version hashes are already carried by retention tombstones for un-purged versions |
-| `repo_id`, `zone` | provenance context |
-| `reason` | `source_deleted \| repo_unavailable \| policy_6024` (the third value is reserved for the §5.3 widening; unused until that rule version exists) |
-| `detection_row_id`, `purge_run_id`, `policy_rule_version` | the audit chain: how it was detected, which run removed it, under which policy |
-| `purged_at` | timestamp |
+| field                                                     | notes                                                                                                                                                                           |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `corpus_item_id`, `version_ids`                           | every purged version id of the item                                                                                                                                             |
+| `content_hash`                                            | hash of the head version at purge time — proves what was there without retaining it (I4); per-version hashes are already carried by retention tombstones for un-purged versions |
+| `repo_id`, `zone`                                         | provenance context                                                                                                                                                              |
+| `reason`                                                  | `source_deleted \| repo_unavailable \| policy_6024` (the third value is reserved for the §5.3 widening; unused until that rule version exists)                                  |
+| `detection_row_id`, `purge_run_id`, `policy_rule_version` | the audit chain: how it was detected, which run removed it, under which policy                                                                                                  |
+| `purged_at`                                               | timestamp                                                                                                                                                                       |
 
 Resolution rule: a trace lookup that reaches a tombstone renders
 **"purged under deletion propagation on \<date\> (\<reason\>)"** —

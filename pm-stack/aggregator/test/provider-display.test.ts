@@ -153,7 +153,7 @@ describe("renderQuota display rule + refresh control (#6125)", () => {
       lastTriggerAt: null,
     });
     expect(html).toContain("Refresh quota");
-    expect(html).toContain('data-quota-refresh-btn');
+    expect(html).toContain("data-quota-refresh-btn");
     expect(html).toContain('data-quota-generated-at="2026-11-05T07:32:27.650Z"');
     expect(html).toContain('action="/quota/refresh"');
     expect(html).toContain("/api/quota/refresh");

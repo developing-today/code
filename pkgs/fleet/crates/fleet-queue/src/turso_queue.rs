@@ -60,7 +60,7 @@ pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.fleet-queue-rw-token";
 
 const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, status, \
     not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
-    claim_provider, claim_model, claim_variant, \
+    claim_provider, claim_model, claim_variant, claim_session_id, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at, \
     blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds";
@@ -186,7 +186,6 @@ fn cell_to_json(cell: &Value) -> Value {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Dependency blocking (#8276): a block declared ONCE, structurally,
 // and watched by the broker — lanes never re-verify gates by hand.
@@ -290,12 +289,12 @@ pub fn task_dep_obs(status: Option<&str>, dep_id: i64) -> DepObs {
     match status {
         None => DepObs::Broken(format!("task {dep_id} not found")),
         Some("done") => DepObs::Cleared("dep task done".to_string()),
-        Some("cancelled") => DepObs::Cleared(
-            "dep task cancelled; dependent released for re-evaluation".to_string(),
-        ),
-        Some("failed") => DepObs::Cleared(
-            "dep task failed; dependent released for re-evaluation".to_string(),
-        ),
+        Some("cancelled") => {
+            DepObs::Cleared("dep task cancelled; dependent released for re-evaluation".to_string())
+        }
+        Some("failed") => {
+            DepObs::Cleared("dep task failed; dependent released for re-evaluation".to_string())
+        }
         Some(s) => DepObs::Open(format!("dep task status {s}")),
     }
 }
@@ -404,9 +403,7 @@ pub fn parse_block_deps(
             "pr" | "issue" | "ci" => {
                 let repo = d.get("repo").and_then(|v| v.as_str()).unwrap_or("");
                 if !valid_dep_repo(repo) {
-                    return Err(format!(
-                        "block: dep repo must be owner/name, got '{repo}'"
-                    ));
+                    return Err(format!("block: dep repo must be owner/name, got '{repo}'"));
                 }
                 obj.insert("repo".to_string(), json!(repo));
                 if kind == "ci" {
@@ -418,9 +415,7 @@ pub fn parse_block_deps(
                 } else {
                     let number = d.get("number").and_then(|v| v.as_i64()).unwrap_or(0);
                     if number <= 0 {
-                        return Err(format!(
-                            "block: {kind} dep needs a positive number"
-                        ));
+                        return Err(format!("block: {kind} dep needs a positive number"));
                     }
                     obj.insert("number".to_string(), json!(number));
                 }
@@ -435,7 +430,7 @@ pub fn parse_block_deps(
             _ => {
                 return Err(format!(
                     "block: unknown dep kind '{kind}' (pr|issue|task|ci)"
-                ))
+                ));
             }
         }
         out.push(dep);
@@ -580,9 +575,7 @@ fn any_lane_id(c: char) -> &'static str {
 fn lane_seed_sql() -> String {
     let values: Vec<String> = canonical_lanes()
         .iter()
-        .map(|(id, worker, enabled)| {
-            format!("('{id}', '{worker}', '*', {})", i32::from(*enabled))
-        })
+        .map(|(id, worker, enabled)| format!("('{id}', '{worker}', '*', {})", i32::from(*enabled)))
         .collect();
     format!(
         "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES {}",
@@ -785,7 +778,13 @@ impl TursoBackend {
         // existing rows read NULL: the claim carried no model).
         // No backfill, nothing destructive.
         let cols = self.query_objs("SELECT name FROM pragma_table_info('tasks')", &[], &[])?;
-        for col in ["platform", "claim_provider", "claim_model", "claim_variant"] {
+        for col in [
+            "platform",
+            "claim_provider",
+            "claim_model",
+            "claim_variant",
+            "claim_session_id",
+        ] {
             let has = cols
                 .iter()
                 .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col));
@@ -808,10 +807,7 @@ impl TursoBackend {
                 .iter()
                 .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col));
             if !has {
-                self.exec(
-                    &format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"),
-                    &[],
-                )?;
+                self.exec(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), &[])?;
             }
         }
         // #8187: the ledger's opencode_reason column (the recorded
@@ -831,6 +827,28 @@ impl TursoBackend {
                 &[],
             )?;
         }
+        // #8582: the merge_intents base-tip linkage column
+        // (base_head_sha -- the recorded head of an intent's base
+        // at stack/restack time) lands the same additive way for
+        // merge_intents tables created before it. No backfill:
+        // existing rows read NULL (no linkage recorded), which the
+        // taint derivation reads as unverified only inside stacks
+        // that hold an abandoned intent.
+        let micols = self.query_objs(
+            "SELECT name FROM pragma_table_info('merge_intents')",
+            &[],
+            &[],
+        )?;
+        if !micols.is_empty()
+            && !micols
+                .iter()
+                .any(|c| c.get("name").and_then(|v| v.as_str()) == Some("base_head_sha"))
+        {
+            self.exec(
+                "ALTER TABLE merge_intents ADD COLUMN base_head_sha TEXT",
+                &[],
+            )?;
+        }
         // #8210: the ledger's platform-limitation columns (a
         // task may be limited to one platform family, but only
         // with a good reason recorded beside it) land the same
@@ -841,9 +859,7 @@ impl TursoBackend {
                 .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col))
             {
                 self.exec(
-                    &format!(
-                        "ALTER TABLE repo_task_lane_ledger ADD COLUMN {col} TEXT"
-                    ),
+                    &format!("ALTER TABLE repo_task_lane_ledger ADD COLUMN {col} TEXT"),
                     &[],
                 )?;
             }
@@ -864,7 +880,7 @@ impl Clone for Arg {
     }
 }
 
-const SCHEMA: [&str; 16] = [
+const SCHEMA: [&str; 17] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -873,7 +889,7 @@ const SCHEMA: [&str; 16] = [
         not_before TEXT, worker_id TEXT, claimed_at TEXT, lease_until TEXT, \
         lane_id TEXT, platform TEXT, attempts INTEGER NOT NULL DEFAULT 0, \
         max_attempts INTEGER NOT NULL DEFAULT 4, \
-        claim_provider TEXT, claim_model TEXT, claim_variant TEXT, \
+        claim_provider TEXT, claim_model TEXT, claim_variant TEXT, claim_session_id TEXT, \
         progress TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', \
         last_error TEXT, park_kind TEXT, wait_kind TEXT, ready_condition TEXT, \
         last_checked_at TEXT, check_outcome TEXT, \
@@ -934,6 +950,9 @@ const SCHEMA: [&str; 16] = [
         id INTEGER PRIMARY KEY CHECK (id = 1), \
         consecutive_rate_limits INTEGER NOT NULL DEFAULT 0, \
         open_until TEXT, last_error_class TEXT, updated_at TEXT NOT NULL)",
+    // #8582 increment 2: the merge-intent table, DDL of record in
+    // the pure core module.
+    crate::merge_intent::MERGE_INTENT_DDL,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1150,6 +1169,35 @@ fn verb_events_count(t: &TursoBackend, req: &Value) -> Value {
             .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
             .unwrap_or(0);
         Ok(json!({"count": n}))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// #9046: read one task's event timeline — the model_stamp /
+/// session_bound / session_unbound history and everything else
+/// recorded on the task, oldest first (the events_task index).
+/// `kind` narrows to one kind; `limit` defaults to 200 and is
+/// clamped to 1..=1000.
+fn verb_events_list(t: &TursoBackend, req: &Value) -> Value {
+    let Some(task_id) = req_i64(req, "task_id") else {
+        return fail(2, "task_id is required".to_string());
+    };
+    let limit = req_i64(req, "limit").unwrap_or(200).clamp(1, 1000);
+    let mut sql = "SELECT id, worker_id, kind, detail, created_at FROM events \
+                   WHERE task_id = ?"
+        .to_string();
+    let mut args: Vec<Arg> = vec![Arg::Int(task_id)];
+    if let Some(k) = req_str(req, "kind") {
+        sql += " AND kind = ?";
+        args.push(Arg::Text(k.to_string()));
+    }
+    sql += &format!(" ORDER BY id ASC LIMIT {limit}");
+    let work = (|| -> Result<Value, TErr> {
+        let rows = t.query_objs(&sql, &args, &["detail"])?;
+        Ok(json!({"rows": rows, "task_id": task_id}))
     })();
     match work {
         Ok(v) => ok(json!({"row": v})),
@@ -1444,7 +1492,10 @@ fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
         // own dep_next_recheck_at schedule with no new service
         // and no lane awake. Opt out per call: dep_recheck=false.
         let dep_summary = if req_bool(req, "dep_recheck").unwrap_or(true) {
-            Some(run_dep_rechecks(t, req_i64(req, "dep_limit").unwrap_or(200))?)
+            Some(run_dep_rechecks(
+                t,
+                req_i64(req, "dep_limit").unwrap_or(200),
+            )?)
         } else {
             None
         };
@@ -1671,6 +1722,15 @@ fn on_binding_cleared(
         Some(task_id),
         "session_binding_cleared",
         &json!({"session_id": old_session, "via": via}),
+    )?;
+    // #9046: the canonical unbound half of the binding history,
+    // written beside the legacy kind its existing consumers read.
+    event(
+        t,
+        Some(worker),
+        Some(task_id),
+        "session_unbound",
+        &json!({"session_id": old_session, "via": via}),
     )
 }
 
@@ -1732,8 +1792,8 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
             .get("max_attempts")
             .and_then(|v| v.as_i64())
             .unwrap_or(4);
-        let at_cap = !to_sink
-            && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
+        let at_cap =
+            !to_sink && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
         let upd = if at_cap {
             t.exec(
                 "UPDATE tasks SET status = 'failed', worker_id = NULL, lease_until = NULL, \
@@ -2358,29 +2418,99 @@ fn parse_claim_model(req: &Value) -> Result<Option<ClaimModel>, String> {
     }
 }
 
-/// #8176: stamp the claiming session's own model on a just-claimed
-/// row. Claim-time semantics: the stamp is the leaf serving the
-/// session WHEN it claimed; a later failover changes the serving
-/// leaf (still visible via route_usage) but never rewrites the
-/// stamp. A claim carrying no model leaves the columns untouched
-/// (NULL on a fresh row). The returned row is patched in place so
-/// the claim's answer carries the stamp without a re-read.
+/// One model stamp in a task's model timeline (#9046): the pure
+/// detail shape every model_stamp event carries — the session the
+/// stamp belongs to (null when the stamping surface knew no
+/// session; a session is never fabricated), the serving leaf, and
+/// the touch that produced it (claim | transfer | bind).
+fn model_stamp_detail(m: &ClaimModel, session_id: Option<&str>, trigger: &str) -> Value {
+    json!({
+        "session_id": session_id,
+        "provider": m.provider,
+        "model": m.model,
+        "variant": m.variant,
+        "trigger": trigger,
+    })
+}
+
+/// #9046: record that a session bound to a task — one half of the
+/// binding history whose windows slice the session's raw
+/// route_attempt data per task (one session may serve several
+/// tasks; each task's window is its own slice). The other half is
+/// session_unbound, written by on_binding_cleared and by the
+/// terminal verbs that keep the binding on the row
+/// (verb_complete / verb_cancel via record_session_unbound).
+fn record_session_bound(
+    t: &TursoBackend,
+    worker: Option<&str>,
+    task_id: i64,
+    row: &Value,
+    session_id: &str,
+    trigger: &str,
+) -> Result<(), TErr> {
+    event(
+        t,
+        worker,
+        Some(task_id),
+        "session_bound",
+        &with_marks(&json!({"session_id": session_id, "trigger": trigger}), row),
+    )
+}
+
+/// #9046: record that a task's session binding window closed, for
+/// the terminal verbs that keep the binding on the row as the
+/// execution record (complete / cancel) — the event ends the
+/// window the route_attempt join slices by; the row is untouched.
+fn record_session_unbound(
+    t: &TursoBackend,
+    worker: Option<&str>,
+    task_id: i64,
+    row: &Value,
+    session_id: &str,
+    trigger: &str,
+) -> Result<(), TErr> {
+    event(
+        t,
+        worker,
+        Some(task_id),
+        "session_unbound",
+        &with_marks(&json!({"session_id": session_id, "trigger": trigger}), row),
+    )
+}
+
+/// #8176 + #9046: stamp the claiming session's own model on a
+/// just-claimed row AND append the stamp to the task's model
+/// timeline (a model_stamp event). Claim-time semantics unchanged:
+/// the stamp is the leaf serving the session WHEN it claimed; a
+/// later failover changes the serving leaf (still visible via the
+/// route_attempt join on the stamp's session) but never rewrites
+/// history — a transition lands as a later stamp when the fleet
+/// next touches the task. The row's claim_* columns, now including
+/// claim_session_id (#9046), always hold the LATEST stamp; the
+/// events are the history. A claim carrying no model leaves the
+/// columns untouched (NULL on a fresh row) and writes no stamp
+/// event. The returned row is patched in place so the claim's
+/// answer carries the stamp without a re-read.
 fn stamp_claim_model(
     t: &TursoBackend,
     task_id: i64,
     row: &mut Value,
     model: &Option<ClaimModel>,
+    worker: Option<&str>,
+    session_id: Option<&str>,
+    trigger: &str,
 ) -> Result<(), TErr> {
     let Some(m) = model else {
         return Ok(());
     };
     t.exec(
         "UPDATE tasks SET claim_provider = ?, claim_model = ?, \
-           claim_variant = ? WHERE id = ?",
+           claim_variant = ?, claim_session_id = ? WHERE id = ?",
         &[
             Arg::Text(m.provider.clone()),
             arg_str(m.model.as_deref()),
             arg_str(m.variant.as_deref()),
+            arg_str(session_id),
             Arg::Int(task_id),
         ],
     )?;
@@ -2388,7 +2518,18 @@ fn stamp_claim_model(
         obj.insert("claim_provider".to_string(), json!(m.provider));
         obj.insert("claim_model".to_string(), json!(m.model));
         obj.insert("claim_variant".to_string(), json!(m.variant));
+        obj.insert(
+            "claim_session_id".to_string(),
+            session_id.map(|s| json!(s)).unwrap_or(Value::Null),
+        );
     }
+    event(
+        t,
+        worker,
+        Some(task_id),
+        "model_stamp",
+        &with_marks(&model_stamp_detail(m, session_id, trigger), row),
+    )?;
     Ok(())
 }
 
@@ -2587,13 +2728,14 @@ fn claim_transfer(
         &[Arg::Int(task_id)],
         &[],
     )?;
-    let ev_detail = ev_rows.first().and_then(|e| e.get("detail")).and_then(|d| {
-        match d {
+    let ev_detail = ev_rows
+        .first()
+        .and_then(|e| e.get("detail"))
+        .and_then(|d| match d {
             Value::String(s) => serde_json::from_str(s).ok(),
             Value::Object(_) => Some(d.clone()),
             _ => None,
-        }
-    });
+        });
     let claimed_event_session = ev_detail
         .as_ref()
         .and_then(|d| d.get("session_id"))
@@ -2683,8 +2825,7 @@ fn claim_transfer(
     )?;
     if upd.affected == 0 {
         return Err(
-            "claim_repo_task: transfer refused: the claim changed under the transfer"
-                .to_string(),
+            "claim_repo_task: transfer refused: the claim changed under the transfer".to_string(),
         );
     }
     t.exec(
@@ -2729,7 +2870,18 @@ fn claim_transfer(
             obj.insert("progress".to_string(), progress);
         }
     }
-    stamp_claim_model(t, task_id, &mut row, model)?;
+    if let Some(sid) = new_session {
+        record_session_bound(t, Some(worker), task_id, &row, sid, "transfer")?;
+    }
+    stamp_claim_model(
+        t,
+        task_id,
+        &mut row,
+        model,
+        Some(worker),
+        new_session,
+        "transfer",
+    )?;
     touch_worker(t, worker, Some(task_id))?;
     event(
         t,
@@ -2773,6 +2925,7 @@ fn claim_by_id(
     lease_seconds: i64,
     family: Option<&str>,
     model: &Option<ClaimModel>,
+    claim_session: Option<&str>,
     pool: &Option<String>,
 ) -> Result<Option<Value>, TErr> {
     let Some(row) = get_task(t, task_id)? else {
@@ -2791,29 +2944,25 @@ fn claim_by_id(
     if let Some(reason) = claim_guard_reason(&row) {
         quarantine_task(t, task_id, &reason)?;
         return Ok(None);
-    // #8217: the plain by-id path honors the same recorded
-    // platform limitation the transfer claim enforces (#8210):
-    // an invalid (reason-less) stored limitation is cleared,
-    // never enforced; a valid one refuses a claim from any
-    // other family (or none) — the row simply reads unclaimable
-    // by id, like any other by-id refusal.
-    if let Some(ledger) = get_ledger(t, task_id)? {
-        let limit = ledger
-            .get("platform_limit")
-            .and_then(|v| v.as_str());
-        let limit_reason = ledger
-            .get("platform_limit_reason")
-            .and_then(|v| v.as_str());
-        if platform_limit_invalid(limit, limit_reason) {
-            t.exec(
-                "UPDATE repo_task_lane_ledger SET platform_limit = NULL, \
+        // #8217: the plain by-id path honors the same recorded
+        // platform limitation the transfer claim enforces (#8210):
+        // an invalid (reason-less) stored limitation is cleared,
+        // never enforced; a valid one refuses a claim from any
+        // other family (or none) — the row simply reads unclaimable
+        // by id, like any other by-id refusal.
+        if let Some(ledger) = get_ledger(t, task_id)? {
+            let limit = ledger.get("platform_limit").and_then(|v| v.as_str());
+            let limit_reason = ledger.get("platform_limit_reason").and_then(|v| v.as_str());
+            if platform_limit_invalid(limit, limit_reason) {
+                t.exec(
+                    "UPDATE repo_task_lane_ledger SET platform_limit = NULL, \
                    platform_limit_reason = NULL, updated_at = ? WHERE task_id = ?",
-                &[Arg::Text(now_iso()), Arg::Int(task_id)],
-            )?;
-        } else if platform_limit_refusal(limit, limit_reason, family).is_some() {
-            return Ok(None);
+                    &[Arg::Text(now_iso()), Arg::Int(task_id)],
+                )?;
+            } else if platform_limit_refusal(limit, limit_reason, family).is_some() {
+                return Ok(None);
+            }
         }
-    }
     }
     let status = row
         .get("status")
@@ -2875,7 +3024,17 @@ fn claim_by_id(
     // Migration 0023 §4: a fresh claim never inherits a binding.
     let progress = row.get("progress").cloned().unwrap_or(json!({}));
     let (progress, cleared) = clear_binding(&progress, "claim_repo_task");
-    if cleared.is_some() {
+    // #9046: a by-id claim that names its session binds it, like
+    // the transfer path — the binding is what joins the task to
+    // the session's raw opencode data from here on.
+    let progress = match claim_session {
+        Some(sid) => merge_obj(
+            &progress,
+            &json!({"session_id": sid, "launched_by": worker}),
+        ),
+        None => progress,
+    };
+    if cleared.is_some() || claim_session.is_some() {
         t.exec(
             "UPDATE tasks SET progress = ? WHERE id = ?",
             &[Arg::Text(progress.to_string()), Arg::Int(task_id)],
@@ -2896,7 +3055,18 @@ fn claim_by_id(
             Arg::Text(now_iso()),
         ],
     )?;
-    stamp_claim_model(t, task_id, &mut row, model)?;
+    if let Some(sid) = claim_session {
+        record_session_bound(t, Some(worker), task_id, &row, sid, "claim")?;
+    }
+    stamp_claim_model(
+        t,
+        task_id,
+        &mut row,
+        model,
+        Some(worker),
+        claim_session,
+        "claim",
+    )?;
     touch_worker(t, worker, Some(task_id))?;
     if let Some(old) = &cleared {
         on_binding_cleared(t, worker, task_id, old, "claim_repo_task")?;
@@ -3053,9 +3223,8 @@ enum FilterTok {
 
 fn filter_tokens(src: &str) -> Result<Vec<FilterTok>, String> {
     let chars: Vec<char> = src.chars().collect();
-    let word_char = |c: char| {
-        c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '#' | '@' | '*')
-    };
+    let word_char =
+        |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '#' | '@' | '*');
     let mut toks = Vec::new();
     let mut i = 0usize;
     while i < chars.len() {
@@ -3206,11 +3375,7 @@ impl<'a> FilterParser<'a> {
     fn parse_comparison(&mut self) -> Result<FilterExpr, String> {
         let field_name = match self.next() {
             Some(FilterTok::Word(w)) => w.clone(),
-            other => {
-                return Err(format!(
-                    "filter: expected a field name, found {other:?}"
-                ))
-            }
+            other => return Err(format!("filter: expected a field name, found {other:?}")),
         };
         let field = FilterField::parse(&field_name).ok_or_else(|| {
             format!(
@@ -3247,7 +3412,7 @@ impl<'a> FilterParser<'a> {
             other => {
                 return Err(format!(
                     "filter: expected an operator after {field_name}, found {other:?}"
-                ))
+                ));
             }
         };
         let value = self.parse_value()?;
@@ -3269,7 +3434,10 @@ pub fn parse_filter(src: &str) -> Result<FilterExpr, String> {
     if toks.is_empty() {
         return Err("filter: empty expression".to_string());
     }
-    let mut p = FilterParser { toks: &toks, pos: 0 };
+    let mut p = FilterParser {
+        toks: &toks,
+        pos: 0,
+    };
     let expr = p.parse_or()?;
     if p.pos != toks.len() {
         return Err("filter: unexpected trailing input".to_string());
@@ -3304,8 +3472,7 @@ fn validate_filter(expr: &FilterExpr) -> Result<(), String> {
                 _ => {
                     if matches!(op, CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge) {
                         return Err(
-                            "filter: ordering comparisons are only valid on priority"
-                                .to_string(),
+                            "filter: ordering comparisons are only valid on priority".to_string()
                         );
                     }
                     Ok(())
@@ -3461,8 +3628,7 @@ fn filter_sql(expr: &FilterExpr, args: &mut Vec<Arg>) -> String {
 /// attribute the claimer does not declare binds NULL and meets
 /// no requirement — the same shape as the platform limitation's
 /// family-less rule (#8217).
-const TASK_REQUIREMENTS_CLAUSE: &str =
-    "(json_extract(payload, '$.requires.platform') IS NULL \
+const TASK_REQUIREMENTS_CLAUSE: &str = "(json_extract(payload, '$.requires.platform') IS NULL \
         OR json_extract(payload, '$.requires.platform') = ?) \
      AND (json_extract(payload, '$.requires.lane') IS NULL \
         OR json_extract(payload, '$.requires.lane') = ?) \
@@ -3847,8 +4013,7 @@ fn lane_flip_to_opencode(
 /// whose reason is blank is invalid — never enforced; the
 /// transfer path clears it and records the clearing.
 fn platform_limit_invalid(limit: Option<&str>, reason: Option<&str>) -> bool {
-    !limit.map(str::trim).unwrap_or("").is_empty()
-        && reason.map(str::trim).unwrap_or("").is_empty()
+    !limit.map(str::trim).unwrap_or("").is_empty() && reason.map(str::trim).unwrap_or("").is_empty()
 }
 
 /// Why a requested limitation cannot be recorded, or None when
@@ -3856,18 +4021,12 @@ fn platform_limit_invalid(limit: Option<&str>, reason: Option<&str>) -> bool {
 /// vocabulary), and the reason must be present and non-blank —
 /// the lane verb refuses the set otherwise. A reason without a
 /// limitation is likewise refused (it would record nothing).
-fn platform_limit_error(
-    limit: Option<&str>,
-    reason: Option<&str>,
-) -> Option<String> {
+fn platform_limit_error(limit: Option<&str>, reason: Option<&str>) -> Option<String> {
     let l = limit.map(str::trim).unwrap_or("");
     let r = reason.map(str::trim).unwrap_or("");
     if l.is_empty() {
         if !r.is_empty() {
-            return Some(
-                "platform_limit_reason requires a platform_limit to limit"
-                    .to_string(),
-            );
+            return Some("platform_limit_reason requires a platform_limit to limit".to_string());
         }
         return None;
     }
@@ -3950,9 +4109,7 @@ fn transfer_refusal(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     if lease <= now {
-        return Some(
-            "the holder's lease is not live: no live claim to transfer".to_string(),
-        );
+        return Some("the holder's lease is not live: no live claim to transfer".to_string());
     }
     if from_session.trim().is_empty() {
         return Some("from_session is empty".to_string());
@@ -4143,8 +4300,8 @@ fn claim_pick_once(
             upd_args.push(Arg::Text(now.clone()));
             upd_args.push(Arg::Text(now.clone()));
         }
-            upd_args.push(arg_str(family.as_deref()));
-            upd_args.push(arg_str(family.as_deref()));
+        upd_args.push(arg_str(family.as_deref()));
+        upd_args.push(arg_str(family.as_deref()));
         for a in &scope.args {
             upd_args.push(a.clone());
         }
@@ -4182,7 +4339,17 @@ fn claim_pick_once(
     // Migration 0023 §4: a fresh claim never inherits a binding.
     let progress = row.get("progress").cloned().unwrap_or(json!({}));
     let (progress, cleared) = clear_binding(&progress, "claim_repo_task");
-    if cleared.is_some() {
+    // #9046: a pick that names its session binds it — previously
+    // the session lived only in the claimed event's detail, so no
+    // binding existed for later audit marks or the timeline.
+    let progress = match claim_session.as_deref() {
+        Some(sid) => merge_obj(
+            &progress,
+            &json!({"session_id": sid, "launched_by": worker}),
+        ),
+        None => progress,
+    };
+    if cleared.is_some() || claim_session.is_some() {
         t.exec(
             "UPDATE tasks SET progress = ? WHERE id = ?",
             &[Arg::Text(progress.to_string()), Arg::Int(id)],
@@ -4203,7 +4370,18 @@ fn claim_pick_once(
             Arg::Text(now_iso()),
         ],
     )?;
-    stamp_claim_model(t, id, &mut row, model)?;
+    if let Some(sid) = claim_session.as_deref() {
+        record_session_bound(t, Some(&worker), id, &row, sid, "claim")?;
+    }
+    stamp_claim_model(
+        t,
+        id,
+        &mut row,
+        model,
+        Some(&worker),
+        claim_session.as_deref(),
+        "claim",
+    )?;
     touch_worker(t, &worker, Some(id))?;
     if let Some(old) = &cleared {
         on_binding_cleared(t, &worker, id, old, "claim_repo_task")?;
@@ -4453,6 +4631,7 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                 lease_seconds,
                 family.as_deref(),
                 &model,
+                claim_session.as_deref(),
                 &pool,
             );
         }
@@ -4496,10 +4675,9 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
         // #8210: a platform limitation is recorded only with its
         // reason — validate before anything mutates.
         if !clear_limit {
-            if let Some(e) = platform_limit_error(
-                limit_platform.as_deref(),
-                limit_reason.as_deref(),
-            ) {
+            if let Some(e) =
+                platform_limit_error(limit_platform.as_deref(), limit_reason.as_deref())
+            {
                 return Err(format!("assign_repo_task_lane: {e}"));
             }
         }
@@ -4731,6 +4909,13 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
     let launched_by = req_str(req, "launched_by")
         .unwrap_or("opencode-claimant")
         .to_string();
+    // #9046: a bind may carry the bound session's own model (the
+    // claimant derives it from the session record, #8176); when
+    // it does, the bind stamps it via stamp_claim_model below.
+    let model = match parse_claim_model(req) {
+        Ok(m) => m,
+        Err(e) => return fail(2, format!("bind_repo_task_lane_session: {e}")),
+    };
     let work = (|| -> Result<Value, TErr> {
         let Some(task) = get_task(t, task_id)? else {
             return Err(format!(
@@ -4786,6 +4971,23 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
                 Arg::Int(task_id),
             ],
         )?;
+        // #9046: the canonical binding record, beside the legacy
+        // lane_session_bound event below; a model-carrying bind
+        // also stamps (the claimant's collect -> launch -> bind
+        // flow is where the working session becomes known).
+        record_session_bound(t, Some(&worker), task_id, &task, &session_id, "bind")?;
+        if model.is_some() {
+            let mut task_now = get_task(t, task_id)?.unwrap_or_else(|| task.clone());
+            stamp_claim_model(
+                t,
+                task_id,
+                &mut task_now,
+                &model,
+                Some(&worker),
+                Some(&session_id),
+                "bind",
+            )?;
+        }
         event(
             t,
             Some(&worker),
@@ -5428,7 +5630,6 @@ fn verb_block(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
-
 fn emit_dep_transitions(
     t: &TursoBackend,
     task_id: i64,
@@ -5528,11 +5729,8 @@ fn dep_recheck_one(
         let obs = match kind.as_str() {
             "task" => {
                 let dep_id = dep.get("task_id").and_then(|v| v.as_i64()).unwrap_or(0);
-                let st = get_task(t, dep_id)?.and_then(|r| {
-                    r.get("status")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                });
+                let st = get_task(t, dep_id)?
+                    .and_then(|r| r.get("status").and_then(|v| v.as_str()).map(str::to_string));
                 task_dep_obs(st.as_deref(), dep_id)
             }
             "issue" | "pr" | "ci" => {
@@ -5546,9 +5744,9 @@ fn dep_recheck_one(
                         (Some(p), "issue") => p.probe_issue(repo, num("number")),
                         (Some(p), "pr") => p.probe_pr(repo, num("number")),
                         (Some(p), "ci") => p.probe_ci(repo, num("run_id")),
-                        _ => DepObs::Failed(
-                            "no github probe configured on this broker".to_string(),
-                        ),
+                        _ => {
+                            DepObs::Failed("no github probe configured on this broker".to_string())
+                        }
                     };
                     cache.insert(key, o.clone());
                     o
@@ -5637,8 +5835,7 @@ pub fn run_dep_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
         &[Arg::Text(iso(now_unix_v))],
         &TASK_JSON_COLS,
     )?;
-    let mut cache: std::collections::HashMap<String, DepObs> =
-        std::collections::HashMap::new();
+    let mut cache: std::collections::HashMap<String, DepObs> = std::collections::HashMap::new();
     let (mut checked, mut unblocked, mut ttl_expired, mut still_blocked, mut failures) =
         (0i64, 0i64, 0i64, 0i64, 0i64);
     for row in &rows {
@@ -5791,6 +5988,16 @@ fn verb_cancel(t: &TursoBackend, req: &Value) -> Value {
             "cancelled",
             &json!({"reason": reason, "via": "cancel_repo_task_turso"}),
         )?;
+        // #9046: close the binding window on the timeline (the
+        // binding stays on the row up to this transition; the
+        // event ends the window the route_attempt join slices by).
+        if let Some(sid) = row
+            .get("progress")
+            .and_then(|p| p.get("session_id"))
+            .and_then(|v| v.as_str())
+        {
+            record_session_unbound(t, Some(&worker), task_id, &row, sid, "cancel")?;
+        }
         get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
     })();
     match work {
@@ -6065,6 +6272,17 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
             "completed",
             &with_marks(&json!({"via": "complete_task_turso"}), &row),
         )?;
+        // #9046: close the binding window on the timeline. The
+        // binding itself stays on the row as the execution record
+        // (migration 0023 header above); this event only ends the
+        // window the route_attempt join slices by.
+        if let Some(sid) = row
+            .get("progress")
+            .and_then(|p| p.get("session_id"))
+            .and_then(|v| v.as_str())
+        {
+            record_session_unbound(t, Some(&worker), task_id, &row, sid, "complete")?;
+        }
         // Triage doctrine (#7016): a triage completion is not the
         // issue being done — the issue goes back in the queue as a
         // fix follow-on unless triage exited it (invalid /
@@ -6200,7 +6418,7 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     let rich = req.get("rich").and_then(|r| r.as_bool()).unwrap_or(false);
     let select = if rich {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
-         worker_id, lease_until, lane_id, platform, attempts, max_attempts, \
+         worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
          claim_provider, claim_model, claim_variant, progress, payload, \
          blocked_deps, dep_next_recheck_at, dep_blocked_until"
     } else {
@@ -6425,6 +6643,452 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         }
         Err(e) => terr(e),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Merge-intent stack storage (#8582 increment 2) — broker endpoints
+// over the merge_intents table (DDL of record:
+// crate::merge_intent::MERGE_INTENT_DDL, applied via SCHEMA above).
+// Record/list came first; the transition verb (increment 4) moves
+// intents through the core's lifecycle for the replay executor. The
+// append rules themselves (position, base tip) are the pure core's
+// (plan_append), so storage cannot drift from replay semantics, and
+// a stack's full state — branches, order, owners — reads back from
+// this database alone while GitHub is down.
+// ---------------------------------------------------------------------------
+
+const MERGE_INTENT_COLS: &str = "id, stack_id, position, repo, branch, base_branch, \
+    head_sha, base_head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
+    state, conflict_detail, created_at, updated_at";
+
+fn merge_intent_core(row: &Value) -> Option<crate::merge_intent::MergeIntent> {
+    Some(crate::merge_intent::MergeIntent {
+        stack_id: row.get("stack_id")?.as_str()?.to_string(),
+        position: row.get("position")?.as_i64()?,
+        repo: row.get("repo")?.as_str()?.to_string(),
+        branch: row.get("branch")?.as_str()?.to_string(),
+        base_branch: row.get("base_branch")?.as_str()?.to_string(),
+        head_sha: row
+            .get("head_sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        base_head_sha: row
+            .get("base_head_sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        issue_number: row.get("issue_number").and_then(|v| v.as_i64()),
+        pr_number: row.get("pr_number").and_then(|v| v.as_i64()),
+        owner_lane: row.get("owner_lane")?.as_str()?.to_string(),
+        owner_worker: row.get("owner_worker")?.as_str()?.to_string(),
+        owner_session: row
+            .get("owner_session")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        state: crate::merge_intent::IntentState::parse(row.get("state")?.as_str()?)?,
+    })
+}
+
+fn stack_rows(t: &TursoBackend, stack_id: &str) -> Result<Vec<Value>, TErr> {
+    t.query_objs(
+        &format!(
+            "SELECT {MERGE_INTENT_COLS} FROM merge_intents \
+             WHERE stack_id = ? ORDER BY position ASC"
+        ),
+        &[Arg::Text(stack_id.to_string())],
+        &[],
+    )
+}
+
+/// The stack state the list endpoint answers: every recorded intent
+/// in merge order, plus the core's derived view (the replay walk,
+/// and where the next append lands) — all from the database alone.
+fn stack_state(stack_id: &str, rows: &[Value]) -> Value {
+    let core: Vec<crate::merge_intent::MergeIntent> =
+        rows.iter().filter_map(merge_intent_core).collect();
+    let walk: Vec<Value> = crate::merge_intent::replay_prefix(&core, stack_id)
+        .iter()
+        .map(|i| {
+            json!({
+                "position": i.position,
+                "branch": i.branch,
+                "base_branch": i.base_branch,
+            })
+        })
+        .collect();
+    json!({
+        "stack_id": stack_id,
+        "intents": rows,
+        "replay_prefix": walk,
+        "next_position": crate::merge_intent::next_position(&core, stack_id),
+        "next_base_branch": crate::merge_intent::next_base_branch(&core, stack_id),
+    })
+}
+
+fn verb_stack_record(t: &TursoBackend, req: &Value) -> Value {
+    let append = crate::merge_intent::AppendRequest {
+        stack_id: req_str(req, "stack_id").unwrap_or("").to_string(),
+        repo: req_str(req, "repo").unwrap_or("").to_string(),
+        branch: req_str(req, "branch").unwrap_or("").to_string(),
+        base_branch: req_str(req, "base_branch").map(|s| s.to_string()),
+        head_sha: req_str(req, "head_sha").map(|s| s.to_string()),
+        issue_number: req_i64(req, "issue_number"),
+        pr_number: req_i64(req, "pr_number"),
+        owner_lane: req_str(req, "owner_lane").unwrap_or("").to_string(),
+        owner_worker: req_str(req, "owner_worker").unwrap_or("").to_string(),
+        owner_session: req_str(req, "owner_session").map(|s| s.to_string()),
+    };
+    if let Err(e) = crate::merge_intent::validate_append(&append) {
+        return fail(2, e);
+    }
+    // Owner lane/worker pair validation against the lane registry
+    // (#8582 increment 3; deferred from the CodeRabbit round on
+    // PR #8660, where the pair originates at the client verbs):
+    // a recorded intent's conflict is routed to its owner pair, so
+    // the pair must be one the registry actually holds — an
+    // unknown lane, a lane owned by a different worker, or a
+    // disabled lane would strand that routing. Mirrors the claim
+    // preamble's registry check (minus the queue binding: stack
+    // recording is not a claim).
+    {
+        let lanes = match t.query_objs(
+            "SELECT lane_id, worker_id, enabled FROM lanes WHERE lane_id = ?",
+            &[Arg::Text(append.owner_lane.clone())],
+            &[],
+        ) {
+            Ok(rows) => rows,
+            Err(e) => return terr(e),
+        };
+        let Some(l) = lanes.into_iter().next() else {
+            return fail(
+                2,
+                format!("stack_record: unknown owner lane_id {}", append.owner_lane),
+            );
+        };
+        if l.get("worker_id").and_then(|v| v.as_str()) != Some(append.owner_worker.as_str()) {
+            return fail(
+                2,
+                format!(
+                    "stack_record: lane {} belongs to worker {}, not {}",
+                    append.owner_lane,
+                    l.get("worker_id").and_then(|v| v.as_str()).unwrap_or(""),
+                    append.owner_worker
+                ),
+            );
+        }
+        if l.get("enabled").and_then(|v| v.as_i64()) == Some(0) {
+            return fail(
+                2,
+                format!("stack_record: lane {} is disabled", append.owner_lane),
+            );
+        }
+    }
+    // One stack, one repository (#8582): refuse a cross-repo append
+    // before planning — plan_append would otherwise base the new
+    // branch on a tip from the other repository (CodeRabbit finding,
+    // PR #8660). A read failure here is not a verdict: the work
+    // closure below re-reads under the retry loop and surfaces it.
+    if let Ok(pre_rows) = stack_rows(t, &append.stack_id) {
+        let pre_existing: Vec<crate::merge_intent::MergeIntent> =
+            pre_rows.iter().filter_map(merge_intent_core).collect();
+        if let Err(e) = crate::merge_intent::validate_append_against_stack(&pre_existing, &append) {
+            return fail(2, e);
+        }
+    }
+    let work = (|| -> Result<Value, TErr> {
+        // Concurrent lanes recording into the same stack can read the
+        // same rows and plan the same next position; the loser's INSERT
+        // then hits UNIQUE(stack_id, position). Retry the whole
+        // read/plan/insert cycle on that conflict so position AND base
+        // branch are recalculated from the winner's row (Codex P2 on
+        // PR #8660). Other errors — including the UNIQUE(repo, branch)
+        // duplicate-branch refusal — return immediately.
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let existing_rows = stack_rows(t, &append.stack_id)?;
+            let existing: Vec<crate::merge_intent::MergeIntent> =
+                existing_rows.iter().filter_map(merge_intent_core).collect();
+            // Safety net for a cross-repo row landing between the
+            // pre-check below and this read: never plan on its tip.
+            crate::merge_intent::validate_append_against_stack(&existing, &append)?;
+            let planned = crate::merge_intent::plan_append(&existing, &append);
+            let now = now_iso();
+            let res = t.exec(
+                "INSERT INTO merge_intents (stack_id, position, repo, branch, base_branch, \
+                 head_sha, base_head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
+                 state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                &[
+                    Arg::Text(planned.stack_id.clone()),
+                    Arg::Int(planned.position),
+                    Arg::Text(planned.repo.clone()),
+                    Arg::Text(planned.branch.clone()),
+                    Arg::Text(planned.base_branch.clone()),
+                    arg_str(planned.head_sha.as_deref()),
+                    arg_str(planned.base_head_sha.as_deref()),
+                    planned.issue_number.map(Arg::Int).unwrap_or(Arg::Null),
+                    planned.pr_number.map(Arg::Int).unwrap_or(Arg::Null),
+                    Arg::Text(planned.owner_lane.clone()),
+                    Arg::Text(planned.owner_worker.clone()),
+                    arg_str(planned.owner_session.as_deref()),
+                    Arg::Text(planned.state.as_str().to_string()),
+                    Arg::Text(now.clone()),
+                    Arg::Text(now),
+                ],
+            );
+            let res = match res {
+                Ok(res) => res,
+                Err(e)
+                    if attempt < 5
+                        && e.contains("UNIQUE constraint failed")
+                        && e.contains("stack_id") =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            let rows = stack_rows(t, &append.stack_id)?;
+            let inserted = rows
+                .iter()
+                .find(|r| r.get("id").and_then(|v| v.as_i64()) == res.last_insert_rowid)
+                .cloned()
+                .unwrap_or(Value::Null);
+            return Ok(json!({
+                "intent": inserted,
+                "stack": stack_state(&append.stack_id, &rows),
+            }));
+        }
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+fn verb_stack_list(t: &TursoBackend, req: &Value) -> Value {
+    let Some(stack_id) = req_str(req, "stack_id") else {
+        return fail(2, "stack_id is required".to_string());
+    };
+    let stack_id = stack_id.to_string();
+    let work = (|| -> Result<Value, TErr> {
+        let rows = stack_rows(t, &stack_id)?;
+        Ok(stack_state(&stack_id, &rows))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// Move one recorded intent through its lifecycle (#8582
+/// increment 4): the storage half of the replay executor. The
+/// transition rules are the pure core's (`IntentState::
+/// can_transition`) — this verb only reads the current row,
+/// refuses an illegal move, and writes the new state (plus the PR
+/// number a landing records, and the conflict detail a conflict
+/// routing carries). It performs no GitHub work: the client
+/// executor drives git/gh and reports each state change here, so
+/// the stack state stays fully visible from the database alone
+/// even mid-replay.
+fn verb_stack_transition(t: &TursoBackend, req: &Value) -> Value {
+    let Some(stack_id) = req_str(req, "stack_id") else {
+        return fail(2, "stack_id is required".to_string());
+    };
+    let stack_id = stack_id.to_string();
+    let Some(position) = req_i64(req, "position") else {
+        return fail(2, "position is required".to_string());
+    };
+    let Some(to) = req_str(req, "to_state").and_then(crate::merge_intent::IntentState::parse)
+    else {
+        return fail(
+            2,
+            format!(
+                "stack_transition: unknown to_state {:?}",
+                req_str(req, "to_state")
+            ),
+        );
+    };
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let Some(row) = rows
+        .iter()
+        .find(|r| r.get("position").and_then(|v| v.as_i64()) == Some(position))
+    else {
+        return fail(
+            2,
+            format!("stack_transition: no intent at stack {stack_id} position {position}"),
+        );
+    };
+    let Some(current) = merge_intent_core(row) else {
+        return fail(
+            2,
+            "stack_transition: stored intent row is unparseable".to_string(),
+        );
+    };
+    if !current.state.can_transition(to) {
+        return fail(
+            2,
+            format!(
+                "stack_transition: illegal move {} -> {} for stack {} position {}",
+                current.state.as_str(),
+                to.as_str(),
+                stack_id,
+                position
+            ),
+        );
+    }
+    // A landing records the PR that landed it; an explicit number
+    // wins, otherwise the recorded one (if any) is kept.
+    let pr_number = req_i64(req, "pr_number").or(current.pr_number);
+    // The conflict detail lives only while the intent is
+    // conflicted: a fresh detail replaces it, a move out of
+    // conflicted clears it.
+    let conflict_detail: Option<String> = if to == crate::merge_intent::IntentState::Conflicted {
+        req_str(req, "conflict_detail")
+            .map(|s| s.to_string())
+            .or_else(|| {
+                row.get("conflict_detail")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+    } else {
+        None
+    };
+    let now = now_iso();
+    // Condition the write on the state that was validated above
+    // (Codex P2, PR #8849): the broker serves connections
+    // concurrently, so a second transition can land between this
+    // verb's read and its UPDATE — an unconditional write would let
+    // it overwrite a terminal state the core has already sealed.
+    // With the validated state in the predicate, a lost race
+    // affects 0 rows and is refused as a concurrent change.
+    let upd = match t.exec(
+        "UPDATE merge_intents SET state = ?, pr_number = ?, conflict_detail = ?, \
+         updated_at = ? WHERE stack_id = ? AND position = ? AND state = ?",
+        &[
+            Arg::Text(to.as_str().to_string()),
+            pr_number.map(Arg::Int).unwrap_or(Arg::Null),
+            arg_str(conflict_detail.as_deref()),
+            Arg::Text(now),
+            Arg::Text(stack_id.clone()),
+            Arg::Int(position),
+            Arg::Text(current.state.as_str().to_string()),
+        ],
+    ) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    if upd.affected == 0 {
+        return fail(
+            2,
+            format!(
+                "stack_transition: intent at stack {stack_id} position {position} changed \
+                 concurrently (validated state {} is no longer current); re-read the stack \
+                 and retry",
+                current.state.as_str()
+            ),
+        );
+    }
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let updated = rows
+        .iter()
+        .find(|r| r.get("position").and_then(|v| v.as_i64()) == Some(position))
+        .cloned()
+        .unwrap_or(Value::Null);
+    ok(json!({"row": {"intent": updated, "stack": stack_state(&stack_id, &rows)}}))
+}
+
+/// Re-record one intent's base after its author restacked the
+/// branch off a withdrawn base (#8582; Codex P2, PR #8849): the
+/// storage half of the `stack restack` acknowledgement. The
+/// refresh rules are the pure core's (`plan_restack`) — this verb
+/// only reads the stack, refuses what the core refuses, and
+/// writes the new base (plus the restacked head, when the author
+/// recorded one), conditioned on the base that was validated so a
+/// concurrent change is refused rather than overwritten (the
+/// transition verb's CAS discipline).
+fn verb_stack_restack(t: &TursoBackend, req: &Value) -> Value {
+    let Some(stack_id) = req_str(req, "stack_id") else {
+        return fail(2, "stack_id is required".to_string());
+    };
+    let stack_id = stack_id.to_string();
+    let Some(position) = req_i64(req, "position") else {
+        return fail(2, "position is required".to_string());
+    };
+    let Some(new_base) = req_str(req, "new_base_branch") else {
+        return fail(2, "new_base_branch is required".to_string());
+    };
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let core: Vec<crate::merge_intent::MergeIntent> =
+        rows.iter().filter_map(merge_intent_core).collect();
+    let restack = crate::merge_intent::RestackRequest {
+        stack_id: stack_id.clone(),
+        position,
+        new_base_branch: new_base.to_string(),
+        new_head_sha: req_str(req, "head_sha").map(|s| s.to_string()),
+    };
+    let planned = match crate::merge_intent::plan_restack(&core, &restack) {
+        Ok(pl) => pl,
+        Err(e) => return fail(2, e),
+    };
+    // plan_restack found the intent; its validated base AND its
+    // validated lifecycle state are the CAS predicates for the
+    // write below. The state predicate matters (Codex P2, PR
+    // #8849, comment 4549335606): transitions do not change
+    // base_branch, so a base-only predicate would let a restack
+    // acknowledgement rewrite the recorded base/head of an intent
+    // that a concurrent transition just landed or abandoned --
+    // terminal records are sealed.
+    let (current_base, current_state) = core
+        .iter()
+        .find(|i| i.position == position)
+        .map(|i| (i.base_branch.clone(), i.state.as_str().to_string()))
+        .unwrap_or_default();
+    let now = now_iso();
+    let upd = match t.exec(
+        "UPDATE merge_intents SET base_branch = ?, head_sha = ?, base_head_sha = ?, updated_at = ? \
+         WHERE stack_id = ? AND position = ? AND base_branch = ? AND state = ?",
+        &[
+            Arg::Text(planned.base_branch.clone()),
+            arg_str(planned.head_sha.as_deref()),
+            arg_str(planned.base_head_sha.as_deref()),
+            Arg::Text(now),
+            Arg::Text(stack_id.clone()),
+            Arg::Int(position),
+            Arg::Text(current_base),
+            Arg::Text(current_state),
+        ],
+    ) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    if upd.affected == 0 {
+        return fail(
+            2,
+            format!(
+                "stack_restack: intent at stack {stack_id} position {position} changed \
+                 concurrently (validated base or lifecycle state is no longer current); \
+                 re-read the stack and retry"
+            ),
+        );
+    }
+    let rows = match stack_rows(t, &stack_id) {
+        Ok(r) => r,
+        Err(e) => return terr(e),
+    };
+    let updated = rows
+        .iter()
+        .find(|r| r.get("position").and_then(|v| v.as_i64()) == Some(position))
+        .cloned()
+        .unwrap_or(Value::Null);
+    ok(json!({"row": {"intent": updated, "stack": stack_state(&stack_id, &rows)}}))
 }
 
 fn verb_signal_count(t: &TursoBackend, req: &Value) -> Value {
@@ -7016,9 +7680,14 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/list" => verb_list(t, req),
         "/health" => verb_health(t, req),
         "/signal-count" => verb_signal_count(t, req),
+        "/stack-record" => verb_stack_record(t, req),
+        "/stack-list" => verb_stack_list(t, req),
+        "/stack-transition" => verb_stack_transition(t, req),
+        "/stack-restack" => verb_stack_restack(t, req),
         "/events-append" => verb_events_append(t, req),
         "/events-seen" => verb_events_seen(t, req),
         "/events-count" => verb_events_count(t, req),
+        "/events-list" => verb_events_list(t, req),
         "/events-prune" => verb_events_prune(t, req),
         "/outbox-enqueue" => verb_outbox_enqueue(t, req),
         "/outbox-claim" => verb_outbox_claim(t, req),
@@ -7035,6 +7704,167 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn model_stamp_detail_9046_carries_session_and_trigger() {
+        // #9046 oracle: a stamp detail names the session it
+        // belongs to (or null — a session is never fabricated),
+        // the serving leaf, and the touch that produced it.
+        let m = ClaimModel {
+            provider: "opencode-route".to_string(),
+            model: Some("workhorse".to_string()),
+            variant: None,
+        };
+        let d = model_stamp_detail(&m, Some("ses_abc"), "transfer");
+        assert_eq!(d["session_id"], json!("ses_abc"));
+        assert_eq!(d["provider"], json!("opencode-route"));
+        assert_eq!(d["model"], json!("workhorse"));
+        assert_eq!(d["variant"], Value::Null);
+        assert_eq!(d["trigger"], json!("transfer"));
+        let d2 = model_stamp_detail(&m, None, "claim");
+        assert_eq!(d2["session_id"], Value::Null);
+        assert_eq!(d2["trigger"], json!("claim"));
+    }
+
+    #[test]
+    fn timeline_wiring_9046() {
+        // #9046 source oracle: the broker half of the timeline —
+        // the claim_session_id column, model_stamp events from
+        // the one stamp site, session_unbound from the one clear
+        // funnel, the /events-list read verb, and claimed_at on
+        // the rich list (cmd_complete's window source).
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("claim_session_id TEXT"),
+            "schema carries claim_session_id"
+        );
+        assert!(
+            src.contains("\"/events-list\" => verb_events_list(t, req)"),
+            "dispatch routes /events-list"
+        );
+        let stamp_seg = seg8217(src, "fn stamp_claim_model(", "\n/// The SQL predicate");
+        assert!(
+            stamp_seg.contains("\"model_stamp\""),
+            "the stamp site writes the timeline event"
+        );
+        assert!(
+            stamp_seg.contains("claim_session_id = ?"),
+            "the stamp site updates claim_session_id"
+        );
+        let clear_seg = seg8217(src, "fn on_binding_cleared(", "\n/// What lease expiry");
+        assert!(
+            clear_seg.contains("\"session_unbound\""),
+            "the clear funnel writes session_unbound"
+        );
+        assert!(
+            src.contains("worker_id, claimed_at, lease_until"),
+            "rich list carries claimed_at"
+        );
+    }
+
+    #[test]
+    fn stack_storage_wiring_8582() {
+        // Source oracle for increment 2 of #8582: the schema applies
+        // the core's DDL of record, dispatch routes both stack
+        // verbs, and the record verb decides validation + append
+        // planning in the pure core (never in SQL).
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("crate::merge_intent::MERGE_INTENT_DDL"),
+            "schema applies the merge_intents DDL of record"
+        );
+        let dispatch_seg = seg8217(src, "pub fn dispatch(", "\n#[cfg(test)]");
+        assert!(
+            dispatch_seg.contains("\"/stack-record\" => verb_stack_record(t, req)"),
+            "dispatch routes /stack-record"
+        );
+        assert!(
+            dispatch_seg.contains("\"/stack-list\" => verb_stack_list(t, req)"),
+            "dispatch routes /stack-list"
+        );
+        let record = seg8217(src, "fn verb_stack_record(", "\nfn verb_stack_list(");
+        assert!(
+            record.contains("validate_append("),
+            "record validates via the core"
+        );
+        assert!(record.contains("plan_append("), "record plans via the core");
+        // Increment 3: the record verb validates the owner
+        // lane/worker pair against the lanes registry, so a
+        // conflict route recorded here names a real owner.
+        assert!(
+            record.contains("FROM lanes WHERE lane_id = ?"),
+            "record validates the owner pair against the lane registry"
+        );
+        assert!(
+            record.contains("unknown owner lane_id"),
+            "record refuses an unregistered owner lane"
+        );
+        let list = seg8217(src, "fn verb_stack_list(", "\nfn verb_signal_count(");
+        assert!(
+            list.contains("stack_state("),
+            "list answers the derived stack state"
+        );
+    }
+
+    #[test]
+    fn stack_transition_wiring_8582() {
+        // Source oracle for increment 4 of #8582: dispatch routes
+        // the transition verb, and the verb decides legality in the
+        // pure core's transition table (never in SQL), recording
+        // the landing PR number and the conflict detail.
+        let src = include_str!("turso_queue.rs");
+        let dispatch_seg = seg8217(src, "pub fn dispatch(", "\n#[cfg(test)]");
+        assert!(
+            dispatch_seg.contains("\"/stack-transition\" => verb_stack_transition(t, req)"),
+            "dispatch routes /stack-transition"
+        );
+        let seg = seg8217(src, "fn verb_stack_transition(", "\nfn verb_signal_count(");
+        assert!(
+            seg.contains("can_transition("),
+            "transition legality comes from the core table"
+        );
+        assert!(
+            seg.contains("illegal move"),
+            "an illegal move is a refusal, not a write"
+        );
+        assert!(seg.contains("pr_number"), "a landing records its PR number");
+        assert!(
+            seg.contains("conflict_detail"),
+            "a conflict records its routing detail"
+        );
+        assert!(
+            seg.contains("stack_state("),
+            "transition answers the derived stack state"
+        );
+    }
+
+    #[test]
+    fn stack_restack_wiring_8582() {
+        // Source oracle for the restack acknowledgement (#8582;
+        // Codex P2, PR #8849): dispatch routes the restack verb,
+        // and the verb decides the refresh in the pure core
+        // (plan_restack) — never in SQL — and answers the derived
+        // stack state.
+        let src = include_str!("turso_queue.rs");
+        let dispatch_seg = seg8217(src, "pub fn dispatch(", "\n#[cfg(test)]");
+        assert!(
+            dispatch_seg.contains("\"/stack-restack\" => verb_stack_restack(t, req)"),
+            "dispatch routes /stack-restack"
+        );
+        let seg = seg8217(src, "fn verb_stack_restack(", "\nfn verb_signal_count(");
+        assert!(
+            seg.contains("plan_restack("),
+            "restack planning comes from the core"
+        );
+        assert!(
+            seg.contains("base_branch = ?"),
+            "restack writes the refreshed base"
+        );
+        assert!(
+            seg.contains("stack_state("),
+            "restack answers the derived stack state"
+        );
+    }
 
     #[test]
     fn canonical_lanes_are_exactly_the_post_rename_universe_8097() {
@@ -7058,11 +7888,42 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), 36, "duplicate lane ids in the canonical set");
         let expected_ids: Vec<&str> = vec![
-            "any-a", "any-b", "any-c", "any-d", "any-e", "any-f", "any-g", "any-h", "any-i",
-            "any-j", "any-k", "any-l", "any-m", "any-n", "any-o", "any-p", "any-q", "any-r",
-            "any-s", "code-a", "code-b", "code-c", "code-d", "code-e", "code-f", "code-g",
-            "code-h", "code-i", "code-j", "not-code-a", "not-code-b", "not-code-c",
-            "not-code-d", "not-code-e", "not-code-f", "not-code-g",
+            "any-a",
+            "any-b",
+            "any-c",
+            "any-d",
+            "any-e",
+            "any-f",
+            "any-g",
+            "any-h",
+            "any-i",
+            "any-j",
+            "any-k",
+            "any-l",
+            "any-m",
+            "any-n",
+            "any-o",
+            "any-p",
+            "any-q",
+            "any-r",
+            "any-s",
+            "code-a",
+            "code-b",
+            "code-c",
+            "code-d",
+            "code-e",
+            "code-f",
+            "code-g",
+            "code-h",
+            "code-i",
+            "code-j",
+            "not-code-a",
+            "not-code-b",
+            "not-code-c",
+            "not-code-d",
+            "not-code-e",
+            "not-code-f",
+            "not-code-g",
         ];
         assert_eq!(
             ids, expected_ids,
@@ -7105,9 +7966,23 @@ mod tests {
         assert_eq!(
             enabled,
             [
-                "any-a", "any-b", "any-c", "any-d", "any-n", "any-o", "code-a", "code-b",
-                "code-c", "code-d", "code-f", "code-g", "code-h", "code-i", "code-j",
-                "not-code-d", "not-code-g",
+                "any-a",
+                "any-b",
+                "any-c",
+                "any-d",
+                "any-n",
+                "any-o",
+                "code-a",
+                "code-b",
+                "code-c",
+                "code-d",
+                "code-f",
+                "code-g",
+                "code-h",
+                "code-i",
+                "code-j",
+                "not-code-d",
+                "not-code-g",
             ]
         );
         // Worker ownership: the renamed lanes keep the worker of
@@ -7141,7 +8016,13 @@ mod tests {
         }
         // Nothing outside the canonical set is seeded: a deleted
         // legacy lane stays deleted across broker restarts.
-        for legacy in ["openchamber-a", "openchamber-b", "nix-a", "opencode-a", "code-z"] {
+        for legacy in [
+            "openchamber-a",
+            "openchamber-b",
+            "nix-a",
+            "opencode-a",
+            "code-z",
+        ] {
             assert!(
                 !sql.contains(&format!("('{legacy}'")),
                 "seed must not name {legacy}"
@@ -7418,7 +8299,10 @@ mod tests {
         let pred = default_pick_predicate();
         assert!(pred.contains("status = 'queued' AND attempts < max_attempts"));
         assert!(pred.contains("status = 'parked' AND not_before IS NOT NULL AND not_before <= ?"));
-        assert!(!pred.contains("NOT ("), "no sink exclusion since #8234: {pred}");
+        assert!(
+            !pred.contains("NOT ("),
+            "no sink exclusion since #8234: {pred}"
+        );
         assert!(pred.contains("status = 'handed_off'"));
         assert!(pred.contains("json_extract(progress, '$.lane') = 'opencode'"));
         assert!(
@@ -7500,7 +8384,11 @@ mod tests {
         assert!(!lane_flip_to_opencode("direct", None, None));
         assert!(!lane_flip_to_opencode("direct", None, Some("  ")));
         // A bound row never flips, either direction.
-        assert!(!lane_flip_to_opencode("direct", Some("ses_1"), Some("reason")));
+        assert!(!lane_flip_to_opencode(
+            "direct",
+            Some("ses_1"),
+            Some("reason")
+        ));
         // Opencode rows are not this flip's business.
         assert!(!lane_flip_to_opencode("opencode", None, Some("reason")));
     }
@@ -7524,7 +8412,14 @@ mod tests {
         // claimed with --session-id).
         let row = transfer_row("claimed", json!({"lane": "direct"}), live);
         assert_eq!(
-            transfer_refusal(&row, "ses_muse_1", Some("ses_muse_1"), None, Some("ses_new"), now),
+            transfer_refusal(
+                &row,
+                "ses_muse_1",
+                Some("ses_muse_1"),
+                None,
+                Some("ses_new"),
+                now
+            ),
             None
         );
         // Holder mark checkpointed into progress.from_session.
@@ -7545,7 +8440,14 @@ mod tests {
             live,
         );
         assert_eq!(
-            transfer_refusal(&row, "ses_holder", None, Some("ses_holder"), Some("ses_new"), now),
+            transfer_refusal(
+                &row,
+                "ses_holder",
+                None,
+                Some("ses_holder"),
+                Some("ses_new"),
+                now
+            ),
             None
         );
     }
@@ -7557,21 +8459,34 @@ mod tests {
         // A random session cannot poach a claimed task by id:
         // its id matches no holder mark.
         let row = transfer_row("claimed", json!({"lane": "direct"}), live);
-        let r = transfer_refusal(&row, "ses_random", Some("ses_muse_1"), None, Some("ses_new"), now)
-            .expect("poach must refuse");
+        let r = transfer_refusal(
+            &row,
+            "ses_random",
+            Some("ses_muse_1"),
+            None,
+            Some("ses_new"),
+            now,
+        )
+        .expect("poach must refuse");
         assert!(r.contains("only the current holder"), "{r}");
         // No holder mark anywhere: nobody can give the task away.
         assert!(transfer_refusal(&row, "ses_muse_1", None, None, Some("ses_new"), now).is_some());
         // Terminal states refuse.
         for st in ["done", "cancelled", "failed"] {
             let row = transfer_row(st, json!({"from_session": "ses_m"}), live);
-            assert!(transfer_refusal(&row, "ses_m", None, None, None, now).is_some(), "{st}");
+            assert!(
+                transfer_refusal(&row, "ses_m", None, None, None, now).is_some(),
+                "{st}"
+            );
         }
         // Queued and parked rows are not transfer sources (a
         // genuine wait-park stays excluded, as by-id claim has it).
         for st in ["queued", "parked", "blocked"] {
             let row = transfer_row(st, json!({"from_session": "ses_m"}), live);
-            assert!(transfer_refusal(&row, "ses_m", None, None, None, now).is_some(), "{st}");
+            assert!(
+                transfer_refusal(&row, "ses_m", None, None, None, now).is_some(),
+                "{st}"
+            );
         }
         // A dead lease is not a live claim.
         let row = transfer_row(
@@ -7622,7 +8537,10 @@ mod tests {
         assert!(!platform_limit_invalid(None, None));
         assert_eq!(platform_limit_error(None, None), None);
         assert_eq!(platform_limit_refusal(None, None, Some("muse")), None);
-        assert_eq!(platform_limit_refusal(None, None, Some("openchamber")), None);
+        assert_eq!(
+            platform_limit_refusal(None, None, Some("openchamber")),
+            None
+        );
         assert_eq!(platform_limit_refusal(None, None, None), None);
         // Recording one demands a real family AND a reason.
         assert!(platform_limit_error(Some("muse"), Some("needs claude-only context")).is_none());
@@ -7646,7 +8564,10 @@ mod tests {
         // limitation and its reason — and an undeclared family
         // cannot take a limited task.
         let reason = Some("needs claude-only context window");
-        assert_eq!(platform_limit_refusal(Some("muse"), reason, Some("muse")), None);
+        assert_eq!(
+            platform_limit_refusal(Some("muse"), reason, Some("muse")),
+            None
+        );
         let r = platform_limit_refusal(Some("muse"), reason, Some("openchamber"))
             .expect("muse-limited task refuses an opencode transfer");
         assert!(r.contains("limited to platform 'muse'"), "{r}");
@@ -7968,31 +8889,41 @@ mod tests {
         assert_eq!(dep_key(&deps[2]), "task:5865");
         assert_eq!(dep_key(&deps[3]), "ci:developing-today/code#12345");
         // A dep the broker cannot watch is a block-time error.
-        assert!(parse_block_deps(
-            &json!({"deps": [{"kind": "pr", "repo": "noslash", "number": 1}]}),
-            "w", now,
-        )
-        .is_err());
-        assert!(parse_block_deps(
-            &json!({"deps": [{"kind": "pr", "repo": "a/b", "number": 0}]}),
-            "w", now,
-        )
-        .is_err());
-        assert!(parse_block_deps(
-            &json!({"deps": [{"kind": "task", "task_id": -3}]}),
-            "w", now,
-        )
-        .is_err());
-        assert!(parse_block_deps(
-            &json!({"deps": [{"kind": "ci", "repo": "a/b"}]}),
-            "w", now,
-        )
-        .is_err());
-        assert!(parse_block_deps(
-            &json!({"deps": [{"kind": "milestone", "number": 1}]}),
-            "w", now,
-        )
-        .is_err());
+        assert!(
+            parse_block_deps(
+                &json!({"deps": [{"kind": "pr", "repo": "noslash", "number": 1}]}),
+                "w",
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_block_deps(
+                &json!({"deps": [{"kind": "pr", "repo": "a/b", "number": 0}]}),
+                "w",
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_block_deps(
+                &json!({"deps": [{"kind": "task", "task_id": -3}]}),
+                "w",
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_block_deps(&json!({"deps": [{"kind": "ci", "repo": "a/b"}]}), "w", now,).is_err()
+        );
+        assert!(
+            parse_block_deps(
+                &json!({"deps": [{"kind": "milestone", "number": 1}]}),
+                "w",
+                now,
+            )
+            .is_err()
+        );
         assert!(parse_block_deps(&json!({"deps": "pr"}), "w", now).is_err());
     }
 
@@ -8078,7 +9009,14 @@ mod tests {
         // Routes, sweep ride, audit kinds, health bucket.
         assert!(impl_src.contains("\"/dep-recheck\" => verb_dep_recheck"));
         assert!(impl_src.contains("\"/unblock\" => verb_unblock"));
-        assert!(impl_src.contains("run_dep_rechecks(t, req_i64(req, \"dep_limit\")"));
+        // The sweep ride calls run_dep_rechecks with the sweep's own
+        // "dep_limit" key; rustfmt splits that call across lines, so
+        // the oracle matches on whitespace-flattened source. The
+        // /dep-recheck verb's own call (client sends "limit") is
+        // asserted separately below.
+        let impl_flat = impl_src.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(impl_flat.contains("run_dep_rechecks( t, req_i64(req, \"dep_limit\")"));
+        assert!(impl_src.contains("run_dep_rechecks(t, req_i64(req, \"limit\")"));
         assert!(impl_src.contains("\"dep_ttl_expired\""));
         assert!(impl_src.contains("\"dep_unblocked\""));
         assert!(impl_src.contains("\"dep_unblock_override\""));
@@ -8420,7 +9358,11 @@ mod tests {
         assert!(handoff_park(&handoff, false, &json!({"kind": "time"})));
         // A caller-named real wait always wins, even on a
         // handoff-shaped row: CI, a task dependency, a quota reset.
-        assert!(!handoff_park(&handoff, false, &json!({"kind": "ci", "pr": 1})));
+        assert!(!handoff_park(
+            &handoff,
+            false,
+            &json!({"kind": "ci", "pr": 1})
+        ));
         assert!(!handoff_park(
             &handoff,
             false,
@@ -8768,7 +9710,10 @@ mod tests {
             Ok(BATCH_CLAIM_MAX)
         );
         let over = parse_batch_count(&json!({"count": BATCH_CLAIM_MAX + 1})).unwrap_err();
-        assert!(over.contains("out of range") && over.contains("1..=5"), "{over}");
+        assert!(
+            over.contains("out of range") && over.contains("1..=5"),
+            "{over}"
+        );
         assert!(parse_batch_count(&json!({"count": 0})).is_err());
         assert!(parse_batch_count(&json!({"count": -2})).is_err());
     }
@@ -8809,7 +9754,10 @@ mod tests {
         let c = flow.find("verb_claim(").expect("claim step");
         let l = flow.find("verb_lane(").expect("lane step");
         let b = flow.find("verb_bind(").expect("bind step");
-        assert!(pre < c && c < l && l < b, "steps run precheck -> claim -> lane -> bind");
+        assert!(
+            pre < c && c < l && l < b,
+            "steps run precheck -> claim -> lane -> bind"
+        );
         assert!(flow.contains("\"bind_row\""), "answer carries the bind row");
         assert!(flow.contains("\"lane_row\""), "answer carries the lane row");
     }
@@ -8829,8 +9777,14 @@ mod tests {
             2,
             "lane and bind failures both carry claim_flow_partial"
         );
-        assert!(flow.contains("\"step\": \"lane\""), "lane partial names its step");
-        assert!(flow.contains("\"step\": \"bind\""), "bind partial names its step");
+        assert!(
+            flow.contains("\"step\": \"lane\""),
+            "lane partial names its step"
+        );
+        assert!(
+            flow.contains("\"step\": \"bind\""),
+            "bind partial names its step"
+        );
         assert!(
             !flow.contains("return lane;") && !flow.contains("return bind;"),
             "post-commit step envelopes are never returned verbatim"
@@ -8851,7 +9805,10 @@ mod tests {
             batch.contains("claim_pick_once("),
             "batch = the single pick, repeated"
         );
-        assert!(batch.contains("\"rows\": rows"), "batch returns the claimed set");
+        assert!(
+            batch.contains("\"rows\": rows"),
+            "batch returns the claimed set"
+        );
         let single = seg8217(src, "fn verb_claim(", "\nfn verb_bind(");
         assert!(single.contains("count > 1"), "single claim routes batches");
         assert!(
@@ -8894,12 +9851,14 @@ mod tests {
         let src = include_str!("turso_queue.rs");
         let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
         assert_eq!(
-            pick.matches("pick_args.push(arg_str(family.as_deref()))").count(),
+            pick.matches("pick_args.push(arg_str(family.as_deref()))")
+                .count(),
             2,
             "candidate SELECT binds the family twice"
         );
         assert_eq!(
-            pick.matches("upd_args.push(arg_str(family.as_deref()))").count(),
+            pick.matches("upd_args.push(arg_str(family.as_deref()))")
+                .count(),
             2,
             "claim UPDATE binds the family twice"
         );
@@ -8917,8 +9876,7 @@ mod tests {
             "by-id claim enforces the limitation"
         );
         assert!(
-            seg.contains("platform_limit = NULL")
-                && seg.contains("platform_limit_reason = NULL"),
+            seg.contains("platform_limit = NULL") && seg.contains("platform_limit_reason = NULL"),
             "an invalid stored limit is cleared, not enforced"
         );
     }
@@ -8990,7 +9948,11 @@ mod tests {
         // session binding cleared and a `released` audit event;
         // attempts are NOT handed back.
         let src = include_str!("turso_queue.rs");
-        let seg = seg8217(src, "/// Release a claimed task straight back", "\nfn verb_park(");
+        let seg = seg8217(
+            src,
+            "/// Release a claimed task straight back",
+            "\nfn verb_park(",
+        );
         for needle in [
             "a release requires a reason",
             "claimed_by(",
@@ -9015,7 +9977,10 @@ mod tests {
         let mut args: Vec<Arg> = Vec::new();
         let sql = filter_sql(&not_code, &mut args);
         assert!(sql.contains("NOT"), "negation compiles: {sql}");
-        assert!(sql.contains("json_extract(payload, '$.repo')"), "repo identity: {sql}");
+        assert!(
+            sql.contains("json_extract(payload, '$.repo')"),
+            "repo identity: {sql}"
+        );
         assert_eq!(args.len(), 2, "repo equality binds the value twice: {sql}");
         match (&args[0], &args[1]) {
             (Arg::Text(a), Arg::Text(b)) => assert_eq!((a.as_str(), b.as_str()), ("code", "code")),
@@ -9035,7 +10000,10 @@ mod tests {
         let mut args: Vec<Arg> = Vec::new();
         let sql = filter_sql(&expr, &mut args);
         assert!(sql.contains("priority <= ?"), "{sql}");
-        assert!(matches!(args.last(), Some(Arg::Int(3))), "priority binds an integer");
+        assert!(
+            matches!(args.last(), Some(Arg::Int(3))),
+            "priority binds an integer"
+        );
         // Malformed expressions are usage errors, never silent.
         for bad in [
             "",
@@ -9089,21 +10057,33 @@ mod tests {
         let not_code = parse_filter("repo != code").unwrap();
         assert!(!filter_matches(&not_code, &code_task), "code task is code");
         assert!(filter_matches(&not_code, &nix_task), "nix task is not code");
-        assert!(filter_matches(&not_code, &meta_task), "meta task is not code");
+        assert!(
+            filter_matches(&not_code, &meta_task),
+            "meta task is not code"
+        );
         let code_only = parse_filter("repo = code").unwrap();
-        assert!(filter_matches(&code_only, &code_task), "payload repo basename matches");
+        assert!(
+            filter_matches(&code_only, &code_task),
+            "payload repo basename matches"
+        );
         assert!(
             filter_matches(&code_only, &stream_only_task),
             "stream-derived identity matches a payload without repo"
         );
         assert!(!filter_matches(&code_only, &nix_task));
         let full_name = parse_filter("repo = developing-today/code").unwrap();
-        assert!(filter_matches(&full_name, &code_task), "full owner/name matches");
+        assert!(
+            filter_matches(&full_name, &code_task),
+            "full owner/name matches"
+        );
         // Priority and kind dimensions.
         let urgent_code = parse_filter("priority <= 2 AND kind = small_fix").unwrap();
         assert!(filter_matches(&urgent_code, &code_task));
         assert!(filter_matches(&urgent_code, &nix_task));
-        assert!(!filter_matches(&urgent_code, &stream_only_task), "priority 3 is not <= 2");
+        assert!(
+            !filter_matches(&urgent_code, &stream_only_task),
+            "priority 3 is not <= 2"
+        );
     }
 
     #[test]
@@ -9187,7 +10167,10 @@ mod tests {
         // the pick spans the whole queue in priority order.
         let scope = claim_scope(None, None, &claimer);
         assert!(!scope.sql.contains("queue = ?"), "unscoped: {}", scope.sql);
-        assert!(scope.sql.contains("requires.platform"), "requirements always bind");
+        assert!(
+            scope.sql.contains("requires.platform"),
+            "requirements always bind"
+        );
         assert_eq!(scope.args.len(), 5);
         // A stream-scoped claim keeps the old shape: queue first.
         let scope = claim_scope(Some("repo-health-code-pilot"), None, &claimer);
@@ -9224,12 +10207,21 @@ mod tests {
         let src = include_str!("turso_queue.rs");
         let single = seg8217(src, "fn verb_claim(", "\nfn verb_bind(");
         assert!(single.contains("parse_filter("), "claim parses --filter");
-        assert!(single.contains("claim_scope("), "claim builds the union scope");
-        assert!(single.contains("\"filter\""), "claim reads the filter field");
+        assert!(
+            single.contains("claim_scope("),
+            "claim builds the union scope"
+        );
+        assert!(
+            single.contains("\"filter\""),
+            "claim reads the filter field"
+        );
         assert!(single.contains("\"pool\""), "claim reads the pool identity");
         let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
         assert!(pick.contains("scope.sql"), "pick SELECT applies the scope");
-        assert!(pick.contains("scope.args"), "pick binds the scope arguments");
+        assert!(
+            pick.contains("scope.args"),
+            "pick binds the scope arguments"
+        );
         let preamble = seg8217(src, "fn claim_preamble(", "\nfn claim_pick_once(");
         assert!(
             preamble.contains("lane_queue_binds("),

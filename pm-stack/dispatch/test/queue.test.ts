@@ -133,9 +133,7 @@ function stubFetch(handler: (call: number) => Promise<Response>) {
 describe("ensureWorker registration memo", () => {
   test("first attempt fails, second succeeds, later calls reuse the success", async () => {
     const calls = stubFetch(async (n) =>
-      n === 1
-        ? new Response("postgrest unavailable", { status: 503 })
-        : new Response(null, { status: 201 }),
+      n === 1 ? new Response("postgrest unavailable", { status: 503 }) : new Response(null, { status: 201 }),
     );
     const client = new QueueClient("http://queue.test", "test-key");
 
@@ -166,16 +164,11 @@ describe("ensureWorker registration memo", () => {
 
   test("concurrent callers share one attempt and one retry", async () => {
     const calls = stubFetch(async (n) =>
-      n === 1
-        ? new Response("boom", { status: 500 })
-        : new Response(null, { status: 201 }),
+      n === 1 ? new Response("boom", { status: 500 }) : new Response(null, { status: 201 }),
     );
     const client = new QueueClient("http://queue.test", "test-key");
 
-    const [a, b] = await Promise.allSettled([
-      client.ensureWorker(),
-      client.ensureWorker(),
-    ]);
+    const [a, b] = await Promise.allSettled([client.ensureWorker(), client.ensureWorker()]);
     expect(a.status).toBe("rejected");
     expect(b.status).toBe("rejected");
     expect(calls()).toBe(1);

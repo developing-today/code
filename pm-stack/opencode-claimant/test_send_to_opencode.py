@@ -56,11 +56,16 @@ NOTES = "Fix the widget counter first; the flaky test is a red herring."
 
 def sender_row(**over):
     row = {
-        "id": 777, "queue": QUEUE, "status": "claimed",
+        "id": 777,
+        "queue": QUEUE,
+        "status": "claimed",
         "title": "Fix the thing",
         "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:4242",
-        "priority": 10, "attempts": 1, "max_attempts": 5,
-        "worker_id": SENDER, "lane_id": "code-m",
+        "priority": 10,
+        "attempts": 1,
+        "max_attempts": 5,
+        "worker_id": SENDER,
+        "lane_id": "code-m",
         "progress": {"lane": "direct"},
         "payload": {"repo": "developing-today/code", "issue": {"number": 4242}},
     }
@@ -76,9 +81,7 @@ def serve_claimed(rows):
 
 
 def live_and_room(room=3):
-    return patch.multiple(
-        claimant, read_mode=lambda: "live", cap_step=lambda: room
-    )
+    return patch.multiple(claimant, read_mode=lambda: "live", cap_step=lambda: room)
 
 
 def quiet_logs():
@@ -160,18 +163,25 @@ def run_send(worktree, fq=None, server_kw=None, **send_kw):
     fq = fq or FakeQueue()
     server_patches, deleted, prompts = fake_server(worktree, **(server_kw or {}))
     kw = dict(
-        queue_name=QUEUE, task_id=777, sender_worker=SENDER,
-        from_session=FROM_SESSION, reason="sender at its time limit",
-        notes=NOTES, worktree_arg=worktree,
+        queue_name=QUEUE,
+        task_id=777,
+        sender_worker=SENDER,
+        from_session=FROM_SESSION,
+        reason="sender at its time limit",
+        notes=NOTES,
+        worktree_arg=worktree,
     )
     kw.update(send_kw)
-    with serve_claimed([sender_row()]), live_and_room(), quiet_logs(), \
-            server_patches, \
-            patch.object(launch_one, "queue", fq), \
-            patch.object(launch_one, "hard_stop_reason", return_value=None), \
-            patch.object(launch_one, "post_agent_note",
-                         return_value=(True, None)), \
-            patch.object(send, "is_worktree_of", return_value=True):
+    with (
+        serve_claimed([sender_row()]),
+        live_and_room(),
+        quiet_logs(),
+        server_patches,
+        patch.object(launch_one, "queue", fq),
+        patch.object(launch_one, "hard_stop_reason", return_value=None),
+        patch.object(launch_one, "post_agent_note", return_value=(True, None)),
+        patch.object(send, "is_worktree_of", return_value=True),
+    ):
         rec = send.send(**kw)
     return rec, fq, deleted, prompts
 
@@ -198,30 +208,41 @@ class TestValidationGates(unittest.TestCase):
 
 class TestClaimAndLabelGates(unittest.TestCase):
     def test_sender_must_hold_the_task(self):
-        with serve_claimed([sender_row(worker_id="repo-worker-code-x")]), \
-                live_and_room(), quiet_logs():
-            rec = send.send(QUEUE, 777, SENDER, FROM_SESSION,
-                            "a reason", NOTES, None)
+        with (
+            serve_claimed([sender_row(worker_id="repo-worker-code-x")]),
+            live_and_room(),
+            quiet_logs(),
+        ):
+            rec = send.send(QUEUE, 777, SENDER, FROM_SESSION, "a reason", NOTES, None)
         self.assertFalse(rec["ok"])
         self.assertEqual(rec["phase"], "verify_claim")
 
     def test_hard_stop_label_refuses_before_any_queue_write(self):
         fq = FakeQueue()
-        with serve_claimed([sender_row()]), live_and_room(), quiet_logs(), \
-                patch.object(launch_one, "queue", fq), \
-                patch.object(launch_one, "hard_stop_reason",
-                             return_value="hard-stop:held"):
-            rec = send.send(QUEUE, 777, SENDER, FROM_SESSION,
-                            "a reason", NOTES, "/tmp/wt")
+        with (
+            serve_claimed([sender_row()]),
+            live_and_room(),
+            quiet_logs(),
+            patch.object(launch_one, "queue", fq),
+            patch.object(launch_one, "hard_stop_reason", return_value="hard-stop:held"),
+        ):
+            rec = send.send(
+                QUEUE, 777, SENDER, FROM_SESSION, "a reason", NOTES, "/tmp/wt"
+            )
         self.assertFalse(rec["ok"])
         self.assertEqual(rec["phase"], "labels")
         self.assertEqual(fq.calls, [])
 
     def test_primary_checkout_is_not_a_worktree(self):
-        with serve_claimed([sender_row()]), live_and_room(), quiet_logs(), \
-                patch.object(launch_one, "hard_stop_reason", return_value=None):
-            rec = send.send(QUEUE, 777, SENDER, FROM_SESSION,
-                            "a reason", NOTES, PRIMARY)
+        with (
+            serve_claimed([sender_row()]),
+            live_and_room(),
+            quiet_logs(),
+            patch.object(launch_one, "hard_stop_reason", return_value=None),
+        ):
+            rec = send.send(
+                QUEUE, 777, SENDER, FROM_SESSION, "a reason", NOTES, PRIMARY
+            )
         self.assertFalse(rec["ok"])
         self.assertEqual(rec["phase"], "worktree")
 
@@ -238,14 +259,12 @@ class TestHappyPath(unittest.TestCase):
             # -> sender checkpoint -> transfer claim -> launched
             # checkpoint.
             self.assertEqual(
-                fq.verbs(),
-                ["lane", "lane", "checkpoint", "claim", "checkpoint"])
+                fq.verbs(), ["lane", "lane", "checkpoint", "claim", "checkpoint"]
+            )
             claim = fq.claim_args()
             self.assertIn("--from-session", claim)
-            self.assertEqual(claim[claim.index("--from-session") + 1],
-                             FROM_SESSION)
-            self.assertEqual(claim[claim.index("--session-id") + 1],
-                             NEW_SESSION)
+            self.assertEqual(claim[claim.index("--from-session") + 1], FROM_SESSION)
+            self.assertEqual(claim[claim.index("--session-id") + 1], NEW_SESSION)
             # The prompt carries the sender's notes and the
             # worktree, and says who sent it.
             self.assertEqual(len(prompts), 1)
@@ -270,8 +289,7 @@ class TestHappyPath(unittest.TestCase):
 class TestRollback(unittest.TestCase):
     def test_failed_transfer_deletes_session_and_flips_back(self):
         with tempfile.TemporaryDirectory() as wt:
-            rec, fq, deleted, _prompts = run_send(
-                wt, fq=FakeQueue(claim_rc=4))
+            rec, fq, deleted, _prompts = run_send(wt, fq=FakeQueue(claim_rc=4))
             self.assertFalse(rec["ok"])
             self.assertEqual(rec["phase"], "transfer")
             self.assertTrue(rec["rolled_back"])
@@ -280,7 +298,8 @@ class TestRollback(unittest.TestCase):
             # ledger read, lane assign, sender checkpoint, claim,
             # lane flip-back.
             self.assertEqual(
-                fq.verbs(), ["lane", "lane", "checkpoint", "claim", "lane"])
+                fq.verbs(), ["lane", "lane", "checkpoint", "claim", "lane"]
+            )
 
     def test_failed_assignment_creates_no_session(self):
         created = []
@@ -293,23 +312,24 @@ class TestRollback(unittest.TestCase):
         with tempfile.TemporaryDirectory() as wt:
             fq = FakeQueue(assign_lane="direct")
             server_patches, _d, _p = fake_server(wt)
-            with serve_claimed([sender_row()]), live_and_room(), \
-                    quiet_logs(), server_patches, \
-                    patch.object(claimant, "_server_request", spy), \
-                    patch.object(launch_one, "queue", fq), \
-                    patch.object(launch_one, "hard_stop_reason",
-                                 return_value=None), \
-                    patch.object(send, "is_worktree_of", return_value=True):
-                rec = send.send(QUEUE, 777, SENDER, FROM_SESSION,
-                                "a reason", NOTES, wt)
+            with (
+                serve_claimed([sender_row()]),
+                live_and_room(),
+                quiet_logs(),
+                server_patches,
+                patch.object(claimant, "_server_request", spy),
+                patch.object(launch_one, "queue", fq),
+                patch.object(launch_one, "hard_stop_reason", return_value=None),
+                patch.object(send, "is_worktree_of", return_value=True),
+            ):
+                rec = send.send(QUEUE, 777, SENDER, FROM_SESSION, "a reason", NOTES, wt)
             self.assertFalse(rec["ok"])
             self.assertEqual(rec["phase"], "assign")
             self.assertEqual(created, [])
 
     def test_prompt_failure_keeps_the_binding(self):
         with tempfile.TemporaryDirectory() as wt:
-            rec, _fq, deleted, _prompts = run_send(
-                wt, server_kw={"prompt_ok": False})
+            rec, _fq, deleted, _prompts = run_send(wt, server_kw={"prompt_ok": False})
             self.assertFalse(rec["ok"])
             self.assertFalse(rec["rolled_back"])
             self.assertIn("prompt_failed", rec["reason"])
@@ -319,10 +339,12 @@ class TestRollback(unittest.TestCase):
 class TestPlatformLimitation(unittest.TestCase):
     def test_valid_muse_limitation_refuses_the_send(self):
         with tempfile.TemporaryDirectory() as wt:
-            fq = FakeQueue(read_limit={
-                "platform_limit": "muse",
-                "platform_limit_reason": "needs claude-only context",
-            })
+            fq = FakeQueue(
+                read_limit={
+                    "platform_limit": "muse",
+                    "platform_limit_reason": "needs claude-only context",
+                }
+            )
             rec, fq, deleted, _prompts = run_send(wt, fq=fq)
             self.assertFalse(rec["ok"])
             self.assertEqual(rec["phase"], "platform_limit")
@@ -334,9 +356,12 @@ class TestPlatformLimitation(unittest.TestCase):
 
     def test_reasonless_limitation_is_invalid_and_does_not_block(self):
         with tempfile.TemporaryDirectory() as wt:
-            fq = FakeQueue(read_limit={
-                "platform_limit": "muse", "platform_limit_reason": None,
-            })
+            fq = FakeQueue(
+                read_limit={
+                    "platform_limit": "muse",
+                    "platform_limit_reason": None,
+                }
+            )
             rec, _fq, _d, _p = run_send(wt, fq=fq)
             self.assertTrue(rec["ok"], rec)
 
@@ -345,13 +370,24 @@ class TestBuildPromptSenderNotes(unittest.TestCase):
     def test_notes_section_present_only_when_given(self):
         row = sender_row()
         with_notes = launch_one.build_prompt(
-            row, ("issue", 4242), "developing-today/code", "/tmp/wt",
-            NEW_SESSION, "opencode-claimant", sender_notes="do the thing")
+            row,
+            ("issue", 4242),
+            "developing-today/code",
+            "/tmp/wt",
+            NEW_SESSION,
+            "opencode-claimant",
+            sender_notes="do the thing",
+        )
         self.assertIn("SENDER NOTES", with_notes)
         self.assertIn("do the thing", with_notes)
         without = launch_one.build_prompt(
-            row, ("issue", 4242), "developing-today/code", "/tmp/wt",
-            NEW_SESSION, "opencode-claimant")
+            row,
+            ("issue", 4242),
+            "developing-today/code",
+            "/tmp/wt",
+            NEW_SESSION,
+            "opencode-claimant",
+        )
         self.assertNotIn("SENDER NOTES", without)
 
 

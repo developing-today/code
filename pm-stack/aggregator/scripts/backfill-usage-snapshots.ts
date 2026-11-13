@@ -66,7 +66,9 @@ function parseStoreDirArg(): string | undefined {
       continue;
     }
     console.error(
-      "backfill-usage-snapshots: unknown argument '" + arg + "' (usage: [--dir <storeDir>]); refusing to run, store untouched",
+      "backfill-usage-snapshots: unknown argument '" +
+        arg +
+        "' (usage: [--dir <storeDir>]); refusing to run, store untouched",
     );
     process.exit(2);
   }

@@ -1490,9 +1490,20 @@ class Handler(BaseHTTPRequestHandler):
                 if left <= 0:
                     raise TimeoutError("request body read timed out")
                 self.connection.settimeout(left)
-                chunk = self.rfile.read(min(remaining, _CRAWL_READ_CHUNK_BYTES))
+                # read1(), not read(): the buffered read() keeps
+                # recv-ing until the full count arrives, and a client
+                # dribbling bytes faster than the socket timeout keeps
+                # every recv alive, so read() outlives the absolute
+                # deadline (#8906; the _fetch_crawl pattern above).
+                # read1() returns after a single raw read, so the loop
+                # rechecks the deadline between chunks.
+                chunk = self.rfile.read1(min(remaining, _CRAWL_READ_CHUNK_BYTES))
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("request body read timed out")
                 if not chunk:
-                    raise ValueError("request body ended before Content-Length bytes arrived")
+                    raise ValueError(
+                        "request body ended before Content-Length bytes arrived"
+                    )
                 chunks.append(chunk)
                 remaining -= len(chunk)
         finally:
@@ -1517,8 +1528,10 @@ class Handler(BaseHTTPRequestHandler):
         if length < 0 or length > _CRAWL_REQUEST_MAX_BODY_BYTES:
             return self._send(
                 400,
-                {"error": f"Content-Length {length} out of range: "
-                          f"0..{_CRAWL_REQUEST_MAX_BODY_BYTES}"},
+                {
+                    "error": f"Content-Length {length} out of range: "
+                    f"0..{_CRAWL_REQUEST_MAX_BODY_BYTES}"
+                },
             )
         try:
             url = json.loads(self._read_request_body(length))["url"]

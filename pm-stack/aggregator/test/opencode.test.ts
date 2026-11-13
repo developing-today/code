@@ -232,7 +232,10 @@ describe("opencode v2 mapper", () => {
     }));
     overrides = {
       sessions: {
-        data: [...futureSessions, { id: "ses_recent", title: "genuinely recent", time: { created: recent, updated: recent } }],
+        data: [
+          ...futureSessions,
+          { id: "ses_recent", title: "genuinely recent", time: { created: recent, updated: recent } },
+        ],
       },
       active: { data: {} },
       permissions: { data: {} },
@@ -248,7 +251,9 @@ describe("opencode v2 mapper", () => {
   test("active/pending-included future sessions map a null lastActivityAt (#4180)", async () => {
     const future = NOW + 365 * 24 * 3_600_000;
     overrides = {
-      sessions: { data: [{ id: "ses_future_active", title: "future but live", time: { created: recent, updated: future } }] },
+      sessions: {
+        data: [{ id: "ses_future_active", title: "future but live", time: { created: recent, updated: future } }],
+      },
       active: { data: { ses_future_active: {} } },
       permissions: { data: [] },
     };

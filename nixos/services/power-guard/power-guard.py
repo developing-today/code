@@ -59,9 +59,7 @@ def parse_timing(name, raw):
             "it must be a finite positive number of seconds"
         ) from None
     if not math.isfinite(value) or value <= 0:
-        raise ValueError(
-            f"{name}={raw!r} must be a finite positive number of seconds"
-        )
+        raise ValueError(f"{name}={raw!r} must be a finite positive number of seconds")
     if value > MAX_TIMING_SECONDS:
         raise ValueError(
             f"{name}={raw!r} exceeds the largest interval time.sleep "
@@ -83,6 +81,7 @@ def timing_from_env(name, default):
     except ValueError as exc:
         print(f"power-guard: error: {exc}", file=sys.stderr, flush=True)
         raise SystemExit(2) from None
+
 
 POLL = timing_from_env("POWER_GUARD_POLL", "15")
 LOW_PCT = 20  # engage the block at/below this (UPower PercentageLow)

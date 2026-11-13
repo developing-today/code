@@ -1,16 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { projectsBodyHtml, renderRoadmap } from "../src/render.ts";
 import type { Provenance, RoadmapRow } from "../src/model.ts";
-import {
-  buildSpendCards,
-  spendCardHtml,
-  unattributedSpendHtml,
-} from "../src/spend-cards.ts";
-import {
-  buildSpendRollups,
-  type SpendRollup,
-  type SpendRollupEvent,
-} from "../src/spend-rollups.ts";
+import { buildSpendCards, spendCardHtml, unattributedSpendHtml } from "../src/spend-cards.ts";
+import { buildSpendRollups, type SpendRollup, type SpendRollupEvent } from "../src/spend-rollups.ts";
 import type { ProjectPoolItem, RefKey } from "../src/model.ts";
 
 // #4824 acceptance: complete + spend present, forecast absent,
@@ -36,7 +28,14 @@ describe("buildSpendCards (#4824)", () => {
   test("complete window: three unit families stay separate labelled measures", () => {
     const view = buildSpendCards(
       rollups([
-        { ts: NOV, projectId: null, epicRef: EPIC, tokensByPool: { main: 1200 }, paygUsd: 34.5, sharePctByPool: { main: 12.34 } },
+        {
+          ts: NOV,
+          projectId: null,
+          epicRef: EPIC,
+          tokensByPool: { main: 1200 },
+          paygUsd: 34.5,
+          sharePctByPool: { main: 12.34 },
+        },
       ]),
     );
     const card = view.byScope.get(EPIC);
@@ -76,9 +75,7 @@ describe("buildSpendCards (#4824)", () => {
   });
 
   test("partial window is labelled partial with its coverage start", () => {
-    const view = buildSpendCards(
-      rollups([{ ts: NOV, projectId: null, epicRef: EPIC, tokensByPool: { main: 5 } }], []),
-    );
+    const view = buildSpendCards(rollups([{ ts: NOV, projectId: null, epicRef: EPIC, tokensByPool: { main: 5 } }], []));
     const card = view.byScope.get(EPIC);
     expect(card?.coverage).toBe("partial");
     const html = spendCardHtml(card as NonNullable<typeof card>);
@@ -98,6 +95,45 @@ describe("buildSpendCards (#4824)", () => {
     expect(html).toContain("<details");
     expect(html).toContain("Reason-code breakdown");
     expect(html).toContain("no-binding: 77 tokens");
+  });
+
+  test("selected attribution version is preserved on the card and displayed beside the window label (#8854)", () => {
+    // Oracle: the version string is the literal the records were built
+    // under (buildSpendRollups stamps it), not a value re-derived from
+    // the card under test.
+    const view = buildSpendCards(
+      rollups([{ ts: NOV, projectId: null, epicRef: EPIC, tokensByPool: { main: 5 }, paygUsd: 2 }]),
+    );
+    const card = view.byScope.get(EPIC);
+    expect(card?.attributionVersion).toBe("v1");
+    const html = spendCardHtml(card as NonNullable<typeof card>);
+    expect(html).toContain("attribution v1");
+    const unattr = buildSpendCards(rollups([{ ts: NOV, projectId: null, epicRef: null, tokensByPool: { main: 7 } }]));
+    expect(unattr.unattributed?.attributionVersion).toBe("v1");
+    expect(unattributedSpendHtml(unattr.unattributed as NonNullable<typeof unattr.unattributed>)).toContain(
+      "attribution v1",
+    );
+  });
+
+  test("a restatement displays the newer selected version, not the superseded one (#8854)", () => {
+    const events: SpendRollupEvent[] = [
+      { ts: NOV, projectId: null, epicRef: EPIC, tokensByPool: { main: 5 }, paygUsd: 2 },
+    ];
+    const v1 = buildSpendRollups(events, {
+      attributionVersion: "v1",
+      coverageStart: "2026-09-01",
+      coverage: FULL_MONTH,
+    });
+    const v2 = buildSpendRollups(events, {
+      attributionVersion: "v2",
+      coverageStart: "2026-09-01",
+      coverage: FULL_MONTH,
+    });
+    const card = buildSpendCards([...v1, ...v2]).byScope.get(EPIC);
+    expect(card?.attributionVersion).toBe("v2");
+    const html = spendCardHtml(card as NonNullable<typeof card>);
+    expect(html).toContain("attribution v2");
+    expect(html).not.toContain("attribution v1");
   });
 
   test("an empty store yields no cards at all", () => {
@@ -180,10 +216,23 @@ describe("Projects pool cards render spend beside progress (#4824)", () => {
       registry: "fixture",
       aa: "fixture",
     } as Provenance;
-    const spend = buildSpendCards(
-      rollups([{ ts: NOV, projectId: null, epicRef: null, tokensByPool: { main: 7 } }]),
+    const spend = buildSpendCards(rollups([{ ts: NOV, projectId: null, epicRef: null, tokensByPool: { main: 7 } }]));
+    const html = renderRoadmap(
+      [row],
+      new Map(),
+      prov,
+      "quarter",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "",
+      undefined,
+      undefined,
+      undefined,
+      spend,
     );
-    const html = renderRoadmap([row], new Map(), prov, "quarter", undefined, undefined, undefined, undefined, undefined, "", undefined, undefined, undefined, spend);
     expect(html).toContain("Unattributed spend");
     const bare = renderRoadmap([row], new Map(), prov, "quarter");
     expect(bare).not.toContain("Unattributed spend");

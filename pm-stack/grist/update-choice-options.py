@@ -130,9 +130,7 @@ def api(
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(
-            req, timeout=API_TIMEOUT_SECONDS
-        ) as resp:
+        with urllib.request.urlopen(req, timeout=API_TIMEOUT_SECONDS) as resp:
             raw = resp.read().decode()
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):

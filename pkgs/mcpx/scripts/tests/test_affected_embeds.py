@@ -72,14 +72,10 @@ class EmbeddedOwnerFixture(unittest.TestCase):
             'package skills\n\nimport "embed"\n\n'
             "//go:embed all:mcpx-*\nvar FS embed.FS\n",
         )
-        self.write(
-            "plugin/opencode/skills/mcpx-basics/SKILL.md", "# Original skill\n"
-        )
+        self.write("plugin/opencode/skills/mcpx-basics/SKILL.md", "# Original skill\n")
         base = self.commit()
 
-        self.write(
-            "plugin/opencode/skills/mcpx-basics/SKILL.md", "# Updated skill\n"
-        )
+        self.write("plugin/opencode/skills/mcpx-basics/SKILL.md", "# Updated skill\n")
         output = self.run_selector(base)
 
         self.assert_selected(output, "plugin/opencode/skills")
@@ -99,9 +95,7 @@ class EmbeddedOwnerFixture(unittest.TestCase):
         base = self.commit()
 
         self.write("internal/allprefix/exact.txt", "changed\n")
-        self.write(
-            "internal/allprefix/assets/icon.svg", "<svg>changed</svg>\n"
-        )
+        self.write("internal/allprefix/assets/icon.svg", "<svg>changed</svg>\n")
         self.write("internal/allprefix/example.tmpl", "changed\n")
         output = self.run_selector(base)
 

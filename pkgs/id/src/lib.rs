@@ -51,6 +51,57 @@
 //! - [`repl`] - Interactive REPL with shell-like features
 //! - [`helpers`] - Utility functions for parsing and formatting
 //!
+//! ## Signing contract — sign only what receipt would accept
+//!
+//! Every public signing entry point in this crate family (`sign_*`,
+//! `Signed*::sign`, and any public method whose purpose is producing a
+//! signed object) follows one contract, recorded as design #6487 and
+//! inventoried in the closing audit on issue #6488:
+//!
+//! > **Sign only what receipt would accept.** Mirror at sign time every
+//! > receipt rule that is decidable from the signer's own inputs — the
+//! > key, the object being signed, and the function's existing
+//! > arguments. Receipt means whichever side consumes the object: a
+//! > fold, a viewer, a verifier, or an accept function. A rule receipt
+//! > enforces unconditionally, and the signer can decide, must not be
+//! > signable-around: a signer that produces an object no consumer will
+//! > ever count has reported success for a failure the caller discovers
+//! > far from the signing call, if at all.
+//!
+//! The decidability line is part of the contract, in four classes:
+//!
+//! - **(a) intrinsic** — decidable from the object alone: a field's
+//!   domain, a version, a roster's shape, an envelope's internal
+//!   agreement.
+//! - **(b) signer-relative** — decidable from the key plus the object:
+//!   the author the key implies versus the object's issuer, players,
+//!   roster, successor, source, or named sender.
+//! - **(c) seam-extended** — decidable only if the seam takes one more
+//!   input it already conceptually has (the agreement for a claim). The
+//!   public seam changes — a checked sibling or an extra parameter —
+//!   it never silently skips the check.
+//! - **(d) receiver-state** — not decidable at the seam: the
+//!   receiver's cursor, a per-world limit, a store's current epoch, the
+//!   key being replaced in a recovery the inputs do not name, an
+//!   assembled log's context. These rules stay receipt-only, and the
+//!   closing inventory on issue #6488 names each one with its reason,
+//!   so the line is auditable rather than implied.
+//!
+//! Two corollaries bind a new signer before it lands:
+//!
+//! - Refusal speaks the module's own vocabulary — the receipt error
+//!   itself, or a typed sign error naming the rule — never a generic
+//!   failure, and never a silently repaired object. Wire formats and
+//!   receipt verdicts do not change under this contract.
+//! - A bypass, where tests need one, is crate-private (or gated to
+//!   tests) and named `*_unchecked` — the artifact pattern
+//!   (`SignedArtifact::sign_unchecked`). There is never a second
+//!   *public* unchecked signer.
+//!
+//! Adding a `sign_*` function without dispositioning it against this
+//! contract — enforced for the decidable classes, or deliberately
+//! receipt-only with the class-(d) reason named — is incomplete work.
+//!
 //! ## Quick Start
 //!
 //! ### As a Library
@@ -154,8 +205,6 @@
 
 pub use id_core::abuse;
 pub use id_core::access;
-pub mod aliases;
-pub mod app_manifest;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub use id_events::attestation;
@@ -163,27 +212,26 @@ pub mod backup;
 pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;
+pub use id_core::connectivity;
 pub use id_store::chain;
 pub use id_store::chat;
-pub mod chat_presence;
-pub mod cli;
-pub mod commands;
-pub use id_core::connectivity;
 pub mod conversion;
 pub mod currency;
 pub mod currency_poc;
+#[cfg(feature = "world")]
+pub use id_directory::directory;
+#[cfg(feature = "world")]
+pub use id_directory::directory_auth;
+#[cfg(feature = "world")]
+pub use id_directory::directory_log;
 pub use id_sync::dht;
 #[cfg(feature = "world")]
-pub mod directory;
-#[cfg(feature = "world")]
-pub mod directory_auth;
-#[cfg(feature = "world")]
-pub mod directory_log;
-#[cfg(feature = "world")]
-pub mod directory_mail;
-#[cfg(feature = "world")]
-pub mod directory_view;
+pub mod keyset;
 pub use id_core::discovery;
+#[cfg(feature = "world")]
+pub use id_directory::directory_mail;
+#[cfg(feature = "world")]
+pub use id_directory::directory_view;
 pub mod didit;
 pub use id_store::documents;
 #[cfg(feature = "world")]
@@ -200,108 +248,109 @@ pub use id_core::frames;
 pub mod grant_service;
 pub mod grants;
 pub mod groups;
-pub mod helpers;
 pub mod hosted_binding;
+pub mod hosted_export;
 pub use id_events::idset;
 pub mod input_framing;
-pub mod invite;
-pub mod invites;
-pub use id_store::issuer_rotation;
-pub(crate) mod key_envelope;
-pub mod local;
+pub use id_directory::invite;
+pub use id_directory::invites;
 pub use id_events::local_claims;
 pub use id_events::local_events;
+pub use id_store::issuer_rotation;
 pub use id_sync::log_sync;
-mod peer_announcement;
 pub mod serve_proxy;
 pub use id_core::membership;
-pub mod match_audit;
-pub mod meta_client;
-pub use id_store::note_links;
-pub use id_store::notes;
 #[cfg(feature = "world")]
 pub use id_core::petname;
-pub mod protocol;
-pub mod publications;
-pub mod publications_runtime;
+pub use id_store::note_links;
+pub use id_store::notes;
 pub mod pull_policy;
 pub use id_core::residency;
 pub mod references;
 pub use id_core::rejection;
-pub mod repl;
-#[cfg(feature = "sandbox")]
-pub mod sandbox;
-#[cfg(feature = "sandbox")]
-pub mod world_dev;
+#[cfg(feature = "world")]
+pub use id_directory::seitan;
 pub use id_store::search;
 #[cfg(feature = "world")]
-pub mod seitan;
-#[cfg(feature = "world")]
-pub mod server_config;
 pub use id_store::session_checkpoint;
-#[cfg(feature = "world")]
-pub mod shell_contract;
 pub use id_store::store;
+#[cfg(feature = "sandbox")]
+pub use id_worlds::sandbox;
+#[cfg(feature = "world")]
+pub use id_worlds::shell_contract;
+#[cfg(feature = "sandbox")]
+pub use id_worlds::world_dev;
 pub mod store_traits;
 pub mod structured_logging;
-pub use id_core::sync_method;
-pub use id_store::tag_claims;
-pub use id_store::tag_index;
-pub use id_store::tags;
-#[cfg(test)]
-mod test_forgeries;
-pub(crate) use id_core::text;
+#[cfg(feature = "world")]
+pub use id_caps::world_caps;
 pub(crate) use id_core::is_format_char;
+pub use id_core::sync_method;
+#[cfg(test)]
+pub(crate) use id_core::test_forgeries;
+pub(crate) use id_core::text;
 pub(crate) use id_core::time;
 pub use id_core::tuple;
 pub use id_core::waiting;
+pub use id_store::tag_claims;
+pub use id_store::tag_index;
+pub use id_store::tags;
 #[cfg(feature = "world")]
-pub mod world;
+pub use id_worlds::world;
 #[cfg(feature = "world")]
-pub use id_caps::world_caps;
+pub use id_worlds::world_cache;
+pub use id_worlds::world_compile;
 #[cfg(feature = "world")]
-pub mod world_cache;
-pub mod world_compile;
+pub use id_worlds::world_doctor;
 #[cfg(feature = "world")]
-pub mod world_doctor;
-#[cfg(feature = "world")]
-pub mod world_fixture;
-#[cfg(feature = "world")]
-mod session_host;
+pub use id_worlds::world_fixture;
 
-pub mod world_hub;
 #[cfg(feature = "world")]
 pub use id_caps::world_limits;
-pub(crate) mod world_line;
 #[cfg(feature = "world")]
 pub use id_caps::world_manifest;
 #[cfg(feature = "world")]
-pub mod world_native;
-#[cfg(feature = "world")]
-pub mod world_net;
-#[cfg(feature = "world")]
-pub mod world_replication_net;
-#[cfg(feature = "world")]
 pub use id_core::world_presentation;
+pub use id_worlds::world_hub;
+pub(crate) use id_worlds::world_line;
 #[cfg(feature = "world")]
-pub mod world_records;
+pub use id_worlds::world_native;
 #[cfg(feature = "world")]
-pub mod world_session;
+pub use id_worlds::world_net;
+#[cfg(feature = "world")]
+pub use id_worlds::world_records;
+#[cfg(feature = "world")]
+pub use id_worlds::world_replication_net;
+#[cfg(feature = "world")]
+pub use id_worlds::world_session;
 #[cfg(feature = "ssh")]
-pub mod world_ssh;
+pub use id_worlds::world_ssh;
 #[cfg(feature = "world")]
-pub mod world_store;
+pub use id_worlds::world_store;
 #[cfg(feature = "world")]
-pub(crate) mod world_terminal;
+pub(crate) use id_worlds::world_terminal;
 
 #[cfg(feature = "web")]
 pub use id_core::qr;
+// Application layer extracted in split step 7b (#4411): the modules
+// below live in the id-cli crate and are re-exported at their
+// historical `id::` paths. `main.rs` consumes them through here.
+pub use id_cli::{
+    aliases, app_manifest, chat_presence, cli, commands, helpers, local, match_audit, meta_client,
+    protocol, publications, publications_runtime, repl, server_config,
+};
+
 #[cfg(feature = "web")]
-pub mod web;
+pub use id_web as web;
 
 // Re-export commonly used types for convenience
-pub use cli::{Cli, Command, KeyCommand, TagCommand};
-pub use commands::{
+pub use discovery::{
+    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, MAX_PEER_NAME_BYTES,
+    MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
+    STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
+};
+pub use id_cli::cli::{Cli, Command, KeyCommand, TagCommand};
+pub use id_cli::commands::{
     PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo,
     ServeOptions, cmd_find, cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one,
     cmd_get_one_remote, cmd_gethash, cmd_id, cmd_list, cmd_list_remote, cmd_migrate_tags, cmd_peek,
@@ -309,18 +358,15 @@ pub use commands::{
     cmd_put_one_remote, cmd_search, cmd_serve, cmd_show, cmd_tag, create_local_client_endpoint,
     create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
 };
-pub use discovery::{
-    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, MAX_PEER_NAME_BYTES,
-    MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
-    STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
-};
-pub use helpers::{
+pub use id_cli::helpers::{
     download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,
     print_matches_cli,
 };
-pub use protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
-pub use protocol::match_kind;
-pub use repl::run_repl;
+pub use id_cli::protocol::match_kind;
+pub use id_cli::protocol::{
+    FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch,
+};
+pub use id_cli::repl::run_repl;
 pub use store::{StoreType, load_or_create_keypair, open_store};
 
 use anyhow::Result;
@@ -330,25 +376,9 @@ use std::path::PathBuf;
 // Constants
 // ============================================================================
 
-/// Filename for the server's Ed25519 keypair.
-///
-/// This file is created in the working directory and contains the private key
-/// used to identify this node. The public key derived from this is the node ID.
-pub const KEY_FILE: &str = ".iroh-key";
-
-/// Filename for the client's Ed25519 keypair.
-///
-/// Used when connecting to remote peers. Separate from the server key to allow
-/// different identities for serving vs. connecting.
-pub const CLIENT_KEY_FILE: &str = ".iroh-key-client";
+pub use id_core::{CLIENT_KEY_FILE, KEY_FILE, SERVE_LOCK};
 
 pub use id_store::STORE_PATH;
-
-/// Filename for the serve lock file.
-///
-/// Created when `id serve` is running. Contains the node ID and addresses
-/// for local clients to connect. Automatically removed on clean shutdown.
-pub const SERVE_LOCK: &str = ".iroh-serve.lock";
 
 pub use id_sync::protocol::META_ALPN;
 
@@ -356,199 +386,15 @@ pub use id_sync::protocol::META_ALPN;
 // Utility Functions
 // ============================================================================
 
-/// Converts a potentially relative path to an absolute path.
-///
-/// If the path is already absolute, it is returned unchanged. Otherwise,
-/// it is joined with the current working directory.
-///
-/// # Arguments
-///
-/// * `path` - The path to convert
-///
-/// # Returns
-///
-/// The absolute path, or an error if the current directory cannot be determined.
-///
-/// # Example
-///
-/// ```rust
-/// use std::path::PathBuf;
-/// use id::to_absolute;
-///
-/// let abs = to_absolute(&PathBuf::from("/already/absolute")).unwrap();
-/// assert_eq!(abs, PathBuf::from("/already/absolute"));
-///
-/// // Relative paths are joined with the current directory
-/// let rel = to_absolute(&PathBuf::from("relative/path")).unwrap();
-/// assert!(rel.is_absolute());
-/// ```
-pub fn to_absolute(path: &PathBuf) -> Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.clone())
-    } else {
-        Ok(std::env::current_dir()?.join(path))
-    }
-}
+pub use id_cli::to_absolute;
 
+pub use id_core::is_node_id;
 
+pub use id_cli::parse_stdin_items;
 
-/// Checks if a string is a valid node ID format.
-///
-/// A valid node ID is exactly 64 hexadecimal characters (representing a
-/// 32-byte Ed25519 public key). This function only validates the format,
-/// not whether the node actually exists.
-///
-/// # Arguments
-///
-/// * `s` - The string to check
-///
-/// # Returns
-///
-/// `true` if the string is exactly 64 hex characters, `false` otherwise.
-///
-/// # Example
-///
-/// ```rust
-/// use id::is_node_id;
-///
-/// // Valid node ID (64 hex chars)
-/// assert!(is_node_id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
-///
-/// // Invalid: too short
-/// assert!(!is_node_id("0123456789abcdef"));
-///
-/// // Invalid: contains non-hex characters
-/// assert!(!is_node_id("ghijklmnopqrstuv0123456789abcdef0123456789abcdef0123456789abcd"));
-/// ```
-pub fn is_node_id(s: &str) -> bool {
-    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
+pub use id_cli::read_input;
 
-/// Parses items from stdin, splitting on common delimiters.
-///
-/// Reads all content from stdin and splits it on newlines, tabs, or commas.
-/// Empty items and whitespace-only items are filtered out. This is useful
-/// for batch operations where file lists are piped in.
-///
-/// # Returns
-///
-/// A vector of trimmed, non-empty strings.
-///
-/// # Example
-///
-/// ```bash
-/// # From command line:
-/// echo "file1.txt,file2.txt,file3.txt" | id put --stdin
-/// ```
-///
-/// ```rust,no_run
-/// use id::parse_stdin_items;
-///
-/// // If stdin contains "a.txt\nb.txt\tc.txt,d.txt"
-/// let items = parse_stdin_items().unwrap();
-/// // items = ["a.txt", "b.txt", "c.txt", "d.txt"]
-/// ```
-pub fn parse_stdin_items() -> Result<Vec<String>> {
-    use std::io::Read;
-    let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input)?;
-    Ok(input
-        .split(['\n', '\t', ','])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToOwned::to_owned)
-        .collect())
-}
-
-/// Reads input data from a file path or stdin.
-///
-/// If the input is "-", reads from stdin. Otherwise, reads from the specified
-/// file path. This is a common pattern for CLI tools that accept either a
-/// file or piped input.
-///
-/// # Arguments
-///
-/// * `input` - Either "-" for stdin, or a file path
-///
-/// # Returns
-///
-/// The raw bytes read from the source.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use id::read_input;
-///
-/// # async fn example() -> anyhow::Result<()> {
-/// // Read from file
-/// let data = read_input("myfile.txt").await?;
-///
-/// // Read from stdin (when input is "-")
-/// let stdin_data = read_input("-").await?;
-/// # Ok(())
-/// # }
-/// ```
-pub async fn read_input(input: &str) -> Result<Vec<u8>> {
-    use std::io::Read;
-    use tokio::fs as afs;
-
-    if input == "-" {
-        let mut data = Vec::new();
-        std::io::stdin().read_to_end(&mut data)?;
-        Ok(data)
-    } else {
-        Ok(afs::read(input).await?)
-    }
-}
-
-/// Exports a blob to a file or stdout.
-///
-/// Retrieves the blob data by hash from the store and writes it to the
-/// specified output. If output is "-", writes to stdout. Otherwise,
-/// writes to a file at the given path (converting to absolute if needed).
-///
-/// # Arguments
-///
-/// * `store` - The blob store to read from
-/// * `hash` - The hash of the blob to export
-/// * `output` - Either "-" for stdout, or a file path
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use id::{open_store, export_blob};
-/// use iroh_blobs::Hash;
-///
-/// # async fn example() -> anyhow::Result<()> {
-/// let store_type = open_store(false).await?;
-/// let store = store_type.as_store();
-///
-/// // Export to file
-/// let hash: Hash = "abc123...".parse()?;
-/// export_blob(&store, hash, "output.txt").await?;
-///
-/// // Export to stdout
-/// export_blob(&store, hash, "-").await?;
-/// # Ok(())
-/// # }
-/// ```
-pub async fn export_blob(
-    store: &iroh_blobs::api::Store,
-    hash: iroh_blobs::Hash,
-    output: &str,
-) -> Result<()> {
-    use std::io::Write;
-
-    if output == "-" {
-        let data = store.blobs().get_bytes(hash).await?;
-        std::io::stdout().write_all(&data)?;
-    } else {
-        let path = to_absolute(&PathBuf::from(output))?;
-        store.blobs().export(hash, &path).await?;
-        eprintln!("exported: {} -> {}", hash, path.display());
-    }
-    Ok(())
-}
+pub use id_cli::export_blob;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

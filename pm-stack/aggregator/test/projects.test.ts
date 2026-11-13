@@ -106,18 +106,35 @@ function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount 
 }
 
 describe("fetchProjectPool pagination", () => {
-  test("throws rather than returning a partial pool when page ten has another page", async () => {
+  test("paginates past ten pages and returns every item from a long finite pool", async () => {
+    // Oracle: the pool is complete iff every page was fetched and every
+    // delivered item returned — no page-count cap (Drew, 2026-11-12).
     let calls = 0;
     const fetchFn: typeof fetch = Object.assign(
       async () => {
         calls++;
-        return new Response(JSON.stringify(projectPage(true, `cursor-${calls}`)));
+        return new Response(JSON.stringify(projectPage(calls < 13, calls < 13 ? `cursor-${calls}` : null, 26)));
       },
       { preconnect: () => {} },
     );
 
-    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/truncat.*25/i);
-    expect(calls).toBe(10);
+    const items = await fetchProjectPool("test-token", fetchFn);
+    expect(calls).toBe(13);
+    expect(items).toHaveLength(26);
+  });
+
+  test("throws when pagination does not advance instead of looping forever", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = Object.assign(
+      async () => {
+        calls++;
+        return new Response(JSON.stringify(projectPage(true, "cursor-stuck")));
+      },
+      { preconnect: () => {} },
+    );
+
+    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/did not advance/i);
+    expect(calls).toBe(2);
   });
 
   test("returns every item from a finite multi-page pool", async () => {
@@ -134,6 +151,9 @@ describe("fetchProjectPool pagination", () => {
     expect(calls).toBe(3);
     expect(items).toHaveLength(6);
   });
+
+
+
 
   test("returns a single-page pool unchanged", async () => {
     let calls = 0;
@@ -192,6 +212,25 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     expect(isProjectPoolItem(pool[0])).toBe(true);
   });
 
+  test("the pool gate refuses impossible updatedAt stamps (#5202)", () => {
+    const item = parseProjectItems(GQL)[0];
+    // Control: the collector's own stamp passes, and the missing-stamp
+    // forms (absent field, '') stay valid.
+    expect(isProjectPoolItem(item)).toBe(true);
+    expect(isProjectPoolItem({ ...item, updatedAt: "" })).toBe(true);
+    const { updatedAt: _dropped, ...withoutStamp } = item;
+    expect(isProjectPoolItem(withoutStamp)).toBe(true);
+    // Impossible calendar days and non-ISO strings are refused: before
+    // the gate they rolled over in Date.parse and fabricated this-week
+    // activity in derive.ts momentum math.
+    for (const bad of ["2026-02-29", "2026-02-30", "2026-04-31", "March 2, 2026", "not-a-date"]) {
+      expect(isProjectPoolItem({ ...item, updatedAt: bad })).toBe(false);
+    }
+    // A real leap day and a full ISO datetime still pass.
+    expect(isProjectPoolItem({ ...item, updatedAt: "2024-02-29" })).toBe(true);
+    expect(isProjectPoolItem({ ...item, updatedAt: "2026-03-01T12:00:00Z" })).toBe(true);
+  });
+
   test("derived state + disagreement", () => {
     const pool = parseProjectItems(GQL);
     // Open, no orchestration presence -> Todo, which disagrees with In Progress.
@@ -238,24 +277,31 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     expect(snapshot.audit.totalItems).toBe(3);
     expect(snapshot.audit.counts.status).toEqual({ "(unset)": 1, Done: 1, "In Progress": 1 });
     expect(isProjectAudit(snapshot.audit)).toBe(true);
+    expect(snapshot.counts).toEqual({ reportedTotal: 2, emittedEntries: 2 });
     // The pool is deduplicated by item id as well.
     expect(snapshot.items.map((item) => item.id)).toEqual(["PVTI_1", "PVTI_2"]);
   });
 
   test("scheduled fetch keeps the full item total and publishes one-page audit metadata", async () => {
     const mockFetch = (async () => new Response(JSON.stringify(GQL), { status: 200 })) as unknown as typeof fetch;
-    const snapshot = await fetchProjectSnapshot(
-      "test-token",
-      mockFetch,
-      "2026-11-01T21:00:00.000Z",
-    );
+    const snapshot = await fetchProjectSnapshot("test-token", mockFetch, "2026-11-01T21:00:00.000Z");
     expect(snapshot.items).toHaveLength(2);
     expect(snapshot.audit.totalItems).toBe(3);
+    // The board's third item is a draft the pool excludes: the
+    // comparable total is 3 - 1 = 2, so a complete collection shows
+    // no lag (Codex P2 on PR #5180).
+    expect(snapshot.counts).toEqual({ reportedTotal: 2, emittedEntries: 2 });
     expect(snapshot.audit.fields.map((field) => field.name)).toEqual(["Status", "Area"]);
-    expect(snapshot.audit.views).toEqual([{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }]);
+    expect(snapshot.audit.views).toEqual([
+      { id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" },
+    ]);
     expect(snapshot.audit.counts.status).toEqual({ "(unset)": 1, Done: 1, "In Progress": 1 });
     expect(snapshot.audit.counts.area).toEqual({ "(unset)": 2, "lab-cluster": 1 });
-    expect(snapshot.audit.counts.repo).toEqual({ "(unlinked)": 1, "developing-today/code": 1, "dezren39/darwin-nix": 1 });
+    expect(snapshot.audit.counts.repo).toEqual({
+      "(unlinked)": 1,
+      "developing-today/code": 1,
+      "dezren39/darwin-nix": 1,
+    });
   });
 });
 
@@ -559,7 +605,10 @@ describe("Project #4 audit snapshot (#1218)", () => {
                 id: "PVTSSF_status",
                 name: "Status",
                 dataType: "SINGLE_SELECT",
-                options: [{ id: "opt_open", name: "In Progress" }, { id: "opt_done", name: "Done" }],
+                options: [
+                  { id: "opt_open", name: "In Progress" },
+                  { id: "opt_done", name: "Done" },
+                ],
               },
               { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT", options: [{ id: "opt_lab", name: "lab" }] },
             ],
@@ -574,7 +623,12 @@ describe("Project #4 audit snapshot (#1218)", () => {
       [
         {
           content: { repository: { nameWithOwner: "developing-today/code" } },
-          fieldValues: { nodes: [{ name: "In Progress", field: { name: "Status" } }, { name: "lab", field: { name: "Area" } }] },
+          fieldValues: {
+            nodes: [
+              { name: "In Progress", field: { name: "Status" } },
+              { name: "lab", field: { name: "Area" } },
+            ],
+          },
         },
         {
           content: { repository: { nameWithOwner: "dezren39/nix" } },
@@ -588,7 +642,15 @@ describe("Project #4 audit snapshot (#1218)", () => {
     expect(audit).toMatchObject({
       totalItems: 3,
       fields: [
-        { id: "PVTSSF_status", name: "Status", dataType: "SINGLE_SELECT", options: [{ id: "opt_open", name: "In Progress" }, { id: "opt_done", name: "Done" }] },
+        {
+          id: "PVTSSF_status",
+          name: "Status",
+          dataType: "SINGLE_SELECT",
+          options: [
+            { id: "opt_open", name: "In Progress" },
+            { id: "opt_done", name: "Done" },
+          ],
+        },
         { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT" },
       ],
       views: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }],

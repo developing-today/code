@@ -12,7 +12,10 @@ describe("dashboard assembly deadline (#5664)", () => {
   it.each(routes)("returns a visible, non-empty bounded response for a stalled %s", async (path) => {
     const withinDeadline = createDashboardResponseDeadline({ timeoutMs: 10 });
     const start = performance.now();
-    const response = await withinDeadline(new Request(`http://localhost${path}`), () => new Promise<Response>(() => {}));
+    const response = await withinDeadline(
+      new Request(`http://localhost${path}`),
+      () => new Promise<Response>(() => {}),
+    );
     const elapsed = performance.now() - start;
     const body = await response.text();
 
@@ -21,10 +24,10 @@ describe("dashboard assembly deadline (#5664)", () => {
     if (path === "/frag/overview") {
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toContain("text/event-stream");
-      expect(body).toContain("role=\"alert\"");
+      expect(body).toContain('role="alert"');
       expect(body).toContain("timed out");
       // The inner patch must not duplicate the #overview-main shell id.
-      expect(body).not.toContain("id=\"overview-main\"");
+      expect(body).not.toContain('id="overview-main"');
     } else if (path.startsWith("/api/")) {
       expect(response.status).toBe(503);
       expect(response.headers.get("content-type")).toContain("application/json");
@@ -33,7 +36,7 @@ describe("dashboard assembly deadline (#5664)", () => {
     } else {
       expect(response.status).toBe(503);
       expect(response.headers.get("content-type")).toContain("text/html");
-      expect(body).toContain("role=\"alert\"");
+      expect(body).toContain('role="alert"');
       expect(body).toContain("timed out");
     }
   });
@@ -41,9 +44,21 @@ describe("dashboard assembly deadline (#5664)", () => {
   it("returns the last successful representation with a visible stale marker when a later assembly stalls", async () => {
     const withinDeadline = createDashboardResponseDeadline({ timeoutMs: 10 });
     const cases = [
-      { path: "/board", response: new Response("<html><body><main>board</main></body></html>", { headers: { "content-type": "text/html; charset=utf-8" } }), marker: "Showing the last successful" },
+      {
+        path: "/board",
+        response: new Response("<html><body><main>board</main></body></html>", {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+        marker: "Showing the last successful",
+      },
       { path: "/api/overview.json", response: Response.json({ overview: "ready" }), marker: '"stale": true' },
-      { path: "/frag/overview", response: new Response("event: patch\\ndata: original\\n\\n", { headers: { "content-type": "text/event-stream; charset=utf-8" } }), marker: "Showing the last successful" },
+      {
+        path: "/frag/overview",
+        response: new Response("event: patch\\ndata: original\\n\\n", {
+          headers: { "content-type": "text/event-stream; charset=utf-8" },
+        }),
+        marker: "Showing the last successful",
+      },
     ] as const;
 
     for (const item of cases) {
@@ -89,9 +104,8 @@ describe("dashboard assembly deadline (#5664)", () => {
 
   it("preserves a fast response unchanged", async () => {
     const withinDeadline = createDashboardResponseDeadline({ timeoutMs: 100 });
-    const response = await withinDeadline(
-      new Request("http://localhost/api/board.json"),
-      async () => Response.json({ board: [{ id: "fast" }] }),
+    const response = await withinDeadline(new Request("http://localhost/api/board.json"), async () =>
+      Response.json({ board: [{ id: "fast" }] }),
     );
 
     expect(response.status).toBe(200);

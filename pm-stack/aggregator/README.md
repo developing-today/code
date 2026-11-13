@@ -17,7 +17,7 @@ Design record (source of truth):
 
 **A lazy initializer memoizes success, never failure.** Concurrent
 callers share the one in-flight attempt; once that attempt settles, a
-failure — a rejection, or a fail-soft failure *value* (`null`,
+failure — a rejection, or a fail-soft failure _value_ (`null`,
 `false`) — leaves no memo behind, so the next caller retries. A
 success is memoized for the process lifetime unless the module
 already has an explicit invalidation path, which stays. Every layer
@@ -26,7 +26,7 @@ applies the contract to its own resolved value — "the layer below
 retries" is never a reason for a layer to keep a failure. Per-call
 fail-soft behaviour is unchanged: a caller whose attempt failed still
 gets the failure value for that call and reports its surface
-unavailable — the contract removes the *permanence*, not the
+unavailable — the contract removes the _permanence_, not the
 posture. Retry cost stays bounded by the layer that knows it
 (`src/secrets.ts` caches a failed resolution for 5 minutes), never by
 a second per-site failure TTL.
@@ -464,7 +464,7 @@ on failure, and new boundaries are written to its standard.
 ## Parsed-shape contract (#3068)
 
 Sibling to the ingest contract above, stated here by reference: the
-parsed-shape contract from design #3068 — *parsed is not validated* —
+parsed-shape contract from design #3068 — _parsed is not validated_ —
 applies at every JSON trust boundary in this repo (`bin/`, `scripts/`,
 `pkgs/` tools, pm-stack's non-aggregator handlers, and id web), not
 only at aggregator ingest. Its recorded terms:
@@ -478,7 +478,7 @@ only at aggregator ingest. Its recorded terms:
   is not a catalogue, and a present-but-wrong-typed field is a shape
   error — coercion is not validation.
 - Absence is not emptiness: a missing field, section, or collection
-  is *absent* (the boundary's recorded outcome for absence applies),
+  is _absent_ (the boundary's recorded outcome for absence applies),
   never silently rewritten as an empty object or array that later
   reads as a measured empty result.
 - Each surface records its own outcome for a shape failure (refuse
@@ -502,7 +502,7 @@ the laptop exporters — exactly two forms exist:
   unsigned integers; kind rules stay with their gates). Everything
   else — empty, whitespace-padded, radix-prefixed (`0x10`),
   scientific (`1e2`), thousands separators in a field value — is
-  *not a measurement*: the gate returns its existing not-measured
+  _not a measurement_: the gate returns its existing not-measured
   outcome (`null` here; the exporters' fail-closed error), never a
   reinterpreted number.
 - **Prose form** (a count embedded in a human-written bullet): the
@@ -606,6 +606,7 @@ derived from the board items linked to the current Project-pool snapshot;
 unlinked cards still count toward their lane total. The board and Today
 view use the same summary, and `/api/today.json` includes it. Done cards
 are completion history and are not counted as WIP.
+
 ### Activity ingestion into the event stream (#3321)
 
 Watchdog breach episodes and Kaneo board changes are ingested into the

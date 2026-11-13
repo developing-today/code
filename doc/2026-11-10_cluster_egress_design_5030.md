@@ -10,14 +10,14 @@
 
 Private administration uses Tailscale direct peer-to-peer when possible, DERP as best-effort fallback, not a throughput SLA. Keep admin and control endpoints private. Turso replicas are optional only for small data sets with acceptable consistency and measured sync amplification; bulk data and backups do not belong there. Local retention and recovery belong to #1085; an R2 off-site copy is optional after restore and cost testing. #1084 owns WAN/fabric; #1092 owns workload integration.
 
-| Path | Cost / limit to check before admission | Home link |
-|---|---|---|
-| CDN → R2 | R2 Standard has zero egress pricing, but storage and operations are metered; cache and provider terms must be checked | Initial publication, not repeated edge reads |
-| Worker → tunnel → home | Workers requests and CPU metered; tunnel has no stated numeric throughput guarantee | Both directions, including cache misses |
-| Tailscale direct / DERP | No published per-GB price in prior review; DERP fair use applies; verify plan and commercial eligibility | Both directions, direct or relayed |
-| Turso replication | Monthly sync is metered; verify account limit, overage behavior, and actual page-sync amplification | Sync traffic, if adopted |
-| Backup → R2 / restore | Storage and request operations; verify storage class and retrieval charges | Upload and restore respectively |
-| OCI | Prior ledger lists free egress but signup blocked by #4904; zero usable until tenancy and terms verified | Depends on actual topology |
+| Path                    | Cost / limit to check before admission                                                                                | Home link                                    |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| CDN → R2                | R2 Standard has zero egress pricing, but storage and operations are metered; cache and provider terms must be checked | Initial publication, not repeated edge reads |
+| Worker → tunnel → home  | Workers requests and CPU metered; tunnel has no stated numeric throughput guarantee                                   | Both directions, including cache misses      |
+| Tailscale direct / DERP | No published per-GB price in prior review; DERP fair use applies; verify plan and commercial eligibility              | Both directions, direct or relayed           |
+| Turso replication       | Monthly sync is metered; verify account limit, overage behavior, and actual page-sync amplification                   | Sync traffic, if adopted                     |
+| Backup → R2 / restore   | Storage and request operations; verify storage class and retrieval charges                                            | Upload and restore respectively              |
+| OCI                     | Prior ledger lists free egress but signup blocked by #4904; zero usable until tenancy and terms verified              | Depends on actual topology                   |
 
 Sources are the prior issue review and provider documentation: [R2 pricing](https://developers.cloudflare.com/r2/pricing/), [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [Tunnel](https://developers.cloudflare.com/tunnel/), [Tailscale routing](https://tailscale.com/docs/concepts/traffic-routing-through-tailscale), [Turso pricing](https://turso.tech/pricing) and [embedded replicas](https://docs.turso.tech/features/embedded-replicas/introduction). Prices, quotas, and account entitlements can change; recheck before committing. R2 zero egress does not mean zero storage or operation costs.
 
@@ -29,14 +29,14 @@ Build Brotli and gzip variants for static text once, negotiate with `Vary: Accep
 
 Decimal units: 2 Gbit/s × 30 days / 8 = **648,000 GB per direction** at continuous saturation. At a 75% planning ceiling this is **486,000 GB per direction** if held constantly. These are arithmetic capacity equivalents, not ISP quota, forecast, or a guarantee. The ceiling is **1.5 Gbit/s per direction** on a rolling observation window; use a provisional 5-minute rolling mean and observe shorter bursts and p95 separately. Measure real available throughput and adjust the window after baseline testing. Ingress and egress are separate: never add their capacities or hide one direction's saturation behind the other.
 
-| Monthly class | Forecast GB | Account / path and measurement |
-|---|---:|---|
-| Static and media | Unknown | CDN hits, misses, origin bytes; R2 GB-month and operations |
-| Dynamic APIs | Unknown | WAN ingress/egress, Workers requests/CPU, cache bypass/misses |
-| Private/admin | Unknown | WAN bytes, direct vs DERP, peak/p95 rates |
-| Backups and restore | Unknown | Upload and restore GB, object counts, retention, recovery test |
-| Turso sync, if used | Unknown | Provider monthly sync and amplification, account-specific limit |
-| OCI | 0 available pending tenancy | Verify entitlement and actual use before budgeting |
+| Monthly class       |                 Forecast GB | Account / path and measurement                                  |
+| ------------------- | --------------------------: | --------------------------------------------------------------- |
+| Static and media    |                     Unknown | CDN hits, misses, origin bytes; R2 GB-month and operations      |
+| Dynamic APIs        |                     Unknown | WAN ingress/egress, Workers requests/CPU, cache bypass/misses   |
+| Private/admin       |                     Unknown | WAN bytes, direct vs DERP, peak/p95 rates                       |
+| Backups and restore |                     Unknown | Upload and restore GB, object counts, retention, recovery test  |
+| Turso sync, if used |                     Unknown | Provider monthly sync and amplification, account-specific limit |
+| OCI                 | 0 available pending tenancy | Verify entitlement and actual use before budgeting              |
 
 After a representative 30-day baseline, set a forecast and class budgets with an owner and dated evidence. A month is not necessarily a provider billing cycle: record each provider's actual reset date, units, allowance and attribution; include other workloads sharing the account. Missing or stale counters are **unknown**, not zero. The external ledger at `/home/user/hatch-personal/workspace/ai-subscriptions/master-tracker.md` reportedly received a dated model on 2026-11-04; freshness and current account usage must be verified rather than assumed. #5203 owns counters, reporting and alerting.
 
@@ -49,12 +49,12 @@ Stage thresholds are proposed operational defaults, not approved account quotas.
 
 ## Failure and recovery
 
-| Event | Availability and ordered degradation |
-|---|---|
-| Fiber cut | Cached objects may remain available but uncached home origin fails without a configured alternate. Stop optional replication/backups; preserve management and monitoring on an actually provisioned alternate; serve stale only when explicitly safe. |
-| 100 Mbit/s cable fallback | Candidate, not provisioned; 1/20 primary rate. First pause bulk backups/replication and large downloads, then disable uncached media/reduce rendition sizes; retain small APIs and management subject to measured capacity. |
-| Starlink/hotspot | Emergency management only until plan, caps, path/CGNAT, placement and cost are verified. Disable public origin and bulk; alerts and recovery first. |
-| Provider outage or quota wall | Fail closed for optional publishing/sync; no silent unlimited home fallback or paid overage. Preserve private management and restore path; use explicitly safe stale content where available. |
+| Event                         | Availability and ordered degradation                                                                                                                                                                                                                  |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fiber cut                     | Cached objects may remain available but uncached home origin fails without a configured alternate. Stop optional replication/backups; preserve management and monitoring on an actually provisioned alternate; serve stale only when explicitly safe. |
+| 100 Mbit/s cable fallback     | Candidate, not provisioned; 1/20 primary rate. First pause bulk backups/replication and large downloads, then disable uncached media/reduce rendition sizes; retain small APIs and management subject to measured capacity.                           |
+| Starlink/hotspot              | Emergency management only until plan, caps, path/CGNAT, placement and cost are verified. Disable public origin and bulk; alerts and recovery first.                                                                                                   |
+| Provider outage or quota wall | Fail closed for optional publishing/sync; no silent unlimited home fallback or paid overage. Preserve private management and restore path; use explicitly safe stale content where available.                                                         |
 
 Alternate-WAN routing, health detection, traffic shaping, and recovery are not implied by having a cable or mobile link. Test cutover and restore under the actual topology before relying on them. A second fiber is not assumed: TriCounty service and price at the address remain unknown.
 
@@ -66,28 +66,28 @@ Alternate-WAN routing, health detection, traffic shaping, and recovery are not i
 
 ## Statement inventory and acceptance status
 
-| Source statement | Design response | Status |
-|---|---|---|
-| 2 Gbit/s symmetric; bandwidth scarce | Separate ingress and egress, reserve 25% headroom | Proposed, actual throughput unmeasured |
-| Free-first; $5 plans in play; $25–30 possible; $75 excluded | No plan upgrade or paid commitment here | Guardrail retained; live accounts unverified |
-| Classify edge, object and home traffic | Placement and topology above | Proposed; workload-specific selection pending |
-| Tunnel topology and path costs | Path table above and cost equations below | Architecture proposed; provider/account rates must be rechecked |
-| Per-class compression and Threadripper CPU cost | Class plan above | CPU cost and latency benchmark outstanding |
-| Fiber/cable/emergency failure matrix | Failure matrix above | Proposed; alternatives unprovisioned and drills outstanding |
-| Expected class GB/month and ledger | Ledger model verified present, dated 2026-11-04 | Forecasts unknown until representative measurements; live usage not verified |
-| Exceedance and follow-up issues | Separate rate and quota controls above; #5203 and #8408 | Controls not implemented; no deployment claimed |
-| Bootstrap from configuration; no HashiCorp | Applies to implementation and recovery | Implementation acceptance requirement |
-| TriCounty and unused existing SaaS allowances | Carry as unknown | Address/account verification outstanding |
+| Source statement                                            | Design response                                         | Status                                                                       |
+| ----------------------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 2 Gbit/s symmetric; bandwidth scarce                        | Separate ingress and egress, reserve 25% headroom       | Proposed, actual throughput unmeasured                                       |
+| Free-first; $5 plans in play; $25–30 possible; $75 excluded | No plan upgrade or paid commitment here                 | Guardrail retained; live accounts unverified                                 |
+| Classify edge, object and home traffic                      | Placement and topology above                            | Proposed; workload-specific selection pending                                |
+| Tunnel topology and path costs                              | Path table above and cost equations below               | Architecture proposed; provider/account rates must be rechecked              |
+| Per-class compression and Threadripper CPU cost             | Class plan above                                        | CPU cost and latency benchmark outstanding                                   |
+| Fiber/cable/emergency failure matrix                        | Failure matrix above                                    | Proposed; alternatives unprovisioned and drills outstanding                  |
+| Expected class GB/month and ledger                          | Ledger model verified present, dated 2026-11-04         | Forecasts unknown until representative measurements; live usage not verified |
+| Exceedance and follow-up issues                             | Separate rate and quota controls above; #5203 and #8408 | Controls not implemented; no deployment claimed                              |
+| Bootstrap from configuration; no HashiCorp                  | Applies to implementation and recovery                  | Implementation acceptance requirement                                        |
+| TriCounty and unused existing SaaS allowances               | Carry as unknown                                        | Address/account verification outstanding                                     |
 
 ## Alternatives and tradeoffs
 
-| Decision | Options and tradeoffs | Proposed selection and revisit trigger |
-|---|---|---|
-| Public objects | Serve from home: simplest but every read consumes upstream and dies with home link. CDN with home origin: reduces repeat bytes but misses and invalidations still load home. R2 + CDN: shifts repeated delivery away from home but incurs object storage/operations and requires publication workflow. | R2 + CDN for selected immutable public artifacts; retain home-only for private or non-exportable data. Reconsider if operations cost or consistency exceeds budget. |
-| Dynamic compute | Worker at edge: avoids home round-trip where workload fits limits; introduces platform coupling, request/CPU billing and data access constraints. Tunnel to home: preserves existing compute and private ingress but WAN and home availability remain critical. | Edge only where application fits and semantics permit; otherwise narrow authenticated tunnel. Measure usage and latency before selection. |
-| Private paths | Direct Tailscale minimizes relay dependency; DERP provides connectivity fallback but fair use and latency preclude guaranteed throughput. Dedicated peer relay adds operations and a failure domain. | Prefer direct; fallback to DERP for management and consider relay only after path measurements. |
-| Relational reads | Turso replicas may improve geographically distributed reads but introduce sync cost and consistency constraints; home-only is simpler but consumes WAN and fails with home; no replica avoids unused spend. | No replica by default until consistency, availability and measured sync justify one. |
-| WAN resilience | Second fiber could provide independent capacity only if physically diverse and available; cable is much slower; mobile/satellite could be management-only with unknown limits. | Do not assume any until availability, diversity, cost and tested failover are established. |
+| Decision         | Options and tradeoffs                                                                                                                                                                                                                                                                                  | Proposed selection and revisit trigger                                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Public objects   | Serve from home: simplest but every read consumes upstream and dies with home link. CDN with home origin: reduces repeat bytes but misses and invalidations still load home. R2 + CDN: shifts repeated delivery away from home but incurs object storage/operations and requires publication workflow. | R2 + CDN for selected immutable public artifacts; retain home-only for private or non-exportable data. Reconsider if operations cost or consistency exceeds budget. |
+| Dynamic compute  | Worker at edge: avoids home round-trip where workload fits limits; introduces platform coupling, request/CPU billing and data access constraints. Tunnel to home: preserves existing compute and private ingress but WAN and home availability remain critical.                                        | Edge only where application fits and semantics permit; otherwise narrow authenticated tunnel. Measure usage and latency before selection.                           |
+| Private paths    | Direct Tailscale minimizes relay dependency; DERP provides connectivity fallback but fair use and latency preclude guaranteed throughput. Dedicated peer relay adds operations and a failure domain.                                                                                                   | Prefer direct; fallback to DERP for management and consider relay only after path measurements.                                                                     |
+| Relational reads | Turso replicas may improve geographically distributed reads but introduce sync cost and consistency constraints; home-only is simpler but consumes WAN and fails with home; no replica avoids unused spend.                                                                                            | No replica by default until consistency, availability and measured sync justify one.                                                                                |
+| WAN resilience   | Second fiber could provide independent capacity only if physically diverse and available; cable is much slower; mobile/satellite could be management-only with unknown limits.                                                                                                                         | Do not assume any until availability, diversity, cost and tested failover are established.                                                                          |
 
 ### Cost and traffic equations
 

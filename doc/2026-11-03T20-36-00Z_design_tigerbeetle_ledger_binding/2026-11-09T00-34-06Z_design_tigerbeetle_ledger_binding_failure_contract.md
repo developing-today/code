@@ -17,12 +17,12 @@ contract and retires the old panic stance.
 
 ## 1. Two lookup forms on `LedgerBackend`
 
-The trait now separates *critical* reads from *best-effort* reads:
+The trait now separates _critical_ reads from _best-effort_ reads:
 
-| Method | Semantics |
-| --- | --- |
-| `try_lookup_transfer`, `try_lookup_account`, `try_account_balance`, `try_transfers_with_user_data_128` | Fallible. `Ok(None)` means "absent"; `Err` means "the backend could not answer". |
-| `lookup_transfer`, `lookup_account`, `account_balance`, `transfers_with_user_data_128` | Defaulted best-effort wrappers over the fallible form. On `Err` they log at error level and return `None` / an empty vector. |
+| Method                                                                                                 | Semantics                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `try_lookup_transfer`, `try_lookup_account`, `try_account_balance`, `try_transfers_with_user_data_128` | Fallible. `Ok(None)` means "absent"; `Err` means "the backend could not answer".                                             |
+| `lookup_transfer`, `lookup_account`, `account_balance`, `transfers_with_user_data_128`                 | Defaulted best-effort wrappers over the fallible form. On `Err` they log at error level and return `None` / an empty vector. |
 
 **Rule:** recovery, preflight and any path that must distinguish a missing
 record from an unreachable ledger uses the `try_` form. The best-effort

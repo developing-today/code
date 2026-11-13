@@ -1,0 +1,9915 @@
+# Curated source requirements and candidates
+
+Requirement records: **389** (**340 atomic outcomes**, **9 group nodes**, **40 aliases**). Aliases preserve append-only IDs for repeated same-source citations; they add no separate acceptance oracle. Every row cites exact source IDs/spans/quotes. Not implementation or issue coverage.
+
+Charter requirements are source requirements as proposed text, not runtime taxonomy. Preserve the ratified 10–90 runtime profile and #7030 expedite=15/nextup=25 by intent without silent renumbering. Candidate/history modality remains explicit. Group rows point to child outcomes or already-atomic cross-source rows.
+
+## Counts by source
+
+| Source | Records | Atomic outcomes | Groups | Aliases |
+|---|---:|---:|---:|---:|
+| `02_charter_v1_1.md` | 167 | 166 | 1 | 0 |
+| `01_handoff_pm_stack_fleet_orchestration.md` | 63 | 47 | 3 | 13 |
+| `04_recovered_original_combined_design.md` | 77 | 62 | 3 | 12 |
+| `03_full_orchestration_proposal.md` | 70 | 53 | 2 | 15 |
+| `05_supplemental_raw_note.md` | 12 | 12 | 0 | 0 |
+
+## C-R001 — candidate (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** CF-001
+**Occurrence refs:** C-062, C-063, C-064, C-065, C-066, C-067, C-068, C-069
+
+Define the intrinsic urgency bands and retain cold backlog as searchable, reviewable work.
+
+Details:
+- 0–99 Emergency; 100–199 Supercritical; 200–399 Critical; 400–799 High; 800–1199 Standard (new-item default 1000); 1200–1599 Low; 1600–1999 Someday; 2000+ Cold backlog.
+
+Curation note: Charter proposed band table retained as historical/candidate mapping. It is not a runtime taxonomy directive: reconcile intent to current ratified 10–90 profile and #7030 expedite=15/nextup=25, without renumbering live values.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-062` | line 47 | \| 0–99 \| Emergency \| Severe active incident or extraordinary immediate need \| |
+| `C-063` | line 48 | \| 100–199 \| Supercritical \| Severe critical-path or near-immediate operational work \| |
+| `C-064` | line 49 | \| 200–399 \| Critical \| Major blockers, near-term required work or hard deadlines \| |
+| `C-065` | line 50 | \| 400–799 \| High \| Ahead of normal actionable work \| |
+| `C-066` | line 51 | \| 800–1199 \| Standard \| Ordinary actionable work; new-item default 1000 \| |
+| `C-067` | line 52 | \| 1200–1599 \| Low \| Useful but not time-sensitive \| |
+| `C-068` | line 53 | \| 1600–1999 \| Someday \| Speculative or deferred \| |
+| `C-069` | line 54 | \| 2000+ \| Cold backlog \| Retained, searchable, scheduled for occasional reconsideration \| |
+
+## C-R002 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-071, C-072
+
+Support authorized exact-score, band-default, relative before/after, and additive urgency edits.
+
+Details:
+- Additive examples: ±10 and ±25.
+
+Curation note: One coherent contract with source table/options retained in details.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-071` | line 56 | Preserve authorized exact-score edits, band-default moves, move before/after, and additive adjustments (e.g |
+| `C-072` | line 56 | ±10, ±25) |
+
+## C-R003 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-005
+**Occurrence refs:** C-130, C-131
+
+Persist bounded post-exploration suggestions as hints rather than treating random selection as urgency evidence.
+
+Details:
+- Example suggestions: selected −20, triage −10, defer +10.
+
+Curation note: One coherent contract with source table/options retained in details.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-130` | line 90 | If the exploratory agent terminates, durable hints survive and a triage worker can apply bounded suggestions (e.g |
+| `C-131` | line 90 | selected -20, triage -10, defer +10) |
+
+## C-R004 — candidate (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-005
+**Occurrence refs:** C-134, C-135, C-136, C-137, C-138, C-139, C-140
+
+Define the configurable weighted-exploration function and its suggested defaults.
+
+Details:
+- weight_i = r^(-(u_i-u_ref)/d) × count(bucket_i)^(-alpha); P(i)=weight_i/sum_j(weight_j); r=1.25; d=200; alpha=.50; bucket_width=200; optional uniform-mixture epsilon=.05.
+
+Curation note: One coherent contract with source table/options retained in details.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-134` | line 94 | weight_i = r^(-(u_i - u_ref)/d) * count(bucket_i)^(-alpha) |
+| `C-135` | line 95 | P(i) = weight_i / sum_j weight_j |
+| `C-136` | line 97 | r = 1.25  (relative preference per d urgency points) |
+| `C-137` | line 98 | d = 200   (point distance) |
+| `C-138` | line 99 | alpha = 0.50 (cluster-density exponent) |
+| `C-139` | line 100 | bucket_width = 200 |
+| `C-140` | line 101 | optional uniform-mixture epsilon = 0.05 |
+
+## C-R005 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-148, C-149, C-150, C-151, C-152, C-153, C-154, C-155, C-156, C-157, C-158, C-159
+
+Maintain a cohesive Fleet CLI across the listed agent, queue, work, GitHub, dependency, metadata, sync/outbox, and session command families.
+
+Details:
+- Exact command keys/options are in `census/commands.jsonl`; source passages map to those keys in `census/command-slice-map.jsonl`.
+- The completed slice map demonstrates coverage of command families, flags/options/arguments, roles/capabilities, errors/receipts, and workflow outcomes; spellings remain proposals to reconcile with Fleet conventions.
+
+Curation note: One coherent contract with source table/options retained in details.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-148` | line 109 | fleet agent bootstrap --scenario queue-worker\|assigned-item\|resume\|triage |
+| `C-149` | line 110 | fleet queue list\|search\|rank\|claim\|release\|park\|resume\|update\|close |
+| `C-150` | line 111 | fleet work next\|open\|inspect\|hydrate\|refresh\|changes\|checkpoint |
+| `C-151` | line 112 | fleet work note add\|list\|edit |
+| `C-152` | line 113 | fleet work block\|unblock\|park\|resume\|release\|handoff\|complete |
+| `C-153` | line 114 | fleet github issue get\|update\|comments\|timeline\|close |
+| `C-154` | line 115 | fleet github pr get\|create\|update\|diff\|commits\|reviews\|checks\|merge |
+| `C-155` | line 116 | fleet github comment add\|edit\|reply |
+| `C-156` | line 117 | fleet dependency add\|remove\|list\|graph\|ready |
+| `C-157` | line 118 | fleet metadata priority\|labels\|title\|summary\|patch |
+| `C-158` | line 119 | fleet sync status\|verify\|outbox list\|outbox retry |
+| `C-159` | line 120 | fleet agent dispatch\|session status\|session send\|session resume |
+
+## C-R006 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-167, C-168, C-169, C-170, C-171, C-172, C-173, C-174, C-175, C-176, C-177, C-178, C-179, C-180
+
+Hydration writes the complete durable context bundle at `.fleet/work/<id>/context/`.
+
+Details:
+- manifest.json, summary.md, queue.json, issues.json, pull_requests.json, comments.json, reviews.json, timeline.json, commits.json, checks.json, dependencies.json, activity-cursors.json, diffs/pr-<number>.patch.
+
+Curation note: One coherent contract with source table/options retained in details.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-167` | line 130 | .fleet/work/<id>/context/ |
+| `C-168` | line 131 | manifest.json |
+| `C-169` | line 132 | summary.md |
+| `C-170` | line 133 | queue.json |
+| `C-171` | line 134 | issues.json |
+| `C-172` | line 135 | pull_requests.json |
+| `C-173` | line 136 | comments.json |
+| `C-174` | line 137 | reviews.json |
+| `C-175` | line 138 | timeline.json |
+| `C-176` | line 139 | commits.json |
+| `C-177` | line 140 | checks.json |
+| `C-178` | line 141 | dependencies.json |
+| `C-179` | line 142 | activity-cursors.json |
+| `C-180` | line 143 | diffs/pr-<number>.patch |
+
+## C-R007 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-214, C-215, C-216, C-217, C-218
+
+Provide a composed direct-completion workflow that accepts authorized merge, issue-close, and queue-close operations with reconciliation verification.
+
+Details:
+- Example options: --merge-pr, --close-issues, --close-queue, --require-clean-reconciliation, --verify, --wait.
+
+Curation note: One coherent contract with source table/options retained in details.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-214` | line 163 | An agent should be able to run a high-level workflow such as: |
+| `C-215` | line 165 | fleet work complete 842 \ |
+| `C-216` | line 166 | --merge-pr developing-today/code#231 \ |
+| `C-217` | line 167 | --close-issues developing-today/code#203 \ |
+| `C-218` | line 168 | --close-queue --require-clean-reconciliation --verify --wait |
+
+## C-R008 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-011
+
+Upgrade the existing Fleet multicall binary and PM Stack, not a replacement system, into the shared control plane for queue-driven agents
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-011` | line 17 | Upgrade the existing Fleet multicall binary and PM Stack, not a replacement system, into the shared control plane for queue-driven agents |
+
+## C-R009 — requirement (group)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-012
+
+Agents should be able to discover work, understand its priority and dependencies, claim it safely, hydrate GitHub context into files, execute work, report notes and comments, handle new activity, park or resume, and complete linked PR/issue/queue states directly and verifiably
+
+Children: C-R005, C-R039, C-R040, C-R043, C-R096, C-R112, C-R118, C-R126, C-R129, C-R134, C-R145
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-012` | line 17 | Agents should be able to discover work, understand its priority and dependencies, claim it safely, hydrate GitHub context into files, execute work, report notes and comments, handle new activity, park or resume, and complete linked PR/issue |
+
+## C-R010 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-013
+
+GitHub, GitHub Project #4, the Fleet queue, and PM Stack must present coherent and explainable views
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-013` | line 17 | GitHub, GitHub Project #4, the Fleet queue, and PM Stack must present coherent and explainable views |
+
+## C-R011 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-014
+
+This is two coordinated designs and potentially two implementation tracks: (A) urgency/triage/PM visibility/direct dispatch and (B) work-item orchestration/context hydration/lifecycle/outbox
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-014` | line 19 | This is two coordinated designs and potentially two implementation tracks: (A) urgency/triage/PM visibility/direct dispatch and (B) work-item orchestration/context hydration/lifecycle/outbox |
+
+## C-R012 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-015
+
+These must be reconciled with the existing Queue Table Improvements effort before shared schema changes
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-015` | line 19 | These must be reconciled with the existing Queue Table Improvements effort before shared schema changes |
+
+## C-R013 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-016
+
+The coordinator should not treat the design as authorization for a broad unreviewed production migration
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-016` | line 19 | The coordinator should not treat the design as authorization for a broad unreviewed production migration |
+
+## C-R014 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-018
+
+Work for the coordinating agent — execute, do not merely propose
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-018` | line 21 | Work for the coordinating agent — execute, do not merely propose |
+
+## C-R015 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-019
+
+1. Inspect the current developing-today/code repository, especially pkgs/fleet/, pkgs/fleet/crates/fleet-queue/, pm-stack/, pm-stack/opencode-claimant/, pm-stack/dispatch/, pm-stack/aggregator/, pm-stack/projector/, repository AGENTS.md, queue schemas/migrations, source-of-truth conventions, and the Queue Table Improvements issue/design
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-019` | line 23 | 1. Inspect the current developing-today/code repository, especially pkgs/fleet/, pkgs/fleet/crates/fleet-queue/, pm-stack/, pm-stack/opencode-claimant/, pm-stack/dispatch/, pm-stack/aggregator/, pm-stack/projector/, repository AGENTS.md, qu |
+
+## C-R016 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-020
+
+Pin the inspected commit
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-020` | line 23 | Pin the inspected commit |
+
+## C-R017 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** CF-007
+**Occurrence refs:** C-022
+
+Produce and commit two repository-grounded design documents (use established paths if different): docs/design/fleet-priority-urgency-pm-stack.md and docs/design/fleet-work-item-orchestration.md
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-022` | line 24 | Produce and commit two repository-grounded design documents (use established paths if different): docs/design/fleet-priority-urgency-pm-stack.md and docs/design/fleet-work-item-orchestration.md |
+
+## C-R018 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-023
+
+Treat this charter as the requirements and the existing full Work-Item Orchestration draft as supporting detail
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-023` | line 24 | Treat this charter as the requirements and the existing full Work-Item Orchestration draft as supporting detail |
+
+## C-R019 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-024
+
+Preserve all user outcomes; replace weak mechanisms with documented better alternatives and reasons
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-024` | line 24 | Preserve all user outcomes; replace weak mechanisms with documented better alternatives and reasons |
+
+## C-R020 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-026
+
+Reuse existing queue brokers, source-of-truth APIs, GitHub Project mappings, dispatch/claimant paths and outbox
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-026` | line 25 | Reuse existing queue brokers, source-of-truth APIs, GitHub Project mappings, dispatch/claimant paths and outbox |
+
+## C-R021 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-027
+
+Do not introduce a parallel queue, scheduler, secret resolver, or PM database
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-027` | line 25 | Do not introduce a parallel queue, scheduler, secret resolver, or PM database |
+
+## C-R022 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-029
+
+Locate and update an existing matching design issue, or create one central actionable design issue “Fleet: urgency, triage, PM visibility, and agent workflow design”
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-029` | line 26 | Locate and update an existing matching design issue, or create one central actionable design issue “Fleet: urgency, triage, PM visibility, and agent workflow design” |
+
+## C-R023 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-030
+
+Link both documents, the Queue Table Improvements design, relevant PRs, and supporting architectural records; ensure project membership and native relationships are correct
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-030` | line 26 | Link both documents, the Queue Table Improvements design, relevant PRs, and supporting architectural records; ensure project membership and native relationships are correct |
+
+## C-R024 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** CF-001, CF-006
+**Occurrence refs:** C-032
+
+For the design-stub issue in the charter’s coordination task, set 450/High and separate one-shot Do Now; do not treat this historic score as a runtime taxonomy mapping.
+
+Curation note: Task-specific charter instruction; handoff requires mapping historic scores into ratified live urgency by intent.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-032` | line 27 | Set intrinsic urgency 450 (High) and Do Now as a *separate one-shot dispatch directive* |
+
+## C-R025 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-033
+
+This design is high because it unblocks multiple interfaces; it is not an emergency
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-033` | line 27 | This design is high because it unblocks multiple interfaces; it is not an emergency |
+
+## C-R026 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-034
+
+Do not inflate numeric urgency merely to bypass scheduling
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-034` | line 27 | Do not inflate numeric urgency merely to bypass scheduling |
+
+## C-R027 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-036
+
+Immediately dispatch a design/architecture agent through the currently supported authorized execution mechanism
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-036` | line 28 | Immediately dispatch a design/architecture agent through the currently supported authorized execution mechanism |
+
+## C-R028 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-037
+
+Bind the issue/work item to the task and OpenCode session where applicable
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-037` | line 28 | Bind the issue/work item to the task and OpenCode session where applicable |
+
+## C-R029 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-038
+
+Confirm a real dispatch receipt and, if possible, a live/accepted session—not just priority, a label, or a queue position
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-038` | line 28 | Confirm a real dispatch receipt and, if possible, a live/accepted session—not just priority, a label, or a queue position |
+
+## C-R030 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-039
+
+Avoid double-claiming with ordinary workers
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-039` | line 28 | Avoid double-claiming with ordinary workers |
+
+## C-R031 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-041
+
+Record in the issue the source links, dispatch method, lane/route, task/session identifiers, accepted/started status, and next steps
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-041` | line 29 | Record in the issue the source links, dispatch method, lane/route, task/session identifiers, accepted/started status, and next steps |
+
+## C-R032 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-042
+
+If dispatch cannot be verified, report precisely which step failed; do not claim success
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-042` | line 29 | If dispatch cannot be verified, report precisely which step failed; do not claim success |
+
+## C-R033 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-044
+
+Return concise evidence: commit/PR, document URLs, issue ID, numeric urgency, dependency links, task/session IDs, and any blockers
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-044` | line 30 | Return concise evidence: commit/PR, document URLs, issue ID, numeric urgency, dependency links, task/session IDs, and any blockers |
+
+## C-R034 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-045
+
+The handoff is not complete without verified artifacts
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-045` | line 30 | The handoff is not complete without verified artifacts |
+
+## C-R035 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-046
+
+Source-of-truth observation: Current repository documentation describes GitHub Project Developing Today #4 as a portfolio map: Project Kind=Epic is canonical, the epic label is a maintained mirror/gate, native sub-issue parent links are hierarchy, and native blocking links are dependencies
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-046` | line 32 | Source-of-truth observation: Current repository documentation describes GitHub Project Developing Today #4 as a portfolio map: Project Kind=Epic is canonical, the epic label is a maintained mirror/gate, native sub-issue parent links are hie |
+
+## C-R036 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** CF-003
+**Occurrence refs:** C-047
+
+The orchestrator is the Project's single writer; dashboard and agents should not bypass it
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-047` | line 32 | The orchestrator is the Project's single writer; dashboard and agents should not bypass it |
+
+## C-R037 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-048
+
+Confirm this remains accurate at execution time
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-048` | line 32 | Confirm this remains accurate at execution time |
+
+## C-R038 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-050
+
+Shared mental model: never conflate the four axes
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-050` | line 34 | Shared mental model: never conflate the four axes |
+
+## C-R039 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-051
+
+- Intrinsic urgency: durable numeric score, lower = sooner; default Standard = 1000
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-051` | line 36 | - Intrinsic urgency: durable numeric score, lower = sooner; default Standard = 1000 |
+
+## C-R040 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** CF-008
+**Occurrence refs:** C-052
+
+- Importance/impact: expected value, strategy, risk and scope; separate field or documented provisional dimension
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-052` | line 37 | - Importance/impact: expected value, strategy, risk and scope; separate field or documented provisional dimension |
+
+## C-R041 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-053
+
+- Effective scheduling urgency: dynamic derived pressure from hard blockers, deadlines, critical-path position, opportunities, resource availability and directive policy
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-053` | line 38 | - Effective scheduling urgency: dynamic derived pressure from hard blockers, deadlines, critical-path position, opportunities, resource availability and directive policy |
+
+## C-R042 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-054
+
+Do not blindly overwrite intrinsic score
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-054` | line 38 | Do not blindly overwrite intrinsic score |
+
+## C-R043 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** CF-002
+**Occurrence refs:** C-055
+
+- Workflow/ownership: triage, backlog, ready, claimed, in_progress, review, parked, blocked, completing, completed, cancelled; distinguish assignment, active execution, lease and GitHub issue/PR states
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-055` | line 39 | - Workflow/ownership: triage, backlog, ready, claimed, in_progress, review, parked, blocked, completing, completed, cancelled; distinguish assignment, active execution, lease and GitHub issue/PR states |
+
+## C-R044 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** CF-006
+**Occurrence refs:** C-056
+
+A separate dispatch directive such as normal, expedite, do-now, direct-session, or hold controls operational handling
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-056` | line 41 | A separate dispatch directive such as normal, expedite, do-now, direct-session, or hold controls operational handling |
+
+## C-R045 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** CF-006
+**Occurrence refs:** C-057
+
+do-now does not mean Critical urgency and does not remove hard blockers
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-057` | line 41 | do-now does not mean Critical urgency and does not remove hard blockers |
+
+## C-R046 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-059
+
+Initial urgency bands and stable total order
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-059` | line 43 | Initial urgency bands and stable total order |
+
+## C-R047 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-070
+
+Validate migration against existing queue values; do not reinterpret them silently
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-070` | line 56 | Validate migration against existing queue values; do not reinterpret them silently |
+
+## C-R048 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-073
+
+Equal scores are legitimate
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-073` | line 56 | Equal scores are legitimate |
+
+## C-R049 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-074
+
+Maintain a deterministic secondary rank and then oldest-first and stable-ID tie breaking; do not force unique scores for every ticket
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-074` | line 56 | Maintain a deterministic secondary rank and then oldest-first and stable-ID tie breaking; do not force unique scores for every ticket |
+
+## C-R050 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-075
+
+The cold backlog must remain searchable and eligible for review rather than becoming a 9999-point purgatory
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-075` | line 56 | The cold backlog must remain searchable and eligible for review rather than becoming a 9999-point purgatory |
+
+## C-R051 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-077
+
+Dynamic triage without inflation or oscillation
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-077` | line 58 | Dynamic triage without inflation or oscillation |
+
+## C-R052 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-078
+
+Regular triage considers age, freshness of evidence, deadlines, opportunity windows, strategic pivots, current epics/projects, blockers, work size, recent effort, and user direction
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-078` | line 60 | Regular triage considers age, freshness of evidence, deadlines, opportunity windows, strategic pivots, current epics/projects, blockers, work size, recent effort, and user direction |
+
+## C-R053 — example (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-079
+
+A medium item may rise after a week if still valuable and now time-sensitive; an obsolete High item may fall after a pivot
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-079` | line 60 | A medium item may rise after a week if still valuable and now time-sensitive; an obsolete High item may fall after a pivot |
+
+## C-R054 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-080
+
+Age alone is not an automatic route to Critical
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-080` | line 60 | Age alone is not an automatic route to Critical |
+
+## C-R055 — candidate (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-081
+
+Triage comparisons may classify each item as much more urgent, slightly more urgent, roughly equal, slightly less urgent, much less urgent, custom, or needs research
+
+Curation note: Configurable comparison vocabulary is a substantive triage-design candidate.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-081` | line 62 | Triage comparisons may classify each item as much more urgent, slightly more urgent, roughly equal, slightly less urgent, much less urgent, custom, or needs research |
+
+## C-R056 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-082
+
+Minor automatic adjustments can default to ±10; larger jumps require evidence
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-082` | line 62 | Minor automatic adjustments can default to ±10; larger jumps require evidence |
+
+## C-R057 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-083
+
+Large clusters should be progressively refined (50 → rough stacks of 25/10/10/5 → smaller cohorts), not deterministically flattened
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-083` | line 62 | Large clusters should be progressively refined (50 → rough stacks of 25/10/10/5 → smaller cohorts), not deterministically flattened |
+
+## C-R058 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-084
+
+At most one ordinary automatic priority movement per item per sweep, except a new high-confidence event
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-084` | line 62 | At most one ordinary automatic priority movement per item per sweep, except a new high-confidence event |
+
+## C-R059 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-085
+
+Preserve reason, previous/new score, evidence, confidence and event ID
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-085` | line 62 | Preserve reason, previous/new score, evidence, confidence and event ID |
+
+## C-R060 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-086
+
+Introduce configurable boundary hysteresis for low-confidence automatic score changes near the Standard↔High and other band boundaries, with a bounded buffer, confidence requirement and cooldown
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-086` | line 64 | Introduce configurable boundary hysteresis for low-confidence automatic score changes near the Standard↔High and other band boundaries, with a bounded buffer, confidence requirement and cooldown |
+
+## C-R061 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-087
+
+This is resistance, not a permanent barrier: manual moves, verified deadlines, incidents and high-confidence hard blockers bypass it
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-087` | line 64 | This is resistance, not a permanent barrier: manual moves, verified deadlines, incidents and high-confidence hard blockers bypass it |
+
+## C-R062 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-088
+
+Prevent repeated ping-pong changes and unbounded cumulative drift
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-088` | line 64 | Prevent repeated ping-pong changes and unbounded cumulative drift |
+
+## C-R063 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-089
+
+Handle temporary opportunity windows with deadline, temporary_boost, and expiry_action=retriage; expiration removes the boost and reassesses the task instead of abruptly burying it
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-089` | line 66 | Handle temporary opportunity windows with deadline, temporary_boost, and expiry_action=retriage; expiration removes the boost and reassesses the task instead of abruptly burying it |
+
+## C-R064 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-090
+
+A low-value quick fix blocking a high-value item should acquire effective scheduling pressure while its intrinsic importance/urgency remain independently explainable
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-090` | line 66 | A low-value quick fix blocking a high-value item should acquire effective scheduling pressure while its intrinsic importance/urgency remain independently explainable |
+
+## C-R065 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** C-091
+
+Propagation must be cycle-safe, limited to true hard dependencies, and sensitive to effort and alternatives
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-091` | line 66 | Propagation must be cycle-safe, limited to true hard dependencies, and sensitive to effort and alternatives |
+
+## C-R066 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** C-093
+
+GitHub labels, Projects and PM Stack projections
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-093` | line 68 | GitHub labels, Projects and PM Stack projections |
+
+## C-R067 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** C-094
+
+Fleet numeric urgency is the canonical score; GitHub priority labels derive from bands (reuse existing taxonomy if different)
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-094` | line 70 | Fleet numeric urgency is the canonical score; GitHub priority labels derive from bands (reuse existing taxonomy if different) |
+
+## C-R068 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** CF-004
+**Occurrence refs:** C-095
+
+An authorized external priority-label addition is an input command: translate to the configured band default or an appropriate retained intra-band score; remove mutually exclusive labels and reproject
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-095` | line 70 | An authorized external priority-label addition is an input command: translate to the configured band default or an appropriate retained intra-band score; remove mutually exclusive labels and reproject |
+
+## C-R069 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** CF-004
+**Occurrence refs:** C-096
+
+If the final priority label is removed, preserve numeric score and expedite triage, rather than silently resetting it or treating it as emergency
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-096` | line 70 | If the final priority label is removed, preserve numeric score and expedite triage, rather than silently resetting it or treating it as emergency |
+
+## C-R070 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** C-097
+
+Conflicts or untrusted changes should be held for triage
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-097` | line 70 | Conflicts or untrusted changes should be held for triage |
+
+## C-R071 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** C-098
+
+A distinct needs-triage label moves it to triage, not implementation
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-098` | line 70 | A distinct needs-triage label moves it to triage, not implementation |
+
+## C-R072 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** CF-002
+**Occurrence refs:** C-099
+
+Board columns should distinguish Inbox/Triage, Backlog, Ready/Todo, In Progress, Review, Blocked, Parked, Done
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-099` | line 72 | Board columns should distinguish Inbox/Triage, Backlog, Ready/Todo, In Progress, Review, Blocked, Parked, Done |
+
+## C-R073 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** C-100
+
+Ready includes executable High-and-above, explicitly prepared work and appropriate owner-assigned tasks; lower urgency generally remains Backlog unless state overrides
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-100` | line 72 | Ready includes executable High-and-above, explicitly prepared work and appropriate owner-assigned tasks; lower urgency generally remains Backlog unless state overrides |
+
+## C-R074 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** C-101
+
+Claimed items must show agent/session and an In Progress Project status
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-101` | line 72 | Claimed items must show agent/session and an In Progress Project status |
+
+## C-R075 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** C-102
+
+Parked/blocked work once picked up must retain last worker, checkpoint, reason, blockers, and an actionable next-agent note instead of disappearing into Backlog
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-102` | line 72 | Parked/blocked work once picked up must retain last worker, checkpoint, reason, blockers, and an actionable next-agent note instead of disappearing into Backlog |
+
+## C-R076 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** CF-003
+**Occurrence refs:** C-103
+
+The orchestrator remains the single writer of GitHub Project fields
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-103` | line 74 | The orchestrator remains the single writer of GitHub Project fields |
+
+## C-R077 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** C-104
+
+The aggregator/projector/board are projections and authorized control surfaces, not new owners of the same fields
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-104` | line 74 | The aggregator/projector/board are projections and authorized control surfaces, not new owners of the same fields |
+
+## C-R078 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** C-105
+
+Keep native GitHub blockedBy distinct from sub-issue parent/epic links
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-105` | line 74 | Keep native GitHub blockedBy distinct from sub-issue parent/epic links |
+
+## C-R079 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** C-106
+
+Use PM Stack's existing Kaneo, Pad, Grist, aggregator, projector, and dispatch boundaries rather than merging service databases by fiat
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-106` | line 74 | Use PM Stack's existing Kaneo, Pad, Grist, aggregator, projector, and dispatch boundaries rather than merging service databases by fiat |
+
+## C-R080 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9201
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control
+**Conflict refs:** none identified
+**Occurrence refs:** C-108
+
+Mobile-first interactive operations
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-108` | line 76 | Mobile-first interactive operations |
+
+## C-R081 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9201
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control
+**Conflict refs:** none identified
+**Occurrence refs:** C-109
+
+From a phone or browser, the authorized user should be able to search/filter the Fleet queue, read summaries and linked issues/PRs, add notes and comments, reprioritize, change permitted state, request triage or direct agent dispatch, inspect dependencies, request a status report, find an active session and send a live instruction
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-109` | line 78 | From a phone or browser, the authorized user should be able to search/filter the Fleet queue, read summaries and linked issues/PRs, add notes and comments, reprioritize, change permitted state, request triage or direct agent dispatch, inspe |
+
+## C-R082 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9201
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control
+**Conflict refs:** none identified
+**Occurrence refs:** C-110
+
+Show operation accepted, running, pending external sync, blocked, conflicted, and verified complete separately
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-110` | line 78 | Show operation accepted, running, pending external sync, blocked, conflicted, and verified complete separately |
+
+## C-R083 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9201
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control
+**Conflict refs:** none identified
+**Occurrence refs:** C-111
+
+Use accessible touch-sized controls, a compact responsive layout, keyboard navigation, and confirmations for consequential actions
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-111` | line 78 | Use accessible touch-sized controls, a compact responsive layout, keyboard navigation, and confirmations for consequential actions |
+
+## C-R084 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9201
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control
+**Conflict refs:** none identified
+**Occurrence refs:** C-112
+
+UI actions call the same validated Fleet command/service layer; do not embed a second ranking or authorization engine in client JavaScript
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-112` | line 80 | UI actions call the same validated Fleet command/service layer; do not embed a second ranking or authorization engine in client JavaScript |
+
+## C-R085 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9201
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control
+**Conflict refs:** none identified
+**Occurrence refs:** C-113
+
+Support provider-specific session adapters (e.g., OpenCode and approved Muse/Slack routes), report actual capabilities, and never mistake posting a message to Slack for session acknowledgment
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-113` | line 80 | Support provider-specific session adapters (e.g., OpenCode and approved Muse/Slack routes), report actual capabilities, and never mistake posting a message to Slack for session acknowledgment |
+
+## C-R086 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** C-115
+
+Immediate commands, comments and event routing
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-115` | line 82 | Immediate commands, comments and event routing |
+
+## C-R087 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** CF-006
+**Occurrence refs:** C-116
+
+Support a small authenticated slash-command grammar, with names adjusted to existing conventions: /fleet status, triage, start, resume, retry, park, unblock, priority high, priority 575, do-now, merge, and agent status
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-116` | line 84 | Support a small authenticated slash-command grammar, with names adjusted to existing conventions: /fleet status, triage, start, resume, retry, park, unblock, priority high, priority 575, do-now, merge, and agent status |
+
+## C-R088 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** C-117
+
+Also accept authorized plain-language requests on live or parked items when policy permits
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-117` | line 84 | Also accept authorized plain-language requests on live or parked items when policy permits |
+
+## C-R089 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** C-118
+
+An actionable live-issue comment routes to the current session and records delivery/acknowledgment
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-118` | line 84 | An actionable live-issue comment routes to the current session and records delivery/acknowledgment |
+
+## C-R090 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** CF-006
+**Occurrence refs:** C-119
+
+An authorized actionable parked-item comment may directly launch a new session or triage it; it must not merely rise in the ordinary queue
+
+Curation note: Authorized parked-item routing and the prohibition on merely queueing are normative, not illustrative.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-119` | line 84 | An authorized actionable parked-item comment may directly launch a new session or triage it; it must not merely rise in the ordinary queue |
+
+## C-R091 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** C-120
+
+Event handling: verify webhook signature → authorize actor → resolve item → deduplicate → find live session → send to session or direct-dispatch → bind/record receipt → update board/comment
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-120` | line 86 | Event handling: verify webhook signature → authorize actor → resolve item → deduplicate → find live session → send to session or direct-dispatch → bind/record receipt → update board/comment |
+
+## C-R092 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** C-121
+
+Use allowlists, RBAC, rate limits, explicit confirmations for merges or irreversible actions, replay protection and audit IDs
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-121` | line 86 | Use allowlists, RBAC, rate limits, explicit confirmations for merges or irreversible actions, replay protection and audit IDs |
+
+## C-R093 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** C-122
+
+Repeated event deliveries must not double-launch an agent
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-122` | line 86 | Repeated event deliveries must not double-launch an agent |
+
+## C-R094 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** CF-006
+**Occurrence refs:** C-123
+
+do-now bypasses waiting behind normal selection not leases, auth, hard dependencies or concurrency caps
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-123` | line 86 | do-now bypasses waiting behind normal selection not leases, auth, hard dependencies or concurrency caps |
+
+## C-R095 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-005
+**Occurrence refs:** C-125
+
+Queue selection and bounded exploration
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-125` | line 88 | Queue selection and bounded exploration |
+
+## C-R096 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** C-126
+
+Normal lanes should select the highest eligible effective scheduling urgency, subject to capability, ownership, dependency and fairness rules
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-126` | line 90 | Normal lanes should select the highest eligible effective scheduling urgency, subject to capability, ownership, dependency and fairness rules |
+
+## C-R097 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-005, CF-006
+**Occurrence refs:** C-127
+
+When there is no eligible Emergency/Supercritical/Critical/Do Now work requiring that lane, allow a configurable low-probability exploration draw (initial suggestion 4%)
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-127` | line 90 | When there is no eligible Emergency/Supercritical/Critical/Do Now work requiring that lane, allow a configurable low-probability exploration draw (initial suggestion 4%) |
+
+## C-R098 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** C-128
+
+Draw three distinct candidate items, but first persist all three dispositions: select for execution, triage, defer/reprioritize, or release
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-128` | line 90 | Draw three distinct candidate items, but first persist all three dispositions: select for execution, triage, defer/reprioritize, or release |
+
+## C-R099 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** C-129
+
+Do not claim three exclusive leases merely because they were sampled
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-129` | line 90 | Do not claim three exclusive leases merely because they were sampled |
+
+## C-R100 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** C-132
+
+Prefer hints and verification over mechanically moving priorities for random selection alone
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-132` | line 90 | Prefer hints and verification over mechanically moving priorities for random selection alone |
+
+## C-R101 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-005
+**Occurrence refs:** C-133
+
+Default weighted sampling over eligible items:
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-133` | line 92 | Default weighted sampling over eligible items: |
+
+## C-R102 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** C-141
+
+Lower scores are favored
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-141` | line 103 | Lower scores are favored |
+
+## C-R103 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** C-142
+
+Bucket correction reduces, but does not eliminate, large-cluster advantage
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-142` | line 103 | Bucket correction reduces, but does not eliminate, large-cluster advantage |
+
+## C-R104 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** C-143
+
+Sample without replacement; compute density over the eligible population; make all parameters configurable per lane and expose seeded simulations and --explain
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-143` | line 103 | Sample without replacement; compute density over the eligible population; make all parameters configurable per lane and expose seeded simulations and --explain |
+
+## C-R105 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-008
+**Occurrence refs:** C-144
+
+When separate importance scores exist, evaluate a tunable urgency-versus-importance axis mixture; do not fabricate importance from urgency
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-144` | line 103 | When separate importance scores exist, evaluate a tunable urgency-versus-importance axis mixture; do not fabricate importance from urgency |
+
+## C-R106 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-146
+
+Work-item lifecycle primitives and high-level sugar
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-146` | line 105 | Work-item lifecycle primitives and high-level sugar |
+
+## C-R107 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-147
+
+Expose a cohesive agent-facing CLI, with exact naming reconciled to existing Fleet conventions:
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-147` | line 107 | Expose a cohesive agent-facing CLI, with exact naming reconciled to existing Fleet conventions: |
+
+## C-R108 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-160
+
+Typical common flags: --work, --issue, --pr, --repo, --agent-id, --session-id, --lease-token, --since, --since-start, --since-checkpoint, --external-only, --json, --dry-run, --explain, --expected-version, --idempotency-key, --verify, --wait
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-160` | line 122 | Typical common flags: --work, --issue, --pr, --repo, --agent-id, --session-id, --lease-token, --since, --since-start, --since-checkpoint, --external-only, --json, --dry-run, --explain, --expected-version, --idempotency-key, --verify, --wait |
+
+## C-R109 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-161
+
+Implement composed workflows rather than inventing separate backends for each sugar command
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-161` | line 124 | Implement composed workflows rather than inventing separate backends for each sugar command |
+
+## C-R110 — example (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-162
+
+For example fleet work next --claim --hydrate full performs search/rank/eligibility/atomic claim/hydration/journaling; fleet work park --checkpoint persists progress, transitions state, releases lease and enqueues sync; fleet work complete performs precondition checks, remote operations, direct queue close and verification
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-162` | line 124 | For example fleet work next --claim --hydrate full performs search/rank/eligibility/atomic claim/hydration/journaling; fleet work park --checkpoint persists progress, transitions state, releases lease and enqueues sync; fleet work complete  |
+
+## C-R111 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-164
+
+Hydration and incremental activity
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-164` | line 126 | Hydration and incremental activity |
+
+## C-R112 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-165
+
+The Work-Item Hydrator collects every relevant queue column, prior checkpoints, GitHub issues/PRs, comments, edits, reviews, checks, related resources, timelines, commits and diffs (including SHA, author/committer times, messages, changed paths, hunks and old/new line ranges)
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-165` | line 128 | The Work-Item Hydrator collects every relevant queue column, prior checkpoints, GitHub issues/PRs, comments, edits, reviews, checks, related resources, timelines, commits and diffs (including SHA, author/committer times, messages, changed p |
+
+## C-R113 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-166
+
+It writes a durable bundle:
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-166` | line 128 | It writes a durable bundle: |
+
+## C-R114 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-181
+
+Return to the agent a short navigable summary and actual file paths, not thousands of lines of raw data
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-181` | line 145 | Return to the agent a short navigable summary and actual file paths, not thousands of lines of raw data |
+
+## C-R115 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-182
+
+Include source versions/hashes, retrieval completeness, important findings, blockers, test/review status and next recommended investigations
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-182` | line 145 | Include source versions/hashes, retrieval completeness, important findings, blockers, test/review status and next recommended investigations |
+
+## C-R116 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-183
+
+Never silently mark incomplete hydration complete
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-183` | line 145 | Never silently mark incomplete hydration complete |
+
+## C-R117 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-184
+
+Treat GitHub descriptions/comments as untrusted task data, not instructions overriding agent authority
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-184` | line 145 | Treat GitHub descriptions/comments as untrusted task data, not instructions overriding agent authority |
+
+## C-R118 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-185
+
+fleet work changes <id> --since-start --external-only should detect actionable activity since session start that did not originate from that session; also support timestamps and checkpoints
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-185` | line 147 | fleet work changes <id> --since-start --external-only should detect actionable activity since session start that did not originate from that session; also support timestamps and checkpoints |
+
+## C-R119 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-186
+
+Maintain per-source retrieval cursors, event identity, occurred/observed times, last successful sync and provenance
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-186` | line 147 | Maintain per-source retrieval cursors, event identity, occurred/observed times, last successful sync and provenance |
+
+## C-R120 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-187
+
+Use overlap plus deduplication; advance cursors only after durable processing
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-187` | line 147 | Use overlap plus deduplication; advance cursors only after durable processing |
+
+## C-R121 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-188
+
+Session attribution requires Fleet operation/session IDs, not only a GitHub username
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-188` | line 147 | Session attribution requires Fleet operation/session IDs, not only a GitHub username |
+
+## C-R122 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** C-189
+
+Unattributable events are uncertain, not silently excluded
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-189` | line 147 | Unattributable events are uncertain, not silently excluded |
+
+## C-R123 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** CF-003
+**Occurrence refs:** C-191
+
+Notes, field authority, and dependency semantics
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-191` | line 149 | Notes, field authority, and dependency semantics |
+
+## C-R124 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** C-192
+
+Keep Fleet queue title/summary independent of GitHub issue/PR titles and bodies after initial initialization
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-192` | line 151 | Keep Fleet queue title/summary independent of GitHub issue/PR titles and bodies after initial initialization |
+
+## C-R125 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** C-193
+
+The issue/PR is an independent external work artifact; continuous bidirectional title/body mirroring is generally wrong
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-193` | line 151 | The issue/PR is an independent external work artifact; continuous bidirectional title/body mirroring is generally wrong |
+
+## C-R126 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** C-194
+
+Store Fleet private notes and append-only journal separately from public GitHub comments
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-194` | line 151 | Store Fleet private notes and append-only journal separately from public GitHub comments |
+
+## C-R127 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** C-195
+
+Allow explicit mirroring to an owned managed comment or delimited body section; edit only that section using optimistic concurrency, not the entire body
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-195` | line 151 | Allow explicit mirroring to an owned managed comment or delimited body section; edit only that section using optimistic concurrency, not the entire body |
+
+## C-R128 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** CF-004
+**Occurrence refs:** C-196
+
+Derive priority labels from canonical score, and accept authorized label edits through a conflict-aware normalization policy
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-196` | line 151 | Derive priority labels from canonical score, and accept authorized label edits through a conflict-aware normalization policy |
+
+## C-R129 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** C-197
+
+Represent typed relationships blocks, blocked_by, related_to, parent_of, child_of, duplicates, supersedes
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-197` | line 153 | Represent typed relationships blocks, blocked_by, related_to, parent_of, child_of, duplicates, supersedes |
+
+## C-R130 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** C-198
+
+Hard blockers affect eligibility and effective scheduling urgency; advisory edges do not automatically block
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-198` | line 153 | Hard blockers affect eligibility and effective scheduling urgency; advisory edges do not automatically block |
+
+## C-R131 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** C-199
+
+Prevent cycles and preserve resolved history
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-199` | line 153 | Prevent cycles and preserve resolved history |
+
+## C-R132 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** C-200
+
+Existing GitHub native relationships and Project hierarchy should be projected accurately rather than replaced with prose
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-200` | line 153 | Existing GitHub native relationships and Project hierarchy should be projected accurately rather than replaced with prose |
+
+## C-R133 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-202
+
+Lease and outbox reliability
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-202` | line 155 | Lease and outbox reliability |
+
+## C-R134 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-203
+
+Claims must be atomic and issue a lease_token, lease_expiration, session_id and fencing/version counter
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-203` | line 157 | Claims must be atomic and issue a lease_token, lease_expiration, session_id and fencing/version counter |
+
+## C-R135 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-204
+
+A stale agent cannot overwrite a newer claim
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-204` | line 157 | A stale agent cannot overwrite a newer claim |
+
+## C-R136 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-205
+
+Checkpoints and expiry enable interrupted-session recovery
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-205` | line 157 | Checkpoints and expiry enable interrupted-session recovery |
+
+## C-R137 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-206
+
+Ownership, execution and GitHub state remain distinct
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-206` | line 157 | Ownership, execution and GitHub state remain distinct |
+
+## C-R138 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-207
+
+Use a transactional outbox for cross-system changes: authoritative local state + durable outbox intent are committed atomically; external write is delivered, checked and acknowledged later
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-207` | line 159 | Use a transactional outbox for cross-system changes: authoritative local state + durable outbox intent are committed atomically; external write is delivered, checked and acknowledged later |
+
+## C-R139 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-208
+
+States: pending, delivering, confirmed, retryable_failure, conflict, terminal_failure
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-208` | line 159 | States: pending, delivering, confirmed, retryable_failure, conflict, terminal_failure |
+
+## C-R140 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-209
+
+Store stable operation IDs, remote IDs and expected versions
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-209` | line 159 | Store stable operation IDs, remote IDs and expected versions |
+
+## C-R141 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-210
+
+Verify before retries to prevent duplicate GitHub comments or repeated merges
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-210` | line 159 | Verify before retries to prevent duplicate GitHub comments or repeated merges |
+
+## C-R142 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-211
+
+Do not pretend GitHub and the local database share an atomic transaction
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-211` | line 159 | Do not pretend GitHub and the local database share an atomic transaction |
+
+## C-R143 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-213
+
+Direct verified completion
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-213` | line 161 | Direct verified completion |
+
+## C-R144 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-219
+
+Fleet validates lease/auth, dependencies, last-minute external activity, PR head SHA, checks/reviews and merge eligibility
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-219` | line 170 | Fleet validates lease/auth, dependencies, last-minute external activity, PR head SHA, checks/reviews and merge eligibility |
+
+## C-R145 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-220
+
+It moves to completing, persists outbox operations, merges the authorized PR, verifies merge, closes designated issues, verifies closure, directly closes the queue item, records outcome and releases lease
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-220` | line 170 | It moves to completing, persists outbox operations, merges the authorized PR, verifies merge, closes designated issues, verifies closure, directly closes the queue item, records outcome and releases lease |
+
+## C-R146 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-221
+
+Do not require a subsequent webhook or sweeper to finish Fleet-initiated completion
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-221` | line 170 | Do not require a subsequent webhook or sweeper to finish Fleet-initiated completion |
+
+## C-R147 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-222
+
+The webhook/sweeper remains necessary for external changes and crash recovery
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-222` | line 170 | The webhook/sweeper remains necessary for external changes and crash recovery |
+
+## C-R148 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** C-223
+
+If merge succeeds but closure fails, retain a recoverable completing state and report partial completion precisely
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-223` | line 170 | If merge succeeds but closure fails, retain a recoverable completing state and report partial completion precisely |
+
+## C-R149 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-225
+
+End-to-end reference scenarios
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-225` | line 172 | End-to-end reference scenarios |
+
+## C-R150 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-226
+
+Scenario A — standard agent: fleet agent bootstrap --scenario queue-worker → fleet work next --ready --claim --hydrate full → read returned summary.md and selective diffs → inspect code/tests → fleet work note add → edit/commit/push using normal Git → fleet work changes --since-start --external-only → respond to external comments through Fleet → refresh review/check state → fleet work complete --verify --wait
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-226` | line 174 | Scenario A — standard agent: fleet agent bootstrap --scenario queue-worker → fleet work next --ready --claim --hydrate full → read returned summary.md and selective diffs → inspect code/tests → fleet work note add → edit/commit/push using n |
+
+## C-R151 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-227
+
+Scenario B — blocked, parked, resumed: after hydration, discover hard dependency #761 → fleet dependency add 842 --blocked-by fleet:761 --hard → label/journal through Fleet → fleet work park 842 --checkpoint --release-lease → later session checks --since-checkpoint, observes dependency resolved, calls fleet work unblock, fleet work resume --claim --hydrate incremental, completes implementation and merges when verified
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-227` | line 176 | Scenario B — blocked, parked, resumed: after hydration, discover hard dependency #761 → fleet dependency add 842 --blocked-by fleet:761 --hard → label/journal through Fleet → fleet work park 842 --checkpoint --release-lease → later session  |
+
+## C-R152 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-228
+
+Scenario C — new live comment: authorized user comments on an active labeled issue from mobile → webhook verifies/normalizes → Fleet finds bound OpenCode session → routes instruction and records acknowledgment → agent handles new edge case, pushes fix and replies via Fleet; no ordinary queue wait
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-228` | line 178 | Scenario C — new live comment: authorized user comments on an active labeled issue from mobile → webhook verifies/normalizes → Fleet finds bound OpenCode session → routes instruction and records acknowledgment → agent handles new edge case, |
+
+## C-R153 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-229
+
+Scenario D — near-timeout: agent has inadequate remaining time → checkpoint with branch/commit, tests run/pending, activity cursors and next steps → park/release safely
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-229` | line 180 | Scenario D — near-timeout: agent has inadequate remaining time → checkpoint with branch/commit, tests run/pending, activity cursors and next steps → park/release safely |
+
+## C-R154 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-230
+
+Do not start a risky merge to beat the deadline
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-230` | line 180 | Do not start a risky merge to beat the deadline |
+
+## C-R155 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-231
+
+Future workers can resume
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-231` | line 180 | Future workers can resume |
+
+## C-R156 — example (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** C-232
+
+Workers may iterate tasks until their remaining time budget becomes insufficient, but the examples assume one item each
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-232` | line 180 | Workers may iterate tasks until their remaining time budget becomes insufficient, but the examples assume one item each |
+
+## C-R157 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-234
+
+Implementation sequencing and acceptance
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-234` | line 182 | Implementation sequencing and acceptance |
+
+## C-R158 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-235
+
+Phases: (1) verified repository census, data ownership and Queue Table Improvements compatibility; (2) shared identity, queue claims and hydration; (3) typed dependencies, notes, lifecycle/checkpoints; (4) GitHub adapter, managed content and outbox; (5) incremental activity and session attribution; (6) direct completion/recovery; (7) priority/triage and PM Stack mobile/direct dispatch; (8) simulations and production migration
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-235` | line 184 | Phases: (1) verified repository census, data ownership and Queue Table Improvements compatibility; (2) shared identity, queue claims and hydration; (3) typed dependencies, notes, lifecycle/checkpoints; (4) GitHub adapter, managed content an |
+
+## C-R159 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-236
+
+Sequence according to actual dependencies, not this document's ordering alone
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-236` | line 184 | Sequence according to actual dependencies, not this document's ordering alone |
+
+## C-R160 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** CF-005
+**Occurrence refs:** C-237
+
+Acceptance must cover atomic claims, stale lease fencing, full/partial hydration, per-source change cursors, external comment handling, managed-content conflicts, triage feedback, weighted exploration statistics, boundary hysteresis, PM Stack projection fidelity, mobile operations, authenticated slash commands, direct Summit/worker session receipt, duplicate-webhook resistance, crash recovery after remote mutation, PR merge verification, and immediate direct queue completion
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-237` | line 186 | Acceptance must cover atomic claims, stale lease fencing, full/partial hydration, per-source change cursors, external comment handling, managed-content conflicts, triage feedback, weighted exploration statistics, boundary hysteresis, PM Sta |
+
+## C-R161 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-239
+
+Execution evidence and reporting
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-239` | line 188 | Execution evidence and reporting |
+
+## C-R162 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-240
+
+The design agent should provide: current architecture map, gaps, decisions/ADRs, integrated schema/API/CLI contracts, safe migration plan, phased implementation issues with acceptance tests, risks and go/no-go gates, actual created documents/issue links, dispatch receipts, and verified status
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-240` | line 190 | The design agent should provide: current architecture map, gaps, decisions/ADRs, integrated schema/API/CLI contracts, safe migration plan, phased implementation issues with acceptance tests, risks and go/no-go gates, actual created document |
+
+## C-R163 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-241
+
+Distinguish implemented, tested, scheduled, proposed, blocked, and unverified
+
+Curation note: Reporting must distinguish these execution/evidence statuses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-241` | line 190 | Distinguish implemented, tested, scheduled, proposed, blocked, and unverified |
+
+## C-R164 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** CF-006
+**Occurrence refs:** C-242
+
+An issue labeled Do Now is not evidence of an executing agent, and a test passing on mocks is not evidence of production synchronization
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-242` | line 190 | An issue labeled Do Now is not evidence of an executing agent, and a test passing on mocks is not evidence of production synchronization |
+
+## C-R165 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-249
+
+- Related Fleet v0.3 Summit planning effort: see the companion Summit handoff; it is separate, and should share interface/issue conventions without conflating scope
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-249` | line 198 | - Related Fleet v0.3 Summit planning effort: see the companion Summit handoff; it is separate, and should share interface/issue conventions without conflating scope |
+
+## C-R166 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-250
+
+Final principle: preserve clear source-of-truth boundaries, visible execution status, durable recovery, and agents' ability to act without unnecessary permission loops
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-250` | line 200 | Final principle: preserve clear source-of-truth boundaries, visible execution status, durable recovery, and agents' ability to act without unnecessary permission loops |
+
+## C-R167 — requirement (atomic)
+
+**Source:** `02_charter_v1_1.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** C-251
+
+Prefer improving the architecture over blindly transcribing a numeric rule, but never silently drop a required user outcome
+
+Curation note: Charter outcome retained at source-level granularity; see sibling outcomes for adjacent independent clauses.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `C-251` | line 200 | Prefer improving the architecture over blindly transcribing a numeric rule, but never silently drop a required user outcome |
+
+## H-R001 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198, #9199, #9200, #9201, #9203, #9204, #9206, #9207, #9208, #9209
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure; #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation; #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing; #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration; #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity; #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** H-029
+
+Preserve the two coordinated tracks: priority/triage/PM visibility/direct dispatch/mobile control and lifecycle/hydration/dependencies/journal/outbox/direct verified completion.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-029` | line 28 | Preserve the two coordinated design tracks within this charter: (A) urgency, triage, PM visibility, direct dispatch and mobile control; (B) work-item lifecycle, context hydration, typed dependencies, journal, outbox and direct verified comp |
+
+## H-R002 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-008, H-009, H-010
+
+Treat recovered requirements as source requirements; recent repository work is integration evidence, not a scope ceiling; preserve original mechanisms alongside better replacements with reasons.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-008` | line 11 | Preservation comes first |
+| `H-009` | line 11 | Treat recent repo work as integration evidence, not a replacement for the recovered requirements |
+| `H-010` | line 11 | Run this as a design mill: preserve and map every requirement, break it into reviewed component designs, and turn each design into linked, testable implementation issues |
+
+## H-R003 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-025, H-026, H-027
+
+Keep the Secrets/Cryptography/PKI effort separate; share interfaces/dependency links without duplicating provider, vault, credential-generation, or CA deliverables.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-025` | line 24 | This workstream is distinct from Fleet v0.3 Secrets/Cryptography/PKI |
+| `H-026` | line 24 | That workstream's coordinator handoff is https://docs.google.com/document/d/1AKDACXObRcUwmJIeCfLaGv6bxcWC00e3rYjOztk4qiY/edit and its secrets addendum is https://docs.google.com/document/d/1QkQMPYGEHbjdyMBdrcSdo4i2GKxlJYK2S3PDrvCRfVw/edit |
+| `H-027` | line 24 | Share interfaces and dependency links, but do not duplicate its provider, vault, credential-generation or CA deliverables here |
+
+## H-R004 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9199, #9200
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure; #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** CF-008
+**Occurrence refs:** H-047, H-048, H-049
+
+Keep urgency, importance, effective scheduling pressure, workflow/state, and dispatch directive distinct; preserve ascending order and map historical score schemes without silently renumbering live values.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-047` | line 41 | Preserve current ascending urgency ordering |
+| `H-048` | line 41 | The original charter's 450/High and 1000/default score scheme is a proposal; map the intent into the current ratified taxonomy rather than silently renumbering the live queue |
+| `H-049` | line 41 | Keep intrinsic urgency, importance, effective scheduling pressure, state and immediate-dispatch directive distinct |
+
+## H-R005 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** H-092, H-093, H-094, H-095, H-096
+
+Treat priority distribution as its own design: trace producers/consumers and specify authoritative policy, precedence, stable IDs, versioned payloads, provenance/reasons, replay/reconciliation, cross-target ordering, and hard eligibility separation.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-092` | line 71 | Treat distribution of priority as its own design question, not just a local sorting formula |
+| `H-093` | line 71 | Trace every priority producer and consumer: human rulings and labels, comments and direct dispatch, work-item/issue metadata, typed dependencies, queue broker and claimant, PM projections and hosted implementations |
+| `H-094` | line 71 | Specify the authoritative policy and precedence, stable IDs and versioned payloads, provenance and reason codes, replay and reconciliation when views diverge, and how to validate the same ordering across targets |
+| `H-095` | line 71 | Keep urgent dispatch separate from stored priority and hard eligibility gates |
+| `H-096` | line 71 | Verify exact historical coverage in the source notes and record missing requirements as additive rather than silently rewriting the existing charter |
+
+## H-R006 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203, #9204, #9209
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing; #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** CF-005
+**Occurrence refs:** H-115, H-116, H-117
+
+Distribute work across eligible lanes by capability/readiness/dependency/ownership; separate ranking from sampling, revalidate atomic claims, and let direct dispatch bypass waiting only.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-115` | line 94 | - Distribute work across eligible lanes by capability/readiness/dependency/ownership; ranking and sampling are independent |
+| `H-116` | line 94 | Atomic claim revalidates eligibility after selection |
+| `H-117` | line 94 | Direct dispatch bypasses waiting, not hard blockers or live leases |
+
+## H-R007 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** H-118, H-119, H-120, H-121, H-122, H-123, H-124, H-125
+
+Preserve stable total ordering, ties, authorized moves, progressive clump refinement, bidirectional evidence-informed aging, and hard-dependency pressure with cycle/effort/alternative safeguards.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-118` | line 95 | - Stable total order with equal scores permitted, deterministic secondary rank, oldest-first and stable-ID ties |
+| `H-119` | line 95 | Explicit exact-score/band/before/after/relative edits remain available |
+| `H-120` | line 96 | - Progressive clump refinement, gentle spacing, avoiding uncontrolled drift; lower-urgency-to-higher-urgency sweep order with safeguards against repeatedly moving the same item |
+| `H-121` | line 96 | Preserve user example50→25/10/5/singles as an intended shape, not a mandated algorithm |
+| `H-122` | line 97 | - Bidirectional aging informed by actual value, pivots, opportunity windows and last meaningful triage; no automatic climb to Critical, no permanent cold-backlog purgatory |
+| `H-123` | line 97 | Temporary boosts expire to retriage, not silent deletion |
+| `H-124` | line 98 | - Hard-dependency urgency inheritance, critical-path pressure, cycle safety, effort/alternatives and explanation |
+| `H-125` | line 98 | Do not conflate inherited urgency with intrinsic value or rewrite it blindly |
+
+## H-R008 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** CF-004
+**Occurrence refs:** H-126, H-127, H-128, H-129, H-130
+
+Normalize authorized priority labels; removal triggers triage without losing canonical score; separate triage-needed from executable work; coalesce managed updates without losing meaningful transitions.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-126` | line 99 | - Configurable low-confidence resistance/hysteresis at band boundaries, cooldown and high-confidence/manual bypass |
+| `H-127` | line 99 | Preserve reasons, confidence, before/after and evidence |
+| `H-128` | line 100 | - Authorized GitHub priority-label edits normalize into canonical score; priority-label removal triggers triage without losing score |
+| `H-129` | line 100 | Separate needs-triage from executable work |
+| `H-130` | line 100 | Threshold/coalesced managed updates avoid comment floods while meaningful transitions remain visible |
+
+## H-R009 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-005
+**Occurrence refs:** H-131, H-132, H-133, H-134
+
+Run bounded exploration only when urgent eligible work does not need the lane; persist dispositions, do not reserve three sampled items, and preserve interrupted intent as bounded hints.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-131` | line 101 | - Exploration only when eligible Emergency/Supercritical/Critical/Do Now work does not require the lane |
+| `H-132` | line 101 | Suggested4% chance, three distinct candidates, all dispositions persisted before action |
+| `H-133` | line 101 | No three exclusive claims solely because sampled |
+| `H-134` | line 101 | Select/triage/defer/release each; interrupted intentions survive as bounded hints, not automatic unsupported score changes |
+
+## H-R010 — candidate (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-008
+**Occurrence refs:** H-135, H-136, H-137
+
+Retain weighted-selection formula and candidate defaults for evaluation; normalize over eligible work, sample without replacement, expose seeded simulation/explanation, and never fabricate importance.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-135` | line 102 | - Weighted selection: w_i=r^(-(u_i-u_ref)/d)×count(bucket_i)^(-alpha); defaults r1.25,d200,alpha0.5,bucket200, optional uniform-mixture epsilon0.05 |
+| `H-136` | line 102 | Normalize over eligible items, sample without replacement, seeded simulations and --explain |
+| `H-137` | line 102 | Future urgency/importance axis mixture remains separate and configurable; never fabricate importance from urgency |
+
+## H-R011 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9199, #9201
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure; #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control
+**Conflict refs:** none identified
+**Occurrence refs:** H-138
+
+Account for project/epic lifecycle and strategic urgency with manual intervention and owner escalation, not arithmetic sorting alone.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-138` | line 103 | - Project/epic lifecycle and strategic urgency can change effective order; preserve manual intervention, limited opportunities and high-value escalation to the owner, not just arithmetic sorting |
+
+## H-R012 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9200, #9201, #9203
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation; #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** CF-003
+**Occurrence refs:** H-069, H-070, H-071, H-072
+
+Preserve authenticated labels/comments/commands, single-writer projection, separate hierarchy/hard dependencies, live-session routing, authorized direct dispatch, durable receipts, and idempotent webhooks.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-069` | line 54 | - Authenticated labels, comments and slash commands, single-writer Project projection, distinct hierarchy vs hard dependencies, live-session instruction routing, direct dispatch for authorized parked work, durable receipt and idempotent web |
+| `H-070` | line 55 | - Mobile-first PM board controls for status, search, notes, reprioritization, triage, dispatch and live-session direction, using shared validated Fleet APIs rather than independent frontend policy |
+| `H-071` | line 56 | - Safe atomic claiming and fencing, work-item hydration into durable files, complete GitHub context/diffs, per-source activity cursors, session-origin attribution, private notes vs public comments, managed body sections, checkpoints and res |
+| `H-072` | line 57 | - Transactional outbox with verified remote effects and safe retry; direct completion that verifies authorized merge/issue closure then closes the canonical queue item without waiting for a webhook, while retaining recovery for partial effe |
+
+## H-R013 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9201
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control
+**Conflict refs:** none identified
+**Occurrence refs:** H-070
+
+Provide mobile-first PM status/search/notes/reprioritization/triage/dispatch/live-session controls via shared validated Fleet APIs, not independent frontend policy.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-070` | line 55 | - Mobile-first PM board controls for status, search, notes, reprioritization, triage, dispatch and live-session direction, using shared validated Fleet APIs rather than independent frontend policy |
+
+## H-R014 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9206, #9207, #9208, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity; #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** H-071
+
+Preserve atomic claims/fencing, durable hydration, full GitHub context/diffs, per-source cursors, session attribution, private notes vs public comments, managed sections, checkpoints, and resumable parking.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-071` | line 56 | - Safe atomic claiming and fencing, work-item hydration into durable files, complete GitHub context/diffs, per-source activity cursors, session-origin attribution, private notes vs public comments, managed body sections, checkpoints and res |
+
+## H-R015 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** H-072
+
+Use verified transactional outbox delivery/retry and direct completion that verifies remote effects, closes canonical queue state without waiting for webhooks, and recovers partial effects.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-072` | line 57 | - Transactional outbox with verified remote effects and safe retry; direct completion that verifies authorized merge/issue closure then closes the canonical queue item without waiting for a webhook, while retaining recovery for partial effe |
+
+## H-R016 — requirement (group)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198, #9203, #9209
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** H-075
+
+Cover fresh work, blocked/parked resume, late comment, near-timeout checkpoint, crash after remote mutation, duplicate webhook, stale lease, conflict, and live launch/bind proof.
+
+Children: C-R150, C-R151, C-R152, C-R153, P-R022, C-R093, C-R135, P-R046, H-R021
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-075` | line 59 | - End-to-end scenarios: fresh work, blocked/parked resume, late external comment, near-timeout checkpoint, crash after remote mutation, duplicate webhook, stale lease, conflict and live launch/bind proof |
+
+## H-R017 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** H-139, H-140, H-141, H-142, H-143, H-144, H-145, H-146, H-147, H-148, H-149, H-150, H-151, H-152
+
+Preserve the full namespace/operation/flag inventory (discovery, queue, work, GitHub, metadata, dependencies, activity/sync, agent control, shared context) even when final names change.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-139` | line 105 | Command/features inventory must remain explicit |
+| `H-140` | line 107 | Preserve every original namespace/operation in the source crosswalk, even if implementation names change: |
+| `H-141` | line 109 | - Discovery: help, capabilities, agent bootstrap queue-worker/assigned-item/resume/triage |
+| `H-142` | line 110 | - Queue: list/search/inspect/rank/claim/release/park/resume/update/close; filters for urgency bounds, labels, assignee, readiness/blockers, created/updated time, type/repo/capability/effort; exploration/sampling and explanation |
+| `H-143` | line 111 | - Work: next/open/inspect/hydrate/refresh/changes/checkpoint/note/block/unblock/park/resume/release/handoff/complete/status |
+| `H-144` | line 112 | - GitHub: issues and PR metadata, comments/timeline/events, commit/diff/reviews/checks, create/update/merge/close; managed comment/body regions and explicit mirroring |
+| `H-145` | line 113 | - Metadata: get/patch/priority/labels/title/summary; independent queue vs GitHub titles/bodies |
+| `H-146` | line 114 | - Dependencies: add/remove/list/graph/ready/blockers; hard vs advisory, parent vs blocker, resolved history |
+| `H-147` | line 115 | - Activity/sync: list/since/watch/reconcile/status/run/retry/verify/outbox; per-source cursors, overlap/dedup and reliable session exclusion |
+| `H-148` | line 116 | - Agent control: dispatch/session status/send/resume; authenticated comments/slash commands, receipt/acknowledgment, near-timeout recovery |
+| `H-149` | line 117 | - Shared flags/context: work/repo/issue/PR/agent/session/lease, since/start/checkpoint/external-only, output/format/json,dry-run,explain,expected-version,idempotency-key,verify,wait,timeout |
+| `H-150` | line 117 | Safe inferred defaults never ambiguous cross-repo mutations |
+| `H-151` | line 119 | Keep complete hydration metadata/diffs/manifests, structured errors, journals/outbox, direct verified completion, all startup→claim→work→block→resume→external-change→merge→close walkthroughs, negative tests and failure cases |
+| `H-152` | line 119 | The new Muse launch prompt is a wrapper around these full preserved documents, not a replacement specification |
+
+## H-R018 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-156
+
+Locate Queue Table Improvements by name and crosswalk before assuming equivalence.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-156` | line 123 | Retain “Queue Table Improvements” as an explicit discovery anchor: locate the original work by name and crosswalk it against current queue work before assuming equivalence |
+
+## H-R019 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-033, H-034, H-035, H-036, H-037, H-038, H-039, H-040, H-041, H-042, H-043, H-044, H-045, H-046
+
+Pin the inspected commit, inspect current authority/code/tests/PRs/issues/deployment evidence and re-check discovery anchors; protect useful drafts and avoid repeating ratification.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-033` | line 30 | Reconcile current work before adding anything |
+| `H-034` | line 32 | Pin the inspected commit, read AGENTS.md and current Fleet/PM Stack/queue authority documents, and inspect code, tests, open PRs, issue comments and actual deployment evidence |
+| `H-035` | line 32 | In particular verify these entry points again at execution time: |
+| `H-036` | line 34 | - https://github.com/developing-today/code/issues/9060 and https://github.com/developing-today/code/pull/9064: design merged, component implementation remains open |
+| `H-037` | line 35 | - https://github.com/developing-today/code/issues/9078 and https://github.com/developing-today/code/pull/9088: hosted prototype and component issues #9079–#9087 |
+| `H-038` | line 35 | Epic closure must not cause unfinished components to be skipped as already_done |
+| `H-039` | line 36 | - https://github.com/developing-today/code/issues/9091, https://github.com/developing-today/code/pull/9102 and https://github.com/developing-today/code/issues/9106: design-mill starter, parked wrong-worktree work with potentially salvageabl |
+| `H-040` | line 36 | Preserve useful drafts and inspect ownership before replacing or restarting |
+| `H-041` | line 37 | - https://github.com/developing-today/code/issues/8187: inline triage and immediate bound handoff changes |
+| `H-042` | line 38 | - https://github.com/developing-today/code/issues/6533: live launch-and-bind acceptance proof remains a separate requirement; a merged fix is not that proof |
+| `H-043` | line 39 | - https://github.com/developing-today/code/issues/7030: priority brief was ratified |
+| `H-044` | line 39 | Do not ask for the same ratification again or trust stale issue-body status over dated evidence |
+| `H-045` | line 41 | These are discovery anchors, not permission to overwrite recent decisions |
+| `H-046` | line 41 | Read the ongoing ID/Atlas and design-mill patterns and integrate with their existing component boundaries |
+
+## H-R020 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-057, H-058
+
+Produce/reuse a central design epic and domain issue tree with stable IDs, parent/blocker links, testable component designs, and independently actionable implementation/validation/migration/docs issues.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-057` | line 47 | Create/reuse a central design epic and a small initial domain issue tree |
+| `H-058` | line 47 | Each design should decompose into testable component designs and independently actionable implementation, validation, migration and documentation issues, with stable requirement IDs, native parent/blocker relationships and measurable accept |
+
+## H-R021 — requirement (group)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-059, H-060, H-061, H-062, H-063, H-064, H-065
+
+Use sanctioned issue/outbox/queue paths; verify created IDs and task records, actual route/host, prompt delivery, session identity, ownership/lease and meaningful start; reuse active compatible sessions and avoid double claims.
+
+Children: H-R038, H-R039, H-R040, H-R041, H-R042, H-R043, H-R044
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-059` | line 49 | Use the current sanctioned GitHub App/outbox and queue writer |
+| `H-060` | line 49 | Verify actual created issue IDs and queue records rather than counting pending intents |
+| `H-061` | line 49 | Discover the live Summit route and host; do not invent provider/model IDs or silently choose another pool |
+| `H-062` | line 49 | Create/bind the canonical queue task and immediately launch the authorized Summit OpenCode session with this prompt and staged sources |
+| `H-063` | line 49 | Confirm prompt delivery, session identity, ownership/lease and meaningful start |
+| `H-064` | line 49 | A label, queue position, session shell without a prompt or pending outbox record is not a launch receipt |
+| `H-065` | line 49 | Reuse a compatible active session if one exists; do not double-claim |
+
+## H-R022 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198, #9203
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-077, H-078, H-079, H-080, H-081, H-082
+
+Supervise active work at practical cadence, inspect logs/progress/receipts/terminal state, recover without racing owners, and require acknowledgement/meaningful resumed work before claiming recovery.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-077` | line 63 | Reuse established durable supervision at a practical 5–15 minute cadence while active |
+| `H-078` | line 63 | Check logs, bound task/session, actual progress, questions, outbox receipts and terminal state |
+| `H-079` | line 63 | Answer questions from verified sources and user-approved authority; preserve genuine production/security approval gates |
+| `H-080` | line 63 | Recover or redirect stalls without racing a live owner or creating duplicate sessions |
+| `H-081` | line 63 | A “continue” message is not recovery evidence until the session acknowledges or resumes meaningful work |
+| `H-082` | line 63 | Record checkpoints and monitor ownership; do not promise monitoring that has not been installed and verified |
+
+## H-R023 — requirement (group)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-083, H-084, H-085, H-086, H-087
+
+Deliver committed inventory, architecture/component designs, ADRs, traceability, issue index, staged plan, acceptance/migration/rollback tests, census evidence, gaps, and truthful status/receipts; keep implementation issues open until verified.
+
+Children: H-R045, H-R046, H-R047, H-R048, H-R049, H-R050
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-083` | line 65 | The design pass must deliver committed source inventory, architecture and component designs, ADRs, traceability, granular issue index, dependency-aware staged plan, acceptance and migration/rollback tests, current-state evidence, and explic |
+| `H-084` | line 65 | Keep implementation children open until their own tests and operational evidence pass |
+| `H-085` | line 65 | Report separately what was designed, implemented, merged, deployed, live-verified, blocked and still pending |
+| `H-086` | line 65 | Provide launch and final receipts with issue URLs, queue/task/session IDs, route, commit/PR, monitor record and first executable stage |
+| `H-087` | line 65 | Continue the agreed process through component buildout using those records; do not close the overall program merely because the first planning session completed |
+
+## H-R024 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198, #9206
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** H-151, H-152
+
+Keep every original command/option, schema, error, receipt, walkthrough, negative test and failure case in compatibility/acceptance coverage; the new launch wrapper does not replace the source specs.
+
+Curation note: Handoff is governing intake; mechanism refinements must preserve user outcome.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-151` | line 119 | Keep complete hydration metadata/diffs/manifests, structured errors, journals/outbox, direct verified completion, all startup→claim→work→block→resume→external-change→merge→close walkthroughs, negative tests and failure cases |
+| `H-152` | line 119 | The new Muse launch prompt is a wrapper around these full preserved documents, not a replacement specification |
+
+## H-R025 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-011, H-012
+
+Verify source access through authorized identity/staging and do not publish private material.
+
+Curation note: Source-specific handoff outcome; exact occurrence citations retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-011` | line 11 | Verify source access through the authorized identity or approved staging |
+| `H-012` | line 11 | Do not make private material public |
+
+## H-R026 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-013, H-014, H-015, H-016
+
+Treat prior submission as cancelled and current intake as pending, reuse work that already satisfies requirements, and avoid duplicate live sessions.
+
+Curation note: Source-specific handoff outcome; exact occurrence citations retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-013` | line 13 | Muse, prepare and directly launch an OpenCode Summit pool assignment for the Fleet/PM Stack work below, then supervise it through verified completion |
+| `H-014` | line 13 | Treat the earlier attempted submission as cancelled and this design intake as pending, but do not assume overlapping repository work is unimplemented |
+| `H-015` | line 13 | Reuse existing issues, sessions, designs and commits wherever they already satisfy requirements |
+| `H-016` | line 13 | Do not launch a duplicate live session |
+
+## H-R027 — candidate (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-022, H-023, H-024
+
+Preserve supplemental content as candidates, reconcile it against ratified policy, and avoid creating a third independent stream.
+
+Curation note: Source-specific handoff outcome; exact occurrence citations retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-022` | line 22 | Supplemental raw note (review as design candidates, not a new overriding directive): https://docs.google.com/document/d/1MSdUt97SnWIzgqyglMJuSzTMq4RKtoThQq1a4JVVZvU/edit |
+| `H-023` | line 22 | The v1.1 charter already incorporates its main urgency/importance, bidirectional aging, clump smoothing, boundary resistance, dependency pressure, immediate dispatch, mobile control and three-item weighted exploration ideas |
+| `H-024` | line 22 | Read its full text for nuances and reconcile against current ratified policy; do not create a third independent implementation stream merely for this overlapping note |
+
+## H-R028 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-030, H-031, H-032
+
+Complete an evidence-backed design pass and granular backlog; distinguish it explicitly from implementation completion.
+
+Curation note: Source-specific handoff outcome; exact occurrence citations retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-030` | line 28 | Build an evidence-backed design-of-designs and granular implementation backlog, then progress authorized executable stages through the established workflow |
+| `H-031` | line 28 | Do not confuse a completed design pass with a completed implementation epic |
+| `H-032` | line 28 | The first Summit task must review and reconcile the complete requirements, make architectural decisions, and produce implementation-ready component designs and issues, not attempt a monolithic production rewrite |
+
+## H-R029 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-050, H-051, H-052, H-053, H-054, H-055, H-056
+
+Build a source-linked requirement crosswalk with ownership/evidence; preserve source documents/hashes safely and avoid parallel infrastructure.
+
+Curation note: Source-specific handoff outcome; exact occurrence citations retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-050` | line 43 | Produce a requirement crosswalk classifying each item as verified existing, partially implemented, open implementation, design-only, research, superseded with rationale, blocked, or unverified |
+| `H-051` | line 43 | Link real code/tests/issues |
+| `H-052` | line 43 | Identify requirements whose current ownership differs from the historical charter |
+| `H-053` | line 43 | Do not create another queue, scheduler, database, Fleet binary or secret resolver simply to implement this intake |
+| `H-054` | line 45 | Muse preparation and launch |
+| `H-055` | line 47 | Export and preserve all source documents with links, dates and hashes; commit reviewed public-safe design text and source inventory into the repository using its current conventions |
+| `H-056` | line 47 | Do not commit private credentials or unrelated private chat material |
+
+## H-R030 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** H-067, H-068, H-069, H-070, H-071, H-072
+
+Preserve numeric urgency and separate importance, dependency pressure, temporary boosts, bounded bidirectional aging, explainable triage, hysteresis, manual override, and protection against inflation/cold-backlog disappearance.
+
+Curation note: Handoff requirement list; parameter suggestions separated into H-R036.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-067` | line 53 | - Numeric urgency and separate importance, dependency pressure, deadline/opportunity boosts, bounded aging and de-escalation, stable ties, explainable triage, band hysteresis and manual overrides |
+| `H-068` | line 53 | Avoid priority inflation or cold-backlog disappearance |
+| `H-069` | line 54 | - Authenticated labels, comments and slash commands, single-writer Project projection, distinct hierarchy vs hard dependencies, live-session instruction routing, direct dispatch for authorized parked work, durable receipt and idempotent web |
+| `H-070` | line 55 | - Mobile-first PM board controls for status, search, notes, reprioritization, triage, dispatch and live-session direction, using shared validated Fleet APIs rather than independent frontend policy |
+| `H-071` | line 56 | - Safe atomic claiming and fencing, work-item hydration into durable files, complete GitHub context/diffs, per-source activity cursors, session-origin attribution, private notes vs public comments, managed body sections, checkpoints and res |
+| `H-072` | line 57 | - Transactional outbox with verified remote effects and safe retry; direct completion that verifies authorized merge/issue closure then closes the canonical queue item without waiting for a webhook, while retaining recovery for partial effe |
+
+## H-R031 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-089, H-090
+
+Keep full original schema, interactions, commands/options, errors/receipts, examples and failures in compatibility/acceptance coverage.
+
+Curation note: Source-specific handoff outcome; exact occurrence citations retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-089` | line 69 | Retain the earlier full design text and handoff, including the issue/queue schema, priority policy, mobile interactions, command grammar, concrete subcommands, error/receipt semantics, and worked examples; do not reduce the implementation b |
+| `H-090` | line 69 | Capture each command and option in a compatibility/acceptance inventory |
+
+## H-R032 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-097, H-098, H-099, H-100, H-101, H-102, H-103, H-104, H-105
+
+Treat landed work as context, retain unimplemented features, and preserve immutable source requirements with explicit replacement rationale.
+
+Curation note: Source-specific handoff outcome; exact occurrence citations retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-097` | line 73 | Recent repo work is contextual evidence |
+| `H-098` | line 73 | It may satisfy or constrain specific requirements, but is not the scope of either design and does not replace either original |
+| `H-099` | line 73 | For the design mill retain unimplemented subcommands and features as traced issues, even if they do not overlap current ID/Atlas work |
+| `H-100` | line 76 | Original combined PM design, preserved in Drive: https://docs.google.com/document/d/1h8zF-uWTFuXQZ2KFeAPg-aNXR_S3BY9ebKtr3pc6Tg8/edit |
+| `H-101` | line 78 | PM/Fleet preservation checklist |
+| `H-102` | line 80 | Preservation-first rule: the original design and discussion are source requirements, not a list to shrink around today's code |
+| `H-103` | line 80 | Keep immutable copies and map every requirement to implementation/design/test/research/deferred-with-reason |
+| `H-104` | line 80 | Recently landed work is integration context and evidence, not permission to discard desired features |
+| `H-105` | line 80 | Preserve the original proposed mechanisms alongside any better replacement and explain the mapping |
+
+## H-R033 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** CF-001
+**Occurrence refs:** H-113, H-114
+
+Preserve separate priority axes and explain migration from historic provisional score bands to ratified convention.
+
+Curation note: Source-specific handoff outcome; exact occurrence citations retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-113` | line 93 | - Separate urgency, importance, effective scheduling pressure, workflow, dispatch directive and ownership |
+| `H-114` | line 93 | Preserve original provisional score bands/defaults and explain migration to any current numeric convention, rather than silently substituting it |
+
+## H-R034 — history (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198, #9203
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-155, H-157, H-158, H-159, H-160, H-161, H-162, H-163
+
+Use current dispatch authority; retain Queue Table Improvements as discovery anchor; verify task/session binding and durable handoff.
+
+Curation note: Source-specific handoff outcome; exact occurrence citations retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-155` | line 123 | Use the current Muse instructions above for dispatch |
+| `H-157` | line 125 | Verbatim prompt from the original final reply: |
+| `H-158` | line 126 | Read and execute the complete Fleet & PM Stack Execution Charter: https://docs.google.com/document/d/1_DQwNbuRmJnITDKKJJ7A3Q0FJa-q2rkzWlz-4PyA_iw/edit |
+| `H-159` | line 128 | Inspect the current developing-today/code repository and existing Queue Table Improvements work |
+| `H-160` | line 128 | Carry out the entire coordinating workflow, create and commit the design artifacts, establish the high-priority GitHub issue and dependencies, and directly dispatch the designated design agent rather than waiting for ordinary queue selectio |
+| `H-161` | line 128 | Follow the existing Fleet, GitHub Project, PM Stack, and outbox conventions |
+| `H-162` | line 128 | Exercise architectural judgment, resolve implementation details against current code, and delegate substantial work appropriately |
+| `H-163` | line 128 | Verify the actual agent session, task ownership, issue state, and durable handoff |
+
+## H-R035 — history (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198, #9203
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-164, H-165
+
+Continue through verified completion mechanisms; a queued issue or unaccepted dispatch request is not proof of execution.
+
+Curation note: Historical handoff completion instruction; aligns with, but is not a new runtime dispatch mechanism.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-164` | line 128 | Continue the specified downstream workflow through its completion mechanisms, preserving checkpoints and reporting verified results, blockers, and remaining work |
+| `H-165` | line 128 | Do not mistake a queued issue or dispatched request for completed execution |
+
+## H-R036 — candidate (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-005
+**Occurrence refs:** H-073, H-074
+
+Retain bounded-exploration parameters as suggestions; preserve selection/disposition outcomes rather than copying arbitrary constants.
+
+Curation note: Parameters remain candidates for simulation/design, not fixed values.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-073` | line 58 | - Bounded exploration only when higher-urgency eligible work does not require the lane; configurable density-corrected sampling, suggested preference 1.25 per 200 urgency points and density exponent 0.5, statistical simulation and explanati |
+| `H-074` | line 58 | Preserve outcomes rather than mechanically copying arbitrary numeric choices |
+
+## H-R037 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-156
+
+Locate “Queue Table Improvements” by name and crosswalk it before assuming equivalence.
+
+Curation note: Explicit discovery anchor; preserve the named work item.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-156` | line 123 | Retain “Queue Table Improvements” as an explicit discovery anchor: locate the original work by name and crosswalk it against current queue work before assuming equivalence |
+
+## H-R038 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-059
+
+Use the sanctioned GitHub App/outbox and queue writer for issue/task creation.
+
+Curation note: Independent launch lifecycle oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-059` | line 49 | Use the current sanctioned GitHub App/outbox and queue writer |
+
+## H-R039 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-060
+
+Verify created issue IDs and durable queue/task records; pending intents alone are not evidence.
+
+Curation note: Independent launch lifecycle oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-060` | line 49 | Verify actual created issue IDs and queue records rather than counting pending intents |
+
+## H-R040 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-061
+
+Discover the actual live Summit route and host; do not invent provider/model IDs or silently choose a different pool.
+
+Curation note: Independent launch lifecycle oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-061` | line 49 | Discover the live Summit route and host; do not invent provider/model IDs or silently choose another pool |
+
+## H-R041 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-062
+
+Bind the canonical queue task and directly launch the authorized session with the prompt and staged source documents.
+
+Curation note: Independent launch lifecycle oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-062` | line 49 | Create/bind the canonical queue task and immediately launch the authorized Summit OpenCode session with this prompt and staged sources |
+
+## H-R042 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-063
+
+Verify prompt delivery, session identity, ownership/lease, and meaningful accepted/started work.
+
+Curation note: Independent launch lifecycle oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-063` | line 49 | Confirm prompt delivery, session identity, ownership/lease and meaningful start |
+
+## H-R043 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-064
+
+Do not treat a label, queue position, bare session shell, or pending outbox record as a launch receipt.
+
+Curation note: Independent launch lifecycle oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-064` | line 49 | A label, queue position, session shell without a prompt or pending outbox record is not a launch receipt |
+
+## H-R044 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-065
+
+Reuse a compatible active session and prevent a duplicate ordinary-worker claim.
+
+Curation note: Independent launch lifecycle oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-065` | line 49 | Reuse a compatible active session if one exists; do not double-claim |
+
+## H-R045 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-083
+
+Deliver source inventory, repository-grounded architecture/component designs, ADRs, traceability, issue index, staged plan, census evidence, and explicit gaps.
+
+Curation note: Independent deliverable/evidence oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-083` | line 65 | The design pass must deliver committed source inventory, architecture and component designs, ADRs, traceability, granular issue index, dependency-aware staged plan, acceptance and migration/rollback tests, current-state evidence, and explic |
+
+## H-R046 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-083
+
+Include acceptance and migration/rollback tests in the design handoff.
+
+Curation note: Independent deliverable/evidence oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-083` | line 65 | The design pass must deliver committed source inventory, architecture and component designs, ADRs, traceability, granular issue index, dependency-aware staged plan, acceptance and migration/rollback tests, current-state evidence, and explic |
+
+## H-R047 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-084
+
+Keep implementation children open until their own tests and operational evidence pass.
+
+Curation note: Independent deliverable/evidence oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-084` | line 65 | Keep implementation children open until their own tests and operational evidence pass |
+
+## H-R048 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-085
+
+Report designed, implemented, merged, deployed, live-verified, blocked, and pending states separately.
+
+Curation note: Independent deliverable/evidence oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-085` | line 65 | Report separately what was designed, implemented, merged, deployed, live-verified, blocked and still pending |
+
+## H-R049 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-086
+
+Provide launch/final receipts with issue URLs, queue/task/session IDs, route, commit/PR, monitor record, and first executable stage.
+
+Curation note: Independent deliverable/evidence oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-086` | line 65 | Provide launch and final receipts with issue URLs, queue/task/session IDs, route, commit/PR, monitor record and first executable stage |
+
+## H-R050 — requirement (atomic)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-087
+
+Continue the agreed component buildout; do not close the program merely because planning completed.
+
+Curation note: Independent deliverable/evidence oracle.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-087` | line 65 | Continue the agreed process through component buildout using those records; do not close the overall program merely because the first planning session completed |
+
+## H-R051 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-059
+**Duplicate of:** `H-R038`
+
+Use the sanctioned GitHub App/outbox and queue writer for issue/task creation.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R038; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-059` | line 49 | Use the current sanctioned GitHub App/outbox and queue writer |
+
+## H-R052 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-060
+**Duplicate of:** `H-R039`
+
+Verify created issue IDs and durable queue/task records; pending intents alone are not evidence.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R039; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-060` | line 49 | Verify actual created issue IDs and queue records rather than counting pending intents |
+
+## H-R053 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-061
+**Duplicate of:** `H-R040`
+
+Discover the actual live Summit route and host; do not invent provider/model IDs or silently choose a different pool.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R040; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-061` | line 49 | Discover the live Summit route and host; do not invent provider/model IDs or silently choose another pool |
+
+## H-R054 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-062
+**Duplicate of:** `H-R041`
+
+Bind the canonical queue task and directly launch the authorized session with the prompt and staged source documents.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R041; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-062` | line 49 | Create/bind the canonical queue task and immediately launch the authorized Summit OpenCode session with this prompt and staged sources |
+
+## H-R055 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-063
+**Duplicate of:** `H-R042`
+
+Verify prompt delivery, session identity, ownership/lease, and meaningful accepted/started work.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R042; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-063` | line 49 | Confirm prompt delivery, session identity, ownership/lease and meaningful start |
+
+## H-R056 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-064
+**Duplicate of:** `H-R043`
+
+Do not treat a label, queue position, bare session shell, or pending outbox record as a launch receipt.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R043; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-064` | line 49 | A label, queue position, session shell without a prompt or pending outbox record is not a launch receipt |
+
+## H-R057 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** H-065
+**Duplicate of:** `H-R044`
+
+Reuse a compatible active session and prevent a duplicate ordinary-worker claim.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R044; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-065` | line 49 | Reuse a compatible active session if one exists; do not double-claim |
+
+## H-R058 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-083
+**Duplicate of:** `H-R045`
+
+Deliver source inventory, repository-grounded architecture/component designs, ADRs, traceability, issue index, staged plan, census evidence, and explicit gaps.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R045; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-083` | line 65 | The design pass must deliver committed source inventory, architecture and component designs, ADRs, traceability, granular issue index, dependency-aware staged plan, acceptance and migration/rollback tests, current-state evidence, and explic |
+
+## H-R059 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-083
+**Duplicate of:** `H-R046`
+
+Include acceptance and migration/rollback tests in the design handoff.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R046; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-083` | line 65 | The design pass must deliver committed source inventory, architecture and component designs, ADRs, traceability, granular issue index, dependency-aware staged plan, acceptance and migration/rollback tests, current-state evidence, and explic |
+
+## H-R060 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-084
+**Duplicate of:** `H-R047`
+
+Keep implementation children open until their own tests and operational evidence pass.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R047; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-084` | line 65 | Keep implementation children open until their own tests and operational evidence pass |
+
+## H-R061 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-085
+**Duplicate of:** `H-R048`
+
+Report designed, implemented, merged, deployed, live-verified, blocked, and pending states separately.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R048; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-085` | line 65 | Report separately what was designed, implemented, merged, deployed, live-verified, blocked and still pending |
+
+## H-R062 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-086
+**Duplicate of:** `H-R049`
+
+Provide launch/final receipts with issue URLs, queue/task/session IDs, route, commit/PR, monitor record, and first executable stage.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R049; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-086` | line 65 | Provide launch and final receipts with issue URLs, queue/task/session IDs, route, commit/PR, monitor record and first executable stage |
+
+## H-R063 — requirement (alias)
+
+**Source:** `01_handoff_pm_stack_fleet_orchestration.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** H-087
+**Duplicate of:** `H-R050`
+
+Continue the agreed component buildout; do not close the program merely because planning completed.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is H-R050; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `H-087` | line 65 | Continue the agreed process through component buildout using those records; do not close the overall program merely because the first planning session completed |
+
+## O-R001 — requirement (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198, #9200
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** O-174, O-175, O-176, O-177, O-178, O-179, O-180, O-181, O-182, O-183, O-184, O-185, O-186, O-187, O-188, O-189, O-190, O-191, O-192, O-193, O-194, O-195, O-196, O-197
+
+Make Fleet, GitHub/Projects, PM Stack, scheduling, mobile and live sessions share a coherent view of urgency, importance, readiness, ownership and lifecycle; prevent forgotten work, inflation, stale pivots, buried blockers, cluster bias, unstable ties, oscillation, drift, delayed dispatch and lost parking context.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-174` | line 13 | Purpose Fleet and PM Stack need a consistent way to represent the relative urgency, importance, readiness, ownership, and lifecycle of work |
+| `O-175` | line 13 | The same underlying work should be understandable through: - Fleet CLI |
+| `O-176` | line 13 | - Fleet queue |
+| `O-177` | line 13 | - GitHub issues |
+| `O-178` | line 13 | - GitHub Projects |
+| `O-179` | line 13 | - PM Stack dashboard |
+| `O-180` | line 13 | - Agent scheduling |
+| `O-181` | line 13 | - Triage workflows |
+| `O-182` | line 13 | - Mobile browser |
+| `O-183` | line 13 | - Live agent sessions |
+| `O-184` | line 13 | These interfaces should not evolve separate, conflicting interpretations of what is important or what should happen next |
+| `O-185` | line 13 | The system must support both human and automated prioritization |
+| `O-186` | line 13 | It should also resist the common failure modes of priority queues: - Old tasks becoming permanently forgotten |
+| `O-187` | line 13 | - Everything gradually becoming high priority |
+| `O-188` | line 13 | - High-priority tasks remaining high after strategic pivots |
+| `O-189` | line 13 | - Small blocking tasks remaining buried because their intrinsic importance is low |
+| `O-190` | line 13 | - Large clusters receiving disproportionate selection probability |
+| `O-191` | line 13 | - Equal-priority items having unstable order |
+| `O-192` | line 13 | - Repeated automated updates causing priority oscillation |
+| `O-193` | line 13 | - GitHub labels diverging from database values |
+| `O-194` | line 13 | - Immediate requests being delayed behind background workers |
+| `O-195` | line 13 | - Agents picking up work without publishing a visible lifecycle state |
+| `O-196` | line 13 | - Parked work losing its history and continuation context |
+| `O-197` | line 13 | The goal is a system that remains legible, adaptable, and self-maintaining |
+
+## O-R002 — requirement (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199, #9200
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure; #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** CF-008
+**Occurrence refs:** O-199, O-200, O-201, O-202, O-203, O-204, O-205, O-206, O-207, O-208, O-209, O-210, O-211, O-212, O-213, O-214, O-215, O-216, O-217, O-218, O-219, O-220, O-221, O-222, O-223, O-224, O-225, O-226, O-227, O-228, O-229, O-230, O-231, O-232, O-233, O-234, O-235, O-236
+
+Keep intrinsic urgency, importance, derived scheduling pressure, workflow, dispatch directive and ownership separate; do not rewrite intrinsic score for temporary pressure; assignment is not active execution.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-199` | line 13 | Separate the Major Concepts Do not force every scheduling decision into a single priority number |
+| `O-200` | line 13 | At minimum, distinguish: ## 2.1 Intrinsic urgency How soon should the item receive attention under its own circumstances |
+| `O-201` | line 13 | Represented initially by a numeric score |
+| `O-202` | line 13 | **Lower numbers mean greater urgency.** Example: urgency_score = 600 This score should be durable, editable, and explainable |
+| `O-203` | line 13 | ## 2.2 Importance / impact How valuable or consequential is the work |
+| `O-204` | line 13 | Examples: - Strategic importance |
+| `O-205` | line 13 | - Business or user impact |
+| `O-206` | line 13 | - Risk reduction |
+| `O-207` | line 13 | - Architectural significance |
+| `O-208` | line 13 | - Expected benefit |
+| `O-209` | line 13 | Importance should eventually have its own representation |
+| `O-210` | line 13 | A high-importance architectural project may not be immediately urgent |
+| `O-211` | line 13 | A short-lived minor opportunity may be urgent despite modest importance |
+| `O-212` | line 13 | ## 2.3 Effective scheduling urgency How urgent is the item to execute right now, considering its surroundings |
+| `O-213` | line 13 | Derived from: - Intrinsic urgency |
+| `O-214` | line 13 | - Blocking relationships |
+| `O-215` | line 13 | - Deadlines |
+| `O-216` | line 13 | - Current project phase |
+| `O-217` | line 13 | - Time-sensitive opportunities |
+| `O-218` | line 13 | - Explicit dispatch directives |
+| `O-219` | line 13 | - Resource availability |
+| `O-220` | line 13 | - Other applicable policies |
+| `O-221` | line 13 | This may differ temporarily from intrinsic urgency |
+| `O-222` | line 13 | Do not necessarily rewrite the canonical numeric score every time scheduling pressure changes |
+| `O-223` | line 13 | ## 2.4 Workflow state What is happening to the item |
+| `O-224` | line 13 | Examples: triage backlog ready claimed in_progress review parked blocked completing completed cancelled State is not priority |
+| `O-225` | line 13 | ## 2.5 Dispatch directive What should happen operationally |
+| `O-226` | line 13 | Examples: normal expedite do_now direct_session hold manual_only A `do_now` directive should not inherently change numeric urgency |
+| `O-227` | line 13 | It should influence dispatch behavior |
+| `O-228` | line 13 | ## 2.6 Ownership and assignment Who has responsibility for the item |
+| `O-229` | line 13 | Distinguish: - Human owner |
+| `O-230` | line 13 | - Assigned agent |
+| `O-231` | line 13 | - Currently running agent/session |
+| `O-232` | line 13 | - Lease holder |
+| `O-233` | line 13 | - Reviewing agent |
+| `O-234` | line 13 | - Supervising or escalation recipient |
+| `O-235` | line 13 | Do not equate "assigned" with "actively executing |
+| `O-236` | line 13 | ." --- # 3 |
+
+## O-R003 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** CF-001
+**Occurrence refs:** O-237, O-238, O-239, O-240, O-241, O-242, O-243, O-244, O-245, O-246, O-247, O-248
+
+Retain broad configurable score bands and explicitly prevent a hidden cold backlog; compare existing values and migration before reinterpretation.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-237` | line 13 | Proposed Numeric Urgency Bands Use a broad numeric scale that leaves room for gradual adjustment |
+| `O-238` | line 13 | Recommended initial convention: \| Range \| Band \| Meaning \| \|---\|---\|---\| \| 0–99 \| Emergency \| Active severe incident or similarly extraordinary need \| \| 100–199 \| Supercritical \| Immediate critical-path or severe operational work \| \| 200–39 |
+| `O-239` | line 13 | Before implementing, compare them with existing queue values and migration constraints |
+| `O-240` | line 13 | Do not blindly reinterpret existing numeric scores without an explicit migration plan |
+| `O-241` | line 13 | ## 3.1 Avoid the shadow backlog Scores above 2000 must not become a hidden deletion mechanism |
+| `O-242` | line 13 | Cold backlog items should remain: - Searchable |
+| `O-243` | line 13 | - Visible through appropriate filters |
+| `O-244` | line 13 | - Eligible for periodic review |
+| `O-245` | line 13 | - Eligible for manual escalation |
+| `O-246` | line 13 | - Eligible for opportunity-based reconsideration |
+| `O-247` | line 13 | - Included in explicit archive or retention policy |
+| `O-248` | line 13 | Do not indefinitely bury an important item simply because its score was set too high once |
+
+## O-R004 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-249, O-250, O-251, O-252, O-253, O-254, O-255, O-256, O-257, O-258, O-259, O-260
+
+Keep authorized band/exact-score/relative/delta/pinned-order/recalculate/triage/dispatch controls auditable; manual changes bypass automatic hysteresis.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-249` | line 13 | ## 3.2 Manual control Authorized users and agents should be able to: - Move to a band's default |
+| `O-250` | line 13 | - Set an exact numeric score |
+| `O-251` | line 13 | - Move ahead of a particular item |
+| `O-252` | line 13 | - Move behind a particular item |
+| `O-253` | line 13 | - Increase or decrease urgency by a fixed amount |
+| `O-254` | line 13 | - Pin an explicit ordering override |
+| `O-255` | line 13 | - Request recalculation |
+| `O-256` | line 13 | - Request triage |
+| `O-257` | line 13 | - Request immediate dispatch |
+| `O-258` | line 13 | Examples of desired interfaces: fleet priority set 842 high fleet priority set 842 475 fleet priority move 842 --before 761 fleet priority move 842 --after 903 fleet priority adjust 842 --delta -10 fleet priority explain 842 These may be im |
+| `O-259` | line 13 | Manual explicit moves should not be blocked by automatic prioritization hysteresis |
+| `O-260` | line 13 | Every change should still be recorded |
+
+## O-R005 — candidate (group)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-262, O-263, O-264, O-265, O-266, O-267, O-268, O-269, O-270, O-271, O-272, O-273, O-274, O-275, O-276, O-277, O-278, O-279, O-280, O-281, O-282, O-283, O-284, O-285, O-286, O-287, O-288, O-289, O-290, O-291, O-292, O-293, O-294, O-295
+
+Allow equal scores but guarantee deterministic total ordering with separate explicit relative key, oldest queue entry and stable ID; refine clusters gradually, handle collisions without mass renumbering, and prevent aggregate drift.
+
+Children: O-R054, O-R055, O-R056, O-R057
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-262` | line 13 | Stable Total Ordering Numerical urgency does not need to be unique |
+| `O-263` | line 13 | Many items may reasonably share: urgency_score = 1000 Nevertheless, the queue must have a deterministic total order |
+| `O-264` | line 13 | Recommended logical ordering: 1 |
+| `O-265` | line 13 | Effective scheduling urgency |
+| `O-266` | line 13 | 2 |
+| `O-267` | line 13 | Explicit relative-order key, if present |
+| `O-268` | line 13 | 3 |
+| `O-269` | line 13 | Original queue-entry time, oldest first |
+| `O-270` | line 13 | 4 |
+| `O-271` | line 13 | Stable work-item ID |
+| `O-272` | line 13 | For items with identical intrinsic urgency and no explicit ordering override, **oldest first** is a reasonable default |
+| `O-273` | line 13 | A newly created item that truly needs to run sooner should receive a more urgent score or explicit placement |
+| `O-274` | line 13 | ## 4.1 Separate the score from the tie-breaker Do not continually modify numeric urgency solely to force unique values |
+| `O-275` | line 13 | Introduce a secondary ordering mechanism |
+| `O-276` | line 13 | Possible implementations: - Fractional rank |
+| `O-277` | line 13 | - Lexicographic rank |
+| `O-278` | line 13 | - Sparse integer order key |
+| `O-279` | line 13 | - Another stable insert-before/after representation |
+| `O-280` | line 13 | Use the architecture that best fits the existing queue backend |
+| `O-281` | line 13 | An explicit `move before` request must remain meaningful even when two items share a score |
+| `O-282` | line 13 | ## 4.2 Gentle spacing Natural priority clusters are acceptable |
+| `O-283` | line 13 | However, triage may gradually distinguish items within a cluster |
+| `O-284` | line 13 | For example: Before: 1000: 50 items After initial comparison: 980: 25 items 1000: 10 items 1020: 10 items 1050: 5 items Later reviews may refine the clusters further |
+| `O-285` | line 13 | The purpose is to improve comparative ranking, not force every item onto a unique score |
+| `O-286` | line 13 | ## 4.3 Collision handling If an automatic adjustment lands on an occupied score: - Permit identical scores when justified |
+| `O-287` | line 13 | - Preserve deterministic order |
+| `O-288` | line 13 | - Optionally choose a nearby score, such as ±5 |
+| `O-289` | line 13 | - Prefer minimal local changes |
+| `O-290` | line 13 | - Avoid cascades of mass renumbering |
+| `O-291` | line 13 | - Respect explicit exact-score requests |
+| `O-292` | line 13 | A score collision is not an error |
+| `O-293` | line 13 | ## 4.4 No uncontrolled priority drift Automatic spacing must not collectively push every item upward or downward over time |
+| `O-294` | line 13 | Each adjustment requires a documented reason |
+| `O-295` | line 13 | Triage should preserve relative scale and distribution unless the actual work priorities have changed |
+
+## O-R006 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-297, O-298, O-299, O-300, O-301, O-302, O-303, O-304, O-305, O-306, O-307, O-308, O-309, O-310, O-311, O-312, O-313, O-314, O-315, O-316, O-317, O-318, O-319, O-320, O-321, O-322, O-323, O-324, O-325, O-326, O-327, O-328, O-329, O-330, O-331
+
+Reprioritize from age/triage recency, deadline, dependency, project/strategy, incidents, expected value, effort/resources, user input, opportunities and history; aging prompts reconsideration, not automatic escalation.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-297` | line 13 | Dynamic Reprioritization Priority should evolve as circumstances change |
+| `O-298` | line 13 | But aging alone must not guarantee that every item eventually becomes critical |
+| `O-299` | line 13 | The system should evaluate actual urgency signals |
+| `O-300` | line 13 | ## 5.1 Relevant signals - Age since creation |
+| `O-301` | line 13 | - Age since last meaningful triage |
+| `O-302` | line 13 | - Time since last execution attempt |
+| `O-303` | line 13 | - Deadlines |
+| `O-304` | line 13 | - Dependency relationships |
+| `O-305` | line 13 | - Project urgency |
+| `O-306` | line 13 | - Epic or parent-item urgency |
+| `O-307` | line 13 | - Current strategic direction |
+| `O-308` | line 13 | - Active incidents |
+| `O-309` | line 13 | - Changes in expected value |
+| `O-310` | line 13 | - Implementation effort |
+| `O-311` | line 13 | - Availability of required resources |
+| `O-312` | line 13 | - User requests |
+| `O-313` | line 13 | - Maintainer feedback |
+| `O-314` | line 13 | - Explicit deferment decisions |
+| `O-315` | line 13 | - Opportunity windows |
+| `O-316` | line 13 | - Recent execution or failure history |
+| `O-317` | line 13 | ## 5.2 Example: old medium item escalates An idea is initially: urgency = 1000 importance = medium After a week it remains untouched |
+| `O-318` | line 13 | A review finds that: - The opportunity is still relevant |
+| `O-319` | line 13 | - Implementation is straightforward |
+| `O-320` | line 13 | - Its delay is now affecting current work |
+| `O-321` | line 13 | It may move to: urgency = 780 This crosses into High |
+| `O-322` | line 13 | However, the mere passage of seven days should not automatically produce the same change for every idea |
+| `O-323` | line 13 | ## 5.3 Example: strategic pivot An item was previously: urgency = 520 A project pivot makes it less immediately relevant |
+| `O-324` | line 13 | It may move to: urgency = 1010 The system should not preserve outdated urgency simply because the previous classification was High |
+| `O-325` | line 13 | ## 5.4 Example: stable priority A speculative architectural idea remains useful but has no clear deadline |
+| `O-326` | line 13 | It may stay at: urgency = 1400 for weeks or months |
+| `O-327` | line 13 | Repeated triage can explicitly confirm that this is still appropriate |
+| `O-328` | line 13 | ## 5.5 Example: urgency decreases with time A short-lived integration opportunity becomes less valuable after its ecosystem changes |
+| `O-329` | line 13 | The item may gradually move downward |
+| `O-330` | line 13 | If the opportunity disappears, the system should reconsider whether to defer, replace, close, or retain the work |
+| `O-331` | line 13 | Do not blindly add a large number such as 9999 and abandon it |
+
+## O-R007 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-333, O-334, O-335, O-336, O-337, O-338, O-339, O-340, O-341, O-342, O-343, O-344, O-345, O-346, O-347, O-348, O-349, O-350, O-351, O-352, O-353, O-354, O-355
+
+Represent time-limited opportunities as separate boosts with expiry/re-triage; remove boost and reassess value/history on expiry, and support proportional escalation of high-potential opportunities.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-333` | line 13 | Time-Limited Opportunities Some work has modest importance but high temporary urgency |
+| `O-334` | line 13 | Example: > A useful integration can be implemented during the next three days before an upstream release |
+| `O-335` | line 13 | It is not strategically critical, but doing it now would be convenient |
+| `O-336` | line 13 | Represent this explicitly: intrinsic_urgency: 900 importance: low opportunity_deadline: date/time temporary_scheduling_boost: active expiry_policy: re-triage During the opportunity window, its effective scheduling urgency may be substantial |
+| `O-337` | line 13 | When the window expires: 1 |
+| `O-338` | line 13 | Remove the temporary boost |
+| `O-339` | line 13 | 2 |
+| `O-340` | line 13 | Review the item's remaining value |
+| `O-341` | line 13 | 3 |
+| `O-342` | line 13 | Recalculate scheduling urgency |
+| `O-343` | line 13 | 4 |
+| `O-344` | line 13 | Preserve the original decision history |
+| `O-345` | line 13 | 5 |
+| `O-346` | line 13 | Decide whether to defer, close, or rescope |
+| `O-347` | line 13 | Do not automatically convert an expired opportunity into a permanently forgotten item |
+| `O-348` | line 13 | ## 6.1 Escalation If an agent believes a low-importance opportunity has unusually high potential value, it should be able to escalate the question |
+| `O-349` | line 13 | Suggested routes: Agent → Triage Agent → Supervising agent Agent → Human decision channel Escalations should contain: - The opportunity |
+| `O-350` | line 13 | - Expected benefit |
+| `O-351` | line 13 | - Deadline |
+| `O-352` | line 13 | - Cost or effort |
+| `O-353` | line 13 | - Risk of delay |
+| `O-354` | line 13 | - Recommended action |
+| `O-355` | line 13 | Avoid escalating every small opportunity |
+
+## O-R008 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199, #9208
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure; #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** O-357, O-358, O-359, O-360, O-361, O-362, O-363, O-364, O-365, O-366, O-367, O-368, O-369, O-370, O-371, O-372, O-373, O-374, O-375, O-376, O-377
+
+Keep dependency pressure separate from intrinsic value; model typed hard/soft edges, cycle-safe selective propagation, effort/alternatives and explainable effective urgency; do not promote speculative blockers blindly.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-357` | line 13 | Dependency-Driven Urgency A low-importance task may become urgent because it blocks something important |
+| `O-358` | line 13 | Example: Work A: urgency = 500 importance = high blocked_by = Work B Work B: urgency = 1450 importance = low effort = small Work B is intrinsically low importance but operationally urgent because Work A cannot proceed without it |
+| `O-359` | line 13 | The system must recognize this |
+| `O-360` | line 13 | ## 7.1 Intrinsic versus inherited urgency Recommended approach: Keep Work B's intrinsic score: base_urgency = 1450 Compute temporary scheduling pressure: blocking_pressure = high And optionally: effective_urgency = 480 This allows Work B to |
+| `O-361` | line 13 | After the dependency is resolved, the inherited pressure disappears |
+| `O-362` | line 13 | ## 7.2 Dependency graph Support: blocks blocked_by related_to parent_of child_of duplicates supersedes Differentiate hard blockers from advisory dependencies |
+| `O-363` | line 13 | A hard dependency can affect execution eligibility |
+| `O-364` | line 13 | A soft relationship may only affect ranking or context |
+| `O-365` | line 13 | ## 7.3 Propagation rules Urgency propagation should consider: - Downstream urgency |
+| `O-366` | line 13 | - Whether the dependency is truly required |
+| `O-367` | line 13 | - Number of blocked items |
+| `O-368` | line 13 | - Critical-path position |
+| `O-369` | line 13 | - Estimated effort |
+| `O-370` | line 13 | - Probability of resolution |
+| `O-371` | line 13 | - Availability of alternatives |
+| `O-372` | line 13 | - Whether the blocker is actionable |
+| `O-373` | line 13 | Avoid indiscriminately promoting a giant speculative task to Emergency just because a high-priority item references it |
+| `O-374` | line 13 | If the blocker is large or uncertain, escalate for design or project-level planning rather than blindly increasing its score |
+| `O-375` | line 13 | ## 7.4 Cycle detection Detect dependency cycles |
+| `O-376` | line 13 | Do not let cyclic blocking relationships produce unbounded priority escalation |
+| `O-377` | line 13 | ## 7.5 Explainability Example: fleet priority explain 761 Desired result: Intrinsic urgency: 1450 (Low) Effective urgency: 480 (High) Reason: Blocks item 842 (urgency 500) Hard dependency Estimated effort: small Recommended action: Execute  |
+
+## O-R009 — candidate (group)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-379, O-380, O-381, O-382, O-383, O-384, O-385, O-386, O-387, O-388, O-389, O-390, O-391, O-392, O-393, O-394, O-395, O-396, O-397, O-398, O-399, O-400, O-401, O-402, O-403, O-404, O-405
+
+Triage refines comparisons/clusters gradually with configurable small/evidence-backed changes, one move per ordinary sweep, full decision provenance, bounded hysteresis and explicit high-confidence/manual bypass.
+
+Children: O-R058, O-R059, O-R060, O-R061
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-379` | line 13 | Automatic Triage and Priority Refinement Regular triage should improve ordering without generating excessive changes |
+| `O-380` | line 13 | ## 8.1 Triage dimensions Items may be compared along categories such as: Much more urgent Slightly more urgent Roughly equal Slightly less urgent Much less urgent Custom urgency Needs investigation The same conceptual categories can later b |
+| `O-381` | line 13 | ## 8.2 Gradual adjustment A typical minor adjustment might be: -10 = more urgent +10 = less urgent Larger moves should be possible when supported by evidence |
+| `O-382` | line 13 | Examples: -25 -50 +25 +50 Manual repositioning can be much larger |
+| `O-383` | line 13 | These values must be configurable |
+| `O-384` | line 13 | ## 8.3 Progressive cluster refinement Suppose 50 items have approximately equal urgency |
+| `O-385` | line 13 | A first pass might separate them into broad groups: 25 / 10 / 10 / 5 Later passes compare more closely related items: 10 / 10 / 5 Then: 5 / 3 / 2 Eventually, a few items warrant individual ordering |
+| `O-386` | line 13 | Do not require fixed group sizes |
+| `O-387` | line 13 | Use this as a strategy for progressively refining partially ordered sets |
+| `O-388` | line 13 | ## 8.4 Sweep ordering A reasonable approach is to examine lower-urgency cohorts first and proceed toward more urgent cohorts |
+| `O-389` | line 13 | However, avoid repeatedly processing the same ticket within one sweep merely because it moved into a later cohort |
+| `O-390` | line 13 | Recommended invariant: **Each item receives at most one automatic priority adjustment per ordinary sweep unless a separate high-confidence event requires immediate reconsideration.** This prevents runaway escalation loops |
+| `O-391` | line 13 | ## 8.5 Triage explanation Each adjustment should record: previous_urgency new_urgency source reason evidence confidence evaluated_at next_review_at Not every adjustment needs a public comment, but it must be auditable |
+| `O-392` | line 13 | --- # 9 |
+| `O-393` | line 13 | Resistance at Urgency-Band Boundaries A useful objective is to prevent low-confidence automatic adjustments from repeatedly bouncing items across bands |
+| `O-394` | line 13 | For example: Standard: 800–1199 High: 400–799 An item approaching 800 from the Standard band should not cross merely because of tiny, noisy ranking changes |
+| `O-395` | line 13 | ## 9.1 Proposed hysteresis Support: boundary_buffer: configurable automatic_crossing_confidence: configurable review_cooldown: configurable For example: boundary_buffer = 30 automatic_crossing_confidence = 0.8 Within the boundary buffer, re |
+| `O-396` | line 13 | This is a policy example, not a universal mathematical law |
+| `O-397` | line 13 | ## 9.2 Allowed exceptions Crossing should remain immediate for: - Authorized manual action |
+| `O-398` | line 13 | - Confirmed hard deadline |
+| `O-399` | line 13 | - Active critical incident |
+| `O-400` | line 13 | - Explicit high-confidence dependency pressure |
+| `O-401` | line 13 | - Verified major project reprioritization |
+| `O-402` | line 13 | ## 9.3 Avoid permanent band trapping Hysteresis is resistance, not a wall |
+| `O-403` | line 13 | An item that consistently deserves promotion must be able to cross |
+| `O-404` | line 13 | Record the evidence and allow persistent signals to accumulate |
+| `O-405` | line 13 | --- # 10 |
+
+## O-R010 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** CF-004
+**Occurrence refs:** O-406, O-407, O-408, O-409, O-410, O-411, O-412, O-413, O-414, O-415, O-416, O-417, O-418, O-419, O-420, O-421, O-422, O-423, O-424, O-425, O-426, O-427, O-428, O-429, O-430, O-431, O-432, O-433, O-434, O-435, O-436, O-437, O-438, O-439, O-440, O-441, O-442, O-443, O-444, O-445, O-446, O-447, O-448
+
+Project canonical numeric urgency to existing GitHub labels; normalize authorized additions, preserve score on last-label removal while triaging, handle conflicts safely, and keep needs-triage from launching implementation.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-406` | line 13 | GitHub Priority Labels GitHub labels should make urgency visible without creating a competing source of truth |
+| `O-407` | line 13 | Possible canonical names: priority:emergency priority:supercritical priority:critical priority:high priority:standard priority:low priority:someday priority:cold Adapt these names to the repository's existing label conventions |
+| `O-408` | line 13 | Do not create parallel labels when equivalent ones already exist |
+| `O-409` | line 13 | ## 10.1 Normal direction Fleet numeric urgency determines the canonical band |
+| `O-410` | line 13 | Fleet should maintain the corresponding GitHub priority label |
+| `O-411` | line 13 | Example: urgency_score = 600 GitHub: priority:high Changing the numeric score from 600 to 1000 should remove the old priority label and add the new one |
+| `O-412` | line 13 | ## 10.2 GitHub labels as commands GitHub label changes may also represent intentional human input |
+| `O-413` | line 13 | When an authorized actor adds: priority:critical Fleet should treat it as an input event |
+| `O-414` | line 13 | Suggested behavior: 1 |
+| `O-415` | line 13 | Validate the label and actor |
+| `O-416` | line 13 | 2 |
+| `O-417` | line 13 | Read the current work-item state |
+| `O-418` | line 13 | 3 |
+| `O-419` | line 13 | Map the label to the configured band default or appropriate retained intra-band position |
+| `O-420` | line 13 | 4 |
+| `O-421` | line 13 | Update numeric urgency |
+| `O-422` | line 13 | 5 |
+| `O-423` | line 13 | Remove conflicting priority labels |
+| `O-424` | line 13 | 6 |
+| `O-425` | line 13 | Record the source and reason |
+| `O-426` | line 13 | 7 |
+| `O-427` | line 13 | Reproject GitHub and PM Stack views |
+| `O-428` | line 13 | 8 |
+| `O-429` | line 13 | Reconsider scheduling |
+| `O-430` | line 13 | Example: priority:critical → default 300 Do not repeatedly reset an item's carefully tuned intra-band score when merely reconciling an unchanged label |
+| `O-431` | line 13 | ## 10.3 Priority label removed If the last priority label is removed: - Do not invent an emergency urgency |
+| `O-432` | line 13 | - Do not silently reset to 1000 |
+| `O-433` | line 13 | - Preserve the existing numeric score pending review |
+| `O-434` | line 13 | - Mark the item `needs-triage` |
+| `O-435` | line 13 | - Put it at the front of the **triage queue**, not necessarily the execution queue |
+| `O-436` | line 13 | - Record why triage was requested |
+| `O-437` | line 13 | If another valid priority label remains, normalize according to that label |
+| `O-438` | line 13 | ## 10.4 Conflicting labels If a new priority label is added while an old one remains: - Prefer the newly authorized, explicitly added label when event ordering is reliable |
+| `O-439` | line 13 | - Remove conflicting labels |
+| `O-440` | line 13 | - Update numeric urgency |
+| `O-441` | line 13 | If event ordering or authorization is ambiguous: - Preserve the existing canonical value |
+| `O-442` | line 13 | - Mark a priority-label conflict |
+| `O-443` | line 13 | - Send the item to high-priority triage |
+| `O-444` | line 13 | ## 10.5 `needs-triage` Adding a `needs-triage` label should: - Create or update a triage request |
+| `O-445` | line 13 | - Expedite triage selection |
+| `O-446` | line 13 | - Preserve the underlying work-item urgency |
+| `O-447` | line 13 | - Avoid automatically launching an implementation agent |
+| `O-448` | line 13 | A command or policy may explicitly request immediate triage |
+
+## O-R011 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9203, #9209
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** CF-006
+**Occurrence refs:** O-450, O-451, O-452, O-453, O-454, O-455, O-456, O-457, O-458, O-459, O-460, O-461, O-462, O-463, O-464, O-465, O-466, O-467, O-468, O-469, O-470, O-471, O-472, O-473, O-474, O-475, O-476, O-477, O-478, O-479, O-480, O-481, O-482, O-483, O-484, O-485, O-486
+
+Treat do-now as a durable, authenticated one-shot dispatch request; route to a live session or dispatch through authorized mechanism, bind/record/acknowledge, preserve blockers, and deduplicate deliveries.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-450` | line 13 | Do Now and Immediate Dispatch Introduce an explicit directive such as: do-now The exact label name should follow existing conventions |
+| `O-451` | line 13 | ## 11.1 Semantics `do-now` means: > Begin the appropriate authorized action immediately, or explain why it cannot safely begin |
+| `O-452` | line 13 | It must not simply mean: > Increase the item's numeric urgency |
+| `O-453` | line 13 | The directive may be transient |
+| `O-454` | line 13 | ## 11.2 Mechanical handling On an authorized `do-now` event: 1 |
+| `O-455` | line 13 | Validate actor and permission |
+| `O-456` | line 13 | 2 |
+| `O-457` | line 13 | Deduplicate the event |
+| `O-458` | line 13 | 3 |
+| `O-459` | line 13 | Resolve work-item identity |
+| `O-460` | line 13 | 4 |
+| `O-461` | line 13 | Inspect current lifecycle and blockers |
+| `O-462` | line 13 | 5 |
+| `O-463` | line 13 | Determine whether a live session exists |
+| `O-464` | line 13 | 6 |
+| `O-465` | line 13 | If live, route the request to that session |
+| `O-466` | line 13 | 7 |
+| `O-467` | line 13 | Otherwise, directly dispatch a session through the established mechanism |
+| `O-468` | line 13 | 8 |
+| `O-469` | line 13 | Claim or bind the item appropriately |
+| `O-470` | line 13 | 9 |
+| `O-471` | line 13 | Record task/session identity |
+| `O-472` | line 13 | 10 |
+| `O-473` | line 13 | Update visible status |
+| `O-474` | line 13 | 11 |
+| `O-475` | line 13 | Acknowledge the result |
+| `O-476` | line 13 | Do not merely append an ordinary queue item and hope it gets picked soon |
+| `O-477` | line 13 | ## 11.3 Blocked items A blocked item should not automatically lose its hard blockers just because someone applies `do-now` |
+| `O-478` | line 13 | Possible outcomes: - Dispatch an inspection/unblocking agent |
+| `O-479` | line 13 | - Escalate for human approval |
+| `O-480` | line 13 | - Reject the start with an actionable explanation |
+| `O-481` | line 13 | - Begin a permitted independent subtask |
+| `O-482` | line 13 | Do not silently bypass dependency policy |
+| `O-483` | line 13 | ## 11.4 One-shot behavior The directive should have a durable request identity |
+| `O-484` | line 13 | Repeated webhook deliveries should not launch duplicate sessions |
+| `O-485` | line 13 | Once handled, Fleet may clear the label, record it as consumed, or maintain an explicit request status according to policy |
+| `O-486` | line 13 | --- # 12 |
+
+## O-R012 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9201
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control
+**Conflict refs:** none identified
+**Occurrence refs:** O-487, O-488, O-489, O-490, O-491, O-492, O-493, O-494, O-495, O-496, O-497, O-498, O-499, O-500, O-501, O-502, O-503, O-504, O-505, O-506, O-507, O-508, O-509, O-510, O-511, O-512, O-513, O-514, O-515, O-516, O-517, O-518, O-519, O-520, O-521, O-522, O-523, O-524, O-525, O-526, O-527, O-528, O-529, O-530, O-531, O-532, O-533, O-534
+
+Project lifecycle-aware board states and views; blocked/parked outrank urgency-based Ready, claims publish session/ownership, parked work retains continuation data, and views derive from canonical shared model.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-487` | line 13 | GitHub and PM Stack Workflow Visibility The GitHub and PM Stack views should agree on a task's lifecycle |
+| `O-488` | line 13 | ## 12.1 Suggested board columns Inbox / Triage Backlog Ready / Todo In Progress Review Blocked Parked Done The actual PM Stack schema should determine the final representation |
+| `O-489` | line 13 | ## 12.2 Suggested default projections **Inbox / Triage** - Newly created untriaged items |
+| `O-490` | line 13 | - Explicit `needs-triage` |
+| `O-491` | line 13 | - Priority-label conflicts |
+| `O-492` | line 13 | - Missing classification requiring attention |
+| `O-493` | line 13 | **Ready / Todo** - Unblocked, executable High-and-above work |
+| `O-494` | line 13 | - Explicitly expedited work |
+| `O-495` | line 13 | - Items assigned to the owner for near-term action |
+| `O-496` | line 13 | - Items directly designated ready |
+| `O-497` | line 13 | **Backlog** - Standard and lower-urgency work not otherwise ready |
+| `O-498` | line 13 | - Work awaiting normal selection |
+| `O-499` | line 13 | **In Progress** - Actively claimed/executing work |
+| `O-500` | line 13 | - A verified bound agent session |
+| `O-501` | line 13 | **Review** - Implementation completed but awaiting review, checks, or approved merge |
+| `O-502` | line 13 | **Blocked** - Work with unresolved hard blockers |
+| `O-503` | line 13 | **Parked** - Work previously picked up and intentionally set aside |
+| `O-504` | line 13 | - Checkpoint and reason preserved |
+| `O-505` | line 13 | **Done** - Verified completed work |
+| `O-506` | line 13 | A blocked or parked status should take precedence over a simple urgency-based Ready classification |
+| `O-507` | line 13 | ## 12.3 Picked-up work When an agent claims work, Fleet should: - Update queue ownership and execution state |
+| `O-508` | line 13 | - Update configured GitHub labels |
+| `O-509` | line 13 | - Update the task-level GitHub Project status to In Progress |
+| `O-510` | line 13 | - Update PM Stack projections |
+| `O-511` | line 13 | - Create or update a managed progress comment where appropriate |
+| `O-512` | line 13 | - Record the agent/session identity |
+| `O-513` | line 13 | - Record the claim timestamp |
+| `O-514` | line 13 | Avoid adding a new public comment on every lease heartbeat |
+| `O-515` | line 13 | ## 12.4 Parked and blocked work A previously claimed item should visibly retain its history |
+| `O-516` | line 13 | At minimum: previous_agent previous_session last_checkpoint reason blocked_by next_action last_activity Triage agents and subsequent workers should be able to see why the item stopped |
+| `O-517` | line 13 | The board should not misleadingly return previously worked, blocked items to a generic untouched Backlog column |
+| `O-518` | line 13 | ## 12.5 Views Useful board views include: - All work |
+| `O-519` | line 13 | - Ready / Todo |
+| `O-520` | line 13 | - High urgency |
+| `O-521` | line 13 | - Critical path |
+| `O-522` | line 13 | - Blocking other work |
+| `O-523` | line 13 | - My work |
+| `O-524` | line 13 | - Active agents |
+| `O-525` | line 13 | - Awaiting review |
+| `O-526` | line 13 | - Parked / Blocked |
+| `O-527` | line 13 | - Needs triage |
+| `O-528` | line 13 | - Recently changed |
+| `O-529` | line 13 | - Cold backlog |
+| `O-530` | line 13 | - By repository |
+| `O-531` | line 13 | - By project or epic |
+| `O-532` | line 13 | - By owner or execution lane |
+| `O-533` | line 13 | Each view should derive from a shared canonical model |
+| `O-534` | line 13 | --- # 13 |
+
+## O-R013 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9201, #9203
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-535, O-536, O-537, O-538, O-539, O-540, O-541, O-542, O-543, O-544, O-545, O-546, O-547, O-548, O-549, O-550, O-551, O-552, O-553, O-554, O-555, O-556, O-557, O-558, O-559, O-560, O-561, O-562, O-563, O-564, O-565, O-566, O-567, O-568, O-569, O-570, O-571, O-572, O-573, O-574, O-575, O-576, O-577, O-578, O-579, O-580, O-581
+
+Provide interactive mobile control and capability-aware agent panel through same authorized Fleet operation layer; report pending/rejected/conflicted outcomes and actual provider capabilities.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-535` | line 13 | Mobile-Friendly PM Stack PM Stack should work well on a phone and in a standard desktop browser |
+| `O-536` | line 13 | It should not be merely a read-only miniature board |
+| `O-537` | line 13 | ## 13.1 Mobile usability Support: - Responsive layouts |
+| `O-538` | line 13 | - Touch-friendly controls |
+| `O-539` | line 13 | - Search and filtering |
+| `O-540` | line 13 | - Accessible labels and keyboard interactions |
+| `O-541` | line 13 | - Clear state and priority indicators |
+| `O-542` | line 13 | - Compact issue details |
+| `O-543` | line 13 | - Fast loading |
+| `O-544` | line 13 | - Visible errors and pending operations |
+| `O-545` | line 13 | - Confirmation for consequential actions |
+| `O-546` | line 13 | ## 13.2 Minimum mobile actions From a phone, an authorized user should be able to: 1 |
+| `O-547` | line 13 | Search Fleet work items |
+| `O-548` | line 13 | 2 |
+| `O-549` | line 13 | Inspect queue metadata |
+| `O-550` | line 13 | 3 |
+| `O-551` | line 13 | Read issue and PR summaries |
+| `O-552` | line 13 | 4 |
+| `O-553` | line 13 | Add a note |
+| `O-554` | line 13 | 5 |
+| `O-555` | line 13 | Add or reply to a comment |
+| `O-556` | line 13 | 6 |
+| `O-557` | line 13 | Change urgency |
+| `O-558` | line 13 | 7 |
+| `O-559` | line 13 | Set or clear `do-now` |
+| `O-560` | line 13 | 8 |
+| `O-561` | line 13 | Move an item to Ready, Parked, or Blocked as permitted |
+| `O-562` | line 13 | 9 |
+| `O-563` | line 13 | Request triage |
+| `O-564` | line 13 | 10 |
+| `O-565` | line 13 | Request an agent |
+| `O-566` | line 13 | 11 |
+| `O-567` | line 13 | View current session status |
+| `O-568` | line 13 | 12 |
+| `O-569` | line 13 | Send a message to a live agent |
+| `O-570` | line 13 | 13 |
+| `O-571` | line 13 | Ask for a status report |
+| `O-572` | line 13 | 14 |
+| `O-573` | line 13 | Inspect dependencies |
+| `O-574` | line 13 | 15 |
+| `O-575` | line 13 | View recent work and completion outcomes |
+| `O-576` | line 13 | ## 13.3 One command service The PM Stack UI should call the same authorized operation layer used by Fleet CLI |
+| `O-577` | line 13 | Avoid implementing separate priority and lifecycle logic in browser code |
+| `O-578` | line 13 | The browser may expose an action such as: Reprioritize item Internally it should invoke a validated Fleet operation or equivalent shared service |
+| `O-579` | line 13 | The UI must report whether the action: succeeded is pending synchronization was rejected needs confirmation conflicted with newer state ## 13.4 Agent interaction panel An item detail view should expose: Agent status Execution lane Session I |
+| `O-580` | line 13 | Use adapters rather than pretending all agent systems support identical live-session controls |
+| `O-581` | line 13 | --- # 14 |
+
+## O-R014 — candidate (group)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-582, O-583, O-584, O-585, O-586, O-587, O-588, O-589, O-590, O-591, O-592, O-593, O-594, O-595, O-596, O-597, O-598, O-599, O-600, O-601, O-602, O-603, O-604, O-605, O-606, O-607, O-608, O-609, O-610, O-611, O-612, O-613, O-614, O-615, O-616, O-617, O-618, O-619, O-620, O-621, O-622, O-623, O-624, O-625, O-626, O-627, O-628, O-629, O-630, O-631, O-632, O-633, O-634, O-635
+
+Authenticate/authorize comments and slash commands; route actionable active/parked instructions, expose honest adapter delivery/ack, apply replay/idempotency/audit/rate controls, and make failures visible without silently degrading direct dispatch.
+
+Children: O-R062, O-R063, O-R064, O-R065
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-582` | line 13 | Comments, Commands, and Agent Routing GitHub comments and the PM Stack UI should be useful control surfaces |
+| `O-583` | line 13 | However, comments are untrusted external input until authenticated and authorized |
+| `O-584` | line 13 | ## 14.1 Proposed command syntax Examples: /fleet status /fleet triage /fleet triage now /fleet start /fleet resume /fleet retry /fleet park /fleet unblock /fleet priority high /fleet priority 575 /fleet do-now /fleet merge /fleet agent stat |
+| `O-585` | line 13 | ## 14.2 Security A webhook must not execute arbitrary shell commands simply because a GitHub comment contains slash syntax |
+| `O-586` | line 13 | Implement: - Signed webhook verification |
+| `O-587` | line 13 | - Authorized actor checks |
+| `O-588` | line 13 | - Explicit command allowlists |
+| `O-589` | line 13 | - Role-based permissions |
+| `O-590` | line 13 | - Confirmation for high-impact operations |
+| `O-591` | line 13 | - Input validation |
+| `O-592` | line 13 | - Replay protection |
+| `O-593` | line 13 | - Idempotency |
+| `O-594` | line 13 | - Audit logs |
+| `O-595` | line 13 | - Rate limiting |
+| `O-596` | line 13 | - Session routing authorization |
+| `O-597` | line 13 | A random external contributor must not be able to force a merge, change queue priority, or start privileged agents |
+| `O-598` | line 13 | ## 14.3 Normal comments on active work An authorized user may comment naturally on a live issue: > Please check the new reconnect case before merging |
+| `O-599` | line 13 | When policy permits, Fleet should: 1 |
+| `O-600` | line 13 | Detect the comment |
+| `O-601` | line 13 | 2 |
+| `O-602` | line 13 | Associate it with the work item |
+| `O-603` | line 13 | 3 |
+| `O-604` | line 13 | Identify the live agent session |
+| `O-605` | line 13 | 4 |
+| `O-606` | line 13 | Forward the message to that session |
+| `O-607` | line 13 | 5 |
+| `O-608` | line 13 | Record delivery and acknowledgment |
+| `O-609` | line 13 | 6 |
+| `O-610` | line 13 | Update the activity journal |
+| `O-611` | line 13 | 7 |
+| `O-612` | line 13 | Make the result visible |
+| `O-613` | line 13 | Do not require a special slash command for every normal instruction from an authorized owner |
+| `O-614` | line 13 | ## 14.4 Parked work An authorized actionable comment on a parked item may trigger: - Direct resumption |
+| `O-615` | line 13 | - A new session |
+| `O-616` | line 13 | - Immediate triage |
+| `O-617` | line 13 | - An explicit inability-to-resume response |
+| `O-618` | line 13 | It should not merely move to the front of the normal queue |
+| `O-619` | line 13 | If the item is blocked, preserve safety and dependency rules |
+| `O-620` | line 13 | ## 14.5 Live-session adapters Possible targets include: - OpenCode sessions |
+| `O-621` | line 13 | - Existing Fleet execution lanes |
+| `O-622` | line 13 | - Other supported agent providers |
+| `O-623` | line 13 | - Muse Agent through an available authorized channel |
+| `O-624` | line 13 | - Slack-mediated communication where appropriate |
+| `O-625` | line 13 | - GitHub comments when direct session messaging is unavailable |
+| `O-626` | line 13 | Inspect actual provider APIs and integration contracts before implementing |
+| `O-627` | line 13 | The internal abstraction might be: agent.session.find agent.session.send agent.session.status agent.session.start agent.session.resume agent.session.stop Each adapter must honestly report supported capabilities |
+| `O-628` | line 13 | A Slack message being posted is not proof that an agent received and acted upon it |
+| `O-629` | line 13 | ## 14.6 Immediate event flow GitHub / PM Stack event \| v Authenticate and authorize \| v Resolve work item \| v Deduplicate event \| v Find active session / \ Yes No \| \| v v Send message Direct dispatch \| \| v v Await ACK Bind new session \ / v |
+| `O-630` | line 13 | - Report the failure |
+| `O-631` | line 13 | - Preserve any required retry intent |
+| `O-632` | line 13 | - Avoid claiming that the agent started |
+| `O-633` | line 13 | - Use an authorized alternate route only where configured |
+| `O-634` | line 13 | The system should not silently convert an immediate request into an ordinary low-visibility queue item |
+| `O-635` | line 13 | --- # 15 |
+
+## O-R015 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-005
+**Occurrence refs:** O-636, O-637, O-638, O-639, O-640, O-641, O-642, O-643, O-644, O-645, O-646, O-647, O-648, O-649, O-650, O-651, O-652, O-653, O-654, O-655, O-656, O-657, O-658, O-659, O-660, O-661, O-662, O-663, O-664, O-665, O-666
+
+Select highest eligible effective urgency normally; bounded exploration only when urgent work does not require lane; persist three dispositions before action, never lease all sampled candidates, and treat random selection as attention rather than forced work.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-636` | line 13 | Queue Selection and Exploratory Work Normal lanes should favor eligible work with the strongest current scheduling urgency |
+| `O-637` | line 13 | However, purely deterministic priority selection can cause useful lower-urgency items to be neglected indefinitely |
+| `O-638` | line 13 | Introduce bounded exploratory selection |
+| `O-639` | line 13 | ## 15.1 Normal selection Default: Select highest effective scheduling urgency among eligible items for the lane |
+| `O-640` | line 13 | Respect: - Dependencies |
+| `O-641` | line 13 | - Capabilities |
+| `O-642` | line 13 | - Ownership |
+| `O-643` | line 13 | - Leases |
+| `O-644` | line 13 | - Resource constraints |
+| `O-645` | line 13 | - Explicit directives |
+| `O-646` | line 13 | - Fairness policies |
+| `O-647` | line 13 | ## 15.2 Exploration opportunity When no eligible Emergency, Supercritical, Critical, or immediate-dispatch work requires the lane, it may occasionally perform an exploratory selection |
+| `O-648` | line 13 | Initial suggested probability: exploration_probability = 0.04 This is a proposed default, not a mandated value |
+| `O-649` | line 13 | Make it configurable by lane and workload |
+| `O-650` | line 13 | Exploration must not displace an available critical task |
+| `O-651` | line 13 | ## 15.3 Three-item exploration draw An exploration event selects three distinct work items |
+| `O-652` | line 13 | Example: fleet queue explore \ --count 3 \ --strategy weighted \ --explain The agent reviews all three before choosing what to do |
+| `O-653` | line 13 | Possible dispositions: Catch / Select for execution Triage Reprioritize / Defer Release unchanged The agent should persist decisions for all three before starting extended work on any one item |
+| `O-654` | line 13 | This is important because execution might terminate before the remaining items are handled |
+| `O-655` | line 13 | ## 15.4 Selection intent versus lease Do not claim three exclusive execution leases merely because three items were drawn |
+| `O-656` | line 13 | Persist an exploration event and three candidate dispositions |
+| `O-657` | line 13 | Acquire an execution lease only when actually beginning work on an item |
+| `O-658` | line 13 | ## 15.5 Unfinished exploration decisions If the agent terminates after deciding but before acting, preserve its decisions |
+| `O-659` | line 13 | Possible default hints: Selected for execution: suggested urgency adjustment -20 Selected for triage: suggested urgency adjustment -10 Defer / reprioritize downward: suggested urgency adjustment +10 These values are configurable |
+| `O-660` | line 13 | **Preferred initial implementation:** Record durable triage hints and allow an existing triage process to validate and apply them |
+| `O-661` | line 13 | This is safer than mechanically changing priority merely because an exploratory agent happened to select an item |
+| `O-662` | line 13 | If a bounded automatic adjustment policy is later enabled, apply each hint at most once and preserve the source event |
+| `O-663` | line 13 | ## 15.6 No forced work An exploration draw is an opportunity for evaluation |
+| `O-664` | line 13 | The agent may determine that none of the three should be executed immediately |
+| `O-665` | line 13 | The goal is to improve attention and prioritization, not create artificial work |
+| `O-666` | line 13 | --- # 16 |
+
+## O-R016 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-005, CF-008
+**Occurrence refs:** O-667, O-668, O-669, O-670, O-671, O-672, O-673, O-674, O-675, O-676, O-677, O-678, O-679, O-680, O-681, O-682, O-683, O-684, O-685, O-686, O-687
+
+Retain weighted exploration formula as configurable candidate, calculate density on eligible pool, sample without replacement, explain/simulate parameters, and do not fabricate importance.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-667` | line 13 | Weighted Random Selection Formula Use exponential weighted random selection with configurable lower-value preference and density correction |
+| `O-668` | line 13 | Default values: Value preference: 1.25× per 200-point difference Density correction: 0.50 Numerical bucket width: 200 For item i: w_i = r^(-(u_i - u_ref) / d) × n_b(i)^(-alpha) Where: u_i = item's numeric urgency u_ref = reference score, e. |
+| `O-669` | line 13 | 500 r = preference multiplier, default 1.25 d = point distance, default 200 n_b(i) = item count within the score bucket alpha = density correction exponent, default 0.50 The reference value does not affect relative probabilities when applie |
+| `O-670` | line 13 | Lower urgency scores receive greater weight |
+| `O-671` | line 13 | Density correction reduces the advantage of large clusters without eliminating it |
+| `O-672` | line 13 | ## 16.1 Interpretation If: r = 1.25 d = 200 then an item 200 urgency points lower receives 1.25 times the base weight of the higher-numbered item, before density adjustment |
+| `O-673` | line 13 | If: alpha = 0.5 then a bucket containing many items receives less total weight than it would under pure per-item selection |
+| `O-674` | line 13 | The approximate total bucket effect becomes proportional to the square root of its item count when item scores within the bucket are similar |
+| `O-675` | line 13 | ## 16.2 Probability normalization For eligible items: P(i) = w_i / sum(w_j) Sample without replacement when selecting multiple items |
+| `O-676` | line 13 | ## 16.3 Optional minimum exploration floor To prevent extremely low-weight items from becoming practically invisible in large queues, support an optional uniform mixture: P_final(i) = (1 - epsilon) × P_weighted(i) + epsilon × (1 / N) Sugges |
+| `O-677` | line 13 | ## 16.4 Cluster correction Calculate bucket population over the relevant candidate pool, not unrelated queue records |
+| `O-678` | line 13 | Do not include completed or otherwise ineligible work in the density count for executable selection |
+| `O-679` | line 13 | For triage exploration, a broader population may be appropriate |
+| `O-680` | line 13 | ## 16.5 Configurable controls Expose: preference_multiplier preference_distance density_exponent bucket_width uniform_floor exploration_probability exploration_count Support seeded simulation and an explain mode |
+| `O-681` | line 13 | ## 16.6 Extend to importance When a separate importance scale exists, support selecting an exploration axis |
+| `O-682` | line 13 | Illustrative policy: urgency_axis_probability = 0.70 importance_axis_probability = 0.30 The chosen axis determines the relevant weighting and filtering |
+| `O-683` | line 13 | Initially, when only urgency is available, use urgency exclusively |
+| `O-684` | line 13 | Do not fabricate importance values from the urgency score |
+| `O-685` | line 13 | An alternative multi-dimensional weighted strategy may be preferable after observing the data |
+| `O-686` | line 13 | This should be evaluated before locking in the final API |
+| `O-687` | line 13 | --- # 17 |
+
+## O-R017 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199, #9201
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure; #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control
+**Conflict refs:** none identified
+**Occurrence refs:** O-688, O-689, O-690, O-691, O-692, O-693, O-694, O-695, O-696, O-697, O-698
+
+Let project/epic phase, deadlines and dependencies influence effective order selectively; prioritize critical path/unblockers, avoid escalating unrelated children, and expose project plus item urgency.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-688` | line 13 | Project and Epic Urgency Project-level context should influence work scheduling |
+| `O-689` | line 13 | A project or epic may have: intrinsic_importance target_deadline phase urgency dependencies current_health status When an epic becomes urgent, certain child items may inherit scheduling pressure |
+| `O-690` | line 13 | However, not every child task necessarily becomes urgent |
+| `O-691` | line 13 | Prioritize: - Critical-path items |
+| `O-692` | line 13 | - Immediate prerequisites |
+| `O-693` | line 13 | - Small unblocking tasks |
+| `O-694` | line 13 | - Required integration work |
+| `O-695` | line 13 | Do not automatically escalate unrelated optional enhancements |
+| `O-696` | line 13 | Conversely, when a project is paused or pivoted, previously urgent work should be reconsidered |
+| `O-697` | line 13 | The PM Stack board should explain both item-level and project-level urgency |
+| `O-698` | line 13 | --- # 18 |
+
+## O-R018 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9200
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** O-699, O-700, O-701, O-702, O-703
+
+Keep Fleet as canonical urgency/source owner and PM/GitHub projections non-authoritative; route mutations through shared service and reconcile idempotently.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-699` | line 13 | Source-of-Truth and Synchronization Recommended ownership: \| Data \| Primary authority \| \|---\|---\| \| Numeric intrinsic urgency \| Fleet queue \| \| Importance \| Fleet work metadata \| \| Effective scheduling urgency \| Fleet scheduling policy \| \|  |
+| `O-700` | line 13 | They do not need to become the independent permanent source of numeric urgency |
+| `O-701` | line 13 | PM Stack should submit mutations through the same validated command/service layer as Fleet CLI |
+| `O-702` | line 13 | Use an outbox and idempotent reconciliation to keep projections aligned |
+| `O-703` | line 13 | --- # 19 |
+
+## O-R019 — requirement (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198, #9200
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation
+**Conflict refs:** none identified
+**Occurrence refs:** O-704, O-705, O-706, O-707, O-708, O-709, O-710, O-711, O-712, O-713, O-714, O-715, O-716, O-717, O-718, O-719, O-720, O-721, O-722, O-723, O-724, O-725, O-726, O-727, O-728, O-729, O-730, O-731, O-732, O-733, O-734, O-735
+
+Integrate with Queue Table Improvements without competing schema; extend shared fields, allow safe independent design/UI work, gate schema-coupled features, and verify real dependencies.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-704` | line 13 | Integration With Queue Table Improvements This design is related to, but distinct from, the underlying queue-table redesign |
+| `O-705` | line 13 | Inspect the existing plan first |
+| `O-706` | line 13 | Potential shared foundations include: - Expanded queue metadata |
+| `O-707` | line 13 | - Typed dependencies |
+| `O-708` | line 13 | - Richer status and ownership |
+| `O-709` | line 13 | - Stable ordering keys |
+| `O-710` | line 13 | - Event history |
+| `O-711` | line 13 | - Source-specific synchronization cursors |
+| `O-712` | line 13 | - Priority and importance fields |
+| `O-713` | line 13 | - Session references |
+| `O-714` | line 13 | - Time-based eligibility |
+| `O-715` | line 13 | - Project and epic relationships |
+| `O-716` | line 13 | - Durable outbox records |
+| `O-717` | line 13 | ## 19.1 Avoid a competing schema If Queue Table Improvements already defines these fields, extend that design instead of introducing another set |
+| `O-718` | line 13 | Use additive compatibility layers if near-term UI work needs to proceed before the database migration |
+| `O-719` | line 13 | ## 19.2 Stage the work **Can potentially proceed independently:** - Architecture documentation |
+| `O-720` | line 13 | - GitHub label normalization design |
+| `O-721` | line 13 | - Mobile UX specification |
+| `O-722` | line 13 | - Read-only board improvements |
+| `O-723` | line 13 | - Priority-band configuration |
+| `O-724` | line 13 | - CLI command contract design |
+| `O-725` | line 13 | - Triage policy simulations |
+| `O-726` | line 13 | - Direct-dispatch contract analysis |
+| `O-727` | line 13 | **Likely gated on shared queue foundations:** - Persisted importance dimensions |
+| `O-728` | line 13 | - Expanded dependency graph |
+| `O-729` | line 13 | - Stable relative-order fields |
+| `O-730` | line 13 | - New workflow state columns |
+| `O-731` | line 13 | - Rich session bindings |
+| `O-732` | line 13 | - Outbox-backed bidirectional updates |
+| `O-733` | line 13 | - Canonical effective-urgency computation |
+| `O-734` | line 13 | The dispatched design agent must verify the actual dependencies |
+| `O-735` | line 13 | --- # 20 |
+
+## O-R020 — example (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** O-736, O-737, O-738, O-739, O-740, O-741, O-742, O-743, O-744, O-745, O-746, O-747, O-748, O-749, O-750, O-751, O-752, O-753, O-754, O-755, O-756, O-757, O-758, O-759, O-760, O-761, O-762, O-763, O-764, O-765, O-766, O-767, O-768, O-769, O-770, O-771, O-772, O-773, O-774, O-775, O-776
+
+Retain the original acceptance checklist across priority, aging/dependency pressure, selection, boards/mobile and direct interactions as acceptance coverage, not extra independent mechanisms.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-736` | line 13 | Acceptance Criteria ## Priority - [ ] All items have a clear numeric urgency or explicit untriaged state |
+| `O-737` | line 13 | - [ ] Default Standard urgency is configurable, initially 1000 |
+| `O-738` | line 13 | - [ ] Priority labels match the canonical band |
+| `O-739` | line 13 | - [ ] Authorized label changes update the numeric score |
+| `O-740` | line 13 | - [ ] Removing the last priority label requests urgent triage |
+| `O-741` | line 13 | - [ ] Conflicting labels are handled deterministically or escalated |
+| `O-742` | line 13 | - [ ] Manual exact-score and relative-order edits work |
+| `O-743` | line 13 | - [ ] Equal-score items have deterministic ordering |
+| `O-744` | line 13 | - [ ] Cold backlog is not invisible |
+| `O-745` | line 13 | ## Dynamic reprioritization - [ ] Aging can cause appropriate promotion or demotion |
+| `O-746` | line 13 | - [ ] Aging does not universally promote every task |
+| `O-747` | line 13 | - [ ] Project pivots can reduce urgency |
+| `O-748` | line 13 | - [ ] Hard dependencies can create temporary scheduling pressure |
+| `O-749` | line 13 | - [ ] Intrinsic and effective urgency remain distinguishable |
+| `O-750` | line 13 | - [ ] Boundary hysteresis avoids noisy oscillation |
+| `O-751` | line 13 | - [ ] Manual changes override automatic resistance |
+| `O-752` | line 13 | - [ ] Priority history is auditable |
+| `O-753` | line 13 | ## Selection - [ ] Normal lanes favor highest eligible effective urgency |
+| `O-754` | line 13 | - [ ] Critical work prevents unnecessary exploratory draws |
+| `O-755` | line 13 | - [ ] Exploration probability is configurable |
+| `O-756` | line 13 | - [ ] Three-item selection is supported |
+| `O-757` | line 13 | - [ ] Item dispositions persist before execution |
+| `O-758` | line 13 | - [ ] Unfinished selections survive session termination |
+| `O-759` | line 13 | - [ ] Weighted sampling uses configurable preference and density correction |
+| `O-760` | line 13 | - [ ] Sampling is testable and explainable |
+| `O-761` | line 13 | ## GitHub and PM Stack - [ ] Board state reflects actual work lifecycle |
+| `O-762` | line 13 | - [ ] Claimed work is visibly In Progress |
+| `O-763` | line 13 | - [ ] Previously claimed blocked work retains its context |
+| `O-764` | line 13 | - [ ] Parked work includes checkpoint and resumption information |
+| `O-765` | line 13 | - [ ] High-and-above ready work appears in Ready/Todo |
+| `O-766` | line 13 | - [ ] Standard and lower-urgency work appears in Backlog unless another state overrides it |
+| `O-767` | line 13 | - [ ] GitHub Projects and PM Stack are reconciled |
+| `O-768` | line 13 | - [ ] Mobile views are usable and interactive |
+| `O-769` | line 13 | - [ ] Users can add notes, search, reprioritize, and request agents |
+| `O-770` | line 13 | ## Direct interactions - [ ] Authorized comments can reach active sessions promptly |
+| `O-771` | line 13 | - [ ] Authorized comments on parked work can request immediate resumption |
+| `O-772` | line 13 | - [ ] Slash commands are authenticated and validated |
+| `O-773` | line 13 | - [ ] `do-now` uses direct dispatch rather than ordinary priority selection |
+| `O-774` | line 13 | - [ ] Dispatch results include actual task/session evidence |
+| `O-775` | line 13 | - [ ] Duplicate webhook deliveries do not launch duplicate agents |
+| `O-776` | line 13 | - [ ] Failures remain visible and recoverable |
+
+## O-R021 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** O-779, O-780, O-781
+
+Coordinate agent work from discovery/selection through claim, hydration, investigation, implementation, progress, external reconciliation and completion, while supporting safe alternate lifecycle transitions.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-779` | line 13 | Purpose Fleet should let autonomous agents discover, claim, investigate, execute, update, and complete work without each agent independently rebuilding the operational workflow |
+| `O-780` | line 13 | A standard work-item execution should be: Discover ↓ Select ↓ Claim ↓ Hydrate ↓ Investigate ↓ Implement ↓ Report progress ↓ Reconcile external activity ↓ Complete / Merge / Close An item may also be: Blocked Parked Released Handed off Resum |
+| `O-781` | line 13 | --- # 2 |
+
+## O-R022 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9204, #9206, #9207, #9208, #9209
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration; #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity; #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** O-782, O-783, O-784, O-785, O-786, O-787, O-788, O-789, O-790, O-791, O-792, O-793, O-794, O-795, O-796, O-797, O-798, O-799, O-800, O-801, O-802, O-803, O-804, O-805, O-806, O-807, O-808, O-809, O-810, O-811, O-812, O-813, O-814, O-815, O-816, O-817, O-818, O-819, O-820, O-821, O-822, O-823, O-824, O-825, O-826, O-827, O-828, O-829, O-830, O-831, O-832, O-833, O-834, O-835, O-836, O-837, O-838, O-839, O-840, O-841, O-842, O-843, O-844, O-845
+
+Separate queue broker, hydrator, GitHub adapter, activity reconciler, dependency resolver, journal, mutation/outbox and direct-dispatch responsibilities; preserve their stated responsibilities and integration boundaries.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-782` | line 13 | Core Architecture ## 2.1 Queue Broker Responsibilities: - Search |
+| `O-783` | line 13 | - Filter |
+| `O-784` | line 13 | - Rank |
+| `O-785` | line 13 | - Determine eligibility |
+| `O-786` | line 13 | - Select |
+| `O-787` | line 13 | - Atomically claim |
+| `O-788` | line 13 | - Manage leases |
+| `O-789` | line 13 | - Release claims |
+| `O-790` | line 13 | - Recover expired leases |
+| `O-791` | line 13 | ## 2.2 Work-Item Hydrator Responsibilities: - Read queue metadata |
+| `O-792` | line 13 | - Resolve related issues and PRs |
+| `O-793` | line 13 | - Fetch descriptions and comments |
+| `O-794` | line 13 | - Fetch reviews and discussions |
+| `O-795` | line 13 | - Fetch commits and diffs |
+| `O-796` | line 13 | - Load previous checkpoints |
+| `O-797` | line 13 | - Generate durable context files |
+| `O-798` | line 13 | - Return concise summaries |
+| `O-799` | line 13 | ## 2.3 GitHub Adapter Responsibilities: - Issues |
+| `O-800` | line 13 | - Pull requests |
+| `O-801` | line 13 | - Comments |
+| `O-802` | line 13 | - Reviews |
+| `O-803` | line 13 | - Commits |
+| `O-804` | line 13 | - Diffs |
+| `O-805` | line 13 | - Checks |
+| `O-806` | line 13 | - Timeline events |
+| `O-807` | line 13 | - Labels |
+| `O-808` | line 13 | - Milestones and project fields |
+| `O-809` | line 13 | - Merge and closure operations |
+| `O-810` | line 13 | ## 2.4 Activity Reconciler Responsibilities: - Incremental retrieval |
+| `O-811` | line 13 | - Change detection |
+| `O-812` | line 13 | - Deduplication |
+| `O-813` | line 13 | - External-versus-local attribution |
+| `O-814` | line 13 | - Synchronization |
+| `O-815` | line 13 | - Conflict detection |
+| `O-816` | line 13 | - Recovery |
+| `O-817` | line 13 | ## 2.5 Dependency Resolver Responsibilities: - Typed relationships |
+| `O-818` | line 13 | - Hard/soft blockers |
+| `O-819` | line 13 | - Ready-work evaluation |
+| `O-820` | line 13 | - Dependency graph queries |
+| `O-821` | line 13 | - Cycle detection |
+| `O-822` | line 13 | - Effective urgency inputs |
+| `O-823` | line 13 | ## 2.6 Work Journal Responsibilities: - Notes |
+| `O-824` | line 13 | - Progress |
+| `O-825` | line 13 | - Decisions |
+| `O-826` | line 13 | - Checkpoints |
+| `O-827` | line 13 | - Handoffs |
+| `O-828` | line 13 | - Lifecycle history |
+| `O-829` | line 13 | - Completion reports |
+| `O-830` | line 13 | Prefer append-only events |
+| `O-831` | line 13 | ## 2.7 Mutation Coordinator and Outbox Responsibilities: - Validated mutations |
+| `O-832` | line 13 | - Idempotency |
+| `O-833` | line 13 | - Concurrency control |
+| `O-834` | line 13 | - Durable remote operation intents |
+| `O-835` | line 13 | - Retries |
+| `O-836` | line 13 | - Verification |
+| `O-837` | line 13 | - Partial-failure recovery |
+| `O-838` | line 13 | ## 2.8 Direct Dispatch Adapter Responsibilities: - Route authorized immediate requests |
+| `O-839` | line 13 | - Find existing sessions |
+| `O-840` | line 13 | - Start or resume sessions |
+| `O-841` | line 13 | - Bind sessions to work items |
+| `O-842` | line 13 | - Record dispatch receipts |
+| `O-843` | line 13 | - Distinguish accepted requests from running sessions |
+| `O-844` | line 13 | This component must interoperate with the queue broker without confusing direct dispatch and normal queue selection |
+| `O-845` | line 13 | --- # 3 |
+
+## O-R023 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** O-846, O-847, O-848, O-849, O-850
+
+Preserve the proposed CLI command families while reconciling names to Fleet and avoiding parallel dispatch mechanisms.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-846` | line 13 | Proposed Fleet CLI Preserve existing CLI conventions where practical |
+| `O-847` | line 13 | ## 3.1 Bootstrap fleet help fleet capabilities fleet agent bootstrap fleet agent bootstrap --scenario queue-worker fleet agent bootstrap --scenario assigned-item fleet agent bootstrap --scenario resume fleet agent bootstrap --scenario triag |
+| `O-848` | line 13 | ## 3.2 Queue fleet queue list fleet queue search fleet queue get fleet queue inspect fleet queue rank fleet queue claim fleet queue release fleet queue park fleet queue resume fleet queue update fleet queue close Example: fleet queue search |
+| `O-849` | line 13 | Avoid creating parallel dispatch mechanisms |
+| `O-850` | line 13 | --- # 4 |
+
+## O-R024 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** O-851, O-852
+
+Support the proposed shared context/concurrency/output flags; infer active context only when unambiguous.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-851` | line 13 | Common Command Conventions Suggested shared parameters: \| Flag \| Purpose \| \|---\|---\| \| `--work` \| Fleet work item \| \| `--repo` \| Repository \| \| `--issue` \| Issue reference \| \| `--pr` \| PR reference \| \| `--agent-id` \| Agent identity \| \| `--s |
+| `O-852` | line 13 | --- # 5 |
+
+## O-R025 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9206, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** O-853, O-854, O-855, O-856
+
+Compose next/open/park/complete workflows from safe primitives; completion is validated and recoverable.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-853` | line 13 | Composed Commands ## 5.1 `fleet work next` Example: fleet work next \ --ready \ --claim \ --hydrate full Conceptually combines: queue.search queue.rank queue.validate_eligibility queue.claim_atomically work.hydrate work.summarize journal.re |
+| `O-854` | line 13 | ## 5.3 `fleet work park` Example: fleet work park 842 \ --reason "Awaiting maintainer response" \ --checkpoint \ --release-lease Conceptually combines: checkpoint journal lifecycle_transition lease_release configured_sync ## 5.4 `fleet work |
+| `O-855` | line 13 | It is a validated, recoverable completion workflow |
+| `O-856` | line 13 | --- # 6 |
+
+## O-R026 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** O-857, O-858, O-859
+
+Give work items stable Fleet identity with qualified external resource links and logical metadata independent of external issue IDs.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-857` | line 13 | Work-Item Identity and Schema Every item should have a stable Fleet identity independent of GitHub |
+| `O-858` | line 13 | Example: fleet://work/842 Linked resources: github://developing-today/code/issues/203 github://developing-today/code/pulls/231 Logical fields: id title summary intrinsic_urgency effective_urgency importance lifecycle_state state_reason assi |
+| `O-859` | line 13 | --- # 7 |
+
+## O-R027 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** O-860, O-861, O-862, O-863, O-864, O-865, O-866
+
+Make claims atomic; bind lease token/expiry/fencing to agent/session, recover expiry safely, prevent stale writes and distinguish termination from completion.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-860` | line 13 | Claims, Leases, and Concurrency A claim must be atomic |
+| `O-861` | line 13 | Example: fleet queue claim 842 \ --agent-id worker-07 \ --lease 30m Record: work_item_id agent_id session_id lease_token expiration fencing_version claimed_at Lease heartbeats may be automatic |
+| `O-862` | line 13 | If a lease expires, another agent may recover the item |
+| `O-863` | line 13 | A stale session must not mutate newer state using an old lease |
+| `O-864` | line 13 | Agent termination must not automatically imply task completion |
+| `O-865` | line 13 | Direct-dispatched sessions should still obey the relevant ownership and fencing rules |
+| `O-866` | line 13 | --- # 8 |
+
+## O-R028 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** O-867, O-868, O-869, O-870, O-871, O-872, O-873, O-874, O-875, O-876, O-877, O-878, O-879, O-880, O-881, O-882, O-883, O-884, O-885, O-886, O-887, O-888, O-889, O-890, O-891, O-892, O-893, O-894, O-895, O-896, O-897, O-898, O-899, O-900, O-901, O-902, O-903, O-904, O-905, O-906, O-907, O-908, O-909, O-910, O-911, O-912, O-913, O-914, O-915, O-916, O-917, O-918, O-919, O-920, O-921, O-922
+
+Hydrate queue, issue, PR, commit/diff and event metadata comprehensively, retaining source IDs/times/actors/provenance and diff line-level fidelity.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-867` | line 13 | Comprehensive Context Hydration Example: fleet work hydrate 842 \ --full \ --output .fleet/work/842/context/ Hydration should collect: ## Queue context - Every relevant queue column |
+| `O-868` | line 13 | - Custom metadata |
+| `O-869` | line 13 | - Priority and importance |
+| `O-870` | line 13 | - Status |
+| `O-871` | line 13 | - Ownership |
+| `O-872` | line 13 | - Dependencies |
+| `O-873` | line 13 | - Historical notes |
+| `O-874` | line 13 | - Previous checkpoints |
+| `O-875` | line 13 | ## Issue context - Title |
+| `O-876` | line 13 | - Description |
+| `O-877` | line 13 | - State |
+| `O-878` | line 13 | - Labels |
+| `O-879` | line 13 | - Assignees |
+| `O-880` | line 13 | - Milestones |
+| `O-881` | line 13 | - Project fields |
+| `O-882` | line 13 | - Comments |
+| `O-883` | line 13 | - Timeline events |
+| `O-884` | line 13 | - Relevant edits |
+| `O-885` | line 13 | - Cross-references |
+| `O-886` | line 13 | - Linked PRs |
+| `O-887` | line 13 | ## PR context - Title |
+| `O-888` | line 13 | - Description |
+| `O-889` | line 13 | - State |
+| `O-890` | line 13 | - Base/head branches |
+| `O-891` | line 13 | - Reviews |
+| `O-892` | line 13 | - Review threads |
+| `O-893` | line 13 | - Check results |
+| `O-894` | line 13 | - Mergeability |
+| `O-895` | line 13 | - Commits |
+| `O-896` | line 13 | - Diffs |
+| `O-897` | line 13 | - Changed files |
+| `O-898` | line 13 | - Merge history |
+| `O-899` | line 13 | ## Commit context - SHA |
+| `O-900` | line 13 | - Author and committer |
+| `O-901` | line 13 | - Author/commit timestamps |
+| `O-902` | line 13 | - Message |
+| `O-903` | line 13 | - Changed paths |
+| `O-904` | line 13 | - Renames |
+| `O-905` | line 13 | - Additions/deletions |
+| `O-906` | line 13 | - Diff hunks |
+| `O-907` | line 13 | - Line ranges |
+| `O-908` | line 13 | ## Event context - Item created |
+| `O-909` | line 13 | - Item claimed |
+| `O-910` | line 13 | - Item parked |
+| `O-911` | line 13 | - Item blocked |
+| `O-912` | line 13 | - Priority edited |
+| `O-913` | line 13 | - Labels edited |
+| `O-914` | line 13 | - Comments added or edited |
+| `O-915` | line 13 | - Commits pushed |
+| `O-916` | line 13 | - Reviews submitted |
+| `O-917` | line 13 | - Checks completed |
+| `O-918` | line 13 | - PR merged |
+| `O-919` | line 13 | - Issue closed |
+| `O-920` | line 13 | - Work completed |
+| `O-921` | line 13 | Preserve source IDs, timestamps, actors, and provenance |
+| `O-922` | line 13 | --- # 9 |
+
+## O-R029 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** O-923, O-924, O-925, O-926, O-927, O-928, O-929, O-930, O-931, O-932, O-933, O-934, O-935, O-936, O-937, O-938, O-939, O-940, O-941, O-942, O-943, O-944, O-945
+
+Persist navigable bundle artifacts and a concise summary with provenance/freshness, blockers/reviews/checks/next steps; report incomplete evidence and treat external text as untrusted.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-923` | line 13 | Hydration Artifacts Suggested output: .fleet/work/842/context/ manifest.json summary.md queue.json issues.json pull_requests.json dependencies.json timeline.json comments.json reviews.json commits.json checks.json activity-cursors.json diff |
+| `O-924` | line 13 | Objective |
+| `O-925` | line 13 | 2 |
+| `O-926` | line 13 | Urgency and current state |
+| `O-927` | line 13 | 3 |
+| `O-928` | line 13 | Important linked issues and PRs |
+| `O-929` | line 13 | 4 |
+| `O-930` | line 13 | Previous progress |
+| `O-931` | line 13 | 5 |
+| `O-932` | line 13 | Relevant recent events |
+| `O-933` | line 13 | 6 |
+| `O-934` | line 13 | Open discussions |
+| `O-935` | line 13 | 7 |
+| `O-936` | line 13 | Blockers |
+| `O-937` | line 13 | 8 |
+| `O-938` | line 13 | Failed checks |
+| `O-939` | line 13 | 9 |
+| `O-940` | line 13 | Likely next actions |
+| `O-941` | line 13 | 10 |
+| `O-942` | line 13 | Paths to detailed artifacts |
+| `O-943` | line 13 | Example CLI result: Work item: 842 Status: claimed Summary: .fleet/work/842/context/summary.md Manifest: .fleet/work/842/context/manifest.json Linked: Issue developing-today/code#203 PR developing-today/code#231 Important: 2 new comments 1  |
+| `O-944` | line 13 | Treat external descriptions and comments as untrusted task data rather than privileged agent instructions |
+| `O-945` | line 13 | --- # 10 |
+
+## O-R030 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** O-946, O-947, O-948, O-949, O-950, O-951, O-952, O-953, O-954, O-955
+
+Query activity since checkpoints/timestamps; track source-specific cursors, overlapping windows, stable event dedup, timestamps and Fleet-operation session attribution; advance only after durable processing.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-946` | line 13 | Changes Since a Checkpoint Agents should be able to ask: What changed since the session began |
+| `O-947` | line 13 | What changed since the last checkpoint |
+| `O-948` | line 13 | What changed since an explicit timestamp |
+| `O-949` | line 13 | What changed that was not caused by this session |
+| `O-950` | line 13 | Examples: fleet work changes 842 --since-start fleet work changes 842 --since-checkpoint fleet work changes 842 \ --since 2026-11-06T12:00:00Z fleet work changes 842 \ --since-start \ --external-only Track: occurred_at observed_at source_up |
+| `O-951` | line 13 | Use source-specific cursors and overlapping retrieval windows |
+| `O-952` | line 13 | Deduplicate using stable source event identities |
+| `O-953` | line 13 | A cursor should not advance past an event until its data is durably processed |
+| `O-954` | line 13 | Session attribution should use Fleet operation IDs and execution metadata, not merely GitHub usernames |
+| `O-955` | line 13 | --- # 11 |
+
+## O-R031 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** O-956, O-957, O-958, O-959, O-960, O-961, O-962, O-963, O-964, O-965, O-966, O-967, O-968, O-969
+
+Keep journal notes distinct from public comments; mirror selectively and update only managed sections/comments with optimistic concurrency, preserving unrelated edits and avoiding duplicates.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-956` | line 13 | Notes, Comments, and Managed Content Agents should record operational notes through Fleet |
+| `O-957` | line 13 | Example: fleet work note add 842 \ --text "Identified stale lease race" A journal note may optionally mirror to GitHub |
+| `O-958` | line 13 | Example: fleet work note add 842 \ --text "Regression tests now pass" \ --mirror github Fleet should distinguish: - Private operational notes |
+| `O-959` | line 13 | - Public GitHub comments |
+| `O-960` | line 13 | - Managed progress summaries |
+| `O-961` | line 13 | - Replies to specific discussion threads |
+| `O-962` | line 13 | - Completion reports |
+| `O-963` | line 13 | Do not blindly mirror every internal note to public GitHub discussions |
+| `O-964` | line 13 | ## Managed content Fleet should support editing only a designated section of an issue or PR description |
+| `O-965` | line 13 | Example: <!-- fleet:progress:start --> Current work status and next steps |
+| `O-966` | line 13 | <!-- fleet:progress:end --> Use optimistic concurrency and managed identifiers |
+| `O-967` | line 13 | Do not overwrite unrelated user edits |
+| `O-968` | line 13 | A managed progress comment should be updated in place rather than duplicated repeatedly |
+| `O-969` | line 13 | --- # 12 |
+
+## O-R032 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** O-970, O-971, O-972, O-973, O-974, O-975, O-976, O-977, O-978, O-979, O-980, O-981, O-982, O-983, O-984, O-985, O-986, O-987, O-988
+
+Persist local authoritative mutation and outbox intent transactionally; retry with stable IDs/remote checks, expose pending/verified state, and avoid claiming distributed atomicity or universal exactly-once behavior.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-970` | line 13 | Transactional Outbox External mutations should be durable and retryable |
+| `O-971` | line 13 | Example operation: fleet metadata labels 842 \ --add needs-review \ --mirror github Internally: 1 |
+| `O-972` | line 13 | Validate |
+| `O-973` | line 13 | 2 |
+| `O-974` | line 13 | Apply authoritative local mutation |
+| `O-975` | line 13 | 3 |
+| `O-976` | line 13 | Record outbox intent in the same local transaction |
+| `O-977` | line 13 | 4 |
+| `O-978` | line 13 | Commit |
+| `O-979` | line 13 | 5 |
+| `O-980` | line 13 | Deliver remote mutation |
+| `O-981` | line 13 | 6 |
+| `O-982` | line 13 | Verify remote result |
+| `O-983` | line 13 | 7 |
+| `O-984` | line 13 | Record completion |
+| `O-985` | line 13 | Suggested outbox states: pending delivering confirmed retryable_failure conflict terminal_failure Store: operation_id work_item_id target_resource requested_mutation expected_version idempotency_data attempts timestamps result GitHub APIs d |
+| `O-986` | line 13 | Fleet must use local identities, remote-state checks, and known remote resource IDs to avoid duplicate effects when possible |
+| `O-987` | line 13 | A local write and a GitHub API request cannot be assumed to form one distributed atomic transaction |
+| `O-988` | line 13 | --- # 13 |
+
+## O-R033 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9206, #9208
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** O-989, O-990, O-991, O-992, O-993, O-994
+
+Keep lifecycle distinct from ownership; parked/blocked state preserves checkpoint/relations, satisfied dependency history remains, and unblocking must not erase provenance.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-989` | line 13 | Lifecycle and Dependencies Suggested lifecycle: available \| v claimed \| v in_progress \| +--------> blocked \| \| \| v \| resume \| +--------> parked \| \| \| v \| resume \| v completing \| v completed Store both lifecycle and ownership state |
+| `O-990` | line 13 | A parked item may retain an assigned agent but release the active lease |
+| `O-991` | line 13 | A blocked item should preserve hard dependencies and previous checkpoints |
+| `O-992` | line 13 | ## Dependency operations fleet dependency add 842 \ --blocked-by fleet:761 \ --hard fleet dependency add 842 \ --blocks fleet:903 fleet dependency graph 842 \ --depth 3 A resolved dependency remains in the historical graph |
+| `O-993` | line 13 | Do not erase provenance merely because the blocker was satisfied |
+| `O-994` | line 13 | --- # 14 |
+
+## O-R034 — requirement (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** O-995, O-996, O-997, O-998, O-999, O-1000, O-1001, O-1002, O-1003, O-1004, O-1005, O-1006, O-1007, O-1008, O-1009, O-1010, O-1011, O-1012, O-1013, O-1014, O-1015, O-1016, O-1017, O-1018, O-1019, O-1020, O-1021, O-1022, O-1023, O-1024, O-1025, O-1026, O-1027, O-1028, O-1029, O-1030, O-1031, O-1032, O-1033, O-1034, O-1035, O-1036
+
+Directly verify merge/issue closure and close queue item without webhook wait; retain recoverable completing state on partial effects, deduplicate late events and inspect actual remote state before retries.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-995` | line 13 | Direct Verified Completion One of the most important requirements is that Fleet must close the work item directly when it performs the completion workflow |
+| `O-996` | line 13 | Do not depend on a later webhook or sweep to discover a merge that Fleet itself requested |
+| `O-997` | line 13 | Example: fleet work complete 842 \ --merge-pr developing-today/code#231 \ --close-issues developing-today/code#203 \ --close-queue \ --require-clean-reconciliation \ --verify \ --wait Conceptual sequence: 1 |
+| `O-998` | line 13 | Validate current ownership |
+| `O-999` | line 13 | 2 |
+| `O-1000` | line 13 | Refresh relevant external activity |
+| `O-1001` | line 13 | 3 |
+| `O-1002` | line 13 | Detect meaningful new changes |
+| `O-1003` | line 13 | 4 |
+| `O-1004` | line 13 | Validate blockers |
+| `O-1005` | line 13 | 5 |
+| `O-1006` | line 13 | Validate PR checks and reviews |
+| `O-1007` | line 13 | 6 |
+| `O-1008` | line 13 | Validate merge permissions and current head SHA |
+| `O-1009` | line 13 | 7 |
+| `O-1010` | line 13 | Transition to `completing` |
+| `O-1011` | line 13 | 8 |
+| `O-1012` | line 13 | Persist required outbox operations |
+| `O-1013` | line 13 | 9 |
+| `O-1014` | line 13 | Merge the authorized PR |
+| `O-1015` | line 13 | 10 |
+| `O-1016` | line 13 | Verify the merge |
+| `O-1017` | line 13 | 11 |
+| `O-1018` | line 13 | Close designated linked issues |
+| `O-1019` | line 13 | 12 |
+| `O-1020` | line 13 | Verify issue closure |
+| `O-1021` | line 13 | 13 |
+| `O-1022` | line 13 | Directly close the queue item |
+| `O-1023` | line 13 | 14 |
+| `O-1024` | line 13 | Record completion notes |
+| `O-1025` | line 13 | 15 |
+| `O-1026` | line 13 | Release execution lease |
+| `O-1027` | line 13 | 16 |
+| `O-1028` | line 13 | Return verified status |
+| `O-1029` | line 13 | Webhooks and sweeps remain necessary for: - External changes |
+| `O-1030` | line 13 | - Missed notifications |
+| `O-1031` | line 13 | - Recovery |
+| `O-1032` | line 13 | - Reconciliation |
+| `O-1033` | line 13 | - Operations initiated outside Fleet |
+| `O-1034` | line 13 | They are not prerequisites for normal successful direct completion |
+| `O-1035` | line 13 | If the PR merges but issue closure fails, retain `completing` and recover rather than claiming full success |
+| `O-1036` | line 13 | --- # 15 |
+
+## O-R035 — example (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** O-1092, O-1093, O-1094, O-1095, O-1096, O-1097, O-1098, O-1099, O-1100, O-1101
+
+Cover claim races, agent termination, lost remote acknowledgement, concurrent content edits, partial completion, duplicate webhook, late comment, route failure, priority changes during claim, and dependency cycles.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-1092` | line 13 | Failure and Recovery Cases Test at least: ## Two agents claim the same item Only one exclusive lease succeeds |
+| `O-1093` | line 13 | ## Agent terminates Checkpoint and lease expiry allow safe recovery |
+| `O-1094` | line 13 | ## GitHub mutation succeeds but acknowledgment is lost Fleet checks remote state before retrying |
+| `O-1095` | line 13 | ## External user edits managed content Fleet detects the conflict and avoids overwriting unrelated changes |
+| `O-1096` | line 13 | ## PR merges but queue completion fails Fleet retains recoverable completion state and finalizes after verification |
+| `O-1097` | line 13 | ## Webhook arrives after direct completion The event is deduplicated and reconciled rather than duplicating closure |
+| `O-1098` | line 13 | ## New external comment appears during completion Fleet evaluates it before irreversible operations where possible |
+| `O-1099` | line 13 | ## Session redirect fails Fleet records the failure and does not falsely claim delivery |
+| `O-1100` | line 13 | ## Queue priority changes during claim Fleet revalidates the item's eligibility and selection state |
+| `O-1101` | line 13 | ## Dependency cycle exists Fleet prevents unsafe blocker propagation |
+
+## O-R036 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** O-1103, O-1104, O-1105, O-1106, O-1107, O-1108, O-1109, O-1110, O-1111, O-1112, O-1113, O-1114, O-1115, O-1116, O-1117, O-1118, O-1119, O-1120, O-1121, O-1122, O-1123, O-1124, O-1125, O-1126, O-1127, O-1128, O-1129, O-1130, O-1131, O-1132, O-1133, O-1134, O-1135, O-1136, O-1137, O-1138, O-1139, O-1140, O-1141
+
+Sequence discovery/contracts, hydration, lifecycle/journal, GitHub/outbox, incremental reconciliation, completion, then scheduling/UI according to verified dependencies.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-1103` | line 13 | Implementation Sequence Inspect existing implementation before assigning exact changes |
+| `O-1104` | line 13 | Suggested sequence: ### Phase 1 — Discovery and contracts - Review Fleet CLI |
+| `O-1105` | line 13 | - Review Queue Table Improvements |
+| `O-1106` | line 13 | - Review existing PM Stack/dispatch |
+| `O-1107` | line 13 | - Establish shared work-item identity |
+| `O-1108` | line 13 | - Define CLI and API contracts |
+| `O-1109` | line 13 | - Define authoritative data ownership |
+| `O-1110` | line 13 | ### Phase 2 — Context hydration - Work-item discovery |
+| `O-1111` | line 13 | - Claiming |
+| `O-1112` | line 13 | - Linked issue and PR resolution |
+| `O-1113` | line 13 | - Context artifacts |
+| `O-1114` | line 13 | - Concise summaries |
+| `O-1115` | line 13 | ### Phase 3 — Lifecycle and journal - Notes |
+| `O-1116` | line 13 | - Checkpoints |
+| `O-1117` | line 13 | - Parking |
+| `O-1118` | line 13 | - Blocking |
+| `O-1119` | line 13 | - Resuming |
+| `O-1120` | line 13 | - Handoffs |
+| `O-1121` | line 13 | - Dependency APIs |
+| `O-1122` | line 13 | ### Phase 4 — GitHub mutation coordination - Unified GitHub adapter |
+| `O-1123` | line 13 | - Outbox |
+| `O-1124` | line 13 | - Label synchronization |
+| `O-1125` | line 13 | - Managed comments |
+| `O-1126` | line 13 | - Managed description sections |
+| `O-1127` | line 13 | ### Phase 5 — Incremental reconciliation - Source-specific cursors |
+| `O-1128` | line 13 | - Session attribution |
+| `O-1129` | line 13 | - Change retrieval |
+| `O-1130` | line 13 | - Conflict handling |
+| `O-1131` | line 13 | ### Phase 6 — Completion - Merge coordination |
+| `O-1132` | line 13 | - Verified issue closure |
+| `O-1133` | line 13 | - Direct queue completion |
+| `O-1134` | line 13 | - Partial-failure recovery |
+| `O-1135` | line 13 | ### Phase 7 — Scheduling and UI integration - Unified urgency |
+| `O-1136` | line 13 | - PM Stack projections |
+| `O-1137` | line 13 | - Mobile interaction |
+| `O-1138` | line 13 | - Direct comments-to-session routing |
+| `O-1139` | line 13 | - Advanced triage |
+| `O-1140` | line 13 | - Weighted exploration |
+| `O-1141` | line 13 | The actual sequence may differ based on dependencies already implemented |
+
+## O-R037 — example (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** O-1143, O-1144, O-1145, O-1146, O-1147, O-1148, O-1149, O-1150, O-1151, O-1152, O-1153, O-1154, O-1155, O-1156, O-1157, O-1158, O-1159, O-1160, O-1161, O-1162, O-1163, O-1164, O-1165, O-1166, O-1167, O-1168, O-1169, O-1170, O-1171, O-1172, O-1173, O-1174, O-1175, O-1176, O-1177
+
+Preserve the source acceptance checklist for startup, hydration, activity, mutation, lifecycle and agent integration.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-1143` | line 13 | Acceptance Criteria ## Agent startup - [ ] Bootstrap produces useful scenario-specific commands |
+| `O-1144` | line 13 | - [ ] Agents can discover available Fleet capabilities |
+| `O-1145` | line 13 | - [ ] Agents can claim an appropriate item |
+| `O-1146` | line 13 | ## Context - [ ] Full queue metadata is available |
+| `O-1147` | line 13 | - [ ] Linked issues and PRs are resolved |
+| `O-1148` | line 13 | - [ ] Relevant comments and reviews are retrieved |
+| `O-1149` | line 13 | - [ ] Commits and diffs include correct paths and line information |
+| `O-1150` | line 13 | - [ ] Context files are persisted |
+| `O-1151` | line 13 | - [ ] Concise summaries identify important findings |
+| `O-1152` | line 13 | - [ ] Missing source data is explicitly reported |
+| `O-1153` | line 13 | ## Activity - [ ] Query by timestamp |
+| `O-1154` | line 13 | - [ ] Query since session start |
+| `O-1155` | line 13 | - [ ] Query since checkpoint |
+| `O-1156` | line 13 | - [ ] Identify session-originated operations |
+| `O-1157` | line 13 | - [ ] Detect external changes |
+| `O-1158` | line 13 | - [ ] Deduplicate repeated events |
+| `O-1159` | line 13 | ## Mutations - [ ] Queue changes are validated |
+| `O-1160` | line 13 | - [ ] GitHub mutations use durable outbox records |
+| `O-1161` | line 13 | - [ ] Notes and comments are coordinated |
+| `O-1162` | line 13 | - [ ] Managed sections avoid overwriting unrelated content |
+| `O-1163` | line 13 | - [ ] Retry behavior is idempotent where achievable |
+| `O-1164` | line 13 | ## Lifecycle - [ ] Claiming is atomic |
+| `O-1165` | line 13 | - [ ] Leases are recoverable |
+| `O-1166` | line 13 | - [ ] Parking preserves context |
+| `O-1167` | line 13 | - [ ] Dependencies affect readiness |
+| `O-1168` | line 13 | - [ ] Completion checks relevant activity |
+| `O-1169` | line 13 | - [ ] Authorized merges are verified |
+| `O-1170` | line 13 | - [ ] Designated issues are closed and verified |
+| `O-1171` | line 13 | - [ ] Queue items close directly |
+| `O-1172` | line 13 | - [ ] Interrupted completion can resume safely |
+| `O-1173` | line 13 | ## Agent integration - [ ] Live sessions can be located |
+| `O-1174` | line 13 | - [ ] Supported sessions can receive authorized messages |
+| `O-1175` | line 13 | - [ ] Immediate dispatch has verifiable receipts |
+| `O-1176` | line 13 | - [ ] Parked work can be resumed through direct dispatch |
+| `O-1177` | line 13 | - [ ] Mobile commands use the same validated operation layer |
+
+## O-R038 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199, #9200, #9203, #9204, #9209
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure; #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing; #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** CF-004, CF-005, CF-006
+**Occurrence refs:** O-1178, O-1179, O-1180, O-1181, O-1182, O-1183, O-1184, O-1185, O-1186, O-1187, O-1188, O-1189, O-1190, O-1191, O-1192, O-1193, O-1194, O-1195, O-1196, O-1197, O-1198, O-1199, O-1200, O-1201, O-1202, O-1203, O-1204, O-1205, O-1206, O-1207, O-1208, O-1209, O-1210, O-1211, O-1212, O-1213, O-1214, O-1215, O-1216, O-1217, O-1218, O-1219, O-1220, O-1221, O-1222, O-1223, O-1224, O-1225, O-1226, O-1227, O-1228, O-1229, O-1230, O-1231, O-1232, O-1233, O-1234, O-1235, O-1236, O-1237, O-1238, O-1239, O-1240, O-1241
+
+Treat the recorded cross-document decisions as recommendations: multiple priority axes; temporary boosts separate; ties valid; aging reconsiderative; hysteresis with bypass; labels conflict-aware; do-now separate; comments authorized; exploratory intent durable; direct dispatch skips delay not safeguards; shared PM service; gate schema-coupled changes.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-1178` | line 13 | --- # PART 3 — CROSS-DOCUMENT DESIGN DECISIONS The dispatched design agent should explicitly resolve these questions |
+| `O-1179` | line 13 | ## 1 |
+| `O-1180` | line 13 | One number or multiple scores |
+| `O-1181` | line 13 | Recommendation: Retain one canonical numeric urgency score for compatibility |
+| `O-1182` | line 13 | Add importance and effective scheduling urgency as distinct concepts |
+| `O-1183` | line 13 | Do not overload the existing priority value with every possible decision criterion |
+| `O-1184` | line 13 | ## 2 |
+| `O-1185` | line 13 | Should every automatic priority change mutate the queue |
+| `O-1186` | line 13 | Recommendation: No |
+| `O-1187` | line 13 | Distinguish persistent intrinsic urgency changes from temporary scheduling boosts |
+| `O-1188` | line 13 | Dependencies, deadlines, and `do-now` may affect execution order without permanently rewriting canonical urgency |
+| `O-1189` | line 13 | ## 3 |
+| `O-1190` | line 13 | Should ties be eliminated |
+| `O-1191` | line 13 | Recommendation: No |
+| `O-1192` | line 13 | Identical urgency scores are legitimate |
+| `O-1193` | line 13 | Use a stable secondary ordering key for precise relative placement |
+| `O-1194` | line 13 | ## 4 |
+| `O-1195` | line 13 | Should aging automatically increase priority |
+| `O-1196` | line 13 | Recommendation: Only through configurable policies informed by evidence |
+| `O-1197` | line 13 | Aging should trigger reconsideration, not inevitable escalation |
+| `O-1198` | line 13 | ## 5 |
+| `O-1199` | line 13 | Should priority-band transitions resist small changes |
+| `O-1200` | line 13 | Recommendation: Yes, for low-confidence automatic adjustments |
+| `O-1201` | line 13 | Manual changes and high-confidence events should bypass the resistance |
+| `O-1202` | line 13 | ## 6 |
+| `O-1203` | line 13 | Should GitHub labels directly control numeric urgency |
+| `O-1204` | line 13 | Recommendation: Accept authorized label edits as commands, normalize to canonical Fleet state, and maintain a single priority label |
+| `O-1205` | line 13 | Use dedicated urgent triage handling when classification is removed or ambiguous |
+| `O-1206` | line 13 | ## 7 |
+| `O-1207` | line 13 | Should `do-now` imply critical priority |
+| `O-1208` | line 13 | Recommendation: No |
+| `O-1209` | line 13 | It is an operational dispatch directive |
+| `O-1210` | line 13 | Keep the underlying urgency separate |
+| `O-1211` | line 13 | ## 8 |
+| `O-1212` | line 13 | Should every user comment start an agent |
+| `O-1213` | line 13 | Recommendation: No |
+| `O-1214` | line 13 | Authenticated, authorized, actionable comments may trigger routing or execution according to policy |
+| `O-1215` | line 13 | Other comments should be captured as context |
+| `O-1216` | line 13 | Avoid arbitrary execution of untrusted text |
+| `O-1217` | line 13 | ## 9 |
+| `O-1218` | line 13 | Should unfinished random selections change priority |
+| `O-1219` | line 13 | Recommendation: Persist explicit triage intentions first |
+| `O-1220` | line 13 | Allow bounded automatic adjustments only after establishing safe policy and idempotency |
+| `O-1221` | line 13 | Random discovery is evidence of attention, not proof of urgency |
+| `O-1222` | line 13 | ## 10 |
+| `O-1223` | line 13 | Should all priority clusters be split to unique values |
+| `O-1224` | line 13 | Recommendation: No |
+| `O-1225` | line 13 | Progressively refine clusters when comparisons are meaningful |
+| `O-1226` | line 13 | Avoid write amplification and artificial differentiation |
+| `O-1227` | line 13 | ## 11 |
+| `O-1228` | line 13 | Should direct dispatch bypass queue safety |
+| `O-1229` | line 13 | Recommendation: No |
+| `O-1230` | line 13 | It bypasses ordinary *selection delay*, not ownership, authorization, lease, deduplication, or dependency protections |
+| `O-1231` | line 13 | ## 12 |
+| `O-1232` | line 13 | Should PM Stack have separate business logic |
+| `O-1233` | line 13 | Recommendation: No |
+| `O-1234` | line 13 | Use shared Fleet command/service contracts and the existing authoritative data sources |
+| `O-1235` | line 13 | The board is an interactive view and control interface |
+| `O-1236` | line 13 | ## 13 |
+| `O-1237` | line 13 | Should all work be implemented immediately |
+| `O-1238` | line 13 | Recommendation: No |
+| `O-1239` | line 13 | Produce the integrated design immediately |
+| `O-1240` | line 13 | Implement independently safe foundations as appropriate |
+| `O-1241` | line 13 | Gate schema-coupled or dispatch-sensitive changes on verified prerequisites |
+
+## O-R039 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** O-1242, O-1243, O-1244, O-1245, O-1246, O-1247, O-1248, O-1249, O-1250, O-1251, O-1252, O-1253, O-1254, O-1255, O-1256, O-1257, O-1258, O-1259, O-1260, O-1261, O-1262, O-1263, O-1264, O-1265, O-1266, O-1267, O-1268, O-1269, O-1270, O-1271, O-1272, O-1273, O-1274, O-1275, O-1276, O-1277, O-1278, O-1279, O-1280, O-1281, O-1282, O-1283, O-1284, O-1285, O-1286, O-1287, O-1288, O-1289, O-1290, O-1291, O-1292, O-1293, O-1294, O-1295, O-1296, O-1297, O-1298, O-1299, O-1300, O-1301, O-1302, O-1303, O-1304, O-1305, O-1306, O-1307, O-1308, O-1309, O-1310
+
+Audit current mechanisms and constraints; simulate priority/aging/clustering/hysteresis/dependencies/selection/races; verify end-to-end handoff; deliver architecture, ownership, contracts, tests, risks, and honest dispatch evidence.
+
+Curation note: Recovered proposal. Original formatting is flattened; occurrence spans are exact, section reconstruction provisional. Preserve historical mechanism alongside governing replacement.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-1242` | line 13 | --- # PART 4 — REQUIRED REVIEW, TESTING, AND HANDOFF ## 4.1 Repository audit The implementing agent must identify: - Existing functionality |
+| `O-1243` | line 13 | - Missing functionality |
+| `O-1244` | line 13 | - Duplicate or overlapping mechanisms |
+| `O-1245` | line 13 | - Deprecated paths |
+| `O-1246` | line 13 | - Source-of-truth conflicts |
+| `O-1247` | line 13 | - Current migration status |
+| `O-1248` | line 13 | - Relevant tests |
+| `O-1249` | line 13 | - Existing production constraints |
+| `O-1250` | line 13 | Preserve established behavior where appropriate |
+| `O-1251` | line 13 | ## 4.2 Simulations Build testable simulations for: - Priority-band distributions |
+| `O-1252` | line 13 | - Aging policies |
+| `O-1253` | line 13 | - Cluster refinement |
+| `O-1254` | line 13 | - Boundary hysteresis |
+| `O-1255` | line 13 | - Dependency pressure |
+| `O-1256` | line 13 | - Weighted exploratory selection |
+| `O-1257` | line 13 | - Equal-score ordering |
+| `O-1258` | line 13 | - Multi-agent claim races |
+| `O-1259` | line 13 | - Webhook duplication |
+| `O-1260` | line 13 | - Direct-dispatch races |
+| `O-1261` | line 13 | Include example queue distributions ranging from tens to thousands of items |
+| `O-1262` | line 13 | ## 4.3 End-to-end verification Validate: GitHub issue created \| v Priority assigned \| v PM Stack projects state \| v Agent directly dispatched \| v Session bound to work \| v Context hydrated \| v Agent performs work \| v Notes and metadata sync |
+| `O-1263` | line 13 | ## 4.4 Deliverables from the dispatched agent The downstream agent should produce: 1 |
+| `O-1264` | line 13 | Reviewed architecture documents |
+| `O-1265` | line 13 | 2 |
+| `O-1266` | line 13 | A system-boundary diagram |
+| `O-1267` | line 13 | 3 |
+| `O-1268` | line 13 | Data ownership and migration plan |
+| `O-1269` | line 13 | 4 |
+| `O-1270` | line 13 | CLI/API command contracts |
+| `O-1271` | line 13 | 5 |
+| `O-1272` | line 13 | Synchronization and outbox design |
+| `O-1273` | line 13 | 6 |
+| `O-1274` | line 13 | Priority selection and triage policy |
+| `O-1275` | line 13 | 7 |
+| `O-1276` | line 13 | Mobile/UI interaction plan |
+| `O-1277` | line 13 | 8 |
+| `O-1278` | line 13 | Direct-dispatch and comment-routing design |
+| `O-1279` | line 13 | 9 |
+| `O-1280` | line 13 | Dependency-aware implementation sequence |
+| `O-1281` | line 13 | 10 |
+| `O-1282` | line 13 | Test and acceptance plan |
+| `O-1283` | line 13 | 11 |
+| `O-1284` | line 13 | Risks and unresolved decisions |
+| `O-1285` | line 13 | 12 |
+| `O-1286` | line 13 | Starter implementation tasks or issues where justified |
+| `O-1287` | line 13 | 13 |
+| `O-1288` | line 13 | Evidence supporting any changes already implemented |
+| `O-1289` | line 13 | Where diagrams are useful, keep their source editable |
+| `O-1290` | line 13 | ## 4.5 Final handoff format The downstream agent should update the starter issue with a concise report: Design review status: Documents updated: Architecture decisions: Major deviations from original proposal: Immediate implementation candi |
+| `O-1291` | line 13 | --- # PART 5 — IMMEDIATE EXECUTION CHECKLIST The coordinating agent receiving this full prompt should now: - [ ] Inspect `developing-today/code` |
+| `O-1292` | line 13 | - [ ] Read relevant repository/agent instructions |
+| `O-1293` | line 13 | - [ ] Find the Queue Table Improvements effort |
+| `O-1294` | line 13 | - [ ] Review the existing Fleet and PM Stack integration points |
+| `O-1295` | line 13 | - [ ] Create or update the two Markdown documents |
+| `O-1296` | line 13 | - [ ] Preserve the requirements and improve repository-specific details |
+| `O-1297` | line 13 | - [ ] Commit/upload the files using the established workflow |
+| `O-1298` | line 13 | - [ ] Create or reuse one design starter issue |
+| `O-1299` | line 13 | - [ ] Attach durable links to both documents |
+| `O-1300` | line 13 | - [ ] Cross-link the existing queue-table design |
+| `O-1301` | line 13 | - [ ] Assign numeric urgency 450 (High) |
+| `O-1302` | line 13 | - [ ] Apply the appropriate immediate-dispatch directive |
+| `O-1303` | line 13 | - [ ] Invoke the actual direct agent scheduling path |
+| `O-1304` | line 13 | - [ ] Confirm the execution task/session was accepted or started |
+| `O-1305` | line 13 | - [ ] Bind the execution to the design issue |
+| `O-1306` | line 13 | - [ ] Record execution identifiers and state in the issue |
+| `O-1307` | line 13 | - [ ] Verify the issue is not left waiting in the ordinary queue |
+| `O-1308` | line 13 | - [ ] Report the results with links and evidence |
+| `O-1309` | line 13 | **Do not claim the handoff has been completed until the documents and issue exist and the direct scheduling result has been verified.** The architecture should serve the operational goal rather than mechanically reproduce every suggested im |
+| `O-1310` | line 13 | The system should become easier to understand, operate, delegate through, and recover—not merely accumulate more fields, labels, and automation rules |
+
+## O-R040 — history (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198, #9203
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-016, O-017, O-018, O-019, O-020, O-021, O-022, O-023, O-024
+
+Preserve the historical two-track request and Queue Table Improvements relationship while using the governing Muse handoff for current dispatch authority.
+
+Curation note: Part 0 historical handoff; current governing intake supersedes historical dispatch instructions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-016` | line 13 | ```markdown # Fleet and PM Stack — Priority, Orchestration, and Agent Handoff ## Coordinating-Agent Instructions and Two Design Specifications **Status:** Design and implementation-planning handoff **Repository:** `developing-today/code` ** |
+| `O-017` | line 13 | --- # PART 0 — INSTRUCTIONS TO THE COORDINATING AGENT You are receiving a combined architecture and implementation-planning request covering two closely related efforts: 1 |
+| `O-018` | line 13 | **Fleet Priority, Urgency, Triage, and PM Stack Visibility** 2 |
+| `O-019` | line 13 | **Fleet Work-Item Orchestration and Agent Lifecycle Tooling** The designs should work together, but they do not need to be implemented in one transaction or one pull request |
+| `O-020` | line 13 | A separate Queue Table Improvements effort is already planned or underway |
+| `O-021` | line 13 | Inspect its current design, implementation status, and relevant issues before deciding where to integrate new functionality |
+| `O-022` | line 13 | Your responsibility is to preserve and upload the following two design specifications, align them with the actual repository, create an actionable design issue, attach or link the supporting resources, and **directly schedule an appropriate |
+| `O-023` | line 13 | The next agent should not simply receive another ordinary queue item and wait to be selected |
+| `O-024` | line 13 | ## 0.1 What you must accomplish 1 |
+
+## O-R041 — history (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198, #9203
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-025, O-026, O-027, O-028, O-029, O-030, O-031, O-032, O-033, O-034, O-035, O-036, O-037, O-038, O-039, O-040, O-041, O-042, O-043, O-044, O-045, O-046, O-047, O-048, O-049, O-050, O-051
+
+Inspect/refine against repository evidence, preserve both specs/resources, reuse/create one design issue and require verified dispatch rather than urgency labels or queue position.
+
+Curation note: Part 0 historical handoff; current governing intake supersedes historical dispatch instructions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-025` | line 13 | Inspect the repository, relevant `AGENTS.md` instructions, existing Fleet CLI, queue modules, PM Stack board, GitHub project integration, and dispatch mechanisms |
+| `O-026` | line 13 | 2 |
+| `O-027` | line 13 | Find the existing Queue Table Improvements design and determine its relationship to the proposed work |
+| `O-028` | line 13 | 3 |
+| `O-029` | line 13 | Review and refine the two specifications below against the actual architecture |
+| `O-030` | line 13 | 4 |
+| `O-031` | line 13 | Preserve substantive requirements even when revising their implementation details |
+| `O-032` | line 13 | 5 |
+| `O-033` | line 13 | Write the two documents into the repository, using the proposed paths or appropriate existing documentation conventions |
+| `O-034` | line 13 | 6 |
+| `O-035` | line 13 | Link the documents to each other and to the Queue Table Improvements effort |
+| `O-036` | line 13 | 7 |
+| `O-037` | line 13 | Create one high-priority design issue, or update a clearly matching existing issue rather than creating a duplicate |
+| `O-038` | line 13 | 8 |
+| `O-039` | line 13 | Attach or link both documents and any relevant existing design resources to the issue |
+| `O-040` | line 13 | 9 |
+| `O-041` | line 13 | Set the design issue's numeric urgency to **450**, corresponding to **High** in the proposed scheme |
+| `O-042` | line 13 | 10 |
+| `O-043` | line 13 | Mark the issue for immediate dispatch through the established authorized scheduling mechanism |
+| `O-044` | line 13 | 11 |
+| `O-045` | line 13 | Actually invoke that mechanism and verify that a design agent was scheduled or started |
+| `O-046` | line 13 | 12 |
+| `O-047` | line 13 | Record the resulting task/session identity, assigned agent, and dispatch status on the issue |
+| `O-048` | line 13 | 13 |
+| `O-049` | line 13 | Provide a final report describing documents, issue, dependencies, scheduling evidence, and remaining decisions |
+| `O-050` | line 13 | A GitHub issue with an urgent label is not sufficient proof that an agent has been scheduled |
+| `O-051` | line 13 | Likewise, placing an item at the front of a queue is not equivalent to starting the requested agent |
+
+## O-R042 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** O-053, O-054, O-055, O-056, O-057
+
+Reuse existing Fleet/PM Stack architecture, ownership and dispatch contracts; avoid competing binaries, queues or PM databases.
+
+Curation note: Part 0 historical handoff; current governing intake supersedes historical dispatch instructions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-053` | line 13 | Relevant locations to inspect include: pkgs/fleet/ pkgs/fleet/crates/fleet-queue/ pm-stack/ pm-stack/aggregator/ pm-stack/opencode-claimant/ These are discovery hints, not instructions to assume the current implementation is unchanged |
+| `O-054` | line 13 | Inspect the actual source tree, recent changes, and established task-routing conventions |
+| `O-055` | line 13 | Do not introduce a competing Fleet executable, a second independent queue, or a parallel project-management database without compelling technical justification |
+| `O-056` | line 13 | Prefer reusable Rust libraries and the existing Fleet CLI/capability architecture |
+| `O-057` | line 13 | For PM Stack, preserve its existing source-of-truth, projection, and dispatch contracts |
+
+## O-R043 — history (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198, #9206
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** O-058, O-059, O-060, O-061, O-062, O-063, O-064, O-065, O-066, O-067, O-068, O-069, O-070, O-071, O-072, O-073, O-074, O-075, O-076, O-077, O-078, O-079, O-080
+
+The two designs cover priority/PM/mobile/dispatch and lifecycle/hydration/dependencies/outbox/completion, include CLI/examples/tests/links, and reconcile existing docs rather than overwrite.
+
+Curation note: Part 0 historical handoff; current governing intake supersedes historical dispatch instructions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-058` | line 13 | ## 0.3 Documents to produce Preferred paths: docs/design/fleet-priority-urgency-pm-stack.md docs/design/fleet-work-item-orchestration.md If the repository has a different established location, use it and explain the choice |
+| `O-059` | line 13 | The first document covers: - Numeric urgency and priority bands |
+| `O-060` | line 13 | - Separation of urgency, importance, and workflow state |
+| `O-061` | line 13 | - Automatic and manual reprioritization |
+| `O-062` | line 13 | - Aging, pivots, deadlines, opportunities, and dependencies |
+| `O-063` | line 13 | - GitHub label synchronization |
+| `O-064` | line 13 | - Triage and immediate dispatch |
+| `O-065` | line 13 | - Queue selection and weighted exploration |
+| `O-066` | line 13 | - PM Stack board visibility |
+| `O-067` | line 13 | - Mobile and browser interaction |
+| `O-068` | line 13 | - Live-session instructions and comment handling |
+| `O-069` | line 13 | - Integration with Queue Table Improvements |
+| `O-070` | line 13 | The second document covers: - Agent startup and Fleet discovery |
+| `O-071` | line 13 | - Work discovery, claiming, leasing, and hydration |
+| `O-072` | line 13 | - GitHub issue, PR, timeline, commit, and diff retrieval |
+| `O-073` | line 13 | - Durable context files |
+| `O-074` | line 13 | - Notes, comments, metadata, and dependency operations |
+| `O-075` | line 13 | - Checkpoints, parking, blocking, resuming, and handoffs |
+| `O-076` | line 13 | - Transactional outbox and reconciliation |
+| `O-077` | line 13 | - Direct verified completion |
+| `O-078` | line 13 | - Agent walkthroughs and acceptance tests |
+| `O-079` | line 13 | Both documents should contain implementation-level guidance, proposed CLI interfaces, examples, and verification criteria |
+| `O-080` | line 13 | If documents already exist, reconcile and update them rather than silently overwriting more recent work |
+
+## O-R044 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** O-081, O-082, O-083, O-084, O-085, O-086, O-087, O-088, O-089, O-090, O-091, O-092, O-093, O-094, O-095, O-096, O-097, O-098, O-099, O-100, O-101, O-102, O-103, O-104, O-105, O-106
+
+Treat goals as authoritative and mechanisms as proposals; document intended behavior, implementation, rationale/tradeoffs/failures and evaluate listed architecture questions.
+
+Curation note: Part 0 historical handoff; current governing intake supersedes historical dispatch instructions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-081` | line 13 | ## 0.4 Required architectural review Do not simply accept every mechanism proposed below |
+| `O-082` | line 13 | The underlying goals are authoritative; the exact mechanisms are proposals |
+| `O-083` | line 13 | You are expected to exercise engineering judgment |
+| `O-084` | line 13 | For any significant change of approach: 1 |
+| `O-085` | line 13 | State the intended behavior |
+| `O-086` | line 13 | 2 |
+| `O-087` | line 13 | Explain the proposed implementation |
+| `O-088` | line 13 | 3 |
+| `O-089` | line 13 | Explain why it is better than the original mechanism |
+| `O-090` | line 13 | 4 |
+| `O-091` | line 13 | Identify tradeoffs, limitations, and failure cases |
+| `O-092` | line 13 | 5 |
+| `O-093` | line 13 | Preserve the user's actual operational objective |
+| `O-094` | line 13 | In particular, critically evaluate: - Whether priority should remain a single number |
+| `O-095` | line 13 | - How urgency should differ from importance |
+| `O-096` | line 13 | - How priority should change with time |
+| `O-097` | line 13 | - Whether queue ordering and total ordering should use separate keys |
+| `O-098` | line 13 | - Whether automatic priority changes create excessive churn |
+| `O-099` | line 13 | - How GitHub labels should synchronize |
+| `O-100` | line 13 | - Whether comments should trigger execution |
+| `O-101` | line 13 | - How immediate dispatch should differ from ordinary queue selection |
+| `O-102` | line 13 | - How blocked work should influence dependency priorities |
+| `O-103` | line 13 | - How the mobile board should command live agents |
+| `O-104` | line 13 | - How these capabilities fit the existing queue-table redesign |
+| `O-105` | line 13 | Do not build elaborate mechanics merely to reproduce arbitrary numeric rules when a simpler, more reliable model achieves the objective |
+| `O-106` | line 13 | Conversely, do not discard detailed behavior simply because it is difficult |
+
+## O-R045 — history (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** O-107, O-108, O-109, O-110, O-111, O-112, O-113, O-114, O-115, O-116, O-117, O-118, O-119, O-120, O-121, O-122, O-123, O-124, O-125, O-126, O-127, O-128, O-129, O-130, O-131, O-132, O-133, O-134
+
+Design issue carries objective/resources/decision areas/done criteria, verified architecture and plans, independent vs queue-table-gated work, without authorizing production rewrite.
+
+Curation note: Part 0 historical handoff; current governing intake supersedes historical dispatch instructions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-107` | line 13 | ## 0.5 Create the starter design issue Suggested title: Design: Fleet urgency, triage, PM Stack visibility, and agent workflows Suggested metadata: Numeric urgency: 450 Urgency band: High Kind: Design / Architecture Execution directive: Do  |
+| `O-108` | line 13 | Do not invent conflicting labels |
+| `O-109` | line 13 | The issue should contain: ### Objective Design the unified Fleet priority/urgency, triage, GitHub synchronization, PM Stack board, and agent orchestration system |
+| `O-110` | line 13 | ### Required resources - Link to the priority/urgency/PM Stack design document |
+| `O-111` | line 13 | - Link to the work-item orchestration design document |
+| `O-112` | line 13 | - Link to the Queue Table Improvements design |
+| `O-113` | line 13 | - Links to relevant existing issues or PRs |
+| `O-114` | line 13 | - References to relevant modules and tests |
+| `O-115` | line 13 | ### Design decisions to resolve - Source-of-truth boundaries |
+| `O-116` | line 13 | - Numerical urgency representation |
+| `O-117` | line 13 | - Priority-band mapping |
+| `O-118` | line 13 | - Stable total ordering |
+| `O-119` | line 13 | - Dependency urgency propagation |
+| `O-120` | line 13 | - GitHub event normalization |
+| `O-121` | line 13 | - Immediate agent-dispatch semantics |
+| `O-122` | line 13 | - Mobile interaction architecture |
+| `O-123` | line 13 | - Queue selection/exploration policies |
+| `O-124` | line 13 | - Transactional outbox and recovery |
+| `O-125` | line 13 | - Implementation sequence and migration requirements |
+| `O-126` | line 13 | ### Definition of done The assigned agent must produce: - A repository-grounded architecture |
+| `O-127` | line 13 | - A reviewed implementation plan |
+| `O-128` | line 13 | - A dependency and migration plan |
+| `O-129` | line 13 | - Stable command/API contracts |
+| `O-130` | line 13 | - Acceptance criteria |
+| `O-131` | line 13 | - A list of work that can proceed immediately |
+| `O-132` | line 13 | - A list of work gated on Queue Table Improvements |
+| `O-133` | line 13 | - A recorded recommendation about when implementation should begin |
+| `O-134` | line 13 | The issue is a design deliverable, not an instruction to rewrite the entire production system in one session |
+
+## O-R046 — history (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199, #9203
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** CF-001, CF-006
+**Occurrence refs:** O-135, O-136, O-137, O-138, O-139, O-140, O-141
+
+Keep historical design urgency 450/High distinct from one-shot Do Now; rationale is unblocking scope, not emergency, and implementation may be gated.
+
+Curation note: Part 0 historical handoff; current governing intake supersedes historical dispatch instructions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-135` | line 13 | ## 0.6 Why the design issue receives priority 450 Use **450 — High**, near the urgent end of the High band |
+| `O-136` | line 13 | This is appropriate because the design is relatively bounded, unblocks several related implementation decisions, and influences multiple agents and interfaces |
+| `O-137` | line 13 | It should not be classified as an emergency merely because it is strategically important |
+| `O-138` | line 13 | If inspection establishes that it blocks an active critical-path rollout, a higher urgency may be warranted |
+| `O-139` | line 13 | The `Do Now` directive is independent of the numeric priority |
+| `O-140` | line 13 | It means this specific design session should be dispatched immediately, subject to authorization and capacity, without permanently distorting the issue's underlying urgency |
+| `O-141` | line 13 | The later implementation effort may initially have a lower urgency and may remain gated until the queue-table work stabilizes |
+
+## O-R047 — history (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-142, O-143, O-144, O-145, O-146, O-147, O-148, O-149, O-150, O-151, O-152, O-153, O-154, O-155, O-156, O-157, O-158
+
+Discover and invoke actual authorized direct scheduling; bind issue/task/session, verify accepted/started identity, avoid ordinary double-claim, and report failure honestly.
+
+Curation note: Part 0 historical handoff; current governing intake supersedes historical dispatch instructions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-142` | line 13 | ## 0.7 Directly dispatch the next agent Use the established direct agent-dispatch mechanism |
+| `O-143` | line 13 | Inspect the current scheduler, OpenCode claimant integration, available execution lanes, and existing issue-to-session handoff pattern |
+| `O-144` | line 13 | The intended sequence is: Design files committed / uploaded \| v Starter issue created \| v Resources linked to issue \| v Agent execution requested directly \| v Scheduler / claimant accepts request \| v Session created and bound to issue \| v I |
+| `O-145` | line 13 | - Add a label |
+| `O-146` | line 13 | - Create a normal queue task |
+| `O-147` | line 13 | - Assume a webhook will eventually start something |
+| `O-148` | line 13 | - Declare success after a request that was not accepted |
+| `O-149` | line 13 | A direct-dispatch operation may still create an internal execution record for durability, deduplication, and observability |
+| `O-150` | line 13 | That is acceptable |
+| `O-151` | line 13 | The distinction is that it **must not wait behind ordinary queue selection** |
+| `O-152` | line 13 | Use the actual existing direct scheduling API or command, not an assumed CLI syntax |
+| `O-153` | line 13 | Illustrative desired interface, if compatible with existing conventions: fleet agent dispatch \ --issue developing-today/code#ISSUE \ --mode immediate \ --lane opencode \ --purpose design \ --idempotency-key fleet-pm-priority-design-v1 This |
+| `O-154` | line 13 | Discover the real mechanism before invoking anything |
+| `O-155` | line 13 | If the system automatically imports GitHub issues into the queue, ensure the directly dispatched issue is bound to its active execution record and does not also get independently claimed by an ordinary worker |
+| `O-156` | line 13 | Confirm: issue_id execution_task_id agent/session_id provider/lane dispatch_status started_at or accepted_at Record the identifiers and status |
+| `O-157` | line 13 | If dispatch fails, report it as a blocker |
+| `O-158` | line 13 | Do not describe the issue as actively scheduled without evidence |
+
+## O-R048 — history (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** O-159, O-160, O-161, O-162, O-163, O-164, O-165, O-166, O-167, O-168, O-169, O-170
+
+Historical agent brief requires repository inspection, contracts/tests/failure handling, justified deviations, gated risky schema work, preserved invariants and verified follow-up.
+
+Curation note: Part 0 historical handoff; current governing intake supersedes historical dispatch instructions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-159` | line 13 | ## 0.8 Instructions to the dispatched design agent Supply the following operating brief: > Read the starter issue and both attached design documents |
+| `O-160` | line 13 | Inspect the existing Queue Table Improvements effort and the current Fleet, PM Stack, GitHub, and dispatch implementations |
+| `O-161` | line 13 | Treat the documents as architectural requirements and proposed mechanisms, not an unquestionable implementation recipe |
+| `O-162` | line 13 | > > Resolve inconsistencies, improve weak designs, and distinguish work that can be implemented immediately from work dependent on the queue-table changes |
+| `O-163` | line 13 | Maintain a clear separation between intrinsic urgency, importance, scheduling pressure, and workflow state |
+| `O-164` | line 13 | > > Produce an implementation-ready plan with data contracts, CLI/API interfaces, synchronization rules, migration sequencing, tests, and operational failure handling |
+| `O-165` | line 13 | Update the design issue and linked resources through the established workflow |
+| `O-166` | line 13 | Record important deviations and reasons |
+| `O-167` | line 13 | > > Do not start a large schema-coupled migration before its prerequisite design and schema are confirmed |
+| `O-168` | line 13 | Small independent foundational improvements may be implemented if authorized, clearly scoped, tested, and consistent with the repository's established development process |
+| `O-169` | line 13 | > > Preserve the existing queue/lease/claim invariants and avoid parallel infrastructure |
+| `O-170` | line 13 | At the end, leave a verified issue state, useful checkpoints, and actionable follow-up work |
+
+## O-R049 — example (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9206, #9207
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** O-1037, O-1038, O-1039, O-1040, O-1041, O-1042, O-1043, O-1044, O-1045, O-1046, O-1047, O-1048
+
+Illustrative ordinary-worker scenario covers bootstrap, eligible claim, execution-session/context creation, concise summary, progress and hard dependency, then park/release without marking completion.
+
+Curation note: Flattened source example; exact source spans retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-1037` | line 13 | Agent Walkthrough A — Ordinary Queue Worker ## Agent receives > You are a Fleet queue worker |
+| `O-1038` | line 13 | Discover Fleet, claim suitable eligible work, hydrate context, implement the task, record progress through Fleet, reconcile new activity, and complete or checkpoint appropriately |
+| `O-1039` | line 13 | ## Startup fleet agent bootstrap \ --scenario queue-worker \ --format compact fleet work next \ --ready \ --claim \ --hydrate full Fleet: - Selects an eligible item |
+| `O-1040` | line 13 | - Atomically claims it |
+| `O-1041` | line 13 | - Creates the execution session record |
+| `O-1042` | line 13 | - Gathers linked metadata |
+| `O-1043` | line 13 | - Writes detailed context artifacts |
+| `O-1044` | line 13 | - Returns a concise summary and file paths |
+| `O-1045` | line 13 | ## Agent examines context .fleet/work/842/context/summary.md The summary identifies: Queue item 842 Issue #203 PR #231 One unresolved review thread One failing test The agent reads relevant files and investigates |
+| `O-1046` | line 13 | ## Agent records progress fleet work note add 842 \ --text "Investigating race condition and prior implementation" It uses ordinary development tools to edit, test, commit, and push code |
+| `O-1047` | line 13 | ## Agent discovers a blocker fleet dependency add 842 \ --blocked-by fleet:761 \ --hard fleet work note add 842 \ --text "Requires fencing-token change from item 761" \ --mirror github ## Agent parks fleet work park 842 \ --reason "Blocked  |
+| `O-1048` | line 13 | The item is not marked completed |
+
+## O-R050 — example (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9206, #9207, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** O-1050, O-1051, O-1052, O-1053, O-1054, O-1055, O-1056, O-1057, O-1058, O-1059, O-1060
+
+Illustrative resume scenario checks dependency and new activity, resumes with incremental hydration, handles feedback, verifies merge/closure and directly records completion.
+
+Curation note: Flattened source example; exact source spans retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-1050` | line 13 | Agent Walkthrough B — Resume and Finish A later session is assigned item 842 |
+| `O-1051` | line 13 | Assume dependency 761 has completed |
+| `O-1052` | line 13 | ## Resume fleet agent bootstrap --scenario resume fleet work inspect 842 fleet work changes 842 \ --since-checkpoint Fleet reports: Dependency 761 completed One new maintainer comment One new PR check result The agent verifies eligibility |
+| `O-1053` | line 13 | fleet work unblock 842 \ --reason "Dependency satisfied" fleet work resume 842 \ --claim \ --hydrate incremental ## Implement The agent modifies code, adds regression tests, and runs the test suite |
+| `O-1054` | line 13 | It commits and pushes: git add . git commit -m "Fix stale lease recovery" git push It records the result: fleet work note add 842 \ --text "Implemented fix and added regression tests" ## Update GitHub through Fleet fleet metadata labels 842 |
+| `O-1055` | line 13 | ## Check new external activity fleet work changes 842 \ --since-start \ --external-only Fleet reports: New issue comment: Please handle reconnect during lease renewal |
+| `O-1056` | line 13 | The agent does not ignore this new requirement |
+| `O-1057` | line 13 | It investigates, modifies the implementation, adds tests, and pushes another commit |
+| `O-1058` | line 13 | It replies through Fleet: fleet github comment reply \ --work 842 \ --comment-id COMMENT_ID \ --body-file response.md ## Verify fleet work refresh 842 \ --include commits,reviews,checks,comments fleet github pr checks \ --work 842 \ --pr de |
+| `O-1059` | line 13 | ## Complete fleet work complete 842 \ --merge-pr developing-today/code#231 \ --close-issues developing-today/code#203 \ --close-queue \ --verify \ --wait Fleet verifies the merge and closure and directly marks the queue item completed |
+| `O-1060` | line 13 | It does not wait for another worker's webhook processing |
+
+## O-R051 — example (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9201, #9203
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-1062, O-1063, O-1064, O-1065, O-1066, O-1067, O-1068, O-1069, O-1070, O-1071, O-1072, O-1073, O-1074, O-1075, O-1076, O-1077, O-1078, O-1079, O-1080, O-1081, O-1082, O-1083, O-1084, O-1085, O-1086, O-1087
+
+Illustrative live-instruction scenario authenticates and resolves a phone/comment request, routes to a live session, records delivery and returns visible/recoverable result; do not queue when session can act.
+
+Curation note: Flattened source example; exact source spans retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-1062` | line 13 | Agent Walkthrough C — Live User Instruction An agent is already working on issue #203 |
+| `O-1063` | line 13 | The user opens the PM Stack mobile board and enters: > Please inspect the reconnect case and tell me whether the test covers it |
+| `O-1064` | line 13 | Alternatively, the user posts the same authorized comment on GitHub |
+| `O-1065` | line 13 | ## Event flow 1 |
+| `O-1066` | line 13 | UI or webhook receives the message |
+| `O-1067` | line 13 | 2 |
+| `O-1068` | line 13 | Fleet authenticates and authorizes it |
+| `O-1069` | line 13 | 3 |
+| `O-1070` | line 13 | The issue is resolved to work item 842 |
+| `O-1071` | line 13 | 4 |
+| `O-1072` | line 13 | Fleet finds the active execution session |
+| `O-1073` | line 13 | 5 |
+| `O-1074` | line 13 | Fleet forwards the instruction through the session adapter |
+| `O-1075` | line 13 | 6 |
+| `O-1076` | line 13 | Delivery is recorded |
+| `O-1077` | line 13 | 7 |
+| `O-1078` | line 13 | The agent inspects the case |
+| `O-1079` | line 13 | 8 |
+| `O-1080` | line 13 | The agent reports its findings |
+| `O-1081` | line 13 | 9 |
+| `O-1082` | line 13 | Fleet makes the answer visible in the appropriate interface |
+| `O-1083` | line 13 | This should not produce an ordinary queued task when a capable live session already exists |
+| `O-1084` | line 13 | ## If the session is not live Fleet should inspect the work-item state |
+| `O-1085` | line 13 | If authorized and eligible, it may dispatch a new session directly |
+| `O-1086` | line 13 | If blocked or not executable, it should return the appropriate explanation or route the request to immediate triage |
+| `O-1087` | line 13 | All cases must be visible and recoverable |
+
+## O-R052 — example (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9206, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** O-1089, O-1090
+
+Illustrative near-timeout session checkpoints and parks/releases rather than starting an unsafe completion.
+
+Curation note: Flattened source example; exact source spans retained.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-1089` | line 13 | Agent Walkthrough D — Near-Timeout Handoff An agent is working on item 905 but has insufficient remaining execution time for safe completion |
+| `O-1090` | line 13 | It checkpoints: fleet work checkpoint 905 \ --note "Implementation updated; integration tests pending" Then parks: fleet work park 905 \ --reason "Execution window nearly exhausted" \ --checkpoint \ --release-lease Checkpoint metadata shoul |
+
+## O-R053 — history (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9198, #9203
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** CF-003
+**Occurrence refs:** O-006, O-011
+
+Preserve the recovered source requirements/examples while using the governing Muse handoff—not the historic prompt—for current dispatch authority.
+
+Curation note: Historical source-preservation and precedence context.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-006` | line 5 | Preservation source — requirements and examples here are source requirements, not a list to shrink |
+| `O-011` | line 10 | Preserve its requirements and examples, but use the separate Muse handoff for current dispatch and authority |
+
+## O-R054 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-262, O-263, O-264, O-265, O-266, O-267, O-268, O-269, O-270, O-271, O-272, O-273, O-274, O-275, O-276, O-277, O-278, O-279, O-280, O-281
+
+Keep urgency and any explicit relative-order key separate; resolve equal scores deterministically using explicit ordering, oldest queue entry, then stable item identity.
+
+Curation note: Independent ordering/collision behavior from flattened recovered design.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-262` | line 13 | Stable Total Ordering Numerical urgency does not need to be unique |
+| `O-263` | line 13 | Many items may reasonably share: urgency_score = 1000 Nevertheless, the queue must have a deterministic total order |
+| `O-264` | line 13 | Recommended logical ordering: 1 |
+| `O-265` | line 13 | Effective scheduling urgency |
+| `O-266` | line 13 | 2 |
+| `O-267` | line 13 | Explicit relative-order key, if present |
+| `O-268` | line 13 | 3 |
+| `O-269` | line 13 | Original queue-entry time, oldest first |
+| `O-270` | line 13 | 4 |
+| `O-271` | line 13 | Stable work-item ID |
+| `O-272` | line 13 | For items with identical intrinsic urgency and no explicit ordering override, **oldest first** is a reasonable default |
+| `O-273` | line 13 | A newly created item that truly needs to run sooner should receive a more urgent score or explicit placement |
+| `O-274` | line 13 | ## 4.1 Separate the score from the tie-breaker Do not continually modify numeric urgency solely to force unique values |
+| `O-275` | line 13 | Introduce a secondary ordering mechanism |
+| `O-276` | line 13 | Possible implementations: - Fractional rank |
+| `O-277` | line 13 | - Lexicographic rank |
+| `O-278` | line 13 | - Sparse integer order key |
+| `O-279` | line 13 | - Another stable insert-before/after representation |
+| `O-280` | line 13 | Use the architecture that best fits the existing queue backend |
+| `O-281` | line 13 | An explicit `move before` request must remain meaningful even when two items share a score |
+
+## O-R055 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-282, O-283, O-284, O-285
+
+Allow gradual progressive refinement of broad equal-score clusters without forcing unique scores or fixed cohort sizes.
+
+Curation note: Independent ordering/collision behavior from flattened recovered design.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-282` | line 13 | ## 4.2 Gentle spacing Natural priority clusters are acceptable |
+| `O-283` | line 13 | However, triage may gradually distinguish items within a cluster |
+| `O-284` | line 13 | For example: Before: 1000: 50 items After initial comparison: 980: 25 items 1000: 10 items 1020: 10 items 1050: 5 items Later reviews may refine the clusters further |
+| `O-285` | line 13 | The purpose is to improve comparative ranking, not force every item onto a unique score |
+
+## O-R056 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-286, O-287, O-288, O-289, O-290, O-291, O-292
+
+On a score collision, preserve ties/order where justified, prefer minimal local movement, avoid mass renumbering, and respect exact-score requests.
+
+Curation note: Independent ordering/collision behavior from flattened recovered design.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-286` | line 13 | ## 4.3 Collision handling If an automatic adjustment lands on an occupied score: - Permit identical scores when justified |
+| `O-287` | line 13 | - Preserve deterministic order |
+| `O-288` | line 13 | - Optionally choose a nearby score, such as ±5 |
+| `O-289` | line 13 | - Prefer minimal local changes |
+| `O-290` | line 13 | - Avoid cascades of mass renumbering |
+| `O-291` | line 13 | - Respect explicit exact-score requests |
+| `O-292` | line 13 | A score collision is not an error |
+
+## O-R057 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-293, O-294, O-295
+
+Prevent automatic spacing from causing aggregate upward/downward drift without a genuine change in work priorities.
+
+Curation note: Independent ordering/collision behavior from flattened recovered design.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-293` | line 13 | ## 4.4 No uncontrolled priority drift Automatic spacing must not collectively push every item upward or downward over time |
+| `O-294` | line 13 | Each adjustment requires a documented reason |
+| `O-295` | line 13 | Triage should preserve relative scale and distribution unless the actual work priorities have changed |
+
+## O-R058 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-379, O-380, O-381, O-382, O-383
+
+Use comparison categories and configurable small/evidence-backed score adjustments; retain manual larger moves.
+
+Curation note: Independent triage/hysteresis oracle from recovered source.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-379` | line 13 | Automatic Triage and Priority Refinement Regular triage should improve ordering without generating excessive changes |
+| `O-380` | line 13 | ## 8.1 Triage dimensions Items may be compared along categories such as: Much more urgent Slightly more urgent Roughly equal Slightly less urgent Much less urgent Custom urgency Needs investigation The same conceptual categories can later b |
+| `O-381` | line 13 | ## 8.2 Gradual adjustment A typical minor adjustment might be: -10 = more urgent +10 = less urgent Larger moves should be possible when supported by evidence |
+| `O-382` | line 13 | Examples: -25 -50 +25 +50 Manual repositioning can be much larger |
+| `O-383` | line 13 | These values must be configurable |
+
+## O-R059 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-384, O-385, O-386, O-387, O-388, O-389, O-390
+
+Refine clusters progressively and limit ordinary automatic movement to one adjustment per item per sweep unless a distinct high-confidence event applies.
+
+Curation note: Independent triage/hysteresis oracle from recovered source.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-384` | line 13 | ## 8.3 Progressive cluster refinement Suppose 50 items have approximately equal urgency |
+| `O-385` | line 13 | A first pass might separate them into broad groups: 25 / 10 / 10 / 5 Later passes compare more closely related items: 10 / 10 / 5 Then: 5 / 3 / 2 Eventually, a few items warrant individual ordering |
+| `O-386` | line 13 | Do not require fixed group sizes |
+| `O-387` | line 13 | Use this as a strategy for progressively refining partially ordered sets |
+| `O-388` | line 13 | ## 8.4 Sweep ordering A reasonable approach is to examine lower-urgency cohorts first and proceed toward more urgent cohorts |
+| `O-389` | line 13 | However, avoid repeatedly processing the same ticket within one sweep merely because it moved into a later cohort |
+| `O-390` | line 13 | Recommended invariant: **Each item receives at most one automatic priority adjustment per ordinary sweep unless a separate high-confidence event requires immediate reconsideration.** This prevents runaway escalation loops |
+
+## O-R060 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-391
+
+Record previous/new score, source, reason, evidence, confidence, evaluation time, and next review for every adjustment.
+
+Curation note: Independent triage/hysteresis oracle from recovered source.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-391` | line 13 | ## 8.5 Triage explanation Each adjustment should record: previous_urgency new_urgency source reason evidence confidence evaluated_at next_review_at Not every adjustment needs a public comment, but it must be auditable |
+
+## O-R061 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-393, O-394, O-395, O-396, O-397, O-398, O-399, O-400, O-401, O-402, O-403, O-404, O-405
+
+Apply bounded boundary hysteresis with configurable buffer/confidence/cooldown; allow specified manual and high-confidence exceptions and avoid permanent trapping.
+
+Curation note: Independent triage/hysteresis oracle from recovered source.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-393` | line 13 | Resistance at Urgency-Band Boundaries A useful objective is to prevent low-confidence automatic adjustments from repeatedly bouncing items across bands |
+| `O-394` | line 13 | For example: Standard: 800–1199 High: 400–799 An item approaching 800 from the Standard band should not cross merely because of tiny, noisy ranking changes |
+| `O-395` | line 13 | ## 9.1 Proposed hysteresis Support: boundary_buffer: configurable automatic_crossing_confidence: configurable review_cooldown: configurable For example: boundary_buffer = 30 automatic_crossing_confidence = 0.8 Within the boundary buffer, re |
+| `O-396` | line 13 | This is a policy example, not a universal mathematical law |
+| `O-397` | line 13 | ## 9.2 Allowed exceptions Crossing should remain immediate for: - Authorized manual action |
+| `O-398` | line 13 | - Confirmed hard deadline |
+| `O-399` | line 13 | - Active critical incident |
+| `O-400` | line 13 | - Explicit high-confidence dependency pressure |
+| `O-401` | line 13 | - Verified major project reprioritization |
+| `O-402` | line 13 | ## 9.3 Avoid permanent band trapping Hysteresis is resistance, not a wall |
+| `O-403` | line 13 | An item that consistently deserves promotion must be able to cross |
+| `O-404` | line 13 | Record the evidence and allow persistent signals to accumulate |
+| `O-405` | line 13 | --- # 10 |
+
+## O-R062 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-582, O-583, O-584, O-585, O-586, O-587, O-588, O-589, O-590, O-591, O-592, O-593, O-594, O-595, O-596, O-597
+
+Authenticate/authorize actors and commands; validate signed webhooks, allowlists/RBAC, confirmations, replay/idempotency, audits, rate limits, and routing permissions.
+
+Curation note: Independent security/routing/receipt behavior from recovered source.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-582` | line 13 | Comments, Commands, and Agent Routing GitHub comments and the PM Stack UI should be useful control surfaces |
+| `O-583` | line 13 | However, comments are untrusted external input until authenticated and authorized |
+| `O-584` | line 13 | ## 14.1 Proposed command syntax Examples: /fleet status /fleet triage /fleet triage now /fleet start /fleet resume /fleet retry /fleet park /fleet unblock /fleet priority high /fleet priority 575 /fleet do-now /fleet merge /fleet agent stat |
+| `O-585` | line 13 | ## 14.2 Security A webhook must not execute arbitrary shell commands simply because a GitHub comment contains slash syntax |
+| `O-586` | line 13 | Implement: - Signed webhook verification |
+| `O-587` | line 13 | - Authorized actor checks |
+| `O-588` | line 13 | - Explicit command allowlists |
+| `O-589` | line 13 | - Role-based permissions |
+| `O-590` | line 13 | - Confirmation for high-impact operations |
+| `O-591` | line 13 | - Input validation |
+| `O-592` | line 13 | - Replay protection |
+| `O-593` | line 13 | - Idempotency |
+| `O-594` | line 13 | - Audit logs |
+| `O-595` | line 13 | - Rate limiting |
+| `O-596` | line 13 | - Session routing authorization |
+| `O-597` | line 13 | A random external contributor must not be able to force a merge, change queue priority, or start privileged agents |
+
+## O-R063 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-598, O-599, O-600, O-601, O-602, O-603, O-604, O-605, O-606, O-607, O-608, O-609, O-610, O-611, O-612, O-613, O-614, O-615, O-616, O-617, O-618, O-619
+
+Route authorized actionable comments on active work to its bound session with delivery/acknowledgment, journal, and visible outcome; parked work may directly resume/dispatch/triage or explain why not, preserving blockers.
+
+Curation note: Independent security/routing/receipt behavior from recovered source.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-598` | line 13 | ## 14.3 Normal comments on active work An authorized user may comment naturally on a live issue: > Please check the new reconnect case before merging |
+| `O-599` | line 13 | When policy permits, Fleet should: 1 |
+| `O-600` | line 13 | Detect the comment |
+| `O-601` | line 13 | 2 |
+| `O-602` | line 13 | Associate it with the work item |
+| `O-603` | line 13 | 3 |
+| `O-604` | line 13 | Identify the live agent session |
+| `O-605` | line 13 | 4 |
+| `O-606` | line 13 | Forward the message to that session |
+| `O-607` | line 13 | 5 |
+| `O-608` | line 13 | Record delivery and acknowledgment |
+| `O-609` | line 13 | 6 |
+| `O-610` | line 13 | Update the activity journal |
+| `O-611` | line 13 | 7 |
+| `O-612` | line 13 | Make the result visible |
+| `O-613` | line 13 | Do not require a special slash command for every normal instruction from an authorized owner |
+| `O-614` | line 13 | ## 14.4 Parked work An authorized actionable comment on a parked item may trigger: - Direct resumption |
+| `O-615` | line 13 | - A new session |
+| `O-616` | line 13 | - Immediate triage |
+| `O-617` | line 13 | - An explicit inability-to-resume response |
+| `O-618` | line 13 | It should not merely move to the front of the normal queue |
+| `O-619` | line 13 | If the item is blocked, preserve safety and dependency rules |
+
+## O-R064 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-620, O-621, O-622, O-623, O-624, O-625, O-626, O-627, O-628
+
+Use capability-aware session adapters; inspect actual provider APIs and never treat Slack posting as agent receipt/action.
+
+Curation note: Independent security/routing/receipt behavior from recovered source.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-620` | line 13 | ## 14.5 Live-session adapters Possible targets include: - OpenCode sessions |
+| `O-621` | line 13 | - Existing Fleet execution lanes |
+| `O-622` | line 13 | - Other supported agent providers |
+| `O-623` | line 13 | - Muse Agent through an available authorized channel |
+| `O-624` | line 13 | - Slack-mediated communication where appropriate |
+| `O-625` | line 13 | - GitHub comments when direct session messaging is unavailable |
+| `O-626` | line 13 | Inspect actual provider APIs and integration contracts before implementing |
+| `O-627` | line 13 | The internal abstraction might be: agent.session.find agent.session.send agent.session.status agent.session.start agent.session.resume agent.session.stop Each adapter must honestly report supported capabilities |
+| `O-628` | line 13 | A Slack message being posted is not proof that an agent received and acted upon it |
+
+## O-R065 — candidate (atomic)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-629, O-630, O-631, O-632, O-633, O-634, O-635
+
+Deduplicate event flow, bind and report dispatch receipts; on failure preserve retry intent and never silently downgrade immediate requests to ordinary queue work.
+
+Curation note: Independent security/routing/receipt behavior from recovered source.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-629` | line 13 | ## 14.6 Immediate event flow GitHub / PM Stack event \| v Authenticate and authorize \| v Resolve work item \| v Deduplicate event \| v Find active session / \ Yes No \| \| v v Send message Direct dispatch \| \| v v Await ACK Bind new session \ / v |
+| `O-630` | line 13 | - Report the failure |
+| `O-631` | line 13 | - Preserve any required retry intent |
+| `O-632` | line 13 | - Avoid claiming that the agent started |
+| `O-633` | line 13 | - Use an authorized alternate route only where configured |
+| `O-634` | line 13 | The system should not silently convert an immediate request into an ordinary low-visibility queue item |
+| `O-635` | line 13 | --- # 15 |
+
+## O-R066 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-262, O-263, O-264, O-265, O-266, O-267, O-268, O-269, O-270, O-271, O-272, O-273, O-274, O-275, O-276, O-277, O-278, O-279, O-280, O-281
+**Duplicate of:** `O-R054`
+
+Keep urgency and any explicit relative-order key separate; resolve equal scores deterministically using explicit ordering, oldest queue entry, then stable item identity.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R054; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-262` | line 13 | Stable Total Ordering Numerical urgency does not need to be unique |
+| `O-263` | line 13 | Many items may reasonably share: urgency_score = 1000 Nevertheless, the queue must have a deterministic total order |
+| `O-264` | line 13 | Recommended logical ordering: 1 |
+| `O-265` | line 13 | Effective scheduling urgency |
+| `O-266` | line 13 | 2 |
+| `O-267` | line 13 | Explicit relative-order key, if present |
+| `O-268` | line 13 | 3 |
+| `O-269` | line 13 | Original queue-entry time, oldest first |
+| `O-270` | line 13 | 4 |
+| `O-271` | line 13 | Stable work-item ID |
+| `O-272` | line 13 | For items with identical intrinsic urgency and no explicit ordering override, **oldest first** is a reasonable default |
+| `O-273` | line 13 | A newly created item that truly needs to run sooner should receive a more urgent score or explicit placement |
+| `O-274` | line 13 | ## 4.1 Separate the score from the tie-breaker Do not continually modify numeric urgency solely to force unique values |
+| `O-275` | line 13 | Introduce a secondary ordering mechanism |
+| `O-276` | line 13 | Possible implementations: - Fractional rank |
+| `O-277` | line 13 | - Lexicographic rank |
+| `O-278` | line 13 | - Sparse integer order key |
+| `O-279` | line 13 | - Another stable insert-before/after representation |
+| `O-280` | line 13 | Use the architecture that best fits the existing queue backend |
+| `O-281` | line 13 | An explicit `move before` request must remain meaningful even when two items share a score |
+
+## O-R067 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-282, O-283, O-284, O-285
+**Duplicate of:** `O-R055`
+
+Allow gradual progressive refinement of broad equal-score clusters without forcing unique scores or fixed cohort sizes.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R055; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-282` | line 13 | ## 4.2 Gentle spacing Natural priority clusters are acceptable |
+| `O-283` | line 13 | However, triage may gradually distinguish items within a cluster |
+| `O-284` | line 13 | For example: Before: 1000: 50 items After initial comparison: 980: 25 items 1000: 10 items 1020: 10 items 1050: 5 items Later reviews may refine the clusters further |
+| `O-285` | line 13 | The purpose is to improve comparative ranking, not force every item onto a unique score |
+
+## O-R068 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-286, O-287, O-288, O-289, O-290, O-291, O-292
+**Duplicate of:** `O-R056`
+
+On a score collision, preserve ties/order where justified, prefer minimal local movement, avoid mass renumbering, and respect exact-score requests.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R056; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-286` | line 13 | ## 4.3 Collision handling If an automatic adjustment lands on an occupied score: - Permit identical scores when justified |
+| `O-287` | line 13 | - Preserve deterministic order |
+| `O-288` | line 13 | - Optionally choose a nearby score, such as ±5 |
+| `O-289` | line 13 | - Prefer minimal local changes |
+| `O-290` | line 13 | - Avoid cascades of mass renumbering |
+| `O-291` | line 13 | - Respect explicit exact-score requests |
+| `O-292` | line 13 | A score collision is not an error |
+
+## O-R069 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-293, O-294, O-295
+**Duplicate of:** `O-R057`
+
+Prevent automatic spacing from causing aggregate upward/downward drift without a genuine change in work priorities.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R057; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-293` | line 13 | ## 4.4 No uncontrolled priority drift Automatic spacing must not collectively push every item upward or downward over time |
+| `O-294` | line 13 | Each adjustment requires a documented reason |
+| `O-295` | line 13 | Triage should preserve relative scale and distribution unless the actual work priorities have changed |
+
+## O-R070 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-379, O-380, O-381, O-382, O-383
+**Duplicate of:** `O-R058`
+
+Use comparison categories and configurable small/evidence-backed score adjustments; retain manual larger moves.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R058; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-379` | line 13 | Automatic Triage and Priority Refinement Regular triage should improve ordering without generating excessive changes |
+| `O-380` | line 13 | ## 8.1 Triage dimensions Items may be compared along categories such as: Much more urgent Slightly more urgent Roughly equal Slightly less urgent Much less urgent Custom urgency Needs investigation The same conceptual categories can later b |
+| `O-381` | line 13 | ## 8.2 Gradual adjustment A typical minor adjustment might be: -10 = more urgent +10 = less urgent Larger moves should be possible when supported by evidence |
+| `O-382` | line 13 | Examples: -25 -50 +25 +50 Manual repositioning can be much larger |
+| `O-383` | line 13 | These values must be configurable |
+
+## O-R071 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-384, O-385, O-386, O-387, O-388, O-389, O-390
+**Duplicate of:** `O-R059`
+
+Refine clusters progressively and limit ordinary automatic movement to one adjustment per item per sweep unless a distinct high-confidence event applies.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R059; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-384` | line 13 | ## 8.3 Progressive cluster refinement Suppose 50 items have approximately equal urgency |
+| `O-385` | line 13 | A first pass might separate them into broad groups: 25 / 10 / 10 / 5 Later passes compare more closely related items: 10 / 10 / 5 Then: 5 / 3 / 2 Eventually, a few items warrant individual ordering |
+| `O-386` | line 13 | Do not require fixed group sizes |
+| `O-387` | line 13 | Use this as a strategy for progressively refining partially ordered sets |
+| `O-388` | line 13 | ## 8.4 Sweep ordering A reasonable approach is to examine lower-urgency cohorts first and proceed toward more urgent cohorts |
+| `O-389` | line 13 | However, avoid repeatedly processing the same ticket within one sweep merely because it moved into a later cohort |
+| `O-390` | line 13 | Recommended invariant: **Each item receives at most one automatic priority adjustment per ordinary sweep unless a separate high-confidence event requires immediate reconsideration.** This prevents runaway escalation loops |
+
+## O-R072 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-391
+**Duplicate of:** `O-R060`
+
+Record previous/new score, source, reason, evidence, confidence, evaluation time, and next review for every adjustment.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R060; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-391` | line 13 | ## 8.5 Triage explanation Each adjustment should record: previous_urgency new_urgency source reason evidence confidence evaluated_at next_review_at Not every adjustment needs a public comment, but it must be auditable |
+
+## O-R073 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** O-393, O-394, O-395, O-396, O-397, O-398, O-399, O-400, O-401, O-402, O-403, O-404, O-405
+**Duplicate of:** `O-R061`
+
+Apply bounded boundary hysteresis with configurable buffer/confidence/cooldown; allow specified manual and high-confidence exceptions and avoid permanent trapping.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R061; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-393` | line 13 | Resistance at Urgency-Band Boundaries A useful objective is to prevent low-confidence automatic adjustments from repeatedly bouncing items across bands |
+| `O-394` | line 13 | For example: Standard: 800–1199 High: 400–799 An item approaching 800 from the Standard band should not cross merely because of tiny, noisy ranking changes |
+| `O-395` | line 13 | ## 9.1 Proposed hysteresis Support: boundary_buffer: configurable automatic_crossing_confidence: configurable review_cooldown: configurable For example: boundary_buffer = 30 automatic_crossing_confidence = 0.8 Within the boundary buffer, re |
+| `O-396` | line 13 | This is a policy example, not a universal mathematical law |
+| `O-397` | line 13 | ## 9.2 Allowed exceptions Crossing should remain immediate for: - Authorized manual action |
+| `O-398` | line 13 | - Confirmed hard deadline |
+| `O-399` | line 13 | - Active critical incident |
+| `O-400` | line 13 | - Explicit high-confidence dependency pressure |
+| `O-401` | line 13 | - Verified major project reprioritization |
+| `O-402` | line 13 | ## 9.3 Avoid permanent band trapping Hysteresis is resistance, not a wall |
+| `O-403` | line 13 | An item that consistently deserves promotion must be able to cross |
+| `O-404` | line 13 | Record the evidence and allow persistent signals to accumulate |
+| `O-405` | line 13 | --- # 10 |
+
+## O-R074 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-582, O-583, O-584, O-585, O-586, O-587, O-588, O-589, O-590, O-591, O-592, O-593, O-594, O-595, O-596, O-597
+**Duplicate of:** `O-R062`
+
+Authenticate/authorize actors and commands; validate signed webhooks, allowlists/RBAC, confirmations, replay/idempotency, audits, rate limits, and routing permissions.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R062; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-582` | line 13 | Comments, Commands, and Agent Routing GitHub comments and the PM Stack UI should be useful control surfaces |
+| `O-583` | line 13 | However, comments are untrusted external input until authenticated and authorized |
+| `O-584` | line 13 | ## 14.1 Proposed command syntax Examples: /fleet status /fleet triage /fleet triage now /fleet start /fleet resume /fleet retry /fleet park /fleet unblock /fleet priority high /fleet priority 575 /fleet do-now /fleet merge /fleet agent stat |
+| `O-585` | line 13 | ## 14.2 Security A webhook must not execute arbitrary shell commands simply because a GitHub comment contains slash syntax |
+| `O-586` | line 13 | Implement: - Signed webhook verification |
+| `O-587` | line 13 | - Authorized actor checks |
+| `O-588` | line 13 | - Explicit command allowlists |
+| `O-589` | line 13 | - Role-based permissions |
+| `O-590` | line 13 | - Confirmation for high-impact operations |
+| `O-591` | line 13 | - Input validation |
+| `O-592` | line 13 | - Replay protection |
+| `O-593` | line 13 | - Idempotency |
+| `O-594` | line 13 | - Audit logs |
+| `O-595` | line 13 | - Rate limiting |
+| `O-596` | line 13 | - Session routing authorization |
+| `O-597` | line 13 | A random external contributor must not be able to force a merge, change queue priority, or start privileged agents |
+
+## O-R075 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-598, O-599, O-600, O-601, O-602, O-603, O-604, O-605, O-606, O-607, O-608, O-609, O-610, O-611, O-612, O-613, O-614, O-615, O-616, O-617, O-618, O-619
+**Duplicate of:** `O-R063`
+
+Route authorized actionable comments on active work to its bound session with delivery/acknowledgment, journal, and visible outcome; parked work may directly resume/dispatch/triage or explain why not, preserving blockers.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R063; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-598` | line 13 | ## 14.3 Normal comments on active work An authorized user may comment naturally on a live issue: > Please check the new reconnect case before merging |
+| `O-599` | line 13 | When policy permits, Fleet should: 1 |
+| `O-600` | line 13 | Detect the comment |
+| `O-601` | line 13 | 2 |
+| `O-602` | line 13 | Associate it with the work item |
+| `O-603` | line 13 | 3 |
+| `O-604` | line 13 | Identify the live agent session |
+| `O-605` | line 13 | 4 |
+| `O-606` | line 13 | Forward the message to that session |
+| `O-607` | line 13 | 5 |
+| `O-608` | line 13 | Record delivery and acknowledgment |
+| `O-609` | line 13 | 6 |
+| `O-610` | line 13 | Update the activity journal |
+| `O-611` | line 13 | 7 |
+| `O-612` | line 13 | Make the result visible |
+| `O-613` | line 13 | Do not require a special slash command for every normal instruction from an authorized owner |
+| `O-614` | line 13 | ## 14.4 Parked work An authorized actionable comment on a parked item may trigger: - Direct resumption |
+| `O-615` | line 13 | - A new session |
+| `O-616` | line 13 | - Immediate triage |
+| `O-617` | line 13 | - An explicit inability-to-resume response |
+| `O-618` | line 13 | It should not merely move to the front of the normal queue |
+| `O-619` | line 13 | If the item is blocked, preserve safety and dependency rules |
+
+## O-R076 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-620, O-621, O-622, O-623, O-624, O-625, O-626, O-627, O-628
+**Duplicate of:** `O-R064`
+
+Use capability-aware session adapters; inspect actual provider APIs and never treat Slack posting as agent receipt/action.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R064; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-620` | line 13 | ## 14.5 Live-session adapters Possible targets include: - OpenCode sessions |
+| `O-621` | line 13 | - Existing Fleet execution lanes |
+| `O-622` | line 13 | - Other supported agent providers |
+| `O-623` | line 13 | - Muse Agent through an available authorized channel |
+| `O-624` | line 13 | - Slack-mediated communication where appropriate |
+| `O-625` | line 13 | - GitHub comments when direct session messaging is unavailable |
+| `O-626` | line 13 | Inspect actual provider APIs and integration contracts before implementing |
+| `O-627` | line 13 | The internal abstraction might be: agent.session.find agent.session.send agent.session.status agent.session.start agent.session.resume agent.session.stop Each adapter must honestly report supported capabilities |
+| `O-628` | line 13 | A Slack message being posted is not proof that an agent received and acted upon it |
+
+## O-R077 — candidate (alias)
+
+**Source:** `04_recovered_original_combined_design.md`
+**Domains:** #9203
+**Design targets:** #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** O-629, O-630, O-631, O-632, O-633, O-634, O-635
+**Duplicate of:** `O-R065`
+
+Deduplicate event flow, bind and report dispatch receipts; on failure preserve retry intent and never silently downgrade immediate requests to ordinary queue work.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is O-R065; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `O-629` | line 13 | ## 14.6 Immediate event flow GitHub / PM Stack event \| v Authenticate and authorize \| v Resolve work item \| v Deduplicate event \| v Find active session / \ Yes No \| \| v v Send message Direct dispatch \| \| v v Await ACK Bind new session \ / v |
+| `O-630` | line 13 | - Report the failure |
+| `O-631` | line 13 | - Preserve any required retry intent |
+| `O-632` | line 13 | - Avoid claiming that the agent started |
+| `O-633` | line 13 | - Use an authorized alternate route only where configured |
+| `O-634` | line 13 | The system should not silently convert an immediate request into an ordinary low-visibility queue item |
+| `O-635` | line 13 | --- # 15 |
+
+## P-R001 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-016, P-017, P-018, P-019, P-020, P-021, P-022, P-023, P-024, P-025, P-026, P-027, P-028, P-029, P-030, P-031, P-032, P-033, P-034, P-035, P-036, P-037, P-038, P-039, P-040, P-041, P-042, P-043, P-044, P-045, P-046, P-047, P-048, P-049, P-050, P-051, P-052, P-053, P-054, P-055, P-056, P-057
+
+Provide a comprehensive Fleet work-control workflow from discovery through verified completion, while preserving park/block/release/handoff/resume/reprioritize/review transitions and direct Fleet completion.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-016` | line 22 | Fleet should provide a comprehensive, agent-friendly interface for discovering, selecting, claiming, investigating, executing, updating, and completing work items |
+| `P-017` | line 24 | Work items are stored in a priority queue and may link to GitHub issues, pull requests, repositories, comments, commits, reviews, and other records |
+| `P-018` | line 26 | Currently, an agent may need to independently perform numerous operations: |
+| `P-019` | line 28 | - Discover available tasks |
+| `P-020` | line 29 | - Inspect queue columns and metadata |
+| `P-021` | line 30 | - Select a suitable task according to priority and eligibility |
+| `P-022` | line 31 | - Claim or reserve the task |
+| `P-023` | line 32 | - Fetch linked GitHub issues |
+| `P-024` | line 33 | - Discover associated pull requests |
+| `P-025` | line 34 | - Retrieve descriptions, discussions, timelines, reviews, commits, and diffs |
+| `P-026` | line 35 | - Determine what changed since the previous agent worked on the task |
+| `P-027` | line 36 | - Record discoveries, decisions, notes, and progress |
+| `P-028` | line 37 | - Update queue metadata and GitHub metadata |
+| `P-029` | line 38 | - Manage dependencies and blockers |
+| `P-030` | line 39 | - Create, edit, or reply to comments |
+| `P-031` | line 40 | - Update PRs, push code, and handle reviews |
+| `P-032` | line 41 | - Release, park, resume, or complete work |
+| `P-033` | line 42 | - Keep queue records and GitHub state synchronized |
+| `P-034` | line 44 | Each agent should not need to implement these workflows independently |
+| `P-035` | line 46 | Instead, Fleet should expose consistent low-level commands and convenient higher-level commands that compose them |
+| `P-036` | line 48 | The intended standard workflow is: |
+| `P-037` | line 50 | Discover |
+| `P-038` | line 51 | ↓
+    Evaluate / Rank |
+| `P-039` | line 53 | ↓
+    Claim |
+| `P-040` | line 55 | ↓
+    Hydrate Context |
+| `P-041` | line 57 | ↓
+    Investigate |
+| `P-042` | line 59 | ↓
+    Execute |
+| `P-043` | line 61 | ↓
+    Record Progress |
+| `P-044` | line 63 | ↓
+    Reconcile Changes |
+| `P-045` | line 65 | ↓
+    Complete / Merge / Close |
+| `P-046` | line 68 | At any point, the agent may also: |
+| `P-047` | line 70 | Park |
+| `P-048` | line 71 | Block |
+| `P-049` | line 72 | Release |
+| `P-050` | line 73 | Handoff |
+| `P-051` | line 74 | Resume |
+| `P-052` | line 75 | Reprioritize |
+| `P-053` | line 76 | Request Review |
+| `P-054` | line 78 | Fleet should coordinate these transitions, preserve state, and manage synchronization with external systems |
+| `P-055` | line 80 | **Important:** Fleet must be able to close and complete a queue item directly as part of its own verified completion workflow |
+| `P-056` | line 80 | It should not depend on a later sweep, webhook, or background polling cycle to recognize a PR merge or issue closure that Fleet itself initiated |
+| `P-057` | line 82 | Webhooks and scheduled reconciliation remain necessary for detecting external changes, recovering from interruptions, and repairing inconsistencies |
+
+## P-R002 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** P-061, P-062, P-063, P-064, P-065, P-066, P-067, P-068, P-069, P-070, P-071, P-072
+
+Use Fleet as agent-facing coordination for queue/GitHub/work state without replacing mature development tools.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-061` | line 88 | ## 2.1 Fleet is the agent-facing work control plane |
+| `P-062` | line 90 | Fleet should be the preferred interface for queue operations, work-item context, GitHub coordination, progress tracking, and work lifecycle changes |
+| `P-063` | line 92 | Agents should generally use Fleet rather than independently coordinating GitHub API calls and queue database mutations |
+| `P-064` | line 94 | This does not mean reimplementing Git, compilers, test runners, or other mature development tools |
+| `P-065` | line 96 | An agent might still use: |
+| `P-066` | line 98 | git |
+| `P-067` | line 99 | cargo |
+| `P-068` | line 100 | go |
+| `P-069` | line 101 | pytest |
+| `P-070` | line 102 | npm |
+| `P-071` | line 103 | nix |
+| `P-072` | line 105 | Fleet should orchestrate work and maintain its associated state, not replace the development environment |
+
+## P-R003 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** P-073, P-074, P-075, P-076, P-077, P-078, P-079, P-080, P-081, P-082, P-083, P-084, P-085, P-086, P-087, P-088, P-089, P-090
+
+Expose low-level composable Fleet primitives plus higher-level workflows to prevent repeated orchestration logic.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-073` | line 107 | ## 2.2 Both primitives and convenient workflows |
+| `P-074` | line 109 | Fleet should expose low-level operations such as: |
+| `P-075` | line 111 | fleet queue search |
+| `P-076` | line 112 | fleet queue claim |
+| `P-077` | line 113 | fleet work hydrate |
+| `P-078` | line 114 | fleet github issue get |
+| `P-079` | line 115 | fleet github pr diff |
+| `P-080` | line 116 | fleet work checkpoint |
+| `P-081` | line 117 | fleet queue close |
+| `P-082` | line 119 | It should also provide higher-level commands such as: |
+| `P-083` | line 121 | fleet work next |
+| `P-084` | line 122 | fleet work open |
+| `P-085` | line 123 | fleet work park |
+| `P-086` | line 124 | fleet work resume |
+| `P-087` | line 125 | fleet work complete |
+| `P-088` | line 127 | Higher-level commands may call several underlying operations |
+| `P-089` | line 129 | Agents should be able to use these commands individually, compose them in shell scripts, or use built-in workflow commands |
+| `P-090` | line 131 | Avoid requiring an agent to repeatedly write the same orchestration logic |
+
+## P-R004 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** P-091, P-092, P-093, P-094, P-095, P-096, P-097, P-098, P-099, P-100, P-101
+
+Persist comprehensive hydration context durably but return concise summaries, findings, blockers, paths, machine-readable result, and references.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-091` | line 133 | ## 2.3 Persist comprehensive context, return concise context |
+| `P-092` | line 135 | A hydration operation should collect all relevant information into a durable context bundle |
+| `P-093` | line 137 | The command should return: |
+| `P-094` | line 139 | - A concise summary |
+| `P-095` | line 140 | - Important findings and recent changes |
+| `P-096` | line 141 | - Relevant blockers or warnings |
+| `P-097` | line 142 | - Paths to generated files |
+| `P-098` | line 143 | - A machine-readable result |
+| `P-099` | line 144 | - References for retrieving additional details |
+| `P-100` | line 146 | Do not flood the agent's immediate context with thousands of lines of commits, comments, and diffs unless specifically requested |
+| `P-101` | line 148 | The agent should know where the detailed data is available |
+
+## P-R005 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** P-102, P-103, P-104, P-105, P-106, P-107, P-108, P-109
+
+Give each work item a stable Fleet identity, support multiple qualified external links, and never assume GitHub issue number is globally unique.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-102` | line 150 | ## 2.4 One canonical Fleet work-item identity |
+| `P-103` | line 152 | Every work item should have a stable Fleet identifier |
+| `P-104` | line 154 | A single work item may be associated with multiple issues, PRs, repositories, or external resources |
+| `P-105` | line 156 | For example: |
+| `P-106` | line 158 | fleet://work/842 |
+| `P-107` | line 160 | github://acme/project/issues/203 |
+| `P-108` | line 161 | github://acme/project/pulls/231 |
+| `P-109` | line 163 | Never assume a GitHub issue number is globally unique |
+
+## P-R006 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-110, P-111, P-112, P-113, P-114, P-115, P-116, P-117, P-118, P-119, P-120, P-121, P-122
+
+Make work recoverable across interruption using durable progress/ownership, idempotency, outbox, optimistic concurrency, leases, checkpoints, incremental activity, and repair.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-110` | line 165 | ## 2.5 Safe operation across interruptions |
+| `P-111` | line 167 | Agents may be terminated, reach time limits, lose connections, or be replaced by another session |
+| `P-112` | line 169 | Fleet must support: |
+| `P-113` | line 171 | - Durable progress |
+| `P-114` | line 172 | - Recoverable ownership |
+| `P-115` | line 173 | - Idempotent mutations |
+| `P-116` | line 174 | - Transactional outbox delivery |
+| `P-117` | line 175 | - Optimistic concurrency |
+| `P-118` | line 176 | - Expiring leases |
+| `P-119` | line 177 | - Checkpoints and handoffs |
+| `P-120` | line 178 | - Incremental activity retrieval |
+| `P-121` | line 179 | - Explicit repair and reconciliation |
+| `P-122` | line 181 | An interruption should not leave the system requiring manual reconstruction |
+
+## P-R007 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-123, P-124, P-125, P-126, P-127, P-128
+
+Keep execution state distinct from GitHub state and ownership; merge, issue closure, or lease expiry alone does not establish work completion.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-123` | line 183 | ## 2.6 Do not conflate different kinds of state |
+| `P-124` | line 185 | A work item's execution state is distinct from its GitHub state and agent ownership |
+| `P-125` | line 187 | A PR being merged does not, by itself, describe every aspect of the work item's status |
+| `P-126` | line 189 | A lease expiring does not mean the work is completed |
+| `P-127` | line 191 | An issue closing does not necessarily mean every associated work item is complete |
+| `P-128` | line 193 | Maintain these distinctions explicitly |
+
+## P-R008 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9204, #9207, #9208, #9209
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration; #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity; #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-130, P-131, P-132, P-133, P-134, P-135, P-136, P-137, P-138, P-139, P-140, P-141, P-142, P-143, P-144, P-145, P-146, P-147, P-148, P-149, P-150, P-151, P-152, P-153, P-154, P-155, P-156, P-157, P-158, P-159, P-160, P-161, P-162, P-163, P-164, P-165, P-166, P-167, P-168, P-169, P-170, P-171, P-172, P-173, P-174, P-175, P-176, P-177, P-178, P-179, P-180, P-181, P-182, P-183, P-184, P-185, P-186, P-187, P-188, P-189, P-190, P-191, P-192, P-193, P-194, P-195, P-196, P-197, P-198, P-199, P-200, P-201, P-202, P-203, P-204, P-205, P-206, P-207, P-208, P-209, P-210, P-211, P-212, P-213, P-214, P-215, P-216, P-217, P-218, P-219, P-220, P-221, P-222, P-223, P-224, P-225
+
+Define logical internal responsibilities for Queue Broker, Hydrator, GitHub Adapter, Activity Reconciler, Dependency Resolver, append-oriented Journal, Mutation Coordinator, and durable Outbox; reuse existing infrastructure rather than require separate services.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-130` | line 197 | # 3 |
+| `P-131` | line 197 | Proposed Component Architecture |
+| `P-132` | line 199 | Fleet may implement these capabilities as internal modules rather than separate running services |
+| `P-133` | line 201 | The logical responsibilities are: |
+| `P-134` | line 203 | ## 3.1 Queue Broker |
+| `P-135` | line 205 | Responsible for: |
+| `P-136` | line 207 | - Searching queue records |
+| `P-137` | line 208 | - Filtering candidates |
+| `P-138` | line 209 | - Ranking and selecting work |
+| `P-139` | line 210 | - Evaluating eligibility |
+| `P-140` | line 211 | - Managing assignment and claims |
+| `P-141` | line 212 | - Acquiring leases |
+| `P-142` | line 213 | - Renewing leases |
+| `P-143` | line 214 | - Releasing or recovering abandoned claims |
+| `P-144` | line 216 | ## 3.2 Work-Item Hydrator |
+| `P-145` | line 218 | Responsible for: |
+| `P-146` | line 220 | - Fetching queue metadata |
+| `P-147` | line 221 | - Resolving linked issues and PRs |
+| `P-148` | line 222 | - Discovering related GitHub resources |
+| `P-149` | line 223 | - Fetching timelines and comments |
+| `P-150` | line 224 | - Fetching commits and diffs |
+| `P-151` | line 225 | - Loading previous notes and checkpoints |
+| `P-152` | line 226 | - Producing context bundles |
+| `P-153` | line 227 | - Generating concise summaries |
+| `P-154` | line 229 | ## 3.3 GitHub Adapter |
+| `P-155` | line 231 | Responsible for standardized access to: |
+| `P-156` | line 233 | - Issues |
+| `P-157` | line 234 | - Pull requests |
+| `P-158` | line 235 | - Comments |
+| `P-159` | line 236 | - Reviews |
+| `P-160` | line 237 | - Timeline events |
+| `P-161` | line 238 | - Labels |
+| `P-162` | line 239 | - Milestones |
+| `P-163` | line 240 | - GitHub Projects fields, where applicable |
+| `P-164` | line 241 | - Commits |
+| `P-165` | line 242 | - Diffs |
+| `P-166` | line 243 | - Checks |
+| `P-167` | line 244 | - Merge operations |
+| `P-168` | line 245 | - Issue and PR updates |
+| `P-169` | line 247 | Use existing GitHub API libraries or GitHub CLI functionality as appropriate |
+| `P-170` | line 249 | Avoid unnecessary duplication |
+| `P-171` | line 251 | ## 3.4 Activity Reconciler |
+| `P-172` | line 253 | Responsible for: |
+| `P-173` | line 255 | - Identifying new activity |
+| `P-174` | line 256 | - Comparing source and local state |
+| `P-175` | line 257 | - Tracking synchronization cursors |
+| `P-176` | line 258 | - Detecting external edits |
+| `P-177` | line 259 | - Preventing duplicate processing |
+| `P-178` | line 260 | - Resolving or surfacing conflicts |
+| `P-179` | line 261 | - Reconstructing missed events |
+| `P-180` | line 263 | ## 3.5 Dependency Resolver |
+| `P-181` | line 265 | Maintains typed work-item relationships |
+| `P-182` | line 267 | Examples: |
+| `P-183` | line 269 | blocks |
+| `P-184` | line 270 | blocked_by |
+| `P-185` | line 271 | related_to |
+| `P-186` | line 272 | duplicates |
+| `P-187` | line 273 | parent_of |
+| `P-188` | line 274 | child_of |
+| `P-189` | line 275 | supersedes |
+| `P-190` | line 277 | It determines whether hard dependencies have been satisfied |
+| `P-191` | line 279 | ## 3.6 Work Journal |
+| `P-192` | line 281 | Maintains durable records of: |
+| `P-193` | line 283 | - Agent observations |
+| `P-194` | line 284 | - Notes and decisions |
+| `P-195` | line 285 | - Progress updates |
+| `P-196` | line 286 | - Checkpoints |
+| `P-197` | line 287 | - Activity observations |
+| `P-198` | line 288 | - Lifecycle changes |
+| `P-199` | line 289 | - Handoffs |
+| `P-200` | line 290 | - Completion reports |
+| `P-201` | line 292 | Prefer append-only records |
+| `P-202` | line 294 | Corrections should generally produce new events rather than silently modifying history |
+| `P-203` | line 296 | ## 3.7 Mutation Coordinator |
+| `P-204` | line 298 | Handles safe mutations involving Fleet and GitHub |
+| `P-205` | line 300 | Responsibilities: |
+| `P-206` | line 302 | - Validate permissions and expected state |
+| `P-207` | line 303 | - Validate lease ownership |
+| `P-208` | line 304 | - Apply local state changes |
+| `P-209` | line 305 | - Create durable outbox entries |
+| `P-210` | line 306 | - Deliver remote mutations |
+| `P-211` | line 307 | - Retry recoverable failures |
+| `P-212` | line 308 | - Detect conflicts |
+| `P-213` | line 309 | - Verify effects |
+| `P-214` | line 310 | - Finalize lifecycle transitions |
+| `P-215` | line 312 | ## 3.8 Synchronization Outbox |
+| `P-216` | line 314 | Maintains durable pending external operations |
+| `P-217` | line 316 | Examples: |
+| `P-218` | line 318 | Update GitHub label |
+| `P-219` | line 319 | Edit managed GitHub comment |
+| `P-220` | line 320 | Post progress note |
+| `P-221` | line 321 | Update PR description |
+| `P-222` | line 322 | Merge PR |
+| `P-223` | line 323 | Close GitHub issue |
+| `P-224` | line 324 | Verify remote state |
+| `P-225` | line 326 | The outbox must prevent accidental duplicate operations when an agent retries a command or crashes after a remote request succeeds |
+
+## P-R009 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** P-227, P-228, P-229, P-230, P-231, P-232, P-233, P-234, P-235, P-236, P-237, P-238, P-239, P-240, P-241, P-242, P-243, P-244, P-245, P-246, P-247, P-248, P-249, P-250, P-251, P-252, P-253, P-254, P-255, P-256, P-257, P-258, P-259, P-260, P-261, P-262, P-263, P-264, P-265, P-266, P-267, P-268, P-269, P-270, P-271, P-272, P-273, P-274, P-275, P-276, P-277, P-278, P-279, P-280, P-281, P-282, P-283, P-284, P-285, P-286, P-287, P-288, P-289, P-290, P-291, P-292, P-293, P-294, P-295, P-296, P-297, P-298, P-299, P-300, P-301, P-302, P-303, P-304, P-305, P-306, P-307, P-308, P-309, P-310, P-311, P-312, P-313, P-314, P-315, P-316, P-317, P-318, P-319, P-320, P-321, P-322, P-323, P-324, P-325, P-326, P-327, P-328, P-329, P-330, P-331, P-332, P-333, P-334, P-335, P-336, P-337, P-338, P-339, P-340, P-341, P-342, P-343, P-344, P-345, P-346, P-347, P-348, P-349, P-350, P-351, P-352, P-353, P-354, P-355, P-356, P-357, P-358, P-359, P-360, P-361, P-362, P-363, P-364, P-365, P-366, P-367, P-368, P-369, P-370, P-371, P-372, P-373, P-374, P-375, P-376, P-377, P-378, P-379, P-380, P-381, P-382, P-383, P-384, P-385, P-386, P-387, P-388, P-389, P-390, P-391, P-392, P-393, P-394, P-395, P-396, P-397, P-398, P-399, P-400, P-401, P-402, P-403, P-404, P-405, P-406, P-407, P-408, P-409
+
+Preserve a cohesive proposed CLI contract spanning bootstrap, queue/work, GitHub, metadata/dependencies, activity/sync/outbox and agent/session operations; reconcile exact names with existing Fleet conventions.
+
+Details:
+- Exact command keys/options are in `census/commands.jsonl`; `census/command-slice-map.jsonl` maps source passages to those keys.
+- The completed slice map must cover command families, flags/options/arguments, role/capability constraints, errors/receipts, and workflow outcomes; spelling remains proposed and must reconcile with Fleet conventions.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-227` | line 330 | # 4 |
+| `P-228` | line 330 | Suggested Fleet Command Structure |
+| `P-229` | line 332 | The names below are proposals |
+| `P-230` | line 334 | Use the existing Fleet command conventions where possible, but maintain a coherent interface |
+| `P-231` | line 336 | ## 4.1 Agent bootstrap and discovery |
+| `P-232` | line 338 | fleet help |
+| `P-233` | line 339 | fleet capabilities |
+| `P-234` | line 341 | fleet agent bootstrap |
+| `P-235` | line 343 | fleet agent bootstrap --scenario queue-worker |
+| `P-236` | line 344 | fleet agent bootstrap --scenario assigned-item |
+| `P-237` | line 345 | fleet agent bootstrap --scenario resume |
+| `P-238` | line 346 | fleet agent bootstrap --scenario triage |
+| `P-239` | line 347 | fleet agent bootstrap --scenario review |
+| `P-240` | line 349 | fleet agent bootstrap --format compact |
+| `P-241` | line 350 | fleet agent bootstrap --json |
+| `P-242` | line 352 | The bootstrap command should produce scenario-specific instructions, relevant commands, common pitfalls, and tool availability |
+| `P-243` | line 354 | The agent should not need to load Fleet's entire command reference to get started |
+| `P-244` | line 356 | ## 4.2 Queue operations |
+| `P-245` | line 358 | fleet queue list |
+| `P-246` | line 359 | fleet queue search |
+| `P-247` | line 360 | fleet queue get |
+| `P-248` | line 361 | fleet queue inspect |
+| `P-249` | line 362 | fleet queue rank |
+| `P-250` | line 363 | fleet queue claim |
+| `P-251` | line 364 | fleet queue release |
+| `P-252` | line 365 | fleet queue park |
+| `P-253` | line 366 | fleet queue resume |
+| `P-254` | line 367 | fleet queue update |
+| `P-255` | line 368 | fleet queue close |
+| `P-256` | line 370 | Example search: |
+| `P-257` | line 372 | fleet queue search \ |
+| `P-258` | line 373 | --status available \ |
+| `P-259` | line 374 | --ready \ |
+| `P-260` | line 375 | --limit 20 \ |
+| `P-261` | line 376 | --order priority |
+| `P-262` | line 378 | Supported filters should include: |
+| `P-263` | line 380 | --status |
+| `P-264` | line 381 | --repo |
+| `P-265` | line 382 | --queue |
+| `P-266` | line 383 | --priority-min |
+| `P-267` | line 384 | --priority-max |
+| `P-268` | line 385 | --label |
+| `P-269` | line 386 | --exclude-label |
+| `P-270` | line 387 | --assigned-to |
+| `P-271` | line 388 | --unassigned |
+| `P-272` | line 389 | --ready |
+| `P-273` | line 390 | --blocked |
+| `P-274` | line 391 | --created-since |
+| `P-275` | line 392 | --updated-since |
+| `P-276` | line 393 | --capability |
+| `P-277` | line 394 | --estimated-effort |
+| `P-278` | line 395 | --limit |
+| `P-279` | line 397 | ## 4.3 High-level work operations |
+| `P-280` | line 399 | fleet work next |
+| `P-281` | line 400 | fleet work open |
+| `P-282` | line 401 | fleet work inspect |
+| `P-283` | line 402 | fleet work hydrate |
+| `P-284` | line 403 | fleet work refresh |
+| `P-285` | line 404 | fleet work changes |
+| `P-286` | line 405 | fleet work link |
+| `P-287` | line 406 | fleet work checkpoint |
+| `P-288` | line 408 | fleet work note add |
+| `P-289` | line 409 | fleet work note list |
+| `P-290` | line 410 | fleet work note edit |
+| `P-291` | line 412 | fleet work block |
+| `P-292` | line 413 | fleet work unblock |
+| `P-293` | line 414 | fleet work park |
+| `P-294` | line 415 | fleet work resume |
+| `P-295` | line 416 | fleet work release |
+| `P-296` | line 417 | fleet work handoff |
+| `P-297` | line 418 | fleet work complete |
+| `P-298` | line 419 | fleet work status |
+| `P-299` | line 421 | Examples: |
+| `P-300` | line 423 | fleet work next --claim --hydrate |
+| `P-301` | line 425 | fleet work open 842 --claim --hydrate |
+| `P-302` | line 427 | fleet work changes 842 --since-start |
+| `P-303` | line 429 | fleet work park 842 \ |
+| `P-304` | line 430 | --reason "Awaiting review" |
+| `P-305` | line 432 | fleet work complete 842 \ |
+| `P-306` | line 433 | --merge-linked-prs \ |
+| `P-307` | line 434 | --close-linked-issues \ |
+| `P-308` | line 435 | --close-queue \ |
+| `P-309` | line 436 | --verify |
+| `P-310` | line 438 | These are composed workflows, not necessarily separate bespoke implementations |
+| `P-311` | line 440 | ## 4.4 GitHub operations |
+| `P-312` | line 442 | fleet github issue get |
+| `P-313` | line 443 | fleet github issue update |
+| `P-314` | line 444 | fleet github issue close |
+| `P-315` | line 445 | fleet github issue comments |
+| `P-316` | line 446 | fleet github issue timeline |
+| `P-317` | line 448 | fleet github pr get |
+| `P-318` | line 449 | fleet github pr create |
+| `P-319` | line 450 | fleet github pr update |
+| `P-320` | line 451 | fleet github pr diff |
+| `P-321` | line 452 | fleet github pr commits |
+| `P-322` | line 453 | fleet github pr reviews |
+| `P-323` | line 454 | fleet github pr checks |
+| `P-324` | line 455 | fleet github pr merge |
+| `P-325` | line 457 | fleet github comment add |
+| `P-326` | line 458 | fleet github comment edit |
+| `P-327` | line 459 | fleet github comment reply |
+| `P-328` | line 460 | fleet github comment list |
+| `P-329` | line 462 | fleet github events since |
+| `P-330` | line 464 | A work-item association should be available through: |
+| `P-331` | line 466 | --work 842 |
+| `P-332` | line 468 | For example: |
+| `P-333` | line 470 | fleet github pr diff \ |
+| `P-334` | line 471 | --work 842 \ |
+| `P-335` | line 472 | --pr acme/project#231 |
+| `P-336` | line 474 | Fleet should infer the repository when unambiguous |
+| `P-337` | line 476 | ## 4.5 Metadata operations |
+| `P-338` | line 478 | fleet metadata get |
+| `P-339` | line 479 | fleet metadata patch |
+| `P-340` | line 480 | fleet metadata title |
+| `P-341` | line 481 | fleet metadata summary |
+| `P-342` | line 482 | fleet metadata priority |
+| `P-343` | line 483 | fleet metadata labels |
+| `P-344` | line 484 | fleet metadata fields |
+| `P-345` | line 486 | Examples: |
+| `P-346` | line 488 | fleet metadata priority 842 1250 |
+| `P-347` | line 490 | fleet metadata labels 842 \ |
+| `P-348` | line 491 | --add needs-review |
+| `P-349` | line 493 | fleet metadata labels 842 \ |
+| `P-350` | line 494 | --remove blocked |
+| `P-351` | line 496 | fleet metadata summary 842 \ |
+| `P-352` | line 497 | --file summary.md |
+| `P-353` | line 499 | Metadata edits should be scoped to their intended records and fields |
+| `P-354` | line 501 | ## 4.6 Dependency operations |
+| `P-355` | line 503 | fleet dependency list |
+| `P-356` | line 504 | fleet dependency add |
+| `P-357` | line 505 | fleet dependency remove |
+| `P-358` | line 506 | fleet dependency graph |
+| `P-359` | line 507 | fleet dependency blockers |
+| `P-360` | line 508 | fleet dependency ready |
+| `P-361` | line 510 | Examples: |
+| `P-362` | line 512 | fleet dependency add 842 \ |
+| `P-363` | line 513 | --blocked-by fleet:761 \ |
+| `P-364` | line 514 | --hard |
+| `P-365` | line 516 | fleet dependency add 842 \ |
+| `P-366` | line 517 | --blocks fleet:900 |
+| `P-367` | line 519 | fleet dependency graph 842 \ |
+| `P-368` | line 520 | --depth 3 |
+| `P-369` | line 522 | ## 4.7 Activity and reconciliation |
+| `P-370` | line 524 | fleet activity list |
+| `P-371` | line 525 | fleet activity since |
+| `P-372` | line 526 | fleet activity reconcile |
+| `P-373` | line 527 | fleet activity watch |
+| `P-374` | line 529 | fleet sync status |
+| `P-375` | line 530 | fleet sync run |
+| `P-376` | line 531 | fleet sync verify |
+| `P-377` | line 533 | fleet sync outbox list |
+| `P-378` | line 534 | fleet sync outbox inspect |
+| `P-379` | line 535 | fleet sync outbox retry |
+| `P-380` | line 537 | Example: |
+| `P-381` | line 539 | fleet activity since 842 \ |
+| `P-382` | line 540 | --since-checkpoint \ |
+| `P-383` | line 541 | --external-only |
+| `P-384` | line 543 | The meaning of `external-only` is activity not attributable to the current Fleet session, rather than simply activity by a different GitHub username |
+| `P-385` | line 545 | ## 4.8 Common command flags |
+| `P-386` | line 547 | \| Flag \| Purpose \| |
+| `P-387` | line 548 | \|---\|---\| |
+| `P-388` | line 549 | \| `--work` \| Explicit Fleet work item \| |
+| `P-389` | line 550 | \| `--repo` \| GitHub repository \| |
+| `P-390` | line 551 | \| `--issue` \| GitHub issue reference \| |
+| `P-391` | line 552 | \| `--pr` \| GitHub PR reference \| |
+| `P-392` | line 553 | \| `--agent-id` \| Stable agent identity \| |
+| `P-393` | line 554 | \| `--session-id` \| Execution session identity \| |
+| `P-394` | line 555 | \| `--lease-token` \| Active lease authorization \| |
+| `P-395` | line 556 | \| `--since` \| Explicit ISO 8601 timestamp \| |
+| `P-396` | line 557 | \| `--since-start` \| Activity since session start \| |
+| `P-397` | line 558 | \| `--since-checkpoint` \| Activity since saved checkpoint \| |
+| `P-398` | line 559 | \| `--external-only` \| Activity not attributed to this session \| |
+| `P-399` | line 560 | \| `--output` \| Output path \| |
+| `P-400` | line 561 | \| `--format` \| Output format \| |
+| `P-401` | line 562 | \| `--json` \| Structured command output \| |
+| `P-402` | line 563 | \| `--dry-run` \| Preview mutations \| |
+| `P-403` | line 564 | \| `--explain` \| Explain decisions and effects \| |
+| `P-404` | line 565 | \| `--verify` \| Verify resulting state \| |
+| `P-405` | line 566 | \| `--wait` \| Wait for requested operations to settle \| |
+| `P-406` | line 567 | \| `--expected-version` \| Concurrency protection \| |
+| `P-407` | line 568 | \| `--idempotency-key` \| Safe operation retry identity \| |
+| `P-408` | line 569 | \| `--timeout` \| Command-level timeout \| |
+| `P-409` | line 571 | Agent/session configuration should supply safe defaults to avoid passing repetitive arguments |
+
+## P-R010 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** P-256, P-257, P-258, P-259, P-260, P-261, P-262, P-263, P-264, P-265, P-266, P-267, P-268, P-269, P-270, P-271, P-272, P-273, P-274, P-275, P-276, P-277, P-278
+
+Support queue-search filters for status/repository/queue/priority bounds/labels/assignment/readiness/blockers/time/capability/effort/limit and priority ordering.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-256` | line 370 | Example search: |
+| `P-257` | line 372 | fleet queue search \ |
+| `P-258` | line 373 | --status available \ |
+| `P-259` | line 374 | --ready \ |
+| `P-260` | line 375 | --limit 20 \ |
+| `P-261` | line 376 | --order priority |
+| `P-262` | line 378 | Supported filters should include: |
+| `P-263` | line 380 | --status |
+| `P-264` | line 381 | --repo |
+| `P-265` | line 382 | --queue |
+| `P-266` | line 383 | --priority-min |
+| `P-267` | line 384 | --priority-max |
+| `P-268` | line 385 | --label |
+| `P-269` | line 386 | --exclude-label |
+| `P-270` | line 387 | --assigned-to |
+| `P-271` | line 388 | --unassigned |
+| `P-272` | line 389 | --ready |
+| `P-273` | line 390 | --blocked |
+| `P-274` | line 391 | --created-since |
+| `P-275` | line 392 | --updated-since |
+| `P-276` | line 393 | --capability |
+| `P-277` | line 394 | --estimated-effort |
+| `P-278` | line 395 | --limit |
+
+## P-R011 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-299, P-300, P-301, P-302, P-303, P-304, P-305, P-306, P-307, P-308, P-309, P-310
+
+Compose `work next`, `open`, `park`, and `complete` from primitives; preserve concurrency safety, checkpoint/journal/lease-release/sync behavior, and verified direct queue completion.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-299` | line 421 | Examples: |
+| `P-300` | line 423 | fleet work next --claim --hydrate |
+| `P-301` | line 425 | fleet work open 842 --claim --hydrate |
+| `P-302` | line 427 | fleet work changes 842 --since-start |
+| `P-303` | line 429 | fleet work park 842 \ |
+| `P-304` | line 430 | --reason "Awaiting review" |
+| `P-305` | line 432 | fleet work complete 842 \ |
+| `P-306` | line 433 | --merge-linked-prs \ |
+| `P-307` | line 434 | --close-linked-issues \ |
+| `P-308` | line 435 | --close-queue \ |
+| `P-309` | line 436 | --verify |
+| `P-310` | line 438 | These are composed workflows, not necessarily separate bespoke implementations |
+
+## P-R012 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9207
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** P-385, P-386, P-387, P-388, P-389, P-390, P-391, P-392, P-393, P-394, P-395, P-396, P-397, P-398, P-399, P-400, P-401, P-402, P-403, P-404, P-405, P-406, P-407, P-408, P-409
+
+Support common work/repo/issue/PR/agent/session/lease flags, time anchors, external-only, output/format/JSON, dry-run/explain/verify/wait, expected-version, idempotency and timeout; configure safe session defaults.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-385` | line 545 | ## 4.8 Common command flags |
+| `P-386` | line 547 | \| Flag \| Purpose \| |
+| `P-387` | line 548 | \|---\|---\| |
+| `P-388` | line 549 | \| `--work` \| Explicit Fleet work item \| |
+| `P-389` | line 550 | \| `--repo` \| GitHub repository \| |
+| `P-390` | line 551 | \| `--issue` \| GitHub issue reference \| |
+| `P-391` | line 552 | \| `--pr` \| GitHub PR reference \| |
+| `P-392` | line 553 | \| `--agent-id` \| Stable agent identity \| |
+| `P-393` | line 554 | \| `--session-id` \| Execution session identity \| |
+| `P-394` | line 555 | \| `--lease-token` \| Active lease authorization \| |
+| `P-395` | line 556 | \| `--since` \| Explicit ISO 8601 timestamp \| |
+| `P-396` | line 557 | \| `--since-start` \| Activity since session start \| |
+| `P-397` | line 558 | \| `--since-checkpoint` \| Activity since saved checkpoint \| |
+| `P-398` | line 559 | \| `--external-only` \| Activity not attributed to this session \| |
+| `P-399` | line 560 | \| `--output` \| Output path \| |
+| `P-400` | line 561 | \| `--format` \| Output format \| |
+| `P-401` | line 562 | \| `--json` \| Structured command output \| |
+| `P-402` | line 563 | \| `--dry-run` \| Preview mutations \| |
+| `P-403` | line 564 | \| `--explain` \| Explain decisions and effects \| |
+| `P-404` | line 565 | \| `--verify` \| Verify resulting state \| |
+| `P-405` | line 566 | \| `--wait` \| Wait for requested operations to settle \| |
+| `P-406` | line 567 | \| `--expected-version` \| Concurrency protection \| |
+| `P-407` | line 568 | \| `--idempotency-key` \| Safe operation retry identity \| |
+| `P-408` | line 569 | \| `--timeout` \| Command-level timeout \| |
+| `P-409` | line 571 | Agent/session configuration should supply safe defaults to avoid passing repetitive arguments |
+
+## P-R013 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9208
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** P-479, P-480, P-481, P-482, P-483, P-484, P-485, P-486, P-487, P-488, P-489, P-490, P-491, P-492, P-493, P-494, P-495, P-496, P-497, P-498, P-499, P-500, P-501, P-502, P-503, P-504, P-505, P-506, P-507, P-508, P-509, P-510, P-511, P-512, P-513, P-514, P-515, P-516, P-517, P-518, P-519, P-520, P-521
+
+Represent logical work-item identity, content, priority, state/reason, ownership/lease/fencing, multiple links, dependencies, timestamps, checkpoint, activity cursors and metadata version; keep large external content in referenced artifacts, not queue rows.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-479` | line 670 | # 6 |
+| `P-480` | line 670 | Work-Item Data Model |
+| `P-481` | line 672 | A work item should logically include: |
+| `P-482` | line 674 | ```yaml |
+| `P-483` | line 675 | id: 842 |
+| `P-484` | line 677 | title: Improve lease recovery |
+| `P-485` | line 678 | summary: Prevent stale workers from overwriting newer claims |
+| `P-486` | line 680 | priority: |
+| `P-487` | line 681 | value: 1250 |
+| `P-488` | line 682 | derived_label: priority-high |
+| `P-489` | line 684 | state: |
+| `P-490` | line 685 | status: in_progress |
+| `P-491` | line 686 | reason: null |
+| `P-492` | line 688 | ownership: |
+| `P-493` | line 689 | assigned_agent: worker-07 |
+| `P-494` | line 690 | session_id: session-abc123 |
+| `P-495` | line 691 | lease_expires_at: null |
+| `P-496` | line 692 | fencing_version: 18 |
+| `P-497` | line 694 | links: |
+| `P-498` | line 695 | issues: |
+| `P-499` | line 696 | - github://acme/project/issues/203 |
+| `P-500` | line 697 | pull_requests: |
+| `P-501` | line 698 | - github://acme/project/pulls/231 |
+| `P-502` | line 700 | dependencies: |
+| `P-503` | line 701 | blocked_by: [] |
+| `P-504` | line 702 | blocks: [] |
+| `P-505` | line 703 | related_to: [] |
+| `P-506` | line 705 | timestamps: |
+| `P-507` | line 706 | created_at: null |
+| `P-508` | line 707 | updated_at: null |
+| `P-509` | line 708 | claimed_at: null |
+| `P-510` | line 709 | completed_at: null |
+| `P-511` | line 711 | checkpoint: |
+| `P-512` | line 712 | id: checkpoint-004 |
+| `P-513` | line 714 | activity: |
+| `P-514` | line 715 | cursor_set_id: cursor-004 |
+| `P-515` | line 716 | last_successful_sync: null |
+| `P-516` | line 718 | metadata_version: 19 |
+| `P-517` | line 719 | ``` |
+| `P-518` | line 721 | The specific schema should reflect existing Fleet storage conventions |
+| `P-519` | line 723 | Large comments, diffs, timelines, and content snapshots should not be stored directly in the queue row |
+| `P-520` | line 725 | Use references to dedicated structured records or content artifacts |
+| `P-521` | line 727 | --- |
+
+## P-R014 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9199, #9204
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure; #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** P-522, P-523, P-524, P-525, P-526, P-527, P-528, P-529, P-530, P-531, P-532, P-533, P-534, P-535, P-536, P-537, P-538, P-539, P-540, P-541, P-542, P-543, P-544, P-545, P-546, P-547, P-548, P-549, P-550, P-551, P-552
+
+Keep numeric priority configurable/canonical with derived labels; ranking considers age, dependencies, capability, complexity, repository affinity, fairness, starvation, weighted randomness and optional lower-number preference; prevent cluster domination and explain policy/eligibility/result.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-522` | line 729 | # 7 |
+| `P-523` | line 729 | Priority, Ranking, and Queue Selection |
+| `P-524` | line 731 | Priority should be a configurable numeric value |
+| `P-525` | line 733 | Labels may be derived from numeric ranges |
+| `P-526` | line 735 | Example: |
+| `P-527` | line 737 | 1250 → priority-high |
+| `P-528` | line 739 | The numeric priority should be the canonical value |
+| `P-529` | line 741 | Editing the priority through Fleet should update the relevant derived labels according to policy |
+| `P-530` | line 743 | The inverse operation—changing a GitHub label to modify the numeric priority—should occur only if explicitly enabled |
+| `P-531` | line 745 | ## 7.1 Ranking considerations |
+| `P-532` | line 747 | Support: |
+| `P-533` | line 749 | - Numeric priority |
+| `P-534` | line 750 | - Age of item |
+| `P-535` | line 751 | - Dependency readiness |
+| `P-536` | line 752 | - Agent capabilities |
+| `P-537` | line 753 | - Estimated complexity |
+| `P-538` | line 754 | - Repository affinity |
+| `P-539` | line 755 | - Fairness |
+| `P-540` | line 756 | - Starvation prevention |
+| `P-541` | line 757 | - Weighted randomness |
+| `P-542` | line 758 | - Optional preference for lower numerical values |
+| `P-543` | line 760 | The selection algorithm should not be determined solely by the density of items in a priority range |
+| `P-544` | line 762 | A large clump of similarly ranked items should not unintentionally overwhelm all other ranges |
+| `P-545` | line 764 | Allow configurable mixtures of range-level and per-item selection, with a tunable priority preference |
+| `P-546` | line 766 | These policies should be encapsulated behind the Queue Broker, allowing the ranking implementation to evolve independently of the agent interface |
+| `P-547` | line 768 | Example: |
+| `P-548` | line 770 | fleet queue rank \ |
+| `P-549` | line 771 | --ready \ |
+| `P-550` | line 772 | --strategy weighted \ |
+| `P-551` | line 773 | --explain |
+| `P-552` | line 775 | Fleet should be able to report the policy used, candidate count, eligibility, and selection result |
+
+## P-R015 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** P-554, P-555, P-556, P-557, P-558, P-559, P-560, P-561, P-562, P-563, P-564, P-565, P-566, P-567, P-568, P-569, P-570, P-571, P-572, P-573, P-574, P-575, P-576, P-577, P-578, P-579, P-580, P-581, P-582, P-583, P-584, P-585, P-586, P-587, P-588, P-589, P-590, P-591, P-592, P-593, P-594, P-595, P-596, P-597, P-598, P-599, P-600, P-601, P-602, P-603, P-604, P-605, P-606, P-607, P-608, P-609, P-610, P-611, P-612, P-613, P-614, P-615, P-616, P-617, P-618, P-619, P-620, P-621, P-622, P-623, P-624, P-625, P-626, P-627, P-628, P-629, P-630, P-631, P-632, P-633, P-634, P-635, P-636, P-637, P-638, P-639, P-640, P-641, P-642, P-643, P-644, P-645, P-646
+
+Hydrate queue, issue, PR, commit/diff and event context comprehensively, including identifiers/provenance/timestamps/line ranges, with targeted retrieval of files/commits.
+
+Details:
+- Queue: ID/title/summary/priority/custom columns/status/reason/labels/assignment/lease/times/current and historical blockers/notes/checkpoints/links.
+- Issues: title/body/state/reason/assignees/labels/milestones/project fields/comments/edits/timeline/linked PRs/cross-references/timestamps.
+- PRs: title/body/state/base/head branches and SHA/author/reviewers/reviews/comments/discussions/checks/statuses/files/commits/diffs/merge state/times.
+- Commit/diff: SHA, author/committer and timestamps, message/parents, paths/renames/additions/deletions/hunks and old/new line ranges; permit targeted file/commit reads.
+- Events retain source/source-event ID/actor/occurred/observed times/payload reference.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-554` | line 779 | # 8 |
+| `P-555` | line 779 | Context Hydration |
+| `P-556` | line 781 | Context hydration should be a first-class Fleet operation |
+| `P-557` | line 783 | Example: |
+| `P-558` | line 785 | fleet work hydrate 842 \ |
+| `P-559` | line 786 | --full \ |
+| `P-560` | line 787 | --output .fleet/work/842/context/ |
+| `P-561` | line 789 | ## 8.1 Queue metadata |
+| `P-562` | line 791 | Retrieve: |
+| `P-563` | line 793 | - Queue ID |
+| `P-564` | line 794 | - Title and summary |
+| `P-565` | line 795 | - Priority |
+| `P-566` | line 796 | - All custom columns |
+| `P-567` | line 797 | - Status and status reason |
+| `P-568` | line 798 | - Labels |
+| `P-569` | line 799 | - Assignment and lease |
+| `P-570` | line 800 | - Creation and update times |
+| `P-571` | line 801 | - Current and historical blockers |
+| `P-572` | line 802 | - Previous notes |
+| `P-573` | line 803 | - Previous checkpoints |
+| `P-574` | line 804 | - Linked external resources |
+| `P-575` | line 806 | ## 8.2 Issues |
+| `P-576` | line 808 | Retrieve: |
+| `P-577` | line 810 | - Issue title and body |
+| `P-578` | line 811 | - State and state reason |
+| `P-579` | line 812 | - Assignees |
+| `P-580` | line 813 | - Labels |
+| `P-581` | line 814 | - Milestones |
+| `P-582` | line 815 | - Project fields, where available |
+| `P-583` | line 816 | - Comments |
+| `P-584` | line 817 | - Relevant edits |
+| `P-585` | line 818 | - Timeline events |
+| `P-586` | line 819 | - Linked pull requests |
+| `P-587` | line 820 | - Cross-references |
+| `P-588` | line 821 | - Creation, update, and closure times |
+| `P-589` | line 823 | ## 8.3 Pull requests |
+| `P-590` | line 825 | Retrieve: |
+| `P-591` | line 827 | - PR title and body |
+| `P-592` | line 828 | - State |
+| `P-593` | line 829 | - Base and head branches |
+| `P-594` | line 830 | - Current head SHA |
+| `P-595` | line 831 | - Author |
+| `P-596` | line 832 | - Reviewers |
+| `P-597` | line 833 | - Reviews |
+| `P-598` | line 834 | - Review comments |
+| `P-599` | line 835 | - Discussion threads |
+| `P-600` | line 836 | - Checks and statuses |
+| `P-601` | line 837 | - Changed files |
+| `P-602` | line 838 | - Commits |
+| `P-603` | line 839 | - Diffs |
+| `P-604` | line 840 | - Merge status |
+| `P-605` | line 841 | - Relevant timestamps |
+| `P-606` | line 843 | ## 8.4 Commits and diffs |
+| `P-607` | line 845 | Preserve: |
+| `P-608` | line 847 | - SHA |
+| `P-609` | line 848 | - Author |
+| `P-610` | line 849 | - Committer |
+| `P-611` | line 850 | - Author timestamp |
+| `P-612` | line 851 | - Commit timestamp |
+| `P-613` | line 852 | - Message |
+| `P-614` | line 853 | - Parent commits |
+| `P-615` | line 854 | - Changed paths |
+| `P-616` | line 855 | - Renames |
+| `P-617` | line 856 | - Additions/deletions |
+| `P-618` | line 857 | - Diff hunks |
+| `P-619` | line 858 | - Original and new line ranges |
+| `P-620` | line 860 | The agent should be able to inspect particular files or commits without retrieving the entire PR again |
+| `P-621` | line 862 | ## 8.5 Events |
+| `P-622` | line 864 | Gather both GitHub and Fleet events |
+| `P-623` | line 866 | Examples: |
+| `P-624` | line 868 | queue_item_created |
+| `P-625` | line 869 | queue_item_claimed |
+| `P-626` | line 870 | queue_item_parked |
+| `P-627` | line 871 | queue_item_blocked |
+| `P-628` | line 872 | queue_priority_changed |
+| `P-629` | line 874 | issue_opened |
+| `P-630` | line 875 | issue_edited |
+| `P-631` | line 876 | comment_created |
+| `P-632` | line 877 | comment_edited |
+| `P-633` | line 879 | pull_request_opened |
+| `P-634` | line 880 | review_submitted |
+| `P-635` | line 881 | commit_pushed |
+| `P-636` | line 882 | check_completed |
+| `P-637` | line 883 | pull_request_merged |
+| `P-638` | line 884 | issue_closed |
+| `P-639` | line 886 | Events should retain: |
+| `P-640` | line 888 | source |
+| `P-641` | line 889 | source_event_id |
+| `P-642` | line 890 | actor |
+| `P-643` | line 891 | occurred_at |
+| `P-644` | line 892 | observed_at |
+| `P-645` | line 893 | payload_reference |
+| `P-646` | line 895 | --- |
+
+## P-R016 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** P-647, P-648, P-649, P-650, P-651, P-652, P-653, P-654, P-655, P-656, P-657, P-658, P-659, P-660, P-661, P-662, P-663, P-664, P-665, P-666, P-667, P-668, P-669, P-670, P-671, P-672, P-673, P-674, P-675, P-676, P-677, P-678, P-679, P-680, P-681, P-682, P-683, P-684, P-685, P-686, P-687, P-688, P-689, P-690, P-691, P-692, P-693, P-694, P-695, P-696, P-697, P-698, P-699, P-700, P-701, P-702, P-703, P-704, P-705, P-706, P-707, P-708, P-709, P-710, P-711, P-712, P-713, P-714, P-715
+
+Write a durable context bundle with manifest, concise navigation summary and resource files; summary covers objective/state/priority/links/findings/activity/code/blockers/reviews/checks/progress/next steps; report freshness and partial retrieval honestly.
+
+Details:
+- Bundle: manifest, concise summary, queue/issues/PRs/dependencies/comments/reviews/timeline/commits/checks/activity cursors and applicable diff patches.
+- Summary: identity/objective/state/priority, significant links, findings/activity/code changes, blockers/reviews/checks, previous progress/checkpoints, next investigations and detail-file references.
+- Every artifact establishes source/freshness; incomplete/stale evidence is reported and never labeled complete.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-647` | line 897 | # 9 |
+| `P-648` | line 897 | Hydration Files and Agent Context |
+| `P-649` | line 899 | A hydration should produce a context directory |
+| `P-650` | line 901 | Example: |
+| `P-651` | line 903 | .fleet/work/842/context/ |
+| `P-652` | line 904 | manifest.json |
+| `P-653` | line 905 | summary.md |
+| `P-654` | line 906 | queue.json |
+| `P-655` | line 907 | issues.json |
+| `P-656` | line 908 | pull_requests.json |
+| `P-657` | line 909 | dependencies.json |
+| `P-658` | line 910 | comments.json |
+| `P-659` | line 911 | reviews.json |
+| `P-660` | line 912 | timeline.json |
+| `P-661` | line 913 | commits.json |
+| `P-662` | line 914 | checks.json |
+| `P-663` | line 915 | activity-cursors.json |
+| `P-664` | line 916 | diffs/ |
+| `P-665` | line 917 | pr-231.patch |
+| `P-666` | line 919 | The exact files produced may depend on what resources exist |
+| `P-667` | line 921 | ## 9.1 Summary contents |
+| `P-668` | line 923 | `summary.md` should contain: |
+| `P-669` | line 925 | 1. Work-item identity and objective |
+| `P-670` | line 926 | 2 |
+| `P-671` | line 926 | Queue state and priority |
+| `P-672` | line 927 | 3 |
+| `P-673` | line 927 | Significant linked issues and PRs |
+| `P-674` | line 928 | 4 |
+| `P-675` | line 928 | Important findings from descriptions |
+| `P-676` | line 929 | 5 |
+| `P-677` | line 929 | Recent comments and activity |
+| `P-678` | line 930 | 6 |
+| `P-679` | line 930 | Relevant code changes |
+| `P-680` | line 931 | 7 |
+| `P-681` | line 931 | Existing blockers |
+| `P-682` | line 932 | 8 |
+| `P-683` | line 932 | Active reviews or failed checks |
+| `P-684` | line 933 | 9 |
+| `P-685` | line 933 | Previous progress and checkpoints |
+| `P-686` | line 934 | 10 |
+| `P-687` | line 934 | Suggested next investigation steps |
+| `P-688` | line 935 | 11 |
+| `P-689` | line 935 | References to detailed files |
+| `P-690` | line 937 | The summary is a navigation aid, not a replacement for source evidence |
+| `P-691` | line 939 | ## 9.2 Example command output |
+| `P-692` | line 941 | Work item: 842 |
+| `P-693` | line 942 | Status: claimed |
+| `P-694` | line 943 | Priority: 1250 |
+| `P-695` | line 944 | Lease: active |
+| `P-696` | line 946 | Summary: |
+| `P-697` | line 947 | .fleet/work/842/context/summary.md |
+| `P-698` | line 949 | Manifest: |
+| `P-699` | line 950 | .fleet/work/842/context/manifest.json |
+| `P-700` | line 952 | Linked issue: |
+| `P-701` | line 953 | acme/project#203 |
+| `P-702` | line 955 | Linked PR: |
+| `P-703` | line 956 | acme/project#231 |
+| `P-704` | line 958 | Important findings: |
+| `P-705` | line 959 | - One unresolved review thread |
+| `P-706` | line 960 | - One failing integration check |
+| `P-707` | line 961 | - Two previous agent checkpoints |
+| `P-708` | line 963 | Suggested reading: |
+| `P-709` | line 964 | summary.md |
+| `P-710` | line 965 | reviews.json |
+| `P-711` | line 966 | diffs/pr-231.patch |
+| `P-712` | line 968 | Hydration status: complete |
+| `P-713` | line 970 | Every artifact should carry enough provenance to establish its source and freshness |
+| `P-714` | line 972 | If retrieval is incomplete, Fleet should explicitly report missing or stale evidence |
+| `P-715` | line 974 | Do not silently label partial hydration as complete |
+
+## P-R017 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9200, #9208
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation; #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** CF-003
+**Occurrence refs:** P-717, P-718, P-719, P-720, P-721, P-722, P-723, P-724, P-725, P-726, P-727, P-728, P-729, P-730, P-731, P-732, P-733, P-734, P-735, P-736, P-737, P-738, P-739, P-740, P-741, P-742, P-743, P-744, P-745, P-746, P-747, P-748, P-749, P-750, P-751, P-752, P-753, P-754, P-755, P-756, P-757, P-758, P-759, P-760, P-761, P-762, P-763, P-764, P-765, P-766, P-767, P-768, P-769, P-770, P-771, P-772, P-773, P-774, P-775, P-776, P-777, P-778, P-779, P-780, P-781, P-782, P-783, P-784, P-785, P-786, P-787
+
+Keep field authority explicit (Fleet queue/work data and journal vs GitHub issue/PR content/discussion); synchronize selectively, edit only managed body sections with concurrency checks, and update managed comments without duplication.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-717` | line 978 | # 10 |
+| `P-718` | line 978 | Titles, Descriptions, Comments, and Synchronization Authority |
+| `P-719` | line 980 | Fleet should distinguish queue content from GitHub content |
+| `P-720` | line 982 | ## 10.1 Recommended field ownership |
+| `P-721` | line 984 | \| Field \| Authority \| |
+| `P-722` | line 985 | \|---\|---\| |
+| `P-723` | line 986 | \| Queue title \| Fleet \| |
+| `P-724` | line 987 | \| Queue summary \| Fleet \| |
+| `P-725` | line 988 | \| Numeric priority \| Fleet \| |
+| `P-726` | line 989 | \| Derived priority label \| Fleet \| |
+| `P-727` | line 990 | \| Work status \| Fleet \| |
+| `P-728` | line 991 | \| Lease and assignment \| Fleet \| |
+| `P-729` | line 992 | \| Dependencies \| Fleet \| |
+| `P-730` | line 993 | \| Issue title/body \| GitHub \| |
+| `P-731` | line 994 | \| PR title/body \| GitHub \| |
+| `P-732` | line 995 | \| GitHub discussion \| GitHub \| |
+| `P-733` | line 996 | \| Agent notes \| Fleet journal \| |
+| `P-734` | line 998 | When a queue item is initially created from an issue or PR, Fleet may initialize its title and summary from that resource |
+| `P-735` | line 1000 | After creation, these should normally be independently editable |
+| `P-736` | line 1002 | Queue titles describe the work to perform |
+| `P-737` | line 1004 | PR titles describe the proposed code changes |
+| `P-738` | line 1006 | They may reasonably diverge |
+| `P-739` | line 1008 | ## 10.2 Selective synchronization |
+| `P-740` | line 1010 | Support synchronization rules rather than universal bidirectional copying |
+| `P-741` | line 1012 | Examples: |
+| `P-742` | line 1014 | - Fleet priority changes update GitHub priority labels |
+| `P-743` | line 1015 | - Fleet progress notes may update a managed GitHub comment |
+| `P-744` | line 1016 | - GitHub comments appear in Fleet's activity view |
+| `P-745` | line 1017 | - GitHub PR edits refresh Fleet's linked context |
+| `P-746` | line 1018 | - GitHub closures may trigger configurable lifecycle reconciliation |
+| `P-747` | line 1019 | - Queue title changes do not automatically rewrite PR titles |
+| `P-748` | line 1021 | Synchronization should be configurable per field and event type |
+| `P-749` | line 1023 | ## 10.3 Managed description sections |
+| `P-750` | line 1025 | Fleet should be able to edit only a designated section of a GitHub issue or PR body |
+| `P-751` | line 1027 | Example: |
+| `P-752` | line 1029 | <!-- fleet:progress:start --> |
+| `P-753` | line 1031 | Work is in progress |
+| `P-754` | line 1032 | Current blocker: #761 |
+| `P-755` | line 1034 | <!-- fleet:progress:end --> |
+| `P-756` | line 1036 | Example command: |
+| `P-757` | line 1038 | fleet github issue update \ |
+| `P-758` | line 1039 | --work 842 \ |
+| `P-759` | line 1040 | --section progress \ |
+| `P-760` | line 1041 | --file progress.md |
+| `P-761` | line 1043 | Fleet should: |
+| `P-762` | line 1045 | 1. Fetch the current body and version |
+| `P-763` | line 1046 | 2 |
+| `P-764` | line 1046 | Locate the managed section |
+| `P-765` | line 1047 | 3 |
+| `P-766` | line 1047 | Check for conflicting edits |
+| `P-767` | line 1048 | 4 |
+| `P-768` | line 1048 | Replace only the intended content |
+| `P-769` | line 1049 | 5 |
+| `P-770` | line 1049 | Submit the mutation |
+| `P-771` | line 1050 | 6 |
+| `P-772` | line 1050 | Record and verify the result |
+| `P-773` | line 1052 | Do not blindly overwrite an entire description when only one section needs updating |
+| `P-774` | line 1054 | ## 10.4 Managed comments |
+| `P-775` | line 1056 | Fleet may maintain a single progress comment per work item and linked issue |
+| `P-776` | line 1058 | Example: |
+| `P-777` | line 1060 | fleet work note add 842 \ |
+| `P-778` | line 1061 | --text "Implementation passes unit tests" \ |
+| `P-779` | line 1062 | --mirror github |
+| `P-780` | line 1064 | Or: |
+| `P-781` | line 1066 | fleet github comment edit \ |
+| `P-782` | line 1067 | --work 842 \ |
+| `P-783` | line 1068 | --managed progress \ |
+| `P-784` | line 1069 | --file progress.md |
+| `P-785` | line 1071 | Store the remote comment ID |
+| `P-786` | line 1073 | Do not create duplicate comments on every synchronization attempt |
+| `P-787` | line 1075 | Regular agent notes should remain in the journal even when they are not mirrored publicly |
+
+## P-R018 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** P-789, P-790, P-791, P-792, P-793, P-794, P-795, P-796, P-797, P-798, P-799, P-800, P-801, P-802, P-803, P-804, P-805, P-806, P-807, P-808, P-809, P-810, P-811, P-812, P-813, P-814, P-815, P-816, P-817, P-818, P-819, P-820, P-821, P-822, P-823, P-824, P-825, P-826, P-827, P-828, P-829, P-830, P-831, P-832, P-833, P-834, P-835, P-836, P-837, P-838, P-839, P-840, P-841, P-842, P-843, P-844, P-845, P-846, P-847
+
+Track source-specific activity/cursors and session attribution; support since-start/checkpoint/timestamp and external-only; overlap/deduplicate retrieval, distinguish timestamp meanings, advance only after durable processing, and refresh again before completion.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-789` | line 1079 | # 11 |
+| `P-790` | line 1079 | Activity Tracking and Incremental Updates |
+| `P-791` | line 1081 | Agents must be able to discover changes since a specific point |
+| `P-792` | line 1083 | Examples: |
+| `P-793` | line 1085 | fleet work changes 842 --since-start |
+| `P-794` | line 1087 | fleet work changes 842 --since-checkpoint |
+| `P-795` | line 1089 | fleet work changes 842 \ |
+| `P-796` | line 1090 | --since 2026-11-06T12:00:00Z |
+| `P-797` | line 1092 | fleet work changes 842 \ |
+| `P-798` | line 1093 | --since-start \ |
+| `P-799` | line 1094 | --external-only |
+| `P-800` | line 1096 | ## 11.1 Session attribution |
+| `P-801` | line 1098 | Fleet should record the origin of its own mutations: |
+| `P-802` | line 1100 | agent_id |
+| `P-803` | line 1101 | session_id |
+| `P-804` | line 1102 | work_item_id |
+| `P-805` | line 1103 | operation_id |
+| `P-806` | line 1104 | outbox_id |
+| `P-807` | line 1106 | This allows Fleet to distinguish operations initiated by the current session from external changes |
+| `P-808` | line 1108 | Do not assume that every GitHub event authored by the same bot account belongs to the current session |
+| `P-809` | line 1110 | Other sessions may share credentials |
+| `P-810` | line 1112 | Events without reliable attribution should be treated as uncertain, not automatically excluded |
+| `P-811` | line 1114 | ## 11.2 Source-specific cursors |
+| `P-812` | line 1116 | Do not rely on one global `last_checked_at` timestamp |
+| `P-813` | line 1118 | Track retrieval state independently for: |
+| `P-814` | line 1120 | - Issue comments |
+| `P-815` | line 1121 | - Issue timeline events |
+| `P-816` | line 1122 | - PR discussion |
+| `P-817` | line 1123 | - PR reviews |
+| `P-818` | line 1124 | - Review threads |
+| `P-819` | line 1125 | - PR commits |
+| `P-820` | line 1126 | - PR checks |
+| `P-821` | line 1127 | - Queue mutations |
+| `P-822` | line 1128 | - Other linked sources |
+| `P-823` | line 1130 | Different endpoints may use different event models or pagination |
+| `P-824` | line 1132 | Use overlapping retrieval windows and stable event IDs for deduplication |
+| `P-825` | line 1134 | ## 11.3 Important timestamps |
+| `P-826` | line 1136 | Distinguish: |
+| `P-827` | line 1138 | occurred_at |
+| `P-828` | line 1139 | observed_at |
+| `P-829` | line 1140 | source_updated_at |
+| `P-830` | line 1141 | last_successful_sync_at |
+| `P-831` | line 1142 | session_started_at |
+| `P-832` | line 1144 | Advancing a cursor means the relevant events have been durably processed, not merely requested |
+| `P-833` | line 1146 | ## 11.4 Completion-time reconciliation |
+| `P-834` | line 1148 | Before completing work, an agent should check for activity that occurred during execution |
+| `P-835` | line 1150 | Example: |
+| `P-836` | line 1152 | fleet work changes 842 \ |
+| `P-837` | line 1153 | --since-start \ |
+| `P-838` | line 1154 | --external-only |
+| `P-839` | line 1156 | This might discover: |
+| `P-840` | line 1158 | New issue comment |
+| `P-841` | line 1159 | New PR review |
+| `P-842` | line 1160 | Changed requirements |
+| `P-843` | line 1161 | New commit |
+| `P-844` | line 1162 | Updated labels |
+| `P-845` | line 1163 | Closed dependency |
+| `P-846` | line 1165 | A completion workflow should perform its own final refresh and concurrency check as well |
+| `P-847` | line 1167 | The agent's earlier activity check alone does not eliminate the possibility of a last-second external change |
+
+## P-R019 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** P-849, P-850, P-851, P-852, P-853, P-854, P-855, P-856, P-857, P-858, P-859, P-860, P-861, P-862, P-863, P-864, P-865, P-866, P-867, P-868, P-869, P-870, P-871, P-872, P-873, P-874, P-875, P-876, P-877, P-878, P-879, P-880, P-881, P-882, P-883
+
+Represent typed hard/advisory/related/parent-child dependencies, eligibility, cycles, external references and graphs; retain satisfied history and never unblock past another hard blocker.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-849` | line 1171 | # 12 |
+| `P-850` | line 1171 | Dependencies and Blockers |
+| `P-851` | line 1173 | Fleet should support typed directed relationships |
+| `P-852` | line 1175 | Examples: |
+| `P-853` | line 1177 | 842 blocked_by 761 |
+| `P-854` | line 1178 | 842 blocks 900 |
+| `P-855` | line 1179 | 842 related_to 903 |
+| `P-856` | line 1181 | Distinguish: |
+| `P-857` | line 1183 | - Hard blockers |
+| `P-858` | line 1184 | - Soft or advisory dependencies |
+| `P-859` | line 1185 | - Related work |
+| `P-860` | line 1186 | - Parent/child relationships |
+| `P-861` | line 1188 | A hard blocker can make a work item ineligible for normal execution |
+| `P-862` | line 1190 | Example: |
+| `P-863` | line 1192 | fleet dependency add 842 \ |
+| `P-864` | line 1193 | --blocked-by fleet:761 \ |
+| `P-865` | line 1194 | --hard |
+| `P-866` | line 1196 | Then: |
+| `P-867` | line 1198 | fleet work block 842 \ |
+| `P-868` | line 1199 | --reason "Requires dependency 761" |
+| `P-869` | line 1201 | The dependency resolver should: |
+| `P-870` | line 1203 | - Identify unresolved blockers |
+| `P-871` | line 1204 | - Detect cycles |
+| `P-872` | line 1205 | - Check readiness |
+| `P-873` | line 1206 | - Prevent unsafe completion |
+| `P-874` | line 1207 | - Recognize satisfied dependencies |
+| `P-875` | line 1208 | - Support external references |
+| `P-876` | line 1209 | - Provide dependency graphs |
+| `P-877` | line 1211 | A resolved dependency should normally remain in history |
+| `P-878` | line 1213 | Unblocking does not require deleting its relationship |
+| `P-879` | line 1215 | For example: |
+| `P-880` | line 1217 | fleet work unblock 842 \ |
+| `P-881` | line 1218 | --reason "Dependency 761 completed" |
+| `P-882` | line 1220 | This may transition the item back to available or in progress, depending on ownership and lifecycle policy |
+| `P-883` | line 1222 | Unblocking must not accidentally override another unresolved hard blocker |
+
+## P-R020 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** CF-002
+**Occurrence refs:** P-885, P-886, P-887, P-888, P-889, P-890, P-891, P-892, P-893, P-894, P-895, P-896, P-897, P-898, P-899, P-900, P-901, P-902, P-903, P-904, P-905, P-906, P-907, P-908, P-909, P-910, P-911, P-912, P-913, P-914, P-915, P-916, P-917, P-918, P-919, P-920, P-921, P-922, P-923, P-924, P-925, P-926, P-927, P-928, P-929, P-930, P-931, P-932, P-933, P-934, P-935, P-936, P-937, P-938, P-939, P-940, P-941, P-942, P-943, P-944, P-945, P-946, P-947, P-948, P-949, P-950, P-951, P-952, P-953, P-954, P-955, P-956, P-957
+
+Support lifecycle states, atomic leases/fencing/recovery, useful checkpoints and time-budget-aware park/release/handoff; separate worker-loop policy from lifecycle semantics.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-885` | line 1226 | # 13 |
+| `P-886` | line 1226 | Work Lifecycle and Ownership |
+| `P-887` | line 1228 | The operational states should include: |
+| `P-888` | line 1230 | available |
+| `P-889` | line 1231 | claimed |
+| `P-890` | line 1232 | in_progress |
+| `P-891` | line 1233 | parked |
+| `P-892` | line 1234 | blocked |
+| `P-893` | line 1235 | completing |
+| `P-894` | line 1236 | completed |
+| `P-895` | line 1237 | cancelled |
+| `P-896` | line 1238 | failed |
+| `P-897` | line 1240 | Potential flow: |
+| `P-898` | line 1242 | available |
+| `P-899` | line 1243 | \|
+       v |
+| `P-900` | line 1245 | claimed |
+| `P-901` | line 1246 | \|
+       v |
+| `P-902` | line 1248 | in_progress |
+| `P-903` | line 1249 | \| \ |
+| `P-904` | line 1250 | \|  +------> parked |
+| `P-905` | line 1251 | \|             \| |
+| `P-906` | line 1252 | \|             v |
+| `P-907` | line 1253 | \|          available |
+| `P-908` | line 1254 | \|
+       +---------> blocked |
+| `P-909` | line 1256 | \|             \| |
+| `P-910` | line 1257 | \|             v |
+| `P-911` | line 1258 | \|          available / in_progress |
+| `P-912` | line 1259 | \|
+       v |
+| `P-913` | line 1261 | completing |
+| `P-914` | line 1262 | \|
+       v |
+| `P-915` | line 1264 | completed |
+| `P-916` | line 1266 | Some transitions may require validation |
+| `P-917` | line 1268 | ## 13.1 Leases |
+| `P-918` | line 1270 | A claim should issue: |
+| `P-919` | line 1272 | lease_token |
+| `P-920` | line 1273 | lease_expiration |
+| `P-921` | line 1274 | fencing_version |
+| `P-922` | line 1276 | Example: |
+| `P-923` | line 1278 | fleet queue claim 842 \ |
+| `P-924` | line 1279 | --agent-id worker-07 \ |
+| `P-925` | line 1280 | --lease 30m |
+| `P-926` | line 1282 | The claim must be atomic |
+| `P-927` | line 1284 | An expired lease may be reclaimed, but stale workers must not be permitted to mutate newer state using an old token |
+| `P-928` | line 1286 | ## 13.2 Checkpointing |
+| `P-929` | line 1288 | Agents should checkpoint meaningful progress |
+| `P-930` | line 1290 | Example: |
+| `P-931` | line 1292 | fleet work checkpoint 842 \ |
+| `P-932` | line 1293 | --note "Root cause identified; tests pending" |
+| `P-933` | line 1295 | A checkpoint may record: |
+| `P-934` | line 1297 | - Current objective |
+| `P-935` | line 1298 | - Completed steps |
+| `P-936` | line 1299 | - Outstanding work |
+| `P-937` | line 1300 | - Important files |
+| `P-938` | line 1301 | - Branch or commit |
+| `P-939` | line 1302 | - Known blockers |
+| `P-940` | line 1303 | - Session activity cursors |
+| `P-941` | line 1304 | - Suggested next action |
+| `P-942` | line 1306 | The next agent should not need to reconstruct previous reasoning from a large unstructured transcript |
+| `P-943` | line 1308 | ## 13.3 Time budgets |
+| `P-944` | line 1310 | Agents may continue taking work items until they approach their execution deadline |
+| `P-945` | line 1312 | Fleet should support a configurable policy such as: |
+| `P-946` | line 1314 | Do not claim new work when insufficient |
+| `P-947` | line 1315 | execution time remains |
+| `P-948` | line 1317 | It should also support: |
+| `P-949` | line 1319 | fleet work checkpoint |
+| `P-950` | line 1320 | fleet work park |
+| `P-951` | line 1321 | fleet work release |
+| `P-952` | line 1322 | fleet work handoff |
+| `P-953` | line 1324 | The examples below assume one work item per agent execution |
+| `P-954` | line 1326 | Eventually, a worker loop might repeatedly call: |
+| `P-955` | line 1328 | fleet work next --claim --hydrate |
+| `P-956` | line 1330 | until its remaining time budget is insufficient for another task |
+| `P-957` | line 1332 | That scheduling policy is separate from work-item lifecycle semantics |
+
+## P-R021 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-959, P-960, P-961, P-962, P-963, P-964, P-965, P-966, P-967, P-968, P-969, P-970, P-971, P-972, P-973, P-974, P-975, P-976, P-977, P-978, P-979, P-980, P-981, P-982, P-983, P-984, P-985, P-986, P-987, P-988, P-989, P-990, P-991, P-992, P-993, P-994, P-995, P-996, P-997, P-998, P-999, P-1000, P-1001, P-1002, P-1003, P-1004, P-1005, P-1006, P-1007, P-1008, P-1009, P-1010, P-1011, P-1012, P-1013, P-1014, P-1015, P-1016, P-1017, P-1018, P-1019, P-1020
+
+Use a transactional outbox with durable states, stable IDs, remote verification, effectively-once retries where possible, conflict preservation, and reconciliation for external changes/recovery.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-959` | line 1336 | # 14 |
+| `P-960` | line 1336 | Transactional Outbox and Reliable Synchronization |
+| `P-961` | line 1338 | Fleet should not require every agent to coordinate queue writes and GitHub updates manually |
+| `P-962` | line 1340 | A single Fleet command should be able to express the intended operation |
+| `P-963` | line 1342 | Example: |
+| `P-964` | line 1344 | fleet metadata labels 842 \ |
+| `P-965` | line 1345 | --add needs-review \ |
+| `P-966` | line 1346 | --mirror github |
+| `P-967` | line 1348 | Conceptually: |
+| `P-968` | line 1350 | 1. Validate the mutation |
+| `P-969` | line 1351 | 2 |
+| `P-970` | line 1351 | Update Fleet's authoritative state |
+| `P-971` | line 1352 | 3 |
+| `P-972` | line 1352 | Create the corresponding outbox record in the same local transaction |
+| `P-973` | line 1353 | 4 |
+| `P-974` | line 1353 | Commit the transaction |
+| `P-975` | line 1354 | 5 |
+| `P-976` | line 1354 | Deliver the GitHub mutation |
+| `P-977` | line 1355 | 6 |
+| `P-978` | line 1355 | Record the remote response |
+| `P-979` | line 1356 | 7 |
+| `P-980` | line 1356 | Verify the resulting state |
+| `P-981` | line 1357 | 8 |
+| `P-982` | line 1357 | Mark the outbox operation confirmed |
+| `P-983` | line 1359 | If GitHub is unavailable, the local operation and outbox intent should remain durable |
+| `P-984` | line 1361 | ## 14.1 Outbox states |
+| `P-985` | line 1363 | Suggested states: |
+| `P-986` | line 1365 | pending |
+| `P-987` | line 1366 | delivering |
+| `P-988` | line 1367 | confirmed |
+| `P-989` | line 1368 | retryable_failure |
+| `P-990` | line 1369 | conflict |
+| `P-991` | line 1370 | terminal_failure |
+| `P-992` | line 1372 | ## 14.2 Idempotency |
+| `P-993` | line 1374 | Each logical mutation should have a stable operation ID |
+| `P-994` | line 1376 | Retries must not create duplicate comments, duplicate journal entries, or duplicate lifecycle operations |
+| `P-995` | line 1378 | GitHub mutations do not universally support server-side idempotency keys |
+| `P-996` | line 1380 | Therefore Fleet should use a combination of: |
+| `P-997` | line 1382 | - Stable operation IDs |
+| `P-998` | line 1383 | - Local idempotency records |
+| `P-999` | line 1384 | - Remote state checks |
+| `P-1000` | line 1385 | - Known remote resource IDs |
+| `P-1001` | line 1386 | - Managed content markers |
+| `P-1002` | line 1387 | - Verification before retry |
+| `P-1003` | line 1389 | The goal is effectively-once application where possible, not an unsupported claim of universal exactly-once delivery |
+| `P-1004` | line 1391 | ## 14.3 Conflict handling |
+| `P-1005` | line 1393 | If an external user edits a description or comment while Fleet is updating it: |
+| `P-1006` | line 1395 | - Detect the conflict |
+| `P-1007` | line 1396 | - Avoid overwriting unrelated edits |
+| `P-1008` | line 1397 | - Retry safely where possible |
+| `P-1009` | line 1398 | - Report unresolved conflicts |
+| `P-1010` | line 1399 | - Preserve the original intended mutation |
+| `P-1011` | line 1401 | Blind last-writer-wins behavior should not be the default for collaborative content |
+| `P-1012` | line 1403 | ## 14.4 Reconciliation |
+| `P-1013` | line 1405 | Webhooks and periodic sweeps remain valuable |
+| `P-1014` | line 1407 | They should: |
+| `P-1015` | line 1409 | - Detect modifications made outside Fleet |
+| `P-1016` | line 1410 | - Repair missed notifications |
+| `P-1017` | line 1411 | - Reconcile interrupted operations |
+| `P-1018` | line 1412 | - Recognize external closures |
+| `P-1019` | line 1413 | - Resolve incomplete outbox deliveries |
+| `P-1020` | line 1415 | They are recovery and observation mechanisms, not mandatory dependencies for immediate completion of operations initiated by Fleet |
+
+## P-R022 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1434, P-1435, P-1436, P-1437, P-1438, P-1439, P-1440, P-1441, P-1442, P-1443, P-1444, P-1445, P-1446, P-1447, P-1448, P-1449, P-1450, P-1451, P-1452, P-1453, P-1454, P-1455, P-1456, P-1457
+
+Complete Fleet-initiated work directly after validation, merge and issue-close verification; deduplicate later webhooks and inspect actual remote state after crash before retrying.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1434` | line 1992 | # 19 |
+| `P-1435` | line 1992 | Direct Completion Versus Webhooks and Sweeps |
+| `P-1436` | line 1994 | This is a central behavioral requirement |
+| `P-1437` | line 1996 | Consider the sequence: |
+| `P-1438` | line 1998 | Agent merges PR |
+| `P-1439` | line 1999 | ↓
+    GitHub emits webhook |
+| `P-1440` | line 2001 | ↓
+    Webhook worker processes event |
+| `P-1441` | line 2003 | ↓
+    Queue sweeper eventually updates work item |
+| `P-1442` | line 2006 | This sequence may remain useful for observing changes initiated outside Fleet |
+| `P-1443` | line 2008 | It should not be the required path when Fleet itself performs the merge |
+| `P-1444` | line 2010 | Preferred sequence: |
+| `P-1445` | line 2012 | Agent requests Fleet completion |
+| `P-1446` | line 2013 | ↓
+    Fleet validates work |
+| `P-1447` | line 2015 | ↓
+    Fleet merges PR |
+| `P-1448` | line 2017 | ↓
+    Fleet verifies merge |
+| `P-1449` | line 2019 | ↓
+    Fleet closes linked issue |
+| `P-1450` | line 2021 | ↓
+    Fleet verifies closure |
+| `P-1451` | line 2023 | ↓
+    Fleet closes queue item directly |
+| `P-1452` | line 2025 | ↓
+    Fleet records completion |
+| `P-1453` | line 2027 | ↓
+    Agent receives confirmed result |
+| `P-1454` | line 2030 | Webhooks may arrive afterward |
+| `P-1455` | line 2032 | They should be deduplicated and treated as confirming observations rather than reopening or duplicating completed operations |
+| `P-1456` | line 2034 | If Fleet crashes after an external merge but before recording success, recovery must inspect GitHub's actual state before retrying |
+| `P-1457` | line 2036 | The completion coordinator must not attempt to reverse an already successful merge simply because a later closure step failed |
+
+## P-R023 — candidate (group)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1459, P-1460, P-1461, P-1462, P-1463, P-1464, P-1465, P-1466, P-1467, P-1468, P-1469, P-1470, P-1471, P-1472, P-1473, P-1474, P-1475, P-1476, P-1477, P-1478, P-1479, P-1480, P-1481, P-1482, P-1483, P-1484, P-1485, P-1486, P-1487, P-1488, P-1489, P-1490, P-1491, P-1492
+
+Handle claim races, terminated agents/stale leases, unavailable GitHub, lost comment acknowledgements, partial completion, concurrent edits, new feedback during completion, and dependency cycles with explicit recoverable outcomes.
+
+Children: P-R041, P-R042, P-R043, P-R044, P-R045, P-R046, P-R047, P-R048
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1459` | line 2040 | # 20 |
+| `P-1460` | line 2040 | Error Handling and Recovery |
+| `P-1461` | line 2042 | Fleet should handle at least these cases |
+| `P-1462` | line 2044 | ## 20.1 Claim race |
+| `P-1463` | line 2046 | Two agents select the same work item |
+| `P-1464` | line 2048 | Only one obtains the claim |
+| `P-1465` | line 2050 | The other receives a conflict or automatically selects another eligible item |
+| `P-1466` | line 2052 | ## 20.2 Agent termination |
+| `P-1467` | line 2054 | The agent disappears |
+| `P-1468` | line 2056 | Its lease expires |
+| `P-1469` | line 2058 | Another agent can recover the item using its checkpoint |
+| `P-1470` | line 2060 | Stale tokens cannot overwrite newer state |
+| `P-1471` | line 2062 | ## 20.3 GitHub unavailable |
+| `P-1472` | line 2064 | A mutation is persisted to the outbox |
+| `P-1473` | line 2066 | Fleet reports that remote synchronization is pending |
+| `P-1474` | line 2068 | It does not claim that the external mutation succeeded |
+| `P-1475` | line 2070 | ## 20.4 Comment posted, acknowledgment lost |
+| `P-1476` | line 2072 | Before retrying, Fleet checks for the operation's previously created comment |
+| `P-1477` | line 2074 | It records the remote ID and avoids duplicate posting |
+| `P-1478` | line 2076 | ## 20.5 PR merges but issue closure fails |
+| `P-1479` | line 2078 | The item remains in `completing` |
+| `P-1480` | line 2080 | The outbox retains the issue-closure operation |
+| `P-1481` | line 2082 | Fleet reports partial completion |
+| `P-1482` | line 2084 | The next reconciliation can finish the workflow |
+| `P-1483` | line 2086 | ## 20.6 External edit during managed update |
+| `P-1484` | line 2088 | Fleet detects the version conflict |
+| `P-1485` | line 2090 | It preserves the external edit and either safely retries the managed section or reports a conflict |
+| `P-1486` | line 2092 | ## 20.7 New external comment during completion |
+| `P-1487` | line 2094 | Fleet checks activity again before irreversible operations |
+| `P-1488` | line 2096 | If material new feedback appears, completion should be paused according to policy |
+| `P-1489` | line 2098 | A final check cannot make all distributed actions perfectly atomic, but it should prevent known stale-state completion |
+| `P-1490` | line 2100 | ## 20.8 Dependency cycle |
+| `P-1491` | line 2102 | A requested blocker relationship would create a cycle |
+| `P-1492` | line 2104 | Fleet rejects it or explicitly flags the cycle for authorized resolution |
+
+## P-R024 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1494, P-1495, P-1496, P-1497, P-1498, P-1499, P-1500, P-1501, P-1502, P-1503, P-1504, P-1505, P-1506, P-1507, P-1508, P-1509, P-1510, P-1511, P-1512, P-1513, P-1514, P-1515, P-1516, P-1517, P-1518, P-1519, P-1520, P-1521, P-1522, P-1523, P-1524, P-1525, P-1526, P-1527, P-1528, P-1529, P-1530, P-1531, P-1532, P-1533, P-1534, P-1535, P-1536, P-1537, P-1538
+
+Provide stable JSON output, stable error identifiers, meaningful exit codes and distinct local/pending/verified/rejected/partial statuses without exposing secrets.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1494` | line 2108 | # 21 |
+| `P-1495` | line 2108 | Structured Output Contracts |
+| `P-1496` | line 2110 | All agent-oriented commands should support stable machine-readable output |
+| `P-1497` | line 2112 | For example, `fleet work next --json` might return: |
+| `P-1498` | line 2114 | ```json |
+| `P-1499` | line 2115 | {
+  "ok": true, |
+| `P-1500` | line 2117 | "work_item_id": 842, |
+| `P-1501` | line 2118 | "status": "claimed", |
+| `P-1502` | line 2119 | "session_id": "session-abc123", |
+| `P-1503` | line 2120 | "lease": { |
+| `P-1504` | line 2121 | "active": true, |
+| `P-1505` | line 2122 | "token_ref": "lease-local-reference" |
+| `P-1506` | line 2123 | }, |
+| `P-1507` | line 2124 | "context": { |
+| `P-1508` | line 2125 | "summary_path": ".fleet/work/842/context/summary.md", |
+| `P-1509` | line 2126 | "manifest_path": ".fleet/work/842/context/manifest.json", |
+| `P-1510` | line 2127 | "complete": true |
+| `P-1511` | line 2128 | }, |
+| `P-1512` | line 2129 | "linked_resources": { |
+| `P-1513` | line 2130 | "issues": 1, |
+| `P-1514` | line 2131 | "pull_requests": 1 |
+| `P-1515` | line 2132 | }, |
+| `P-1516` | line 2133 | "warnings": [], |
+| `P-1517` | line 2134 | "next_actions": [ |
+| `P-1518` | line 2135 | "Read context summary", |
+| `P-1519` | line 2136 | "Inspect relevant review comments" |
+| `P-1520` | line 2137 | ]
+} |
+| `P-1521` | line 2139 | ``` |
+| `P-1522` | line 2141 | Avoid exposing raw credentials or unnecessary secrets in command output |
+| `P-1523` | line 2143 | Use stable error identifiers, such as: |
+| `P-1524` | line 2145 | CLAIM_CONFLICT |
+| `P-1525` | line 2146 | LEASE_EXPIRED |
+| `P-1526` | line 2147 | DEPENDENCY_BLOCKED |
+| `P-1527` | line 2148 | CONTEXT_INCOMPLETE |
+| `P-1528` | line 2149 | EXTERNAL_STATE_CHANGED |
+| `P-1529` | line 2150 | OUTBOX_PENDING |
+| `P-1530` | line 2151 | REMOTE_MUTATION_FAILED |
+| `P-1531` | line 2152 | COMPLETION_INCOMPLETE |
+| `P-1532` | line 2154 | Commands should distinguish: |
+| `P-1533` | line 2156 | - Local mutation committed |
+| `P-1534` | line 2157 | - External synchronization pending |
+| `P-1535` | line 2158 | - External synchronization verified |
+| `P-1536` | line 2159 | - Operation rejected |
+| `P-1537` | line 2160 | - Operation partially completed |
+| `P-1538` | line 2162 | Process exit codes should reflect meaningful success or failure |
+
+## P-R025 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9198, #9209
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1540, P-1541, P-1542, P-1543, P-1544, P-1545, P-1546, P-1547, P-1548, P-1549, P-1550, P-1551, P-1552, P-1553, P-1554, P-1555, P-1556, P-1557, P-1558, P-1559, P-1560, P-1561, P-1562, P-1563, P-1564, P-1565, P-1566, P-1567, P-1568, P-1569, P-1570, P-1571, P-1572, P-1573, P-1574, P-1575, P-1576, P-1577, P-1578, P-1579, P-1580, P-1581, P-1582, P-1583, P-1584, P-1585, P-1586, P-1587, P-1588, P-1589, P-1590, P-1591, P-1592, P-1593, P-1594, P-1595, P-1596, P-1597, P-1598, P-1599, P-1600, P-1601, P-1602, P-1603, P-1604, P-1605, P-1606, P-1607, P-1608
+
+Inspect and reuse existing CLI/storage/source-of-truth/priority/GitHub/sync/webhook/outbox/identity/lease/journal mechanisms; enforce per-action authorization and instrument operational outcomes with correlation IDs.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1540` | line 2166 | # 22 |
+| `P-1541` | line 2166 | Implementation Requirements |
+| `P-1542` | line 2168 | Before building new functionality, inspect the existing Fleet repository |
+| `P-1543` | line 2170 | Identify: |
+| `P-1544` | line 2172 | 1. Existing CLI command framework |
+| `P-1545` | line 2173 | 2 |
+| `P-1546` | line 2173 | Queue storage schema and source of truth |
+| `P-1547` | line 2174 | 3 |
+| `P-1548` | line 2174 | Queue priority implementation |
+| `P-1549` | line 2175 | 4 |
+| `P-1550` | line 2175 | GitHub integration libraries and credentials |
+| `P-1551` | line 2176 | 5 |
+| `P-1552` | line 2176 | Existing issue/PR synchronization logic |
+| `P-1553` | line 2177 | 6 |
+| `P-1554` | line 2177 | Current webhook and sweep behavior |
+| `P-1555` | line 2178 | 7 |
+| `P-1556` | line 2178 | Existing transactional outbox functionality |
+| `P-1557` | line 2179 | 8 |
+| `P-1558` | line 2179 | Agent identity and session metadata |
+| `P-1559` | line 2180 | 9 |
+| `P-1560` | line 2180 | Existing lease or claim implementation |
+| `P-1561` | line 2181 | 10 |
+| `P-1562` | line 2181 | Existing journals, notes, and checkpoint mechanisms |
+| `P-1563` | line 2183 | Reuse mature existing components rather than introduce parallel implementations |
+| `P-1564` | line 2185 | ## 22.1 Storage requirements |
+| `P-1565` | line 2187 | The system will likely need durable representations of: |
+| `P-1566` | line 2189 | work_items |
+| `P-1567` | line 2190 | work_item_links |
+| `P-1568` | line 2191 | work_item_dependencies |
+| `P-1569` | line 2192 | work_item_leases |
+| `P-1570` | line 2193 | agent_sessions |
+| `P-1571` | line 2194 | work_checkpoints |
+| `P-1572` | line 2195 | work_journal_events |
+| `P-1573` | line 2196 | external_resource_snapshots |
+| `P-1574` | line 2197 | external_activity_cursors |
+| `P-1575` | line 2198 | external_events |
+| `P-1576` | line 2199 | outbox_operations |
+| `P-1577` | line 2200 | synchronization_results |
+| `P-1578` | line 2202 | These are logical entities, not necessarily a prescription for separate database tables |
+| `P-1579` | line 2204 | ## 22.2 Authentication and authorization |
+| `P-1580` | line 2206 | Fleet must establish whether the agent is authorized to: |
+| `P-1581` | line 2208 | - Read queue items |
+| `P-1582` | line 2209 | - Claim work |
+| `P-1583` | line 2210 | - Modify priority |
+| `P-1584` | line 2211 | - Change labels |
+| `P-1585` | line 2212 | - Post comments |
+| `P-1586` | line 2213 | - Modify issue/PR descriptions |
+| `P-1587` | line 2214 | - Push or coordinate code changes |
+| `P-1588` | line 2215 | - Merge PRs |
+| `P-1589` | line 2216 | - Close issues |
+| `P-1590` | line 2217 | - Complete queue items |
+| `P-1591` | line 2219 | Read-only hydration should not require unnecessary write permissions |
+| `P-1592` | line 2221 | Merge and closure operations should enforce repository branch protection, required checks, required reviews, and other configured policies |
+| `P-1593` | line 2223 | No implicit privilege escalation |
+| `P-1594` | line 2225 | ## 22.3 Observability |
+| `P-1595` | line 2227 | Track: |
+| `P-1596` | line 2229 | - Queue selection outcomes |
+| `P-1597` | line 2230 | - Claim conflicts |
+| `P-1598` | line 2231 | - Lease expirations |
+| `P-1599` | line 2232 | - Hydration duration and completeness |
+| `P-1600` | line 2233 | - GitHub API failures |
+| `P-1601` | line 2234 | - Outbox backlog and age |
+| `P-1602` | line 2235 | - Synchronization lag |
+| `P-1603` | line 2236 | - Reconciliation conflicts |
+| `P-1604` | line 2237 | - Work time by lifecycle state |
+| `P-1605` | line 2238 | - Completion success and partial failures |
+| `P-1606` | line 2239 | - Number of resumed or abandoned items |
+| `P-1607` | line 2241 | Logs should include operation and correlation IDs |
+| `P-1608` | line 2243 | Sensitive content and credentials should be protected |
+
+## P-R026 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** P-1610, P-1611, P-1612, P-1613, P-1614, P-1615, P-1616, P-1617, P-1618, P-1619, P-1620, P-1621, P-1622, P-1623, P-1624, P-1625, P-1626, P-1627, P-1628, P-1629, P-1630, P-1631, P-1632, P-1633, P-1634, P-1635, P-1636, P-1637, P-1638, P-1639, P-1640, P-1641, P-1642, P-1643, P-1644, P-1645, P-1646, P-1647, P-1648, P-1649, P-1650, P-1651, P-1652, P-1653, P-1654, P-1655, P-1656, P-1657, P-1658, P-1659, P-1660
+
+Use dependency-aware implementation phases from census/contracts through hydration, lifecycle, sync/activity, direct completion and advanced scheduling; adapt actual order to existing dependencies.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1610` | line 2247 | # 23 |
+| `P-1611` | line 2247 | Suggested Implementation Phases |
+| `P-1612` | line 2249 | ## Phase 1: Inspect and consolidate |
+| `P-1613` | line 2251 | Review existing Fleet capabilities |
+| `P-1614` | line 2253 | Document overlapping tools, missing abstractions, current source-of-truth rules, and available storage |
+| `P-1615` | line 2255 | Establish stable work-item references and shared CLI conventions |
+| `P-1616` | line 2257 | ## Phase 2: Discovery, claiming, and hydration |
+| `P-1617` | line 2259 | Implement or consolidate: |
+| `P-1618` | line 2261 | fleet agent bootstrap |
+| `P-1619` | line 2262 | fleet queue search |
+| `P-1620` | line 2263 | fleet queue claim |
+| `P-1621` | line 2264 | fleet work next |
+| `P-1622` | line 2265 | fleet work open |
+| `P-1623` | line 2266 | fleet work hydrate |
+| `P-1624` | line 2268 | Produce reliable context bundles and concise summaries |
+| `P-1625` | line 2270 | ## Phase 3: Notes, metadata, and dependencies |
+| `P-1626` | line 2272 | Implement: |
+| `P-1627` | line 2274 | fleet work note |
+| `P-1628` | line 2275 | fleet work checkpoint |
+| `P-1629` | line 2276 | fleet metadata |
+| `P-1630` | line 2277 | fleet dependency |
+| `P-1631` | line 2278 | fleet work block |
+| `P-1632` | line 2279 | fleet work park |
+| `P-1633` | line 2280 | fleet work resume |
+| `P-1634` | line 2282 | Ensure state changes are durable and recoverable |
+| `P-1635` | line 2284 | ## Phase 4: GitHub operations and outbox |
+| `P-1636` | line 2286 | Consolidate GitHub issue, PR, comment, label, review, and timeline operations |
+| `P-1637` | line 2288 | Implement the mutation coordinator and transactional outbox |
+| `P-1638` | line 2290 | Support managed content sections and remote mutation verification |
+| `P-1639` | line 2292 | ## Phase 5: Incremental reconciliation |
+| `P-1640` | line 2294 | Implement: |
+| `P-1641` | line 2296 | fleet work changes |
+| `P-1642` | line 2297 | fleet work refresh |
+| `P-1643` | line 2298 | fleet activity since |
+| `P-1644` | line 2299 | fleet sync verify |
+| `P-1645` | line 2301 | Track source-specific cursors and session-originated mutations |
+| `P-1646` | line 2303 | ## Phase 6: Direct completion orchestration |
+| `P-1647` | line 2305 | Implement: |
+| `P-1648` | line 2307 | fleet work complete |
+| `P-1649` | line 2309 | It should coordinate: |
+| `P-1650` | line 2311 | - Pre-completion validation |
+| `P-1651` | line 2312 | - External activity checks |
+| `P-1652` | line 2313 | - PR merges |
+| `P-1653` | line 2314 | - Issue closure |
+| `P-1654` | line 2315 | - Direct queue closure |
+| `P-1655` | line 2316 | - Final journaling |
+| `P-1656` | line 2317 | - Outbox settlement |
+| `P-1657` | line 2318 | - Recovery from partial completion |
+| `P-1658` | line 2320 | ## Phase 7: Advanced workflow composition |
+| `P-1659` | line 2322 | Support reusable workflow recipes, shell-friendly scripts, and scenario-specific agent startup guidance |
+| `P-1660` | line 2324 | Add more sophisticated work selection, scheduling, fairness, capability matching, and automated handoff |
+
+## P-R027 — candidate (group)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9198, #9204, #9206, #9207, #9208, #9209
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration; #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity; #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1662, P-1663, P-1664, P-1665, P-1666, P-1667, P-1668, P-1669, P-1670, P-1671, P-1672, P-1673, P-1674, P-1675, P-1676, P-1677, P-1678, P-1679, P-1680, P-1681, P-1682, P-1683, P-1684, P-1685, P-1686, P-1687, P-1688, P-1689, P-1690, P-1691, P-1692, P-1693, P-1694, P-1695, P-1696, P-1697, P-1698, P-1699, P-1700, P-1701, P-1702, P-1703, P-1704, P-1705, P-1706, P-1707, P-1708, P-1709, P-1710, P-1711, P-1712, P-1713, P-1714, P-1715, P-1716, P-1717, P-1718, P-1719, P-1720, P-1721, P-1722, P-1723, P-1724, P-1725, P-1726, P-1727
+
+Accept against realistic end-to-end selection, hydration, activity, authority, dependency, outbox, lifecycle, completion/recovery and worker scenarios.
+
+Children: P-R049, P-R050, P-R051, P-R052, P-R053, P-R054, P-R055
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1662` | line 2328 | # 24 |
+| `P-1663` | line 2328 | Verification and Acceptance Criteria |
+| `P-1664` | line 2330 | The implementation should be tested with realistic workflows |
+| `P-1665` | line 2332 | ## Core selection |
+| `P-1666` | line 2334 | - [ ] Agents can discover eligible queue items |
+| `P-1667` | line 2335 | - [ ] All required metadata can be inspected |
+| `P-1668` | line 2336 | - [ ] Priority ranking is configurable |
+| `P-1669` | line 2337 | - [ ] A claim is atomic |
+| `P-1670` | line 2338 | - [ ] Two agents cannot own the same exclusive lease |
+| `P-1671` | line 2339 | - [ ] Stale leases cannot overwrite newer ownership |
+| `P-1672` | line 2341 | ## Hydration |
+| `P-1673` | line 2343 | - [ ] Linked issues are retrieved |
+| `P-1674` | line 2344 | - [ ] Linked PRs are discovered |
+| `P-1675` | line 2345 | - [ ] Relevant comments and reviews are retrieved |
+| `P-1676` | line 2346 | - [ ] Commits and diffs include accurate metadata |
+| `P-1677` | line 2347 | - [ ] Context files are persisted |
+| `P-1678` | line 2348 | - [ ] A concise summary is returned |
+| `P-1679` | line 2349 | - [ ] Missing or partial data is reported |
+| `P-1680` | line 2350 | - [ ] The context is traceable to its sources |
+| `P-1681` | line 2352 | ## Activity |
+| `P-1682` | line 2354 | - [ ] Changes can be queried since a timestamp |
+| `P-1683` | line 2355 | - [ ] Changes can be queried since a checkpoint |
+| `P-1684` | line 2356 | - [ ] Session-originated mutations can be identified |
+| `P-1685` | line 2357 | - [ ] External events are not incorrectly suppressed |
+| `P-1686` | line 2358 | - [ ] Repeated retrieval does not duplicate events |
+| `P-1687` | line 2359 | - [ ] Cursor advancement is safe across interruptions |
+| `P-1688` | line 2361 | ## Metadata and dependencies |
+| `P-1689` | line 2363 | - [ ] Numeric priority is authoritative |
+| `P-1690` | line 2364 | - [ ] Derived labels update correctly |
+| `P-1691` | line 2365 | - [ ] Queue and PR titles can diverge |
+| `P-1692` | line 2366 | - [ ] Notes can be recorded independently |
+| `P-1693` | line 2367 | - [ ] Managed comments can be updated without duplication |
+| `P-1694` | line 2368 | - [ ] Managed body sections do not overwrite unrelated content |
+| `P-1695` | line 2369 | - [ ] Hard blockers affect work eligibility |
+| `P-1696` | line 2370 | - [ ] Dependency cycles are detected |
+| `P-1697` | line 2371 | - [ ] Resolved dependencies remain auditable |
+| `P-1698` | line 2373 | ## Outbox |
+| `P-1699` | line 2375 | - [ ] A local mutation and outbox intent are committed atomically |
+| `P-1700` | line 2376 | - [ ] Remote failures leave durable retryable records |
+| `P-1701` | line 2377 | - [ ] Retries do not unnecessarily duplicate comments or mutations |
+| `P-1702` | line 2378 | - [ ] Outbox statuses are inspectable |
+| `P-1703` | line 2379 | - [ ] External results are verified |
+| `P-1704` | line 2380 | - [ ] Conflicts are surfaced rather than silently overwritten |
+| `P-1705` | line 2382 | ## Lifecycle |
+| `P-1706` | line 2384 | - [ ] Items can be claimed, parked, blocked, and resumed |
+| `P-1707` | line 2385 | - [ ] Checkpoints preserve useful continuation context |
+| `P-1708` | line 2386 | - [ ] Lease expiration is recoverable |
+| `P-1709` | line 2387 | - [ ] Completion validates required conditions |
+| `P-1710` | line 2388 | - [ ] Fleet can merge an authorized PR |
+| `P-1711` | line 2389 | - [ ] Fleet can close explicitly designated linked issues |
+| `P-1712` | line 2390 | - [ ] Fleet closes the queue item directly after verifying the required external operations |
+| `P-1713` | line 2391 | - [ ] No webhook or sweep is required for successful direct completion |
+| `P-1714` | line 2392 | - [ ] An interrupted completion can resume without repeating successful effects |
+| `P-1715` | line 2393 | - [ ] Completion events and final notes are auditable |
+| `P-1716` | line 2395 | ## End-to-end agent scenarios |
+| `P-1717` | line 2397 | - [ ] New agent claims and hydrates a task |
+| `P-1718` | line 2398 | - [ ] Agent investigates linked issues, PRs, reviews, and diffs |
+| `P-1719` | line 2399 | - [ ] Agent records work and adds a blocker |
+| `P-1720` | line 2400 | - [ ] Agent parks the task and releases its lease |
+| `P-1721` | line 2401 | - [ ] Another session resumes after dependency resolution |
+| `P-1722` | line 2402 | - [ ] Agent pushes a fix and updates progress using Fleet |
+| `P-1723` | line 2403 | - [ ] Agent detects and responds to a new external comment |
+| `P-1724` | line 2404 | - [ ] Agent verifies checks and reviews |
+| `P-1725` | line 2405 | - [ ] Agent merges and closes through Fleet |
+| `P-1726` | line 2406 | - [ ] Fleet immediately records verified completion |
+| `P-1727` | line 2407 | - [ ] A separate near-timeout session can checkpoint safely without completing unfinished work |
+
+## P-R028 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1729, P-1730, P-1731, P-1732, P-1733, P-1734, P-1735, P-1736, P-1737, P-1738, P-1739, P-1740, P-1741, P-1742, P-1743, P-1744, P-1745, P-1746, P-1747, P-1748, P-1749, P-1750, P-1751, P-1752, P-1753, P-1754, P-1755, P-1756, P-1757, P-1758, P-1759
+
+Keep a straightforward auditable normal workflow and recovery path while preserving access to lower-level operations.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1729` | line 2411 | # 25 |
+| `P-1730` | line 2411 | Preferred Agent Experience |
+| `P-1731` | line 2413 | The ideal normal workflow should require only a few Fleet commands: |
+| `P-1732` | line 2415 | fleet agent bootstrap --scenario queue-worker |
+| `P-1733` | line 2417 | fleet work next --claim --hydrate full |
+| `P-1734` | line 2419 | # Read returned context summary |
+| `P-1735` | line 2420 | # Investigate and implement the work |
+| `P-1736` | line 2422 | fleet work note add 842 \ |
+| `P-1737` | line 2423 | --text "Implementation complete" |
+| `P-1738` | line 2425 | fleet work changes 842 \ |
+| `P-1739` | line 2426 | --since-start \ |
+| `P-1740` | line 2427 | --external-only |
+| `P-1741` | line 2429 | # Resolve any newly discovered activity |
+| `P-1742` | line 2431 | fleet work complete 842 \ |
+| `P-1743` | line 2432 | --merge-linked-prs \ |
+| `P-1744` | line 2433 | --close-linked-issues \ |
+| `P-1745` | line 2434 | --close-queue \ |
+| `P-1746` | line 2435 | --verify \ |
+| `P-1747` | line 2436 | --wait |
+| `P-1748` | line 2438 | For interrupted work: |
+| `P-1749` | line 2440 | fleet work checkpoint 842 \ |
+| `P-1750` | line 2441 | --note "Remaining work documented" |
+| `P-1751` | line 2443 | fleet work park 842 \ |
+| `P-1752` | line 2444 | --checkpoint \ |
+| `P-1753` | line 2445 | --release-lease |
+| `P-1754` | line 2447 | For a later session: |
+| `P-1755` | line 2449 | fleet work resume 842 \ |
+| `P-1756` | line 2450 | --claim \ |
+| `P-1757` | line 2451 | --hydrate incremental |
+| `P-1758` | line 2453 | Agents should still have access to every lower-level operation when the standard workflow is insufficient |
+| `P-1759` | line 2455 | The common workflow should be straightforward, recoverable, and auditable |
+
+## P-R029 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1761, P-1762, P-1763, P-1764, P-1765, P-1766, P-1767, P-1768, P-1769, P-1770, P-1771, P-1772, P-1773, P-1774, P-1775, P-1776
+
+Evolve Fleet into the primary queue-work coordination layer with composable broker/hydrator/adapter/reconciler/resolver/journal/outbox/completion responsibilities.
+
+Curation note: Supporting proposal; preserve as a candidate unless adopted by governing design. Line-range grouping is section-aware and intentionally avoids one row per flag.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1761` | line 2459 | # 26 |
+| `P-1762` | line 2459 | Final Design Direction |
+| `P-1763` | line 2461 | Fleet should evolve into the primary coordination layer for queue-driven autonomous work |
+| `P-1764` | line 2463 | Its principal responsibilities are: |
+| `P-1765` | line 2465 | **Queue Broker:** Select and claim appropriate work |
+| `P-1766` | line 2467 | **Work-Item Hydrator:** Gather comprehensive context and present the important information efficiently |
+| `P-1767` | line 2469 | **GitHub Adapter:** Provide consistent access to issues, PRs, commits, diffs, comments, reviews, and mutations |
+| `P-1768` | line 2471 | **Activity Reconciler:** Detect changes and maintain accurate synchronization |
+| `P-1769` | line 2473 | **Dependency Resolver:** Manage blockers, readiness, and work relationships |
+| `P-1770` | line 2475 | **Work Journal:** Persist notes, progress, checkpoints, and decisions |
+| `P-1771` | line 2477 | **Mutation Coordinator and Outbox:** Apply changes reliably across Fleet and GitHub |
+| `P-1772` | line 2479 | **Completion Coordinator:** Verify and finalize work directly without depending on eventual webhook or sweep processing |
+| `P-1773` | line 2481 | The implementation should favor a small set of powerful, composable primitives with convenient agent-facing workflow commands |
+| `P-1774` | line 2483 | An agent should be able to receive a short instruction, discover Fleet's capabilities, select or open a work item, obtain complete context, perform the work, synchronize its changes, respond to new activity, and finish with verified queue a |
+| `P-1775` | line 2485 | Fleet should handle the operational complexity so that agents can concentrate on the work itself |
+| `P-1776` | line 2485 | . |
+
+## P-R030 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** P-411, P-412, P-413, P-414, P-415, P-416, P-417, P-418, P-419, P-420, P-421, P-422, P-423, P-424, P-425, P-426, P-427, P-428, P-429, P-430, P-431
+
+Compose work-next from search/rank/eligibility/atomic claim/hydration/summary/journal; retry or report explicit conflict if the selection becomes unavailable.
+
+Curation note: Proposal workflow or example; names remain proposed and reconcile with existing Fleet conventions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-411` | line 575 | # 5 |
+| `P-412` | line 575 | High-Level Commands as Composed Workflows |
+| `P-413` | line 577 | A key design goal is avoiding repeated orchestration boilerplate |
+| `P-414` | line 579 | ## 5.1 `fleet work next` |
+| `P-415` | line 581 | Example: |
+| `P-416` | line 583 | fleet work next \ |
+| `P-417` | line 584 | --ready \ |
+| `P-418` | line 585 | --claim \ |
+| `P-419` | line 586 | --hydrate full \ |
+| `P-420` | line 587 | --strategy weighted \ |
+| `P-421` | line 588 | --output .fleet/work/ |
+| `P-422` | line 590 | Conceptual composition: |
+| `P-423` | line 592 | queue.search |
+| `P-424` | line 593 | queue.rank |
+| `P-425` | line 594 | queue.evaluate_eligibility |
+| `P-426` | line 595 | queue.claim_atomically |
+| `P-427` | line 596 | work.hydrate |
+| `P-428` | line 597 | work.summarize |
+| `P-429` | line 598 | journal.record_claim |
+| `P-430` | line 600 | Selection and claiming must be concurrency-safe |
+| `P-431` | line 602 | If a selected item becomes unavailable before the claim, Fleet should retry selection or return an explicit conflict |
+
+## P-R031 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** P-432, P-433, P-434, P-435, P-436, P-437, P-438, P-439, P-440, P-441, P-442, P-443
+
+Compose work-open for an assigned item with retrieval, validation, claim, hydration and summary.
+
+Curation note: Proposal workflow or example; names remain proposed and reconcile with existing Fleet conventions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-432` | line 604 | ## 5.2 `fleet work open` |
+| `P-433` | line 606 | Example: |
+| `P-434` | line 608 | fleet work open 842 \ |
+| `P-435` | line 609 | --claim \ |
+| `P-436` | line 610 | --hydrate full |
+| `P-437` | line 612 | Intended for an agent that is explicitly assigned an item |
+| `P-438` | line 614 | Conceptual composition: |
+| `P-439` | line 616 | queue.get |
+| `P-440` | line 617 | queue.validate |
+| `P-441` | line 618 | queue.claim |
+| `P-442` | line 619 | work.hydrate |
+| `P-443` | line 620 | work.summarize |
+
+## P-R032 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** P-444, P-445, P-446, P-447, P-448, P-449, P-450, P-451, P-452, P-453, P-454, P-455
+
+Compose work-park with checkpoint, journal append, parked transition, lease release and configured synchronization; return resumable details.
+
+Curation note: Proposal workflow or example; names remain proposed and reconcile with existing Fleet conventions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-444` | line 622 | ## 5.3 `fleet work park` |
+| `P-445` | line 624 | Example: |
+| `P-446` | line 626 | fleet work park 842 \ |
+| `P-447` | line 627 | --reason "Waiting for maintainer response" \ |
+| `P-448` | line 628 | --checkpoint |
+| `P-449` | line 630 | Conceptual composition: |
+| `P-450` | line 632 | work.checkpoint |
+| `P-451` | line 633 | journal.append |
+| `P-452` | line 634 | queue.transition_to_parked |
+| `P-453` | line 635 | queue.release_lease |
+| `P-454` | line 636 | sync.enqueue_configured_updates |
+| `P-455` | line 638 | The command should return enough information for a later session to resume efficiently |
+
+## P-R033 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-456, P-457, P-458, P-459, P-460, P-461, P-462, P-463, P-464, P-465, P-466, P-467, P-468, P-469, P-470, P-471, P-472, P-473, P-474, P-475, P-476, P-477
+
+Compose validated work-complete through claim/dependency/activity/policy/check validation, outbox delivery and verification, direct queue close, journaling and lease release.
+
+Curation note: Proposal workflow or example; names remain proposed and reconcile with existing Fleet conventions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-456` | line 640 | ## 5.4 `fleet work complete` |
+| `P-457` | line 642 | Example: |
+| `P-458` | line 644 | fleet work complete 842 \ |
+| `P-459` | line 645 | --merge-linked-prs \ |
+| `P-460` | line 646 | --close-linked-issues \ |
+| `P-461` | line 647 | --close-queue \ |
+| `P-462` | line 648 | --verify \ |
+| `P-463` | line 649 | --wait |
+| `P-464` | line 651 | Conceptual composition: |
+| `P-465` | line 653 | validate_active_claim |
+| `P-466` | line 654 | validate_dependencies |
+| `P-467` | line 655 | refresh_external_activity |
+| `P-468` | line 656 | validate_completion_policy |
+| `P-469` | line 657 | verify_required_checks_and_reviews |
+| `P-470` | line 658 | transition_to_completing |
+| `P-471` | line 659 | enqueue_merge_and_closure_operations |
+| `P-472` | line 660 | deliver_and_verify_remote_operations |
+| `P-473` | line 661 | close_queue_item_directly |
+| `P-474` | line 662 | record_completion |
+| `P-475` | line 663 | release_lease |
+| `P-476` | line 664 | return_verified_result |
+| `P-477` | line 666 | The queue completion must not require a subsequent webhook or sweeper to recognize effects that this command has already verified |
+
+## P-R034 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** P-1022, P-1023, P-1024, P-1025, P-1026, P-1027, P-1028, P-1029, P-1030, P-1031, P-1032, P-1033, P-1034, P-1035, P-1036, P-1037, P-1038, P-1039, P-1040, P-1041, P-1042, P-1043, P-1044, P-1045, P-1046, P-1047, P-1048, P-1049, P-1050, P-1051, P-1052, P-1053, P-1054, P-1055, P-1056, P-1057, P-1058, P-1059, P-1060, P-1061, P-1062, P-1063, P-1064, P-1065, P-1066, P-1067, P-1068, P-1069, P-1070, P-1071, P-1072, P-1073, P-1074, P-1075, P-1076, P-1077, P-1078, P-1079
+
+Bootstrap scenarios provide usable startup guidance for general worker, assigned item, resume and triage modes.
+
+Curation note: Proposal workflow or example; names remain proposed and reconcile with existing Fleet conventions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1022` | line 1419 | # 15 |
+| `P-1023` | line 1419 | Agent Bootstrap Scenarios |
+| `P-1024` | line 1421 | Fleet should provide scenario-specific startup instructions |
+| `P-1025` | line 1423 | These may be injected into an agent prompt by its scheduler or supplied through the CLI |
+| `P-1026` | line 1425 | ## 15.1 Scenario A: General queue worker |
+| `P-1027` | line 1427 | Example starter instruction: |
+| `P-1028` | line 1429 | > You are a queue-driven Fleet worker |
+| `P-1029` | line 1429 | Discover Fleet's available capabilities, select an eligible work item according to queue policy, claim it, and hydrate its context |
+| `P-1030` | line 1429 | Use Fleet for queue, GitHub coordination, progress reporting, and lifecycle changes |
+| `P-1031` | line 1429 | Perform implementation work with the appropriate development tools |
+| `P-1032` | line 1429 | Check for external activity before completion |
+| `P-1033` | line 1429 | Checkpoint or park unfinished work before your execution deadline |
+| `P-1034` | line 1431 | Suggested startup: |
+| `P-1035` | line 1433 | fleet agent bootstrap \ |
+| `P-1036` | line 1434 | --scenario queue-worker \ |
+| `P-1037` | line 1435 | --format compact |
+| `P-1038` | line 1437 | fleet work next \ |
+| `P-1039` | line 1438 | --ready \ |
+| `P-1040` | line 1439 | --claim \ |
+| `P-1041` | line 1440 | --hydrate full |
+| `P-1042` | line 1442 | ## 15.2 Scenario B: Explicitly assigned issue |
+| `P-1043` | line 1444 | Example starter instruction: |
+| `P-1044` | line 1446 | > Work on Fleet item 842 |
+| `P-1045` | line 1446 | Retrieve the current state, acquire or validate ownership, load the associated context, and continue from the latest checkpoint |
+| `P-1046` | line 1446 | Use Fleet to update linked resources and record the final outcome |
+| `P-1047` | line 1448 | Suggested startup: |
+| `P-1048` | line 1450 | fleet agent bootstrap \ |
+| `P-1049` | line 1451 | --scenario assigned-item |
+| `P-1050` | line 1453 | fleet work open 842 \ |
+| `P-1051` | line 1454 | --claim \ |
+| `P-1052` | line 1455 | --hydrate full |
+| `P-1053` | line 1457 | ## 15.3 Scenario C: Resume previously parked work |
+| `P-1054` | line 1459 | Example starter instruction: |
+| `P-1055` | line 1461 | > Resume Fleet item 842 if its dependencies are satisfied |
+| `P-1056` | line 1461 | Inspect the latest checkpoint, refresh external context, identify changes since the previous session, and continue the remaining work |
+| `P-1057` | line 1463 | Suggested startup: |
+| `P-1058` | line 1465 | fleet agent bootstrap \ |
+| `P-1059` | line 1466 | --scenario resume |
+| `P-1060` | line 1468 | fleet work inspect 842 |
+| `P-1061` | line 1470 | fleet work changes 842 \ |
+| `P-1062` | line 1471 | --since-checkpoint |
+| `P-1063` | line 1473 | fleet work resume 842 \ |
+| `P-1064` | line 1474 | --claim \ |
+| `P-1065` | line 1475 | --hydrate incremental |
+| `P-1066` | line 1477 | If hard blockers remain unresolved, Fleet should report that fact rather than silently forcing an ineligible item into progress |
+| `P-1067` | line 1479 | ## 15.4 Scenario D: Triage worker |
+| `P-1068` | line 1481 | Example starter instruction: |
+| `P-1069` | line 1483 | > Review untriaged queue items, inspect linked issues and PRs, correct metadata, establish dependencies, adjust priority where justified, and park or release the item for an implementation worker |
+| `P-1070` | line 1483 | Do not implement unrelated code changes |
+| `P-1071` | line 1485 | Suggested startup: |
+| `P-1072` | line 1487 | fleet agent bootstrap \ |
+| `P-1073` | line 1488 | --scenario triage |
+| `P-1074` | line 1490 | fleet queue search \ |
+| `P-1075` | line 1491 | --label needs-triage |
+| `P-1076` | line 1493 | fleet work open 842 \ |
+| `P-1077` | line 1494 | --claim \ |
+| `P-1078` | line 1495 | --hydrate full |
+| `P-1079` | line 1497 | --- |
+
+## P-R035 — example (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** P-1080, P-1081, P-1082, P-1083, P-1084, P-1085, P-1086, P-1087, P-1088, P-1089, P-1090, P-1091, P-1092, P-1093, P-1094, P-1095, P-1096, P-1097, P-1098, P-1099, P-1100, P-1101, P-1102, P-1103, P-1104, P-1105, P-1106, P-1107, P-1108, P-1109, P-1110, P-1111, P-1112, P-1113, P-1114, P-1115, P-1116, P-1117, P-1118, P-1119, P-1120, P-1121, P-1122, P-1123, P-1124, P-1125, P-1126, P-1127, P-1128, P-1129, P-1130, P-1131, P-1132, P-1133, P-1134, P-1135, P-1136, P-1137, P-1138, P-1139, P-1140, P-1141, P-1142, P-1143, P-1144, P-1145, P-1146, P-1147, P-1148, P-1149, P-1150, P-1151, P-1152, P-1153, P-1154, P-1155, P-1156, P-1157, P-1158, P-1159, P-1160, P-1161, P-1162, P-1163, P-1164, P-1165, P-1166, P-1167, P-1168, P-1169, P-1170, P-1171, P-1172, P-1173, P-1174, P-1175, P-1176, P-1177, P-1178, P-1179, P-1180, P-1181, P-1182, P-1183, P-1184, P-1185, P-1186, P-1187, P-1188, P-1189, P-1190, P-1191, P-1192, P-1193, P-1194, P-1195, P-1196, P-1197, P-1198, P-1199, P-1200, P-1201, P-1202, P-1203, P-1204, P-1205, P-1206, P-1207, P-1208, P-1209, P-1210, P-1211, P-1212, P-1213
+
+Illustrative worker walkthrough shows safe claim/hydration, selective context, progress, hard dependency and checkpointed park/release without false completion.
+
+Curation note: Proposal workflow or example; names remain proposed and reconcile with existing Fleet conventions.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1080` | line 1499 | # 16 |
+| `P-1081` | line 1499 | Walkthrough One: Full Agent Execution |
+| `P-1082` | line 1501 | This walkthrough describes the desired end-to-end behavior |
+| `P-1083` | line 1503 | The numerical IDs and command outputs are illustrative |
+| `P-1084` | line 1505 | ## Step 1: Agent starts |
+| `P-1085` | line 1507 | An autonomous agent starts with the general queue-worker instruction |
+| `P-1086` | line 1509 | It knows that `fleet` is available |
+| `P-1087` | line 1511 | It runs: |
+| `P-1088` | line 1513 | fleet agent bootstrap \ |
+| `P-1089` | line 1514 | --scenario queue-worker \ |
+| `P-1090` | line 1515 | --format compact |
+| `P-1091` | line 1517 | Fleet returns a concise command guide |
+| `P-1092` | line 1519 | The agent learns: |
+| `P-1093` | line 1521 | - How to find work |
+| `P-1094` | line 1522 | - How to claim it |
+| `P-1095` | line 1523 | - How to load context |
+| `P-1096` | line 1524 | - How to record progress |
+| `P-1097` | line 1525 | - How to manage blockers |
+| `P-1098` | line 1526 | - How to complete work safely |
+| `P-1099` | line 1528 | ## Step 2: Agent chooses work |
+| `P-1100` | line 1530 | The agent runs: |
+| `P-1101` | line 1532 | fleet work next \ |
+| `P-1102` | line 1533 | --ready \ |
+| `P-1103` | line 1534 | --claim \ |
+| `P-1104` | line 1535 | --hydrate full \ |
+| `P-1105` | line 1536 | --explain |
+| `P-1106` | line 1538 | Internally Fleet: |
+| `P-1107` | line 1540 | 1. Searches the queue |
+| `P-1108` | line 1541 | 2 |
+| `P-1109` | line 1541 | Filters ineligible work |
+| `P-1110` | line 1542 | 3 |
+| `P-1111` | line 1542 | Applies priority policy |
+| `P-1112` | line 1543 | 4 |
+| `P-1113` | line 1543 | Selects an item |
+| `P-1114` | line 1544 | 5 |
+| `P-1115` | line 1544 | Atomically claims the item |
+| `P-1116` | line 1545 | 6 |
+| `P-1117` | line 1545 | Starts an execution session |
+| `P-1118` | line 1546 | 7 |
+| `P-1119` | line 1546 | Creates the lease |
+| `P-1120` | line 1547 | 8 |
+| `P-1121` | line 1547 | Hydrates linked context |
+| `P-1122` | line 1548 | 9 |
+| `P-1123` | line 1548 | Creates context files |
+| `P-1124` | line 1549 | 10 |
+| `P-1125` | line 1549 | Returns a summary |
+| `P-1126` | line 1551 | Illustrative result: |
+| `P-1127` | line 1553 | Work item: 842 |
+| `P-1128` | line 1555 | Title: |
+| `P-1129` | line 1556 | Improve queue lease recovery |
+| `P-1130` | line 1558 | Priority: |
+| `P-1131` | line 1559 | 1250 |
+| `P-1132` | line 1561 | Linked issue: |
+| `P-1133` | line 1562 | acme/project#203 |
+| `P-1134` | line 1564 | Status: |
+| `P-1135` | line 1565 | claimed |
+| `P-1136` | line 1567 | Context summary: |
+| `P-1137` | line 1568 | .fleet/work/842/context/summary.md |
+| `P-1138` | line 1570 | Full context: |
+| `P-1139` | line 1571 | .fleet/work/842/context/manifest.json |
+| `P-1140` | line 1573 | ## Step 3: Agent examines context |
+| `P-1141` | line 1575 | The agent reads: |
+| `P-1142` | line 1577 | .fleet/work/842/context/summary.md |
+| `P-1143` | line 1579 | It discovers: |
+| `P-1144` | line 1581 | - The issue concerns a stale lease race |
+| `P-1145` | line 1582 | - A previous attempt did not fully resolve the problem |
+| `P-1146` | line 1583 | - Two PRs are associated with the issue |
+| `P-1147` | line 1584 | - One PR was closed |
+| `P-1148` | line 1585 | - Another contains an incomplete implementation |
+| `P-1149` | line 1586 | - The latest review identified an edge case |
+| `P-1150` | line 1588 | The agent then selectively reads: |
+| `P-1151` | line 1590 | pull_requests.json |
+| `P-1152` | line 1591 | reviews.json |
+| `P-1153` | line 1592 | commits.json |
+| `P-1154` | line 1593 | diffs/pr-231.patch |
+| `P-1155` | line 1595 | It does not need to manually discover and fetch each resource from GitHub |
+| `P-1156` | line 1597 | ## Step 4: Agent begins work |
+| `P-1157` | line 1599 | The agent records: |
+| `P-1158` | line 1601 | fleet work note add 842 \ |
+| `P-1159` | line 1602 | --text "Investigating stale lease race and prior PR" |
+| `P-1160` | line 1604 | It may update status: |
+| `P-1161` | line 1606 | fleet queue update 842 \ |
+| `P-1162` | line 1607 | --status in_progress |
+| `P-1163` | line 1609 | It uses normal development tools to inspect the repository |
+| `P-1164` | line 1611 | For example: |
+| `P-1165` | line 1613 | git status |
+| `P-1166` | line 1614 | git log --oneline -10 |
+| `P-1167` | line 1615 | cargo test |
+| `P-1168` | line 1617 | ## Step 5: Agent encounters a blocker |
+| `P-1169` | line 1619 | The agent discovers that another Fleet item must be completed first |
+| `P-1170` | line 1621 | Dependency: |
+| `P-1171` | line 1623 | fleet://work/761 |
+| `P-1172` | line 1625 | It records the relationship: |
+| `P-1173` | line 1627 | fleet dependency add 842 \ |
+| `P-1174` | line 1628 | --blocked-by fleet:761 \ |
+| `P-1175` | line 1629 | --hard |
+| `P-1176` | line 1631 | It updates the label: |
+| `P-1177` | line 1633 | fleet metadata labels 842 \ |
+| `P-1178` | line 1634 | --add blocked |
+| `P-1179` | line 1636 | It records a note: |
+| `P-1180` | line 1638 | fleet work note add 842 \ |
+| `P-1181` | line 1639 | --text "Requires revised fencing-token implementation from item 761" \ |
+| `P-1182` | line 1640 | --mirror github |
+| `P-1183` | line 1642 | Fleet: |
+| `P-1184` | line 1644 | - Records the journal event |
+| `P-1185` | line 1645 | - Updates the queue record |
+| `P-1186` | line 1646 | - Creates relevant outbox operations |
+| `P-1187` | line 1647 | - Updates the configured GitHub label or managed comment |
+| `P-1188` | line 1648 | - Records the relationship |
+| `P-1189` | line 1649 | - Verifies remote changes when available |
+| `P-1190` | line 1651 | ## Step 6: Agent parks the item |
+| `P-1191` | line 1653 | The agent determines that useful progress is temporarily exhausted |
+| `P-1192` | line 1655 | It runs: |
+| `P-1193` | line 1657 | fleet work park 842 \ |
+| `P-1194` | line 1658 | --reason "Blocked by item 761" \ |
+| `P-1195` | line 1659 | --checkpoint \ |
+| `P-1196` | line 1660 | --release-lease |
+| `P-1197` | line 1662 | Fleet: |
+| `P-1198` | line 1664 | 1. Saves progress |
+| `P-1199` | line 1665 | 2 |
+| `P-1200` | line 1665 | Records the blocker |
+| `P-1201` | line 1666 | 3 |
+| `P-1202` | line 1666 | Preserves the dependency |
+| `P-1203` | line 1667 | 4 |
+| `P-1204` | line 1667 | Moves the item to the appropriate blocked/parked state |
+| `P-1205` | line 1668 | 5 |
+| `P-1206` | line 1668 | Releases its execution lease |
+| `P-1207` | line 1669 | 6 |
+| `P-1208` | line 1669 | Synchronizes configured external metadata |
+| `P-1209` | line 1670 | 7 |
+| `P-1210` | line 1670 | Returns a resumable checkpoint reference |
+| `P-1211` | line 1672 | The agent's execution ends |
+| `P-1212` | line 1674 | No queue item is falsely marked completed |
+| `P-1213` | line 1676 | --- |
+
+## P-R036 — example (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9207, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1214, P-1215, P-1216, P-1217, P-1218, P-1219, P-1220, P-1221, P-1222, P-1223, P-1224, P-1225, P-1226, P-1227, P-1228, P-1229, P-1230, P-1231, P-1232, P-1233, P-1234, P-1235, P-1236, P-1237, P-1238, P-1239, P-1240, P-1241, P-1242, P-1243, P-1244, P-1245, P-1246, P-1247, P-1248, P-1249, P-1250, P-1251, P-1252, P-1253, P-1254, P-1255, P-1256, P-1257, P-1258, P-1259, P-1260, P-1261, P-1262, P-1263, P-1264, P-1265, P-1266, P-1267, P-1268, P-1269, P-1270, P-1271, P-1272, P-1273, P-1274, P-1275, P-1276, P-1277, P-1278, P-1279, P-1280, P-1281, P-1282, P-1283, P-1284, P-1285, P-1286, P-1287, P-1288, P-1289, P-1290, P-1291, P-1292, P-1293, P-1294, P-1295, P-1296, P-1297, P-1298, P-1299, P-1300, P-1301, P-1302, P-1303, P-1304, P-1305, P-1306, P-1307, P-1308, P-1309, P-1310, P-1311, P-1312, P-1313, P-1314, P-1315, P-1316, P-1317, P-1318, P-1319, P-1320, P-1321, P-1322, P-1323, P-1324, P-1325, P-1326, P-1327, P-1328, P-1329, P-1330, P-1331, P-1332, P-1333, P-1334, P-1335, P-1336, P-1337, P-1338, P-1339, P-1340, P-1341, P-1342, P-1343, P-1344, P-1345, P-1346, P-1347, P-1348, P-1349, P-1350, P-1351, P-1352, P-1353, P-1354, P-1355, P-1356, P-1357, P-1358, P-1359, P-1360, P-1361, P-1362, P-1363, P-1364, P-1365, P-1366, P-1367, P-1368, P-1369, P-1370, P-1371, P-1372, P-1373, P-1374, P-1375, P-1376, P-1377, P-1378, P-1379, P-1380, P-1381, P-1382
+
+Illustrative resume/finish walkthrough covers dependency resolution, incremental hydration, new external feedback, managed updates, review/check verification and direct completion.
+
+Curation note: Illustrative resume/finish walkthrough; normative partial-completion rule is split to P-R038.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1214` | line 1678 | # 17 |
+| `P-1215` | line 1678 | Walkthrough Two: Resume, Review, Merge, and Complete |
+| `P-1216` | line 1680 | A later agent session is assigned item 842 |
+| `P-1217` | line 1682 | Assume item 761 has now been completed |
+| `P-1218` | line 1684 | ## Step 1: Load previous state |
+| `P-1219` | line 1686 | The agent runs: |
+| `P-1220` | line 1688 | fleet agent bootstrap \ |
+| `P-1221` | line 1689 | --scenario resume \ |
+| `P-1222` | line 1690 | --format compact |
+| `P-1223` | line 1692 | fleet work inspect 842 |
+| `P-1224` | line 1694 | It learns: |
+| `P-1225` | line 1696 | - The item is blocked/parked |
+| `P-1226` | line 1697 | - Item 761 was the hard dependency |
+| `P-1227` | line 1698 | - The previous checkpoint describes the remaining work |
+| `P-1228` | line 1699 | - The linked PR remains open |
+| `P-1229` | line 1701 | ## Step 2: Check what changed |
+| `P-1230` | line 1703 | The agent runs: |
+| `P-1231` | line 1705 | fleet work changes 842 \ |
+| `P-1232` | line 1706 | --since-checkpoint |
+| `P-1233` | line 1708 | Fleet finds: |
+| `P-1234` | line 1710 | - Dependency 761 completed |
+| `P-1235` | line 1711 | - A maintainer added a comment |
+| `P-1236` | line 1712 | - A PR check was rerun |
+| `P-1237` | line 1713 | - No new conflicting commits appeared |
+| `P-1238` | line 1715 | Fleet returns the event summary and detailed references |
+| `P-1239` | line 1717 | ## Step 3: Unblock and resume |
+| `P-1240` | line 1719 | Fleet validates the dependency state |
+| `P-1241` | line 1721 | The agent runs: |
+| `P-1242` | line 1723 | fleet work unblock 842 \ |
+| `P-1243` | line 1724 | --reason "Dependency 761 completed" |
+| `P-1244` | line 1726 | fleet metadata labels 842 \ |
+| `P-1245` | line 1727 | --remove blocked |
+| `P-1246` | line 1729 | fleet work resume 842 \ |
+| `P-1247` | line 1730 | --claim \ |
+| `P-1248` | line 1731 | --hydrate incremental |
+| `P-1249` | line 1733 | Fleet preserves the historical dependency relationship |
+| `P-1250` | line 1735 | It does not delete the record merely because the dependency is satisfied |
+| `P-1251` | line 1737 | The resumed agent receives a new lease and updated context |
+| `P-1252` | line 1739 | ## Step 4: Continue implementation |
+| `P-1253` | line 1741 | The agent checks out the relevant branch or creates a worktree |
+| `P-1254` | line 1743 | It implements the remaining change |
+| `P-1255` | line 1745 | It runs the appropriate tests |
+| `P-1256` | line 1747 | It records progress: |
+| `P-1257` | line 1749 | fleet work note add 842 \ |
+| `P-1258` | line 1750 | --text "Implemented fencing-token validation and added regression tests" |
+| `P-1259` | line 1752 | It commits and pushes its changes using Git: |
+| `P-1260` | line 1754 | git add . |
+| `P-1261` | line 1755 | git commit -m "Fix stale lease recovery" |
+| `P-1262` | line 1756 | git push |
+| `P-1263` | line 1758 | Fleet's GitHub integration can then refresh the linked PR: |
+| `P-1264` | line 1760 | fleet work refresh 842 \ |
+| `P-1265` | line 1761 | --include commits,diffs,checks |
+| `P-1266` | line 1763 | The refreshed context includes the new commit and diff |
+| `P-1267` | line 1765 | ## Step 5: Update review state |
+| `P-1268` | line 1767 | The agent adds a review label: |
+| `P-1269` | line 1769 | fleet metadata labels 842 \ |
+| `P-1270` | line 1770 | --add needs-review \ |
+| `P-1271` | line 1771 | --mirror github |
+| `P-1272` | line 1773 | It updates the managed progress comment: |
+| `P-1273` | line 1775 | fleet github comment edit \ |
+| `P-1274` | line 1776 | --work 842 \ |
+| `P-1275` | line 1777 | --managed progress \ |
+| `P-1276` | line 1778 | --file progress.md |
+| `P-1277` | line 1780 | The operation is recorded locally and delivered through Fleet's outbox |
+| `P-1278` | line 1782 | ## Step 6: Check for new external activity |
+| `P-1279` | line 1784 | Before completing, the agent runs: |
+| `P-1280` | line 1786 | fleet work changes 842 \ |
+| `P-1281` | line 1787 | --since-start \ |
+| `P-1282` | line 1788 | --external-only |
+| `P-1283` | line 1790 | Fleet discovers: |
+| `P-1284` | line 1792 | New comment on acme/project#203 |
+| `P-1285` | line 1794 | Comment ID: |
+| `P-1286` | line 1795 | 44881 |
+| `P-1287` | line 1797 | Author: |
+| `P-1288` | line 1798 | maintainer |
+| `P-1289` | line 1800 | Message summary: |
+| `P-1290` | line 1801 | Requests handling lease renewal during reconnect |
+| `P-1291` | line 1803 | This comment occurred after the agent began work |
+| `P-1292` | line 1805 | It must not be ignored |
+| `P-1293` | line 1807 | ## Step 7: Respond to the new comment |
+| `P-1294` | line 1809 | The agent investigates the edge case |
+| `P-1295` | line 1811 | It updates the implementation, adds a test, and pushes another commit |
+| `P-1296` | line 1813 | It then responds through Fleet: |
+| `P-1297` | line 1815 | fleet github comment reply \ |
+| `P-1298` | line 1816 | --work 842 \ |
+| `P-1299` | line 1817 | --comment-id 44881 \ |
+| `P-1300` | line 1818 | --body-file response.md |
+| `P-1301` | line 1820 | Fleet records: |
+| `P-1302` | line 1822 | - The intended reply |
+| `P-1303` | line 1823 | - The queue activity event |
+| `P-1304` | line 1824 | - The GitHub mutation |
+| `P-1305` | line 1825 | - The remote comment ID |
+| `P-1306` | line 1826 | - Delivery status |
+| `P-1307` | line 1827 | - Session attribution |
+| `P-1308` | line 1829 | The agent does not need to separately post the GitHub comment and manually copy its details into the queue |
+| `P-1309` | line 1831 | ## Step 8: Refresh and verify |
+| `P-1310` | line 1833 | The agent runs: |
+| `P-1311` | line 1835 | fleet work refresh 842 \ |
+| `P-1312` | line 1836 | --include reviews,commits,checks,comments |
+| `P-1313` | line 1838 | fleet github pr checks \ |
+| `P-1314` | line 1839 | --work 842 \ |
+| `P-1315` | line 1840 | --pr acme/project#231 |
+| `P-1316` | line 1842 | It confirms: |
+| `P-1317` | line 1844 | - Required tests pass |
+| `P-1318` | line 1845 | - Required reviews are satisfied |
+| `P-1319` | line 1846 | - No unresolved blocking review conditions remain |
+| `P-1320` | line 1847 | - The branch is mergeable |
+| `P-1321` | line 1848 | - No new external changes require attention |
+| `P-1322` | line 1850 | It records: |
+| `P-1323` | line 1852 | fleet work note add 842 \ |
+| `P-1324` | line 1853 | --text "All required checks pass; latest maintainer feedback addressed" |
+| `P-1325` | line 1855 | ## Step 9: Complete the work |
+| `P-1326` | line 1857 | The agent runs: |
+| `P-1327` | line 1859 | fleet work complete 842 \ |
+| `P-1328` | line 1860 | --merge-pr acme/project#231 \ |
+| `P-1329` | line 1861 | --close-issues acme/project#203 \ |
+| `P-1330` | line 1862 | --close-queue \ |
+| `P-1331` | line 1863 | --require-clean-reconciliation \ |
+| `P-1332` | line 1864 | --verify \ |
+| `P-1333` | line 1865 | --wait |
+| `P-1334` | line 1867 | Fleet performs the completion workflow |
+| `P-1335` | line 1869 | ### Internal completion sequence |
+| `P-1336` | line 1871 | 1. Verify the active lease and permissions |
+| `P-1337` | line 1872 | 2 |
+| `P-1338` | line 1872 | Refresh important external activity |
+| `P-1339` | line 1873 | 3 |
+| `P-1340` | line 1873 | Check for unreviewed external changes |
+| `P-1341` | line 1874 | 4 |
+| `P-1342` | line 1874 | Validate dependencies |
+| `P-1343` | line 1875 | 5 |
+| `P-1344` | line 1875 | Validate PR head SHA, required checks, and merge policy |
+| `P-1345` | line 1876 | 6 |
+| `P-1346` | line 1876 | Transition the work item to `completing` |
+| `P-1347` | line 1877 | 7 |
+| `P-1348` | line 1877 | Record durable completion operations |
+| `P-1349` | line 1878 | 8 |
+| `P-1350` | line 1878 | Request the authorized PR merge |
+| `P-1351` | line 1879 | 9 |
+| `P-1352` | line 1879 | Verify the PR is merged |
+| `P-1353` | line 1880 | 10 |
+| `P-1354` | line 1880 | Close the designated linked issue |
+| `P-1355` | line 1881 | 11 |
+| `P-1356` | line 1881 | Verify the issue is closed |
+| `P-1357` | line 1882 | 12 |
+| `P-1358` | line 1882 | Directly transition the queue item to `completed` |
+| `P-1359` | line 1883 | 13 |
+| `P-1360` | line 1883 | Record completion metadata and final notes |
+| `P-1361` | line 1884 | 14 |
+| `P-1362` | line 1884 | Release the execution lease |
+| `P-1363` | line 1885 | 15 |
+| `P-1364` | line 1885 | Return the verified final result |
+| `P-1365` | line 1887 | The local queue item is closed directly by Fleet after the required external operations are verified |
+| `P-1366` | line 1889 | **No later webhook or sweep is required to finish the normal successful path.** |
+| `P-1367` | line 1891 | Illustrative result: |
+| `P-1368` | line 1893 | Work item: 842 |
+| `P-1369` | line 1895 | PR: |
+| `P-1370` | line 1896 | acme/project#231 |
+| `P-1371` | line 1897 | merged |
+| `P-1372` | line 1899 | Issue: |
+| `P-1373` | line 1900 | acme/project#203 |
+| `P-1374` | line 1901 | closed |
+| `P-1375` | line 1903 | Queue: |
+| `P-1376` | line 1904 | completed |
+| `P-1377` | line 1906 | Completion verified: |
+| `P-1378` | line 1907 | true |
+| `P-1379` | line 1909 | Outbox: |
+| `P-1380` | line 1910 | all required operations confirmed |
+| `P-1381` | line 1912 | Final checkpoint: |
+| `P-1382` | line 1913 | .fleet/work/842/completion.json |
+
+## P-R037 — example (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1386, P-1387, P-1388, P-1389, P-1390, P-1391, P-1392, P-1393, P-1394, P-1395, P-1396, P-1397, P-1398, P-1399, P-1400, P-1401, P-1402, P-1403, P-1404, P-1405, P-1406, P-1407, P-1408, P-1409, P-1410, P-1412, P-1413, P-1415, P-1416, P-1417, P-1418, P-1419, P-1420, P-1421, P-1422, P-1423, P-1424, P-1425, P-1426, P-1427, P-1428, P-1429, P-1430, P-1431, P-1432
+
+Illustrative near-timeout handoff preserves progress, commit/branch, tests/reviews, activity cursor and next action while safely checkpointing, parking/releasing and enabling incremental resume.
+
+Curation note: Illustrative timeout walkthrough; normative checkpoint content and no-unsafe-merge constraints split to P-R039/P-R040.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1386` | line 1921 | # 18 |
+| `P-1387` | line 1921 | Walkthrough Three: Assigned Existing PR and Near-Timeout Handoff |
+| `P-1388` | line 1923 | An agent starts with an explicit instruction: |
+| `P-1389` | line 1925 | > Continue Fleet work item 905 |
+| `P-1390` | line 1925 | Review the existing PR, address relevant feedback, and finish if possible |
+| `P-1391` | line 1925 | If execution time becomes insufficient, checkpoint and release the work safely |
+| `P-1392` | line 1927 | ## Step 1: Open the item |
+| `P-1393` | line 1929 | fleet agent bootstrap \ |
+| `P-1394` | line 1930 | --scenario assigned-item \ |
+| `P-1395` | line 1931 | --format compact |
+| `P-1396` | line 1933 | fleet work open 905 \ |
+| `P-1397` | line 1934 | --claim \ |
+| `P-1398` | line 1935 | --hydrate full |
+| `P-1399` | line 1937 | Fleet retrieves the queue record, linked issue, existing PR, reviews, diffs, comments, and prior work |
+| `P-1400` | line 1939 | ## Step 2: Inspect changes |
+| `P-1401` | line 1941 | fleet work changes 905 \ |
+| `P-1402` | line 1942 | --since-checkpoint \ |
+| `P-1403` | line 1943 | --external-only |
+| `P-1404` | line 1945 | Fleet reports new review requests |
+| `P-1405` | line 1947 | The agent works on the requested corrections |
+| `P-1406` | line 1949 | ## Step 3: Record progress |
+| `P-1407` | line 1951 | fleet work note add 905 \ |
+| `P-1408` | line 1952 | --text "Resolved first review thread; second requires additional integration testing" |
+| `P-1409` | line 1954 | fleet work checkpoint 905 \ |
+| `P-1410` | line 1955 | --note "Changes committed locally; integration tests still pending" |
+| `P-1412` | line 1959 | ## Step 4: Execution time becomes insufficient |
+| `P-1413` | line 1961 | The agent has insufficient remaining time for a reliable completion |
+| `P-1415` | line 1965 | It runs: |
+| `P-1416` | line 1967 | fleet work park 905 \ |
+| `P-1417` | line 1968 | --reason "Execution window nearly exhausted" \ |
+| `P-1418` | line 1969 | --checkpoint \ |
+| `P-1419` | line 1970 | --release-lease |
+| `P-1420` | line 1972 | Fleet preserves: |
+| `P-1421` | line 1974 | - Current progress |
+| `P-1422` | line 1975 | - Relevant commit |
+| `P-1423` | line 1976 | - Remaining review issue |
+| `P-1424` | line 1977 | - Test status |
+| `P-1425` | line 1978 | - Latest activity cursor |
+| `P-1426` | line 1979 | - Suggested next action |
+| `P-1427` | line 1980 | - Resumption instructions |
+| `P-1428` | line 1982 | The next session can continue using: |
+| `P-1429` | line 1984 | fleet work resume 905 \ |
+| `P-1430` | line 1985 | --claim \ |
+| `P-1431` | line 1986 | --hydrate incremental |
+| `P-1432` | line 1988 | The current session ends without leaving an indefinite lease or ambiguous queue state |
+
+## P-R038 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1383, P-1384
+
+If remote completion fails after a successful merge, do not report full success: retain completing state and pending outbox work, report exact partial effects, and permit safe reconciliation.
+
+Curation note: Normative recovery clause embedded in example workflow.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1383` | line 1915 | If a remote operation fails after the PR merges, Fleet must not falsely report full completion |
+| `P-1384` | line 1917 | Instead, it should retain a recoverable `completing` state, preserve the pending outbox operation, and report exactly which effects succeeded |
+
+## P-R039 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9207
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** P-1411
+
+A continuation checkpoint records branch/commit, changed files, tests run/pending, remaining review issues, latest activity cursor and suggested next action.
+
+Curation note: Normative checkpoint detail embedded in timeout walkthrough.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1411` | line 1957 | The checkpoint should also record the branch, current commit, changed files, and other relevant continuation data |
+
+## P-R040 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206, #9209
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface; #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1414
+
+Do not start an unsafe merge merely to finish before the execution deadline; checkpoint and hand off safely.
+
+Curation note: Safety constraint embedded in timeout walkthrough.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1414` | line 1963 | It should not begin an unsafe merge merely to finish before its deadline |
+
+## P-R041 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1462, P-1463, P-1464, P-1465
+
+Resolve claim races so only one agent claims an item and losers receive a conflict or next eligible item.
+
+Curation note: Independent failure/recovery oracle from supporting proposal.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1462` | line 2044 | ## 20.1 Claim race |
+| `P-1463` | line 2046 | Two agents select the same work item |
+| `P-1464` | line 2048 | Only one obtains the claim |
+| `P-1465` | line 2050 | The other receives a conflict or automatically selects another eligible item |
+
+## P-R042 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1466, P-1467, P-1468, P-1469, P-1470
+
+Recover agent termination through lease expiry and checkpoints while fencing stale writes.
+
+Curation note: Independent failure/recovery oracle from supporting proposal.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1466` | line 2052 | ## 20.2 Agent termination |
+| `P-1467` | line 2054 | The agent disappears |
+| `P-1468` | line 2056 | Its lease expires |
+| `P-1469` | line 2058 | Another agent can recover the item using its checkpoint |
+| `P-1470` | line 2060 | Stale tokens cannot overwrite newer state |
+
+## P-R043 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1471, P-1472, P-1473, P-1474
+
+When GitHub is unavailable, preserve durable local/outbox intent and report synchronization pending, not success.
+
+Curation note: Independent failure/recovery oracle from supporting proposal.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1471` | line 2062 | ## 20.3 GitHub unavailable |
+| `P-1472` | line 2064 | A mutation is persisted to the outbox |
+| `P-1473` | line 2066 | Fleet reports that remote synchronization is pending |
+| `P-1474` | line 2068 | It does not claim that the external mutation succeeded |
+
+## P-R044 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1475, P-1476, P-1477
+
+Before retrying a comment with lost acknowledgment, find and record the prior remote comment to prevent duplication.
+
+Curation note: Independent failure/recovery oracle from supporting proposal.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1475` | line 2070 | ## 20.4 Comment posted, acknowledgment lost |
+| `P-1476` | line 2072 | Before retrying, Fleet checks for the operation's previously created comment |
+| `P-1477` | line 2074 | It records the remote ID and avoids duplicate posting |
+
+## P-R045 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1478, P-1479, P-1480, P-1481, P-1482
+
+After merge succeeds but issue closure fails, retain completing/outbox state and report partial completion precisely.
+
+Curation note: Independent failure/recovery oracle from supporting proposal.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1478` | line 2076 | ## 20.5 PR merges but issue closure fails |
+| `P-1479` | line 2078 | The item remains in `completing` |
+| `P-1480` | line 2080 | The outbox retains the issue-closure operation |
+| `P-1481` | line 2082 | Fleet reports partial completion |
+| `P-1482` | line 2084 | The next reconciliation can finish the workflow |
+
+## P-R046 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1483, P-1484, P-1485
+
+Detect managed-content version conflicts, preserve external edits, and safely retry the intended section or report conflict.
+
+Curation note: Independent failure/recovery oracle from supporting proposal.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1483` | line 2086 | ## 20.6 External edit during managed update |
+| `P-1484` | line 2088 | Fleet detects the version conflict |
+| `P-1485` | line 2090 | It preserves the external edit and either safely retries the managed section or reports a conflict |
+
+## P-R047 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1486, P-1487, P-1488, P-1489
+
+Refresh activity before irreversible completion and pause for material new feedback; acknowledge that this is not full distributed atomicity.
+
+Curation note: Independent failure/recovery oracle from supporting proposal.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1486` | line 2092 | ## 20.7 New external comment during completion |
+| `P-1487` | line 2094 | Fleet checks activity again before irreversible operations |
+| `P-1488` | line 2096 | If material new feedback appears, completion should be paused according to policy |
+| `P-1489` | line 2098 | A final check cannot make all distributed actions perfectly atomic, but it should prevent known stale-state completion |
+
+## P-R048 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1490, P-1491, P-1492
+
+Reject or explicitly flag dependency cycles for authorized resolution.
+
+Curation note: Independent failure/recovery oracle from supporting proposal.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1490` | line 2100 | ## 20.8 Dependency cycle |
+| `P-1491` | line 2102 | A requested blocker relationship would create a cycle |
+| `P-1492` | line 2104 | Fleet rejects it or explicitly flags the cycle for authorized resolution |
+
+## P-R049 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** P-1665, P-1666, P-1667, P-1668, P-1669, P-1670, P-1671
+
+Selection acceptance: discover eligible work, inspect metadata, configurable ranking, atomic exclusive claim, stale-lease fencing.
+
+Curation note: Independent acceptance family with source-listed criteria.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1665` | line 2332 | ## Core selection |
+| `P-1666` | line 2334 | - [ ] Agents can discover eligible queue items |
+| `P-1667` | line 2335 | - [ ] All required metadata can be inspected |
+| `P-1668` | line 2336 | - [ ] Priority ranking is configurable |
+| `P-1669` | line 2337 | - [ ] A claim is atomic |
+| `P-1670` | line 2338 | - [ ] Two agents cannot own the same exclusive lease |
+| `P-1671` | line 2339 | - [ ] Stale leases cannot overwrite newer ownership |
+
+## P-R050 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** P-1672, P-1673, P-1674, P-1675, P-1676, P-1677, P-1678, P-1679, P-1680
+
+Hydration acceptance: linked issues/PRs, comments/reviews, correct commit/diff metadata, persisted traceable bundle, concise summary, explicit missing data.
+
+Curation note: Independent acceptance family with source-listed criteria.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1672` | line 2341 | ## Hydration |
+| `P-1673` | line 2343 | - [ ] Linked issues are retrieved |
+| `P-1674` | line 2344 | - [ ] Linked PRs are discovered |
+| `P-1675` | line 2345 | - [ ] Relevant comments and reviews are retrieved |
+| `P-1676` | line 2346 | - [ ] Commits and diffs include accurate metadata |
+| `P-1677` | line 2347 | - [ ] Context files are persisted |
+| `P-1678` | line 2348 | - [ ] A concise summary is returned |
+| `P-1679` | line 2349 | - [ ] Missing or partial data is reported |
+| `P-1680` | line 2350 | - [ ] The context is traceable to its sources |
+
+## P-R051 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** P-1681, P-1682, P-1683, P-1684, P-1685, P-1686, P-1687
+
+Activity acceptance: queries by time/checkpoint, session attribution, external-event detection, deduplication, interruption-safe cursors.
+
+Curation note: Independent acceptance family with source-listed criteria.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1681` | line 2352 | ## Activity |
+| `P-1682` | line 2354 | - [ ] Changes can be queried since a timestamp |
+| `P-1683` | line 2355 | - [ ] Changes can be queried since a checkpoint |
+| `P-1684` | line 2356 | - [ ] Session-originated mutations can be identified |
+| `P-1685` | line 2357 | - [ ] External events are not incorrectly suppressed |
+| `P-1686` | line 2358 | - [ ] Repeated retrieval does not duplicate events |
+| `P-1687` | line 2359 | - [ ] Cursor advancement is safe across interruptions |
+
+## P-R052 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** P-1688, P-1689, P-1690, P-1691, P-1692, P-1693, P-1694, P-1695, P-1696, P-1697
+
+Metadata/dependency acceptance: canonical priority/labels, divergent titles, independent notes, safe managed content, hard blockers/cycles/history.
+
+Curation note: Independent acceptance family with source-listed criteria.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1688` | line 2361 | ## Metadata and dependencies |
+| `P-1689` | line 2363 | - [ ] Numeric priority is authoritative |
+| `P-1690` | line 2364 | - [ ] Derived labels update correctly |
+| `P-1691` | line 2365 | - [ ] Queue and PR titles can diverge |
+| `P-1692` | line 2366 | - [ ] Notes can be recorded independently |
+| `P-1693` | line 2367 | - [ ] Managed comments can be updated without duplication |
+| `P-1694` | line 2368 | - [ ] Managed body sections do not overwrite unrelated content |
+| `P-1695` | line 2369 | - [ ] Hard blockers affect work eligibility |
+| `P-1696` | line 2370 | - [ ] Dependency cycles are detected |
+| `P-1697` | line 2371 | - [ ] Resolved dependencies remain auditable |
+
+## P-R053 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1698, P-1699, P-1700, P-1701, P-1702, P-1703, P-1704
+
+Outbox acceptance: atomic local intent, durable retry, nonduplicate effects, inspectable state, remote verification, visible conflicts.
+
+Curation note: Independent acceptance family with source-listed criteria.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1698` | line 2373 | ## Outbox |
+| `P-1699` | line 2375 | - [ ] A local mutation and outbox intent are committed atomically |
+| `P-1700` | line 2376 | - [ ] Remote failures leave durable retryable records |
+| `P-1701` | line 2377 | - [ ] Retries do not unnecessarily duplicate comments or mutations |
+| `P-1702` | line 2378 | - [ ] Outbox statuses are inspectable |
+| `P-1703` | line 2379 | - [ ] External results are verified |
+| `P-1704` | line 2380 | - [ ] Conflicts are surfaced rather than silently overwritten |
+
+## P-R054 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** P-1705, P-1706, P-1707, P-1708, P-1709, P-1710, P-1711, P-1712, P-1713, P-1714, P-1715
+
+Lifecycle acceptance: safe claim/park/block/resume/checkpoint/lease recovery and directly verified merge/issue/queue completion with resumable partial effects.
+
+Curation note: Independent acceptance family with source-listed criteria.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1705` | line 2382 | ## Lifecycle |
+| `P-1706` | line 2384 | - [ ] Items can be claimed, parked, blocked, and resumed |
+| `P-1707` | line 2385 | - [ ] Checkpoints preserve useful continuation context |
+| `P-1708` | line 2386 | - [ ] Lease expiration is recoverable |
+| `P-1709` | line 2387 | - [ ] Completion validates required conditions |
+| `P-1710` | line 2388 | - [ ] Fleet can merge an authorized PR |
+| `P-1711` | line 2389 | - [ ] Fleet can close explicitly designated linked issues |
+| `P-1712` | line 2390 | - [ ] Fleet closes the queue item directly after verifying the required external operations |
+| `P-1713` | line 2391 | - [ ] No webhook or sweep is required for successful direct completion |
+| `P-1714` | line 2392 | - [ ] An interrupted completion can resume without repeating successful effects |
+| `P-1715` | line 2393 | - [ ] Completion events and final notes are auditable |
+
+## P-R055 — candidate (atomic)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** P-1716, P-1717, P-1718, P-1719, P-1720, P-1721, P-1722, P-1723, P-1724, P-1725, P-1726, P-1727
+
+End-to-end acceptance covers new work, blocked resume, external feedback, verified merge/close, direct completion, and timeout-safe checkpoint.
+
+Curation note: Independent acceptance family with source-listed criteria.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1716` | line 2395 | ## End-to-end agent scenarios |
+| `P-1717` | line 2397 | - [ ] New agent claims and hydrates a task |
+| `P-1718` | line 2398 | - [ ] Agent investigates linked issues, PRs, reviews, and diffs |
+| `P-1719` | line 2399 | - [ ] Agent records work and adds a blocker |
+| `P-1720` | line 2400 | - [ ] Agent parks the task and releases its lease |
+| `P-1721` | line 2401 | - [ ] Another session resumes after dependency resolution |
+| `P-1722` | line 2402 | - [ ] Agent pushes a fix and updates progress using Fleet |
+| `P-1723` | line 2403 | - [ ] Agent detects and responds to a new external comment |
+| `P-1724` | line 2404 | - [ ] Agent verifies checks and reviews |
+| `P-1725` | line 2405 | - [ ] Agent merges and closes through Fleet |
+| `P-1726` | line 2406 | - [ ] Fleet immediately records verified completion |
+| `P-1727` | line 2407 | - [ ] A separate near-timeout session can checkpoint safely without completing unfinished work |
+
+## P-R056 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1462, P-1463, P-1464, P-1465
+**Duplicate of:** `P-R041`
+
+Resolve claim races so only one agent claims an item and losers receive a conflict or next eligible item.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R041; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1462` | line 2044 | ## 20.1 Claim race |
+| `P-1463` | line 2046 | Two agents select the same work item |
+| `P-1464` | line 2048 | Only one obtains the claim |
+| `P-1465` | line 2050 | The other receives a conflict or automatically selects another eligible item |
+
+## P-R057 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1466, P-1467, P-1468, P-1469, P-1470
+**Duplicate of:** `P-R042`
+
+Recover agent termination through lease expiry and checkpoints while fencing stale writes.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R042; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1466` | line 2052 | ## 20.2 Agent termination |
+| `P-1467` | line 2054 | The agent disappears |
+| `P-1468` | line 2056 | Its lease expires |
+| `P-1469` | line 2058 | Another agent can recover the item using its checkpoint |
+| `P-1470` | line 2060 | Stale tokens cannot overwrite newer state |
+
+## P-R058 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1471, P-1472, P-1473, P-1474
+**Duplicate of:** `P-R043`
+
+When GitHub is unavailable, preserve durable local/outbox intent and report synchronization pending, not success.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R043; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1471` | line 2062 | ## 20.3 GitHub unavailable |
+| `P-1472` | line 2064 | A mutation is persisted to the outbox |
+| `P-1473` | line 2066 | Fleet reports that remote synchronization is pending |
+| `P-1474` | line 2068 | It does not claim that the external mutation succeeded |
+
+## P-R059 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1475, P-1476, P-1477
+**Duplicate of:** `P-R044`
+
+Before retrying a comment with lost acknowledgment, find and record the prior remote comment to prevent duplication.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R044; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1475` | line 2070 | ## 20.4 Comment posted, acknowledgment lost |
+| `P-1476` | line 2072 | Before retrying, Fleet checks for the operation's previously created comment |
+| `P-1477` | line 2074 | It records the remote ID and avoids duplicate posting |
+
+## P-R060 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1478, P-1479, P-1480, P-1481, P-1482
+**Duplicate of:** `P-R045`
+
+After merge succeeds but issue closure fails, retain completing/outbox state and report partial completion precisely.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R045; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1478` | line 2076 | ## 20.5 PR merges but issue closure fails |
+| `P-1479` | line 2078 | The item remains in `completing` |
+| `P-1480` | line 2080 | The outbox retains the issue-closure operation |
+| `P-1481` | line 2082 | Fleet reports partial completion |
+| `P-1482` | line 2084 | The next reconciliation can finish the workflow |
+
+## P-R061 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1483, P-1484, P-1485
+**Duplicate of:** `P-R046`
+
+Detect managed-content version conflicts, preserve external edits, and safely retry the intended section or report conflict.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R046; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1483` | line 2086 | ## 20.6 External edit during managed update |
+| `P-1484` | line 2088 | Fleet detects the version conflict |
+| `P-1485` | line 2090 | It preserves the external edit and either safely retries the managed section or reports a conflict |
+
+## P-R062 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1486, P-1487, P-1488, P-1489
+**Duplicate of:** `P-R047`
+
+Refresh activity before irreversible completion and pause for material new feedback; acknowledge that this is not full distributed atomicity.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R047; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1486` | line 2092 | ## 20.7 New external comment during completion |
+| `P-1487` | line 2094 | Fleet checks activity again before irreversible operations |
+| `P-1488` | line 2096 | If material new feedback appears, completion should be paused according to policy |
+| `P-1489` | line 2098 | A final check cannot make all distributed actions perfectly atomic, but it should prevent known stale-state completion |
+
+## P-R063 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1490, P-1491, P-1492
+**Duplicate of:** `P-R048`
+
+Reject or explicitly flag dependency cycles for authorized resolution.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R048; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1490` | line 2100 | ## 20.8 Dependency cycle |
+| `P-1491` | line 2102 | A requested blocker relationship would create a cycle |
+| `P-1492` | line 2104 | Fleet rejects it or explicitly flags the cycle for authorized resolution |
+
+## P-R064 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** P-1665, P-1666, P-1667, P-1668, P-1669, P-1670, P-1671
+**Duplicate of:** `P-R049`
+
+Selection acceptance: discover eligible work, inspect metadata, configurable ranking, atomic exclusive claim, stale-lease fencing.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R049; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1665` | line 2332 | ## Core selection |
+| `P-1666` | line 2334 | - [ ] Agents can discover eligible queue items |
+| `P-1667` | line 2335 | - [ ] All required metadata can be inspected |
+| `P-1668` | line 2336 | - [ ] Priority ranking is configurable |
+| `P-1669` | line 2337 | - [ ] A claim is atomic |
+| `P-1670` | line 2338 | - [ ] Two agents cannot own the same exclusive lease |
+| `P-1671` | line 2339 | - [ ] Stale leases cannot overwrite newer ownership |
+
+## P-R065 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** P-1672, P-1673, P-1674, P-1675, P-1676, P-1677, P-1678, P-1679, P-1680
+**Duplicate of:** `P-R050`
+
+Hydration acceptance: linked issues/PRs, comments/reviews, correct commit/diff metadata, persisted traceable bundle, concise summary, explicit missing data.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R050; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1672` | line 2341 | ## Hydration |
+| `P-1673` | line 2343 | - [ ] Linked issues are retrieved |
+| `P-1674` | line 2344 | - [ ] Linked PRs are discovered |
+| `P-1675` | line 2345 | - [ ] Relevant comments and reviews are retrieved |
+| `P-1676` | line 2346 | - [ ] Commits and diffs include accurate metadata |
+| `P-1677` | line 2347 | - [ ] Context files are persisted |
+| `P-1678` | line 2348 | - [ ] A concise summary is returned |
+| `P-1679` | line 2349 | - [ ] Missing or partial data is reported |
+| `P-1680` | line 2350 | - [ ] The context is traceable to its sources |
+
+## P-R066 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9207
+**Design targets:** #9207 components/9207-context-hydration-incremental-activity.md # Context bundle and incremental activity
+**Conflict refs:** none identified
+**Occurrence refs:** P-1681, P-1682, P-1683, P-1684, P-1685, P-1686, P-1687
+**Duplicate of:** `P-R051`
+
+Activity acceptance: queries by time/checkpoint, session attribution, external-event detection, deduplication, interruption-safe cursors.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R051; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1681` | line 2352 | ## Activity |
+| `P-1682` | line 2354 | - [ ] Changes can be queried since a timestamp |
+| `P-1683` | line 2355 | - [ ] Changes can be queried since a checkpoint |
+| `P-1684` | line 2356 | - [ ] Session-originated mutations can be identified |
+| `P-1685` | line 2357 | - [ ] External events are not incorrectly suppressed |
+| `P-1686` | line 2358 | - [ ] Repeated retrieval does not duplicate events |
+| `P-1687` | line 2359 | - [ ] Cursor advancement is safe across interruptions |
+
+## P-R067 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9208
+**Design targets:** #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** none identified
+**Occurrence refs:** P-1688, P-1689, P-1690, P-1691, P-1692, P-1693, P-1694, P-1695, P-1696, P-1697
+**Duplicate of:** `P-R052`
+
+Metadata/dependency acceptance: canonical priority/labels, divergent titles, independent notes, safe managed content, hard blockers/cycles/history.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R052; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1688` | line 2361 | ## Metadata and dependencies |
+| `P-1689` | line 2363 | - [ ] Numeric priority is authoritative |
+| `P-1690` | line 2364 | - [ ] Derived labels update correctly |
+| `P-1691` | line 2365 | - [ ] Queue and PR titles can diverge |
+| `P-1692` | line 2366 | - [ ] Notes can be recorded independently |
+| `P-1693` | line 2367 | - [ ] Managed comments can be updated without duplication |
+| `P-1694` | line 2368 | - [ ] Managed body sections do not overwrite unrelated content |
+| `P-1695` | line 2369 | - [ ] Hard blockers affect work eligibility |
+| `P-1696` | line 2370 | - [ ] Dependency cycles are detected |
+| `P-1697` | line 2371 | - [ ] Resolved dependencies remain auditable |
+
+## P-R068 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9209
+**Design targets:** #9209 components/9209-leases-fencing-outbox-direct-completion.md # Claims, outbox and direct completion
+**Conflict refs:** none identified
+**Occurrence refs:** P-1698, P-1699, P-1700, P-1701, P-1702, P-1703, P-1704
+**Duplicate of:** `P-R053`
+
+Outbox acceptance: atomic local intent, durable retry, nonduplicate effects, inspectable state, remote verification, visible conflicts.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R053; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1698` | line 2373 | ## Outbox |
+| `P-1699` | line 2375 | - [ ] A local mutation and outbox intent are committed atomically |
+| `P-1700` | line 2376 | - [ ] Remote failures leave durable retryable records |
+| `P-1701` | line 2377 | - [ ] Retries do not unnecessarily duplicate comments or mutations |
+| `P-1702` | line 2378 | - [ ] Outbox statuses are inspectable |
+| `P-1703` | line 2379 | - [ ] External results are verified |
+| `P-1704` | line 2380 | - [ ] Conflicts are surfaced rather than silently overwritten |
+
+## P-R069 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9206
+**Design targets:** #9206 components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and command surface
+**Conflict refs:** none identified
+**Occurrence refs:** P-1705, P-1706, P-1707, P-1708, P-1709, P-1710, P-1711, P-1712, P-1713, P-1714, P-1715
+**Duplicate of:** `P-R054`
+
+Lifecycle acceptance: safe claim/park/block/resume/checkpoint/lease recovery and directly verified merge/issue/queue completion with resumable partial effects.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R054; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1705` | line 2382 | ## Lifecycle |
+| `P-1706` | line 2384 | - [ ] Items can be claimed, parked, blocked, and resumed |
+| `P-1707` | line 2385 | - [ ] Checkpoints preserve useful continuation context |
+| `P-1708` | line 2386 | - [ ] Lease expiration is recoverable |
+| `P-1709` | line 2387 | - [ ] Completion validates required conditions |
+| `P-1710` | line 2388 | - [ ] Fleet can merge an authorized PR |
+| `P-1711` | line 2389 | - [ ] Fleet can close explicitly designated linked issues |
+| `P-1712` | line 2390 | - [ ] Fleet closes the queue item directly after verifying the required external operations |
+| `P-1713` | line 2391 | - [ ] No webhook or sweep is required for successful direct completion |
+| `P-1714` | line 2392 | - [ ] An interrupted completion can resume without repeating successful effects |
+| `P-1715` | line 2393 | - [ ] Completion events and final notes are auditable |
+
+## P-R070 — candidate (alias)
+
+**Source:** `03_full_orchestration_proposal.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** P-1716, P-1717, P-1718, P-1719, P-1720, P-1721, P-1722, P-1723, P-1724, P-1725, P-1726, P-1727
+**Duplicate of:** `P-R055`
+
+End-to-end acceptance covers new work, blocked resume, external feedback, verified merge/close, direct completion, and timeout-safe checkpoint.
+
+Curation note: Duplicate entry from overlapping extraction of the same source occurrence set; no independent acceptance oracle. Canonical outcome is P-R055; this ID is retained append-only for traceability.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `P-1716` | line 2395 | ## End-to-end agent scenarios |
+| `P-1717` | line 2397 | - [ ] New agent claims and hydrates a task |
+| `P-1718` | line 2398 | - [ ] Agent investigates linked issues, PRs, reviews, and diffs |
+| `P-1719` | line 2399 | - [ ] Agent records work and adds a blocker |
+| `P-1720` | line 2400 | - [ ] Agent parks the task and releases its lease |
+| `P-1721` | line 2401 | - [ ] Another session resumes after dependency resolution |
+| `P-1722` | line 2402 | - [ ] Agent pushes a fix and updates progress using Fleet |
+| `P-1723` | line 2403 | - [ ] Agent detects and responds to a new external comment |
+| `P-1724` | line 2404 | - [ ] Agent verifies checks and reviews |
+| `P-1725` | line 2405 | - [ ] Agent merges and closes through Fleet |
+| `P-1726` | line 2406 | - [ ] Fleet immediately records verified completion |
+| `P-1727` | line 2407 | - [ ] A separate near-timeout session can checkpoint safely without completing unfinished work |
+
+## S-R001 — candidate (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** S-008, S-009, S-010, S-011, S-012, S-013
+
+Represent consistent urgency levels across work; review stale items in both directions based on value and changed circumstances, and define rough level ranges.
+
+Curation note: Raw supplemental source is candidate material; preserve exact original quote/garbling in source_occurrence_refs.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-008` | line 9 | what's the priority on the design stub |
+| `S-009` | line 9 | it should be higher priority |
+| `S-010` | line 9 | ensure across all jobs and tasks and documentation we have a consistent variety of priority levels appropriately sorted and as issues get older if they dont get pull in or as circumstances change the priority increases or decreases appropri |
+| `S-011` | line 9 | a medium priority idea goes to high priority because it sat for a week |
+| `S-012` | line 9 | in other cases priority stays same or goes down over time |
+| `S-013` | line 9 | set rough ranges for the priority levels as definitions |
+
+## S-R002 — candidate (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9200, #9203
+**Design targets:** #9200 components/9200-priority-distribution.md # Authority, provenance and reconciliation; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** CF-004
+**Occurrence refs:** S-014, S-015, S-016, S-017, S-018
+
+Treat authorized priority-label changes/removal as normalization or triage input, while a separate “do something now” label affects dispatch rather than stored priority.
+
+Curation note: Raw supplemental source is candidate material; preserve exact original quote/garbling in source_occurrence_refs.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-014` | line 9 | label priority on issues, if webhook shows label changed say priority removed it goes to top of queue for triage, or if triage label added do triage move label |
+| `S-015` | line 9 | if new priority high or critical added remove old priority queue for triage and update priority |
+| `S-016` | line 9 | same for low or critical etc |
+| `S-017` | line 9 | there's a label that makes you do something now it shouldn't change the priority but should move to top of queue |
+| `S-018` | line 9 | picked up jobs should get labels or a comment and added to a task level project in progress |
+
+## S-R003 — candidate (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9201
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control
+**Conflict refs:** none identified
+**Occurrence refs:** S-019, S-020, S-021, S-022
+
+Expose picked-up/parked/blocked/ready/backlog lifecycle visibly in GitHub and PM Stack, retaining comments/context for the next agent; exact dictated label text is garbled.
+
+Curation note: Raw supplemental source is candidate material; preserve exact original quote/garbling in source_occurrence_refs.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-019` | line 9 | if parked but was ever picked up it should go back to a parked or blocked status with a comment the next agent and triage read |
+| `S-020` | line 9 | now labek, high priority and above, picked up by me should all get tido/ready items |
+| `S-021` | line 9 | everything else is backlog |
+| `S-022` | line 9 | build something like this to enhance visibility in github and make pm stack board more visible (it should sync) |
+
+## S-R004 — candidate (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9201, #9203
+**Design targets:** #9201 components/9201-pm-projection-mobile-control.md # PM projection and mobile control; #9203 components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, commands and event routing
+**Conflict refs:** none identified
+**Occurrence refs:** S-023, S-024, S-025, S-026, S-027, S-028
+
+Allow authorized bot/webhook commands and phone/browser controls for queue work, reprioritization, dispatch, status reporting and live-session direction; immediately route comments to a live/appropriate session or start one rather than merely queueing.
+
+Curation note: Raw supplemental source is candidate material; preserve exact original quote/garbling in source_occurrence_refs.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-023` | line 9 | implement a way to at any of the bots and also webhook can review all comments if a / command is given to retry queue stsrt merge etc then it should have an agent go do that |
+| `S-024` | line 9 | build all this or rather the idea of this completely but don't worry about my exact instructions worry about the right design to allow easy github and pm stack and database views |
+| `S-025` | line 9 | this is a separate but related effort to the queue table improvements design and should take into account how that would slot in, with a design issue for it specifically that might only implement after it actually lands and we know the prec |
+| `S-026` | line 9 | also separately make sure the pm stack board and each view is mobile friendly and interactive |
+| `S-027` | line 9 | from phone or web browser I should be able to make notes run fleet search and other commands, queue tasks, reprioritize, direct an agent, ask for a status report on any issue and ask to redirect a live session (send message through opencode |
+| `S-028` | line 9 | should have a system where when I comment on a live labeled issue or parked issue it's picked up immediately and sent to appropriate session or triggers a new session, not sits at front of queue, the hook triggers a task that immediately ei |
+
+## S-R005 — candidate (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** CF-005
+**Occurrence refs:** S-029, S-030, S-031, S-032, S-033, S-034
+
+Explore gradual score spacing and neighbor-aware collision handling while preserving ties, deterministic order, lower-to-higher sweep behavior and bounded movement; all numeric ranges and dictated collision wording remain candidate/uncertain.
+
+Curation note: Raw supplemental source is candidate material; preserve exact original quote/garbling in source_occurrence_refs.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-029` | line 9 | ensure a rough sort of all queue items based on priority, expand priority so default is larger and there's more points like medium/standard 1000 and high is 400 to 800 critical 200 to 400 or something, but as you run regular triage, move so |
+| `S-030` | line 9 | queue edits to first comment or maybe the bottom of pr description whenever a task crosses a, say, multiple of 25 |
+| `S-031` | line 9 | takss can have identical priority and certain moves by default land items on significant numbers which naturally have more than one, but the order should still be determinable, idk if the oldest or newest is highest, I guess oldest is highe |
+| `S-032` | line 9 | despite there bejng a total order at all times tasks should naturally oppose each other in priority and move away |
+| `S-033` | line 9 | maybe any priority number with multiple tasks gets walked through, if everything was pretty close to even then they are roughly review and the items are all moved up or down, soemthing like, buckets of should be lower much lower or custom l |
+| `S-034` | line 9 | roughly one pass from lowest priority down to highest priority so if 20 because 10 much higher 5 slightly less and 5 much less then the 10 escalated would be hit again and split I to 5 that were reduced and 5 escalated again |
+
+## S-R006 — candidate (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9199, #9208
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure; #9208 components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes and authority
+**Conflict refs:** CF-008
+**Occurrence refs:** S-035, S-036, S-037, S-038, S-039
+
+Keep importance distinct from urgency and represent dependency-caused execution pressure without permanently falsifying intrinsic score.
+
+Curation note: Raw supplemental source is candidate material; preserve exact original quote/garbling in source_occurrence_refs.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-035` | line 9 | need to keep track because our priority is blurring importance and urgency, but it's mostly urgency right now |
+| `S-036` | line 9 | if there's a very important item blocked by a low priority quick fix so that a new feature is stubbed out for a different feature then right now we'd have to make that low priority critical or soemthing to not just spin |
+| `S-037` | line 9 | our queue table work will help here |
+| `S-038` | line 9 | but we need to be able to understand links and reprioritize so the low priority item becomes high urgency because a high priority medium urgency item is blocked on it |
+| `S-039` | line 9 | anyways for this conversation I'm describing priority but I mean urgency the order we handle things |
+
+## S-R007 — candidate (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9199
+**Design targets:** #9199 components/9199-distributed-priority.md # Urgency, importance and effective pressure
+**Conflict refs:** none identified
+**Occurrence refs:** S-040, S-041, S-042, S-043, S-044, S-045, S-046
+
+Smooth priority clumps over time; retain manual exact/relative movement, boundary resistance for low-confidence changes, and avoid cold-backlog purgatory or arbitrary escalation; preserve short-lived opportunity and escalation ambiguities.
+
+Curation note: Raw supplemental source is candidate material; preserve exact original quote/garbling in source_occurrence_refs.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-040` | line 9 | smear clumped priorities roughly not so they are one by one but just loosely, I had a stack of 50 now I have stacks of 25, 10, 5 and then 5 individual |
+| `S-041` | line 9 | iterate over time ticket clumps become smaller as the urgency increases |
+| `S-042` | line 9 | introduce slight resistance around priority bands phase shifts, medium ticket moving towards high slows down when it gets close to transition, don't artificially stop an item passing but if your not high confidence it's truly high priority  |
+| `S-043` | line 9 | any item at any time can be custom moved to any priority level default, or a specific one ahead of another, or to any number at all |
+| `S-044` | line 9 | Just be sure you don't 9999 shadow zone something important to purgatory or mark a giant effort that has questionable utility supercritical if you can avoid it |
+| `S-045` | line 9 | links and priority and ovsrall project or epics priority/urgency/lifecycle can cause items to move quickly up or down, if it's low priority and urgent and doesn't block any other items understand if maybe it should deescalate, sometimes it' |
+| `S-046` | line 9 | this doesn't mean drop it to 800 and then kill it on the 4th day, but need to figure out best course of action, if it's possibly very valuabke or muse agent specifically thinks it's important may e those can escalation to questions chat or  |
+
+## S-R008 — candidate (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** S-047, S-048, S-049, S-050, S-051, S-052, S-053, S-054, S-055
+
+Use bounded low-probability selection only when urgent work does not require the lane; decide all sampled-item dispositions durably before acting, with hints/retriage preferred over unsupported automatic score changes.
+
+Curation note: Raw supplemental source is candidate material; preserve exact original quote/garbling in source_occurrence_refs.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-047` | line 9 | Last thing for now is agent task selection, I believe every lane chooses the next item with the highest escalation |
+| `S-048` | line 9 | if there aren't anything that are critical super critical or marked now (maybe webhook immediately launches a session and creates/claims/unparks mechanically without agent) then there should be some low percentage chance for it to spin the  |
+| `S-049` | line 9 | if selected or triage it can also modify change priority etc |
+| `S-050` | line 9 | catch/kill catch/release bird-watching |
+| `S-051` | line 9 | decide choice for all 3 first |
+| `S-052` | line 9 | it can do them in any order or all at once whatever it wants |
+| `S-053` | line 9 | but if it terminates before and item wasn't handled  then reprioritize moves down priority higher number, triage moves up and selected move up even more |
+| `S-054` | line 9 | so 3 selected all move up |
+| `S-055` | line 9 | that can be mechanical based on preset values or marked for a triage sweep that handles them takes the hints and does its own analysis moves accordingly that might be better, then it's just part of the existing job to first handle each luck |
+
+## S-R009 — candidate (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9198, #9204
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability; #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** S-056, S-057, S-058, S-059
+
+Preserve design latitude to improve the mechanism in service of the operational goal; record the attributed “evenly prioritize” concept as source history, not a separate directive.
+
+Curation note: Raw supplemental source is candidate material; preserve exact original quote/garbling in source_occurrence_refs.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-056` | line 9 | the ratio, I'll explain my thoughts but as with all items for design you should look at the shape of the idea and then build whatever should actually exist don't tell me aye aye, explain what you intend to do and where and why it deviates w |
+| `S-057` | line 9 | the way to build big designs and authority to do what's best is standing you always have that prerogative, duty |
+| `S-058` | line 9 | what I imagine is for each random item it's selected by choosing urgency and importance randomly based on a preset ratio then randomly choosing an item that matches that filter, using a scale based on the urgency numbers in the range |
+| `S-059` | line 9 | evenly prioritize so this is what another agent described |
+
+## S-R010 — candidate (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** CF-005
+**Occurrence refs:** S-060, S-061, S-062, S-063, S-064
+
+Evaluate configurable exponential weighted selection with a 1.25-per-200 preference and .5 cluster correction; formula references item value/bucket population and keeps parameters adjustable.
+
+Curation note: Raw supplemental source is candidate material; preserve exact original quote/garbling in source_occurrence_refs.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-060` | line 12 | Use exponential weighted random selection with configurable value preference (default 1.25× per 200-point difference) and cluster-density correction (default 50%) |
+| `S-061` | line 12 | Lower values receive greater weight, while density correction reduces the advantage of large clusters without eliminating it |
+| `S-062` | line 14 | [ |
+| `S-063` | line 15 | w_i = 1.25^{-(x_i-500)/200}\cdot n_{b(i)}^{-0.5} |
+| `S-064` | line 16 | ]
+
+Where (x_i) is the item's value and (n_{b(i)}) is the number of items in its numerical bucket; both the 1.25× preference and 0.5 correction exponent are configurable |
+
+## S-R011 — candidate (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9204
+**Design targets:** #9204 components/9204-queue-selection-bounded-exploration.md # Selection, fairness and bounded exploration
+**Conflict refs:** none identified
+**Occurrence refs:** S-065
+
+Allow future filtering over additional scales while lightly preferring higher-priority/lower-number bands with configurable impact.
+
+Curation note: Raw supplemental source is candidate material; preserve exact original quote/garbling in source_occurrence_refs.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-065` | line 21 | and for the filters we only have priority right now but plan we'll add more scales later, ratio or formula that lightly prefers higher priority (lower) bands with no or less impact based on numbers of items in each band |
+
+## S-R012 — history (atomic)
+
+**Source:** `05_supplemental_raw_note.md`
+**Domains:** #9198
+**Design targets:** #9198 components/9198-requirement-crosswalk-current-state-census.md # Evidence, census and traceability
+**Conflict refs:** none identified
+**Occurrence refs:** S-005, S-006
+
+Treat the raw note as supplemental candidate material, reconcile with charter policy, and do not create a third implementation stream.
+
+Curation note: Source-scope instruction, not a new overriding feature directive.
+
+| Occurrence | Locator | Verbatim excerpt |
+|---|---|---|
+| `S-005` | line 5 | > Role: Supplemental raw note named by the handoff: review as design candidates, not a new overriding directive; the v1.1 charter already incorporates its main ideas |
+| `S-006` | line 5 | Reconcile nuances against the charter; do not create a third implementation stream for it |
+
+## Coverage limits
+
+See `dispositions.jsonl`: every source occurrence is enumerated once. Explicit unresolved substantive entries are gaps, not covered mappings. Source04 is flattened, so spans are authoritative and reconstructed headings provisional. This inventory does not claim independent semantic completeness. Planned design targets are destinations, not implementation coverage.

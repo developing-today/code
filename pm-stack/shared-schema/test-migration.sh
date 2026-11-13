@@ -35,7 +35,7 @@ for _ in $(seq 1 60); do
   fi
   sleep 1
 done
-if [[ "$ready" != true ]]; then
+if [[ $ready != true ]]; then
   echo "disposable PostgreSQL did not become ready" >&2
   exit 1
 fi
@@ -47,7 +47,7 @@ psql_test() {
 # Supabase's service_role carries BYPASSRLS; model that so the test proves
 # the role can actually operate under the RLS model, not just hold grants.
 psql_test -c 'CREATE ROLE service_role BYPASSRLS LOGIN;'
-psql_test < "$up"
+psql_test <"$up"
 
 # A pre-token action is valid, as are modern actions and the source's JSON
 # object payload/author contracts.
@@ -71,7 +71,7 @@ privileges="$(psql_test -Atc "SELECT concat(
   has_table_privilege('service_role', 'public.agg_actions', 'UPDATE')::text, ':',
   has_table_privilege('service_role', 'public.agg_actions', 'DELETE')::text, ':',
   has_table_privilege('service_role', 'public.shared_events', 'DELETE')::text)")"
-if [[ "$privileges" != "true:true:true:false:true" ]]; then
+if [[ $privileges != "true:true:true:false:true" ]]; then
   echo "unexpected RLS/service_role privileges: $privileges" >&2
   exit 1
 fi
@@ -87,7 +87,7 @@ docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U service_role -d pm_act
   VALUES ('event-service-role', now(), 'run-svc', 'comment', 'orch:item-1',
     'service_role write probe', '$svc_hash', '$svc_hash');"
 svc_seen="$(docker exec -i "$container" psql -X -qAt -v ON_ERROR_STOP=1 -U service_role -d pm_actions_test -c "SELECT count(*) FROM public.shared_events WHERE id = 'event-service-role'")"
-if [[ "$svc_seen" != "1" ]]; then
+if [[ $svc_seen != "1" ]]; then
   echo "service_role could not read back its own event row under RLS" >&2
   exit 1
 fi
@@ -204,7 +204,7 @@ psql_test -c "INSERT INTO public.shared_events
     'run-old', 'comment', 'orch:item-1', 'raw timestamp preservation',
     '$zero_hash', '$one_hash');"
 raw_seen="$(psql_test -Atc "SELECT event_at_raw || '|' || ingested_at_raw || '|' || (event_at AT TIME ZONE 'UTC')::text FROM public.shared_events WHERE id = 'event-raw-ts'")"
-if [[ "$raw_seen" != "2026-11-05T03:00:00+03:00|2026-11-05T03:00:01+03:00|2026-11-05 00:00:00" ]]; then
+if [[ $raw_seen != "2026-11-05T03:00:00+03:00|2026-11-05T03:00:01+03:00|2026-11-05 00:00:00" ]]; then
   echo "raw timestamp strings did not round-trip: $raw_seen" >&2
   exit 1
 fi
@@ -223,22 +223,22 @@ psql_test -c "INSERT INTO public.shared_events
     '{\"identity\":\"pm-stack/aggregator\",\"channel\":\"test\"}',
     '$zero_hash', '$one_hash');"
 raw_json_seen="$(psql_test -Atc "SELECT attribution_raw || '|' || source_raw FROM public.shared_events WHERE id = 'event-raw-json'")"
-if [[ "$raw_json_seen" != "{\"confidence\":\"unknown\",\"asserted\":false}|{\"identity\":\"pm-stack/aggregator\",\"channel\":\"test\"}" ]]; then
+if [[ $raw_json_seen != '{"confidence":"unknown","asserted":false}|{"identity":"pm-stack/aggregator","channel":"test"}' ]]; then
   echo "raw JSON serializations did not round-trip: $raw_json_seen" >&2
   exit 1
 fi
 echo "ok - raw JSON serializations preserved alongside jsonb"
 
-if psql_test < "$down" >/dev/null 2>&1; then
+if psql_test <"$down" >/dev/null 2>&1; then
   echo "down migration should refuse populated tables" >&2
   exit 1
 fi
 echo "ok - down migration protects non-empty tables"
 
 psql_test -c 'DELETE FROM public.shared_events; DELETE FROM public.agg_actions;'
-psql_test < "$down"
+psql_test <"$down"
 remaining="$(psql_test -Atc "SELECT (to_regclass('public.agg_actions') IS NULL AND to_regclass('public.shared_events') IS NULL)::text")"
-if [[ "$remaining" != true ]]; then
+if [[ $remaining != true ]]; then
   echo "down migration left schema objects behind" >&2
   exit 1
 fi

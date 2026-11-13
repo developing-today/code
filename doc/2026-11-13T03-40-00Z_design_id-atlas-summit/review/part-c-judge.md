@@ -1,0 +1,69 @@
+# Part C zero-context design judge — #9106
+
+**Review date:** 2026-11-12. **Scope:** proto S2.1–S2.19 and S6.1–S6.17; `main.md`, `answers.md`, baseline audit/seam map; every Part C research, design, plan, fixture, oracle and slice artifact. Reviewed component ownership #9133–#9140. No code or external source was changed.
+
+## Verdict
+
+**Blocking corrections required; do not mark Part C or the summit complete.** The design is generally careful about evidence boundaries and has the right security direction, but the benchmark proof artifacts and implementation handoff have gaps that make some stated checks stronger than the actual oracle/slice plan.
+
+## Blocking findings and precise repairs
+
+1. **The offline benchmark oracle does not prove what its design text says it proves.** `part-c/versioned-design.md:69` says the script checks six operation mappings, a generation-fence fixture and stable whole-file identity. `benchmark-workload-oracle.py:13-25` checks only that each engine mapping is a nonempty value (and that `metadata_scan` values are strings); the generation checks read expected constants by fixture index; and `whole_file_hash_unchanged` is only a fixture boolean. The symbolic `sha256:fixture-a` is not computed from the fixture bytes `abc`. The successful raw output therefore proves fixture shape, not operation semantics, race behavior or hash stability.
+
+   **Repair:** make the offline oracle execute a small reference store/state model for put/get/metadata/ref-commit/tombstone/resurrection, compare each engine mapping against per-operation expected semantics (including explicit R2 `metadata_scan` unsupported behavior where it is not equivalent), and compute the canonical whole-file digest from bytes through generation/resurrection. Either use a valid digest fixture or explicitly name it symbolic and do not claim identity verification. Regenerate the raw output and narrow the design's claim to exactly what is executed. Keep all timing fields/reporting clearly unmeasured.
+
+2. **S2.1's laptop benchmark requirement has no run/result slice.** Proto §2 maps S2.1–S2.3 to #9133 and explicitly calls for D1 vs R2 vs laptop redb vs laptop Turso. Slices `C9133-02-redb` and `C9133-02-turso` (implementation-slices.json:8–9) create adapter tests only; `C9133-CLOUD` (line 10) measures D1/R2/Turso cloud and treats redb as a soft dependency. No planned command/result record runs the laptop redb/Turso measurements, so the adapter conformance tests cannot satisfy the stated benchmark.
+
+   **Repair:** add a bounded local-evidence slice with an explicit runner command and schema-validated result artifact for laptop redb and Turso, using the same logical workload/dataset digest while labeling hardware/network conditions. Keep local and cloud numbers separate and do not infer a universal winner across incomparable environments. Make S2.1 coverage traceable to those two runs plus the cloud run.
+
+3. **Recall@10 is an acceptance criterion without a planned execution/consumption contract.** `benchmark-plan.json:21` and `C9133-CLOUD` require equal-or-better #8627 recall@10 and claim to enable an Atlas shard recommendation, but the logical operation matrix (lines 11–17) covers storage operations only and does not specify the search workload, shard configuration result input, or which #9092 artifact/command supplies the recall measurements. Research says to coordinate with #9092 rather than duplicate it, but the implementation handoff does not say how the shared result enters the cloud evidence record.
+
+   **Repair:** either add a named #9092-owned result artifact/schema and specify its required fields, shard configurations, dataset/eval digests, and how the cloud report references/validates it (no duplicated search run); or remove the recall/shard-recommendation acceptance from #9133 and scope that acceptance entirely to #9092. Do not publish a shard recommendation from storage-only measurements.
+
+4. **Cloud result validator is invoked but not owned, and its CLI contract is unspecified.** `C9133-CLOUD` names `pkgs/id/benchmarks/validate_results.py` as `done_command` (implementation-slices.json:10), but that file is absent from `owned_files`. Thus a future implementer cannot tell which slice creates the command. Since the cloud run has credentials, spend caps and file outputs, its future operator entry point also needs the repo's strict argument contract.
+
+   **Repair:** add the validator's exact new path to the owning slice (or name an existing verified validator), define its input/output contract and schema checks, and state that it rejects unknown/malformed flags before any network call, lock, write or spend-bearing action. The two checked-in offline oracle scripts take no CLI arguments and make no writes; no current strict-CLI test exists to run.
+
+5. **Two independently schedulable slices own the same research file.** `C9135-01` owns `part-c/research.md` (implementation-slices.json:13), as does `C9138-01` (line 20); they have no dependency between them. Their parenthetical section notes do not remove the physical file collision under the one-writer-per-file rule.
+
+   **Repair:** move each proposed addition to a distinct new research artifact owned by that slice and have the summit reconcile them, or add an explicit hard ordering dependency and ensure only one slice edits the file at a time. Preserve `C9135-03`'s existing dependency on `C9135-01` if that file remains its target.
+
+6. **Recommendation page ordering is stable in name only.** The design requires a pinned snapshot, stable pages, finite dedup/replay, expiry, restart safety and signed derived output (`versioned-design.md:43–49`), but does not define the total ordering/tie-break for equal-ranked recommendations. Without one, retries/restarts can legally return different “next 10” page boundaries while still claiming stable order.
+
+   **Repair:** specify that the pinned algorithm's ordered result is materialized at snapshot cutoff and define a deterministic total-order tie-break (for example, score descending then immutable recommendation ID ascending); persist/derive page sequence from that order. Add equal-score/tie, late-arrival, restart, duplicate, and expired-cursor cases to `C9139-01`'s model oracle. Keep the finite replay/expiry rules and signed-output gate.
+
+## Slice-by-slice handoff check
+
+All 21 slices were checked for a title, explicit S2/S6 statement references, goal/output, enables, file/test ownership, prerequisite edges, tier/version, oracle, failing test and future command. Union coverage is exactly the 36 S2/S6 statements (no missing or out-of-range references). I found no crucial slice with a hard dependency on a recommended slice. The following table records slice-level disposition; “blocked” means the slice needs the linked correction above before the whole handoff is ready, not that every isolated implementation detail is unsound.
+
+| Slice | Zero-context disposition |
+|---|---|
+| C9133-01 | **Blocked by 1.** Good bounded schema/fixture intent, but its oracle needs to execute semantics, not just assert fixture fields. |
+| C9133-02-D1 | Agree as a narrow adapter/conformance PR; no performance claim. |
+| C9133-02-R2 | Agree as a narrow object adapter; keep SQL-scan unsupported unless semantic equivalence is demonstrated. |
+| C9133-02-redb | Agree as a narrow adapter; adapter test is not a benchmark run (finding 2). |
+| C9133-02-turso | Agree as a narrow adapter; adapter test is not a benchmark run (finding 2). |
+| C9133-CLOUD | **Blocked by 1–4.** Cloud-only scope does not satisfy the laptop comparison; recall input and validator ownership are unclear. Contingent gates (credentials, spend cap, region, corpus/eval set) are appropriate. |
+| C9134-01 | Agree: research/contract boundary names watermark and policy authority prerequisites and fail-closed oracle. |
+| C9134-02 | Agree: implementation is scoped to cache migration; hard prerequisites are the contract and sibling-owned policy/watermark interfaces. |
+| C9135-01 | **Blocked by 5.** Identity/store inventory and bounded test are coherent; research file conflicts with C9138-01. |
+| C9135-02 | Agree: compatibility-only test with no wire-byte change; owner review is explicit. |
+| C9135-03 | Agree as contingent research; its hard dependency on C9135-01 and source-check command are stated. |
+| C9136-01 | Agree: broker authorization and encryption are correctly separate; scope remains #9083/#9084-owned. |
+| C9136-02 | Agree: bounded authorization implementation, including presence/list probes. |
+| C9137-01 | Agree on core fence contract: atomic ref-intent/tombstone generation authority, resurrection at g+1, and GC disabled without #9084 support. |
+| C9137-02 | Agree: collector is downstream of the fence and deletes only a captured physical generation. |
+| C9138-01 | **Blocked by 5.** Keeps Snowflake Arctic distinct from Cortex and leaves the second model owner-undecided; research file conflicts with C9135-01. |
+| C9138-02 | Agree: consumes the model decision and #9084 identity contract; does not choose a second embedder. |
+| C9139-01 | **Blocked by 6.** Snapshot, finite dedup/expiry, restart and signed-page gates are present; deterministic ordering/tie-break is not. |
+| C9139-02 | Agree conditional on C9139-01's settled model; logical worker and bounded per-tenant DO intent are coherent. |
+| C9140-01 | Agree: separates recommendation snapshots from search history and states per-class retention plus deletion/hold. |
+| C9140-02 | Agree conditional on object/lifecycle authority and paging contract; pinned snapshot IDs make comparisons stable. |
+
+## Evidence checks performed
+
+- Ran both offline scripts with `python3 -I`; outputs exactly match the checked-in output files: six logical operation names/four engine labels/eight fixture steps, `timings_measured: false`, and synthetic-only cost totals D1 `$0.0`, R2 `$21.3`, no winner. Both plan/fixture/slice JSON files parse. These results support only current fixture shape and arithmetic; they do not cure finding 1.
+- Source boundary is correctly preserved: baseline records empirical SHA256 of exact UTF-8 chunk text in the inspected Atlas snapshot while stating the producer is missing; Part C does not assign that observed hash to Iroh BLAKE3. Snowflake Arctic is correctly described as a model, not a Cortex deployment, and the second embedder remains owner-undecided.
+- GC's design rejects a fresh-check TOCTOU and requires the atomic generation fence; bucket broker authorization is distinct from encryption; cache design includes source watermark bounds, policy epochs, immediate revocation/fail-closed behavior and real-time/cache-disable bypass.
+- S6 designs specify asynchronous/idempotent vectorization, signed/validated authority gates, recommendation snapshot IDs/envelopes, retention classes, restart-safe accumulation and explicit finite dedup/replay expiry. The ordering tie-break remains the one recommendation-contract gap identified above.
+- No Part C claim was found that a synthetic result is a production latency/economics result. Cloud evidence is explicitly future work, and benchmark dimensions include shards, data/object size, concurrency, warm/cold modes, repetitions and percentiles.

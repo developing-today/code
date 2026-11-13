@@ -1,9 +1,11 @@
 // Pure HTML rendering. Every view function takes already-assembled data and
 // returns a full HTML string — nothing here does I/O, which keeps the smoke
 // tests cheap (render from fixtures and assert on output).
+import { analyticsSectionHtml } from "./quota-analytics-view.ts";
 import {
   type AttentionView,
   type RoadmapGrain,
+  type TodayObjective,
   type TodayView,
   allRefs,
   buildQuotaActions,
@@ -65,7 +67,13 @@ import type { NotificationRollup } from "./notifications.ts";
 import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
-import type { QueueView, QueueRow } from "./queue-view.ts";
+import {
+  reconciledInProgress,
+  type InProgressSignal,
+  type QueueView,
+  type QueueRow,
+  type ReconciledInProgressItem,
+} from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
 import {
   type AaCaiRow,
@@ -114,6 +122,13 @@ import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import {
+  CANONICAL_STATUSES,
+  STATUS_SOURCE_LABELS,
+  STATUS_TAXONOMY,
+  canonicalStatusFor,
+  ghItemDerivedStatus,
+} from "./status-taxonomy.ts";
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
@@ -123,6 +138,7 @@ import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
 import type { SearchResult } from "./search-view.ts";
+import type { DecisionSetSummary } from "./decisions.ts";
 import { dnsAnchor } from "./search-view.ts";
 
 export function esc(s: unknown): string {
@@ -515,7 +531,7 @@ function layout(
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><script>try{var __pmTheme=localStorage.getItem('pm-theme');if(__pmTheme==='light'||__pmTheme==='dark')document.documentElement.setAttribute('data-theme',__pmTheme);}catch(e){}</script><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/datastar.js"></script></head>
 <body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
-</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
+</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script><script src="/assets/freshness-client.js?v=freshness-3976" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
 }
 
 /** Global search over board/roadmap subjects, linked refs, and the slice-2 sources (#1212): registry sessions, the DNS register, services, and tier items. */
@@ -553,17 +569,17 @@ export function renderSearch(
   for (const result of results) {
     if (result.kind === "registry") chipKeys.add("registry");
     if (result.kind === "dns") chipKeys.add("dns");
-    if (result.kind === "service") { chipKeys.add("quota"); chipKeys.add("usage"); }
-    if (result.kind === "tier") { chipKeys.add("orchestration"); chipKeys.add("attention"); chipKeys.add("registry"); }
+    if (result.kind === "service") {
+      chipKeys.add("quota");
+      chipKeys.add("usage");
+    }
+    if (result.kind === "tier") {
+      chipKeys.add("orchestration");
+      chipKeys.add("attention");
+      chipKeys.add("registry");
+    }
   }
-  return layout(
-    "Search",
-    body,
-    provenance,
-    "/search",
-    "",
-    detail ? freshnessChips(detail, [...chipKeys]) : "",
-  );
+  return layout("Search", body, provenance, "/search", "", detail ? freshnessChips(detail, [...chipKeys]) : "");
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -608,9 +624,8 @@ export function authorBadge(a: DashAuthor): string {
 }
 
 export function dashCommentHtml(c: DashComment, showObject = false): string {
-  const verificationChip = c.authorVerified === true
-    ? `<span class="badge">verified</span>`
-    : `<span class="badge">unverified</span>`;
+  const verificationChip =
+    c.authorVerified === true ? `<span class="badge">verified</span>` : `<span class="badge">unverified</span>`;
   const kindChip =
     c.kind === "message"
       ? `<span class="badge msg">✉ message to Muse</span> <span class="muted">${c.triageState === "triaged" ? "triaged by the orchestrator" : "awaiting triage"}</span>`
@@ -1330,8 +1345,10 @@ export function delegationDefaultHtml(records: DashAction[] | undefined, opts: A
   return `<div class="card"><strong>Standing delegation default</strong> — ${state}.${pending}${actboxHtml(opts, form)}</div>`;
 }
 
-/** The Project Status values a status request may target (#910 field). */
-export const PROJECT_STATUS_VALUES = ["Todo", "In Progress", "In Review", "Done"] as const;
+/** The Project Status values a status request may target (#910 field).
+ * #1198: this set IS the canonical status taxonomy's set — one
+ * definition (status-taxonomy.ts), adopted here, never a second copy. */
+export const PROJECT_STATUS_VALUES = CANONICAL_STATUSES;
 
 /** The #1154 control: request a Project Status change (never a direct write). */
 export function statusRequestHtml(
@@ -1568,7 +1585,21 @@ export function renderBoardBody(
             }
           }
           const kaneo = item.kaneoUrl ? ` <a class="badge" href="${esc(item.kaneoUrl)}">Kaneo ↗</a>` : "";
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${stripHtml(items, item.links)}${statusCtl}${briefs}</div>`;
+          // #1198: the board column is Kaneo's status; when the linked
+          // Project pool item's Status disagrees canonically, show BOTH
+          // instead of silently picking the column.
+          let statusClash = "";
+          if (act?.poolByRef) {
+            const pooled = item.links.map((l) => act.poolByRef!.get(l.ref)).find((p) => p !== undefined);
+            if (pooled?.status) {
+              const boardCanonical = canonicalStatusFor("kaneo", item.status);
+              const projectCanonical = canonicalStatusFor("project", pooled.status);
+              if (boardCanonical && projectCanonical && boardCanonical !== projectCanonical) {
+                statusClash = ` <span class="badge stale" title="The Kaneo board column and the Project Status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">⚠ board: ${esc(item.status)} · project: ${esc(pooled.status)}</span>`;
+              }
+            }
+          }
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${statusClash}${stripHtml(items, item.links)}${statusCtl}${briefs}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
@@ -1584,8 +1615,12 @@ export function renderBoardBody(
           : `${esc(k)} (${colItems.length}/${wipByLane.get(k)?.cap ?? 0})`;
       const summary = wipByLane.get(k);
       const scopeFlags = [
-        ...(summary?.projects ?? []).filter((scope) => scope.overCap).map((scope) => `project ${scope.key} ${scope.count}/${scope.cap}`),
-        ...(summary?.epics ?? []).filter((scope) => scope.overCap).map((scope) => `epic ${scope.key} ${scope.count}/${scope.cap}`),
+        ...(summary?.projects ?? [])
+          .filter((scope) => scope.overCap)
+          .map((scope) => `project ${scope.key} ${scope.count}/${scope.cap}`),
+        ...(summary?.epics ?? [])
+          .filter((scope) => scope.overCap)
+          .map((scope) => `epic ${scope.key} ${scope.count}/${scope.cap}`),
       ];
       if (summary?.overCap) scopeFlags.unshift(`lane over cap by ${summary.count - summary.cap}`);
       const overCapBadges = scopeFlags
@@ -1628,7 +1663,7 @@ export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDeta
   const fragBoard = viewQuery ? `/frag/board?${viewQuery}` : "/frag/board";
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('${fragBoard}')" data-on-dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('${fragBoard}')" data-on:dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
     provenance,
     "/board",
     ACTION_SCRIPT,
@@ -1689,7 +1724,12 @@ export function forecastSummaryHtml(contracts: ForecastContract[] | undefined): 
   return `<div class="forecast">${lines}</div>`;
 }
 
-function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow, forecasts?: Map<RefKey, ForecastContract[]>, spend?: SpendCardsView | null): string {
+function roadmapDrilldown(
+  drill: RoadmapDrill,
+  row: RoadmapRow,
+  forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
+): string {
   const parts: string[] = [];
   if (!drill.epic) {
     parts.push(`<p class="muted">No epic yet — no Project epic matches this roadmap row.</p>`);
@@ -1756,7 +1796,24 @@ function roadmapCard(
   const horizonWarning = row.horizonError
     ? ` <span class="badge horizon-invalid" title="${esc(row.horizonError)}">Invalid Horizon</span>`
     : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
+  // #1198: the row's status is Grist's; when the linked GitHub item's
+  // derived lifecycle status (or its Project Status) disagrees
+  // canonically, show BOTH instead of silently picking Grist's.
+  let statusClash = "";
+  const ghLinked = refs.map((r) => items.get(r)).find((x) => x !== undefined);
+  if (ghLinked) {
+    const gristCanonical = canonicalStatusFor("grist", row.status);
+    const derived = ghItemDerivedStatus(ghLinked);
+    if (gristCanonical && derived && derived !== gristCanonical) {
+      statusClash = ` <span class="badge stale" title="The Grist Roadmap Status and the status derived from the linked GitHub item disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">⚠ grist: ${esc(row.status)} · derived: ${esc(derived)}</span>`;
+    } else if (gristCanonical && ghLinked.projectStatus) {
+      const projectCanonical = canonicalStatusFor("project", ghLinked.projectStatus);
+      if (projectCanonical && projectCanonical !== gristCanonical) {
+        statusClash = ` <span class="badge stale" title="The Grist Roadmap Status and the Project Status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">⚠ grist: ${esc(row.status)} · project: ${esc(ghLinked.projectStatus)}</span>`;
+      }
+    }
+  }
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1840,7 +1897,11 @@ export function renderRoadmap(
           .map(([theme, themeRows]) => {
             const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
             const cards = (laneRows: RoadmapRow[]) =>
-              laneRows.map((row) => roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts, spend)).join("");
+              laneRows
+                .map((row) =>
+                  roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts, spend),
+                )
+                .join("");
             const lanes = dg.lanes
               .map((lane) => {
                 const laneRows = lane.rows.filter((row) => (row.area || "Unthemed") === theme);
@@ -1849,8 +1910,12 @@ export function renderRoadmap(
               .join("");
             const outsideRows = dg.outsideRows.filter((row) => (row.area || "Unthemed") === theme);
             const coarseRows = dg.coarse.filter((row) => (row.area || "Unthemed") === theme);
-            const outside = outsideRows.length ? `<h3>Outside this window (${outsideRows.length})</h3>${cards(outsideRows)}` : "";
-            const coarse = coarseRows.length ? `<h3>Undated or coarse horizons (${coarseRows.length})</h3>${cards(coarseRows)}` : "";
+            const outside = outsideRows.length
+              ? `<h3>Outside this window (${outsideRows.length})</h3>${cards(outsideRows)}`
+              : "";
+            const coarse = coarseRows.length
+              ? `<h3>Undated or coarse horizons (${coarseRows.length})</h3>${cards(coarseRows)}`
+              : "";
             return `<section class="roadmap-theme"><h2>${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></h2>${lanes}${outside}${coarse}</section>`;
           })
           .join("")
@@ -2138,7 +2203,11 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
     ? ` <a class="badge conflict" href="/quota/service/${esc(svc.id)}" title="Sources disagree — the dated history is on the detail page">conflict</a>`
     : "";
   const pace = paceLineHtml(svc.id, history);
-  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
+  const extractionGap =
+    svc.extractionHealth?.status === "gap"
+      ? ` <span class="badge blocked" title="${esc(svc.extractionHealth.reason ?? "extractor miss")}">extraction gap</span>`
+      : "";
+  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}${extractionGap}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
 }
 
 function uninstrumentedServicesHtml(services: UsageView["uninstrumentedServices"]): string {
@@ -2181,10 +2250,7 @@ function chargesStripHtml(usage: UsageView): string {
 /** Lazy-refresh strip (#1171): a visible "refreshing" marker while a
  *  gatherer run is in flight, plus the manual refresh-now control. Both
  *  use the same trigger path; neither blocks the page on provider calls. */
-function quotaRefreshHtml(
-  refresh?: import("./quota-refresh.ts").RefreshStatus,
-  generatedAt?: string | null,
-): string {
+function quotaRefreshHtml(refresh?: import("./quota-refresh.ts").RefreshStatus, generatedAt?: string | null): string {
   if (!refresh) return "";
   const marker = refresh.refreshing
     ? `<span class="badge refreshing" data-quota-refreshing="true">refreshing — the quota gatherer is running; reload for updated data</span>`
@@ -2270,6 +2336,10 @@ export function renderQuota(
   /** Lazy-refresh state (#1171): renders the "refreshing" marker and the
    *  manual refresh-now control. Absent means no request was made. */
   refresh?: import("./quota-refresh.ts").RefreshStatus,
+  /** Analytics & projection model (2026-11-13): built by the server
+   *  from the route ledger + snapshot store; absent/null renders no
+   *  section (older callers and tests are unaffected). */
+  analytics?: import("./analytics-store.ts").QuotaAnalytics | null,
 ): string {
   // "-direct" display rule (#6125): judged over every provider name/id
   // this surface renders — pool providers, pool ids, burn rows, the
@@ -2281,9 +2351,7 @@ export function renderQuota(
     ...view.pools.map((p) => p.id),
     ...(view.burn ?? []).map((b) => b.provider),
     ...(view.burn ?? []).map((b) => b.pool),
-    ...(view.choices
-      ? [...view.choices.hasHeadroom, ...view.choices.burnBeforeReset, ...view.choices.doNotStart]
-      : []),
+    ...(view.choices ? [...view.choices.hasHeadroom, ...view.choices.burnBeforeReset, ...view.choices.doNotStart] : []),
     ...(view.credentialLifecycle ?? []).map((c) => c.providerName),
   ]);
   const display = (name: string) => displayNames.get(name) ?? name;
@@ -2348,7 +2416,12 @@ export function renderQuota(
       const fresh = p.freshness
         ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtDate(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
         : "";
-      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
+      const extractionGap =
+        p.extractionHealth?.status === "gap"
+          ? ` <span class="badge blocked" title="${esc(p.extractionHealth.reason ?? "extractor miss")}">extraction gap</span>`
+          : "";
+
+      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${extractionGap}${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
     })
     .join("");
   const burn = view.burn
@@ -2359,7 +2432,7 @@ export function renderQuota(
     .join("");
   const choices = (list: string[]) => (list.length ? list.map((id) => esc(display(id))).join(", ") : "—");
   const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table class="table table-zebra"><caption>Burn between resets</caption><tr><th scope="col">Provider</th><th scope="col">Pool</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
-<h2>Model choice</h2><div class="tblwrap"><table class="table table-zebra"><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
+<h2 id="model-choice">Model choice</h2><div class="tblwrap"><table class="table table-zebra"><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
 <tr><td>Headroom for a new session</td><td>${choices(view.choices.hasHeadroom)}</td></tr>
 <tr><td>Burn-it-before-reset (unused headroom)</td><td>${choices(view.choices.burnBeforeReset)}</td></tr>
 <tr><td>Do not start a second session</td><td>${choices(view.choices.doNotStart)}</td></tr></table></div>`;
@@ -2371,6 +2444,7 @@ ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Pools</h2>${pools}
+${analytics ? analyticsSectionHtml(analytics, display) : ""}
 ${burnAndChoices}`,
       provenance,
       "/quota",
@@ -2415,6 +2489,7 @@ ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Token quotas</h2>${pools}
+${analytics ? analyticsSectionHtml(analytics, display) : ""}
 ${paygCardHtml(usage)}
 <h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}${uninstrumentedServicesHtml(usage.uninstrumentedServices ?? [])}
 ${chargesStripHtml(usage)}
@@ -2665,7 +2740,8 @@ function tierItemCard(
   // carries a gh: ref, and every card expands inline to its full
   // detail — source, state, since/lastSeenAt, horizon, blockedBy,
   // the question payload, and the recorded action history.
-  const titleHtml = item.ref && isValidRef(item.ref) ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
+  const titleHtml =
+    item.ref && isValidRef(item.ref) ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
   const questionPayload = item.questions?.length
     ? `<dt>Questions</dt><dd>${item.questions
         .map(
@@ -3079,6 +3155,54 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
 })();
 </script>`;
 
+/**
+ * The live "Questions" section (#9354): the open decision sets from
+ * the decision-set store, newest first, each linking to its own
+ * token page via `pageUrlFor`. Pure HTML from already-computed
+ * summaries — no I/O here, so tests render it directly.
+ * summaries === null means the store could not be read: the section
+ * says "unavailable" rather than rendering a confident zero (the
+ * needsDrewCensusHtml pattern). summaries === undefined means the
+ * caller predates the section and it is omitted entirely.
+ * Fully-resolved sets are excluded here as well as by callers, so
+ * the counts can never include a settled set.
+ */
+const QUESTIONS_STAMP = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+export function questionsSectionHtml(
+  summaries: DecisionSetSummary[] | null | undefined,
+  pageUrlFor: (summary: DecisionSetSummary) => string,
+): string {
+  if (summaries === undefined) return "";
+  const allSetsLink = `<p><a href="/decisions">All decision sets</a></p>`;
+  const footer = `<p class="muted">Live from the decision-set store at page load.</p>`;
+  if (summaries === null) {
+    return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">Unavailable — the decision-set store could not be read, so open questions cannot be reported here.</p>${allSetsLink}${footer}</section>`;
+  }
+  const open = summaries
+    .filter((s) => s.openQuestions > 0)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (!open.length) {
+    return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">No open questions right now — the stack is clear.</p>${allSetsLink}${footer}</section>`;
+  }
+  const totalOpen = open.reduce((n, s) => n + s.openQuestions, 0);
+  const rows = open
+    .map((s) => {
+      const stamp = Number.isFinite(Date.parse(s.createdAt)) ? QUESTIONS_STAMP.format(new Date(s.createdAt)) : s.createdAt;
+      return `<div class="card"><a href="${esc(pageUrlFor(s))}"><strong>${esc(s.title)}</strong></a><br><span class="muted">${s.openQuestions} open question${s.openQuestions === 1 ? "" : "s"} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · Raised ${esc(stamp)}</span></div>`;
+    })
+    .join("");
+  return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">${open.length} open set${open.length === 1 ? "" : "s"} · ${totalOpen} open question${totalOpen === 1 ? "" : "s"}</p>${rows}${allSetsLink}${footer}</section>`;
+}
+
 export function renderAttention(
   view: AttentionView,
   coverage: SourceCoverage[],
@@ -3088,12 +3212,13 @@ export function renderAttention(
   act?: AttentionAct,
   briefs?: Map<RefKey, ItemBrief>,
   census?: NeedsDrewCensus | null,
+  questionsHtml = "",
 ): string {
   const sections = attentionSections(view, coverage, counts, act, briefs, census);
   return layout(
     "Needs you",
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
-${sections.header}${sections.queues}${sections.sessions}`,
+${sections.header}${sections.queues}${sections.sessions}${questionsHtml}`,
     provenance,
     "/attention",
     act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT : "",
@@ -3358,7 +3483,7 @@ ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale $
  *  a refresh re-patches the container with itself (attrs included). */
 export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string, query = ""): string {
   const q = query ? `?${query}` : "";
-  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}${q}')" data-on-dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
+  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}${q}')" data-on:dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
 }
 
 /**
@@ -3366,13 +3491,13 @@ export function attentionFragment(section: "header" | "queues" | "sessions", inn
  * immediately; the three heavy sections stream in as fragments.
  * Without JS, a meta refresh lands on the full server render.
  */
-export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail, refs?: string): string {
+export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail, refs?: string, questionsHtml = ""): string {
   const refsQuery = refs ? `refs=${encodeURIComponent(refs)}` : "";
   const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
   const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>
 ${attentionFragment("header", skel("queue status"), refsQuery)}
 ${attentionFragment("queues", skel("the queues"), refsQuery)}
-${attentionFragment("sessions", skel("sessions"), refsQuery)}`;
+${attentionFragment("sessions", skel("sessions"), refsQuery)}${questionsHtml}`;
   return layout(
     "Needs you",
     body,
@@ -3472,6 +3597,7 @@ export function renderTodayBody(
   quotaUnavailable = false,
   queue?: QueueView,
   queueStale = false,
+  questionsHtml = "",
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
   const quotaActions = buildQuotaActions(quota, AA_PLAN_FACTS);
@@ -3500,8 +3626,12 @@ export function renderTodayBody(
   }
   const wipViolations = (today.wipLanes ?? []).flatMap((lane) => [
     ...(lane.overCap ? [`${lane.lane} ${lane.count}/${lane.cap}`] : []),
-    ...lane.projects.filter((scope) => scope.overCap).map((scope) => `project ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
-    ...lane.epics.filter((scope) => scope.overCap).map((scope) => `epic ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+    ...lane.projects
+      .filter((scope) => scope.overCap)
+      .map((scope) => `project ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+    ...lane.epics
+      .filter((scope) => scope.overCap)
+      .map((scope) => `epic ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
   ]);
   if (wipViolations.length) {
     alerts.push(
@@ -3526,7 +3656,7 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
-  const quotaObjectives = quotaActions.map((a) => ({
+  const quotaObjectives: TodayObjective[] = quotaActions.map((a) => ({
     title: a.title,
     detail: a.detail,
     chip: "quota · action",
@@ -3541,7 +3671,7 @@ export function renderTodayBody(
     ? allObjectives
         .map(
           (o, i) =>
-            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
+            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.statusNote ? `<br><span class="badge stale" title="Source status vs derived status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">${esc(o.statusNote)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
         )
         .join("")
     : `<p class="muted">No objectives lined up for today.</p>`;
@@ -3570,7 +3700,7 @@ export function renderTodayBody(
   return `${todayHealthStrip(health, quota, quotaUnavailable)}${provenanceLine}${alerts.join("")}
 <h2>Top objectives</h2>${objectives}
 <h2>Project momentum</h2>${momentum}
-${nextUp}${actions}${coverageHtml(coverage)}`;
+${nextUp}${questionsHtml}${actions}${coverageHtml(coverage)}`;
 }
 
 /** The today page (#1444): full server render. */
@@ -3585,10 +3715,11 @@ export function renderToday(
   quotaUnavailable = false,
   queue?: QueueView,
   queueStale = false,
+  questionsHtml = "",
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage, health, quotaUnavailable, queue, queueStale)}`,
+    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage, health, quotaUnavailable, queue, queueStale, questionsHtml)}`,
     provenance,
     "/today",
     "",
@@ -3603,10 +3734,11 @@ export function renderTodayShell(
   health: HealthView | null,
   quota: QuotaView,
   quotaUnavailable = false,
+  questionsHtml = "",
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>`,
+    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>${questionsHtml}`,
     provenance,
     "/today",
     "",
@@ -3642,9 +3774,20 @@ function queueRows(rows: QueueRow[], empty: string): string {
           : `<br><span class="muted">Epic: ${esc(item.epic.title)}</span>`
         : "";
       const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
+      const signals = item.signals?.length
+        ? `<br>${item.signals
+            .map(
+              (signal) =>
+                `<span class="badge ${signal === "open-pr" ? "open" : signal === "active-session" ? "orch" : "src"}">${signal === "project-status" ? "Project Status" : signal === "active-session" ? "Active session" : "Open PR"}</span>`,
+            )
+            .join(" ")}`
+        : "";
+      const clash = item.disagreement
+        ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(item.disagreement.project)} · derived: ${esc(item.disagreement.derived)}</span>`
+        : "";
       const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
       const title = item.url ? `<a href="${esc(item.url)}">${esc(item.title)}</a>` : esc(item.title);
-      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${epic}${why}${blockers}${worker}</article>`;
+      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${signals}${clash}${epic}${why}${blockers}${worker}</article>`;
     })
     .join("")}</div>`;
 }
@@ -3672,7 +3815,7 @@ export function renderQueue(view: QueueView, provenance: Provenance, detail?: Pr
 export function renderQueueShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Queue",
-    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
+    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
     provenance,
     "/queue",
     "",
@@ -3705,16 +3848,9 @@ export interface OverviewData {
   actionsByObject?: Map<string, DashAction[]>;
 }
 
-export type OverviewInProgressSignal = "project-status" | "active-session" | "open-pr";
+export type OverviewInProgressSignal = InProgressSignal;
 
-export interface OverviewInProgressItem {
-  ref: RefKey;
-  title: string;
-  repo: string;
-  url: string;
-  signals: OverviewInProgressSignal[];
-  disagreement: { project: string; derived: string } | null;
-}
+export type OverviewInProgressItem = ReconciledInProgressItem;
 
 export interface OverviewSummary {
   /** count is null when the tier source is not present: the queue is
@@ -3725,101 +3861,6 @@ export interface OverviewSummary {
   health: { degraded: boolean; up: number; down: number; total: number; feedAgeMs: number | null };
   recentDone: { title: string; repo: string }[];
   inProgress: OverviewInProgressItem[];
-}
-
-function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
-  const poolByRef = new Map(data.pool.map((item) => [item.ref, item]));
-  const rows = new Map<
-    RefKey,
-    {
-      ref: RefKey;
-      title: string;
-      repo: string;
-      url: string;
-      signals: Set<OverviewInProgressSignal>;
-    }
-  >();
-  const ensure = (ref: RefKey, title?: string, repo?: string, url?: string) => {
-    const project = poolByRef.get(ref);
-    const item = data.items?.get(ref);
-    const existing = rows.get(ref);
-    if (existing) return existing;
-    const hashAt = ref.lastIndexOf("#");
-    const row = {
-      ref,
-      title: project?.title ?? item?.title ?? title ?? ref,
-      repo: project?.repo ?? (hashAt >= 0 ? ref.slice(0, hashAt) : (repo ?? "")),
-      url: project?.issueUrl ?? item?.url ?? url ?? refUrl(ref),
-      signals: new Set<OverviewInProgressSignal>(),
-    };
-    rows.set(ref, row);
-    return row;
-  };
-  const signal = (ref: RefKey, kind: OverviewInProgressSignal, title?: string, repo?: string, url?: string) => {
-    ensure(ref, title, repo, url).signals.add(kind);
-  };
-
-  for (const item of data.pool) {
-    if (item.status === "In Progress") signal(item.ref, "project-status", item.title, item.repo, item.issueUrl);
-    if (item.contentKind === "pr" && item.state === "open")
-      signal(item.ref, "open-pr", item.title, item.repo, item.issueUrl);
-  }
-  for (const goal of data.orchestration?.goals ?? []) {
-    for (const task of goal.linedUp) {
-      if (task.status !== "in-progress") continue;
-      if (task.ref) {
-        // #6205: a lined-up ref is feed data, not necessarily a GitHub
-        // ref (goal ids, bare numbers). Signaling an invalid ref makes
-        // ensure() fall back to refUrl(), whose parseRef throws and
-        // kills the whole overview — skip refs the shared rule rejects.
-        if (isValidRef(task.ref)) signal(task.ref, "active-session", task.title);
-        continue;
-      }
-      for (const ref of refsInText(task.title)) signal(ref, "active-session", task.title);
-      for (const match of task.title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
-        const ref = `${match[1]}#${match[2]}`;
-        // #6205: same guard for title-scraped refs — \d+ admits
-        // numbers parseRef rejects as unsafe integers.
-        if (isValidRef(ref)) signal(ref, "active-session", task.title);
-      }
-    }
-  }
-  for (const boardItem of data.board) {
-    const openPr = boardItem.links.some((link) => {
-      const item = data.items?.get(link.ref);
-      return item?.kind === "pr" && item.state === "open";
-    });
-    for (const link of boardItem.links) {
-      const item = data.items?.get(link.ref);
-      const title = item?.title ?? boardItem.title;
-      const repo = item?.ref.slice(0, link.ref.lastIndexOf("#")) ?? boardItem.repo;
-      if (boardItem.source === "orchestrator" && boardItem.orchStatus === "in-progress") {
-        signal(link.ref, "active-session", title, repo, item?.url);
-      }
-      // A board card ties its linked issue and PR to the same work item.
-      if (openPr) signal(link.ref, "open-pr", title, repo, item?.url);
-    }
-  }
-
-  const additionalInProgressRefs = new Set<RefKey>();
-  for (const row of rows.values()) {
-    if (row.signals.has("active-session") || row.signals.has("open-pr")) additionalInProgressRefs.add(row.ref);
-  }
-  const signalOrder: OverviewInProgressSignal[] = ["project-status", "active-session", "open-pr"];
-  return [...rows.values()]
-    .map((row) => {
-      const project = poolByRef.get(row.ref);
-      const disagreement = project ? projectDisagreement(project, data.orchestration, additionalInProgressRefs) : null;
-      return {
-        ref: row.ref,
-        title: row.title,
-        repo: row.repo,
-        url: row.url,
-        signals: signalOrder.filter((item) => row.signals.has(item)),
-        disagreement,
-      };
-    })
-    .sort((a, b) => a.repo.localeCompare(b.repo) || a.title.localeCompare(b.title) || a.ref.localeCompare(b.ref));
 }
 
 export function deriveOverview(data: OverviewData): OverviewSummary {
@@ -3965,7 +4006,7 @@ export function renderOverview(data: OverviewData, provenance: Provenance, detai
 export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Overview",
-    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on-dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
+    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
     provenance,
     "/",
     "",
@@ -6172,10 +6213,18 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
           else if (s.status === "error") status = '<span class="badge stale">error</span>';
           else if (s.status === "skipped") status = '<span class="muted">skipped</span>';
           else status = s.present ? "present · ok" : "empty · ok";
-          return `<tr><td><code>${esc(s.key)}</code></td><td>${status}</td><td>${s.ageMs !== undefined ? esc(ageMsText(s.ageMs)) : "—"}</td><td>${s.note ? esc(s.note) : ""}</td></tr>`;
+          return `<tr><td><code>${esc(s.key)}</code></td><td>${status}</td><td>${s.ageMs !== undefined ? esc(ageMsText(s.ageMs)) : "—"}</td><td>${s.behindBy === null ? "unknown" : s.behindBy}</td><td>${s.lastSyncAt ? esc(s.lastSyncAt) : "—"}</td><td>${s.lagNote ? esc(s.lagNote) : ""}</td><td>${s.note ? esc(s.note) : ""}</td></tr>`;
         })
         .join("")
-    : `<tr><td colspan="4" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
+    : `<tr><td colspan="7" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
+  const gathererRows = view.quotaGatherer?.providers.length
+    ? view.quotaGatherer.providers
+        .map(
+          (p) =>
+            `<tr><td><code>${esc(p.providerId)}</code>${p.credentialLabel ? ` · ${esc(p.credentialLabel)}` : ""}</td><td>${esc(p.serviceId)}</td><td>${esc(p.state)}</td><td>unknown</td><td>${p.lastSyncAt ? esc(p.lastSyncAt) : "—"}</td><td>${esc(p.lagNote)}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="6" class="muted">No quota-gatherer provider rows are available.</td></tr>`;
   const orch = view.jobs.orchestration;
   const orchLine = orch.generatedAt
     ? `last run <code>${esc(orch.runId ?? "unknown")}</code> · ${esc(ageMsText(orch.ageMs ?? 0))} · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""} · next expected ~${esc(orch.nextExpectedAt ?? "")} (hourly cadence — an expectation, not a promise)`
@@ -6226,6 +6275,17 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
   const rfaSection = `<h2 id="ready-for-agent">ready-for-agent harness</h2>
 <div class="card">${rfaState} — ${esc(rfa.detail)}<br>${rfaBackendLine}</div>
 <div class="tblwrap"><table class="table table-zebra"><caption>ready-for-agent repositories — settings and dispatch work items</caption><tr><th scope="col">Repository</th><th scope="col">Paused</th><th scope="col">Merge policy</th><th scope="col">Work items</th></tr>${rfaRepoRows}</table></div>`;
+  // #3976: push health — the freshness journal + reconciler state,
+  // rendered beside (never merged into) the per-source freshness
+  // story: the push state describes the delivery machinery, each
+  // source row describes that source's own data age and lag.
+  const push = view.push;
+  const pushSection = push
+    ? `<h2 id="push-health">Push health \u2014 event-driven freshness (#3976)</h2>
+<div class="chips fresh" aria-label="Push freshness"><span class="chip">push: ${esc(push.state)}</span></div>
+<div class="card"><span class="dot ${push.state === "up" ? "up" : push.state === "down" ? "down" : "stale"}"></span><strong>${esc(push.state)}</strong> \u2014 ${esc(push.detail)}<br>last event ${push.lastEventAt ? esc(ageMsText(Math.max(0, nowMs - Date.parse(push.lastEventAt)))) : "none recorded"} \u00b7 last successful reconcile ${push.lastSuccessfulReconcileAt ? esc(ageMsText(Math.max(0, nowMs - Date.parse(push.lastSuccessfulReconcileAt)))) : "never in this process"} \u00b7 journal cursor <code>${push.cursor ?? "unknown"}</code> \u00b7 gaps: <strong>${push.gaps.open} open</strong> \u00b7 ${push.gaps.repairedTotal} repaired by reconciliation \u00b7 ${push.gaps.resetsTotal} journal reset(s)${push.gaps.lastResetAt ? ` (last ${esc(push.gaps.lastResetAt)})` : ""}</div>
+<div class="tblwrap"><table class="table table-zebra"><caption>Push sources \u2014 freshness is per source; a quiet source is silent, not an outage</caption><tr><th scope="col">Source</th><th scope="col">State</th><th scope="col">Last event</th><th scope="col">Age</th><th scope="col">Lag</th><th scope="col">Notices</th></tr>${push.sources.map((s) => `<tr><td><code>${esc(s.source)}</code></td><td>${esc(s.state)}${s.missingNotice ? ' \u00b7 <span class="badge stale">notice missing \u2014 gap open</span>' : ""}</td><td>${s.lastEventAt ? esc(s.lastEventAt) : "\u2014"}</td><td>${s.ageMs !== null ? esc(ageMsText(s.ageMs)) : "\u2014"}</td><td>${s.lagMs !== null ? esc(ageMsText(s.lagMs)) : "\u2014"}</td><td>${s.notices}</td></tr>`).join("")}</table></div>`
+    : `<h2 id="push-health">Push health \u2014 event-driven freshness (#3976)</h2>\n<p class="muted">Push health is not assembled in this mode \u2014 no state is invented for it.</p>`;
   const cov = view.itemsCoverage;
   const coverageLine =
     cov && cov.total > 0
@@ -6260,8 +6320,11 @@ ${degraded}${modeNote}
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
 <div class="tblwrap"><table class="table table-zebra"><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
 ${rfaSection}
+${pushSection}
 <h2>Feed sections</h2>
-<div class="tblwrap"><table class="table table-zebra"><caption>Feed sections — presence and age</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
+<div class="tblwrap"><table><caption>Feed sections — presence, age, lag, and last sync</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
+<h2>Quota gatherer sources</h2>
+<div class="tblwrap"><table><caption>Quota-gatherer provider freshness and lag</caption><tr><th scope="col">Provider</th><th scope="col">Service</th><th scope="col">State</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th></tr>${gathererRows}</table></div>
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
@@ -6364,23 +6427,21 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
       : `${v} <span class="muted">(${d > 0 ? "+" : ""}${d})</span>`;
   };
   const rows = current.repos
-    .map(
-      (r) => {
-        const state = staleIssueState(r);
-        const status =
-          state === "error"
-            ? `Collection error${r.staleIssuesError ? `: ${esc(r.staleIssuesError)}` : ""}`
-            : state === "stale"
-              ? "STALE — collection is over 7 days old"
-              : state === "unavailable"
-                ? "Unavailable — collection failed or not collected"
-                : "Current";
-        const collectedAt = r.staleIssuesCollectedAt
-          ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
-          : "—";
-        return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
-      },
-    )
+    .map((r) => {
+      const state = staleIssueState(r);
+      const status =
+        state === "error"
+          ? `Collection error${r.staleIssuesError ? `: ${esc(r.staleIssuesError)}` : ""}`
+          : state === "stale"
+            ? "STALE — collection is over 7 days old"
+            : state === "unavailable"
+              ? "Unavailable — collection failed or not collected"
+              : "Current";
+      const collectedAt = r.staleIssuesCollectedAt
+        ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
+        : "—";
+      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
+    })
     .join("");
   const note = baseline
     ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
@@ -6405,6 +6466,19 @@ export function briefPanelHtml(brief: ItemBrief): string {
     ? `<br><span>⚠ ${esc(brief.disagreement.text)} Evidence: ${ev(brief.disagreement.evidence)}.</span>`
     : "";
   return `<div class="brief" style="border-left:3px solid #888;padding-left:0.6em;margin-top:0.4em"><strong>Derived brief</strong> <span class="muted">(derived from the projection — not authored)</span><br><span>State: ${esc(brief.state.text)} Evidence: ${ev(brief.state.evidence)}.</span><br><span>Blocker: ${esc(brief.blocker.text)} Evidence: ${ev(brief.blocker.evidence)}.</span><br><span>${activity}</span><br><span>Next: ${esc(brief.nextAction.text)} Evidence: ${ev(brief.nextAction.evidence)}.</span>${clash}</div>`;
+}
+
+/** The canonical status taxonomy (#1198 acceptance 1): the mapping
+ * table from status-taxonomy.ts, rendered where the pool renders —
+ * /projects standalone and the pool section of /program. */
+export function statusTaxonomyHtml(): string {
+  const rows = STATUS_TAXONOMY.map(
+    (row) =>
+      `<tr><td>${esc(STATUS_SOURCE_LABELS[row.source])}</td><td>${esc(row.raw)}</td><td>${esc(row.canonical)}</td></tr>`,
+  ).join("");
+  return `<h2>Canonical status taxonomy (#1198)</h2>
+<p class="muted">One canonical status set — ${CANONICAL_STATUSES.map(esc).join(" · ")} — and every source's vocabulary mapped into it. An item's canonical status is the same on every page for the same inputs; a source value with no row here is unmapped and surfaces as a ⚠ disagreement rather than being guessed. The ⚠ badges on Board, Roadmap, Today, and this pool all compare through this table.</p>
+<div class="tblwrap"><table><caption>Per-source status mapping to the canonical set</caption><thead><tr><th scope="col">Source</th><th scope="col">Source status</th><th scope="col">Canonical status</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 export function projectsBodyHtml(
@@ -6500,6 +6574,7 @@ export function projectsBodyHtml(
 <div class="chips">${chips}</div>
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 ${coverageSectionHtml(opts.coverage)}
+${statusTaxonomyHtml()}
 <p class="muted">Weighted progress (effort xs=1 · s=4 · m=12 · l=40, #1108): <strong>${esc(weightedLine(shownWeights))}</strong><br>${esc(handsLine(shownWeights))}</p>
 ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
 <p class="muted">Live services: ${serviceHomeLinks()
@@ -6800,22 +6875,22 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
   const ranked = g.rankedBlocked;
   const rankedHtml = ranked.length
     ? `<ul class="epic-graph-list">${ranked
-        .map(
-          (r) => {
-            const blockerItems = r.blockers.map((b) => poolRefLink(b));
-            const contributingItems = r.contributingItems.length > 0
+        .map((r) => {
+          const blockerItems = r.blockers.map((b) => poolRefLink(b));
+          const contributingItems =
+            r.contributingItems.length > 0
               ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => poolRefLink(ci)).join(", ")}</span>`
               : "";
-            return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
-          },
-        )
+          return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
+        })
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
 
   const rankedBlockersHtml = g.rankedBlockers.length
     ? `<ol class="epic-graph-list">${g.rankedBlockers
         .map((blocker) => {
-          const stateText = blocker.state === null ? "outside this pool; status unknown — unresolved" : "open unresolved blocker";
+          const stateText =
+            blocker.state === null ? "outside this pool; status unknown — unresolved" : "open unresolved blocker";
           const downstream = blocker.downstreamItems
             .map((item) => {
               const weightText = item.effortWeight === null ? "unsized" : `effort weight ${item.effortWeight}`;

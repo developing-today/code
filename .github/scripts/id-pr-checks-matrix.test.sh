@@ -8,7 +8,7 @@ trap 'rm -rf "$tmp"' EXIT
 sed 's/^/  /; s/$/ \r/' "$dir/id-pr-checks.txt" >"$tmp/variant"
 expected="$(bash "$dir/id-pr-checks-matrix.sh" "$dir/id-pr-checks.txt")"
 actual="$(bash "$dir/id-pr-checks-matrix.sh" "$tmp/variant")"
-[[ "$expected" == "$actual" ]]
+[[ $expected == "$actual" ]]
 
 printf ' alpha \r\n beta\r\n\talpha\t\r\n # comment\r\n \r\n' >"$tmp/duplicates"
 [[ "$(bash "$dir/id-pr-checks-matrix.sh" "$tmp/duplicates")" == '["alpha","beta"]' ]]

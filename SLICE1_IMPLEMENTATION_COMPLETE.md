@@ -23,35 +23,39 @@ The OpenCode execution lane claimant/executor slice 1 implementation is now comp
 
 ### The 6-Step Execution Process
 
-| Step | Function | Status |
-|------|----------|--------|
-| 1 | **Supervision** - Check bound sessions for recovery | ✅ Implemented |
-| 2 | **Gate** - Check for unbound candidates | ✅ Implemented |
-| 3 | **Cap** - Check concurrency limits (36 sessions) | ✅ Implemented |
-| 4 | **Launch** - Create sessions and bind tasks | ✅ Implemented |
-| 5 | **Terminal States** - Handled by worker sessions | ✅ Handled |
-| 6 | **Logging** - Record fire execution results | ✅ Implemented |
+| Step | Function                                            | Status         |
+| ---- | --------------------------------------------------- | -------------- |
+| 1    | **Supervision** - Check bound sessions for recovery | ✅ Implemented |
+| 2    | **Gate** - Check for unbound candidates             | ✅ Implemented |
+| 3    | **Cap** - Check concurrency limits (36 sessions)    | ✅ Implemented |
+| 4    | **Launch** - Create sessions and bind tasks         | ✅ Implemented |
+| 5    | **Terminal States** - Handled by worker sessions    | ✅ Handled     |
+| 6    | **Logging** - Record fire execution results         | ✅ Implemented |
 
 ---
 
 ## 🔧 Key Features
 
 ### 🛡️ Mode Handling
+
 - **Shadow mode** (default): Discovery and read-only supervision only
 - **Live mode**: Full execution including mutations
 - Mode controlled via `~/.local/state/opencode-claimant/mode`
 
 ### 📊 Concurrency Cap
+
 - **36 active root sessions** maximum (raised from 12→20→36 on 2026-11-05)
 - Monitored via OpenCode server API
 - Prevents overloading the fleet
 
 ### 🔄 Recovery Rules (#4758, Phase 3 of #4912)
+
 - **Zero-message recovery**: Sessions with no messages that never received prompts
 - **Gone-session recovery**: Sessions absent from the server
 - **Atomic operations**: Compare-and-clear guards prevent duplicate execution
 
 ### 🔒 Hard Rules Enforced
+
 - Never work tasks directly (only claim/bind/launch/record)
 - No credentials in prompts/logs
 - No cap violations
@@ -61,6 +65,7 @@ The OpenCode execution lane claimant/executor slice 1 implementation is now comp
 - Task state verification before launch
 
 ### 📝 Fire Logging
+
 - JSON lines written to `~/.local/state/opencode-claimant/fires.jsonl`
 - Records: timestamp, mode, candidates, sessions launched, cap room, skips
 - Persistent across fires for audit trail
@@ -70,6 +75,7 @@ The OpenCode execution lane claimant/executor slice 1 implementation is now comp
 ## 📁 Files Created/Modified
 
 ### New Files (Slice 1 Implementation)
+
 ```
 pm-stack/opencode-claimant/
 ├── claimant.py              (18:2561) - Main execution script
@@ -81,6 +87,7 @@ pm-stack/opencode-claimant/
 ```
 
 ### Modified Files
+
 ```
 pm-stack/opencode-claimant/
 └── poll.py                  - Added missing `time` import (bug fix)
@@ -132,6 +139,7 @@ pm-stack/opencode-claimant/
 ```
 
 ### Manual Verification
+
 ```bash
 $ cd /home/user/git/code/pm-stack/opencode-claimant
 $ python3 claimant.py
@@ -140,8 +148,8 @@ Running gate step...
 No unbound opencode-lane candidates found. Exiting.
 
 $ tail -3 ~/.local/state/opencode-claimant/fires.jsonl
-{"timestamp": "2026-11-07T05:36:05.850355+00:00", "mode": "shadow", 
- "candidates_seen": [], "sessions_launched": [], "cap_room": 0, 
+{"timestamp": "2026-11-07T05:36:05.850355+00:00", "mode": "shadow",
+ "candidates_seen": [], "sessions_launched": [], "cap_room": 0,
  "skips": [{"reason": "no_candidates"}]}
 ```
 
@@ -150,22 +158,26 @@ $ tail -3 ~/.local/state/opencode-claimant/fires.jsonl
 ## 🚀 Usage Instructions
 
 ### Run in Shadow Mode (Safe Testing - Default)
+
 ```bash
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Run in Live Mode (Actual Execution)
+
 ```bash
 echo "live" > ~/.local/state/opencode-claimant/mode
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Test poll.py
+
 ```bash
 python3 pm-stack/opencode-claimant/poll.py
 ```
 
 ### Setup Commands
+
 ```bash
 cd pm-stack/opencode-claimant
 make all      # Make scripts executable
@@ -228,11 +240,13 @@ make install  # Create state directory
 ### For Production Deployment
 
 1. **Set mode to live** (if not already in shadow mode):
+
    ```bash
    echo "live" > ~/.local/state/opencode-claimant/mode
    ```
 
 2. **Run in live mode** to verify it works with actual tasks:
+
    ```bash
    python3 pm-stack/opencode-claimant/claimant.py
    ```
@@ -253,14 +267,17 @@ Slice 1 is complete. Slice 2 will implement the parallel-run gate as specified i
 ### Common Issues
 
 **Issue:** poll.py returns cap_room=-1
+
 - **Cause:** OpenCode server not running
 - **Solution:** Start OpenCode server at `http://127.0.0.1:13420`
 
 **Issue:** No candidates found
+
 - **Cause:** No unbound opencode-lane tasks in queues
 - **Solution:** Check queue status with `repo-queue list`
 
 **Issue:** Mode file not found
+
 - **Cause:** First run
 - **Solution:** Defaults to shadow mode automatically
 
@@ -297,4 +314,4 @@ The OpenCode execution lane claimant/executor slice 1 is now fully implemented, 
 
 ---
 
-*Questions? See README.md in pm-stack/opencode-claimant/*
+_Questions? See README.md in pm-stack/opencode-claimant/_

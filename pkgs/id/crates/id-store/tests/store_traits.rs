@@ -21,9 +21,10 @@ use p2panda_store::topics::TopicStore;
 use id::event_store::EventStore;
 use id_core::waiting::{AuthorKey, WaitingLimits};
 use id_store::chain::{ChainExt, Event, sign};
-use id_store::event_types::{BlockKind, Ingest, StoreError};
+use id_store::event_types::{
+    Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Ingest, StoreError,
+};
 use id_store::store_traits::{ChainLog, LogEntries, SharedEventStore, TraitStoreError};
-
 
 /// One `[[package]]` entry of the lock: its name and the names it
 /// depends on. Dependency entries are `"name"`, `"name version"` or
@@ -73,9 +74,7 @@ fn dep_section_dev(section: &str) -> Option<bool> {
         "dev-dependencies" => Some(true),
         "dependencies" | "build-dependencies" => Some(false),
         _ if section.starts_with("dev-dependencies.") => Some(true),
-        _ if section.starts_with("dependencies.")
-            || section.starts_with("build-dependencies.") =>
-        {
+        _ if section.starts_with("dependencies.") || section.starts_with("build-dependencies.") => {
             Some(false)
         }
         _ => None,
@@ -239,8 +238,7 @@ fn test_the_lock_has_no_sqlite_with_logsync_wired() {
     }
 
     let vendored =
-        std::fs::read_to_string(format!("{root_dir}/vendor/p2panda-sync/Cargo.toml"))
-            .unwrap();
+        std::fs::read_to_string(format!("{root_dir}/vendor/p2panda-sync/Cargo.toml")).unwrap();
     let store_line = vendored
         .lines()
         .find(|line| line.starts_with("p2panda-store = {"))
@@ -503,8 +501,7 @@ async fn test_log_entries_stream_each_position_once_in_order() {
     let who = author_of(&alice);
     let events = chain_of(&alice, 5, None);
     ingest_all(&store, &events);
-    let stream =
-        |after, until| LogEntries::new(store.clone(), *who.as_bytes(), after, until, 2);
+    let stream = |after, until| LogEntries::new(store.clone(), *who.as_bytes(), after, until, 2);
 
     // A page of two makes the stream cross page boundaries.
     let all = drain(stream(None, None)).await;
@@ -556,8 +553,7 @@ async fn test_a_topic_resolves_to_the_authors_applied_in_it() {
     ingest_all(&store, &chain_of(&alice, 3, Some(topic)));
     ingest_all(&store, &chain_of(&bob, 1, Some(topic)));
     ingest_all(&store, &chain_of(&carol, 2, Some(other_topic)));
-    let (who_alice, who_bob, who_carol) =
-        (author_of(&alice), author_of(&bob), author_of(&carol));
+    let (who_alice, who_bob, who_carol) = (author_of(&alice), author_of(&bob), author_of(&carol));
 
     assert_eq!(
         store.resolve(&topic).await.unwrap(),
@@ -699,4 +695,51 @@ async fn test_a_poisoned_lock_is_reported_not_unwrapped() {
         store.ingest(&[], None, 0),
         Err(TraitStoreError::Poisoned)
     ));
+}
+
+/// #8750: the shared store's block lookup distinguishes a definite
+/// block and a definite unblocked answer from a lookup that could not
+/// run at all — a poisoned lock is `Indeterminate(Unavailable)`, never
+/// the same answer an unblocked peer gets. The bool seam keeps its
+/// documented fail-open meaning.
+#[test]
+#[allow(clippy::panic)]
+fn test_shared_store_block_lookup_distinguishes_blocked_unblocked_and_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+    backend
+        .add_block(&Block {
+            kind: BlockKind::PeerKey,
+            value: vec![7u8; 32],
+            added_at_ms: 1_000,
+            reason: "test block".to_owned(),
+            expires_at_ms: None,
+        })
+        .unwrap();
+    let store = SharedEventStore::new(backend);
+    let list: &dyn BlockList = &store;
+    assert_eq!(
+        list.lookup(BlockKind::PeerKey, &[7u8; 32]),
+        BlockLookup::Blocked
+    );
+    assert_eq!(
+        list.lookup(BlockKind::PeerKey, &[8u8; 32]),
+        BlockLookup::Unblocked
+    );
+    let poisoner = store.clone();
+    let panicked = std::thread::spawn(move || {
+        let _guard = poisoner.write_guard_for_test();
+        panic!("poisoning the store lock on purpose");
+    })
+    .join();
+    assert!(panicked.is_err());
+    assert_eq!(
+        list.lookup(BlockKind::PeerKey, &[8u8; 32]),
+        BlockLookup::Indeterminate(BlockLookupFailure::Unavailable),
+        "a poisoned lock must not read as an ordinary unblocked result"
+    );
+    assert!(
+        !list.is_blocked(BlockKind::PeerKey, &[8u8; 32]),
+        "the bool seam fails open on an indeterminate lookup"
+    );
 }

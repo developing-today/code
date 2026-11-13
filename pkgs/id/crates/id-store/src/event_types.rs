@@ -16,7 +16,7 @@ use redb::{CommitError, DatabaseError, StorageError, TableError, TransactionErro
 use id_core::rejection::Reason;
 use id_core::waiting::AuthorKey;
 
-pub use id_core::block_list::{BlockKind, BlockList};
+pub use id_core::block_list::{BlockKind, BlockList, BlockLookup, BlockLookupFailure};
 
 /// The store's file name in its directory.
 pub const FILE_NAME: &str = "events.redb";
@@ -60,6 +60,13 @@ pub enum StoreError {
     Occupied {
         /// The sequence number that is taken.
         seq: SeqNum,
+    },
+    /// The event has no stored body: it is header-only, its body never arrived, or no event
+    /// with this ID is stored. The typed not-found of the event-body retrieval API.
+    #[error("event {id} has no stored body")]
+    MissingBody {
+        /// The ID of the event whose body was asked for.
+        id: Hash,
     },
     /// A write failed, and the waiting events could not be rebuilt from disk. The store
     /// refuses further calls. Reopening it rebuilds them.
@@ -216,7 +223,6 @@ impl Block {
     }
 }
 
-
 /// Why an event was refused. A refused event changes nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -321,4 +327,3 @@ pub fn hash_of(bytes: &[u8]) -> Result<Hash, StoreError> {
         .map_err(|_err| corrupt("a hash is not 32 bytes"))?;
     Ok(Hash::from_bytes(bytes))
 }
-

@@ -26,13 +26,7 @@
 // same ref shape, so the join needs no hand reconstruction.
 
 import type { Client } from "@libsql/client";
-import {
-  ackConsumerCheckpoint,
-  getConsumerCheckpoint,
-  hotHighWater,
-  listHotEvents,
-  type HotEventRow,
-} from "./store";
+import { ackConsumerCheckpoint, getConsumerCheckpoint, hotHighWater, listHotEvents, type HotEventRow } from "./store";
 
 /** A fleet queue task record (subset of the broker's task JSON we read). */
 export interface QueueTaskRecord {
@@ -183,11 +177,7 @@ function toViewEvents(events: HotEventRow[]): ViewHotEvent[] {
  * events. Pure: the same inputs always produce the same view, so the
  * join is unit-testable without a database or a live broker.
  */
-export function buildQueueView(
-  tasks: QueueTaskRecord[],
-  hotEvents: HotEventRow[],
-  opts: QueueViewOptions,
-): QueueView {
+export function buildQueueView(tasks: QueueTaskRecord[], hotEvents: HotEventRow[], opts: QueueViewOptions): QueueView {
   const counts: Record<string, number> = {};
   for (const t of tasks) counts[t.status] = (counts[t.status] ?? 0) + 1;
 

@@ -32,21 +32,21 @@ Every decision below is checked against the Phase 14 principles:
 
 ## 2. Disposition of the #6280 findings (accept / reject)
 
-| # | Findings constraint | Disposition |
-|---|---|---|
-| Q1a | Agent profile needs semantic diffs / region subscriptions, not raw frame streaming | **Accept** — §4.2; delivered as an additive shell-contract revision (§9.1) |
-| Q1b | Agent input frames carry the frame/revision they were decided against (stale-decision token) | **Accept** — §4.3; host rejects stale-decision input |
-| Q1c | Shell conformance suite is the agent's safety floor; no input rights without passing it | **Accept** — §8, spike step 1 |
-| Q2a | Agent identity is its own Ed25519 key (iroh endpoint ID); no separate identity system | **Accept** — §5.1 |
-| Q2b | UCAN-style attenuated delegation from owner to agent key; offline-verifiable proof chain | **Accept** — §5.2 |
-| Q2c | Delegations short-lived and renewable; revocation latency bounded by token lifetime; no long-lived standing access | **Accept** — §5.3 (defaults in §9.2) |
-| Q2d | OAuth 2.1 only at the hosted HTTP edge (RFC 9728 discovery, RFC 8707 resource indicators); world role, not the transport token, is the authority of record | **Accept** — §5.4 |
-| Q3a | Capability ceiling set at role grant, enforced by host/policy layer, never by the model or tool annotations | **Accept** — §6.1 |
-| Q3b | Quota charged per action; exhaustion parks the agent visibly ("agent parked, quota exhausted" world event), never silent failure | **Accept** — §6.2 |
-| Q3c | Audit: one signed/hash-chained event per action incl. refusals; periodic owner-readable summaries | **Accept** — §7 |
-| Q4a | Tools = authority-checked world commands only; tool definitions pinned and hash-checked (poisoning/shadowing/rug-pull) | **Accept** — §4.4 |
-| Q4b | Five non-tools: capability mint/widen/delegate; raw credential access / token passthrough; audit-log mutation / quota adjustment; bulk export / existence probing; arbitrary shell/code execution in the host | **Accept, unmodified** — §4.5 |
-| — | (no findings constraint rejected) | All constraints accepted; the design's open choices are confined to §9 |
+| #   | Findings constraint                                                                                                                                                                                           | Disposition                                                                |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Q1a | Agent profile needs semantic diffs / region subscriptions, not raw frame streaming                                                                                                                            | **Accept** — §4.2; delivered as an additive shell-contract revision (§9.1) |
+| Q1b | Agent input frames carry the frame/revision they were decided against (stale-decision token)                                                                                                                  | **Accept** — §4.3; host rejects stale-decision input                       |
+| Q1c | Shell conformance suite is the agent's safety floor; no input rights without passing it                                                                                                                       | **Accept** — §8, spike step 1                                              |
+| Q2a | Agent identity is its own Ed25519 key (iroh endpoint ID); no separate identity system                                                                                                                         | **Accept** — §5.1                                                          |
+| Q2b | UCAN-style attenuated delegation from owner to agent key; offline-verifiable proof chain                                                                                                                      | **Accept** — §5.2                                                          |
+| Q2c | Delegations short-lived and renewable; revocation latency bounded by token lifetime; no long-lived standing access                                                                                            | **Accept** — §5.3 (defaults in §9.2)                                       |
+| Q2d | OAuth 2.1 only at the hosted HTTP edge (RFC 9728 discovery, RFC 8707 resource indicators); world role, not the transport token, is the authority of record                                                    | **Accept** — §5.4                                                          |
+| Q3a | Capability ceiling set at role grant, enforced by host/policy layer, never by the model or tool annotations                                                                                                   | **Accept** — §6.1                                                          |
+| Q3b | Quota charged per action; exhaustion parks the agent visibly ("agent parked, quota exhausted" world event), never silent failure                                                                              | **Accept** — §6.2                                                          |
+| Q3c | Audit: one signed/hash-chained event per action incl. refusals; periodic owner-readable summaries                                                                                                             | **Accept** — §7                                                            |
+| Q4a | Tools = authority-checked world commands only; tool definitions pinned and hash-checked (poisoning/shadowing/rug-pull)                                                                                        | **Accept** — §4.4                                                          |
+| Q4b | Five non-tools: capability mint/widen/delegate; raw credential access / token passthrough; audit-log mutation / quota adjustment; bulk export / existence probing; arbitrary shell/code execution in the host | **Accept, unmodified** — §4.5                                              |
+| —   | (no findings constraint rejected)                                                                                                                                                                             | All constraints accepted; the design's open choices are confined to §9     |
 
 ## 3. Shape of the system
 
@@ -124,15 +124,15 @@ with its definition pinned and hash-checked at session start; a
 server that changes a definition mid-session ends the session
 (findings Q4a — tool poisoning / shadowing / rug-pull defence):
 
-| Tool | World command | Ceiling key |
-|---|---|---|
-| `world.join` / `world.leave` | session presence | `presence` |
-| `screen.read` | read current screen / region state | `screen.read` |
-| `screen.subscribe` | region / event-class subscription (§4.2) | `screen.read` |
-| `chat.post` | post a chat message in-world | `chat.post` |
-| `object.inspect` | inspect one visible object | `screen.read` |
-| `program.invoke` | the one bounded program interaction (§4.6) | `program.invoke:<program-id>` |
-| `presence.set` | manage the agent's own presence | `presence` |
+| Tool                         | World command                              | Ceiling key                   |
+| ---------------------------- | ------------------------------------------ | ----------------------------- |
+| `world.join` / `world.leave` | session presence                           | `presence`                    |
+| `screen.read`                | read current screen / region state         | `screen.read`                 |
+| `screen.subscribe`           | region / event-class subscription (§4.2)   | `screen.read`                 |
+| `chat.post`                  | post a chat message in-world               | `chat.post`                   |
+| `object.inspect`             | inspect one visible object                 | `screen.read`                 |
+| `program.invoke`             | the one bounded program interaction (§4.6) | `program.invoke:<program-id>` |
+| `presence.set`               | manage the agent's own presence            | `presence`                    |
 
 Tool annotations (`readOnlyHint`, `destructiveHint`, …) are treated as
 untrusted UI hints only (findings Q4b); enforcement is the ceiling.
@@ -162,7 +162,7 @@ does not generalise to arbitrary program calls in v1.
 ### 5.1 Agent identity
 
 An agent holds its **own Ed25519 keypair**, distinct from its owner's.
-On iroh the endpoint ID *is* the public key and connections are
+On iroh the endpoint ID _is_ the public key and connections are
 mutually authenticated under it — no separate identity system exists
 or is needed (findings Q2a). The world binds the agent key to a role;
 the key alone grants nothing.
@@ -184,7 +184,7 @@ the key alone grants nothing.
 Offline-verifiable capabilities cannot be un-issued (findings Q2c),
 so revocation is engineered, not wished for: delegations are
 **short-lived (default 1 hour, §9.2) and renewable** — the owner's
-client renews while the agent behaves; stopping renewal *is*
+client renews while the agent behaves; stopping renewal _is_
 revocation, with latency bounded by the token lifetime. Verifiers
 that are online additionally check revocation records. Long-lived
 standing access for agents is refused by policy.
@@ -195,8 +195,8 @@ Where a hosted world fronts agents over HTTP/MCP, the edge is an
 OAuth 2.1 resource server per the MCP authorization profile:
 Protected Resource Metadata discovery (RFC 9728), resource indicators
 (RFC 8707) so a token minted for one world cannot be replayed at
-another, per-tool scope step-up. The OAuth scopes are a *transport
-representation* of the world role; the **role remains the authority
+another, per-tool scope step-up. The OAuth scopes are a _transport
+representation_ of the world role; the **role remains the authority
 of record** (§9.4) — a valid transport token with no matching role
 binding and delegation chain grants nothing.
 
@@ -214,7 +214,7 @@ out-of-band.
 
 Per-agent, per-session budgets over the expensive axes: frames
 requested, tool calls, program invocations, and (where the world
-meters it) world-side compute. Every action is charged *before*
+meters it) world-side compute. Every action is charged _before_
 execution; a charge that would exceed the budget refuses the action.
 Exhaustion **parks** the agent visibly — "agent parked, quota
 exhausted" is a first-class world event the owner sees — never a
@@ -242,7 +242,7 @@ stated in §9.3.
   periodic summaries ("your archivist agent edited 14 objects, spent
   X, was refused twice") — the review surface an owner will actually
   read (findings Q3c).
-- The agent is the audit *subject*, never its editor (§4.5.3).
+- The agent is the audit _subject_, never its editor (§4.5.3).
 
 ## 8. Conformance and safety floor
 
@@ -270,7 +270,7 @@ checked at join (§4.1).
    range requires owner-side policy change, not a role edit.
 3. **Quota sequencing — the spike does NOT wait for F12.10 (#1067).**
    Per plan of record #6312, #1067's design lands first, but the
-   agents spike implements §6.2 as a *local, per-session* budget
+   agents spike implements §6.2 as a _local, per-session_ budget
    inside the policy point (same event shape F12.10 will consume),
    so the spike can run before world's quota system exists and be
    replaced by it without changing the bridge or the audit shape.
@@ -278,7 +278,7 @@ checked at join (§4.1).
    the authority.** OAuth scope strings carry the world + role
    (`world:<id> role:<name>`); the edge validates the transport
    token, then the host re-derives authority from the role binding
-   and the delegation chain (§5.4). A token can therefore be *valid*
+   and the delegation chain (§5.4). A token can therefore be _valid_
    and still grant nothing — transport success never mints authority.
 
 ## 10. Spike plan (v1 implementation breakdown)

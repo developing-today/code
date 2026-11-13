@@ -98,7 +98,7 @@ def fetch_open_issues(repo: str, gh: str = "gh") -> list[dict]:
         "--paginate",
         f"repos/{repo}/issues?state=open&per_page=100",
         "--jq",
-        ".[] | select(has(\"pull_request\") | not) | {number, title}",
+        '.[] | select(has("pull_request") | not) | {number, title}',
     ]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -299,9 +299,7 @@ def render_report(
     ]
     if errors:
         lines += ["## ERRORS", ""] + [f"- {e}" for e in errors] + [""]
-    uncovered_any = [
-        (r, i) for r in results for i in r.get("uncovered_issues", [])
-    ]
+    uncovered_any = [(r, i) for r in results for i in r.get("uncovered_issues", [])]
     if uncovered_any:
         lines += ["## Uncovered issues", ""]
         for r, i in uncovered_any:
@@ -314,9 +312,19 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--observe", action="store_true", help="report only (default)")
-    mode.add_argument("--import", dest="do_import", action="store_true", help="enqueue uncovered issues")
-    ap.add_argument("--repo", action="append", help="restrict to these repos (repeatable)")
-    ap.add_argument("--broker-url", default=os.environ.get("REPO_QUEUE_BROKER_URL", DEFAULT_BROKER_URL))
+    mode.add_argument(
+        "--import",
+        dest="do_import",
+        action="store_true",
+        help="enqueue uncovered issues",
+    )
+    ap.add_argument(
+        "--repo", action="append", help="restrict to these repos (repeatable)"
+    )
+    ap.add_argument(
+        "--broker-url",
+        default=os.environ.get("REPO_QUEUE_BROKER_URL", DEFAULT_BROKER_URL),
+    )
     ap.add_argument("--token-file", default=str(DEFAULT_TOKEN_FILE))
     ap.add_argument("--state-dir", default=str(DEFAULT_STATE_DIR))
     ap.add_argument("--backlog", default=str(DEFAULT_BACKLOG))
@@ -347,10 +355,15 @@ def main(argv: list[str] | None = None) -> int:
         try:
             token = Path(args.token_file).read_text().strip()
         except OSError as exc:
-            print(f"error: cannot read broker token {args.token_file}: {exc}", file=sys.stderr)
+            print(
+                f"error: cannot read broker token {args.token_file}: {exc}",
+                file=sys.stderr,
+            )
             return 2
         if not token:
-            print(f"error: broker token file {args.token_file} is empty", file=sys.stderr)
+            print(
+                f"error: broker token file {args.token_file} is empty", file=sys.stderr
+            )
             return 2
 
     results: list[dict] = []
@@ -378,7 +391,9 @@ def main(argv: list[str] | None = None) -> int:
                 if ok:
                     imported += 1
                 else:
-                    errors.append(f"enqueue failed for {repo}#{issue['number']}: {detail}")
+                    errors.append(
+                        f"enqueue failed for {repo}#{issue['number']}: {detail}"
+                    )
 
         results.append(
             {

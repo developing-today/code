@@ -18,13 +18,15 @@
 <section class="mcpx-home-example" aria-label="Try mcpx in your browser">
   <p class="mcpx-home-example-label">
     <strong>Simulated — runs in your browser.</strong>
-    This example calls a mock <code>demo</code> server in this page, through
-    the real generated mcpx client. No daemon, no install, nothing leaves
-    the tab. To run it for real, copy it as a command below.
+    This example calls a mock <code>demo</code> server in this page, through the
+    real generated mcpx client. No daemon, no install, nothing leaves the tab.
+    To run it for real, copy it as a command below.
   </p>
 
   <!-- Static fallback: shown as-is when JavaScript is unavailable. -->
-  <pre class="mcpx-home-example-static"><code>const echoed = await tools.demo.echo({ message: "hello from a script" });
+  <pre
+    class="mcpx-home-example-static"
+  ><code>const echoed = await tools.demo.echo({ message: "hello from a script" });
 
 console.log("demo.echo:", String(echoed));</code></pre>
 
@@ -55,7 +57,9 @@ console.log("demo.echo:", String(echoed));</code></pre>
       ".mcpx-home-example:not([data-mcpx-ready])",
     );
     root.dataset.mcpxReady = "";
-    const source = root.querySelector(".mcpx-home-example-static code").textContent;
+    const source = root.querySelector(
+      ".mcpx-home-example-static code",
+    ).textContent;
     const editorWrap = root.querySelector(".mcpx-home-example-editor");
     const textarea = editorWrap.querySelector("textarea");
     const actions = root.querySelector(".mcpx-home-example-actions");

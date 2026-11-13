@@ -1,11 +1,6 @@
 {
   "about": "The authorization rows split along accepts-vs-refuses (#1972): a permissive interface (#1950) satisfies a 'permissive' row-side; a 'validation' row-side needs a real check, named here. Checks: invalid, expired, wrong-resource, scope. Only catalogue-bound sides are judged: a side the catalogue marks n/a carries no verdict here (LoadAuthSplit refuses one) \u2014 since #2619 honoured each row's not-implemented-by-choice note (#1950 decision), most authorization sides are n/a and the validation target moved to the #1975 /mcp resource-server work.",
-  "checks": [
-    "invalid",
-    "expired",
-    "wrong-resource",
-    "scope"
-  ],
+  "checks": ["invalid", "expired", "wrong-resource", "scope"],
   "rows": {
     "authz-bearer-header": {
       "client": {
@@ -48,9 +43,7 @@
     "authz-accept-only-own-tokens": {
       "server": {
         "verdict": "validation",
-        "checks": [
-          "invalid"
-        ],
+        "checks": ["invalid"],
         "why": "the #1975 bearer gate (PR #2711) accepts only the daemon's own configured token and refuses any other token with 401 on every route including /mcp (daemon.TestMCPRejectsUnauthenticatedWhenBearerSet); a shared-secret gate has no expiry, audience or scope to check, so 'invalid' is the only check it performs (task 14860)"
       }
     }

@@ -32,15 +32,15 @@ There are two explicit seams to reconcile, not settled parent decisions: #6012 a
 
 The evaluator records a versioned vector for each feature and target profile. Measurements use the actual rendered feature in a repeatable reference scene and include representative visibility/coverage; source-file size or an author's estimate alone is not a cost metric.
 
-| Dimension | Measurement used for ranking | Applies especially to |
-| --- | --- | --- |
-| CPU submission/setup | Incremental CPU time per frame (p50/p95 and worst tested burst), including feature setup, state changes, and draw/dispatch submission | All; sprite batching and filter setup are prominent |
-| GPU execution | Incremental GPU time per frame (p50/p95), with each pass attributed to the feature | Filters and shaders; also sprite rendering |
-| Pixel work | Fragment/sample invocations or the closest supported hardware counter, plus covered screen area/overdraw for the reference view | Transparent sprites, layered effects, filters, shaders |
-| Geometry and submissions | Generated vertices/indices, draw/dispatch calls, material switches, and pass count | Sprites and multi-pass effects |
-| Texture/sampler pressure | Peak additional resident bytes after target compression and deduplication; sampler count and maximum sampled dimensions | Sprites, filters, shaders |
-| Intermediate surfaces/bandwidth | Number and dimensions of temporary render targets, peak live bytes, and measured read/write traffic | Filters and multi-pass shaders |
-| Shader work | Target-specific compiled instruction/resource bounds, dynamic-flow features where supported, and measured GPU time in the reference scene | Shaders |
+| Dimension                       | Measurement used for ranking                                                                                                              | Applies especially to                                  |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| CPU submission/setup            | Incremental CPU time per frame (p50/p95 and worst tested burst), including feature setup, state changes, and draw/dispatch submission     | All; sprite batching and filter setup are prominent    |
+| GPU execution                   | Incremental GPU time per frame (p50/p95), with each pass attributed to the feature                                                        | Filters and shaders; also sprite rendering             |
+| Pixel work                      | Fragment/sample invocations or the closest supported hardware counter, plus covered screen area/overdraw for the reference view           | Transparent sprites, layered effects, filters, shaders |
+| Geometry and submissions        | Generated vertices/indices, draw/dispatch calls, material switches, and pass count                                                        | Sprites and multi-pass effects                         |
+| Texture/sampler pressure        | Peak additional resident bytes after target compression and deduplication; sampler count and maximum sampled dimensions                   | Sprites, filters, shaders                              |
+| Intermediate surfaces/bandwidth | Number and dimensions of temporary render targets, peak live bytes, and measured read/write traffic                                       | Filters and multi-pass shaders                         |
+| Shader work                     | Target-specific compiled instruction/resource bounds, dynamic-flow features where supported, and measured GPU time in the reference scene | Shaders                                                |
 
 The evaluator stores the target profile, evaluator/table version, test-scene version, measurement method, and the measured vector with the resulting rank. It uses the **worst band across dimensions**. Where a device lacks a counter, the evaluator uses a documented conservative proxy; it must not report a proxy as a hardware measurement. Re-measure after a material asset, evaluator, or profile change.
 
@@ -50,13 +50,13 @@ Ranks describe the cost of a feature, ordered from least to greatest cost. The v
 
 The percentages are fractions of the target profile's calibrated visual-feature budget **per ranked feature in the reference view**, not fractions of total device capacity. For each measured dimension, divide its measured cost by that dimension's profile budget; the feature's rank is the band containing the **largest normalized dimension**. Profile budgets and the evaluator version are calibrated against supported hardware and representative worlds; the percentage bands are the stable policy interface.
 
-| Rank (best to worst) | Desktop / console profile | Mobile / Quest-class profile | Viewer-minimum behavior |
-| --- | ---: | ---: | --- |
-| **Excellent** | Largest normalized dimension ≤ 5% | Largest normalized dimension ≤ 3% | Allowed by every threshold |
-| **Good** | Largest normalized dimension > 5% and ≤ 10% | > 3% and ≤ 7% | Allowed at `Good` or a worse minimum |
-| **Medium** | Largest normalized dimension > 10% and ≤ 25% | > 7% and ≤ 15% | Allowed at `Medium`, `Poor`, or `Very Poor` minimum |
-| **Poor** | Largest normalized dimension > 25% and ≤ 50% | > 15% and ≤ 30% | Allowed only at `Poor` or `Very Poor` minimum |
-| **Very Poor** | Largest normalized dimension > 50% and within the profile's hard limits | Largest normalized dimension > 30% and within the profile's hard limits | Allowed only at `Very Poor` minimum |
+| Rank (best to worst) |                                               Desktop / console profile |                                            Mobile / Quest-class profile | Viewer-minimum behavior                             |
+| -------------------- | ----------------------------------------------------------------------: | ----------------------------------------------------------------------: | --------------------------------------------------- |
+| **Excellent**        |                                       Largest normalized dimension ≤ 5% |                                       Largest normalized dimension ≤ 3% | Allowed by every threshold                          |
+| **Good**             |                             Largest normalized dimension > 5% and ≤ 10% |                                                           > 3% and ≤ 7% | Allowed at `Good` or a worse minimum                |
+| **Medium**           |                            Largest normalized dimension > 10% and ≤ 25% |                                                          > 7% and ≤ 15% | Allowed at `Medium`, `Poor`, or `Very Poor` minimum |
+| **Poor**             |                            Largest normalized dimension > 25% and ≤ 50% |                                                         > 15% and ≤ 30% | Allowed only at `Poor` or `Very Poor` minimum       |
+| **Very Poor**        | Largest normalized dimension > 50% and within the profile's hard limits | Largest normalized dimension > 30% and within the profile's hard limits | Allowed only at `Very Poor` minimum                 |
 
 The table is separate by target profile: mobile/Quest-class devices use stricter per-feature budget shares and a profile-specific supported-capability set, while the rank names and ordering stay common so a viewer's preference remains understandable across devices. Crossing a hard platform limit or requiring an unavailable capability is **incompatible**, not merely `Very Poor`; it goes directly through fallback selection. These initial bands are versioned defaults to validate against representative hardware, not claims that every device has identical absolute millisecond or byte budgets.
 

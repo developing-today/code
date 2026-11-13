@@ -24,13 +24,13 @@ surface, not a data gap.
 
 Three audiences, three different joins of the same two records:
 
-- **Users** deciding whether to connect see the *instance join for one world*:
+- **Users** deciding whether to connect see the _instance join for one world_:
   the granted set, the derived used set, and what changed since their last
   connection — rendered into #5960's pre-connect disclosure and world page.
-- **World authors** see the *release join for their own releases*: requested
+- **World authors** see the _release join for their own releases_: requested
   vs used, the footprint they inherit from their libraries, and honest
   markings where a derivation is uncertified.
-- **Server admins** see the *instance join across their server*: grants in
+- **Server admins** see the _instance join across their server_: grants in
   force, a per-world capability inventory, and moderation-pack provenance.
 
 History is a registry fact, not a view trick: §5 adds the append-only
@@ -50,29 +50,29 @@ from two current-state snapshots that may both have moved.
   actor phrase ("using your client" / "through the server side") is part of
   every user-facing line, per #5960 §1.1.
 - **View**: a named, audience-scoped projection of the two records (plus the
-  §5 log). A view is a *reading* of registry facts; it stores nothing of its
+  §5 log). A view is a _reading_ of registry facts; it stores nothing of its
   own except per-user reading state (e.g. a user's last-connection marker,
   §3.1), which is client state, not registry state.
 - **Uncertified derivation**: a release whose `discovered_used.state` is not
   `certified`, or whose only usage data is `partial` (labelled
-  `non_authoritative: true` in the schema). The exception *policy* for such
+  `non_authoritative: true` in the schema). The exception _policy_ for such
   worlds is #6000's (PR #7025); this record specifies only how the state is
   **marked** on surfaces, never what is done about it.
 
 ## 2. The audience × surface matrix
 
-| Audience | Surface | View (§) | Records read |
-|---|---|---|---|
-| User (connecting) | Pre-connect disclosure (#5960 §1) | Granted & used, two groups (§3.1) | instance `effective_grant` + release `requested` / `discovered_used` |
-| User (connecting) | Pre-connect disclosure, delta form (#5960 §1.2) | Changed since last connection (§3.1) | §5 log, from the user's last-connection marker |
-| User (connected) | World page | Grant state & observed use (§3.1) | instance `effective_grant` + `observed` |
-| World author | Registry listing for own releases | Requested vs used (§3.2) | release `requested` / `discovered_used` |
-| World author | Release detail | Inherited library footprint (§3.2) | release identity closure (#5958 §4.1) + the same two sets per dependency release |
-| World author | Registry listing + release detail | Uncertified-derivation marking (§3.2) | `discovered_used.state` / `partial` |
-| Server admin | Admin console, per world | Grants in force (§3.3) | instance `effective_grant` (+ `custom_platform` from the release) |
-| Server admin | Admin console, per server | Capability inventory (§3.3) | all instance records on the server, joined to releases |
-| Server admin | Admin console, per world | Moderation-pack provenance (§3.3) | moderation provenance tuple (§3.3) |
-| Any of the above | Registry history query | Diffs over time (§5) | §5 log |
+| Audience          | Surface                                         | View (§)                              | Records read                                                                     |
+| ----------------- | ----------------------------------------------- | ------------------------------------- | -------------------------------------------------------------------------------- |
+| User (connecting) | Pre-connect disclosure (#5960 §1)               | Granted & used, two groups (§3.1)     | instance `effective_grant` + release `requested` / `discovered_used`             |
+| User (connecting) | Pre-connect disclosure, delta form (#5960 §1.2) | Changed since last connection (§3.1)  | §5 log, from the user's last-connection marker                                   |
+| User (connected)  | World page                                      | Grant state & observed use (§3.1)     | instance `effective_grant` + `observed`                                          |
+| World author      | Registry listing for own releases               | Requested vs used (§3.2)              | release `requested` / `discovered_used`                                          |
+| World author      | Release detail                                  | Inherited library footprint (§3.2)    | release identity closure (#5958 §4.1) + the same two sets per dependency release |
+| World author      | Registry listing + release detail               | Uncertified-derivation marking (§3.2) | `discovered_used.state` / `partial`                                              |
+| Server admin      | Admin console, per world                        | Grants in force (§3.3)                | instance `effective_grant` (+ `custom_platform` from the release)                |
+| Server admin      | Admin console, per server                       | Capability inventory (§3.3)           | all instance records on the server, joined to releases                           |
+| Server admin      | Admin console, per world                        | Moderation-pack provenance (§3.3)     | moderation provenance tuple (§3.3)                                               |
+| Any of the above  | Registry history query                          | Diffs over time (§5)                  | §5 log                                                                           |
 
 Surfaces not in this matrix do not show capability facts. In particular,
 chat, presence, and world-discovery listings show no capability data beyond
@@ -197,7 +197,7 @@ a specified shape and no data source.)
 
 ## 5. History: capability diffs are registry facts
 
-#5958 §4.3 deferred this explicitly: the registry entry is the *current*
+#5958 §4.3 deferred this explicitly: the registry entry is the _current_
 fact for a release identity; history is this record's addition.
 
 **The capability event log** is an append-only sequence of events, each
@@ -223,13 +223,13 @@ fleet's own protocol. The current-state records remain the authority for
 **Queries the log must answer** (these are the acceptance shape, not an
 API sketch):
 
-- *Diff between two points* for one world or one release: the folded
+- _Diff between two points_ for one world or one release: the folded
   added/removed sets per field — this is what §3.1's changed-since-last-
   connection view consumes, with the user's last-connection marker as the
   earlier point.
-- *Diff since a release*: everything after a given `release_identity`
+- _Diff since a release_: everything after a given `release_identity`
   first appeared — the author's "what has moved since I published".
-- *Server-wide capability timeline*: every event naming a given cap —
+- _Server-wide capability timeline_: every event naming a given cap —
   the admin's "when did worlds here start holding `fs.*`".
 
 `observed` is deliberately **not** in the log: it is a rolling window
@@ -242,15 +242,15 @@ not retained" under rule 4 of §4.
 
 ## 6. Sibling coordination and dependencies
 
-| Sibling | State at writing | What this record takes from it | What it gives back |
-|---|---|---|---|
-| #5958 capability model | Design record delivered in PR #7599, **open at writing** | The registry schema (§4), vocabulary, certification states — consumed verbatim | The history layer its §4.3 deferred here (§5) |
-| #5960 permission UX | Merged (PR #7594) | Disclosure shape, two-group rule, requested/used vocabulary, denial semantics | The concrete record population for its disclosure and delta surfaces (§3.1) |
-| #5959 change notices | Open | — (boundary: the change-notice *shape* is its own surface) | The §5 diffs its notices announce; used-but-unrequested reports route through its channel (§3.2) |
-| #5961 precedent research | Open | No dependency: no view here waits on it | — |
-| #6000 / PR #7025 exception policy | PR open | The uncertified-derivation boundary: markings here, policy there | The marking surfaces its policy outcomes will display on (§3.2) |
-| #5840 knowledge-layer sharing | Open, different layer | Shared vocabulary only (#5960 §0) | — |
-| Moderation follow-ups (#5955) | Not yet filed as records at writing | **Dependency**: the provenance fields of §3.3 are theirs to define | The specified admin view those fields will populate |
+| Sibling                           | State at writing                                         | What this record takes from it                                                 | What it gives back                                                                               |
+| --------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| #5958 capability model            | Design record delivered in PR #7599, **open at writing** | The registry schema (§4), vocabulary, certification states — consumed verbatim | The history layer its §4.3 deferred here (§5)                                                    |
+| #5960 permission UX               | Merged (PR #7594)                                        | Disclosure shape, two-group rule, requested/used vocabulary, denial semantics  | The concrete record population for its disclosure and delta surfaces (§3.1)                      |
+| #5959 change notices              | Open                                                     | — (boundary: the change-notice _shape_ is its own surface)                     | The §5 diffs its notices announce; used-but-unrequested reports route through its channel (§3.2) |
+| #5961 precedent research          | Open                                                     | No dependency: no view here waits on it                                        | —                                                                                                |
+| #6000 / PR #7025 exception policy | PR open                                                  | The uncertified-derivation boundary: markings here, policy there               | The marking surfaces its policy outcomes will display on (§3.2)                                  |
+| #5840 knowledge-layer sharing     | Open, different layer                                    | Shared vocabulary only (#5960 §0)                                              | —                                                                                                |
+| Moderation follow-ups (#5955)     | Not yet filed as records at writing                      | **Dependency**: the provenance fields of §3.3 are theirs to define             | The specified admin view those fields will populate                                              |
 
 The one hard dependency is #5958: if PR #7599's schema changes in review,
 this record's field references must change with it — they are references,

@@ -86,7 +86,7 @@ let
 in
 stdenvNoCC.mkDerivation {
   pname = "pm-aggregator";
-  version = manifest.version;
+  inherit (manifest) version;
   inherit src;
 
   nativeBuildInputs = [ makeWrapper ];

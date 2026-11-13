@@ -136,32 +136,32 @@ expect_fail "action metadata with runs.using: banana"
 # tolerates PyYAML being unavailable — so these cases run only
 # when PyYAML is importable, and are skipped (not failed) otherwise.
 if python3 -c 'import yaml' >/dev/null 2>&1; then
-# 7. A node action with no runs.main fails.
-mkdir -p "$TMP/node-no-main-action"
-cat >"$TMP/node-no-main-action/action.yml" <<'EOF'
+  # 7. A node action with no runs.main fails.
+  mkdir -p "$TMP/node-no-main-action"
+  cat >"$TMP/node-no-main-action/action.yml" <<'EOF'
 name: demo-action
 description: A node action missing its entry point.
 runs:
   using: node20
 EOF
-run_check "$TMP/node-no-main-action/action.yml"
-expect_fail "node action with no runs.main"
+  run_check "$TMP/node-no-main-action/action.yml"
+  expect_fail "node action with no runs.main"
 
-# 8. A node action with runs.main passes.
-mkdir -p "$TMP/node-main-action"
-cat >"$TMP/node-main-action/action.yml" <<'EOF'
+  # 8. A node action with runs.main passes.
+  mkdir -p "$TMP/node-main-action"
+  cat >"$TMP/node-main-action/action.yml" <<'EOF'
 name: demo-action
 description: A node action with its entry point.
 runs:
   using: node20
   main: dist/index.js
 EOF
-run_check "$TMP/node-main-action/action.yml"
-expect_pass "node action with runs.main"
+  run_check "$TMP/node-main-action/action.yml"
+  expect_pass "node action with runs.main"
 
-# 9. A composite step declaring neither run nor uses fails.
-mkdir -p "$TMP/composite-empty-step-action"
-cat >"$TMP/composite-empty-step-action/action.yml" <<'EOF'
+  # 9. A composite step declaring neither run nor uses fails.
+  mkdir -p "$TMP/composite-empty-step-action"
+  cat >"$TMP/composite-empty-step-action/action.yml" <<'EOF'
 name: demo-action
 description: A composite action whose step does nothing.
 runs:
@@ -169,12 +169,12 @@ runs:
   steps:
     - name: not a real step
 EOF
-run_check "$TMP/composite-empty-step-action/action.yml"
-expect_fail "composite step with neither run nor uses"
+  run_check "$TMP/composite-empty-step-action/action.yml"
+  expect_fail "composite step with neither run nor uses"
 
-# 10. Composite steps written as bare strings fail.
-mkdir -p "$TMP/composite-string-steps-action"
-cat >"$TMP/composite-string-steps-action/action.yml" <<'EOF'
+  # 10. Composite steps written as bare strings fail.
+  mkdir -p "$TMP/composite-string-steps-action"
+  cat >"$TMP/composite-string-steps-action/action.yml" <<'EOF'
 name: demo-action
 description: A composite action whose steps are strings.
 runs:
@@ -182,12 +182,12 @@ runs:
   steps:
     - echo "hello"
 EOF
-run_check "$TMP/composite-string-steps-action/action.yml"
-expect_fail "composite steps as bare strings"
+  run_check "$TMP/composite-string-steps-action/action.yml"
+  expect_fail "composite steps as bare strings"
 
-# 11. A composite run step without shell fails.
-mkdir -p "$TMP/composite-no-shell-action"
-cat >"$TMP/composite-no-shell-action/action.yml" <<'EOF'
+  # 11. A composite run step without shell fails.
+  mkdir -p "$TMP/composite-no-shell-action"
+  cat >"$TMP/composite-no-shell-action/action.yml" <<'EOF'
 name: demo-action
 description: A composite action whose run step has no shell.
 runs:
@@ -195,8 +195,8 @@ runs:
   steps:
     - run: echo "hello"
 EOF
-run_check "$TMP/composite-no-shell-action/action.yml"
-expect_fail "composite run step without shell"
+  run_check "$TMP/composite-no-shell-action/action.yml"
+  expect_fail "composite run step without shell"
 else
   echo "skip: PyYAML-branch contract cases (PyYAML unavailable; reduced fallback contract)"
 fi

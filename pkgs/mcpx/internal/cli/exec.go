@@ -19,7 +19,10 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // execOptions is what the exec and run commands resolved from their flags,
@@ -172,7 +175,7 @@ func (a *App) localStore() (*artifacts.Store, error) {
 // has launchers, phases and a typecheck mode that the wire Options
 // deliberately do not mirror. Everything after the process starts is the
 // shared implementation.
-func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Service {
+func (a *App) localService(store *artifacts.Store, socket string, cfg *config.Config) *execsvc.Service {
 	set := a.Settings()
 	lim := execsvc.DefaultLimits()
 	lim.Interpreter = set.String("script.interpreter")
@@ -182,7 +185,7 @@ func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Servi
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
 	lim.StdoutLimit = set.Bytes("exec.maxOutputBytes")
-	return &execsvc.Service{
+	svc := &execsvc.Service{
 		Store: store,
 		// The script runs in this process's machine, and the daemon whose
 		// store it is has to be the same one for a path to mean anything to
@@ -191,6 +194,44 @@ func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Servi
 		Local:  socket != "",
 		Limits: lim,
 	}
+	// Prompt hooks (#5276) on a local run resolve through the same
+	// configured model layer the daemon uses, minus the broker samplers
+	// only a daemon can offer. model.provider=none (the default)
+	// resolves to (nil, nil): no behaviour change for a user who
+	// configures nothing, and a prompt hook reports advice unavailable.
+	if prov, merr := model.Resolve(model.Config{
+		Provider:             set.String("model.provider"),
+		BaseURL:              set.String("model.baseURL"),
+		APIKeyEnv:            set.String("model.apiKeyEnv"),
+		ProviderSettingsJSON: set.String("model.providers"),
+		ProfilesJSON:         set.String("model.profiles"),
+		DefaultModel:         set.String("model.default"),
+		Timeout:              set.Duration("model.timeout"),
+	}); merr != nil {
+		svc.ModelProviderErr = merr
+	} else {
+		svc.ModelProvider = prov
+	}
+	// The same token cap the daemon resolves (prompt.maxTokens
+	// bounded by model.budget), so a local run's prompt hooks run
+	// under the operator's ceiling too (Codex review, PR #9021).
+	svc.ModelMaxTokens = execsvc.ModelTokenCap(set.Int("prompt.maxTokens"), set.Int("model.budget"))
+	// The configured default model, for a prompt hook that names
+	// none of its own (see execsvc.Service.ModelDefault).
+	svc.ModelDefault = set.String("model.default")
+	// Config-declared hooks apply to local runs exactly as they do
+	// to daemon runs: without this the service's Hooks stayed empty
+	// and a prompt (or script) entry in script.hooks was silently
+	// ignored on the default local path, provider or not (Codex
+	// review, PR #9021). Configured code is gated by hooks.autonomy
+	// exactly as the daemon gates it and as hookGate gates the
+	// legacy phases: below `run` it does not execute.
+	if cfg != nil && settings.AutonomyAtLeast(set.String("hooks.autonomy"), "run") {
+		for _, h := range cfg.ScriptHooks() {
+			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Prompt: h.Prompt, Effect: h.Effect, Model: h.Model, Name: h.Name})
+		}
+	}
+	return svc
 }
 
 // ---- the remote path ----
@@ -267,6 +308,11 @@ func (a *App) applyFrame(res *execsvc.Result, f execsvc.Frame, eo execOptions, p
 		res.Emits = append(res.Emits, f.Value)
 	case execsvc.FrameStdout:
 		res.Stdout += f.Text
+	case execsvc.FrameResult:
+		var v any
+		if json.Unmarshal(f.Value, &v) == nil {
+			res.Result, res.ResultPresent = v, true
+		}
 	case execsvc.FrameArtifact:
 		if f.Artifact != nil {
 			res.Artifacts = append(res.Artifacts, *f.Artifact)
@@ -375,7 +421,12 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 		if res.Stdout != "" {
 			_, _ = fmt.Fprint(os.Stdout, res.Stdout)
 		}
+		a.reportFinalResult(res)
 		a.reportArtifacts(res)
+		// The remote text path renders hooks too: this renderer is
+		// shared by every remote caller, and a prompt hook's advice
+		// lives only in its retained frame (Codex review, PR #9021).
+		a.reportHooks(res)
 	}
 	if res.Error != "" && res.ExitCode == 0 {
 		return errors.New(res.Error)
@@ -387,6 +438,36 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 		return &exitStatusError{code: res.ExitCode}
 	}
 	return nil
+}
+
+// reportFinalResult prints a run's result for a person at a
+// terminal when the script's own output did not already show it:
+// a snippet whose final expression is its answer (CODE-19) may
+// print nothing at all, and a result that merely repeats the
+// stdout parse must not be printed twice.
+func (a *App) reportFinalResult(res *execsvc.Result) {
+	if !res.ResultPresent && res.Result == nil {
+		return
+	}
+	b, err := json.Marshal(res.Result)
+	if err != nil {
+		return
+	}
+	if trimmed := strings.TrimSpace(res.Stdout); trimmed != "" {
+		var sv any
+		if json.Unmarshal([]byte(trimmed), &sv) == nil {
+			if sb, serr := json.Marshal(sv); serr == nil && string(sb) == string(b) {
+				return
+			}
+		}
+	}
+	// Separate the answer from stdout that did not end with a
+	// newline (a progress write, say), rather than gluing them
+	// into one line.
+	if res.Stdout != "" && !strings.HasSuffix(res.Stdout, "\n") {
+		_, _ = fmt.Fprintln(os.Stdout)
+	}
+	_, _ = fmt.Fprintln(os.Stdout, string(b))
 }
 
 // fetchArtifacts pulls bodies the daemon did not place for us.
@@ -472,6 +553,23 @@ func (a *App) reportArtifacts(res *execsvc.Result) {
 		}
 		fmt.Fprintf(os.Stderr, "mcpx: artifact %s  %s  %d bytes  %s\n",
 			art.Name, art.Mime, art.Size, where)
+	}
+}
+
+// reportHooks renders retained hook frames on the text path, to
+// stderr like reportArtifacts: stdout is the script's own answer,
+// and a prompt hook's advice (or its provider-unavailable warning)
+// would otherwise be generated and silently discarded on a local
+// run (Codex review, PR #9021). The stream path already encodes
+// hook frames as they happen, and the structured/JSON paths carry
+// res.Hooks in the document itself.
+func (a *App) reportHooks(res *execsvc.Result) {
+	for _, f := range res.Hooks {
+		if f.Advice != "" {
+			fmt.Fprintf(os.Stderr, "mcpx: hook advice (%s): %s\n", f.Phase, f.Advice)
+		} else if f.Error != "" {
+			fmt.Fprintf(os.Stderr, "mcpx: hook warning (%s): %s\n", f.Phase, f.Error)
+		}
 	}
 }
 

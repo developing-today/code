@@ -1,10 +1,8 @@
+# Automatic tag-push releases disabled by owner, 2026-11-13; manual snapshot remains.
 name: goreleaser
 
 on:
   # Tag pushes cut the real release (see the GoReleaser args below).
-  push:
-    tags:
-      - '*'
   # Manual runs prove the workflow still works without cutting a
   # release: they build a snapshot (see the GoReleaser args below).
   workflow_dispatch:

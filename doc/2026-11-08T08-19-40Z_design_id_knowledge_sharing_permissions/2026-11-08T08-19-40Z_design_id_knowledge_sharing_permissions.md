@@ -69,14 +69,14 @@ Membership revocation blocks future reads and future key delivery after the new 
 
 ## Alternatives rejected
 
-| Alternative | Why it is not v1 |
-|---|---|
-| New workspace/team ACL system | Duplicates ID groups, creates two membership authorities, and makes revocation/role precedence ambiguous. Use groups as principals; workspaces are presentation only. |
-| Per-note arbitrary role matrix for every user | Duplicates the existing group role/delegation model and makes editor administration scale with each note. Direct user grants remain available for read per the parent; editing is group-based. |
-| Permission inheritance through folders, links, or backlinks | The knowledge graph is not a tree. A backlink or reference must not silently widen an audience; use only the parent's explicit owner/server defaults. |
-| Bearer link / unlisted access | A leaked URL becomes an untracked grant and revocation is unclear. Links remain locators; public read already has a clear meaning. |
-| Anonymous private guests | There is no stable principal for auditing, role changes, or revocation. Use an ID account and an explicit group grant. |
-| Rely on client filtering or #2238 view membership | It does not protect sync/blob serving or metadata. The actual event and blob boundaries must enforce the policy. |
+| Alternative                                                 | Why it is not v1                                                                                                                                                                               |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| New workspace/team ACL system                               | Duplicates ID groups, creates two membership authorities, and makes revocation/role precedence ambiguous. Use groups as principals; workspaces are presentation only.                          |
+| Per-note arbitrary role matrix for every user               | Duplicates the existing group role/delegation model and makes editor administration scale with each note. Direct user grants remain available for read per the parent; editing is group-based. |
+| Permission inheritance through folders, links, or backlinks | The knowledge graph is not a tree. A backlink or reference must not silently widen an audience; use only the parent's explicit owner/server defaults.                                          |
+| Bearer link / unlisted access                               | A leaked URL becomes an untracked grant and revocation is unclear. Links remain locators; public read already has a clear meaning.                                                             |
+| Anonymous private guests                                    | There is no stable principal for auditing, role changes, or revocation. Use an ID account and an explicit group grant.                                                                         |
+| Rely on client filtering or #2238 view membership           | It does not protect sync/blob serving or metadata. The actual event and blob boundaries must enforce the policy.                                                                               |
 
 ## Invariants for implementation
 

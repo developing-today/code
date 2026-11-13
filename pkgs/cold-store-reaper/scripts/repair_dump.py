@@ -51,6 +51,8 @@ STATEMENT_END = b"');"
 QUOTE = 0x27  # '
 COMMA = 0x2C  # ,
 SPACE = b" \t\r\n"
+
+
 # A line that begins a new top-level dump statement (column 0).
 # The largest candidate statement held for repair, in bytes. Real
 # sqlite_schema statements (a table, view, trigger or index
@@ -192,8 +194,7 @@ def _next_line_starts_new(next_line):
     if next_line is None:
         return True
     return bool(
-        next_line.lstrip().startswith(SCHEMA_INSERT)
-        or TOP_LEVEL_START.match(next_line)
+        next_line.lstrip().startswith(SCHEMA_INSERT) or TOP_LEVEL_START.match(next_line)
     )
 
 

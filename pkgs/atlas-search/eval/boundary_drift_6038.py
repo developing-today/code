@@ -40,12 +40,14 @@ Run (laptop only):
   LD_LIBRARY_PATH=<gcc-lib>:<zlib-lib> ~/atlas/v3-venv/bin/python \
       boundary_drift_6038.py --out results.json
 """
+
 import argparse, json, pathlib, random, re, sqlite3, sys, time
 import numpy as np
 
 SEED = 6038
 N_TARGETS = 50
 TOPK = 10
+
 
 def embed_all(sess, tok, texts, batch_tokens=32768):
     enc = tok(texts, add_special_tokens=True)["input_ids"]
@@ -55,38 +57,58 @@ def embed_all(sess, tok, texts, batch_tokens=32768):
     cur, cur_max = [], 0
     batches = []
     for i in order:
-        l = len(enc[i]); nm = max(cur_max, l)
+        l = len(enc[i])
+        nm = max(cur_max, l)
         if cur and nm * (len(cur) + 1) > batch_tokens:
-            batches.append(cur); cur, cur_max = [i], l
+            batches.append(cur)
+            cur, cur_max = [i], l
         else:
-            cur.append(i); cur_max = nm
-    if cur: batches.append(cur)
+            cur.append(i)
+            cur_max = nm
+    if cur:
+        batches.append(cur)
     for b in batches:
-        ids = [enc[i] for i in b]; ml = max(len(x) for x in ids)
-        ii = np.zeros((len(b), ml), dtype=np.int64); am = np.zeros((len(b), ml), dtype=np.int64)
+        ids = [enc[i] for i in b]
+        ml = max(len(x) for x in ids)
+        ii = np.zeros((len(b), ml), dtype=np.int64)
+        am = np.zeros((len(b), ml), dtype=np.int64)
         for j, x in enumerate(ids):
-            ii[j, :len(x)] = x; am[j, :len(x)] = 1
+            ii[j, : len(x)] = x
+            am[j, : len(x)] = 1
         feed = {}
         for n in input_names:
-            if n == "input_ids": feed[n] = ii
-            elif n == "attention_mask": feed[n] = am
-            elif n == "token_type_ids": feed[n] = np.zeros_like(ii)
+            if n == "input_ids":
+                feed[n] = ii
+            elif n == "attention_mask":
+                feed[n] = am
+            elif n == "token_type_ids":
+                feed[n] = np.zeros_like(ii)
         h = sess.run(None, feed)[0]
         v = h[:, 0, :].astype(np.float32)
         v = v / np.linalg.norm(v, axis=1, keepdims=True)
-        for j, i in enumerate(b): out[i] = v[j]
+        for j, i in enumerate(b):
+            out[i] = v[j]
     return np.stack(out)
+
 
 def sentences(text):
     return [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s]
 
+
 def pct(a, q):
     return float(np.percentile(np.asarray(a, dtype=np.float64), q))
 
+
 def stats(a):
     a = np.asarray(a, dtype=np.float64)
-    return {"n": int(a.size), "median": float(np.median(a)), "p95": pct(a, 95),
-            "mean": float(a.mean()), "max": float(a.max())}
+    return {
+        "n": int(a.size),
+        "median": float(np.median(a)),
+        "p95": pct(a, 95),
+        "mean": float(a.mean()),
+        "max": float(a.max()),
+    }
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -104,11 +126,19 @@ def main():
     if not pathlib.Path(model_dir).is_dir():
         sys.exit(f"pinned model snapshot missing: {model_dir}")
     tok = AutoTokenizer.from_pretrained(model_dir)
-    so = ort.SessionOptions(); so.intra_op_num_threads = 16; so.inter_op_num_threads = 2
-    sess = ort.InferenceSession(model_dir + "/onnx/model.onnx", sess_options=so, providers=["CPUExecutionProvider"])
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = 16
+    so.inter_op_num_threads = 2
+    sess = ort.InferenceSession(
+        model_dir + "/onnx/model.onnx",
+        sess_options=so,
+        providers=["CPUExecutionProvider"],
+    )
 
     db = sqlite3.connect(f"file:{args.corpus}?mode=ro", uri=True)
-    rows = db.execute("SELECT id, text FROM messages WHERE text IS NOT NULL ORDER BY id").fetchall()
+    rows = db.execute(
+        "SELECT id, text FROM messages WHERE text IS NOT NULL ORDER BY id"
+    ).fetchall()
     db.close()
     cands = []  # (prev, target, next, after_next_or_None)
     for _mid, text in rows:
@@ -122,7 +152,15 @@ def main():
     sample = rng.sample(cands, N_TARGETS)
     donors = [c[1] for c in sample]
 
-    W0, pert = [], {"boundary_shift": [], "neighbor_replace_prev": [], "neighbor_replace_next": [], "target_alone": []}
+    W0, pert = (
+        [],
+        {
+            "boundary_shift": [],
+            "neighbor_replace_prev": [],
+            "neighbor_replace_next": [],
+            "target_alone": [],
+        },
+    )
     shift_extended = 0
     for idx, (prev, tgt, nxt, after) in enumerate(sample):
         w0 = prev + "\n\n" + tgt + "\n\n" + nxt
@@ -131,11 +169,16 @@ def main():
         shifted_prev = " ".join(prev_sents[1:])
         next_part = nxt
         if after:
-            next_part = nxt + " " + sentences(after)[0]; shift_extended += 1
+            next_part = nxt + " " + sentences(after)[0]
+            shift_extended += 1
         shifted_parts = [q for q in (shifted_prev, tgt, next_part) if q]
         pert["boundary_shift"].append("\n\n".join(shifted_parts))
-        pert["neighbor_replace_prev"].append(donors[(idx + 7) % N_TARGETS] + "\n\n" + tgt + "\n\n" + nxt)
-        pert["neighbor_replace_next"].append(prev + "\n\n" + tgt + "\n\n" + donors[(idx + 13) % N_TARGETS])
+        pert["neighbor_replace_prev"].append(
+            donors[(idx + 7) % N_TARGETS] + "\n\n" + tgt + "\n\n" + nxt
+        )
+        pert["neighbor_replace_next"].append(
+            prev + "\n\n" + tgt + "\n\n" + donors[(idx + 13) % N_TARGETS]
+        )
         pert["target_alone"].append(tgt)
 
     golden = json.load(open(args.golden))["queries"]
@@ -158,7 +201,9 @@ def main():
         "model_snapshot": model_dir.split("/")[-1],
         "corpus_messages_scanned": len(rows),
         "candidate_targets": len(cands),
-        "n_targets": N_TARGETS, "n_queries": len(queries), "seed": SEED,
+        "n_targets": N_TARGETS,
+        "n_queries": len(queries),
+        "seed": SEED,
         "shift_extended_with_following_sentence": shift_extended,
         "embed_seconds": round(embed_seconds, 1),
         "per_type": {},
@@ -170,18 +215,26 @@ def main():
         absdr, flips, pairs = [], 0, 0
         for q in range(S0.shape[0]):
             for i in range(N_TARGETS):
-                col = S0[q].copy(); col[i] = sp[q, i]
+                col = S0[q].copy()
+                col[i] = sp[q, i]
                 rp = int(np.sum(col > sp[q, i]) + 1)
-                absdr.append(abs(rp - int(rank0[q, i]))); pairs += 1
-                in0 = i in top0[q]; inp = rp <= TOPK
-                if in0 != inp: flips += 1
+                absdr.append(abs(rp - int(rank0[q, i])))
+                pairs += 1
+                in0 = i in top0[q]
+                inp = rp <= TOPK
+                if in0 != inp:
+                    flips += 1
         result["per_type"][name] = {
-            "cosine_drift": stats(drift), "cosine_similarity_median": float(np.median(cos)),
-            "abs_rank_change": stats(absdr), "top10_membership_flips": flips,
-            "top10_flip_rate": flips / pairs, "query_target_pairs": pairs,
+            "cosine_drift": stats(drift),
+            "cosine_similarity_median": float(np.median(cos)),
+            "abs_rank_change": stats(absdr),
+            "top10_membership_flips": flips,
+            "top10_flip_rate": flips / pairs,
+            "query_target_pairs": pairs,
         }
     json.dump(result, open(args.out, "w"), indent=1)
     print(json.dumps(result, indent=1))
+
 
 if __name__ == "__main__":
     main()

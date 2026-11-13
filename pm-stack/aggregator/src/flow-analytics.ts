@@ -37,11 +37,7 @@
 // no number is ever presented without its window and coverage state
 // (#4829 acceptance).
 
-import {
-  weeklyTransitions,
-  type ItemHistoryCutoff,
-  type ItemHistoryItem,
-} from "./item-history.ts";
+import { weeklyTransitions, type ItemHistoryCutoff, type ItemHistoryItem } from "./item-history.ts";
 import type { RefKey } from "./model.ts";
 
 export const FLOW_ANALYTICS_SCHEMA_VERSION = 1;
@@ -186,10 +182,7 @@ export function computeFlowAnalytics(cutoffs: ItemHistoryCutoff[]): FlowAnalytic
   // Returns undefined when the item is not observed at the cutoff,
   // so a missing observation stays distinguishable from an explicit
   // unassigned membership (groupRefOf -> null) at that cutoff.
-  const groupAt = (
-    cutoff: ItemHistoryCutoff | undefined,
-    ref: RefKey,
-  ): { group: RefKey | null } | undefined => {
+  const groupAt = (cutoff: ItemHistoryCutoff | undefined, ref: RefKey): { group: RefKey | null } | undefined => {
     const item = cutoff?.items.find((i) => i.ref === ref);
     return item ? { group: groupRefOf(item) } : undefined;
   };
@@ -215,11 +208,9 @@ export function computeFlowAnalytics(cutoffs: ItemHistoryCutoff[]): FlowAnalytic
     }
   }
 
-  const groupRefs: (RefKey | null)[] = [...new Set([
-    ...groupItems.keys(),
-    ...perGroup.keys(),
-    ...throughputByGroup.keys(),
-  ])].sort((a, b) => (a ?? "").localeCompare(b ?? ""));
+  const groupRefs: (RefKey | null)[] = [
+    ...new Set([...groupItems.keys(), ...perGroup.keys(), ...throughputByGroup.keys()]),
+  ].sort((a, b) => (a ?? "").localeCompare(b ?? ""));
 
   const groups: FlowGroup[] = groupRefs.map((groupRef) => {
     const items: ItemStatusTime[] = [...(perGroup.get(groupRef)?.entries() ?? [])]

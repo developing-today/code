@@ -21,12 +21,7 @@
 //   its reason-code breakdown behind a <details> disclosure (one
 //   click) when the caller supplies the attribution projection's
 //   reason lines.
-import {
-  selectRollups,
-  type RollupCoverage,
-  type RollupWindowKind,
-  type SpendRollup,
-} from "./spend-rollups.ts";
+import { selectRollups, type RollupCoverage, type RollupWindowKind, type SpendRollup } from "./spend-rollups.ts";
 
 /** Forecast-to-complete for one scope, supplied by the caller from
  * the #1256 forecast contract. USD only — a forecast in any other
@@ -49,6 +44,11 @@ export interface SpendCardData {
   windowStart: string;
   windowEnd: string;
   coverage: RollupCoverage;
+  /** Attribution version the selected records were computed under.
+   * selectRollups picks one consistent version per window; printing
+   * it on the view makes a restatement distinguishable from changed
+   * consumption (design section 3, doc/spend-rollups-design-1259.md). */
+  attributionVersion: string;
   /** Earliest retained source history, from the records. */
   coverageStart: string;
   measures: SpendMeasure[];
@@ -95,9 +95,7 @@ function cardFor(
   forecasts: ReadonlyMap<string, SpendForecastToComplete> | undefined,
 ): SpendCardData {
   const first = records[0];
-  const tokens = records
-    .filter((r) => r.unit === "tokens")
-    .sort((a, b) => (a.pool ?? "").localeCompare(b.pool ?? ""));
+  const tokens = records.filter((r) => r.unit === "tokens").sort((a, b) => (a.pool ?? "").localeCompare(b.pool ?? ""));
   const shares = records
     .filter((r) => r.unit === "share_pct")
     .sort((a, b) => (a.pool ?? "").localeCompare(b.pool ?? ""));
@@ -118,6 +116,7 @@ function cardFor(
     windowStart: first.windowStart,
     windowEnd: first.windowEnd,
     coverage: records.some((r) => r.coverage === "partial") ? "partial" : "complete",
+    attributionVersion: first.attributionVersion,
     coverageStart: records.map((r) => r.coverageStart).sort()[0],
     measures,
     forecast: forecasts?.get(scopeId) ?? null,
@@ -127,17 +126,17 @@ function cardFor(
 /** Build the card view from stored rollup records (any attribution
  * versions — the store's consistent reader view is selected here).
  * Cards describe the LATEST window of the preferred kind present. */
-export function buildSpendCards(
-  records: readonly SpendRollup[],
-  opts: BuildSpendCardsOptions = {},
-): SpendCardsView {
+export function buildSpendCards(records: readonly SpendRollup[], opts: BuildSpendCardsOptions = {}): SpendCardsView {
   const selected = selectRollups(records);
   const preferred = opts.windowKind ?? "month";
   const fallback: RollupWindowKind = preferred === "month" ? "week" : "month";
   const kind = [preferred, fallback].find((k) => selected.some((r) => r.windowKind === k));
   if (!kind) return { windowKind: null, byScope: new Map(), unattributed: null };
   const inKind = selected.filter((r) => r.windowKind === kind);
-  const latestStart = inKind.map((r) => r.windowStart).sort().at(-1) as string;
+  const latestStart = inKind
+    .map((r) => r.windowStart)
+    .sort()
+    .at(-1) as string;
   const inWindow = inKind.filter((r) => r.windowStart === latestStart);
   const byScopeRecords = new Map<string, SpendRollup[]>();
   for (const r of inWindow) {
@@ -162,11 +161,7 @@ export function buildSpendCards(
 // --- so this module must not import render.ts back) -----------------
 
 function esc(s: unknown): string {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 function monthLabel(iso: string): string {
@@ -177,13 +172,11 @@ function monthLabel(iso: string): string {
 }
 
 function windowText(card: SpendCardData): string {
-  const span =
-    card.windowKind === "month"
-      ? monthLabel(card.windowStart)
-      : `week of ${card.windowStart.slice(0, 10)}`;
+  const span = card.windowKind === "month" ? monthLabel(card.windowStart) : `week of ${card.windowStart.slice(0, 10)}`;
+  const labelled = `${span} · attribution ${esc(card.attributionVersion)}`;
   return card.coverage === "partial"
-    ? `${span} · partial window (source coverage starts ${esc(card.coverageStart.slice(0, 10))})`
-    : span;
+    ? `${labelled} · partial window (source coverage starts ${esc(card.coverageStart.slice(0, 10))})`
+    : labelled;
 }
 
 function measuresHtml(card: SpendCardData): string {
@@ -207,9 +200,7 @@ export function spendCardHtml(card: SpendCardData): string {
 
 /** The unattributed bucket as its own visible row, with the
  * reason-code breakdown one click away in a disclosure element. */
-export function unattributedSpendHtml(
-  card: SpendCardData & { reasons: UnattributedReasonLine[] },
-): string {
+export function unattributedSpendHtml(card: SpendCardData & { reasons: UnattributedReasonLine[] }): string {
   const reasons = card.reasons.length
     ? `<ul>${card.reasons.map((r) => `<li>${esc(r.reason)}: ${esc(r.text)}</li>`).join("")}</ul>`
     : `<p class="muted">No reason breakdown recorded for this window yet — the attribution projection has not supplied one.</p>`;

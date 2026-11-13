@@ -66,10 +66,11 @@ Slice 1 implements the **read-only discovery and reporting phase** for the openc
 ### Mode Handling
 
 - **Shadow mode** (default): Discovery only, no mutations
+
   ```bash
   python3 pm-stack/opencode-claimant/claimant.py
   ```
-  
+
 - **Live mode**: Full execution (future slice)
   ```bash
   echo "live" > ~/.local/state/opencode-claimant/mode
@@ -98,6 +99,7 @@ Slice 1 implements the **read-only discovery and reporting phase** for the openc
 ### Queue Support
 
 All four opencode queues supported:
+
 1. `repo-health-code-pilot`
 2. `repo-health-opencode-pilot`
 3. `repo-health-openchamber-pilot`
@@ -111,13 +113,14 @@ All four opencode queues supported:
 ✅ No double-binding - Never binds a session you didn't create  
 ✅ Atomic operations - Prevents race conditions  
 ✅ Session location verification - Verify before binding  
-✅ Task state verification - Re-verify before launch  
+✅ Task state verification - Re-verify before launch
 
 ---
 
 ## 📊 Verification Results
 
 ### Test Suite Results
+
 ```
 === All Tests Passed! ===
 OpenCode lane claimant/executor slice 1 is working correctly.
@@ -143,21 +146,25 @@ OpenCode lane claimant/executor slice 1 is working correctly.
 ## 🧪 Testing & Validation
 
 ### Quick Test
+
 ```bash
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Full Test Suite
+
 ```bash
 bash pm-stack/opencode-claimant/test_slice1.sh
 ```
 
 ### Comprehensive Verification
+
 ```bash
 bash pm-stack/opencode-claimant/verify_slice1.sh
 ```
 
 ### Unit Tests
+
 ```bash
 cd pm-stack/opencode-claimant/test
 python3 -m unittest discover

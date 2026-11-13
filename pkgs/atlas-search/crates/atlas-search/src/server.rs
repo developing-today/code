@@ -210,7 +210,9 @@ fn home_dir() -> PathBuf {
     // resolved state/config/token paths relative to the CWD.
     match std::env::var_os("HOME") {
         Some(home) if !home.is_empty() => PathBuf::from(home),
-        _ => panic!("HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+        _ => panic!(
+            "HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+        ),
     }
 }
 
@@ -3259,6 +3261,80 @@ mod tests {
         );
         assert_eq!(f1b.body["status"], "done");
         assert_eq!(calls.lock().unwrap().len(), after_f3);
+    }
+
+    #[test]
+    fn search_rejects_unsupported_parameters_before_backend_work() {
+        // Oracle: SearchParametersV1::validate rejects an unimplemented
+        // planner stage, and the HTTP handler validates before scheduling.
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let response = submit(
+            handle.addr,
+            PERSONAL_TOKEN,
+            json!({"query": "alpha", "planner_enabled": true}),
+        );
+        assert_eq!(response.status, 400, "{}", response.body);
+        assert!(calls.lock().unwrap().is_empty(), "refused search did work");
+    }
+
+    #[test]
+    fn search_honors_and_dedupes_by_parameters() {
+        // Oracle: the API contract flattens SearchParametersV1 onto the
+        // request; effective controls reach branch execution and distinguish
+        // cached searches when their values differ.
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let addr = handle.addr;
+        let request = json!({
+            "query": "alpha",
+            "shard_top_k": 17,
+            "global_top_k": 23,
+            "rrf_k": 61
+        });
+        let first = submit(addr, PERSONAL_TOKEN, request.clone());
+        assert_eq!(first.status, 202, "{}", first.body);
+        let first_id = first.body["job_id"].as_str().unwrap().to_string();
+        let first_token = first.body["job_token"].as_str().unwrap().to_string();
+        wait_done(addr, &first_id, &first_token);
+        let first_calls = calls.lock().unwrap().clone();
+        assert!(
+            first_calls
+                .iter()
+                .any(|query| query.shard_top_k == 17 && query.global_top_k == 23),
+            "effective branch controls must reach the backend: {first_calls:?}"
+        );
+
+        let exact_repeat = submit(addr, PERSONAL_TOKEN, request);
+        assert_eq!(exact_repeat.body["status"], "done");
+        assert_eq!(calls.lock().unwrap().len(), first_calls.len());
+
+        let different_parameters = submit(
+            addr,
+            PERSONAL_TOKEN,
+            json!({
+                "query": "alpha",
+                "shard_top_k": 17,
+                "global_top_k": 23,
+                "rrf_k": 62
+            }),
+        );
+        assert_eq!(
+            different_parameters.status, 202,
+            "{}",
+            different_parameters.body
+        );
+        let different_id = different_parameters.body["job_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let different_token = different_parameters.body["job_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_done(addr, &different_id, &different_token);
+        assert!(
+            calls.lock().unwrap().len() > first_calls.len(),
+            "different effective parameters must not reuse the first ranking"
+        );
     }
 
     #[test]

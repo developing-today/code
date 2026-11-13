@@ -30,8 +30,8 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
 
 - `GET /health` — open liveness.
 - `POST /v1/search` `{query, k?}` — gated (`Authorization:
-  Bearer <GATE_TOKEN>`). Returns `{cache: "miss"|"hit", key,
-  query, result, meta}`.
+Bearer <GATE_TOKEN>`). Returns `{cache: "miss"|"hit", key,
+query, result, meta}`.
 - `GET /v1/cache/inspect?query=..&k=..` — gated; DO metadata
   readback (embedding presence/dims/validity, result presence,
   hit count, timings). The proof/audit surface.

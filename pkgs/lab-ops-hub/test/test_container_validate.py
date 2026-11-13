@@ -2170,7 +2170,9 @@ class TestCrawlContentLength(unittest.TestCase):
 
         body_prefix is sent immediately; the socket is then held open
         for hold_seconds (the wedge posture) before reading."""
-        with socket.create_connection(("127.0.0.1", self.port), timeout=read_timeout) as sock:
+        with socket.create_connection(
+            ("127.0.0.1", self.port), timeout=read_timeout
+        ) as sock:
             sock.sendall(head)
             if body_prefix:
                 sock.sendall(body_prefix)
@@ -2202,7 +2204,8 @@ class TestCrawlContentLength(unittest.TestCase):
 
     def test_negative_length_gets_prompt_400(self):
         status, raw = self.raw_request(
-            self.post_head(b"-1"), body_prefix=b'{"url":', hold_seconds=0.2)
+            self.post_head(b"-1"), body_prefix=b'{"url":', hold_seconds=0.2
+        )
         self.assertEqual(status, 400)
         self.assertIn(b"Content-Length", raw)
         self.assert_get_still_answers()
@@ -2210,7 +2213,9 @@ class TestCrawlContentLength(unittest.TestCase):
     def test_oversized_length_gets_prompt_400(self):
         status, raw = self.raw_request(
             self.post_head(str(app._CRAWL_REQUEST_MAX_BODY_BYTES + 1).encode()),
-            body_prefix=b'{"url":', hold_seconds=0.2)
+            body_prefix=b'{"url":',
+            hold_seconds=0.2,
+        )
         self.assertEqual(status, 400)
         self.assertIn(b"Content-Length", raw)
         self.assert_get_still_answers()
@@ -2232,16 +2237,68 @@ class TestCrawlContentLength(unittest.TestCase):
         app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS = 1
         try:
             status, _ = self.raw_request(
-                self.post_head(b"100"), body_prefix=b'{"url": "x"', read_timeout=8.0)
+                self.post_head(b"100"), body_prefix=b'{"url": "x"', read_timeout=8.0
+            )
         finally:
             app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS = orig
         self.assertEqual(status, 408)
         self.assert_get_still_answers()
 
+    def test_trickling_in_cap_body_is_cut_off_at_the_deadline(self):
+        # #8906 (Codex P1 on PR #8705): a client dribbling bytes at
+        # intervals below the socket timeout must still be cut off at
+        # the absolute deadline. The buffered read() this guards
+        # against keeps recv-ing until the declared length arrives -
+        # every recv succeeds, so read() never returns and the
+        # deadline is never rechecked; read1() returns after one raw
+        # read, so the loop rechecks the deadline between chunks.
+        # Oracle: the server answers 408 at ~the deadline (1s patched)
+        # while the drip would need ~20s to satisfy Content-Length.
+        orig = app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS
+        app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS = 1
+        stop = threading.Event()
+
+        def drip(sock):
+            try:
+                while not stop.is_set():
+                    sock.sendall(b"x")
+                    time.sleep(0.2)
+            except OSError:
+                pass
+
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", self.port), timeout=8.0
+            ) as sock:
+                sock.sendall(self.post_head(b"100"))
+                sender = threading.Thread(target=drip, args=(sock,), daemon=True)
+                sender.start()
+                started = time.monotonic()
+                chunks = []
+                try:
+                    while True:
+                        chunk = sock.recv(65536)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                except socket.timeout:
+                    raise AssertionError(
+                        "server did not cut off the trickling body promptly"
+                    )
+                elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+            app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS = orig
+        status = int(b"".join(chunks).split(b" ", 2)[1])
+        self.assertEqual(status, 408)
+        self.assertLess(elapsed, 5.0)
+        self.assert_get_still_answers()
+
     def test_well_formed_control_still_200(self):
         body = json.dumps({"url": "http://example.com/"}).encode()
         status, raw = self.raw_request(
-            self.post_head(str(len(body)).encode()), body_prefix=body)
+            self.post_head(str(len(body)).encode()), body_prefix=body
+        )
         self.assertEqual(status, 200)
         self.assertIn(b'"status_code": 200', raw)
         self.assert_get_still_answers()

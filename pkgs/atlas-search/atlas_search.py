@@ -84,6 +84,7 @@ retrieval (fixed: a single pool-depth lookup, survivors kept; fill:
 escalating depth until the pool fills or a 3200 cap is hit). Opt-in
 A/B modes; scan remains the default.
 """
+
 import argparse
 import base64
 import json
@@ -130,9 +131,15 @@ def bws_secret(name):
     if name in _bws_cache:
         return _bws_cache[name]
     out = subprocess.run(
-        ["bash", "-c", "source ~/tools/bws-env.sh >/dev/null 2>&1; "
-                       "printf %s \"$BWS_ACCESS_TOKEN\""],
-        capture_output=True, text=True, timeout=30)
+        [
+            "bash",
+            "-c",
+            'source ~/tools/bws-env.sh >/dev/null 2>&1; printf %s "$BWS_ACCESS_TOKEN"',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     env_token = out.stdout.strip()
     if env_token:
         os.environ["BWS_ACCESS_TOKEN"] = env_token
@@ -142,8 +149,12 @@ def bws_secret(name):
     last = None
     for _ in range(3):
         try:
-            lst = subprocess.run([bws, "secret", "list", "-o", "json"],
-                                 capture_output=True, text=True, timeout=60)
+            lst = subprocess.run(
+                [bws, "secret", "list", "-o", "json"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
             sid = None
             for item in json.loads(lst.stdout):
                 if item.get("key") == name:
@@ -151,10 +162,16 @@ def bws_secret(name):
                     break
             if not sid:
                 raise RuntimeError(f"bws secret named {name} not found")
-            got = subprocess.run([bws, "secret", "get", sid, "-o", "json"],
-                                 capture_output=True, text=True, timeout=60)
+            got = subprocess.run(
+                [bws, "secret", "get", sid, "-o", "json"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
             val = json.loads(got.stdout)
-            _bws_cache[name] = val[0]["value"] if isinstance(val, list) else val["value"]
+            _bws_cache[name] = (
+                val[0]["value"] if isinstance(val, list) else val["value"]
+            )
             return _bws_cache[name]
         except Exception as e:  # noqa: BLE001 - report the last failure
             last = e
@@ -175,7 +192,10 @@ def resolve_turso_token():
     try:
         with open(TOKEN_CACHE) as f:
             cache = json.load(f)
-        if cache.get("db") == TURSO_DB and time.time() - cache.get("fetched_at", 0) < 20 * 3600:
+        if (
+            cache.get("db") == TURSO_DB
+            and time.time() - cache.get("fetched_at", 0) < 20 * 3600
+        ):
             return cache["token"], "cache (turso CLI read-only mint)"
     except Exception:
         pass
@@ -184,26 +204,35 @@ def resolve_turso_token():
     try:
         out = subprocess.run(
             ["turso", "db", "tokens", "create", TURSO_DB, "--read-only", "-e", "7d"],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
         token = out.stdout.strip()
         if out.returncode == 0 and token.count(".") == 2:
             try:
                 os.makedirs(os.path.dirname(TOKEN_CACHE), exist_ok=True)
                 fd = os.open(TOKEN_CACHE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                 with os.fdopen(fd, "w") as f:
-                    json.dump({"db": TURSO_DB, "token": token, "fetched_at": time.time()}, f)
+                    json.dump(
+                        {"db": TURSO_DB, "token": token, "fetched_at": time.time()}, f
+                    )
             except Exception:
                 pass
             return token, "turso CLI read-only mint"
     except Exception:
         pass
-    return None, "no ATLAS_TURSO_TOKEN, no Bitwarden atlas-ro secret, turso CLI mint unavailable"
+    return (
+        None,
+        "no ATLAS_TURSO_TOKEN, no Bitwarden atlas-ro secret, turso CLI mint unavailable",
+    )
 
 
 def turso_cli_logged_in():
     try:
-        out = subprocess.run(["turso", "auth", "whoami"],
-                             capture_output=True, text=True, timeout=30)
+        out = subprocess.run(
+            ["turso", "auth", "whoami"], capture_output=True, text=True, timeout=30
+        )
         return out.returncode == 0 and bool(out.stdout.strip())
     except Exception:
         return False
@@ -248,20 +277,28 @@ class TursoBackend:
     def __init__(self, vec_table=VEC_TABLE):
         token, source = resolve_turso_token()
         if not token:
-            die(f"turso backend: token did not resolve ({source}). "
-                "Set ATLAS_TURSO_TOKEN or log the turso CLI in.")
+            die(
+                f"turso backend: token did not resolve ({source}). "
+                "Set ATLAS_TURSO_TOKEN or log the turso CLI in."
+            )
         self.token = token
         self.token_source = source
         self.vec_table = vec_table
 
     def pipeline(self, stmts):
         """stmts: list of (sql, [args]). Returns list of list-of-dict rows."""
-        requests = [{"type": "execute",
-                     "stmt": {"sql": sql, "args": [_hrana_arg(a) for a in args]}}
-                    for sql, args in stmts]
+        requests = [
+            {
+                "type": "execute",
+                "stmt": {"sql": sql, "args": [_hrana_arg(a) for a in args]},
+            }
+            for sql, args in stmts
+        ]
         requests.append({"type": "close"})
         body = json.dumps({"requests": requests}).encode()
-        r = urllib.request.Request(f"https://{TURSO_HOST}/v2/pipeline", data=body, method="POST")
+        r = urllib.request.Request(
+            f"https://{TURSO_HOST}/v2/pipeline", data=body, method="POST"
+        )
         r.add_header("Authorization", f"Bearer {self.token}")
         r.add_header("Content-Type", "application/json")
         try:
@@ -277,8 +314,10 @@ class TursoBackend:
             if result is None:
                 continue
             cols = [c["name"] for c in result.get("cols", [])]
-            rows = [{cols[i]: _hrana_val(v) for i, v in enumerate(row)}
-                    for row in result.get("rows", [])]
+            rows = [
+                {cols[i]: _hrana_val(v) for i, v in enumerate(row)}
+                for row in result.get("rows", [])
+            ]
             results.append(rows)
         return results
 
@@ -310,8 +349,12 @@ class LocalBackend:
     #    whether the file is a publish copy (labels+sensitivity+vecs) or
     #    canonical atlas.db (none of those; attached from siblings).
     def _tables(self, schema="main"):
-        return {r[0] for r in self.con.execute(
-            f"SELECT name FROM {schema}.sqlite_master WHERE type IN ('table','view')")}
+        return {
+            r[0]
+            for r in self.con.execute(
+                f"SELECT name FROM {schema}.sqlite_master WHERE type IN ('table','view')"
+            )
+        }
 
     def _cols(self, table, schema="main"):
         return {r[1] for r in self.con.execute(f"PRAGMA {schema}.table_info({table})")}
@@ -319,51 +362,79 @@ class LocalBackend:
     def _setup_views(self):
         main_tables = self._tables()
         aux = None
-        if "session_labels" not in main_tables or "sensitivity" not in self._cols("chunks"):
+        if "session_labels" not in main_tables or "sensitivity" not in self._cols(
+            "chunks"
+        ):
             # Look for a publish copy beside the DB to attach for
             # labels + sensitivity (same session/chunk id space).
             import glob
-            sibs = sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(self.db_path)),
-                                                 "atlas-publish-*.db")),
-                          key=lambda p: os.path.getmtime(p), reverse=True)
+
+            sibs = sorted(
+                glob.glob(
+                    os.path.join(
+                        os.path.dirname(os.path.abspath(self.db_path)),
+                        "atlas-publish-*.db",
+                    )
+                ),
+                key=lambda p: os.path.getmtime(p),
+                reverse=True,
+            )
             for sib in sibs:
                 if os.path.abspath(sib) == os.path.abspath(self.db_path):
                     continue
                 try:
-                    self.con.execute("ATTACH DATABASE ? AS aux", (f"file:{sib}?mode=ro",))
+                    self.con.execute(
+                        "ATTACH DATABASE ? AS aux", (f"file:{sib}?mode=ro",)
+                    )
                     aux = sib
                     break
                 except sqlite3.Error:
                     continue
             if aux:
-                self.notes.append(f"labels/sensitivity attached from sibling publish copy {os.path.basename(aux)}")
+                self.notes.append(
+                    f"labels/sensitivity attached from sibling publish copy {os.path.basename(aux)}"
+                )
         aux_tables = self._tables("aux") if aux else set()
         if "session_labels" in main_tables:
-            self.con.execute("CREATE TEMP VIEW v_labels AS SELECT * FROM main.session_labels")
+            self.con.execute(
+                "CREATE TEMP VIEW v_labels AS SELECT * FROM main.session_labels"
+            )
             self.sens_source = "session_labels (this DB)"
         elif "session_labels" in aux_tables:
-            self.con.execute("CREATE TEMP VIEW v_labels AS SELECT * FROM aux.session_labels")
+            self.con.execute(
+                "CREATE TEMP VIEW v_labels AS SELECT * FROM aux.session_labels"
+            )
             self.sens_source = "session_labels (attached publish copy)"
         else:
             self.con.execute(
                 "CREATE TEMP TABLE v_labels (session_id TEXT PRIMARY KEY, client TEXT,"
                 " kind TEXT, topics TEXT, projects TEXT, sensitivity TEXT,"
-                " confidence TEXT, scheme TEXT)")
+                " confidence TEXT, scheme TEXT)"
+            )
             self.sens_source = "none — this DB carries no labels"
-            self.notes.append("no session_labels available: kind/topic/project filters match nothing")
+            self.notes.append(
+                "no session_labels available: kind/topic/project filters match nothing"
+            )
         if "sensitivity" in self._cols("chunks"):
-            self.con.execute("CREATE TEMP VIEW v_chunk_sens AS SELECT id, sensitivity FROM main.chunks")
+            self.con.execute(
+                "CREATE TEMP VIEW v_chunk_sens AS SELECT id, sensitivity FROM main.chunks"
+            )
             self.chunk_sens_source = "chunks.sensitivity (this DB)"
         elif aux and "sensitivity" in self._cols("chunks", "aux"):
-            self.con.execute("CREATE TEMP VIEW v_chunk_sens AS SELECT id, sensitivity FROM aux.chunks")
+            self.con.execute(
+                "CREATE TEMP VIEW v_chunk_sens AS SELECT id, sensitivity FROM aux.chunks"
+            )
             self.chunk_sens_source = "chunks.sensitivity (attached publish copy)"
         else:
-            self.con.execute("CREATE TEMP TABLE v_chunk_sens (id INTEGER PRIMARY KEY, sensitivity TEXT)")
+            self.con.execute(
+                "CREATE TEMP TABLE v_chunk_sens (id INTEGER PRIMARY KEY, sensitivity TEXT)"
+            )
             self.chunk_sens_source = "none — no sensitivity data available"
             self.notes.append(
                 "WARNING: no sensitivity data in this DB and no publish copy beside it; "
                 "the sensitivity ceiling excludes every chunk (fail-closed). "
-                "Point --db at a publish copy to search this corpus.")
+                "Point --db at a publish copy to search this corpus."
+            )
 
     # (vec file, corpus file whose chunks(id, content_hash) maps its ids)
     KNOWN_VEC_PAIRS = (
@@ -389,12 +460,20 @@ class LocalBackend:
         for vec_rel, map_rel in self.KNOWN_VEC_PAIRS:
             vec_p = os.path.expanduser(vec_rel)
             map_p = os.path.expanduser(map_rel)
-            if vec_p in seen_vec or not os.path.exists(vec_p) or not os.path.exists(map_p):
+            if (
+                vec_p in seen_vec
+                or not os.path.exists(vec_p)
+                or not os.path.exists(map_p)
+            ):
                 continue
             probe = sqlite3.connect(f"file:{vec_p}?mode=ro", uri=True)
             try:
-                tabs = {r[0] for r in probe.execute(
-                    "SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
+                tabs = {
+                    r[0]
+                    for r in probe.execute(
+                        "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+                    )
+                }
             finally:
                 probe.close()
             if self.vec_table not in tabs:
@@ -404,7 +483,8 @@ class LocalBackend:
         if out:
             self.notes.append(
                 f"vectors: {len(out)} side store(s) mapped by content_hash "
-                "(id spaces differ between stores; content_hash is the identity)")
+                "(id spaces differ between stores; content_hash is the identity)"
+            )
         return out
 
     def execute(self, sql, args=()):
@@ -416,6 +496,7 @@ class LocalBackend:
         if self._matrix is not None:
             return self._matrix
         import numpy as np
+
         vec_by_id = {}
         total_chunks = self.con.execute("SELECT count(*) FROM chunks").fetchone()[0]
         mapped_used = False
@@ -423,44 +504,59 @@ class LocalBackend:
             kind = src[0]
             if kind == "main":
                 rows = self.con.execute(
-                    f"SELECT chunk_id, vec FROM main.{self.vec_table}")
+                    f"SELECT chunk_id, vec FROM main.{self.vec_table}"
+                )
                 for cid, blob in rows:
                     vec_by_id.setdefault(cid, blob)
             elif kind == "idkey":
                 schema = f"vx{i}"
-                self.con.execute(f"ATTACH DATABASE ? AS {schema}",
-                                 (f"file:{src[1]}?mode=ro",))
+                self.con.execute(
+                    f"ATTACH DATABASE ? AS {schema}", (f"file:{src[1]}?mode=ro",)
+                )
                 if self.vec_table not in self._tables(schema):
                     continue
                 for cid, blob in self.con.execute(
-                        f"SELECT chunk_id, vec FROM {schema}.{self.vec_table}"):
+                    f"SELECT chunk_id, vec FROM {schema}.{self.vec_table}"
+                ):
                     vec_by_id.setdefault(cid, blob)
             elif kind == "mapped":
                 mapped_used = True
                 _, vec_p, map_p = src
                 vschema, mschema = f"vm{i}", f"mm{i}"
-                self.con.execute(f"ATTACH DATABASE ? AS {vschema}",
-                                 (f"file:{vec_p}?mode=ro",))
+                self.con.execute(
+                    f"ATTACH DATABASE ? AS {vschema}", (f"file:{vec_p}?mode=ro",)
+                )
                 if map_p != vec_p:
-                    self.con.execute(f"ATTACH DATABASE ? AS {mschema}",
-                                     (f"file:{map_p}?mode=ro",))
+                    self.con.execute(
+                        f"ATTACH DATABASE ? AS {mschema}", (f"file:{map_p}?mode=ro",)
+                    )
                 else:
                     mschema = vschema
                 if self.vec_table not in self._tables(vschema):
                     continue
-                id2hash = {r[0]: r[1] for r in self.con.execute(
-                    f"SELECT id, content_hash FROM {mschema}.chunks")}
-                hash2main = {r[1]: r[0] for r in self.con.execute(
-                    "SELECT id, content_hash FROM main.chunks")}
+                id2hash = {
+                    r[0]: r[1]
+                    for r in self.con.execute(
+                        f"SELECT id, content_hash FROM {mschema}.chunks"
+                    )
+                }
+                hash2main = {
+                    r[1]: r[0]
+                    for r in self.con.execute(
+                        "SELECT id, content_hash FROM main.chunks"
+                    )
+                }
                 for cid, blob in self.con.execute(
-                        f"SELECT chunk_id, vec FROM {vschema}.{self.vec_table}"):
+                    f"SELECT chunk_id, vec FROM {vschema}.{self.vec_table}"
+                ):
                     mid = hash2main.get(id2hash.get(cid))
                     if mid is not None:
                         vec_by_id.setdefault(mid, blob)
         if mapped_used:
             self.notes.append(
                 f"vector coverage: {len(vec_by_id)} of {total_chunks} chunks "
-                "have vectors via content-hash mapping")
+                "have vectors via content-hash mapping"
+            )
         ids = sorted(vec_by_id)
         if not ids:
             self._matrix = ([], None, {})
@@ -476,6 +572,7 @@ class LocalBackend:
 
     def vector_search(self, qvec, allowed_ids, pool):
         import numpy as np
+
         ids, M, index = self.load_matrix()
         if M is None:
             return []
@@ -549,11 +646,17 @@ class Filters:
         everything except the sensitivity ceiling — with caller-chosen
         table aliases, for the Turso vector branch's IN-subquery."""
         clauses, params = [], []
-        for col, vals in ((f"{l_alias}.kind", self.kinds), (f"{s_alias}.client", self.clients)):
+        for col, vals in (
+            (f"{l_alias}.kind", self.kinds),
+            (f"{s_alias}.client", self.clients),
+        ):
             if vals:
                 clauses.append(f"{col} IN ({','.join('?' * len(vals))})")
                 params.extend(vals)
-        for col, vals in ((f"{l_alias}.topics", self.topics), (f"{l_alias}.projects", self.projects)):
+        for col, vals in (
+            (f"{l_alias}.topics", self.topics),
+            (f"{l_alias}.projects", self.projects),
+        ):
             for v in vals:
                 clauses.append(f"{col} LIKE ?")
                 params.append(f'%"{v}"%')
@@ -566,10 +669,12 @@ class Filters:
         return clauses, params
 
     def joins(self, be):
-        return (f"JOIN messages m ON m.id = c.message_id "
-                f"JOIN sessions s ON s.id = m.session_id "
-                f"LEFT JOIN {be.labels_table} l ON l.session_id = s.id "
-                f"{be.sens_join}")
+        return (
+            f"JOIN messages m ON m.id = c.message_id "
+            f"JOIN sessions s ON s.id = m.session_id "
+            f"LEFT JOIN {be.labels_table} l ON l.session_id = s.id "
+            f"{be.sens_join}"
+        )
 
     def describe(self):
         d = {"max_sensitivity": self.max_sensitivity}
@@ -608,6 +713,7 @@ def embed_query(text, model=MODEL, embedder="auto", trunc=0):
     order the bake-off's trunc patch applies to queries."""
     global _model
     import numpy as np
+
     framework = embedder
     if framework == "auto":
         framework = "fastembed" if "bge" in model.lower() else "st"
@@ -617,16 +723,20 @@ def embed_query(text, model=MODEL, embedder="auto", trunc=0):
             try:
                 from fastembed import TextEmbedding
             except ImportError:
-                die("vector/hybrid modes with a fastembed model need the fastembed "
+                die(
+                    "vector/hybrid modes with a fastembed model need the fastembed "
                     "package. Use --mode fts, or run with the atlas venv python "
-                    "(~/atlas/.venv on the laptop).")
+                    "(~/atlas/.venv on the laptop)."
+                )
             _model = (key, TextEmbedding(model_name=model))
         elif framework == "st":
             try:
                 from sentence_transformers import SentenceTransformer
             except ImportError:
-                die("vector/hybrid modes with a sentence-transformers model need the "
-                    "sentence_transformers package (~/atlas/v3-venv on the laptop).")
+                die(
+                    "vector/hybrid modes with a sentence-transformers model need the "
+                    "sentence_transformers package (~/atlas/v3-venv on the laptop)."
+                )
             _model = (key, SentenceTransformer(model))
         else:
             die(f"unknown embedder: {embedder}")
@@ -636,8 +746,9 @@ def embed_query(text, model=MODEL, embedder="auto", trunc=0):
         vec = next(iter(m.embed(qs)))
         v = np.asarray(vec, dtype=np.float32)
     else:
-        v = m.encode([text], prompt_name="query", convert_to_numpy=True,
-                     show_progress_bar=False)[0].astype(np.float32)
+        v = m.encode(
+            [text], prompt_name="query", convert_to_numpy=True, show_progress_bar=False
+        )[0].astype(np.float32)
     if trunc:
         v = v[:trunc]
     n = float(np.linalg.norm(v))
@@ -674,25 +785,33 @@ def branch_queries(be, filters, match_expr, qvec_json, pool):
     joins = filters.joins(be)
     stmts = []
     if match_expr is not None:
-        stmts.append((
-            "SELECT c.id AS cid FROM chunks c "
-            "JOIN chunks_fts f ON f.rowid = c.id " + joins +
-            f" WHERE chunks_fts MATCH ? AND {where} "
-            "ORDER BY bm25(chunks_fts) LIMIT ?",
-            [match_expr, *params, pool]))
+        stmts.append(
+            (
+                "SELECT c.id AS cid FROM chunks c "
+                "JOIN chunks_fts f ON f.rowid = c.id "
+                + joins
+                + f" WHERE chunks_fts MATCH ? AND {where} "
+                "ORDER BY bm25(chunks_fts) LIMIT ?",
+                [match_expr, *params, pool],
+            )
+        )
     if qvec_json is not None:
         sens_ph = ",".join("?" * len(filters.allowed_sens))
-        sql = (f"SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist "
-               f"FROM {be.vec_table} v JOIN chunks c ON c.id = v.chunk_id "
-               f"WHERE c.sensitivity IN ({sens_ph})")
+        sql = (
+            f"SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist "
+            f"FROM {be.vec_table} v JOIN chunks c ON c.id = v.chunk_id "
+            f"WHERE c.sensitivity IN ({sens_ph})"
+        )
         vparams = [qvec_json, *filters.allowed_sens]
         sess_clauses, sess_params = filters.session_clauses("s2", "l2")
         if sess_clauses:
-            sql += (" AND v.chunk_id IN (SELECT c2.id FROM chunks c2 "
-                    "JOIN messages m2 ON m2.id = c2.message_id "
-                    "JOIN sessions s2 ON s2.id = m2.session_id "
-                    "LEFT JOIN session_labels l2 ON l2.session_id = s2.id "
-                    f"WHERE {' AND '.join(sess_clauses)})")
+            sql += (
+                " AND v.chunk_id IN (SELECT c2.id FROM chunks c2 "
+                "JOIN messages m2 ON m2.id = c2.message_id "
+                "JOIN sessions s2 ON s2.id = m2.session_id "
+                "LEFT JOIN session_labels l2 ON l2.session_id = s2.id "
+                f"WHERE {' AND '.join(sess_clauses)})"
+            )
             vparams.extend(sess_params)
         sql += " ORDER BY dist ASC LIMIT ?"
         vparams.append(pool)
@@ -709,7 +828,8 @@ def turso_allowed_ids(be, filters):
     sens_ph = ",".join("?" * len(filters.allowed_sens))
     rows = be.execute(
         f"SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN ({sens_ph})",
-        list(filters.allowed_sens))
+        list(filters.allowed_sens),
+    )
     allowed = {r["cid"] for r in rows}
     sess_clauses, sess_params = filters.session_clauses("s2", "l2")
     if sess_clauses:
@@ -718,7 +838,9 @@ def turso_allowed_ids(be, filters):
             "JOIN messages m2 ON m2.id = c2.message_id "
             "JOIN sessions s2 ON s2.id = m2.session_id "
             "LEFT JOIN session_labels l2 ON l2.session_id = s2.id "
-            f"WHERE {" AND ".join(sess_clauses)}", sess_params)
+            f"WHERE {' AND '.join(sess_clauses)}",
+            sess_params,
+        )
         allowed &= {r["cid"] for r in rows}
     return allowed
 
@@ -745,8 +867,10 @@ def turso_index_branch(be, filters, qvec_json, pool, vbackend):
         depths.append(3200)
     survivors = []
     for d in depths:
-        rows = be.execute("SELECT id FROM vector_top_k(?, vector32(?), ?)",
-                          [f"{be.vec_table}_idx", qvec_json, d])
+        rows = be.execute(
+            "SELECT id FROM vector_top_k(?, vector32(?), ?)",
+            [f"{be.vec_table}_idx", qvec_json, d],
+        )
         survivors = [r["id"] for r in rows if r["id"] in allowed][:pool]
         if len(survivors) >= pool:
             break
@@ -756,32 +880,47 @@ def turso_index_branch(be, filters, qvec_json, pool, vbackend):
     drows = be.execute(
         f"SELECT chunk_id AS cid, vector_distance_cos(vec, vector32(?)) AS dist "
         f"FROM {be.vec_table} WHERE chunk_id IN ({ph})",
-        [qvec_json, *survivors])
+        [qvec_json, *survivors],
+    )
     dist = {r["cid"]: r["dist"] for r in drows}
     return [(cid, dist.get(cid)) for cid in survivors]
 
 
 def run_search(be, args):
     vbackend = getattr(args, "vector_backend", "scan")
-    if (args.mode in ("vector", "hybrid") and vbackend != "scan"
-            and not isinstance(be, TursoBackend)):
-        die("--vector-backend index modes need the turso backend "
-            "(the vector index lives in the Turso publish)")
+    if (
+        args.mode in ("vector", "hybrid")
+        and vbackend != "scan"
+        and not isinstance(be, TursoBackend)
+    ):
+        die(
+            "--vector-backend index modes need the turso backend "
+            "(the vector index lives in the Turso publish)"
+        )
     filters = Filters(args)
     match_expr = fts_match_expr(args.query) if args.mode in ("fts", "hybrid") else None
     if args.mode == "fts" and match_expr is None:
-        die("query has no FTS-searchable terms (all words too short); try --mode vector")
+        die(
+            "query has no FTS-searchable terms (all words too short); try --mode vector"
+        )
     qvec = None
     qvec_json = None
     if args.mode in ("vector", "hybrid"):
-        qvec = embed_query(args.query, model=args.model, embedder=args.embedder,
-                           trunc=args.trunc)
+        qvec = embed_query(
+            args.query, model=args.model, embedder=args.embedder, trunc=args.trunc
+        )
         qvec_json = json.dumps([float(x) for x in qvec])
 
     fts_ranked, vec_ranked = [], []  # [(chunk_id, raw)] in rank order
     notes = list(getattr(be, "notes", []))
-    if isinstance(be, LocalBackend) and args.mode in ("vector", "hybrid") and not be._vec_sources:
-        notes.append("no vector store found for the local backend; vector branch returned nothing")
+    if (
+        isinstance(be, LocalBackend)
+        and args.mode in ("vector", "hybrid")
+        and not be._vec_sources
+    ):
+        notes.append(
+            "no vector store found for the local backend; vector branch returned nothing"
+        )
     if isinstance(be, TursoBackend):
         if vbackend == "scan" or qvec_json is None:
             stmts = branch_queries(be, filters, match_expr, qvec_json, args.pool)
@@ -796,24 +935,31 @@ def run_search(be, args):
             fts_stmts = branch_queries(be, filters, match_expr, None, args.pool)
             if fts_stmts:
                 fts_ranked = [(r["cid"], None) for r in be.pipeline(fts_stmts)[0]]
-            vec_ranked = turso_index_branch(be, filters, qvec_json,
-                                            args.pool, vbackend)
+            vec_ranked = turso_index_branch(be, filters, qvec_json, args.pool, vbackend)
     else:
         where, params = filters.where(be)
         joins = filters.joins(be)
         if match_expr is not None:
             rows = be.execute(
                 "SELECT c.id AS cid FROM chunks c "
-                "JOIN chunks_fts f ON f.rowid = c.id " + joins +
-                f" WHERE chunks_fts MATCH ? AND {where} "
+                "JOIN chunks_fts f ON f.rowid = c.id "
+                + joins
+                + f" WHERE chunks_fts MATCH ? AND {where} "
                 "ORDER BY bm25(chunks_fts) LIMIT ?",
-                [match_expr, *params, args.pool])
+                [match_expr, *params, args.pool],
+            )
             fts_ranked = [(r["cid"], None) for r in rows]
         if qvec is not None:
-            allowed = {r["cid"] for r in be.execute(
-                f"SELECT c.id AS cid FROM chunks c {joins} WHERE {where}", params)}
-            vec_ranked = [(cid, 1.0 - sim) for cid, sim in
-                          be.vector_search(qvec, allowed, args.pool)]
+            allowed = {
+                r["cid"]
+                for r in be.execute(
+                    f"SELECT c.id AS cid FROM chunks c {joins} WHERE {where}", params
+                )
+            }
+            vec_ranked = [
+                (cid, 1.0 - sim)
+                for cid, sim in be.vector_search(qvec, allowed, args.pool)
+            ]
 
     # Reciprocal rank fusion, k=10 (production shape, decided 2026-10-31).
     fused = {}
@@ -827,8 +973,10 @@ def run_search(be, args):
         e["score"] += 1.0 / (RRF_K + rank)
         e["rank_sources"]["vector"] = rank
         vec_dist[cid] = dist
-    ranked = sorted(fused.values(),
-                    key=lambda e: (-e["score"], min(e["rank_sources"].values()), e["chunk_id"]))
+    ranked = sorted(
+        fused.values(),
+        key=lambda e: (-e["score"], min(e["rank_sources"].values()), e["chunk_id"]),
+    )
 
     # the local backend learns things mid-search (vector coverage);
     # fold any late notes in before rendering
@@ -850,10 +998,14 @@ def run_search(be, args):
     if args.mode in ("vector", "hybrid"):
         # Provenance, kept explicit so callers can see exactly which
         # model/table produced the pool.
-        out["vector"] = {"model": args.model, "table": be.vec_table,
-                         "embedder": args.embedder, "trunc": args.trunc or None,
-                         "pool": args.pool,
-                         "vector_backend": getattr(args, "vector_backend", "scan")}
+        out["vector"] = {
+            "model": args.model,
+            "table": be.vec_table,
+            "embedder": args.embedder,
+            "trunc": args.trunc or None,
+            "pool": args.pool,
+            "vector_backend": getattr(args, "vector_backend", "scan"),
+        }
     return out
 
 
@@ -909,19 +1061,32 @@ def grouped_output(be, args, filters, ranked, vec_dist, notes):
         d = details.get(e["chunk_id"])
         if d is None:
             continue
-        g = by_session.setdefault(d["session_id"], {"session_id": d["session_id"],
-                                                    "score": e["score"], "hit_count": 0,
-                                                    "chunks": [], "_d": d})
+        g = by_session.setdefault(
+            d["session_id"],
+            {
+                "session_id": d["session_id"],
+                "score": e["score"],
+                "hit_count": 0,
+                "chunks": [],
+                "_d": d,
+            },
+        )
         g["hit_count"] += 1
         g["score"] = max(g["score"], e["score"])
         g["chunks"].append((e, d))
-    groups = sorted(by_session.values(), key=lambda g: (-g["score"], -g["hit_count"]))[: args.k]
+    groups = sorted(by_session.values(), key=lambda g: (-g["score"], -g["hit_count"]))[
+        : args.k
+    ]
     results = []
     for g in groups:
         chunks = []
         for e, d in g["chunks"][:5]:
-            ce = {"chunk_id": e["chunk_id"], "score": round(e["score"], 6),
-                  "rank_sources": dict(e["rank_sources"]), "text": d["text"]}
+            ce = {
+                "chunk_id": e["chunk_id"],
+                "score": round(e["score"], 6),
+                "rank_sources": dict(e["rank_sources"]),
+                "text": d["text"],
+            }
             if e["chunk_id"] in vec_dist and vec_dist[e["chunk_id"]] is not None:
                 ce["vector_distance"] = round(vec_dist[e["chunk_id"]], 6)
             if args.expand:
@@ -929,13 +1094,15 @@ def grouped_output(be, args, filters, ranked, vec_dist, notes):
             if args.with_message:
                 ce["message"] = message_obj(be, d)
             chunks.append(ce)
-        results.append({
-            "session_id": g["session_id"],
-            "score": round(g["score"], 6),
-            "hit_count": g["hit_count"],
-            "session": session_obj(g["_d"]),
-            "chunks": chunks,
-        })
+        results.append(
+            {
+                "session_id": g["session_id"],
+                "score": round(g["score"], 6),
+                "hit_count": g["hit_count"],
+                "session": session_obj(g["_d"]),
+                "chunks": chunks,
+            }
+        )
     return envelope(args, be, filters, results, notes)
 
 
@@ -965,7 +1132,8 @@ def details_sql(be):
         "JOIN sessions s ON s.id = m.session_id "
         f"LEFT JOIN {be.labels_table} l ON l.session_id = s.id "
         f"{be.sens_join} "
-        "WHERE c.id IN ({ph})")
+        "WHERE c.id IN ({ph})"
+    )
 
 
 def fetch_details(be, chunk_ids):
@@ -984,21 +1152,36 @@ def neighbor_map(be, d, n):
     rows = be.execute(
         "SELECT id, chunk_idx, text FROM chunks WHERE message_id = ? "
         "AND chunk_idx BETWEEN ? AND ? ORDER BY chunk_idx",
-        [d["message_id"], d["chunk_idx"] - n, d["chunk_idx"] + n])
-    before = [{"chunk_id": r["id"], "text": r["text"]} for r in rows if r["chunk_idx"] < d["chunk_idx"]]
-    after = [{"chunk_id": r["id"], "text": r["text"]} for r in rows if r["chunk_idx"] > d["chunk_idx"]]
+        [d["message_id"], d["chunk_idx"] - n, d["chunk_idx"] + n],
+    )
+    before = [
+        {"chunk_id": r["id"], "text": r["text"]}
+        for r in rows
+        if r["chunk_idx"] < d["chunk_idx"]
+    ]
+    after = [
+        {"chunk_id": r["id"], "text": r["text"]}
+        for r in rows
+        if r["chunk_idx"] > d["chunk_idx"]
+    ]
     return {"before": before, "after": after}
 
 
 def message_obj(be, d):
-    rows = be.execute("SELECT id, role, text FROM messages WHERE id = ?", [d["message_id"]])
+    rows = be.execute(
+        "SELECT id, role, text FROM messages WHERE id = ?", [d["message_id"]]
+    )
     if not rows:
         return None
     r = rows[0]
     text = r["text"] or ""
     truncated = len(text) > MESSAGE_TEXT_CAP
-    return {"id": r["id"], "role": r["role"],
-            "text": text[:MESSAGE_TEXT_CAP], "truncated": truncated}
+    return {
+        "id": r["id"],
+        "role": r["role"],
+        "text": text[:MESSAGE_TEXT_CAP],
+        "truncated": truncated,
+    }
 
 
 # ------------------------------------------------------------ get-chunk ---
@@ -1011,7 +1194,11 @@ def run_get_chunk(be, args):
         "chunk_id": d["chunk_id"],
         "text": d["text"],
         "chunk_idx": d["chunk_idx"],
-        "message": {"id": d["message_id"], "role": d["m_role"], "session_id": d["session_id"]},
+        "message": {
+            "id": d["message_id"],
+            "role": d["m_role"],
+            "session_id": d["session_id"],
+        },
         "session": session_obj(d),
         "session_id": d["session_id"],
     }
@@ -1027,37 +1214,55 @@ def run_get_chunk(be, args):
 def render_text(out):
     lines = []
     if "query" in out:
-        lines.append(f"query: {out.get('query')}  mode: {out.get('mode')}  backend: {out.get('backend')}")
+        lines.append(
+            f"query: {out.get('query')}  mode: {out.get('mode')}  backend: {out.get('backend')}"
+        )
         lines.append(f"filters: {json.dumps(out.get('filters_applied', {}))}")
         for n in out.get("notes", []):
             lines.append(f"note: {n}")
         for i, r in enumerate(out["results"], 1):
             if "chunks" in r:  # grouped by session
                 s = r["session"]
-                lines.append(f"\n[{i}] session {r['session_id']} score={r['score']} hits={r['hit_count']}")
-                lines.append(f"    {s['title']} · {s['client']} · {s['created_at']} · "
-                             f"{s['kind']} · {','.join(s['topics'])} · {s['sensitivity']}")
+                lines.append(
+                    f"\n[{i}] session {r['session_id']} score={r['score']} hits={r['hit_count']}"
+                )
+                lines.append(
+                    f"    {s['title']} · {s['client']} · {s['created_at']} · "
+                    f"{s['kind']} · {','.join(s['topics'])} · {s['sensitivity']}"
+                )
                 for ce in r["chunks"]:
-                    lines.append(f"    chunk {ce['chunk_id']} score={ce['score']} {ce['rank_sources']}")
+                    lines.append(
+                        f"    chunk {ce['chunk_id']} score={ce['score']} {ce['rank_sources']}"
+                    )
                     lines.append("      " + snippet(ce["text"]))
             else:
                 s = r["session"]
-                lines.append(f"\n[{i}] chunk {r['chunk_id']} score={r['score']} {r['rank_sources']}")
-                lines.append(f"    {s['title']} · {s['client']} · {s['created_at']} · "
-                             f"{s['kind']} · {','.join(s['topics'])} · {s['sensitivity']}")
+                lines.append(
+                    f"\n[{i}] chunk {r['chunk_id']} score={r['score']} {r['rank_sources']}"
+                )
+                lines.append(
+                    f"    {s['title']} · {s['client']} · {s['created_at']} · "
+                    f"{s['kind']} · {','.join(s['topics'])} · {s['sensitivity']}"
+                )
                 lines.append("    " + snippet(r["text"]))
     else:  # get-chunk
         s = out["session"]
-        lines.append(f"chunk {out['chunk_id']} (idx {out['chunk_idx']}) session {out['session_id']}")
-        lines.append(f"{s['title']} · {s['client']} · {s['created_at']} · "
-                     f"{s['kind']} · {','.join(s['topics'])} · {s['sensitivity']}")
+        lines.append(
+            f"chunk {out['chunk_id']} (idx {out['chunk_idx']}) session {out['session_id']}"
+        )
+        lines.append(
+            f"{s['title']} · {s['client']} · {s['created_at']} · "
+            f"{s['kind']} · {','.join(s['topics'])} · {s['sensitivity']}"
+        )
         lines.append(f"message {out['message']['id']} role={out['message']['role']}")
         lines.append(out["text"])
         ctx = out.get("context")
         if ctx:
             for side in ("before", "after"):
                 for c in ctx[side]:
-                    lines.append(f"[{side} chunk {c['chunk_id']}] " + snippet(c["text"]))
+                    lines.append(
+                        f"[{side} chunk {c['chunk_id']}] " + snippet(c["text"])
+                    )
     return "\n".join(lines)
 
 
@@ -1074,7 +1279,9 @@ def default_db_path():
     laptop = os.path.expanduser("~/atlas/turso-atlas/data/atlas.db")
     if os.path.exists(laptop):
         return laptop
-    repo_data = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "atlas.db")
+    repo_data = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "data", "atlas.db"
+    )
     if os.path.exists(repo_data):
         return os.path.normpath(repo_data)
     return laptop  # for the error message
@@ -1103,38 +1310,66 @@ def pick_backend(args):
 
 def add_backend_args(p):
     p.add_argument("--backend", choices=["auto", "turso", "local"], default="auto")
-    p.add_argument("--db", help="local backend: SQLite DB path (default: canonical atlas.db)")
-    p.add_argument("--vecdb", help="local backend: comma-separated vector DB path(s) "
-                                   "if the corpus DB has no vec table")
+    p.add_argument(
+        "--db", help="local backend: SQLite DB path (default: canonical atlas.db)"
+    )
+    p.add_argument(
+        "--vecdb",
+        help="local backend: comma-separated vector DB path(s) "
+        "if the corpus DB has no vec table",
+    )
 
 
 def add_vector_args(p):
-    p.add_argument("--model", default=os.environ.get("ATLAS_SEARCH_MODEL", MODEL),
-                   help=f"embedding model (default {MODEL}; env ATLAS_SEARCH_MODEL)")
-    p.add_argument("--vec-table", default=os.environ.get("ATLAS_VEC_TABLE", VEC_TABLE),
-                   help=f"vector table name (default {VEC_TABLE}; env ATLAS_VEC_TABLE)")
-    p.add_argument("--embedder", choices=["auto", "fastembed", "st"], default="auto",
-                   help="query embedder: fastembed (bge) or st = sentence-transformers "
-                        "with prompt_name='query' (Snowflake); auto picks by model name")
-    p.add_argument("--trunc", type=int, default=0,
-                   help="truncate query+doc vectors to N dims (Matryoshka; 0 = full)")
-    p.add_argument("--vector-backend", choices=["scan", "index-fill", "index-fixed"],
-                   default="scan",
-                   help="turso vector branch: scan = exact vector_distance_cos over "
-                        "the filtered set (default); index-fixed = one vector_top_k "
-                        "lookup at pool depth, filtered afterwards; index-fill = "
-                        "vector_top_k with escalating depth until the pool fills "
-                        "after filtering (cap 3200)")
+    p.add_argument(
+        "--model",
+        default=os.environ.get("ATLAS_SEARCH_MODEL", MODEL),
+        help=f"embedding model (default {MODEL}; env ATLAS_SEARCH_MODEL)",
+    )
+    p.add_argument(
+        "--vec-table",
+        default=os.environ.get("ATLAS_VEC_TABLE", VEC_TABLE),
+        help=f"vector table name (default {VEC_TABLE}; env ATLAS_VEC_TABLE)",
+    )
+    p.add_argument(
+        "--embedder",
+        choices=["auto", "fastembed", "st"],
+        default="auto",
+        help="query embedder: fastembed (bge) or st = sentence-transformers "
+        "with prompt_name='query' (Snowflake); auto picks by model name",
+    )
+    p.add_argument(
+        "--trunc",
+        type=int,
+        default=0,
+        help="truncate query+doc vectors to N dims (Matryoshka; 0 = full)",
+    )
+    p.add_argument(
+        "--vector-backend",
+        choices=["scan", "index-fill", "index-fixed"],
+        default="scan",
+        help="turso vector branch: scan = exact vector_distance_cos over "
+        "the filtered set (default); index-fixed = one vector_top_k "
+        "lookup at pool depth, filtered afterwards; index-fill = "
+        "vector_top_k with escalating depth until the pool fills "
+        "after filtering (cap 3200)",
+    )
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="atlas-search", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(
+        prog="atlas-search", description=__doc__.splitlines()[0]
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    ps = sub.add_parser("search", help="hybrid FTS+vector search with classification filters")
+    ps = sub.add_parser(
+        "search", help="hybrid FTS+vector search with classification filters"
+    )
     ps.add_argument("query")
     ps.add_argument("--k", type=int, default=10, help="final results (default 10)")
-    ps.add_argument("--pool", type=int, default=100, help="per-branch candidates (default 100)")
+    ps.add_argument(
+        "--pool", type=int, default=100, help="per-branch candidates (default 100)"
+    )
     ps.add_argument("--mode", choices=["hybrid", "fts", "vector"], default="hybrid")
     ps.add_argument("--kind")
     ps.add_argument("--topic")
@@ -1142,16 +1377,31 @@ def main():
     ps.add_argument("--client")
     ps.add_argument("--since", help="YYYY-MM-DD, on sessions.created_at (inclusive)")
     ps.add_argument("--until", help="YYYY-MM-DD, on sessions.created_at (inclusive)")
-    ps.add_argument("--max-sensitivity", default="personal",
-                    help="ceiling in shareable<personal<local-only<secret-bearing "
-                         "(default personal; secret-bearing must be spelled out)")
-    ps.add_argument("--group-by-session", action="store_true",
-                    help="roll chunk hits up to sessions (score = best chunk, plus hit count)")
-    ps.add_argument("--expand", type=int, default=0,
-                    help="include N neighboring chunks (same message) around each hit")
-    ps.add_argument("--with-message", action="store_true",
-                    help="include the parent message text (truncated at 50000 chars)")
-    ps.add_argument("--text", action="store_true", help="human-readable output instead of JSON")
+    ps.add_argument(
+        "--max-sensitivity",
+        default="personal",
+        help="ceiling in shareable<personal<local-only<secret-bearing "
+        "(default personal; secret-bearing must be spelled out)",
+    )
+    ps.add_argument(
+        "--group-by-session",
+        action="store_true",
+        help="roll chunk hits up to sessions (score = best chunk, plus hit count)",
+    )
+    ps.add_argument(
+        "--expand",
+        type=int,
+        default=0,
+        help="include N neighboring chunks (same message) around each hit",
+    )
+    ps.add_argument(
+        "--with-message",
+        action="store_true",
+        help="include the parent message text (truncated at 50000 chars)",
+    )
+    ps.add_argument(
+        "--text", action="store_true", help="human-readable output instead of JSON"
+    )
     add_backend_args(ps)
     add_vector_args(ps)
 
