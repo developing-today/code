@@ -16,14 +16,14 @@ categories = ["command-line-utilities", "network-programming"]
 # id-core sub-crate under crates/; this package is the workspace root.
 
 [workspace]
-members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync", "crates/id-worlds", "crates/id-directory", "crates/id-web", "crates/id-native-shell"]
+members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync", "crates/id-worlds", "crates/id-directory", "crates/id-web", "crates/id-native-shell", "crates/id-cli"]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
 # feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
 # forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
 # into Cargo.lock even though no build here enables it (see vendor/README.md).
 exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
-default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync", "crates/id-worlds", "crates/id-directory", "crates/id-web"]
+default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync", "crates/id-worlds", "crates/id-directory", "crates/id-web", "crates/id-cli"]
 
 # =============================================================================
 # Features
@@ -31,19 +31,20 @@ default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "
 
 [features]
 default = ["sandbox", "world"]
-sandbox = ["world", "id-core/sandbox", "id-caps/sandbox", "id-worlds/sandbox"]
+sandbox = ["world", "id-core/sandbox", "id-caps/sandbox", "id-worlds/sandbox", "id-cli/sandbox"]
 world = [
   "id-core/world",
+  "id-cli/world",
 ]
-ssh = ["world", "id-worlds/ssh"]
+ssh = ["world", "id-worlds/ssh", "id-cli/ssh"]
 web = [
   "world",
-  "dep:axum",
   "dep:id-web",
   "id-core/web",
+  "id-cli/web",
 ]
 # Mainline DHT address lookup (P7.3, decision 15). Off in the default build; src/dht.rs decides per server.
-dht = ["id-sync/dht"]
+dht = ["id-sync/dht", "id-cli/dht"]
 # Live-cluster binding for the currency PoC (#2289): the official TigerBeetle
 # Rust client, pinned to the harness server version (harness.rs). Off by
 # default so normal builds do not link the client native tb_client library.
@@ -76,6 +77,10 @@ id-worlds = { path = "crates/id-worlds", default-features = false }
 # only the `web` feature links it, and src/lib.rs re-exports it as
 # `id::web` under that feature.
 id-web = { path = "crates/id-web", default-features = false, optional = true }
+# Application layer extracted in step 7b of the crate split (#4411).
+# Re-exported at their historical crate:: paths in src/lib.rs; the
+# binary entry point (src/main.rs) stays in this package.
+id-cli = { path = "crates/id-cli", default-features = false }
 # Directory-family modules extracted in step 6b of the crate split
 # (#4409). Re-exported at their historical crate:: paths in src/lib.rs.
 id-directory = { path = "crates/id-directory", default-features = false }
@@ -132,7 +137,6 @@ unicode-segmentation = "1.13"
 unicode-width = "0.2"
 
 # Web feature dependencies (optional)
-axum = { version = "0.8", features = ["ws", "multipart"], optional = true }
 argon2 = "0.6"
 chacha20poly1305 = "0.10"
 zeroize = "1"
