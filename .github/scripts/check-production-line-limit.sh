@@ -14,7 +14,10 @@
 # before their production code (e.g. pkgs/id/src/world_session/mod.rs
 # declares its test modules at the top) — Codex finding on PR #4709.
 # Test files are out of scope entirely: files under a tests/
-# directory and files named tests.rs are skipped.
+# directory and files named tests.rs are skipped. Build output is
+# out of scope too: target/ directories are pruned at any depth
+# under the scanned roots (matching the repo's **/target ignore),
+# so a built tree's generated .rs files are never counted.
 #
 # Grandfather list: files that already exceeded the limit when the
 # guard landed. Each entry names the issue that removes it; when the
@@ -28,18 +31,23 @@ ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 # path -> removal issue
 declare -A GRANDFATHERED=(
-  # 5,325 production lines when the guard landed; split tracked by
-  # https://github.com/developing-today/code/issues/4704
-  ["pkgs/id/src/web/markdown.rs"]="https://github.com/developing-today/code/issues/4704"
-  # 2,504 production lines; the F11.10 file itself, regrown. Split:
-  # https://github.com/developing-today/code/issues/4715
-  ["pkgs/id/src/cli.rs"]="https://github.com/developing-today/code/issues/4715"
-  # 2,573 production lines; split tracked by
-  # https://github.com/developing-today/code/issues/4716
-  ["pkgs/id/src/web/routes.rs"]="https://github.com/developing-today/code/issues/4716"
-  # 2,821 production lines; split tracked by
-  # https://github.com/developing-today/code/issues/4717
-  ["pkgs/id/src/world_session/mod.rs"]="https://github.com/developing-today/code/issues/4717"
+  # Grandfathered 2026-11-11 in the #7089 re-arm landing: each file
+  # below was already over the limit when the guard's triggers were
+  # restored, so it is grandfathered with a linked split issue,
+  # per this guard's convention. The entry is deleted in the same
+  # PR that lands the split.
+  ["pkgs/fleet/crates/fleet-queue/src/client.rs"]="#8588"
+  ["pkgs/fleet/crates/fleet-queue/src/turso_queue.rs"]="#8589"
+  ["pkgs/id/src/commands/serve.rs"]="#8590"
+  ["pkgs/id/src/boards.rs"]="#8891"
+  # The four id-worlds files below moved from pkgs/id/src/ to
+  # pkgs/id/crates/id-worlds/src/ in the id crate restructure; a key
+  # must name the file's CURRENT path or the entry silently stops
+  # matching (#8894). The contract tests assert every key exists.
+  ["pkgs/id/crates/id-worlds/src/directory.rs"]="#8591"
+  ["pkgs/id/crates/id-worlds/src/world/actor.rs"]="#8592"
+  ["pkgs/id/crates/id-worlds/src/world/core.rs"]="#8593"
+  ["pkgs/id/crates/id-worlds/src/world_session/mod.rs"]="#8594"
 )
 
 # Count production lines of one file: every line that is not part of
@@ -199,7 +207,7 @@ for base in pkgs apps; do
         fail=1
       fi
     fi
-  done < <(find "$ROOT/$base" -name "*.rs" -type f -print0 | sort -z)
+  done < <(find "$ROOT/$base" -type d -name target -prune -o -name "*.rs" -type f -print0 | sort -z)
 done
 
 echo "production-line-guard: checked $checked production .rs files, limit $LIMIT"

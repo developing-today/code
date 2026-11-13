@@ -1,38 +1,35 @@
 # AGENTS.md
 
+This is the always-loaded rulebook index; it is size-budgeted (8,000 bytes, checked by
+`scripts/research_workflow.py check`). Detail lives in the topic files linked from each
+section — read the topic file before acting on that section's rules.
+
 ## Web retrieval fallback
 
-When retrieving public web content with `curl`, `wget`, Python HTTP clients, or similar tools:
-
-1. Use the normal/default request first.
-2. If the request returns a 403, 429, obvious bot-block page, or otherwise fails because of automated-client filtering, retry with a normal modern browser User-Agent:
-   `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36`
-3. If that still fails, try other well-known user agents — different sites block different agents, so it is worth rotating through several before giving up. Good next tries:
-   - `WhatsApp/2.23.20.0` (link-preview fetcher; rarely blocked, often slips through news/paywall-adjacent CDNs)
-   - `Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot`
-   - `Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ClaudeBot/1.0; +claudebot@anthropic.com`
-4. A full sorted list of known user-agent strings, which operators publish IP ranges for verification, and a site-by-site access matrix (which agents worked or failed on which domains) lives in [`ai-crawler-site-access-table.md`](./ai-crawler-site-access-table.md#user-agents). Check that section for details and prior findings — including notes about the specific domain you are hitting.
-5. Do not use altered User-Agent headers when testing or debugging the actual HTTP behaviour of an application, API, website, authentication flow, or client, because doing so could hide genuine access-control or compatibility problems.
-6. Do not treat a successful response obtained with an alternate User-Agent as evidence that the resource works normally for ordinary clients.
-7. Do not use User-Agent substitution to bypass authentication, account permissions, or other explicit access controls.
-8. **Document what works.** When plain requests fail but an alternate path succeeds, add your findings to `ai-crawler-site-access-table.md` (the agent's subsection under _User Agents_, the domain's subsection under _Sites_, or _General retrieval tips_) at any time, regardless of what the current session is about, and include the update in your next commit. Failures are worth recording too: e.g. "UA X has known failures on example.com, but UA Y worked."
-9. **Preserve scarce sources.** If a URL was genuinely useful and hard to acquire — very few copies online, or hosted somewhere unlikely to persist — submit it to `https://web.archive.org/save/<url>` (works unauthenticated). This applies to the kind of thing that has no mirror: datasheets/whitepaper/manual PDFs, technical docs on fragile personal or CMS-hosted pages, demo/example projects that exist only to illustrate how some code works, hard-to-find header files or source snippets not in any repo or package manager, one-off benchmark posts. It does **not** apply to widely-mirrored content (Wikipedia, MDN, popular repos) or anything already covered elsewhere — you can't and shouldn't archive every page you visit. Anonymous saves are rate-limited to roughly a few per minute; don't hammer it.
-   - **Rare case:** if you are confident the site is still up but you are blocked or rate-limited, and you already know from some other source that the URL is valuable (a citation, an API doc you need, source code relevant to the task), you may submit it unseen and record that it wasn't directly accessible but was submitted on `<date>` — e.g. in the relevant _Sites_ subsection of `ai-crawler-site-access-table.md` — so a future agent can check `web.archive.org` for the capture. Only do this when there's a concrete reason the page matters, not speculatively.
+Full rules: [`doc/agents/web-retrieval-fallback.md`](doc/agents/web-retrieval-fallback.md).
+In short: use the normal/default request first; on a 403, 429, or
+bot-block, retry with a normal browser User-Agent, then rotate others
+(list and site matrix in
+[`ai-crawler-site-access-table.md`](./ai-crawler-site-access-table.md#user-agents)).
+Never use an alternate User-Agent to debug real HTTP behaviour or to
+bypass authentication or access controls, and never treat an
+alternate-UA success as proof the resource works for ordinary clients.
+Document what works in the access table, and archive genuinely scarce
+sources at `https://web.archive.org/save/<url>`.
 
 ## Owner preferences
 
-- The owner does not care if secrets or other sensitive values end up in chat logs. Do not mention that, and do not create tasks for the owner to rotate, redact or fix it.
-- Use subagents to execute tasks, in parallel where they are independent, rather than doing multi-step work inline in the main session, unless the owner asks otherwise.
-- Do not block the main thread on a long wait. Use short waits, a few minutes at most, and do other useful work between checks. Never default to a 30-minute wait.
-- Run long commands as background shells and wait on them in short steps. Keep the main thread free to start or check other work.
-- Use subagents whenever a task can run on its own. They notify you when they finish. To read their progress, use `subagents_read`. To follow up, continue a finished subagent by its session id. Do not cancel a running subagent just to send it an update.
-- **Velocity, selective testing, and unblocking:**
-  - Move fast: unblock yourself and make the best judgment calls rather than waiting for human confirmation.
-  - Perform quick or selective tests during iteration. Only run full exhaustive test suites preemptively for very large changes or known critical issues.
-  - It is acceptable to push and merge code that has been validated with targeted tests without running every single test upfront.
-  - Run long test suites or CI in the background while progressing on other work in parallel. If background jobs or CI fail, double back and address failures while continuing forward.
-  - **CI-first verification:** Review the checks actually triggered on the PR and use [`.github/ci-policy.md`](.github/ci-policy.md) to distinguish the basic merge-gating PR tier from the full main tier; formatting is not a merge gate. Run targeted local checks on the laptop when useful; sandboxed workers use CI and must not run builds or tests in the sandbox. If a policy-listed check is missing from the PR, inspect the workflow trigger and report the coverage gap instead of assuming it ran.
-  - Document unresolved ambiguities, design concerns, or known gaps by creating GitHub issues instead of blocking progress.
+Full text: [`doc/agents/owner-preferences.md`](doc/agents/owner-preferences.md).
+In short: use subagents in parallel where independent; never block the
+main thread on a long wait (short waits, background long commands); the
+owner does not care if secrets or other sensitive values end up in chat
+logs — do not mention that or file rotation tasks for it. Velocity:
+unblock yourself, test selectively, run full suites only for very large
+or critical changes, and file GitHub issues for unresolved gaps instead
+of blocking. CI-first verification per
+[`.github/ci-policy.md`](.github/ci-policy.md); heavy laptop builds go
+through `~/tools/fleet-build-lock` — see the topic file for the build
+discipline (target broker, narrowest Rust verification).
 
 ## Testing doctrine
 
@@ -43,6 +40,15 @@ Three tools, used where they fit:
 - **Oracles:** the decision procedure that tells you whether actual output matches expected — the hard part of automated testing. Every automated test names its oracle: a reference implementation, the model, an invariant check, or a golden corpus. A test with no decidable oracle is a smell to fix, not ship.
 
 Example-based tests remain fine for smoke and acceptance coverage; they do not replace PBT/MBT where those fit.
+
+## Operator script argument contract (#3352)
+
+Full text: [`doc/agents/operator-script-argument-contract.md`](doc/agents/operator-script-argument-contract.md).
+In short: every operator script declares its whole command line and
+parses strictly against that declaration before any subprocess,
+network, file write, lock, or deploy step; anything unaccounted for is
+a usage error with a non-zero exit. New scripts copy the strict pattern
+from a covered sibling and state the contract in their header comment.
 
 ## Worker Git preflight
 
@@ -56,6 +62,41 @@ Muse cron, OpenCode/OpenChamber scheduled tasks or laptop systemd
 timers — updates that registry in the same pass (same PR /
 same run). A schedule that exists on a surface but not in the registry
 is a defect.
+
+## Filing an issue outside a creator run
+
+**File and enqueue in the same pass.** Any lane that files a GitHub issue
+outside a creator run — a work lane filing a blocker mid-task, an audit
+lane, a hand filing — enqueues that issue's triage packet in the same
+pass, or records in the filing comment why it is deliberately not
+queued. An issue filed without a queue item is invisible to every worker
+lane: nothing dispositions it, and it sits open until someone notices by
+hand (#7016).
+
+```bash
+repo-queue enqueue <packet.json> --queue repo-health-<repo>-pilot
+```
+
+The standing backstop is the coverage reconciliation
+(`scripts/fleet/queue-reconcile/`, `doc` in its README): every open issue
+must hold a **live** task — `queued`, `claimed`, `parked` or `blocked` —
+in its own pilot queue. A `done` task is not coverage, and neither is a
+task in a `*-shadow` queue. When the reconciliation reports uncovered
+issues, the rule above was missed somewhere; fix the filing path, not
+just the import.
+
+## The one queue: claiming work
+
+Full text: [`doc/agents/one-queue-claiming-work.md`](doc/agents/one-queue-claiming-work.md).
+In short: there is ONE fleet queue; per-repo `queue` values are stream
+labels, not separate queues. The default claim is unfiltered —
+`repo-queue claim --worker <worker> --lane <lane>` returns the
+highest-priority eligible item across all repos. Matching is the union
+of the task's requirements and the claimer's claim-time `--filter`
+expression, empty by default on both sides; filters are never registry
+bindings, and claimer identity is recorded, never itself a filter.
+Designated filtered lanes (5 code-only, 3 not-code per surface) are the
+only exceptions; the sets are recorded on #8097.
 
 ## Research, design and delivery workflow
 
@@ -71,13 +112,14 @@ Pick the skill by situation ([stages](planning/workflow/stages.md)):
 
 Orchestrators do not implement: they merge, keep state and issues current, and start workers.
 
-### Parallel writers
+### Parallel writers and subsessions
 
-These apply whenever other agents may share the repository. Reasons and detail: [`planning/workflow/collaboration.md`](planning/workflow/collaboration.md).
-
-- **Boot:** `source /home/user/.local/share/plaza-tools/git-env.sh` (commits fail without it), then a fresh worktree from `origin/<base>`. Push the empty branch first; open the PR after the first commit.
-- **One writer per file.** Wide files (`AGENTS.md`, `doc/README.md`, indexes, a package's `main.md` and `design.md`) change only by PR from your own branch.
-- **Add-only records are new files** (notes, receipts, decisions), or one line in a union-merged `changes.md`. Never append to a shared file by hand.
-- **Never** `git stash` (all worktrees share it; use a WIP commit), force push, rebase, `git add .` (stage explicit paths), `gc`/`prune` or `sudo`. Merge commits only; merge the base in before opening or landing a PR.
-- **Final message:** branch, PR URL, last pushed SHA, what was verified and what was not.
-- **A merged branch is dead** (GitHub deletes it). Follow-up work goes on a new branch and PR.
+Full text: [`doc/agents/parallel-writers-and-subsessions.md`](doc/agents/parallel-writers-and-subsessions.md);
+reasons in [`planning/workflow/collaboration.md`](planning/workflow/collaboration.md).
+In short: worktrees always (boot the git env, push the empty branch
+first), one writer per file, add-only records are new files, never
+`git stash` / force push / rebase / `git add .`, merge commits only.
+Subsession work is scoped to the context it needs, launched from its
+own worktree directory; the parent verifies what a child did from its
+diff; detached sessions never call the `question` tool; a session
+cannot change its own model — launch a subsession on the needed head.

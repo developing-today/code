@@ -37,10 +37,14 @@
 
 import { Packr, Unpackr } from "msgpackr";
 import { getVersion, receiveTransaction } from "prosemirror-collab";
+import { Node } from "prosemirror-model";
 import { Step } from "prosemirror-transform";
 import { markCursorFresh, onInitReceived, removeCursor, setConnectionState, updateCursor } from "./cursors";
-import { type ContentMode, type EditorInstance, getSendableSteps, initEditor } from "./editor";
+import { type ContentMode, type EditorInstance, getSchema, getSendableSteps, initEditor } from "./editor";
 import { closeImageBrowser } from "./image-browser";
+import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, stepWireSize } from "./collab-step-budget";
+
+export { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, stepWireSize } from "./collab-step-budget";
 
 // Message type tags
 const MSG = {
@@ -56,31 +60,20 @@ const MSG = {
   AUTH_OK: 9,
 } as const;
 
+/** The ContentMode values an INIT frame may name (#7859). The mode
+ * field is shape-trusted wire data until validated here: adopting a
+ * non-string or unknown mode verbatim corrupts the session, and a
+ * falsy mode coerced to "raw" opens a rich doc in the raw schema as
+ * an empty editor. */
+export const CONTENT_MODES: readonly ContentMode[] = ["rich", "markdown", "plain", "raw", "media", "binary"];
+
+export function isContentMode(value: unknown): value is ContentMode {
+  return typeof value === "string" && (CONTENT_MODES as readonly string[]).includes(value);
+}
+
 // MessagePack encoder/decoder configured for array format
 const packr = new Packr({ useRecords: false, structuredClone: true });
 const unpackr = new Unpackr({ useRecords: false, structuredClone: true });
-
-/** Per-message step bound, mirroring the server MAX_STEPS_PER_MESSAGE
- * (pkgs/id/src/web/collab.rs). A single editor transaction can legitimately
- * exceed it - indenting N lines produces N steps (web/src/indent.ts) - so
- * the client sends at most this many steps per Steps message and flushes
- * the remainder as the server confirms each batch (see the Update handler),
- * instead of wedging the session on a rejected oversized batch. */
-export const MAX_STEPS_PER_MESSAGE = 1000;
-
-/** Wire-size budget for one Steps message, mirroring the server frame cap
- * MAX_FRAME_BYTES (1 MiB, pkgs/id/src/frames.rs) minus a reserve for the
- * MessagePack envelope ([tag, version, steps, clientID]). The step-count
- * cap alone cannot bound the wire size: 1,000 medium steps encode to far
- * more than 1 MiB, and the server refuses an over-limit message before
- * applying any of it (Codex P2 on PR #4051). */
-export const MAX_STEPS_MESSAGE_BYTES = 1024 * 1024 - 4096;
-
-/** Encoded size of one step on the wire (MessagePack, same Packr config
- * as the send path). */
-export function stepWireSize(step: unknown): number {
-  return packr.pack(step).byteLength;
-}
 
 /** The next batch of pending steps to send: at most MAX_STEPS_PER_MESSAGE
  * steps and at most MAX_STEPS_MESSAGE_BYTES of encoded steps, in order.
@@ -286,6 +279,10 @@ export function initCollab(
           MAX_STEPS_MESSAGE_BYTES,
           "byte message budget and cannot be synced; edit kept locally only.",
         );
+        // The console line alone leaves the wedge invisible in the UI: sync
+        // has silently stopped for this document while the local document
+        // keeps the edit. Surface it through the status callback too.
+        updateStatus("error");
         return;
       }
       console.log("[collab] Sending", batch.length, "of", sendable.steps.length, "steps, version:", sendable.version);
@@ -332,7 +329,31 @@ export function initCollab(
           console.error("[collab] Dropping malformed Init message: invalid document");
           return;
         }
-        const mode = ((msg[3] as string) || "raw") as ContentMode;
+        // #7859: the mode field is validated like version/doc above -
+        // an absent mode keeps the "raw" default, but a present mode
+        // that is not a known ContentMode drops the frame instead of
+        // being adopted verbatim or coerced.
+        const rawMode = msg[3];
+        if (rawMode !== undefined && !isContentMode(rawMode)) {
+          console.error("[collab] Dropping malformed Init message: invalid mode");
+          return;
+        }
+        const mode: ContentMode = rawMode ?? "raw";
+        // Validate the doc content entries against the mode schema (#7884):
+        // the top-level checks above cannot see a bad entry (unknown node or
+        // mark type, non-string text, non-object entry), and initEditor would
+        // silently replace the whole document with an empty one when
+        // Node.fromJSON throws on it. A doc the schema cannot parse is
+        // rejected here, at the frame boundary, instead.
+        try {
+          Node.fromJSON(getSchema(mode), docRecord);
+        } catch (err) {
+          console.error(
+            "[collab] Dropping malformed Init message: document does not parse against the mode schema:",
+            err,
+          );
+          return;
+        }
         documentMode = mode;
         console.log("[collab] Received Init, version:", version, "mode:", mode);
 
@@ -391,20 +412,39 @@ export function initCollab(
           break;
         }
 
-        const steps = msg[1] as unknown[];
-        const clientIDs = msg[2] as number[];
+        const steps = msg[1];
+        const clientIDs = msg[2];
 
-        if (steps && clientIDs && steps.length > 0) {
+        // #7873: the frame is shape-checked at the boundary, like Init
+        // (#2824). A malformed Update is dropped with the session
+        // intact - it must not reach the step-apply path, whose catch
+        // treats any throw as desync and tears the session down.
+        if (!Array.isArray(steps) || !Array.isArray(clientIDs) || steps.length !== clientIDs.length) {
+          console.error("[collab] Dropping malformed Update message: steps/clientIDs shape mismatch");
+          break;
+        }
+
+        if (steps.length > 0) {
           console.log("[collab] Received update with", steps.length, "steps, clientIDs:", clientIDs);
+
+          // Parse every step before applying any: a step that fails
+          // Step.fromJSON is a shape error in the frame, so the whole
+          // frame is dropped. Only a failure applying well-shaped
+          // steps (below) is a genuine desync.
+          const editorSchema = editorInstance.view.state.schema;
+          let parsedSteps: Step[];
+          try {
+            parsedSteps = steps.map((s) => Step.fromJSON(editorSchema, s));
+          } catch (err) {
+            console.error("[collab] Dropping malformed Update message: unparseable step:", err);
+            break;
+          }
 
           try {
             // Pass ALL steps to receiveTransaction - it will:
             // 1. Recognize and confirm our own steps (matching our clientID)
             // 2. Apply remote steps from other clients
             // 3. Rebase any unconfirmed local steps over remote steps
-            // Use the schema from the editor instance (mode-aware)
-            const editorSchema = editorInstance.view.state.schema;
-            const parsedSteps = steps.map((s) => Step.fromJSON(editorSchema, s));
             const tr = receiveTransaction(editorInstance.view.state, parsedSteps, clientIDs);
             editorInstance.view.dispatch(tr);
             console.log("[collab] Applied transaction, new version:", getVersion(editorInstance.view.state));
@@ -433,11 +473,32 @@ export function initCollab(
         // [4, clientID, head, anchor, name?, idleSecs?]
         if (!editorInstance) break;
 
-        const clientID = msg[1] as number;
-        const head = msg[2] as number;
-        const anchor = msg[3] as number;
-        const name = msg[4] as string | null;
-        const idleSecs = msg[5] as number | null | undefined;
+        const clientID = msg[1];
+        const head = msg[2];
+        const anchor = msg[3];
+        const rawName = msg[4];
+        const rawIdleSecs = msg[5];
+
+        // #7873: validate at the boundary, like Init (#2824). An
+        // unchecked Cursor frame was stored verbatim as a phantom
+        // cursor whose non-numeric positions fed NaN into the
+        // decoration/coords code. clientID is string | number in
+        // the cursor state; head/anchor must be finite numbers;
+        // name, when present, must be a string or null; idleSecs is
+        // only meaningful as a finite number and is ignored otherwise.
+        if (
+          (typeof clientID !== "string" && typeof clientID !== "number") ||
+          typeof head !== "number" ||
+          !Number.isFinite(head) ||
+          typeof anchor !== "number" ||
+          !Number.isFinite(anchor) ||
+          (rawName !== undefined && rawName !== null && typeof rawName !== "string")
+        ) {
+          console.error("[collab] Dropping malformed Cursor message: invalid cursor fields");
+          break;
+        }
+        const name = rawName as string | null | undefined;
+        const idleSecs = typeof rawIdleSecs === "number" && Number.isFinite(rawIdleSecs) ? rawIdleSecs : undefined;
 
         // Mark cursor as fresh for reconnect cleanup (including own cursor)
         markCursorFresh(editorInstance.view, clientID);
@@ -489,7 +550,15 @@ export function initCollab(
         // [6, clientID]
         if (!editorInstance) break;
 
-        const clientID = msg[1] as number;
+        const clientID = msg[1];
+
+        // #7873: same boundary validation as Cursor - the clientID
+        // keys the cursor map, so a non-string/number value can only
+        // be a malformed frame.
+        if (typeof clientID !== "string" && typeof clientID !== "number") {
+          console.error("[collab] Dropping malformed CursorRemove message: invalid clientID");
+          break;
+        }
 
         // Don't remove our own cursor on disconnect notification
         if (clientID === myClientID) break;
@@ -501,8 +570,17 @@ export function initCollab(
 
       case MSG.NEW_VERSION: {
         // [7, hash, name] — document was saved, new content hash available
-        const hash = msg[1] as string;
-        const name = msg[2] as string;
+        const hash = msg[1];
+        const name = msg[2];
+        // #7854: validate at the boundary, like INIT (#2824) and
+        // Cursor (#7873). A non-string hash flowed unchecked into
+        // onNewVersion, whose callback writes it into dataset.hash —
+        // an object became the literal "[object Object]" the next
+        // save posts as the document hash.
+        if (typeof hash !== "string" || typeof name !== "string") {
+          console.error("[collab] Dropping malformed NewVersion message: hash and name must be strings");
+          break;
+        }
         console.log("[collab] NewVersion: hash=%s, name=%s", hash, name);
         if (onNewVersion) {
           onNewVersion(hash, name);
@@ -516,6 +594,18 @@ export function initCollab(
         const authName = msg[2] as string | null;
         const refreshedToken = msg[3] as string | null | undefined;
         console.log("[collab] Auth OK: client_id=%s, name=%s", authClientId, authName);
+        // #7854: validate at the boundary, like INIT (#2824). A
+        // refreshed token is adopted only when it is a non-empty
+        // string: any other truthy value (a number, an object) was
+        // adopted verbatim, persisted by the caller's saveIdentity
+        // via String(value) — "[object Object]" over the valid
+        // stored token — and re-sent on every reconnect. A malformed
+        // refresh is logged and dropped, leaving the current token
+        // and the stored identity untouched.
+        if (refreshedToken !== undefined && refreshedToken !== null && (typeof refreshedToken !== "string" || refreshedToken === "")) {
+          console.error("[collab] Dropping malformed AuthOk message: refreshed token must be a non-empty string");
+          break;
+        }
         // Save the refreshed token so long-lived WS sessions stay fresh.
         // Write it back to currentToken first: reconnects authenticate with
         // currentToken, so the refreshed value must live here, not only in

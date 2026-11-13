@@ -174,10 +174,19 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 	deadline := time.Now().Add(tm.AskTimeout)
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
-			// The client gave up, or the transport did. The call itself
-			// keeps running as a task, and its questions keep their
-			// deadlines; abandoning it here would throw away work somebody
-			// may still collect from /v1/tasks.
+			// The context ended, for one of two reasons the code must
+			// not conflate. If the client sent notifications/cancelled
+			// for this request, it said stop: the daemon task behind
+			// the call is cancelled through the task cancel path
+			// (Asker.Abandon -> /v1/ask/{id}/abandon -> the task
+			// store's Cancel, the same Cancel /v1/tasks/{id}/cancel
+			// reaches, #2497). If the transport merely died, the call
+			// itself keeps running as a task, and its questions keep
+			// their deadlines; abandoning it would throw away work
+			// somebody may still collect from /v1/tasks.
+			if _, ok := c.cancelledFor(req.ID); ok {
+				s.Ask.Abandon(callID)
+			}
 			return fail(codeInternal, req.Method+": "+err.Error())
 		}
 		wait := tm.AskPoll
@@ -187,6 +196,14 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 		started := time.Now()
 		out, err := s.Ask.Poll(ctx, callID, wait)
 		if err != nil {
+			// A poll that fails because the request's context ended
+			// may be the client's cancellation arriving mid-wait:
+			// route it exactly as the loop head does.
+			if ctx.Err() != nil {
+				if _, ok := c.cancelledFor(req.ID); ok {
+					s.Ask.Abandon(callID)
+				}
+			}
 			return fail(codeInternal, err.Error())
 		}
 		relayNotes(ctx, out)
@@ -556,17 +573,6 @@ func (s *Server) states() *stateSigner {
 		s.signer.ttl = s.Timing.resolved().StateTTL
 	})
 	return s.signer
-}
-
-// mayBlockOnClient reports whether answering this request could require a
-// frame from the client, which decides whether it can be handled in line.
-func (s *Server) mayBlockOnClient(c *Conn, req request) bool {
-	switch req.Method {
-	case "tools/call", "prompts/get", "resources/read":
-	default:
-		return false
-	}
-	return s.canAsk(context.Background(), c, c.peerFor(req.Params))
 }
 
 // wireKey is the inputRequests key q is sent under: the upstream's own key

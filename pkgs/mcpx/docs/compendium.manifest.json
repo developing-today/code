@@ -677,6 +677,20 @@
       "note": "the per-package test inventory the policy page points at (#1960 deliverable 1); was merged without a manifest entry, which this PR repairs"
     },
     {
+      "path": "docs/testing/fuzz-and-seed-policy.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 70,
+      "note": "the fuzz and seed policy for #1960: bounded FuzzStripJSONC PR smoke vs the separate soak work; registered per the Codex P1 finding on PR #5127"
+    },
+    {
+      "path": "docs/public-client.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 23,
+      "note": "the public Go client for the /v1 API (#1877 rung 1, PR #8277): calls derived at run time from internal/api.Ops so the client cannot drift from the daemon; was merged without a manifest entry, registered here"
+    },
+    {
       "path": "docs/testing/feature-inventory.md",
       "chapter": "maintaining-these-docs",
       "role": "chapter-source",

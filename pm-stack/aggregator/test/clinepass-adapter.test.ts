@@ -85,6 +85,20 @@ describe("parseClinePassPayload (ported OpenChamber mapping)", () => {
     expect(reading.windows.map((w) => w.usedPct)).toEqual([51, 100, 0]);
   });
 
+  test("refuses non-decimal percent strings (#3005 field form): hex, scientific, padded", () => {
+    const reading = parseClinePassPayload({
+      data: {
+        limits: [
+          { type: "weekly", percentUsed: "0x10" },
+          { type: "monthly", percentUsed: "1e2" },
+          { type: "five_hour", percentUsed: " 51 " },
+          { type: "weekly", percentUsed: "51.5" },
+        ],
+      },
+    });
+    expect(reading.windows).toEqual([{ name: "weekly", usedPct: 51.5, windowSeconds: 604800, resetsAt: null }]);
+  });
+
   test("skips malformed windows and unknown types, keeping valid siblings", () => {
     const reading = parseClinePassPayload({
       data: {

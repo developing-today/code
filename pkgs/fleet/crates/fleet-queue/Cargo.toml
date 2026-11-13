@@ -12,18 +12,27 @@ description = "The fleet queue domain: the repo-queue client surface plus the qu
 # without the client, and a client-only build is possible for the
 # standalone artifact.
 [features]
-client = []
-queue-broker = ["dep:tiny_http", "dep:ureq"]
-secrets-broker = ["dep:tiny_http"]
+client = ["dep:fleet-config", "dep:ureq"]
+queue-broker = [
+  "client",
+  "dep:tiny_http",
+  "dep:ureq",
+  "dep:fleet-config",
+  "dep:libc",
+]
+secrets-broker = ["dep:tiny_http", "dep:fleet-config", "dep:libc"]
 
 [dependencies]
 fleet-secrets = { workspace = true }
+fleet-config = { workspace = true, optional = true }
 serde = { workspace = true }
 # preserve_order: the brokers' JSON key order is part of the wire and
 # stdout shape the fleet already consumes (the standalone workspace
 # built serde_json the same way).
 serde_json = { version = "1", features = ["preserve_order"] }
 tiny_http = { version = "0.12", optional = true }
+# uds_http's bind lock (flock) — #6515.
+libc = { version = "0.2", optional = true }
 ureq = { version = "3", features = ["rustls", "json"], optional = true }
 
 # Standalone artifacts — the migration's rollback inventory (design
@@ -44,6 +53,16 @@ required-features = ["queue-broker"]
 name = "secrets-broker"
 path = "src/bin/secrets-broker.rs"
 required-features = ["secrets-broker"]
+
+[[test]]
+name = "broker_bin_args"
+path = "tests/broker_bin_args.rs"
+required-features = ["queue-broker", "secrets-broker"]
+
+[[test]]
+name = "chunked_list"
+path = "tests/chunked_list.rs"
+required-features = ["client"]
 
 
 [dev-dependencies]

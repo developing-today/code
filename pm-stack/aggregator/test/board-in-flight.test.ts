@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import type { BoardItem, GhItem, OrchestrationSection, Provenance } from "../src/model.ts";
+import { describe, expect, spyOn, test } from "bun:test";
+import type { BoardItem, GhItem, OrchestrationSection, Provenance, RefKey } from "../src/model.ts";
 import { renderBoard } from "../src/render.ts";
 import { inFlightBoardItems, titleRefs } from "../src/sources/live.ts";
 
@@ -59,8 +59,8 @@ describe("titleRefs", () => {
       "developing-today/code#985",
     ]);
     expect(titleRefs("nix #889 queued; nix #848 bump task 1127 re-queued")).toEqual([
-      "dezren39/nix#889",
-      "dezren39/nix#848",
+      "dezren39/darwin-nix#889",
+      "dezren39/darwin-nix#848",
     ]);
     expect(titleRefs("Jules PR #927 for code #811 - still OPEN draft")).toEqual([
       "developing-today/code#927",
@@ -75,6 +75,14 @@ describe("titleRefs", () => {
     ]);
     expect(titleRefs("queue task 1116 revived, items 3/4/5 picked")).toEqual([]);
     expect(titleRefs("Daily morning readout")).toEqual([]);
+  });
+
+  test("prototype-spelling title tokens stay unlinked like unknown aliases", () => {
+    const unknown = titleRefs("unknown #3106");
+    for (const token of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+      expect(titleRefs(`${token} #3106`)).toEqual(unknown);
+    }
+    expect(titleRefs("code #3106")).toEqual(["developing-today/code#3106"]);
   });
 
   test("does not re-attribute an explicit non-fleet ref as nearby shorthand", () => {
@@ -92,9 +100,14 @@ describe("titleRefs", () => {
     ).toEqual([
       "developing-today/opencode#927",
       "developing-today-forks/kaneo#42",
-      "dezren39/nix#889",
-      "developing-today/openchamber#492",
+      "dezren39/darwin-nix#889",
+      "developing-today-forks/openchamber#492",
     ]);
+  });
+
+  test("rejects unsafe-integer refs from explicit and alias title forms", () => {
+    expect(titleRefs("developing-today/code#9007199254740992")).toEqual([]);
+    expect(titleRefs("code #9007199254740992")).toEqual([]);
   });
 });
 
@@ -130,6 +143,94 @@ describe("inFlightBoardItems", () => {
     );
     expect(out).toHaveLength(1);
     expect(out[0].links).toEqual([{ ref: "developing-today/code#958", relation: "tracks" }]);
+    expect(out[0].repo).toBe("developing-today/code");
+  });
+
+  test("a goal-id ref is dropped and the task remains title-only with a trace", () => {
+    const trace = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = inFlightBoardItems(
+        section([task("Goal-level planning", "in-progress", { ref: "goal_a243772844c3" as RefKey })]),
+        [],
+      );
+
+      expect(out).toHaveLength(1);
+      expect(out[0].repo).toBe("");
+      expect(out[0].links).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(expect.stringContaining("dropping invalid in-flight ref"));
+    } finally {
+      trace.mockRestore();
+    }
+  });
+
+  test("a non-string ref is dropped and the task remains title-only", () => {
+    const trace = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = inFlightBoardItems(
+        section([task("Numeric external ref", "queued", { ref: 12345 as unknown as RefKey })]),
+        [],
+      );
+
+      expect(out).toHaveLength(1);
+      expect(out[0].repo).toBe("");
+      expect(out[0].links).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(expect.stringContaining("dropping invalid in-flight ref"));
+    } finally {
+      trace.mockRestore();
+    }
+  });
+
+  test("a bare-number ref is dropped and the task remains title-only", () => {
+    const trace = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = inFlightBoardItems(
+        section([task("Bare-number external ref", "queued", { ref: "812" as RefKey })]),
+        [],
+      );
+
+      expect(out).toHaveLength(1);
+      expect(out[0].repo).toBe("");
+      expect(out[0].links).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(expect.stringContaining("dropping invalid in-flight ref"));
+    } finally {
+      trace.mockRestore();
+    }
+  });
+
+  test("an unsafe title-derived GitHub number is dropped", () => {
+    const trace = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = inFlightBoardItems(section([task("code #9007199254740992 needs follow-up", "queued")]), []);
+
+      expect(out).toHaveLength(1);
+      expect(out[0].repo).toBe("");
+      expect(out[0].links).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(expect.stringContaining("dropping invalid in-flight ref"));
+    } finally {
+      trace.mockRestore();
+    }
+  });
+
+  test("a poisoned ref does not hide healthy tasks in the same lane", () => {
+    const trace = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = inFlightBoardItems(
+        section([
+          task("Healthy linked work", "in-progress", { ref: "developing-today/code#958" }),
+          task("Poisoned title-only work", "queued", { ref: "goal_a243772844c3" as RefKey }),
+        ]),
+        [],
+      );
+
+      expect(out.map((item) => item.title)).toEqual(["Healthy linked work", "Poisoned title-only work"]);
+      expect(out[0].repo).toBe("developing-today/code");
+      expect(out[0].links).toEqual([{ ref: "developing-today/code#958", relation: "tracks" }]);
+      expect(out[1].repo).toBe("");
+      expect(out[1].links).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(expect.stringContaining("dropping invalid in-flight ref"));
+    } finally {
+      trace.mockRestore();
+    }
   });
 
   test("dedupes matched refs and ref-less title matches against Kaneo cards", () => {
@@ -156,8 +257,8 @@ describe("inFlightBoardItems", () => {
     ]);
 
     expect(out).toHaveLength(1);
-    expect(out[0].links.map((link) => link.ref)).toEqual(["developing-today/openchamber#492"]);
-    expect(out[0].repo).toBe("developing-today/openchamber");
+    expect(out[0].links.map((link) => link.ref)).toEqual(["developing-today-forks/openchamber#492"]);
+    expect(out[0].repo).toBe("developing-today-forks/openchamber");
   });
 
   test("does not let a title-only collision hide a task with distinct refs", () => {
@@ -209,9 +310,9 @@ describe("inFlightBoardItems", () => {
     );
     const by944 = out.find((i) => i.title.includes("#944"));
     expect(by944?.links.map((l) => l.ref)).toContain("developing-today/code#985");
-    expect(out.find((i) => i.title.includes("#889"))?.repo).toBe("dezren39/nix");
+    expect(out.find((i) => i.title.includes("#889"))?.repo).toBe("dezren39/darwin-nix");
     expect(out.find((i) => i.title.includes("#492"))?.links.map((l) => l.ref)).toEqual([
-      "developing-today/openchamber#492",
+      "developing-today-forks/openchamber#492",
     ]);
   });
 });
@@ -268,8 +369,22 @@ describe("renderBoard in-flight lane", () => {
     ]);
     const html = renderBoard([...lane, ...existing], items, provenance);
 
-    expect(html).toContain('href="https://github.com/developing-today/openchamber/issues/492"');
-    expect(html.match(/href="https:\/\/github.com\/developing-today\/openchamber\/issues\/492"/g)).toHaveLength(1);
+    expect(html).toContain('href="https://github.com/developing-today-forks/openchamber/issues/492"');
+    expect(html.match(/href="https:\/\/github.com\/developing-today-forks\/openchamber\/issues\/492"/g)).toHaveLength(
+      1,
+    );
     expect(html.match(/href="https:\/\/github.com\/developing-today\/code\/issues\/944"/g)).toHaveLength(1);
+  });
+
+  test("an unsafe non-first title ref cannot break rendering or displace the valid ref", () => {
+    const lane = inFlightBoardItems(
+      section([task("code #944, then developing-today/code#9007199254740992", "in-progress")]),
+      [],
+    );
+    expect(lane[0].links.map((link) => link.ref)).toEqual(["developing-today/code#944"]);
+
+    const html = renderBoard(lane, new Map(), provenance);
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/944"');
+    expect(html).not.toContain('href="https://github.com/developing-today/code/issues/9007199254740992"');
   });
 });

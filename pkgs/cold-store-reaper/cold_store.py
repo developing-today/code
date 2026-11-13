@@ -14,6 +14,16 @@ to it and are never used.
 
 Secrets: client_id / client_secret / refresh_token live in credentials.json
 (mode 600) under the cold-store home. They are loaded, never printed.
+
+Pagination contract (#6622): a paged read is complete, bounded, or
+says so. (1) The cursor/token is validated where read — type and
+progress (a truncated page must hand back a usable, advancing
+token). (2) The volume is bounded: every listing loop carries the
+LIST_MAX_PAGES / LIST_MAX_RESULTS bound, whose breach is an error
+naming the listing. (3) Truncation is never silent: a listing
+either completes, fails closed, or says it stopped. The closing
+inventory that dispositioned every paginated loop in the repo is
+on issue #6623.
 """
 
 from __future__ import annotations
@@ -68,6 +78,15 @@ MANIFEST_TABLES = ("objects", "bundles", "members", "transfer_ledger", "meta")
 # Batch size is therefore computed per table from its column count against
 # a 90-parameter budget, keeping headroom under the hard limit.
 D1_MAX_PARAMS_PER_QUERY = 100
+
+# Listing bounds (#6602): the Drive and S3 listing loops already refuse
+# stuck/repeated continuation tokens, but a stream of FRESH tokens pages
+# forever. Legitimate backup folders/buckets are orders of magnitude
+# below these caps (Drive pages hold 1000 entries, S3 pages up to 1000
+# keys), so crossing one means the endpoint is not terminating the
+# listing — fail loudly instead of looping.
+LIST_MAX_PAGES = 10_000
+LIST_MAX_RESULTS = 1_000_000
 D1_SYNC_PARAM_BUDGET = 90
 
 
@@ -255,6 +274,67 @@ def _d1_parse_payload(resp: bytes, what: str):
     return payload
 
 
+def _drive_parse_object(resp: bytes, what: str) -> dict:
+    """Parse a Drive success body that must be a JSON object."""
+    try:
+        payload = json.loads(resp)
+    except (ValueError, TypeError):
+        raise ColdStoreError(f"{what}: non-JSON body") from None
+    if not isinstance(payload, dict):
+        raise ColdStoreError(f"{what}: non-object body ({type(payload).__name__})")
+    return payload
+
+
+def _drive_required_string(payload: dict, key: str, what: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ColdStoreError(f"{what}: missing or invalid {key}")
+    return value
+
+
+def _drive_size(value, what: str) -> int:
+    """Parse Drive's decimal-string size without accepting lossy coercions."""
+    if isinstance(value, bool):
+        raise ColdStoreError(f"{what}: invalid size")
+    if isinstance(value, int):
+        size = value
+    elif isinstance(value, str) and value.isascii() and value.isdigit():
+        size = int(value)
+    else:
+        raise ColdStoreError(f"{what}: invalid size")
+    if size < 0:
+        raise ColdStoreError(f"{what}: invalid size")
+    return size
+
+
+def _drive_files(payload: dict, what: str, require_size: bool = False) -> list[dict]:
+    files = payload.get("files", [])
+    if not isinstance(files, list):
+        raise ColdStoreError(f"{what}: files is not a list")
+    for i, entry in enumerate(files):
+        entry_what = f"{what}: files[{i}]"
+        if not isinstance(entry, dict):
+            raise ColdStoreError(
+                f"{entry_what}: expected object, got {type(entry).__name__}"
+            )
+        _drive_required_string(entry, "id", entry_what)
+        _drive_required_string(entry, "name", entry_what)
+        if require_size or "size" in entry:
+            _drive_size(entry.get("size"), f"{entry_what}.size")
+    return files
+
+
+def _drive_optional_string(payload: dict, key: str, what: str, default):
+    if key not in payload:
+        return default
+    value = payload[key]
+    if value is None and default is None:
+        return None
+    if not isinstance(value, str):
+        raise ColdStoreError(f"{what}: invalid {key}")
+    return value
+
+
 def d1_error_message(resp: bytes) -> str:
     """Best-effort extraction of the D1 API's own error text from a
     response body, so a sync failure is diagnosable from the CLI output
@@ -280,6 +360,23 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 
 class ColdStoreError(Exception):
     pass
+
+
+def _json_shape(value) -> str:
+    """Human name for a parsed JSON value's shape, for error messages."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, dict):
+        return "an object"
+    if isinstance(value, list):
+        return "a list"
+    if isinstance(value, str):
+        return "a string"
+    if isinstance(value, (int, float)):
+        return "a number"
+    return type(value).__name__
 
 
 def utcnow_str() -> str:
@@ -435,6 +532,21 @@ class ColdStore:
                 f"(invalid JSON: {e}) - repair or delete the file and "
                 "re-run `cold-store init`, then refill it from Bitwarden"
             ) from e
+        if not isinstance(creds, dict):
+            raise ColdStoreError(
+                f"credentials.json at {self.credentials_path} has an "
+                f"unexpected shape (expected a JSON object, got "
+                f"{_json_shape(creds)}) - repair or delete the file and "
+                "re-run `cold-store init`, then refill it from Bitwarden"
+            )
+        for key in ("client_id", "client_secret", "refresh_token"):
+            if key in creds and not isinstance(creds[key], str):
+                raise ColdStoreError(
+                    f"credentials.json at {self.credentials_path} has a "
+                    f"non-string {key} (got {_json_shape(creds[key])}) - "
+                    "repair the file and refill it from Bitwarden "
+                    "(credential values must be strings)"
+                )
         for key in ("client_id", "client_secret"):
             if not creds.get(key):
                 raise ColdStoreError(f"credentials.json is missing {key}")
@@ -443,13 +555,42 @@ class ColdStore:
     def load_state(self) -> dict:
         if self.state_path.exists():
             try:
-                return json.loads(self.state_path.read_text())
+                state = json.loads(self.state_path.read_text())
             except json.JSONDecodeError as e:
                 raise ColdStoreError(
                     f"state.json at {self.state_path} is corrupt "
                     f"(invalid JSON: {e}) - repair the file, or delete "
                     "it and let the next run rebuild folder state"
                 ) from e
+            if not isinstance(state, dict):
+                raise ColdStoreError(
+                    f"state.json at {self.state_path} has an unexpected "
+                    f"shape (expected a JSON object, got "
+                    f"{_json_shape(state)}) - repair the file, or delete "
+                    "it and let the next run rebuild folder state"
+                )
+            if "folders" in state:
+                folders = state["folders"]
+                if not isinstance(folders, dict):
+                    raise ColdStoreError(
+                        f"state.json at {self.state_path} has an "
+                        f"unexpected shape (folders must be a JSON "
+                        f"object mapping names to folder ids, got "
+                        f"{_json_shape(folders)}) - repair the file, or "
+                        "delete it and let the next run rebuild folder "
+                        "state"
+                    )
+                for name, folder_id in folders.items():
+                    if not isinstance(folder_id, str):
+                        raise ColdStoreError(
+                            f"state.json at {self.state_path} has an "
+                            f"unexpected shape (folder id for {name!r} "
+                            f"must be a string, got "
+                            f"{_json_shape(folder_id)}) - repair the "
+                            "file, or delete it and let the next run "
+                            "rebuild folder state"
+                        )
+            return state
         return {}
 
     def save_state(self, state: dict) -> None:
@@ -655,12 +796,18 @@ class ColdStore:
         )
         if status != 200:
             raise ColdStoreError(f"token exchange failed (HTTP {status})")
-        payload = json.loads(resp)
+        payload = _d1_parse_payload(resp, "token exchange response")
         refresh = payload.get("refresh_token")
         if not refresh:
             raise ColdStoreError(
                 "token response contained no refresh_token — re-run the grant "
                 "from `cold-store auth-url` (prompt=consent is required)"
+            )
+        if not isinstance(refresh, str):
+            raise ColdStoreError(
+                "token response refresh_token is not a string "
+                f"({type(refresh).__name__}) — refusing to store it; re-run "
+                "the grant from `cold-store auth-url`"
             )
         creds["refresh_token"] = refresh
         self._write_private_json(self.credentials_path, creds)
@@ -696,10 +843,21 @@ class ColdStore:
         )
         if status != 200:
             raise ColdStoreError(f"token refresh failed (HTTP {status})")
-        payload = json.loads(resp)
-        token = payload["access_token"]
+        payload = _d1_parse_payload(resp, "token refresh response")
+        token = payload.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise ColdStoreError(
+                "token refresh response contained no usable access_token "
+                f"(got {type(token).__name__})"
+            )
+        expires_in = payload.get("expires_in", 3600)
+        if isinstance(expires_in, bool) or not isinstance(expires_in, (int, float)):
+            raise ColdStoreError(
+                "token refresh response expires_in is not a number "
+                f"({type(expires_in).__name__})"
+            )
         self._access_token = token
-        self._access_token_expires_at = now + payload.get("expires_in", 3600)
+        self._access_token_expires_at = now + expires_in
         return token
 
     def _auth_headers(self, extra=None) -> dict:
@@ -723,7 +881,8 @@ class ColdStore:
         status, _h, resp = http_request("GET", url, headers=self._auth_headers())
         if status != 200:
             raise ColdStoreError(f"files.list failed (HTTP {status})")
-        files = json.loads(resp).get("files", [])
+        what = f"files.list for folder {name!r}"
+        files = _drive_files(_drive_parse_object(resp, what), what)
         return files[0]["id"] if files else None
 
     def _create_folder(self, name: str, parent_id: str | None) -> str:
@@ -738,7 +897,8 @@ class ColdStore:
         )
         if status not in (200, 201):
             raise ColdStoreError(f"folder create failed (HTTP {status})")
-        return json.loads(resp)["id"]
+        what = "folder create"
+        return _drive_required_string(_drive_parse_object(resp, what), "id", what)
 
     def ensure_folders(self) -> dict:
         state = self.load_state()
@@ -976,7 +1136,10 @@ class ColdStore:
                     timeout=600,
                 )
                 if status in (200, 201):
-                    file_id = json.loads(resp)["id"]
+                    what = "resumable upload completion"
+                    file_id = _drive_required_string(
+                        _drive_parse_object(resp, what), "id", what
+                    )
                     break
                 if status == 308:
                     range_hdr = headers.get("Range") or headers.get("range") or ""
@@ -1054,10 +1217,13 @@ class ColdStore:
         )
         if status != 200:
             raise ColdStoreError(f"files.get after upload failed (HTTP {status})")
-        info = json.loads(resp)
+        what = "files.get after upload"
+        info = _drive_parse_object(resp, what)
+        _drive_required_string(info, "id", what)
+        drive_md5 = _drive_required_string(info, "md5Checksum", what)
         local_md5 = md5_file(path)
-        drive_size = int(info.get("size", -1))
-        if info.get("md5Checksum") != local_md5 or drive_size != row["bytes"]:
+        drive_size = _drive_size(info.get("size"), f"{what}: metadata")
+        if drive_md5 != local_md5 or drive_size != row["bytes"]:
             raise ColdStoreError(
                 "verification mismatch: Drive reports size/md5 that differ from "
                 "the local bundle — bundle NOT marked verified"
@@ -1067,7 +1233,7 @@ class ColdStore:
             conn.execute(
                 "UPDATE bundles SET state='verified', drive_file_id=?, drive_md5=?, uploaded_at=?"
                 " WHERE bundle_id=?",
-                (file_id, info["md5Checksum"], utcnow_str(), bundle_id),
+                (file_id, drive_md5, utcnow_str(), bundle_id),
             )
             conn.execute(
                 "UPDATE objects SET state='cold' WHERE hash IN"
@@ -1220,7 +1386,15 @@ class ColdStore:
             q = f"'{folder_id}' in parents and trashed = false"
             page_token = None
             seen_tokens = set()
+            pages = 0
             while True:
+                pages += 1
+                if pages > LIST_MAX_PAGES or len(out) > LIST_MAX_RESULTS:
+                    raise ColdStoreError(
+                        f"files.list for backups of db {db} exceeded the listing "
+                        f"bound ({LIST_MAX_PAGES} pages / {LIST_MAX_RESULTS} results) "
+                        "without the listing terminating (#6602)"
+                    )
                 params = {
                     "q": q,
                     "fields": "nextPageToken,files(id,name,size,createdTime)",
@@ -1237,18 +1411,26 @@ class ColdStore:
                     raise ColdStoreError(
                         f"files.list for backups failed (HTTP {status})"
                     )
-                page = json.loads(resp)
-                for f in page.get("files", []):
+                what = f"files.list for backups of db {db}"
+                page = _drive_parse_object(resp, what)
+                files = _drive_files(page, what, require_size=True)
+                for i, f in enumerate(files):
+                    entry_what = f"{what}: files[{i}]"
+                    created_time = _drive_optional_string(
+                        f, "createdTime", entry_what, ""
+                    )
                     out.append(
                         {
                             "db": db,
                             "id": f["id"],
                             "name": f["name"],
-                            "size": int(f.get("size") or 0),
-                            "created_time": f.get("createdTime", ""),
+                            "size": _drive_size(f["size"], f"{entry_what}.size"),
+                            "created_time": created_time,
                         }
                     )
-                next_page_token = page.get("nextPageToken")
+                next_page_token = _drive_optional_string(
+                    page, "nextPageToken", what, None
+                )
                 if not next_page_token:
                     break
                 if next_page_token in seen_tokens:
@@ -1411,7 +1593,8 @@ class ColdStore:
         status, _h, resp = http_request("GET", url, headers=self._auth_headers())
         if status != 200:
             raise ColdStoreError(f"files.list for get-backup failed (HTTP {status})")
-        files = json.loads(resp).get("files", [])
+        what = "files.list for get-backup"
+        files = _drive_files(_drive_parse_object(resp, what), what, require_size=True)
         if not files:
             raise ColdStoreError(f"backup not found: {db_name}/{name}")
         file_id = files[0]["id"]
@@ -1813,8 +1996,16 @@ class ColdStore:
         forever, appending duplicates. Raise instead, naming the
         bucket, so the caller sees a stuck endpoint, not a hang."""
         out: list[dict] = []
+        pages = 0
         token = None
         while True:
+            pages += 1
+            if pages > LIST_MAX_PAGES or len(out) > LIST_MAX_RESULTS:
+                raise ColdStoreError(
+                    f"list of {bucket} exceeded the listing bound "
+                    f"({LIST_MAX_PAGES} pages / {LIST_MAX_RESULTS} results) "
+                    "without the listing terminating (#6602)"
+                )
             query = {"list-type": "2"}
             if token:
                 query["continuation-token"] = token

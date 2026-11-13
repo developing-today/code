@@ -7,11 +7,13 @@
 # test signal: the suite (pm-stack/aggregator/test/) and the bun
 # scripts existed, but no workflow ran them.
 #
-# Path-filtered to pm-stack/** plus this file, so unrelated PRs never
-# pay for it. Runs on pull requests touching pm-stack (the contract
-# suite is the merge-time signal for the #1110 failure class) and on
-# every main push. Deliberately NOT a required check -- making it
-# required in branch protection is a separate settings decision.
+# Dispatch-only by Drew's 2026-11-05 ruling (#6126): PR and main-push
+# triggers remain blocked until runner strategy and fleet-wide trigger
+# policy are decided. Do not add auto triggers in a routine workflow fix.
+# Dispatch this workflow deliberately for pm-stack changes that need its
+# checks; until it is dispatched, the CI status is "not run".
+# Deliberately NOT a required check -- making it required in branch
+# protection is a separate settings decision.
 # CI tier policy: see .github/ci-policy.md.
 
 name: pm-aggregator tests
@@ -22,10 +24,10 @@ on:
 permissions:
   contents: read
 
-# Push-to-main runs each get their own group (keyed by run_id), so a
-# later merge can never cancel a verification run for an earlier merge.
-# Pull-request runs share a per-ref group, so a new push to a PR still
-# supersedes its stale run (#392).
+# This workflow currently runs only via workflow_dispatch. Dispatches
+# on the same ref share a group, and a newer dispatch cancels the older
+# run. Push/PR event groups are inactive until runner strategy and the
+# fleet-wide trigger policy are settled (see #6126).
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
   cancel-in-progress: true
@@ -52,6 +54,13 @@ jobs:
     name: aggregator tests and typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The aggregator suite's contract is the fixture environment
+    # (#5557): without it, `bun test` boots the live sources and the
+    # run depends on whatever the runner can reach. Job-level env so
+    # every step (tests and typecheck) sees the same world.
+    env:
+      PM_AGG_SOURCE: fixtures
+      PM_AGG_DEV: "1"
     defaults:
       run:
         working-directory: pm-stack/aggregator

@@ -1,8 +1,7 @@
 name: proxy port fallbacks
 
 on:
-  merge_group:
-    types: [checks_requested]
+  pull_request:
 
 permissions:
   contents: read
@@ -16,3 +15,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Check proxy port fallbacks match their definitions
         run: .github/scripts/check-proxy-port-fallbacks.sh
+      - name: Check generated openclaw units carry no undeclared proxy Wants
+        run: .github/scripts/check-openclaw-unit-wants.sh
+      - name: Self-test the openclaw unit Wants guard
+        run: .github/scripts/check-openclaw-unit-wants.test.sh

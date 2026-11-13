@@ -93,6 +93,15 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "decisions",
+    title: "Decision sets",
+    route: "/decisions",
+    blurb:
+      "Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.",
+    group: "overview",
+    nav: "dropdown",
+  },
+  {
     id: "board",
     title: "Board",
     route: "/board",
@@ -161,7 +170,7 @@ export const PAGES: PageDef[] = [
     title: "Search",
     route: "/search",
     api: "/api/search.json",
-    blurb: "Search board and roadmap work by title or linked issue/PR ref.",
+    blurb: "Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.",
     group: "work",
     nav: "dropdown",
   },
@@ -275,6 +284,9 @@ export const SUBROUTE_PARENTS: { name: string; prefix: string; parent: string }[
   { name: "discuss", prefix: "/discuss/", parent: "/" },
   { name: "program-project", prefix: "/program/", parent: "/program" },
   { name: "service-detail", prefix: "/quota/service/", parent: "/quota" },
+  // #3318: the notification preferences page is reached from /alerts
+  // (and linked from the /notifications measurement page).
+  { name: "alerts-preferences", prefix: "/alerts/preferences", parent: "/alerts" },
   // #1497: Projects merged into Program — /projects redirects to the
   // pool section of /program, which is its manifest parent.
   { name: "projects-merge", prefix: "/projects", parent: "/program" },

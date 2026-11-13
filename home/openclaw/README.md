@@ -24,9 +24,9 @@ source in the fleet next to Muse (Archer) and Aster (Dot). It is installed
   retired — CommandCode (:18748) and Claude Code (:18749) in the
   2026-11-06 proxy-infra decommission (both providers are native in
   the fork since 2026-11-05), Design (:18746) on 2026-11-03 and
-  Antigravity (:18743) on 2026-10-30. The Codex/OpenAI proxy
-  (:18744) is the final reserve and is deliberately not an automatic
-  fallback. See `workspace/QUOTAS.md`.
+  Antigravity (:18743) on 2026-10-30 and Codex (:18744) on
+  2026-11-06 (replaced by the fork's native openai provider).
+  See `workspace/QUOTAS.md`.
 - **Coding:** ACP via the acpx plugin. The default ACP agent is
   `opencode` (spawn with cwd `~/code`) — the same OpenCode
   build/config/auth OpenChamber drives; `~/.acpx/config.json` (managed in
@@ -45,7 +45,7 @@ source in the fleet next to Muse (Archer) and Aster (Dot). It is installed
   sag, camsnap, discrawl, wacrawl, qmd) and runtime
   plugins (acpx, slack, discord, whatsapp, matrix, signal, codex,
   copilot, opencode, deepseek, meta, brave, tavily, exa, firecrawl,
-  perplexity, duckduckgo, tokenjuice) are packaged by Nix. Chat channels
+  perplexity, duckduckgo, tokenjuice, memory-lancedb, memory-wiki) are packaged by Nix. Chat channels
   stay inert until their one-time external setup — see
   `workspace/CHANNELS.md`.
 

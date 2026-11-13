@@ -35,6 +35,12 @@ export default {
     const url = new URL(req.url);
     if (url.pathname === "/health") return new Response("ok");
     if (url.pathname === "/github" && req.method === "POST") {
+      // Fail closed on a misconfigured deployment (#6951): without a
+      // secret the HMAC key is zero-length and importKey throws for
+      // every delivery, leaving an opaque 500 that names nothing.
+      if (!env.GITHUB_WEBHOOK_SECRET) {
+        return new Response("webhook secret not configured", { status: 500 });
+      }
       const body = await req.text();
       const given = (req.headers.get("X-Hub-Signature-256") || "").replace("sha256=", "");
       const expect = await hmacHex(env.GITHUB_WEBHOOK_SECRET, body);
@@ -46,7 +52,9 @@ export default {
       try { payload = JSON.parse(body); } catch { /* ping has form encoding sometimes */ }
       const event = req.headers.get("X-GitHub-Event") || "unknown";
       if (event === "ping") return new Response("pong");
-      const repo = payload.repository && payload.repository.full_name;
+      // A JSON null body parses to null (#6951): every other
+      // non-object shape already lands on the 202 below.
+      const repo = payload?.repository && payload.repository.full_name;
       if (!repo) return new Response("no repository in payload", { status: 202 });
       const id = `${Date.now()}-${crypto.randomUUID()}`;
       await env.GHB_EVENTS.put("ev:" + id, JSON.stringify({
@@ -73,7 +81,13 @@ export default {
         const values = await env.GHB_EVENTS.get(chunk);
         for (const name of chunk) {
           const v = values.get(name);
-          if (v) events.push(JSON.parse(v));
+          if (v !== null && v !== undefined) {
+            try {
+              events.push(JSON.parse(v));
+            } catch {
+              return new Response(`invalid JSON stored for queue key ${name}`, { status: 500 });
+            }
+          }
         }
       }
       return Response.json({
@@ -84,8 +98,20 @@ export default {
     }
     if (url.pathname === "/queue/ack" && req.method === "POST") {
       if (!authed(req, env)) return new Response("unauthorized", { status: 401 });
-      const { ids } = await req.json();
-      const keys = (ids || []).map((id) => "ev:" + id);
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
+      }
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return Response.json({ error: "request body must be an object with an ids array" }, { status: 400 });
+      }
+      const { ids } = body;
+      if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || id.trim().length === 0)) {
+        return Response.json({ error: "ids must be an array of non-empty strings" }, { status: 400 });
+      }
+      const keys = ids.map((id) => "ev:" + id);
       // The binding has no bulk delete, so fan the per-key deletes
       // out in parallel chunks (#5496): sequential awaits needed
       // ~50s for the drainer's 500-id ack batches and timed it out

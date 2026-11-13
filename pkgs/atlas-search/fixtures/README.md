@@ -8,6 +8,15 @@ embedded singly and in one fixed mixed batch. Provenance (model
 revision, file hashes, runtime version, thread counts, padding and
 pooling semantics) is recorded inside the JSON itself.
 
+Bit-identity is a **version-matched** claim (code#6663): the gate
+must load the ONNX Runtime version named in the provenance
+(1.31.1, the atlas venv build). A different runtime — e.g. the nix
+closure's 1.27.1 — produces ~1e-7 deltas on most components of every
+probe from kernel/fusion differences alone; the gate detects that
+case and fails as NOT APPLICABLE rather than reporting a parity
+verdict. Align the runtime or re-record the fixtures (below) —
+never read cross-version deltas as parity evidence.
+
 ## Regenerating
 
 `gen_fixtures.py` is the recorded, rerunnable generator — run it on
@@ -37,3 +46,15 @@ text into this repo. The generator re-derives the text from
 corpus.db on every run. The synthetic probes (the opencode#1554
 spike texts, an empty string, a query-shaped sentence) carry their
 text inline.
+
+## Intentional parity deviation: topics/projects LIKE escaping (code#5375)
+
+`core-expectations.json` records the production Python's topics/projects
+filter as `l.topics LIKE ?` with param `%"<value>"%`. atlas-core
+(`Filters::where_clause` / `Filters::session_clauses`) deliberately
+deviates for Gate B (code#5356): the clause is `LIKE ? ESCAPE '\'` and the
+pattern escapes `%`, `_`, `\` and the JSON-encoded form of `"`, so a value
+matches only a JSON element exactly equal to it. For ordinary values the
+params are identical to the recorded ones; `tests/parity.rs` normalizes the
+`ESCAPE` suffix before comparing SQL text. The Python `Filters` is
+unchanged and has the same wildcard bug; fixing it is a separate follow-up.

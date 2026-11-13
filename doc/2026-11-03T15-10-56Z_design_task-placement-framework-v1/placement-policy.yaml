@@ -1,0 +1,306 @@
+# placement-policy.yaml — machine-readable encoding of the task-placement
+# framework v1 decision table.
+#
+# Source of truth (prose): doc/2026-11-03T15-10-56Z_design_task-placement-framework-v1/2026-11-03T15-10-56Z_design_task-placement-framework-v1.md
+# (design for issue #2024, merged via PR #4994). This file is a faithful
+# transcription of that doc's §1 options, §2 decision table, §3 pool/burn
+# model, and §4 exceptions — it adds no rules and changes none. If the
+# framework review amends a rule, the doc and this artifact change in the
+# same PR. Where this artifact and the POOL MAP disagree, the pool map
+# wins and this artifact is the defect (per the source doc's header).
+#
+# Filed as slice 1 of issue #4986; the placement-record schema below is
+# declared here so slice 2 (the PoC, gated on the #2024 review round)
+# consumes the same artifact. Refs #4986, #2024, #1157.
+
+version: 1
+source_doc: "doc/2026-11-03T15-10-56Z_design_task-placement-framework-v1/2026-11-03T15-10-56Z_design_task-placement-framework-v1.md"
+source_issue: 2024
+implementing_issue: 4986
+
+# ---------------------------------------------------------------- options
+# The seven placement options (#4986's enum is the canonical spelling;
+# the doc's O-numbers are kept as `doc_id` for 1:1 diffing).
+options:
+  - id: Muse
+    doc_id: O1
+    name: "Muse (Muse cron agent / worker shift)"
+    cost_pool: "Muse subscription tokens — the scarcest pool"
+    supervision: "Self (it is the supervisor class)"
+  - id: github-action
+    doc_id: O2
+    name: "GitHub Action"
+    cost_pool: "Actions minutes; no model pool unless the workflow calls one"
+    supervision: "Nobody in-loop; failures must be noticed"
+  - id: github-action-jules
+    doc_id: O3
+    name: "GitHub Action → Jules"
+    cost_pool: "Jules account quota (~100 actions/day, Pro) + trivial Actions minutes"
+    supervision: "Muse manages schedule, reviews output after the fact"
+  - id: opencode-session
+    doc_id: O4
+    name: "OpenCode session (dispatcher/Muse-triggered)"
+    cost_pool: "Shared quota plans by route (see pools)"
+    supervision: "Dispatcher + babysitter rounds + Muse review"
+  - id: opencode-scheduled
+    doc_id: O5
+    name: "OpenCode scheduled task"
+    cost_pool: "Same quota plans as O4; zero Muse tokens"
+    supervision: "Weakest in-loop; needs its own reporting path + babysitter (#2021)"
+  - id: aster-codex
+    doc_id: O6
+    name: "Aster / Codex"
+    cost_pool: "The large ChatGPT plan — shared with O4/O5 OpenAI routes and O7"
+    supervision: "Drew/Muse via Slack; no fleet telemetry"
+  - id: openclaw
+    doc_id: O7
+    name: "OpenClaw"
+    cost_pool: "Shares the ChatGPT plan and other plans with OpenCode"
+    supervision: "Least instrumented; comms path is the #2023 design"
+
+# ------------------------------------------------------- decision procedure
+# Apply the questions in order; the first yes decides (target: under one
+# minute per task). R2 is a guard evaluated at Q2, before all rules below
+# it: it excludes options rather than selecting one.
+questions:
+  - id: Q1
+    text: "Purely mechanical, no judgement, scriptable?"
+    on_yes: R1
+  - id: Q2
+    text: "Needs fleet secrets, laptop, local state, or held/user-owned judgement?"
+    guard: R2
+    on_no_and: "single-repo + fully specified + mechanically verifiable + cheap to reject"
+    on_match: R3
+  - id: Q3
+    text: "Recurring, stable brief, failure visible next round?"
+    on_yes: R5
+  - id: Q4
+    text: "Judgement, escalation, or a decision Drew owns?"
+    on_yes: R6
+  - id: Q5
+    text: "Second-opinion / review depth is the point of the task?"
+    on_yes: R7
+  - id: Q6
+    text: "OpenClaw comms path live for this channel today?"
+    on_yes_and: "failure cheap and visible"
+    on_match: R8
+  - id: default
+    text: "No question matched"
+    rule: R4
+
+guard:
+  id: R2
+  applies: "before all rules below R1; evaluated at Q2"
+  condition: "The work needs fleet secrets, Bitwarden/Supabase keys, the laptop, the sandbox, Tailscale, or local services — or touches held / user/owned / escalated items"
+  effect:
+    excluded_options: [github-action-jules, openclaw]
+    continue_at: Q3
+  never_use_when: "— (this is a hard exclusion, from #2020's never-fit rows)"
+
+# Rules in evaluation order (the flowchart's order). `doc_table_order`
+# preserves the source table's R-numbering for 1:1 diffing.
+rules:
+  - id: R1
+    evaluation_order: 1
+    via_question: Q1
+    condition: "The work is deterministic and scriptable end-to-end (format checks, censuses, registry refreshes, quota probes)"
+    option: github-action
+    never_use_when:
+      - "The script needs a model call or a judgement call mid-run"
+      - "A GITHUB_TOKEN push must trigger downstream checks (the #2014 finding from #2022)"
+  - id: R3
+    evaluation_order: 2
+    via_question: Q2
+    condition: "Single-repo, recurring or one-off, fully self-contained, mechanically verifiable, cheap to reject (Actions version bumps, dependency updates in mainstream stacks, lint/dead-code sweeps, docs-drift fixes)"
+    option: github-action-jules
+    option_note: "Scheduled for the recurring slice, ad-hoc otherwise"
+    never_use_when:
+      - "The task is a cross-repo propagation set (Jules is single-repo)"
+      - "Verification needs fleet Nix builds"
+      - "Anyone would need to answer a question mid-task (#2020 one-line rule)"
+  - id: R5
+    evaluation_order: 3
+    via_question: Q3
+    condition: "Recurring work with a stable, fully self-contained brief, a single route, and failure that is visible next round"
+    option: opencode-scheduled
+    option_note: "OS timer + `opencode run`, per #2019; no native scheduler exists — upstream anomalyco/opencode#41906 is still open"
+    never_use_when:
+      - "Judgement is needed at trigger time"
+      - "Cross-session coordination is required"
+      - "Guaranteed escalation is required — a timer fires and forgets; stall detection stays with the babysitter (#2021)"
+  - id: R6
+    evaluation_order: 4
+    via_question: Q4
+    condition: "The task is judgement: triage verdicts, placement decisions, synthesis, escalation handling, anything whose output is a decision someone acts on"
+    option: Muse
+    never_use_when:
+      - "The task is volume implementation wearing a judgement costume — that is R4; every O1 placement taxes every other Muse task (#2022)"
+  - id: R7
+    evaluation_order: 5
+    via_question: Q5
+    condition: "The deliverable is review depth or a second opinion (design critique, diff review at flagship depth)"
+    option: aster-codex
+    never_use_when:
+      - "Fleet telemetry or queue claim/bind discipline is required — O6 has neither"
+      - "Remember O6 burn is O4/O7 ChatGPT capacity gone (§3.1 of the source doc)"
+  - id: R8
+    evaluation_order: 6
+    via_question: Q6
+    condition: "The #2023 comms path is live for the channel in question (Slack leg first), the work is conversational/lightweight, and its failure is cheap and visible"
+    option: openclaw
+    never_use_when:
+      - "Channels are inert for that path (the #1029 state at #2022's writing)"
+      - "The work must not disappear into an unmonitored channel"
+      - "It needs queue discipline O7 does not have"
+  - id: R4
+    evaluation_order: 7
+    via_question: default
+    default: true
+    condition: "Implementation work: coding, investigation-with-tools, PR-shaped delivery, needing fleet context but not Drew's judgement"
+    option: opencode-session
+    option_note: "Via the dispatcher"
+    never_use_when:
+      - "A fresher rule above already matched"
+      - "Every route pool for the required tier is at a known 100% (see burn_rules B3 — then rotate tier or stop, never fall back to PAYG)"
+
+tie_breakers:
+  - id: T-a
+    rule: "If two rules match, the earlier rule wins — the order is deliberate: cheapest sufficient, most supervised first."
+  - id: T-b
+    rule: "If a task matches R3/R5 on shape but its brief is not yet stable, place it once via R4/R6 to stabilise the brief, then move the recurrence."
+  - id: T-c
+    rule: "Synthesis and ramification-heavy design work is R6-shaped even when a session could draft it — #2024 assigns synthesis to the Specialist/Summit grade, and the review loop is Muse's."
+
+# ------------------------------------------------------------------- pools
+# §3.1 inventory, condensed. The POOL MAP is canonical; this is the
+# dispatch-time view of it.
+pools:
+  - id: claude-subscription
+    name: "Muse subscription (Power)"
+    drawn_by: [Muse]
+    notes: "Not a shared pool and not a session route — the assistant's own plan; sessions never draw on it. Scarcest resource in the fleet; spend it on judgement (R6)."
+  - id: meta-pool
+    name: "Meta pool — Muse API High Usage plan"
+    drawn_by: [opencode-session, opencode-scheduled]
+    routes: "O4/O5 Claude routes"
+    notes: "One pool, one door: the OpenCode `meta` provider. The OpenCode `muse` provider is a second door into the same pool and is disabled by Drew's order; the `muse` terminal program reaches the same plan via OAuth. Never describe any route as drawing on the Muse subscription."
+  - id: chatgpt-plan
+    name: "ChatGPT plan (large)"
+    drawn_by: [opencode-session, opencode-scheduled, aster-codex, openclaw]
+    routes: "O4/O5 OpenAI routes, O6 Aster/Codex, O7 OpenClaw"
+    notes: "The most contended pool: three options share it, and only O4/O5 contention is visible to the dispatcher. O6/O7 burn must be treated as OpenCode capacity spent."
+  - id: plan-routes
+    name: "OpenCode Go / ClinePass / Open Design and similar plan routes"
+    drawn_by: [opencode-session, opencode-scheduled]
+    routes: "O4/O5 workhorse & specialist tiers"
+    notes: "Workhorse default: DeepSeek Flash on high. Claude routes default Haiku/Sonnet (Opus low/medium; high only for very complex design). OpenAI routes default Luna Max (Sol medium only for genuinely complicated work). Astra is gated."
+  - id: jules-account
+    name: "Jules account (~100 actions/day, Pro)"
+    drawn_by: [github-action-jules]
+    notes: "Shared across scheduled runs, ad-hoc sessions, Suggested Tasks (off until the pilot proves out, per #2020), and CI-Fixer retries on Jules' own PRs. Fleet governance cap from #2020: scheduled runs ≤ ~5/day."
+    mechanical:
+      actions_per_day_approx: 100
+      scheduled_runs_cap_per_day: 5
+  - id: github-actions-minutes
+    name: "GitHub Actions minutes"
+    drawn_by: [github-action, github-action-jules]
+    notes: "No model pool; the cost is minutes and silence risk (R1's caveat)."
+  - id: deepseek-direct
+    name: "DeepSeek direct (api.deepseek.com)"
+    drawn_by: []
+    notes: "PAYG reserve for when every plan is walled. Never funds: a 402/quota error is a wall, never a balance fallback."
+
+# -------------------------------------------------------------- burn rules
+# §3.2 — burn order and gates, with the mechanical fields a dispatcher
+# can evaluate without prose.
+burn_rules:
+  - id: B1
+    name: "Soonest-expiring first"
+    rule: "Among routes that can do the task at the required tier, burn the pool whose reset is soonest. Pools are used all the way to 100% (Drew 2026-10-27): capacity that resets unused is capacity destroyed."
+    mechanical:
+      burn_order: soonest_reset_first
+      target_utilization_percent: 100
+  - id: B2
+    name: "OpenAI is the final reserve"
+    rule: "The ChatGPT plan burns last among plan routes, because it is the sole door for O6-class review depth and is shared with O7."
+    mechanical:
+      burn_order_position: { chatgpt-plan: last }
+  - id: B3
+    name: "A pool at a known 100% is CLOSED"
+    rule: "Closed until its reset time or until a fresh read shows it dropped below 100% (providers sometimes reset early). No placements, no continued calls on a closed pool."
+    mechanical:
+      closed_at_percent: 100
+      reopen_below_percent: 100
+  - id: B4
+    name: "Unknown is not closed"
+    rule: "A failed or stale quota read never idles a pool and never stops dispatch (Drew 2026-10-30): dispatch proceeds on the last known state and the read is retried. B3 applies only to a read that actually returned 100%."
+  - id: B5
+    name: "Measurement gate"
+    rule: "No placement, switch, or dispatch decision without a quota read ≤ 60 minutes old for that pool — when a read is obtainable (B4 covers when it is not). Burns longer than ~1h re-check hourly and at every failover. O5 schedules cannot apply this gate at fire time — a real cost of R5."
+    mechanical:
+      quota_read_max_age_minutes: 60
+      long_burn_recheck_minutes: 60
+      recheck_at: [hourly, failover]
+  - id: B6
+    name: "One retry, then rotate or stop"
+    rule: "At most one retry on the same pool after a quota error; then rotate to the next pool in burn order; when every plan is walled, the session stops and reports — it never reaches for PAYG (the direct DeepSeek reserve is Drew's call, not a fallback a session takes on its own)."
+    mechanical:
+      max_retries_same_pool: 1
+      payg_fallback: never
+
+# --------------------------------------------------------------- exceptions
+# §4 — an exception is a recorded, expiring decision, never a habit.
+exceptions:
+  - id: E1
+    name: "Record it"
+    rule: "Every exception gets a record (issue comment or placement record) stating: the task, which rules were tried and why each failed, the placement actually chosen, and who chose it. An unrecorded exception is a protocol gap."
+  - id: E2
+    name: "Nearest rule wins provisionally"
+    rule: "Place by the closest rule's option at the lowest sufficient tier, and proceed — an exception is not a stop. (B4 applies: a stale read never turns a placement into an exception.)"
+  - id: E3
+    name: "Expiry"
+    rule: "An exception record expires after one use or 14 days, whichever comes first. A recurring exception is a missing rule: the third occurrence of the same shape must be filed as a framework-amendment issue against the source doc instead of re-exceptioned."
+    mechanical:
+      max_uses: 1
+      max_age_days: 14
+      amendment_issue_on_occurrence: 3
+  - id: E4
+    name: "Escalate only the genuinely Drew-owned"
+    rule: "Additional accounts (a second Jules account is a ToS-shaped decision, #2020), new money or PAYG use, sole-door pool conflicts with no alternative route, and any placement onto a held/user/owned item. Escalations carry the full substance (what, options, ramifications, recommendation) — never a bare label."
+  - id: E5
+    name: "Review"
+    rule: "Exceptions are read in the framework's review round (with the orchestrator's review of #2024, then in the placement audit). Each reviewed exception ends as: rule amended, exception renewed deliberately, or placement class retired."
+    outcomes: [rule_amended, exception_renewed, placement_class_retired]
+
+# --------------------------------------------------------- placement record
+# The record every fleet dispatch emits (#4986). Declared here so the
+# slice-2 PoC — the queue-worker handoff path and the OpenChamber
+# dispatcher path — consumes this same schema.
+placement_record:
+  fields:
+    - name: option
+      type: enum
+      values:
+        [
+          Muse,
+          github-action,
+          github-action-jules,
+          opencode-session,
+          opencode-scheduled,
+          aster-codex,
+          openclaw,
+        ]
+      note: "One of the seven options above."
+    - name: rule
+      type: string
+      note: "The decision-table rule id that selected the option (R1–R8), or `exception` together with exception_id (E1 record)."
+    - name: exception_id
+      type: string
+      required_when: "rule == exception"
+      note: "Identifier of the E1 exception record."
+    - name: pool_read_at
+      type: "timestamp | n/a"
+      note: "Timestamp of the quota read the placement relied on (the ≤60-minute measurement gate, B5), or `n/a` for non-pool options (Actions minutes, Jules)."
+    - name: supervision
+      type: string
+      note: "Who babysits/reviews the result (see each option's supervision field)."

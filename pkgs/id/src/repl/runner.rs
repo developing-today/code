@@ -1888,7 +1888,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_parse_rejects_zero_result_limits() {
         // #3059: explicit zero limits are errors at the REPL boundary.
         assert!(parse_find_args(&["q", "--first", "0"], "tag").is_err());
@@ -1964,6 +1963,7 @@ mod tests {
         assert_eq!(args.output_file, Some("out.txt"));
     }
 
+    #[test]
     fn test_parse_find_args_basic() {
         let rest = vec!["query1", "query2"];
         let args = parse_find_args(&rest, "union").unwrap();

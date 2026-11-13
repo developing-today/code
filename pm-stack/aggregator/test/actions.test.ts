@@ -88,6 +88,34 @@ describe("dashboard actions store", () => {
     expect(retry?.action.state).toBe("applied");
   });
 
+  test("markResult caps never split a surrogate pair (#7711)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-actions-result-surrogate-"));
+    const store = new ActionsStore(join(dir, "actions.json"));
+    // byRun cap 200: 199 units + an astral character straddling the cap is
+    // dropped whole, never stored as a lone high surrogate.
+    const a1 = await store.add(newAction({ objectRef: "orch:item-result-byRun" }));
+    const byRun = await store.markResult(a1.action.id, {
+      outcome: "applied",
+      byRun: "r".repeat(199) + "\u{1F600}" + "tail",
+    });
+    expect(byRun?.appliedByRun?.length).toBe(199);
+    expect(byRun?.appliedByRun?.endsWith("r")).toBe(true);
+    // note cap 2000: same rule at the larger cap.
+    const a2 = await store.add(newAction({ objectRef: "orch:item-result-note" }));
+    const noted = await store.markResult(a2.action.id, {
+      outcome: "applied",
+      byRun: "orch-test",
+      note: "n".repeat(1999) + "\u{1F600}" + "tail",
+    });
+    expect(noted?.resultNote?.length).toBe(1999);
+    expect(noted?.resultNote?.endsWith("n")).toBe(true);
+    // A pair that fits exactly inside the cap is kept whole.
+    const a3 = await store.add(newAction({ objectRef: "orch:item-result-fit" }));
+    const fit = "n".repeat(1998) + "\u{1F600}";
+    const fitted = await store.markResult(a3.action.id, { outcome: "applied", byRun: "orch-test", note: fit });
+    expect(fitted?.resultNote).toBe(fit);
+  });
+
   test("answer question slots dedupe option and survey submissions with an audit pointer", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agg-answer-dedupe-"));
     const store = new ActionsStore(join(dir, "actions.json"));
@@ -359,6 +387,76 @@ describe("dashboard actions validation", () => {
     expect(v({ verb: "reject-proposal", payload: {} }).ok).toBe(false);
     expect(v({ payload: { answers: [{ questionId: "q1" }] }, verb: "answer" }).ok).toBe(false);
     expect(v({ objectRef: "has space" }).ok).toBe(false);
+  });
+
+  test("caps never split a surrogate pair (#7694)", () => {
+    // reason cap 2000: 1999 units + an astral character straddling the cap.
+    const straddle = validateNewAction({
+      ...base,
+      verb: "dismiss",
+      payload: { reason: "x".repeat(1999) + "\u{1F600}" + "tail" },
+    });
+    expect(straddle.ok).toBe(true);
+    if (straddle.ok) {
+      const reason = (straddle.value.payload as { reason?: string }).reason ?? "";
+      expect(reason.length).toBe(1999);
+      expect(reason.endsWith("x")).toBe(true);
+    }
+    // A pair that fits exactly inside the cap is kept whole.
+    const fits = validateNewAction({
+      ...base,
+      verb: "dismiss",
+      payload: { reason: "x".repeat(1998) + "\u{1F600}" },
+    });
+    expect(fits.ok).toBe(true);
+    if (fits.ok) {
+      const reason = (fits.value.payload as { reason?: string }).reason ?? "";
+      expect(reason.length).toBe(2000);
+      expect(reason.endsWith("\u{1F600}")).toBe(true);
+    }
+    // Small cap, same rule: optionId cap 200.
+    const opt = validateNewAction({
+      ...base,
+      verb: "answer",
+      payload: { optionId: "o".repeat(199) + "\u{1F600}" + "tail" },
+    });
+    expect(opt.ok).toBe(true);
+    if (opt.ok) {
+      const optionId = (opt.value.payload as { optionId?: string }).optionId ?? "";
+      expect(optionId.length).toBe(199);
+    }
+  });
+
+  test("refuses impossible calendar days for until and proposalUpdatedAt (#3393)", () => {
+    for (const bad of ["2026-02-29", "2026-02-30", "2026-04-31"]) {
+      const rUntil = v({ verb: "snooze", payload: { until: bad } });
+      expect(rUntil.ok).toBe(false);
+      if (!rUntil.ok) expect(rUntil.error).toBe("payload.until must be an ISO date/time");
+      const rProposal = v({
+        verb: "approve-proposal",
+        payload: { proposalRunId: "run-1", proposalUpdatedAt: bad },
+      });
+      expect(rProposal.ok).toBe(false);
+      if (!rProposal.ok) expect(rProposal.error).toBe("payload.proposalUpdatedAt must be an ISO date/time");
+    }
+    // Leap-year control: 2024-02-29 exists, so date-only and full ISO
+    // datetimes on that day are accepted for both fields.
+    expect(v({ verb: "snooze", payload: { until: "2024-02-29" } }).ok).toBe(true);
+    expect(v({ verb: "snooze", payload: { until: "2024-02-29T12:00:00Z" } }).ok).toBe(true);
+    expect(
+      v({
+        verb: "approve-proposal",
+        payload: { proposalRunId: "run-1", proposalUpdatedAt: "2024-02-29" },
+      }).ok,
+    ).toBe(true);
+    expect(
+      v({
+        verb: "approve-proposal",
+        payload: { proposalRunId: "run-1", proposalUpdatedAt: "2024-02-29T12:00:00Z" },
+      }).ok,
+    ).toBe(true);
+    // Full ISO datetimes on real days still pass.
+    expect(v({ verb: "snooze", payload: { until: "2026-03-15T12:30:00Z" } }).ok).toBe(true);
   });
 
   test("status-request: gh object, status required, targetRef derived", () => {
@@ -768,6 +866,41 @@ describe("actions HTTP round-trip (fixture consumer)", () => {
       ).status,
     ).toBe(400);
     expect((await post("/api/actions", { ...body, clientToken: "ct-http-bad-2", author: undefined })).status).toBe(400);
+  });
+
+  test("/api/actions.json?state=all returns applied history; unknown state 400s (#4620)", async () => {
+    const body = {
+      clientToken: "ct-http-state-all-1",
+      kind: "triage",
+      verb: "acknowledge",
+      objectRef: "orch:state-all-item",
+      author: drew,
+      payload: {},
+    };
+    const created = await post("/api/actions", body);
+    expect(created.status).toBe(201);
+    const { action } = (await created.json()) as { action: DashAction };
+    const result = await post("/api/actions/result", {
+      id: action.id,
+      outcome: "applied",
+      byRun: "orch-fixture-state-all",
+      note: "applied for the #4620 history-read regression test",
+    });
+    expect(result.status).toBe(200);
+
+    const listFor = async (qs: string) =>
+      (
+        (await (await fetch(`http://127.0.0.1:${port}/api/actions.json?${qs}`)).json()) as { actions: DashAction[] }
+      ).actions.map((a) => a.id);
+
+    // The regression: state=all must return the applied record, not [].
+    expect(await listFor("state=all")).toContain(action.id);
+    // Concrete history states return history too.
+    expect(await listFor("state=applied")).toContain(action.id);
+    // state=new behaviour is unchanged: the applied record is not pending.
+    expect(await listFor("state=new")).not.toContain(action.id);
+    // An unknown state is a 400, never a silent false zero.
+    expect((await fetch(`http://127.0.0.1:${port}/api/actions.json?state=bogus`)).status).toBe(400);
   });
 
   test("duplicate answer response includes the persisted audit pointer", async () => {

@@ -5,10 +5,28 @@ on:
   push:
     paths:
       - "pm-stack/external-comms/**"
+      - "pm-stack/opencode-claimant/**"
+      - "pm-stack/opencode-usage-export/**"
+      - "pm-stack/cloudflare-export/**"
+      - "pm-stack/supabase-export/**"
+      - "pm-stack/meta-exporter/**"
+      - "pm-stack/dispatch/**"
+      - "pm-stack/pad/**"
+      - "pm-stack/grist/**"
+      - "pm-stack/scripts/**"
       - ".github/workflows/pm-stack-tests.yml"
   pull_request:
     paths:
       - "pm-stack/external-comms/**"
+      - "pm-stack/opencode-claimant/**"
+      - "pm-stack/opencode-usage-export/**"
+      - "pm-stack/cloudflare-export/**"
+      - "pm-stack/supabase-export/**"
+      - "pm-stack/meta-exporter/**"
+      - "pm-stack/dispatch/**"
+      - "pm-stack/pad/**"
+      - "pm-stack/grist/**"
+      - "pm-stack/scripts/**"
       - ".github/workflows/pm-stack-tests.yml"
 
 permissions:
@@ -16,9 +34,9 @@ permissions:
 
 jobs:
   test:
-    name: aggregator + projector + dispatch + python suites
+    name: aggregator + projector + dispatch + python suites + quota exporters
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -68,6 +86,39 @@ jobs:
           bash pm-stack/scripts/seed-smoke.test.sh
           bash pm-stack/scripts/deploy-install-smoke.test.sh
 
+      # Script suite for #5993: pm-stack/scripts/
+      # tailnet-bindings.test.sh (the #781 regression pin for the
+      # Pad/Grist tailnet bindings) was run by no workflow. The
+      # file is named explicitly and asserted to exist first, so a
+      # green run cannot be a silently skipped suite, and any
+      # failure fails the job. The suite SKIPs (exit 0) when
+      # docker compose is unavailable: ubuntu-latest runners ship
+      # it, so a SKIP here means the runner changed — fail the job
+      # rather than letting the pin lapse silently.
+      # (The other #5993 suite, pm-git-sync.test.sh, is NOT wired:
+      # PR #8171 retired the pm-git-sync redeploy machinery and
+      # deleted its harness on purpose — deploys are merge ->
+      # nixos-rebuild switch now. See the task 9866 note on #5993.)
+      - name: Test tailnet-bindings script
+        run: |
+          t=pm-stack/scripts/tailnet-bindings.test.sh
+          if [ ! -f "$t" ]; then
+            echo "::error::Missing suite file $t — the tailnet-bindings suite was not run."
+            exit 1
+          fi
+          rc=0
+          out="$(bash "$t" 2>&1)" || rc=$?
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::tailnet-bindings suite failed (exit $rc)."
+            exit 1
+          fi
+          if printf '%s' "$out" | grep -q '^SKIP:'; then
+            echo "::error::tailnet-bindings suite reported SKIP (docker compose unavailable) — the #781 pin did not run."
+            exit 1
+          fi
+          echo "tailnet-bindings script suite passed."
+
       # Python suites for #5951: pm-stack/opencode-claimant/test_poll.py
       # (36 tests, the #3026 claimant session-cap gate) and
       # pm-stack/grist/test_update_choice_options.py (7 tests) were run
@@ -77,7 +128,7 @@ jobs:
       - name: Test claimant and grist Python suites
         run: |
           fail=0
-          for t in pm-stack/opencode-claimant/test_poll.py pm-stack/grist/test_update_choice_options.py; do
+          for t in pm-stack/opencode-claimant/test_poll.py pm-stack/opencode-claimant/test_claimant.py pm-stack/opencode-claimant/test/test_claimant.py pm-stack/grist/test_update_choice_options.py; do
             if [ ! -f "$t" ]; then
               echo "::error::Missing suite file $t — the pm-stack Python suites were not run in full."
               fail=1
@@ -87,12 +138,31 @@ jobs:
             exit 1
           fi
           python3 -m unittest pm-stack/opencode-claimant/test_poll.py || fail=1
+          python3 -m unittest pm-stack/opencode-claimant/test_claimant.py || fail=1
+          python3 -m unittest pm-stack/opencode-claimant/test/test_claimant.py || fail=1
           python3 -m unittest discover -s pm-stack/grist -p 'test_*.py' || fail=1
           if [ "$fail" -ne 0 ]; then
             echo "::error::pm-stack Python suites: at least one suite failed (see above)."
             exit 1
           fi
-          echo "pm-stack Python suites: test_poll.py + grist discovery passed."
+          echo "pm-stack Python suites: test_poll.py + test_claimant.py + test/test_claimant.py (#7670) + grist discovery passed."
+
+      # Bun suite for #6091: pm-stack/opencode-claimant/
+      # test/install.test.mjs (13 tests, the #3278 typo'd-flag
+      # install guard) was run by no workflow — #5951 wired only
+      # the claimant Python suite above. The suite imports
+      # bun:test, so the runner is bun (node --test fails on it).
+      # The file is named explicitly and asserted to exist first,
+      # so a green run cannot be a silently skipped suite; any
+      # failure in the suite fails the job.
+      - name: Test claimant install bun suite
+        working-directory: pm-stack/opencode-claimant
+        run: |
+          if [ ! -f test/install.test.mjs ]; then
+            echo "::error::Missing suite file pm-stack/opencode-claimant/test/install.test.mjs — the claimant install suite was not run."
+            exit 1
+          fi
+          bun test test/install.test.mjs
 
       # Python suite for #6217: pm-stack/external-comms/
       # test_push_quarantine.py (6 tests, the pinning suite for the
@@ -108,3 +178,45 @@ jobs:
             exit 1
           fi
           python3 -m unittest test_push_quarantine
+
+      # The quota exporter suites need Node 24: opencode-usage-export
+      # imports node:sqlite, which under the runner's default Node 22
+      # prints an ExperimentalWarning to stderr — and that suite's
+      # import test asserts the child's stderr is empty. (Codex P1
+      # finding on PR #6928, verified against the suite at lines
+      # 52-68 of opencode-usage-export.test.mjs.)
+      - name: Set up Node 24 for the quota exporter suites
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # Quota exporter suites for #6084
+      # opencode-usage-export: node --test (12 tests)
+      - name: Test opencode-usage-export suite
+        run: node --test pm-stack/opencode-usage-export/opencode-usage-export.test.mjs
+
+      # cloudflare-export: node --test (35 tests)
+      - name: Test cloudflare-export suite
+        run: node --test pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs
+
+      # supabase-export: bun test (12 tests)
+      - name: Test supabase-export suite
+        working-directory: pm-stack/supabase-export
+        run: |
+          if [ ! -f supabase-quota-export.test.mjs ]; then
+            echo "::error::Missing suite file pm-stack/supabase-export/supabase-quota-export.test.mjs — the supabase suite was not run."
+            exit 1
+          fi
+          bun test
+
+      # meta-exporter: node --test (suite for #6344; the explicit file
+      # path is required — the directory form fails on Node 24). The
+      # file is asserted to exist first, so a green run cannot be a
+      # silently skipped suite; any failure fails the job.
+      - name: Test meta-exporter suite
+        run: |
+          if [ ! -f pm-stack/meta-exporter/meta-quota-export.test.mjs ]; then
+            echo "::error::Missing suite file pm-stack/meta-exporter/meta-quota-export.test.mjs — the meta-exporter suite was not run."
+            exit 1
+          fi
+          node --test pm-stack/meta-exporter/meta-quota-export.test.mjs

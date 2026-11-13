@@ -64,8 +64,12 @@ describe("FreshnessStore", () => {
       expect(first).toMatchObject({ duplicate: false, pending: false, notice: { sequence: 1 } });
       expect(duplicate).toMatchObject({ duplicate: true, pending: false, notice: { sequence: 1 } });
 
-      const concurrent = await Promise.all(Array.from({ length: 20 }, (_, index) => store.publish(input(`parallel-${index}`))));
-      expect(concurrent.map((result) => result.notice.sequence)).toEqual(Array.from({ length: 20 }, (_, index) => index + 2));
+      const concurrent = await Promise.all(
+        Array.from({ length: 20 }, (_, index) => store.publish(input(`parallel-${index}`))),
+      );
+      expect(concurrent.map((result) => result.notice.sequence)).toEqual(
+        Array.from({ length: 20 }, (_, index) => index + 2),
+      );
       expect((await store.listAfter(0)).cursor).toBe(21);
     });
   });
@@ -131,7 +135,11 @@ describe("FreshnessStore", () => {
 
       await rm(file, { recursive: true });
       const recovered = await new FreshnessStore(file).listAfter(0);
-      expect(recovered).toMatchObject({ cursor: 1, resetRequired: false, events: [{ eventId: "outbox-1", sequence: 1 }] });
+      expect(recovered).toMatchObject({
+        cursor: 1,
+        resetRequired: false,
+        events: [{ eventId: "outbox-1", sequence: 1 }],
+      });
       await expect(readFile(`${file}.outbox.jsonl`, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     });
   });

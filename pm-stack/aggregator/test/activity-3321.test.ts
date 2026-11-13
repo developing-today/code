@@ -4,7 +4,7 @@
 // backfill flips. GitHub stays unsupported pending #2072 (asserted in
 // the coverage table so the gap is documented, not implied away).
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -30,6 +30,50 @@ function tmpStores(): { eventsFile: string; activityFile: string; events: Events
   const eventsFile = join(dir, "events.json");
   const activityFile = join(dir, "activity.json");
   return { eventsFile, activityFile, events: new EventsStore(eventsFile), store: new IngestionStore(activityFile) };
+}
+
+function validIngestionFile() {
+  return {
+    version: 1,
+    checkpoints: {
+      kaneo: {
+        source: "kaneo",
+        lastSourceId: "kaneo:card-1",
+        lastEventAt: "2024-02-29T10:00:00.000Z",
+        deliveries: 2,
+        duplicates: 1,
+        updatedAt: "2024-02-29T10:00:00.000Z",
+      },
+      watchdog: {
+        source: "watchdog",
+        lastSourceId: null,
+        lastEventAt: null,
+        deliveries: 0,
+        duplicates: 0,
+        updatedAt: "2024-02-29T10:00:00.000Z",
+      },
+    },
+    seen: { kaneo: ["kaneo:card-1"] },
+    gaps: [
+      {
+        id: "gap:kaneo:2024-02-29",
+        source: "kaneo",
+        from: "2024-02-29T10:00:00.000Z",
+        to: "2024-03-01T10:00:00.000Z",
+        status: "backfilled" as const,
+        detectedAt: "2024-02-29T10:00:00.000Z",
+        resolvedAt: "2024-03-01T10:00:00.000Z",
+      },
+      {
+        id: "gap:watchdog:2024-03-02",
+        source: "watchdog",
+        from: "2024-03-02T10:00:00.000Z",
+        to: "2024-03-03T10:00:00.000Z",
+        status: "open" as const,
+        detectedAt: "2024-03-02T10:00:00.000Z",
+      },
+    ],
+  };
 }
 
 const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
@@ -341,5 +385,136 @@ describe("ingestion store (#3321)", () => {
     expect(html).toContain("watchdog");
     expect(html).toContain("kaneo");
     expect(html).toContain("unsupported");
+  });
+});
+
+describe("ingestion store load validation (#5232)", () => {
+  const invalidRecords: Array<{
+    description: string;
+    record: "gap" | "checkpoint";
+    patch: Record<string, unknown>;
+  }> = [
+    { description: "impossible gap start", record: "gap", patch: { from: "2026-02-30T00:00:00.000Z" } },
+    { description: "impossible gap end", record: "gap", patch: { to: "2026-04-31T00:00:00.000Z" } },
+    { description: "non-ISO gap detection date", record: "gap", patch: { detectedAt: "March 2, 2026" } },
+    { description: "garbage gap date", record: "gap", patch: { from: "not-a-date" } },
+    {
+      description: "impossible gap resolution date",
+      record: "gap",
+      patch: { resolvedAt: "2026-02-30T00:00:00.000Z" },
+    },
+    {
+      description: "impossible checkpoint last-event date",
+      record: "checkpoint",
+      patch: { lastEventAt: "2026-02-30T00:00:00.000Z" },
+    },
+    {
+      description: "non-ISO checkpoint update date",
+      record: "checkpoint",
+      patch: { updatedAt: "March 2, 2026" },
+    },
+    { description: "garbage checkpoint date", record: "checkpoint", patch: { updatedAt: "not-a-date" } },
+    { description: "negative deliveries count", record: "checkpoint", patch: { deliveries: -1 } },
+    { description: "negative duplicates count", record: "checkpoint", patch: { duplicates: -2 } },
+  ];
+
+  test.each(invalidRecords)("quarantines $description and starts empty", async ({ record, patch }) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-activity-invalid-"));
+    const file = join(dir, "activity.json");
+    const persisted = validIngestionFile();
+    Object.assign(record === "gap" ? persisted.gaps[0]! : persisted.checkpoints.kaneo, patch);
+    const raw = JSON.stringify(persisted);
+    writeFileSync(file, raw);
+
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+    try {
+      const store = new IngestionStore(file);
+      expect(await store.checkpoints()).toEqual([]);
+      expect(await store.seenIds("kaneo")).toEqual([]);
+      expect(await store.gaps()).toEqual([]);
+    } finally {
+      console.error = origError;
+    }
+
+    expect(
+      errors.some(
+        (message) => message.includes("is unparseable") && message.includes("quarantined the original bytes"),
+      ),
+    ).toBe(true);
+    const quarantined = readdirSync(dir).filter((name) => name.startsWith("activity.json.corrupt-"));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantined[0]!), "utf8")).toBe(raw);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  test("valid ISO dates and counts load unchanged without quarantine", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-activity-valid-"));
+    const file = join(dir, "activity.json");
+    const persisted = validIngestionFile();
+    const raw = JSON.stringify(persisted);
+    writeFileSync(file, raw);
+
+    const store = new IngestionStore(file);
+    expect(await store.checkpoints()).toEqual([persisted.checkpoints.kaneo, persisted.checkpoints.watchdog]);
+    expect(await store.seenIds("kaneo")).toEqual(["kaneo:card-1"]);
+    expect(await store.gaps()).toEqual(persisted.gaps);
+    expect(readFileSync(file, "utf8")).toBe(raw);
+    expect(readdirSync(dir).filter((name) => name.startsWith("activity.json.corrupt-"))).toEqual([]);
+  });
+});
+
+describe("activity summary caps never split a surrogate pair (#7725)", () => {
+  const roundTrips = (s: string) => new TextDecoder().decode(new TextEncoder().encode(s)) === s;
+
+  test("watchdog writer drops an astral character straddling the 500 cap whole", () => {
+    const [d] = watchdogDeliveries([watchdogItem("watchdog:emoji", 60_000, "x".repeat(499) + "\u{1F600}" + "tail")]);
+    expect(d?.summary).toHaveLength(499);
+    expect(d?.summary.endsWith("x")).toBe(true);
+    expect(roundTrips(d?.summary ?? "")).toBe(true);
+  });
+
+  test("watchdog writer keeps an astral character fully inside the cap intact", () => {
+    const [d] = watchdogDeliveries([watchdogItem("watchdog:emoji-fit", 60_000, "x".repeat(498) + "\u{1F600}")]);
+    expect(d?.summary).toHaveLength(500);
+    expect(d?.summary.endsWith("\u{1F600}")).toBe(true);
+    expect(roundTrips(d?.summary ?? "")).toBe(true);
+  });
+
+  test("kaneo writer drops an astral character straddling the composed 500 cap whole", () => {
+    const prefix = "Kaneo card appeared in open: ";
+    const card: KaneoCardSnapshot = {
+      id: "kaneo:p/emoji",
+      status: "open",
+      title: "y".repeat(500 - prefix.length - 1) + "\u{1F600}" + "tail",
+      updatedAt: iso(60_000),
+    };
+    const [d] = kaneoChangeDeliveries(new Map(), [card]);
+    expect(d?.summary).toHaveLength(499);
+    expect(d?.summary.endsWith("y")).toBe(true);
+    expect(roundTrips(d?.summary ?? "")).toBe(true);
+  });
+
+  test("record-time cap drops an astral character the link suffix pushes across 500", async () => {
+    const { events, store } = tmpStores();
+    const delivery: ActivityDelivery = {
+      source: "kaneo",
+      sourceId: "kaneo:p/emoji:appeared:undated:1",
+      at: iso(0),
+      kind: "kaneo-change",
+      ref: "kaneo:p/emoji",
+      summary: "s".repeat(494),
+      link: "ab\u{1F600}cd",
+    };
+    const result = await store.ingest(events, [delivery]);
+    expect(result.ingested).toBe(1);
+    const stream = await events.list();
+    expect(stream).toHaveLength(1);
+    expect(stream[0]?.summary).toHaveLength(499);
+    expect(stream[0]?.summary.endsWith("b")).toBe(true);
+    expect(roundTrips(stream[0]?.summary ?? "")).toBe(true);
   });
 });

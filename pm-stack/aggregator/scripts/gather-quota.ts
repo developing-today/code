@@ -64,13 +64,15 @@
 //     snapshot store (SnapshotStore.append dedupes). Setting
 //     USAGE_SNAPSHOT_OUTBOX_PATH switches the sink to the writers'
 //     outbox JSONL instead (the sandbox collector's drain path).
-//   - Supabase agent.quota_records rows (muse-dev2), one per pool
+//   - Turso agent_quota_records rows (fleet-platform), one per pool
 //     entry per tick, source "opencode-quota" — Drew's rule that all
-//     quota info lands in Supabase on a regular basis in addition to
-//     the dashboard. (The previous writer of pool rows, source
-//     "pm-pool", died 2026-10-29; this sink replaces it.) Fail-soft:
-//     a sink failure is logged and never fails the tick —
-//     quota-current.json is already written by then.
+//     quota info lands in the quota ledger on a regular basis in
+//     addition to the dashboard. (The previous writer of pool rows,
+//     source "pm-pool", died 2026-10-29; this sink replaces it. The
+//     sink targeted Supabase agent.quota_records until the 2026-11-06
+//     Wave 3 cutover, code#5690.) Fail-soft: a sink failure is logged
+//     and never fails the tick — quota-current.json is already written
+//     by then.
 //
 // Fail-soft contract: if the subcommand cannot be run or its output
 // cannot be parsed, the tick writes a heartbeat carrying the error
@@ -95,10 +97,13 @@
 //      the subcommand owns fetch concurrency now),
 //      OPENCHAMBER_LIB_DIR (ONLY the OpenDesign keeper's credential
 //      store accessors resolve from here; no quota reading does),
-//      SUPABASE_QUOTA_SINK=0 disables the Supabase sink (default on;
-//      token + project ref resolved by name via the resolveBwsSecret
-//      plumbing: supabase.muse-dev2.access-token-muse-cli /
-//      supabase.muse-dev2.project-ref).
+//      OPENCHAMBER_LIB_INSTALL_CMD (override for the lib checkout's
+//      dependency install step, shell-split like QUOTA_SUBCOMMAND;
+//      default is bun install at the checkout root, #8759),
+//      TURSO_QUOTA_SINK=0 (or the legacy SUPABASE_QUOTA_SINK=0)
+//      disables the Turso sink (default on; token resolved by name
+//      via the resolveBwsSecret plumbing:
+//      turso.fleet-platform-rw-token).
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -108,6 +113,7 @@ import { fileURLToPath } from "node:url";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
 import {
   GATHERER_SOURCE,
+  canonicalProviderId,
   entriesWithPoolSplits,
   entryFromResult,
   entryHasMeasuredWindow,
@@ -119,6 +125,8 @@ import {
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
+import { ensureLibDependencies } from "../src/lib-deps.ts";
+import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -163,7 +171,7 @@ const OBSERVED_BY = "quota-gatherer";
  * concurrency (opencode#1729); the small explicit ask gives it
  * room, and its result replaces the listing's timed-out one.
  * Remove it here when the cap is raised.) */
-const EXPLICIT_ASK_PROVIDERS = ["meta", "command-code", "deepseek", "mistral"];
+const EXPLICIT_ASK_PROVIDERS = ["meta", "_commandcode", "deepseek", "mistral"];
 
 async function writeAtomic(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -280,8 +288,39 @@ interface OpenDesignProviderModule {
 async function runOpenDesignRenewal(tickAt: string): Promise<void> {
   if (process.env.OPENDESIGN_RENEWAL_DISABLED === "1") return;
   try {
-    const credentials = (await import(join(libDir, "quota/credentials/providers.js"))) as unknown as OpenDesignCredentialsModule;
-    const provider = (await import(join(libDir, "quota/providers/opendesign.js"))) as unknown as OpenDesignProviderModule;
+    // #8759: the lib checkout is a plain clone; if its declared
+    // dependencies were never installed, every import below fails
+    // with "Cannot find package ..." and Bun caches that failure
+    // for the process, so install BEFORE the first import
+    // (src/lib-deps.ts preflight), never as an import retry.
+    const installCmd = process.env.OPENCHAMBER_LIB_INSTALL_CMD?.split(/\s+/).filter(Boolean) ?? [];
+    const install =
+      installCmd.length > 0
+        ? async (root: string): Promise<void> => {
+            await new Promise<void>((resolve, reject) => {
+              execFile(
+                installCmd[0],
+                installCmd.slice(1),
+                { cwd: root, timeout: 240_000, maxBuffer: 16 * 1024 * 1024 },
+                (err) => {
+                  if (err) reject(new Error("OPENCHAMBER_LIB_INSTALL_CMD failed in the OpenChamber lib checkout"));
+                  else resolve();
+                },
+              );
+            });
+          }
+        : undefined;
+    await ensureLibDependencies({
+      libDir,
+      log: (line) => console.log("quota-gatherer: " + line),
+      ...(install ? { install } : {}),
+    });
+    const credentials = (await import(
+      join(libDir, "quota/credentials/providers.js")
+    )) as unknown as OpenDesignCredentialsModule;
+    const provider = (await import(
+      join(libDir, "quota/providers/opendesign.js")
+    )) as unknown as OpenDesignProviderModule;
     const state = await renewOpenDesignSession({
       readCredential: () => credentials.readManagedCredential("opendesign"),
       writeCredential: (value) => {
@@ -339,7 +378,7 @@ async function runMetaRenewal(tickAt: string): Promise<void> {
 
 interface ProviderRun {
   id: string;
-  state: "ok" | "error";
+  state: "ok" | "error" | "lapsed";
   ms: number;
   entries: QuotaCurrentEntry[];
   error?: string;
@@ -365,21 +404,35 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
   const anyMeasured = entries.some((e) => entryHasMeasuredWindow(e));
   if (anyOk && !anyMeasured) {
     const reason =
-      entries.find((e) => e.error)?.error ??
-      "no-data: provider reported ok but no window carried a percentage";
+      entries.find((e) => e.error)?.error ?? "no-data: provider reported ok but no window carried a percentage";
     for (const e of entries) {
       if (e.state === "ok") e.state = "error";
       if (!e.error) e.error = reason;
     }
     return { id, state: "error", ms: Date.now() - t0, entries, error: reason };
   }
-  const firstBad = entries.find((e) => e.state !== "ok");
+  const firstFailure = entries.find((e) => e.state !== "ok" && e.state !== "lapsed");
+  // A run whose only non-ok rows are planned lapses is terminal, not
+  // failed: reporting it as "error" would trip #1268 retention and
+  // replace the lapsed rows with last-known ok readings, hiding the
+  // lapse the hub must show.
+  const onlyLapsed = entries.length > 0 && entries.every((e) => e.state === "lapsed");
   return {
     id,
-    state: anyOk ? "ok" : "error",
+    state: anyOk ? "ok" : onlyLapsed ? "lapsed" : "error",
     ms: Date.now() - t0,
     entries,
-    ...(!anyOk && firstBad?.error ? { error: firstBad.error } : {}),
+    // A partially-failed run still surfaces its first failure: a
+    // folded provider (_openai answers one row per OpenAI credential)
+    // must not let one credential's ok row hide a sibling credential's
+    // error from the heartbeat — 2026-11-10 the _openai run read "ok"
+    // with no error while the main and self-contained credentials were
+    // both failing token_expired at the provider.
+    ...(firstFailure?.error
+      ? { error: firstFailure.error }
+      : onlyLapsed
+        ? { error: entries.find((e) => e.state === "lapsed")?.error }
+        : {}),
   };
 }
 
@@ -566,41 +619,57 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
   for (const [id, group] of byProvider) {
     const t0 = Date.now() - group.ms;
     const entries = group.results.map((r) => entryFromResult(r, tickAt));
-    let run = finalizeRun(id, entries, t0);
-    if (id === "command-code") run = keepCommandCodePlanWindows(run);
+    // The folded OpenAI door still answers under the fork's pre-rename
+    // spelling ("codex"); its entries already file under the canonical
+    // door id via entryFromResult, but the run kept the raw spelling —
+    // so the heartbeat's perProvider leg for the OpenAI pool was keyed
+    // "codex" while every consumer (quota-current's legErrorFor,
+    // matched on the entry's providerId) looks up "_openai". Rename
+    // the run to the canonical id, the same mapping quota-gather-map
+    // applies to the entries. Only this door's run id changes: the
+    // heartbeat contract for the other doors is the fork spelling
+    // (e.g. "meta"), and retention canonicalizes both sides already,
+    // so nothing else moves.
+    const runId = canonicalProviderId(id) === "_openai" ? "_openai" : id;
+    let run = finalizeRun(runId, entries, t0);
+    if (id === "command-code" || id === "_commandcode") run = keepCommandCodePlanWindows(run);
     runs.push(run);
   }
   return runs;
 }
 
-const SUPABASE_TOKEN_NAME = "supabase.muse-dev2.access-token-muse-cli";
-const SUPABASE_REF_NAME = "supabase.muse-dev2.project-ref";
+const TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
+const TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
 
 function sqlString(v: string): string {
   return `'${v.replace(/'/g, "''")}'`;
 }
 
 /**
- * The Supabase sink: one agent.quota_records row per pool entry that
+ * The Turso sink: one agent_quota_records row per pool entry that
  * carries a reading (at least one window), in the shape the retired
  * "pm-pool" writer used (payload = {id, ts, plan, state, source,
  * windows[{name, percent, resetsAt}], provider}), with source =
  * GATHERER_SOURCE naming the single source. Runs AFTER
  * quota-current.json is written; fail-soft by contract (a sink
  * failure is logged, never fails the tick, never zeroes a row).
+ * Until the 2026-11-06 Wave 3 cutover (code#5690) this wrote to
+ * Supabase agent.quota_records (muse-dev2) via the Management API;
+ * the table now lives in Turso fleet-platform and is written through
+ * the libsql HTTP pipeline with INSERT OR IGNORE on the
+ * (source, id, ts) PK.
  */
-async function writeSupabaseRecords(entries: QuotaCurrentEntry[], tickAt: string): Promise<void> {
-  if (process.env.SUPABASE_QUOTA_SINK === "0") return;
+async function writeTursoRecords(entries: QuotaCurrentEntry[], tickAt: string): Promise<void> {
+  if (process.env.TURSO_QUOTA_SINK === "0" || process.env.SUPABASE_QUOTA_SINK === "0") return;
   try {
-    const token = await resolveBwsSecret(SUPABASE_TOKEN_NAME);
-    const ref = await resolveBwsSecret(SUPABASE_REF_NAME);
-    if (!token || !ref) {
-      console.log("quota-gatherer: supabase sink skipped — token/ref unresolved by name");
+    const token = await resolveBwsSecret(TURSO_TOKEN_NAME);
+    if (!token) {
+      console.log("quota-gatherer: turso sink skipped \u2014 token unresolved by name");
       return;
     }
     const readable = entries.filter((e) => e.windows.length > 0);
     if (!readable.length) {
-      console.log("quota-gatherer: supabase sink — no entries with windows this tick");
+      console.log("quota-gatherer: turso sink \u2014 no entries with windows this tick");
       return;
     }
     const values = readable.map((e) => {
@@ -619,25 +688,33 @@ async function writeSupabaseRecords(entries: QuotaCurrentEntry[], tickAt: string
         e.planLabel ? sqlString(e.planLabel) : "NULL"
       }, ${weekly?.pctOfLimit ?? "NULL"}, ${weekly?.resetsAt ? sqlString(weekly.resetsAt) : "NULL"}, ${sqlString(
         JSON.stringify(payload),
-      )}::jsonb)`;
+      )}, ${sqlString(tickAt)})`;
     });
     const query =
-      "insert into agent.quota_records (id, source, ts, plan, weekly_percent, resets, payload) values " +
+      "insert or ignore into agent_quota_records (id, source, ts, plan, weekly_percent, resets, payload, inserted_at) values " +
       values.join(", ") +
-      " on conflict (source, id, ts) do nothing;";
-    const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
+      ";";
+    const res = await fetch(`${TURSO_URL}/v2/pipeline`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({
+        requests: [{ type: "execute", stmt: { sql: query } }, { type: "close" }],
+      }),
     });
     if (!res.ok) {
-      console.log(`quota-gatherer: supabase sink failed-soft: HTTP ${res.status}`);
+      console.log(`quota-gatherer: turso sink failed-soft: HTTP ${res.status}`);
       return;
     }
-    console.log(`quota-gatherer: supabase sink wrote ${readable.length} quota_records rows (source=${GATHERER_SOURCE})`);
+    const out = (await res.json()) as { results?: { type: string; error?: { message?: string } }[] };
+    const failed = (out.results ?? []).find((r) => r.type === "error");
+    if (failed) {
+      console.log(`quota-gatherer: turso sink failed-soft: ${failed.error?.message ?? "pipeline error"}`);
+      return;
+    }
+    console.log(`quota-gatherer: turso sink wrote ${readable.length} quota_records rows (source=${GATHERER_SOURCE})`);
   } catch (err) {
     console.log(
-      `quota-gatherer: supabase sink failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      `quota-gatherer: turso sink failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
     );
   }
 }
@@ -669,16 +746,41 @@ async function main(): Promise<number> {
   // #1268: an errored run with no ok row of its own retains the
   // provider's last-known ok entries from the previous tick instead
   // of replacing them with fresh error rows (or with nothing, on a
-  // whole-fetch timeout). The heartbeat below still reports the run
-  // as an error, with its reason and the retained row count.
+  // whole-fetch timeout). Preserve confirmed lapse rows alongside
+  // retained siblings: retention must never erase a terminal state
+  // reported by this tick.
   const prevEntries = await readPreviousEntries();
   if (prevEntries.length) {
     for (const run of runs) {
-      if (run.state !== "error" || run.entries.some((e) => e.state === "ok")) continue;
+      // #8294: a Meta session lapse is temporary (remedy: re-auth on
+      // the hub), unlike the terminal Go lapse — the pool keeps its
+      // last good windows visible as stale rows while lapsed, so a
+      // lapsed Meta run engages retention exactly like an error run,
+      // and its own credential's readings are retained too.
+      const metaLapsed = run.state === "lapsed" && run.id === "meta";
+      if ((run.state !== "error" && !metaLapsed) || run.entries.some((e) => e.state === "ok")) continue;
       const retained = lastKnownEntries(prevEntries, run.id);
       if (retained.length) {
-        run.entries = markRetained(retained, tickAt);
-        run.retained = true;
+        const lapsed = run.entries.filter((e) => e.state === "lapsed");
+        // Do not retain the previous ok reading for the same credential
+        // that has just reported a lapse. Other credentials in the same
+        // provider run may still retain their last-known readings.
+        // (Meta is the exception, per the #8294 note above: its lapse
+        // is the pool's own session, and retaining its last good
+        // windows beside the lapsed row is the point.)
+        const retainedSiblings = metaLapsed
+          ? retained
+          : retained.filter(
+              (previous) =>
+                !lapsed.some(
+                  (current) =>
+                    (current.credentialId && previous.credentialId === current.credentialId) ||
+                    (current.credentialLabel &&
+                      previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
+                ),
+            );
+        run.entries = [...markRetained(retainedSiblings, tickAt), ...lapsed];
+        run.retained = retainedSiblings.length > 0;
       }
     }
   }
@@ -710,12 +812,23 @@ async function main(): Promise<number> {
     durationMs: Date.now() - started,
     perProvider,
   };
+  // #6671: embed the keeper alert projection so the board/readout
+  // surfaces a dying provider session within one gather cycle. The
+  // keepers ran earlier this tick; reading their state files back
+  // also covers a keeper that failed before writing (missing/stale
+  // project as "keeper not reporting", never silence). Fail-soft:
+  // the reader never throws.
+  const providerAuth = await readProviderAuthAlerts({
+    opendesign: process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
+    meta: process.env.META_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "meta-renewal.json"),
+  });
   const file: QuotaCurrentFile = {
     version: 1,
     generatedAt: tickAt,
     source: GATHERER_SOURCE,
     heartbeat,
     providers: entries,
+    providerAuth,
   };
   await writeAtomic(currentPath, JSON.stringify(file, null, 2) + "\n");
   await writeHeartbeat(heartbeat);
@@ -745,9 +858,9 @@ async function main(): Promise<number> {
     );
   }
 
-  // Supabase: the same readings land in agent.quota_records on the
+  // Turso: the same readings land in agent_quota_records on the
   // same tick (Drew's regular-basis rule). Fail-soft, after the file.
-  await writeSupabaseRecords(entries, tickAt);
+  await writeTursoRecords(entries, tickAt);
 
   const okCount = runs.filter((r) => r.state === "ok").length;
   console.log(

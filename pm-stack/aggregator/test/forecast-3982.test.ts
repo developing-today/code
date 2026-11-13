@@ -57,7 +57,6 @@ function history(total: number, closesAtWeek: (number | null)[]): ItemHistoryCut
   );
 }
 
-
 // --- Generated model-based coverage for the design \u00a71 resampling
 // estimator (Codex P1 on PR #6169; testing doctrine: PBT/MBT with a
 // named oracle). The fixed examples alone cannot detect a wrong
@@ -288,7 +287,6 @@ describe("deriveEpicEta", () => {
     expect(b).toEqual(a);
   });
 
-
   test("generated cases match the exact DP oracle within the stated sampling tolerance (MBT, #5274 / PR #6169 Codex P1)", () => {
     let forecastCases = 0;
     for (const { buckets, remaining } of generatedEstimatorCases(240)) {
@@ -347,6 +345,46 @@ describe("deriveEpicEta", () => {
         expect(w.p80).toBe(exact);
       }
     }
+  });
+
+  test("capped trials are censored, not completions: buckets [1, 1, 1, 1] with 100001 remaining publish no date (#6386)", () => {
+    // The Codex P2 example from PR #6169, verbatim. ORACLE (exact
+    // arithmetic, no sampling): a constant pace of 1 unit/week needs
+    // exactly 100001 weeks for 100001 units, so EVERY resampled trial
+    // exceeds the 100000-week cap and is censored — neither
+    // percentile is inside the simulation horizon. Before the fix
+    // each capped trial was recorded as a completion at the cap and
+    // both dates were published at 100000 weeks, one week before
+    // the work can finish.
+    const eta = deriveEpicEta({ subjectRef: EPIC, cutoffs: historyForBuckets([1, 1, 1, 1], 100_001) });
+    expect(eta.status).toBe("forecast");
+    expect(eta.remainingUnits).toBe(100_001);
+    expect(eta.p50).toBeNull();
+    expect(eta.p80).toBeNull();
+    expect(eta.confidence).toBe("unavailable");
+    expect(eta.limitations.some((l) => l.includes("P50") && l.includes("censored"))).toBe(true);
+    expect(eta.limitations.some((l) => l.includes("P80") && l.includes("censored"))).toBe(true);
+  });
+
+  test("partially censored distribution: P50 inside the horizon is dated, P80 beyond it is not (#6386)", () => {
+    // Buckets [0, 0, 0, 4] with 99600 remaining: a trial finishes
+    // within the cap iff 4 * Binomial(100000, 1/4) >= 99600, which
+    // the exact binomial CDF puts at ~77% of trials — so the median
+    // trial completes (just inside the horizon) while the 80th
+    // percentile lies beyond it and must return no date. (Sampling
+    // margin: the censored share sits ~5 sigma from the 20% that
+    // would move the P80 rank onto a finite sample.)
+    const eta = deriveEpicEta({ subjectRef: EPIC, cutoffs: historyForBuckets([0, 0, 0, 4], 99_600) });
+    expect(eta.status).toBe("forecast");
+    expect(eta.remainingUnits).toBe(99_600);
+    expect(eta.p50).not.toBeNull();
+    const p50Weeks = Math.round((Date.parse(eta.p50!) - Date.parse(eta.asOf)) / (7 * 24 * 3600 * 1000));
+    expect(p50Weeks).toBeGreaterThan(98_000);
+    expect(p50Weeks).toBeLessThanOrEqual(100_000);
+    expect(eta.p80).toBeNull();
+    expect(eta.confidence).not.toBe("unavailable");
+    expect(eta.limitations.some((l) => l.includes("P80") && l.includes("censored"))).toBe(true);
+    expect(eta.limitations.some((l) => l.includes("P50 exceeds"))).toBe(false);
   });
 
   test("all-zero borrowed baseline buckets: still no_measurable_pace, no dates (#5274)", () => {

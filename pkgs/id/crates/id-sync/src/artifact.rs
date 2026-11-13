@@ -1,0 +1,2621 @@
+//! Signed artifacts: each account's own signed statements, kept as one
+//! append-only chain per author.
+//!
+//! An artifact names its author's Ed25519 key, a per-author sequence number and
+//! the hash of the artifact before it, and is signed by that key. Any server
+//! can check one without trusting the server that sent it. [`ArtifactLog`]
+//! holds only chains that verify, and takes neither a gap nor a fork. A kind
+//! this server does not know is stored but never applied, so a newer peer
+//! cannot break an older server. Applying a known kind is the directory's job.
+//!
+//! Receipt contract (#3231): a known-kind artifact is acceptable on receipt
+//! only when it satisfies the same rules its in-tree builder must satisfy —
+//! enforced in [`SignedArtifact::parsed`] before [`ArtifactLog`] stores or
+//! replays it, and at the producer seams that build each kind. The generic
+//! builders mirror receipt (#5623): [`SignedArtifact::sign`] and
+//! [`SignedArtifact::sign_after`] run the same `parsed` check before
+//! returning, so an in-tree caller can no longer mint a signed known-kind
+//! artifact that receipt would refuse. A structural
+//! rule failure is [`Refusal::Forbidden`] naming the rule; only hash and
+//! signature failures are [`Refusal::Unauthenticated`]. Receipt never
+//! rewrites signed bytes: duplicates and noncanonical values are refused,
+//! not deduplicated or normalized. Unknown kinds keep the forward-compatible
+//! rule above: envelope only, stored, never applied. A rule added after an
+//! artifact was legitimately stored does not brick replay of its log — the
+//! replay path (`parsed_for_replay`) carries each such grandfathered rule.
+//!
+//! Peer receipt has one chain-position legacy path for the old
+//! `home_declared` world-ID length bound (#4459): an artifact that extends
+//! its author's held chain at a position before the first artifact this
+//! receiver accepted under strict receipt may use the bounded legacy
+//! exception, recorded as a [`LegacyArtifactNote`] in the pull outcome.
+//! The cutoff comes only from the chain's signed links and this receiver's
+//! own strict-receipt history — never from a field the sender asserts, and
+//! the signed format carries no version marker; when an artifact's chain
+//! position cannot be established, receipt stays strict.
+//!
+//! An artifact may also name, in `after`, the hashes of artifacts its author
+//! had applied before writing it. Those names are signed, so a receiver can
+//! order concurrent statements; enforcing that order is up to the consumer.
+//!
+//! Generic kinds carry data rather than directory changes: a `document` holds
+//! structured JSON, and a `tag` labels another artifact by its hash. An author
+//! tags their own document with `name` `author` and `value` their key.
+//!
+//! Artifacts travel over iroh only: pushed to a home server on
+//! [`PUSH_ALPN`], and pulled by account from the same endpoint on [`PULL_ALPN`].
+
+use std::collections::{BTreeMap, HashSet};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail, ensure};
+use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
+use iroh::{
+    Endpoint, EndpointAddr,
+    endpoint::Connection,
+    protocol::{AcceptError, ProtocolHandler},
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use unicode_normalization::is_nfc;
+
+use id_core::connectivity::{DIAL_TIMEOUT, connect, within};
+use id_core::Refusal;
+
+use crate::hex::{hex_encode, hex_to_array, normalize_key};
+use crate::host::{Availability, SessionHost};
+use crate::envelope_net::{Reply, answer_frames, send};
+use crate::envelope_outbox::{Outcome, check_target};
+use id_events::event_sync::{CLOSE_WAIT, SESSION_DEADLINE};
+use id_core::frames::{read_frame, write_frame};
+use id_core::frames::MAX_FRAME_BYTES;
+
+/// The file, beside `directory.jsonl`, that holds a world's artifacts.
+pub const FILE: &str = "artifacts.jsonl";
+/// Bytes one page may take on the wire, counting its JSON framing.
+///
+/// A page always carries at least one artifact, so one larger than this is sent
+/// alone. The budget keeps a page of maximum-size documents far under the frame limit.
+pub const PAGE_BYTES: usize = 256 * 1024;
+/// Home servers one declaration may name.
+pub const MAX_HOME_SERVERS: usize = 8;
+/// The largest world ID one home server may carry, in bytes.
+pub const MAX_WORLD_ID_BYTES: usize = 64;
+/// Hashes one artifact may name in `after`.
+pub const MAX_AFTER: usize = 32;
+/// The largest content a document may carry, as serialized JSON.
+pub const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
+/// The kind of a friend removal.
+pub const FRIEND_REMOVE: &str = "friend_remove";
+/// Pending friendship requests a single friend removal can void.
+pub const MAX_FRIEND_REMOVE_REQUESTS: usize = 3;
+/// The kind of a home-server declaration.
+pub const HOME_DECLARED: &str = "home_declared";
+/// The kind of a generic structured document.
+pub const DOCUMENT: &str = "document";
+/// The kind of a label on another artifact.
+pub const TAG: &str = "tag";
+
+/// ALPN on which a server accepts pushed artifacts, one per stream.
+pub const PUSH_ALPN: &[u8] = b"/id-artifact-push/1";
+/// ALPN on which a server answers pulls of an account's artifacts.
+pub const PULL_ALPN: &[u8] = b"/id-artifact-pull/1";
+
+/// One signed statement by an account.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedArtifact {
+    /// Hex Ed25519 public key of the account that signed it.
+    pub author: String,
+    /// One-based position in the author's chain.
+    pub seq: u64,
+    /// Hash of the author's artifact at `seq - 1`, empty for `seq` 1.
+    pub prev: String,
+    /// What the body says. An unknown kind is kept but not applied.
+    pub kind: String,
+    /// The kind-specific fields.
+    pub body: serde_json::Value,
+    /// Hashes of artifacts the author had applied before this one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<String>,
+    /// Hex SHA-256 over the signed body.
+    pub hash: String,
+    /// Hex Ed25519 signature over the signed body.
+    pub signature: String,
+}
+
+#[derive(Serialize)]
+struct SignedBody<'a> {
+    author: &'a str,
+    seq: u64,
+    prev: &'a str,
+    kind: &'a str,
+    body: &'a serde_json::Value,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    after: Vec<String>,
+}
+
+/// The canonical bytes an artifact's hash and signature cover: the
+/// author's key, sequence, predecessor, kind, body and `after` frontier,
+/// length-prefixed and domain-separated.
+pub fn signed_bytes(
+    author: &str,
+    seq: u64,
+    prev: &str,
+    kind: &str,
+    body: &serde_json::Value,
+    after: &[String],
+) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&SignedBody {
+        author,
+        seq,
+        prev,
+        kind,
+        body,
+        after: after.to_vec(),
+    })?)
+}
+
+fn is_hash(text: &str) -> bool {
+    text.len() == 64
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// The canonical friend-request ID shape: 16 bytes as 32 lowercase
+/// hexadecimal characters. This is the shape the envelope producer mints
+/// (`Envelope::signed` in directory.rs) and the shape the `friend_remove`
+/// receipt contract (#3146) requires; directory.rs reuses this predicate
+/// at friend-request admission (#5624) so the two never drift.
+pub fn is_friend_request_id(text: &str) -> bool {
+    text.len() == 32
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// A friendship ends, and the request IDs it covers are void.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FriendRemove {
+    /// One account.
+    pub a: String,
+    /// The other account.
+    pub b: String,
+    /// At most three lowercase 32-character hex request IDs covered by this removal.
+    #[serde(default)]
+    pub requests: Vec<String>,
+}
+
+/// Where an account's artifacts are held: an endpoint ticket or a bare node ID.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomeServer {
+    /// The Iroh endpoint that takes pushes and serves pulls of the account's artifacts.
+    pub endpoint: String,
+    /// The world the server holds the account in.
+    pub world_id: String,
+}
+
+/// The servers an account publishes its artifacts to. A newer declaration replaces an older one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomeDeclared {
+    /// The declaring account.
+    pub account: String,
+    /// Where its artifacts are held.
+    pub servers: Vec<HomeServer>,
+}
+
+/// Structured data an account publishes as its own statement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Document {
+    /// What the content is, such as `application/json`.
+    pub media_type: String,
+    /// The content itself.
+    pub content: serde_json::Value,
+}
+
+/// A label on another artifact, which the subject names by its hash.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tag {
+    /// The hash of the artifact labelled.
+    pub subject: String,
+    /// The label, such as `author`.
+    pub name: String,
+    /// The label's value, such as an account key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+/// A known kind, with its body decoded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// A friendship ends.
+    FriendRemove(FriendRemove),
+    /// An account names its home servers.
+    HomeDeclared(HomeDeclared),
+    /// An account publishes structured data.
+    Document(Document),
+    /// An account labels an artifact.
+    Tag(Tag),
+}
+
+impl Kind {
+    /// The kind's wire name and JSON body.
+    pub fn encode(&self) -> Result<(&'static str, serde_json::Value)> {
+        Ok(match self {
+            Self::FriendRemove(body) => (FRIEND_REMOVE, serde_json::to_value(body)?),
+            Self::HomeDeclared(body) => (HOME_DECLARED, serde_json::to_value(body)?),
+            Self::Document(body) => (DOCUMENT, serde_json::to_value(body)?),
+            Self::Tag(body) => (TAG, serde_json::to_value(body)?),
+        })
+    }
+}
+
+fn forbidden(message: impl Into<String>) -> anyhow::Error {
+    Refusal::Forbidden(message.into()).into()
+}
+
+fn check_key(key: &str) -> Result<()> {
+    match normalize_key(key) {
+        Ok(canonical) if canonical == key => Ok(()),
+        _ => Err(forbidden(format!("{key} is not an account key"))),
+    }
+}
+
+/// How a known-kind body is checked: strict live receipt, replay of
+/// history a log already holds, or the bounded legacy receipt (#4459).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParseMode {
+    /// Every current rule applies.
+    Strict,
+    /// The bounds added for #3187 do not apply, so a declaration accepted
+    /// before them still replays.
+    Replay,
+    /// Only the `home_declared` world-ID byte bound is bypassed; every
+    /// other rule applies exactly as in [`ParseMode::Strict`].
+    LegacyReceive,
+}
+
+/// The `home_declared` rules, shared by receipt ([`SignedArtifact::parsed`])
+/// and the directory's producer seam ([`Directory::declare_home`]) so a
+/// declaration is refused before it is signed under the same rules that
+/// refuse it on receipt (#3187).
+pub fn check_home_declared(author: &str, body: &HomeDeclared, mode: ParseMode) -> Result<()> {
+    check_key(&body.account)?;
+    if author != body.account {
+        return Err(forbidden(
+            "a home declaration must be signed by its own account",
+        ));
+    }
+    if body.servers.len() > MAX_HOME_SERVERS {
+        return Err(forbidden(format!(
+            "a declaration names at most {MAX_HOME_SERVERS} servers"
+        )));
+    }
+    // Duplicate refusal compares the validated endpoint
+    // identities, not the raw strings: one node can be named
+    // by its bare ID or by an endpoint ticket for that ID.
+    let mut targets: Vec<EndpointAddr> = Vec::with_capacity(body.servers.len());
+    for server in &body.servers {
+        let target =
+            check_target(&server.endpoint).map_err(|error| forbidden(format!("{error:#}")))?;
+        if mode != ParseMode::Replay && targets.iter().any(|prior| prior.id == target.id) {
+            return Err(forbidden("a declaration names each endpoint at most once"));
+        }
+        targets.push(target);
+    }
+    for server in &body.servers {
+        if server.world_id.is_empty() {
+            return Err(forbidden("a home server needs a world ID"));
+        }
+        if mode == ParseMode::Replay {
+            continue;
+        }
+        if mode != ParseMode::LegacyReceive && server.world_id.len() > MAX_WORLD_ID_BYTES {
+            return Err(forbidden(format!(
+                "a home server's world ID is 1 to {MAX_WORLD_ID_BYTES} bytes"
+            )));
+        }
+        if server.world_id.trim().is_empty() {
+            return Err(forbidden(
+                "a home server's world ID must not be whitespace only",
+            ));
+        }
+        if server.world_id.chars().any(char::is_control) {
+            return Err(forbidden(
+                "a home server's world ID must not contain control characters",
+            ));
+        }
+        if server.world_id.chars().any(id_core::is_format_char) {
+            return Err(forbidden(
+                "a home server's world ID must not contain format characters",
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl SignedArtifact {
+    /// Sign a body of `kind` as the author holding `key`, at `seq` after `prev`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `seq` is zero or the body cannot be serialized, or if `kind`
+    /// is a known kind and its body breaks a rule receipt enforces — a
+    /// [`Refusal::Forbidden`] naming the rule, exactly as
+    /// [`SignedArtifact::parsed`] would refuse the signed artifact (#5623).
+    /// Unknown kinds stay envelope-only and always sign.
+    pub fn sign(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &str,
+        body: serde_json::Value,
+    ) -> Result<Self> {
+        Self::sign_after(key, seq, prev, kind, body, Vec::new())
+    }
+
+    /// Like [`Self::sign`], also naming `after`, the artifacts the author had applied before this one.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `seq` is zero, if `after` breaks the frontier rules (see
+    /// [`Self::check_after`]), if the body cannot be serialized, or if
+    /// `kind` is a known kind and its body breaks a rule receipt enforces
+    /// (see [`Self::sign`]).
+    pub fn sign_after(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &str,
+        body: serde_json::Value,
+        after: Vec<String>,
+    ) -> Result<Self> {
+        let artifact = Self::build_signed(key, seq, prev, kind, body, after)?;
+        // Construction-vs-receipt symmetry (#5623): a known kind is signed
+        // only when receipt would accept its body, so the check is the
+        // receipt check itself, run on the artifact about to go out.
+        // Unknown kinds parse to `None` and stay signable envelope-only.
+        artifact.parsed()?;
+        Ok(artifact)
+    }
+
+    /// Sign without the known-kind body check in [`Self::sign_after`]:
+    /// sequence, `after`-frontier, hash, and signature rules all still
+    /// apply. Test-only, so tests can still craft the signed-but-refusable
+    /// artifacts that receipt-side tests exist to refuse.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn sign_unchecked(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &str,
+        body: serde_json::Value,
+    ) -> Result<Self> {
+        Self::build_signed(key, seq, prev, kind, body, Vec::new())
+    }
+
+    /// Sign without the known-kind body check, in the plain wire format:
+    /// the way artifacts minted before the #3187 strict receipt rules were
+    /// signed. The signed format has no version marker, so a legacy
+    /// artifact differs from a current one only in that its body may break
+    /// a rule added after it was minted. Test-only.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn sign_legacy_unchecked(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &str,
+        body: serde_json::Value,
+    ) -> Result<Self> {
+        Self::build_signed(key, seq, prev, kind, body, Vec::new())
+    }
+
+    fn build_signed(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &str,
+        body: serde_json::Value,
+        after: Vec<String>,
+    ) -> Result<Self> {
+        ensure!(seq >= 1, "an artifact's sequence number starts at 1");
+        Self::check_after(&after)?;
+        let author = hex_encode(&key.verifying_key().to_bytes());
+        let bytes = signed_bytes(&author, seq, prev, kind, &body, &after)?;
+        Ok(Self {
+            hash: hex_encode(&Sha256::digest(&bytes)),
+            signature: hex_encode(&key.sign(&bytes).to_bytes()),
+            author,
+            seq,
+            prev: prev.to_owned(),
+            kind: kind.to_owned(),
+            body,
+            after,
+        })
+    }
+
+    /// Check the hash against the content and the signature against the author key.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Refusal::Forbidden`] when the `after` frontier breaks a
+    /// frontier rule — a structural policy refusal, not an authenticity
+    /// failure (#3196) — and with [`Refusal::Unauthenticated`] if the hash
+    /// or signature does not check out.
+    pub fn verify(&self) -> Result<()> {
+        self.verify_mode(false)
+    }
+
+    /// [`Self::verify`] for history a log already holds (trusted local
+    /// replay only): the duplicate-`after` rule (#3196) postdates logs
+    /// the producer path legitimately wrote, so replay does not apply
+    /// it - mirroring how replay skips the duplicate-request rule in
+    /// `parsed_for_replay`. Authenticity (hash, signature, canonical
+    /// author) and the other frontier rules (count, well-formed hashes)
+    /// stay strict in both modes: a corrupt or forged line still fails
+    /// to reopen. Fresh receipt and remote receipt always use
+    /// [`Self::verify`]; this leniency is never a remote policy (#5625,
+    /// coordinating with the #4459 format cutoff).
+    pub(crate) fn verify_for_replay(&self) -> Result<()> {
+        self.verify_mode(true)
+    }
+
+    fn verify_mode(&self, replay: bool) -> Result<()> {
+        Self::check_after_mode(&self.after, replay)?;
+        self.check_authenticity()
+            .map_err(|error| Refusal::Unauthenticated(format!("{error:#}")).into())
+    }
+
+    /// The `after` frontier rules, shared by construction
+    /// ([`Self::sign_after`]) and receipt ([`Self::verify`]): at most
+    /// [`MAX_AFTER`] hashes, each one a well-formed hash, and none named
+    /// twice. Receipt refuses a duplicate rather than deduplicating it, so
+    /// what the signer supplied stays visible (#3231).
+    fn check_after(after: &[String]) -> Result<()> {
+        Self::check_after_mode(after, false)
+    }
+
+    fn check_after_mode(after: &[String], replay: bool) -> Result<()> {
+        if after.len() > MAX_AFTER {
+            return Err(forbidden(format!(
+                "an artifact names at most {MAX_AFTER} artifacts before it"
+            )));
+        }
+        if after.iter().any(|hash| !is_hash(hash)) {
+            return Err(forbidden("an artifact names a malformed hash in after"));
+        }
+        // The duplicate rule is the #3196 addition: in replay mode a
+        // frontier stored before it is grandfathered (see
+        // [`Self::verify_for_replay`]); construction and fresh receipt
+        // refuse a duplicate rather than deduplicating it.
+        if !replay {
+            let mut seen = HashSet::with_capacity(after.len());
+            for hash in after {
+                if !seen.insert(hash) {
+                    return Err(forbidden(format!(
+                        "an artifact names {hash} twice in after"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_authenticity(&self) -> Result<()> {
+        ensure!(
+            normalize_key(&self.author)? == self.author,
+            "author is not a canonical key"
+        );
+        let bytes = signed_bytes(
+            &self.author,
+            self.seq,
+            &self.prev,
+            &self.kind,
+            &self.body,
+            &self.after,
+        )?;
+        ensure!(
+            hex_encode(&Sha256::digest(&bytes)) == self.hash,
+            "artifact hash does not match its content"
+        );
+        let key = VerifyingKey::from_bytes(
+            &hex_to_array::<32>(&self.author).context("malformed author key")?,
+        )
+        .context("author is not an Ed25519 key")?;
+        let signature = Signature::from_bytes(
+            &hex_to_array::<64>(&self.signature).context("malformed artifact signature")?,
+        );
+        key.verify_strict(&bytes, &signature)
+            .context("signature does not verify against the author key")
+    }
+
+    /// The known kind this artifact carries, checked. `None` for a kind this
+    /// server does not know: it is stored but never applied.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Refusal::Forbidden`] when a known kind is malformed or its
+    /// author may not make it.
+    pub fn parsed(&self) -> Result<Option<Kind>> {
+        self.parsed_mode(ParseMode::Strict)
+    }
+
+    /// [`SignedArtifact::parsed`] for history a log already holds: the
+    /// `home_declared` bounds added for #3187 do not apply, so a declaration
+    /// accepted before them still replays (mirroring how replay skips the
+    /// frame check in `store`). New receipts always go through `parsed`.
+    pub fn parsed_for_replay(&self) -> Result<Option<Kind>> {
+        self.parsed_mode(ParseMode::Replay)
+    }
+
+    /// Strict receipt validation except for the legacy world-ID byte
+    /// bound, plus the typed note when that exception was used. Called
+    /// only after the author's chain position is classified as legacy
+    /// (see [`ArtifactLog::insert_received`]).
+    fn parsed_for_legacy_receive(&self) -> Result<(Option<Kind>, Option<LegacyArtifactNote>)> {
+        let kind = self.parsed_mode(ParseMode::LegacyReceive)?;
+        let note = match kind.as_ref() {
+            Some(Kind::HomeDeclared(declared)) => {
+                let world_ids: Vec<LegacyWorldIdBound> = declared
+                    .servers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, server)| server.world_id.len() > MAX_WORLD_ID_BYTES)
+                    .map(|(server_index, server)| LegacyWorldIdBound {
+                        server_index,
+                        bytes: server.world_id.len(),
+                    })
+                    .collect();
+                (!world_ids.is_empty()).then(|| LegacyArtifactNote {
+                    author: self.author.clone(),
+                    seq: self.seq,
+                    reason: LegacyArtifactReason::HomeDeclaredWorldIdOverBound {
+                        world_ids,
+                        max_bytes: MAX_WORLD_ID_BYTES,
+                    },
+                })
+            }
+            _ => None,
+        };
+        Ok((kind, note))
+    }
+
+    fn parsed_mode(&self, mode: ParseMode) -> Result<Option<Kind>> {
+        match self.kind.as_str() {
+            FRIEND_REMOVE => {
+                let body: FriendRemove = self.decode()?;
+                check_key(&body.a)?;
+                check_key(&body.b)?;
+                if body.requests.len() > MAX_FRIEND_REMOVE_REQUESTS {
+                    return Err(forbidden(format!(
+                        "a friend removal names at most {MAX_FRIEND_REMOVE_REQUESTS} requests"
+                    )));
+                }
+                if body
+                    .requests
+                    .iter()
+                    .any(|request| !is_friend_request_id(request))
+                {
+                    return Err(forbidden(
+                        "a friend removal request ID is not 32 lowercase hexadecimal characters",
+                    ));
+                }
+                // The producer sorts and deduplicates its request IDs
+                // (directory.rs `friendship_requests`); a receipt naming
+                // the same request twice is refused rather than
+                // deduplicated (#3146). Replay stays lenient, mirroring
+                // the #3187 grandfathering below: a removal stored before
+                // this rule still replays, and its effect on the
+                // removed-request set is idempotent.
+                if mode != ParseMode::Replay {
+                    let mut named = HashSet::with_capacity(body.requests.len());
+                    if body.requests.iter().any(|request| !named.insert(request)) {
+                        return Err(forbidden("a friend removal names the same request twice"));
+                    }
+                }
+                if body.a == body.b {
+                    return Err(forbidden("no one befriends themselves"));
+                }
+                if self.author != body.a && self.author != body.b {
+                    return Err(forbidden(
+                        "a friend removal must be signed by one of its two accounts",
+                    ));
+                }
+                Ok(Some(Kind::FriendRemove(body)))
+            }
+            HOME_DECLARED => {
+                let body: HomeDeclared = self.decode()?;
+                check_home_declared(&self.author, &body, mode)?;
+                Ok(Some(Kind::HomeDeclared(body)))
+            }
+            DOCUMENT => {
+                let body: Document = self.decode()?;
+                if body.media_type.is_empty() || body.media_type.len() > 128 {
+                    return Err(forbidden("a document names its media type"));
+                }
+                // The NFC rule (#3192) postdates logs the producer
+                // path legitimately wrote; replay grandfathers it
+                // (#5625), fresh receipt stays strict.
+                if mode != ParseMode::Replay && !is_nfc(&body.media_type) {
+                    return Err(forbidden("a document's media type is not NFC"));
+                }
+                let size = serde_json::to_vec(&body.content)
+                    .map_err(|error| forbidden(format!("{error}")))?
+                    .len();
+                if size > MAX_DOCUMENT_BYTES {
+                    return Err(forbidden(format!(
+                        "a document holds at most {MAX_DOCUMENT_BYTES} bytes of content"
+                    )));
+                }
+                Ok(Some(Kind::Document(body)))
+            }
+            TAG => {
+                let body: Tag = self.decode()?;
+                if !is_hash(&body.subject) {
+                    return Err(forbidden("a tag names its subject by hash"));
+                }
+                if body.name.is_empty() || body.name.len() > 64 {
+                    return Err(forbidden("a tag's name is 1 to 64 bytes"));
+                }
+                if mode != ParseMode::Replay && !is_nfc(&body.name) {
+                    return Err(forbidden("a tag's name is not NFC"));
+                }
+                if body.value.as_ref().is_some_and(|value| value.len() > 256) {
+                    return Err(forbidden("a tag's value is at most 256 bytes"));
+                }
+                if mode != ParseMode::Replay
+                    && body.value.as_ref().is_some_and(|value| !is_nfc(value))
+                {
+                    return Err(forbidden("a tag's value is not NFC"));
+                }
+                Ok(Some(Kind::Tag(body)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
+        serde_json::from_value(self.body.clone())
+            .map_err(|error| forbidden(format!("{} body is malformed: {error}", self.kind)))
+    }
+}
+
+/// Whether an insert stored a new artifact or matched one already held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stored {
+    /// The artifact extends its author's chain.
+    New,
+    /// The same artifact is already held.
+    Duplicate,
+}
+
+/// An accepted pre-cutoff artifact that needed a compatibility exception.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyArtifactNote {
+    /// The signing account.
+    pub author: String,
+    /// The position in the signing account's chain.
+    pub seq: u64,
+    /// The exact legacy condition tolerated.
+    pub reason: LegacyArtifactReason,
+}
+
+/// A narrowly tolerated condition on a legacy artifact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LegacyArtifactReason {
+    /// A legacy home declaration contains world IDs longer than the current bound.
+    HomeDeclaredWorldIdOverBound {
+        /// Offending servers and their UTF-8 byte lengths.
+        world_ids: Vec<LegacyWorldIdBound>,
+        /// Current maximum length in bytes.
+        max_bytes: usize,
+    },
+}
+
+/// The location and byte length of one legacy over-bound world ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyWorldIdBound {
+    /// Zero-based index in the declaration's `servers` list.
+    pub server_index: usize,
+    /// World ID length in UTF-8 bytes.
+    pub bytes: usize,
+}
+
+struct InsertOutcome {
+    stored: Stored,
+    kind: Option<Kind>,
+    legacy_note: Option<LegacyArtifactNote>,
+    /// The artifact also passes strict parsing, so accepting it sets the
+    /// author's chain-position cutoff for the legacy exception.
+    strict_valid: bool,
+}
+
+/// Every author's chain of verified artifacts, in sequence order.
+#[derive(Clone, Debug, Default)]
+pub struct ArtifactLog {
+    chains: BTreeMap<String, Vec<SignedArtifact>>,
+    /// Per author, the first sequence number this receiver accepted that
+    /// also passes strict parsing: the chain-position cutoff for the
+    /// legacy exception (#4459). Receiver-side state only — it is derived
+    /// from artifacts this log itself verified, never from anything a
+    /// sender asserts. Replay does not set it, so after a restart the
+    /// cutoff is re-established by the first strict-valid receipt.
+    strict_since: BTreeMap<String, u64>,
+}
+
+// Two logs are equal when they hold the same chains: `strict_since` is
+// per-session receipt state (re-established after a restart), not part
+// of what a log holds.
+impl PartialEq for ArtifactLog {
+    fn eq(&self, other: &Self) -> bool {
+        self.chains == other.chains
+    }
+}
+
+impl Eq for ArtifactLog {}
+
+impl ArtifactLog {
+    /// Add an artifact to its author's chain, if it verifies and extends the chain.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Refusal::Unauthenticated`] for a bad signature or hash, and
+    /// with [`Refusal::Conflict`] for a gap, a fork, or a `prev` that does not
+    /// match. An artifact that one frame cannot carry is [`Refusal::Forbidden`],
+    /// since no page could ever send it. The log is unchanged on error.
+    pub fn insert(&mut self, artifact: SignedArtifact) -> Result<Stored> {
+        self.store(artifact, true)
+    }
+
+    /// Insert an artifact received from a peer, selecting receipt
+    /// validation from the artifact's per-account chain position
+    /// (#4459): the bounded legacy exception applies only to an artifact
+    /// that extends the held chain before this receiver's strict cutoff
+    /// for that author (see `strict_since`); anything else — including
+    /// an artifact whose chain position cannot be established from the
+    /// held chain's signed links — is validated strictly.
+    pub fn insert_received(
+        &mut self,
+        artifact: SignedArtifact,
+    ) -> Result<(Stored, Option<Kind>, Option<LegacyArtifactNote>)> {
+        let mode = self.receive_mode(&artifact);
+        let outcome = self.store_mode(artifact, true, mode)?;
+        Ok((outcome.stored, outcome.kind, outcome.legacy_note))
+    }
+
+    fn receive_mode(&self, artifact: &SignedArtifact) -> ParseMode {
+        let held = self
+            .chains
+            .get(&artifact.author)
+            .map_or(&[][..], Vec::as_slice);
+        let have = u64::try_from(held.len()).unwrap_or(u64::MAX);
+        let expected_prev = held
+            .last()
+            .map_or_else(String::new, |last| last.hash.clone());
+        // The position is established only by the signed chain links
+        // this log already holds: the artifact must be the exact next
+        // link (its signed `seq` and `prev`, both authenticity-checked
+        // in `store_mode` before anything is stored).
+        if artifact.seq != have.saturating_add(1) || artifact.prev != expected_prev {
+            return ParseMode::Strict;
+        }
+        match self.strict_since.get(&artifact.author) {
+            Some(&first_strict) if artifact.seq >= first_strict => ParseMode::Strict,
+            _ => ParseMode::LegacyReceive,
+        }
+    }
+
+    /// [`ArtifactLog::insert`], with the frame check only when `frame_check` is set.
+    /// Opening a file replays its lines without the check, so a line the file held
+    /// before the check still loads.
+    fn store(&mut self, artifact: SignedArtifact, frame_check: bool) -> Result<Stored> {
+        let mode = if frame_check {
+            ParseMode::Strict
+        } else {
+            ParseMode::Replay
+        };
+        self.store_mode(artifact, frame_check, mode)
+            .map(|outcome| outcome.stored)
+    }
+
+    fn store_mode(
+        &mut self,
+        artifact: SignedArtifact,
+        frame_check: bool,
+        mode: ParseMode,
+    ) -> Result<InsertOutcome> {
+        let (kind, legacy_note, strict_valid) = match mode {
+            ParseMode::Strict => {
+                artifact.verify()?;
+                (artifact.parsed()?, None, true)
+            }
+            ParseMode::Replay => {
+                // Trusted local replay (open / open_read_only only): the
+                // grandfathered-rule twins. Remote receipt goes through
+                // `insert`/`insert_received` and never reaches this
+                // branch (#5625).
+                artifact.verify_for_replay()?;
+                (artifact.parsed_for_replay()?, None, false)
+            }
+            ParseMode::LegacyReceive => {
+                artifact.verify()?;
+                // An artifact that needs no exception — it also passes
+                // strict parsing — is a strict receipt for cutoff
+                // purposes: accepting it sets the author's cutoff.
+                let strict_valid = artifact.parsed().is_ok();
+                let (kind, note) = artifact.parsed_for_legacy_receive()?;
+                (kind, note, strict_valid)
+            }
+        };
+        let size = encoded_len(&artifact);
+        if frame_check && page_frame_bytes().saturating_add(size) > MAX_FRAME_BYTES {
+            return Err(forbidden(format!(
+                "an artifact of {size} bytes cannot be sent in one frame of {MAX_FRAME_BYTES} bytes"
+            )));
+        }
+        if artifact.seq < 1 {
+            return Err(forbidden("sequence numbers start at 1"));
+        }
+        let held = self
+            .chains
+            .get(&artifact.author)
+            .map_or(&[][..], Vec::as_slice);
+        let have = u64::try_from(held.len())?;
+        if artifact.seq <= have {
+            let same = held
+                .get(usize::try_from(artifact.seq - 1)?)
+                .is_some_and(|at| at.hash == artifact.hash);
+            return if same {
+                Ok(InsertOutcome {
+                    stored: Stored::Duplicate,
+                    kind,
+                    legacy_note,
+                    strict_valid,
+                })
+            } else {
+                Err(Refusal::Conflict(format!(
+                    "artifact {} of this account is already held as a different one",
+                    artifact.seq
+                ))
+                .into())
+            };
+        }
+        if artifact.seq > have + 1 {
+            return Err(Refusal::Conflict(format!(
+                "artifact {} is missing; it must be pulled before artifact {}",
+                have + 1,
+                artifact.seq
+            ))
+            .into());
+        }
+        let expected = held
+            .last()
+            .map_or_else(String::new, |last| last.hash.clone());
+        if artifact.prev != expected {
+            return Err(Refusal::Conflict(format!(
+                "artifact {} does not follow the one held before it",
+                artifact.seq
+            ))
+            .into());
+        }
+        let author = artifact.author.clone();
+        let seq = artifact.seq;
+        self.chains
+            .entry(author.clone())
+            .or_default()
+            .push(artifact);
+        if strict_valid {
+            let first = self.strict_since.entry(author).or_insert(seq);
+            if seq < *first {
+                *first = seq;
+            }
+        }
+        Ok(InsertOutcome {
+            stored: Stored::New,
+            kind,
+            legacy_note,
+            strict_valid,
+        })
+    }
+
+    /// Every held artifact, author by author, each in sequence order.
+    pub fn all(&self) -> impl Iterator<Item = &SignedArtifact> {
+        self.chains.values().flatten()
+    }
+
+    /// The number of artifacts held for an author, which is the last sequence number.
+    #[must_use]
+    pub fn head_seq(&self, author: &str) -> u64 {
+        self.chains
+            .get(author)
+            .map_or(0, |chain| u64::try_from(chain.len()).unwrap_or(u64::MAX))
+    }
+
+    /// The author's artifacts with a sequence number after `after`, in order, up to
+    /// [`PAGE_BYTES`]. A page always holds at least one artifact if any remain.
+    #[must_use]
+    pub fn page(&self, author: &str, after: u64) -> Vec<SignedArtifact> {
+        let mut page: Vec<SignedArtifact> = Vec::new();
+        let mut used = page_frame_bytes();
+        for artifact in self
+            .chains
+            .get(author)
+            .into_iter()
+            .flatten()
+            .filter(|artifact| artifact.seq > after)
+        {
+            let size = encoded_len(artifact).saturating_add(usize::from(!page.is_empty()));
+            if !page.is_empty() && used.saturating_add(size) > PAGE_BYTES {
+                break;
+            }
+            used = used.saturating_add(size);
+            page.push(artifact.clone());
+        }
+        page
+    }
+
+    /// The latest home-server declaration an account has made.
+    #[must_use]
+    pub fn declared(&self, account: &str) -> Option<HomeDeclared> {
+        self.chains.get(account)?.iter().rev().find_map(|artifact| {
+            match artifact.parsed_for_replay() {
+                Ok(Some(Kind::HomeDeclared(declared))) => Some(declared),
+                _ => None,
+            }
+        })
+    }
+
+    /// Sign `kind` as the author holding `key`, at the position after its chain's head.
+    /// The result is not added to the log.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the body cannot be serialized, or if the kind's body breaks
+    /// a rule receipt enforces (see [`SignedArtifact::sign`]).
+    pub fn sign(&self, key: &SigningKey, kind: &Kind) -> Result<SignedArtifact> {
+        self.sign_after(key, kind, Vec::new())
+    }
+
+    /// Like [`Self::sign`], also naming `after`, the artifacts the author had applied before this one.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the body cannot be serialized, or if the kind's body breaks
+    /// a rule receipt enforces (see [`SignedArtifact::sign`]).
+    pub fn sign_after(
+        &self,
+        key: &SigningKey,
+        kind: &Kind,
+        after: Vec<String>,
+    ) -> Result<SignedArtifact> {
+        let author = hex_encode(&key.verifying_key().to_bytes());
+        let (seq, prev) = self.chains.get(&author).map_or_else(
+            || (1, String::new()),
+            |chain| {
+                let last = chain.last();
+                (
+                    last.map_or(1, |last| last.seq + 1),
+                    last.map_or_else(String::new, |last| last.hash.clone()),
+                )
+            },
+        );
+        let (name, body) = kind.encode()?;
+        SignedArtifact::sign_after(key, seq, &prev, name, body, after)
+    }
+
+    /// Load the log at `path`, which is empty if the file does not exist. A
+    /// final line cut short by a crash was never synced, so it is dropped and
+    /// the file is truncated to the last complete line, with a warning. Blank
+    /// lines are skipped, as `Directory::replay` skips them (#2128).
+    ///
+    /// # Errors
+    ///
+    /// Fails if a complete line is corrupt or does not verify.
+    pub fn open(path: &Path) -> Result<Self> {
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error).context("reading the artifact file"),
+        };
+        let kept = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |index| index + 1);
+        if kept < bytes.len() {
+            // #2128: mirror Directory::replay / FileJournal::open - a torn
+            // final entry is dropped loudly, not silently.
+            tracing::warn!(
+                "artifact journal {}: dropping torn final entry at byte {kept}",
+                path.display()
+            );
+            OpenOptions::new()
+                .write(true)
+                .open(path)?
+                .set_len(u64::try_from(kept)?)?;
+        }
+        let text = std::str::from_utf8(&bytes[..kept]).context("artifact file is not UTF-8")?;
+        let mut log = Self::default();
+        for (number, line) in text.lines().enumerate() {
+            // #2128: blank lines are cosmetic (Directory::replay skips them
+            // in its own journal); enumerate() keeps the physical line
+            // number, so a corrupt non-blank line still reports its true
+            // position below.
+            if line.trim().is_empty() {
+                continue;
+            }
+            let artifact: SignedArtifact = serde_json::from_str(line)
+                .with_context(|| format!("artifact line {} is corrupt", number + 1))?;
+            log.store(artifact, false)
+                .with_context(|| format!("artifact line {} is refused", number + 1))?;
+        }
+        Ok(log)
+    }
+
+    /// Load and verify an artifact log without truncating a torn final
+    /// fragment. Used by read-only replicas, whose startup must never
+    /// rewrite local state.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error).context("reading the artifact file"),
+        };
+        let kept = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let text = std::str::from_utf8(&bytes[..kept]).context("artifact file is not UTF-8")?;
+        let mut log = Self::default();
+        for (number, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let artifact: SignedArtifact = serde_json::from_str(line)
+                .with_context(|| format!("artifact line {} is corrupt", number + 1))?;
+            log.store(artifact, false)
+                .with_context(|| format!("artifact line {} is refused", number + 1))?;
+        }
+        Ok(log)
+    }
+}
+
+/// Durably append one artifact to the file at `path`.
+///
+/// # Errors
+///
+/// Fails if the file cannot be written or synced.
+pub fn append(path: &Path, artifact: &SignedArtifact) -> Result<()> {
+    let mut line = serde_json::to_vec(artifact)?;
+    line.push(b'\n');
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    file.write_all(&line)?;
+    file.sync_data()?;
+    Ok(())
+}
+
+/// A page of an account's artifacts, the answer to one [`PullRequest`].
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Page {
+    /// The account's artifacts after the sequence number asked for, in order.
+    pub artifacts: Vec<SignedArtifact>,
+}
+
+/// The bytes of a page with no artifacts in it, which is `{"artifacts":[]}`.
+fn page_frame_bytes() -> usize {
+    serde_json::to_vec(&Page {
+        artifacts: Vec::new(),
+    })
+    .map_or(0, |bytes| bytes.len())
+}
+
+/// The bytes one artifact takes inside a page. An artifact that does not encode
+/// counts as unbounded, so it can only ever be sent alone.
+fn encoded_len(artifact: &SignedArtifact) -> usize {
+    serde_json::to_vec(artifact).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+/// The bytes a page of `artifacts` takes on the wire, with one comma between artifacts.
+fn page_bytes(artifacts: &[SignedArtifact]) -> usize {
+    artifacts
+        .iter()
+        .enumerate()
+        .fold(page_frame_bytes(), |used, (index, artifact)| {
+            used.saturating_add(encoded_len(artifact))
+                .saturating_add(usize::from(index > 0))
+        })
+}
+
+/// Whether a page is within [`PAGE_BYTES`], or holds one artifact that is larger alone.
+fn within_budget(artifacts: &[SignedArtifact]) -> bool {
+    artifacts.len() <= 1 || page_bytes(artifacts) <= PAGE_BYTES
+}
+
+/// What applying a page did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PageOutcome {
+    /// Artifacts newly stored.
+    pub stored: usize,
+    /// Artifacts already held.
+    pub duplicates: usize,
+    /// Typed compatibility notes for legacy artifacts accepted in this page.
+    pub legacy: Vec<LegacyArtifactNote>,
+    /// The first artifact refused. Nothing after it is applied, since later
+    /// artifacts in a chain depend on it.
+    pub refused: Option<PageRefusal>,
+}
+
+/// The artifact a page stopped at, and why.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PageRefusal {
+    /// The refused artifact's sequence number.
+    pub seq: u64,
+    /// Why it was refused.
+    pub reason: String,
+}
+
+/// The artifact store [`apply_page`] and [`pull`] write to: the seam
+/// between transfer and the directory that owns the log (seam 9 of the
+/// crate split, #4406). The facade implements it for its `Directory`.
+pub trait ArtifactSink {
+    /// Store one verified artifact, as `Directory::receive_artifact` does.
+    fn receive_artifact(&mut self, artifact: &SignedArtifact) -> Result<Stored>;
+
+    /// [`Self::receive_artifact`], also reporting the typed legacy note
+    /// when the bounded legacy exception accepted the artifact (#4459).
+    fn receive_artifact_with_outcome(
+        &mut self,
+        artifact: &SignedArtifact,
+    ) -> Result<(Stored, Option<LegacyArtifactNote>)> {
+        self.receive_artifact(artifact).map(|stored| (stored, None))
+    }
+
+    /// The sequence number of `account`'s newest artifact, or 0 for none.
+    fn artifact_head_seq(&self, account: &str) -> u64;
+}
+
+/// Apply a page of `account`'s artifacts to `directory`. Each artifact is
+/// checked on its own, so the server that served the page is not trusted.
+pub fn apply_page<D: ArtifactSink>(
+    directory: &mut D,
+    account: &str,
+    page: &[SignedArtifact],
+) -> PageOutcome {
+    let mut outcome = PageOutcome::default();
+    for artifact in page {
+        let refusal = if artifact.author == account {
+            match directory.receive_artifact_with_outcome(artifact) {
+                Ok((Stored::New, note)) => {
+                    outcome.stored += 1;
+                    if let Some(note) = note {
+                        outcome.legacy.push(note);
+                    }
+                    None
+                }
+                Ok((Stored::Duplicate, note)) => {
+                    outcome.duplicates += 1;
+                    if let Some(note) = note {
+                        outcome.legacy.push(note);
+                    }
+                    None
+                }
+                Err(error) => Some(format!("{error:#}")),
+            }
+        } else {
+            Some("artifact is not from the requested account".to_owned())
+        };
+        if let Some(reason) = refusal {
+            outcome.refused = Some(PageRefusal {
+                seq: artifact.seq,
+                reason,
+            });
+            break;
+        }
+    }
+    outcome
+}
+
+/// One pull on [`PULL_ALPN`]: the artifacts of `account` after sequence `after`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PullRequest {
+    /// The account whose chain is wanted.
+    pub account: String,
+    /// The last sequence number the puller already holds.
+    pub after: u64,
+}
+
+/// Answers [`PULL_ALPN`] pulls from the worlds a hub holds.
+#[derive(Clone, Debug)]
+pub struct ArtifactPullProtocol<H> {
+    /// The host the pulls are served from.
+    pub hub: H,
+    /// Deadline for the request frame to arrive (see `accept`).
+    pub frame_deadline: Duration,
+    /// Bound on the post-answer wait for the dialer to close.
+    pub close_wait: Duration,
+}
+
+impl<H: SessionHost> ArtifactPullProtocol<H> {
+    /// Serve the artifacts of the worlds in `hub` to Iroh peers.
+    #[must_use]
+    pub const fn new(hub: H) -> Self {
+        Self {
+            hub,
+            frame_deadline: SESSION_DEADLINE,
+            close_wait: CLOSE_WAIT,
+        }
+    }
+
+    async fn page(&self, request: &PullRequest) -> Result<Page> {
+        check_key(&request.account)?;
+        let page = match self
+            .hub
+            .read_artifacts(request.account.clone(), request.after)
+            .await
+        {
+            Ok(Availability::Available(page)) => page,
+            Ok(Availability::Busy) => bail!("the server is busy; try again"),
+            Err(error) => return Err(error),
+        };
+        Ok(Page { artifacts: page })
+    }
+}
+
+fn refused(error: anyhow::Error) -> AcceptError {
+    AcceptError::from_boxed(error.into())
+}
+
+impl<H: SessionHost> ProtocolHandler for ArtifactPullProtocol<H> {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        let (mut send, mut recv) = conn.accept_bi().await?;
+        // A peer that connects and never sends its request frame
+        // must not hold this handler forever (#2087): bound the
+        // read by the same session deadline event sync uses for a
+        // silent peer.
+        let frame = tokio::time::timeout(self.frame_deadline, read_frame(&mut recv)).await;
+        let frame = match frame {
+            Ok(frame) => frame.map_err(refused)?,
+            Err(_elapsed) => return Ok(()),
+        };
+        let Some(frame) = frame else {
+            return Ok(());
+        };
+        let request: PullRequest =
+            serde_json::from_slice(&frame).map_err(|error| refused(error.into()))?;
+        let page = self.page(&request).await.map_err(refused)?;
+        let bytes = serde_json::to_vec(&page).map_err(|error| refused(error.into()))?;
+        write_frame(&mut send, &bytes).await.map_err(refused)?;
+        send.finish()?;
+        // Bound the wait for the dialer to close, as event sync
+        // does (#2087): a peer that never closes must not pin the
+        // handler after its answer is sent.
+        let _ = tokio::time::timeout(self.close_wait, conn.closed()).await;
+        Ok(())
+    }
+}
+
+/// Accepts pushed artifacts on [`PUSH_ALPN`] and stores them in the worlds a hub holds.
+#[derive(Clone, Debug)]
+pub struct ArtifactPushProtocol<H> {
+    hub: H,
+}
+
+impl<H: SessionHost> ArtifactPushProtocol<H> {
+    /// Take pushed artifacts for the worlds in `hub`.
+    #[must_use]
+    pub const fn new(hub: H) -> Self {
+        Self { hub }
+    }
+}
+
+impl<H: SessionHost> ProtocolHandler for ArtifactPushProtocol<H> {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        let hub = self.hub.clone();
+        answer_frames(&conn, move |body| {
+            let hub = hub.clone();
+            async move { receive_pushed(&hub, &body).await }
+        })
+        .await
+    }
+}
+
+/// Push `artifact` to the home server at `target`, and say whether it is done.
+pub async fn push(endpoint: &Endpoint, target: EndpointAddr, artifact: &SignedArtifact) -> Outcome {
+    match serde_json::to_vec(artifact) {
+        Ok(json) => send(endpoint, PUSH_ALPN, target, &json).await,
+        Err(error) => Outcome::Refused(format!("artifact does not encode: {error}")),
+    }
+}
+
+async fn receive_pushed<H: SessionHost>(hub: &H, body: &[u8]) -> Reply {
+    let artifact: SignedArtifact = match serde_json::from_slice(body) {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            return Reply::Refused {
+                message: format!("not an artifact: {error}"),
+            };
+        }
+    };
+    match hub.receive_artifact(artifact).await {
+        Ok(Availability::Busy) => Reply::Retry {
+            message: "the server is busy; try again".to_owned(),
+        },
+        Ok(Availability::Available(Some(Stored::New))) => Reply::Applied,
+        Ok(Availability::Available(Some(Stored::Duplicate))) => Reply::Duplicate,
+        Ok(Availability::Available(None)) => Reply::Retry {
+            message: "artifact was not stored".to_owned(),
+        },
+        Err(error) if error.downcast_ref::<Refusal>().is_some() => Reply::Refused {
+            message: format!("{error:#}"),
+        },
+        Err(error) => Reply::Retry {
+            message: format!("{error:#}"),
+        },
+    }
+}
+
+/// Fetch one page of `account`'s artifacts after `after` from the home server at `peer`.
+/// The dial and the answer share one [`DIAL_TIMEOUT`].
+///
+/// # Errors
+///
+/// Fails if the deadline passes, the peer is unreachable, does not speak
+/// [`PULL_ALPN`], or answers with something other than a page.
+pub async fn fetch_page(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    account: &str,
+    after: u64,
+) -> Result<Vec<SignedArtifact>> {
+    fetch_page_within(endpoint, peer, account, after, DIAL_TIMEOUT).await
+}
+
+/// [`fetch_page`] with its own deadline, which covers the address lookup, the
+/// dial and the answer.
+///
+/// # Errors
+///
+/// As [`fetch_page`], and fails if `limit` passes first.
+pub async fn fetch_page_within(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    account: &str,
+    after: u64,
+    limit: Duration,
+) -> Result<Vec<SignedArtifact>> {
+    check_key(account)?;
+    within(limit, "pulling artifacts from the home server", async {
+        let connection = connect(endpoint, peer, PULL_ALPN)
+            .await
+            .context("connecting to the home server")?;
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .context("opening a pull stream")?;
+        let request = PullRequest {
+            account: account.to_owned(),
+            after,
+        };
+        write_frame(&mut send, &serde_json::to_vec(&request)?).await?;
+        send.finish().context("finishing the pull request")?;
+        let frame = read_frame(&mut recv)
+            .await?
+            .context("home server closed without a page")?;
+        let page: Page = serde_json::from_slice(&frame).context("artifact page is malformed")?;
+        ensure!(
+            within_budget(&page.artifacts),
+            "artifact page is over its byte budget"
+        );
+        connection.close(0_u32.into(), b"pulled");
+        Ok(page.artifacts)
+    })
+    .await
+}
+
+/// Pull `account`'s new artifacts from the home server at `peer`, page by page,
+/// applying each page to `directory` as it arrives. Stops at the first refusal,
+/// an empty page, or a page that stores nothing.
+///
+/// A page is cut by bytes, so a short page does not mean the chain has ended.
+/// The pull asks again after every page that stored something, which costs one
+/// empty answer at the end. Each page fetch has [`DIAL_TIMEOUT`].
+///
+/// # Errors
+///
+/// Fails if a page cannot be fetched.
+pub async fn pull<D: ArtifactSink>(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    account: &str,
+    directory: &mut D,
+) -> Result<PageOutcome> {
+    pull_within(endpoint, peer, account, directory, DIAL_TIMEOUT).await
+}
+
+/// [`pull`] with `limit` on each page fetch, see [`fetch_page_within`].
+///
+/// # Errors
+///
+/// Fails if a page cannot be fetched within `limit`.
+pub async fn pull_within<D: ArtifactSink>(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    account: &str,
+    directory: &mut D,
+    limit: Duration,
+) -> Result<PageOutcome> {
+    check_key(account)?;
+    let mut total = PageOutcome::default();
+    loop {
+        let after = directory.artifact_head_seq(account);
+        let page = fetch_page_within(endpoint, peer.clone(), account, after, limit).await?;
+        let outcome = apply_page(directory, account, &page);
+        total.stored += outcome.stored;
+        total.duplicates += outcome.duplicates;
+        total.legacy.extend(outcome.legacy);
+        if outcome.refused.is_some() {
+            total.refused = outcome.refused;
+            break;
+        }
+        if page.is_empty() || outcome.stored == 0 {
+            break;
+        }
+    }
+    Ok(total)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::Instant;
+    use tempfile::TempDir;
+
+    use id_core::connectivity::silent::{
+        endpoint_with_silent_lookup, unanswered_addr, unanswered_id,
+    };
+    use iroh::{
+        TransportAddr,
+        endpoint::{RelayMode, presets},
+        protocol::Router,
+    };
+    use iroh_base::SecretKey;
+    use proptest::prelude::*;
+    fn key(seed: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed; 32])
+    }
+    #[test]
+    fn read_only_artifact_open_ignores_a_torn_non_utf8_tail_without_writing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let log = ArtifactLog::open_read_only(&path).unwrap();
+        assert_eq!(log.all().count(), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    fn public(seed: u8) -> String {
+        hex_encode(&key(seed).verifying_key().to_bytes())
+    }
+    fn removal(a: u8, b: u8, requests: &[&str]) -> Kind {
+        Kind::FriendRemove(FriendRemove {
+            a: public(a),
+            b: public(b),
+            requests: requests
+                .iter()
+                .map(|request| format!("{:0>32}", request.trim_start_matches('r')))
+                .collect(),
+        })
+    }
+    fn endpoint_of(seed: u8) -> String {
+        SecretKey::from_bytes(&[seed; 32]).public().to_string()
+    }
+    fn declared(seed: u8, home: u8) -> Kind {
+        Kind::HomeDeclared(HomeDeclared {
+            account: public(seed),
+            servers: vec![HomeServer {
+                endpoint: endpoint_of(home),
+                world_id: "home".to_owned(),
+            }],
+        })
+    }
+    fn document(text: &str) -> Kind {
+        Kind::Document(Document {
+            media_type: "application/json".to_owned(),
+            content: json!({ "text": text }),
+        })
+    }
+    /// Sign with full control of the `after` frontier, bypassing the
+    /// builder-side frontier check in [`SignedArtifact::sign_after`], so
+    /// receipt-side refusal of invalid frontiers stays testable.
+    fn sign_raw_after(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &Kind,
+        after: Vec<String>,
+    ) -> SignedArtifact {
+        let (name, body) = kind.encode().unwrap();
+        let author = hex_encode(&key.verifying_key().to_bytes());
+        let bytes = signed_bytes(&author, seq, prev, name, &body, &after).unwrap();
+        SignedArtifact {
+            hash: hex_encode(&Sha256::digest(&bytes)),
+            signature: hex_encode(&key.sign(&bytes).to_bytes()),
+            author,
+            seq,
+            prev: prev.to_owned(),
+            kind: name.to_owned(),
+            body,
+            after,
+        }
+    }
+    /// Sign a typed kind without the construction-side body check in
+    /// [`SignedArtifact::sign_after`], so receipt-side refusal of that
+    /// body stays testable (the typed twin of [`SignedArtifact::sign_unchecked`]).
+    fn sign_kind_unchecked(key: &SigningKey, kind: &Kind) -> SignedArtifact {
+        let (name, body) = kind.encode().unwrap();
+        SignedArtifact::sign_unchecked(key, 1, "", name, body).unwrap()
+    }
+    fn author_tag(subject: &str, author: u8) -> Kind {
+        Kind::Tag(Tag {
+            subject: subject.to_owned(),
+            name: "author".to_owned(),
+            value: Some(public(author)),
+        })
+    }
+    #[test]
+    fn a_replayed_artifact_is_a_duplicate_and_a_gap_names_what_is_missing() {
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &removal(1, 2, &["r1"])).unwrap();
+        assert_eq!(first.seq, 1);
+        assert_eq!(log.insert(first.clone()).unwrap(), Stored::New);
+        assert_eq!(log.insert(first).unwrap(), Stored::Duplicate);
+        assert_eq!(log.head_seq(&public(1)), 1);
+
+        let second = log.sign(&key(1), &removal(1, 3, &[])).unwrap();
+        let third = SignedArtifact::sign(
+            &key(1),
+            3,
+            &second.hash,
+            FRIEND_REMOVE,
+            json!({"a": public(1), "b": public(3), "requests": []}),
+        )
+        .unwrap();
+        let gap = log.insert(third).unwrap_err();
+        assert!(
+            matches!(gap.downcast_ref::<Refusal>(), Some(Refusal::Conflict(m)) if m.contains("artifact 2 is missing")),
+            "{gap:#}"
+        );
+        assert_eq!(log.head_seq(&public(1)), 1);
+    }
+    #[test]
+    fn a_fork_at_a_held_sequence_number_is_refused() {
+        let mut log = ArtifactLog::default();
+        let held = log.sign(&key(1), &removal(1, 2, &["r1"])).unwrap();
+        log.insert(held).unwrap();
+        let other = SignedArtifact::sign(
+            &key(1),
+            1,
+            "",
+            FRIEND_REMOVE,
+            json!({
+                "a": public(1),
+                "b": public(2),
+                "requests": [format!("{:032x}", 2)]
+            }),
+        )
+        .unwrap();
+        let fork = log.insert(other).unwrap_err();
+        assert!(
+            matches!(fork.downcast_ref::<Refusal>(), Some(Refusal::Conflict(_))),
+            "{fork:#}"
+        );
+    }
+    #[test]
+    fn a_forged_or_tampered_artifact_is_refused_and_changes_nothing() {
+        let mut log = ArtifactLog::default();
+        let good = log.sign(&key(1), &removal(1, 2, &["r1"])).unwrap();
+        log.insert(good.clone()).unwrap();
+        let before = log.clone();
+
+        let mut tampered = SignedArtifact::sign(
+            &key(1),
+            2,
+            &good.hash,
+            FRIEND_REMOVE,
+            json!({"a": public(1), "b": public(2), "requests": []}),
+        )
+        .unwrap();
+        tampered.body = json!({
+            "a": public(1),
+            "b": public(2),
+            "requests": [format!("{:032x}", 9)]
+        });
+        let error = log.insert(tampered).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<Refusal>(),
+                Some(Refusal::Unauthenticated(_))
+            ),
+            "{error:#}"
+        );
+
+        let mut forged = SignedArtifact::sign_unchecked(
+            &key(3),
+            2,
+            &good.hash,
+            FRIEND_REMOVE,
+            json!({"a": public(1), "b": public(2), "requests": []}),
+        )
+        .unwrap();
+        forged.author = public(1);
+        let error = log.insert(forged).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<Refusal>(),
+                Some(Refusal::Unauthenticated(_))
+            ),
+            "{error:#}"
+        );
+        assert_eq!(log, before);
+    }
+    #[test]
+    fn a_removal_must_be_signed_by_one_of_its_accounts() {
+        let mut log = ArtifactLog::default();
+        let stranger = SignedArtifact::sign_unchecked(
+            &key(3),
+            1,
+            "",
+            FRIEND_REMOVE,
+            json!({"a": public(1), "b": public(2), "requests": []}),
+        )
+        .unwrap();
+        let error = log.insert(stranger).unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<Refusal>(), Some(Refusal::Forbidden(_))),
+            "{error:#}"
+        );
+    }
+    #[test]
+    fn friend_removal_refuses_too_many_or_malformed_request_ids_before_storage() {
+        let valid_id = |n: u8| format!("{n:032x}");
+        let valid_three = SignedArtifact::sign(
+            &key(1),
+            1,
+            "",
+            FRIEND_REMOVE,
+            json!({
+                "a": public(1),
+                "b": public(2),
+                "requests": [valid_id(1), valid_id(2), valid_id(3)]
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            valid_three.parsed(),
+            Ok(Some(Kind::FriendRemove(_)))
+        ));
+
+        let cases = [
+            vec![valid_id(1), valid_id(2), valid_id(3), valid_id(4)],
+            vec![valid_id(1), valid_id(1)],
+            vec!["g".repeat(32)],
+            vec!["a".repeat(31)],
+            vec!["a".repeat(33)],
+            vec!["A".repeat(32)],
+        ];
+
+        for requests in cases {
+            let artifact = SignedArtifact::sign_unchecked(
+                &key(1),
+                1,
+                "",
+                FRIEND_REMOVE,
+                json!({"a": public(1), "b": public(2), "requests": requests}),
+            )
+            .unwrap();
+            let parsed = artifact.parsed().unwrap_err();
+            assert!(
+                matches!(
+                    parsed.downcast_ref::<Refusal>(),
+                    Some(Refusal::Forbidden(_))
+                ),
+                "{parsed:#}"
+            );
+
+            let mut log = ArtifactLog::default();
+            let inserted = log.insert(artifact).unwrap_err();
+            assert!(
+                matches!(
+                    inserted.downcast_ref::<Refusal>(),
+                    Some(Refusal::Forbidden(_))
+                ),
+                "{inserted:#}"
+            );
+            assert_eq!(log.head_seq(&public(1)), 0);
+        }
+    }
+    #[test]
+    fn a_legacy_removal_naming_a_request_twice_still_replays() {
+        // Stored before the uniqueness rule (#3146): fresh receipt refuses
+        // it, but replay does not brick the log that already holds it.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let legacy = SignedArtifact::sign_unchecked(
+            &key(1),
+            1,
+            "",
+            FRIEND_REMOVE,
+            json!({
+                "a": public(1),
+                "b": public(2),
+                "requests": [format!("{:032x}", 7), format!("{:032x}", 7)]
+            }),
+        )
+        .unwrap();
+        assert!(legacy.parsed().is_err());
+        assert!(ArtifactLog::default().insert(legacy.clone()).is_err());
+        append(&path, &legacy).unwrap();
+
+        let reopened = ArtifactLog::open(&path).unwrap();
+        assert_eq!(reopened.head_seq(&public(1)), 1);
+    }
+    #[test]
+    fn a_legacy_log_with_a_duplicate_after_frontier_still_replays() {
+        // #5625: stored before the duplicate-after rule (#3196), when
+        // sign_after accepted a repeated frontier hash. Fresh receipt
+        // (verify / insert) still refuses it; trusted local replay
+        // (open / open_read_only) reopens the log that already holds it.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &document("first")).unwrap();
+        log.insert(first.clone()).unwrap();
+        let legacy = sign_raw_after(
+            &key(1),
+            2,
+            &first.hash,
+            &document("second"),
+            vec![first.hash.clone(), first.hash.clone()],
+        );
+        assert!(legacy.verify().is_err());
+        assert!(ArtifactLog::default().insert(legacy.clone()).is_err());
+        append(&path, &first).unwrap();
+        append(&path, &legacy).unwrap();
+
+        let reopened = ArtifactLog::open(&path).unwrap();
+        assert_eq!(reopened.head_seq(&public(1)), 2);
+        let read_only = ArtifactLog::open_read_only(&path).unwrap();
+        assert_eq!(read_only.head_seq(&public(1)), 2);
+
+        // Authenticity stays strict in replay: the same log with a
+        // forged hash line does not reopen.
+        let mut forged = legacy.clone();
+        forged.hash = format!("{:064x}", 9_u64);
+        let bad_path = dir.path().join("forged.jsonl");
+        append(&bad_path, &first).unwrap();
+        append(&bad_path, &forged).unwrap();
+        assert!(ArtifactLog::open(&bad_path).is_err());
+        assert!(ArtifactLog::open_read_only(&bad_path).is_err());
+    }
+    #[test]
+    fn a_legacy_log_with_non_nfc_document_and_tag_fields_still_replays() {
+        // #5625: stored before the NFC rules (#3192), when the producer
+        // path passed media_type / tag text through the then-lenient
+        // parser. Fresh receipt still refuses each shape; replay
+        // grandfathers exactly those three fields.
+        let dir = TempDir::new().unwrap();
+        let cases: Vec<Kind> = vec![
+            Kind::Document(Document {
+                media_type: "application/jso\u{301}n".to_owned(),
+                content: json!({ "text": "ok" }),
+            }),
+            Kind::Tag(Tag {
+                subject: public(2),
+                name: "e\u{301}".to_owned(),
+                value: None,
+            }),
+            Kind::Tag(Tag {
+                subject: public(2),
+                name: "author".to_owned(),
+                value: Some("e\u{301}".to_owned()),
+            }),
+        ];
+        for (index, kind) in cases.into_iter().enumerate() {
+            let legacy = sign_kind_unchecked(&key(1), &kind);
+            assert!(legacy.parsed().is_err(), "case {index}");
+            assert!(
+                ArtifactLog::default().insert(legacy.clone()).is_err(),
+                "case {index}"
+            );
+            assert!(
+                matches!(legacy.parsed_for_replay(), Ok(Some(_))),
+                "case {index}"
+            );
+            let path = dir.path().join(format!("legacy-{index}.jsonl"));
+            append(&path, &legacy).unwrap();
+            let reopened = ArtifactLog::open(&path).unwrap();
+            assert_eq!(reopened.head_seq(&public(1)), 1, "case {index}");
+            let read_only = ArtifactLog::open_read_only(&path).unwrap();
+            assert_eq!(read_only.head_seq(&public(1)), 1, "case {index}");
+        }
+    }
+    #[test]
+    fn signing_a_known_kind_refuses_the_bodies_receipt_refuses() {
+        // Construction-vs-receipt symmetry (#5623), with `parsed` on a
+        // raw-signed copy as the oracle: for every known kind, a body
+        // receipt refuses is refused at signing time with the same
+        // Refusal::Forbidden class, and a body receipt accepts still signs.
+        let valid_id = |n: u8| format!("{n:032x}");
+        let refused: Vec<(&str, serde_json::Value)> = vec![
+            // A removal signed by an account that is not one of its two.
+            (
+                FRIEND_REMOVE,
+                json!({"a": public(1), "b": public(2), "requests": []}),
+            ),
+            // A document with no media type.
+            (
+                DOCUMENT,
+                json!({"media_type": "", "content": {"text": "x"}}),
+            ),
+            // A tag whose subject is not a hash.
+            (
+                TAG,
+                json!({"subject": "not a hash", "name": "author", "value": null}),
+            ),
+        ];
+        // The friend_remove case must be signed by the stranger, key(3).
+        let stranger_error =
+            SignedArtifact::sign(&key(3), 1, "", refused[0].0, refused[0].1.clone()).unwrap_err();
+        assert!(
+            matches!(
+                stranger_error.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{stranger_error:#}"
+        );
+        for (kind, body) in &refused[1..] {
+            let error = SignedArtifact::sign(&key(1), 1, "", kind, body.clone()).unwrap_err();
+            assert!(
+                matches!(error.downcast_ref::<Refusal>(), Some(Refusal::Forbidden(_))),
+                "{kind}: {error:#}"
+            );
+            let raw = SignedArtifact::sign_unchecked(&key(1), 1, "", kind, body.clone()).unwrap();
+            assert!(raw.parsed().is_err(), "{kind} body accepted by parsed");
+        }
+        // Too many friend-removal requests, signed by a party to the removal.
+        let too_many = SignedArtifact::sign(
+            &key(1),
+            1,
+            "",
+            FRIEND_REMOVE,
+            json!({
+                "a": public(1),
+                "b": public(2),
+                "requests": [valid_id(1), valid_id(2), valid_id(3), valid_id(4)]
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                too_many.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{too_many:#}"
+        );
+        // A home declaration naming another account.
+        let other_account = SignedArtifact::sign(
+            &key(2),
+            1,
+            "",
+            HOME_DECLARED,
+            json!({"account": public(1), "servers": []}),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                other_account.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{other_account:#}"
+        );
+        // The accepted side of the symmetry: valid bodies of every known
+        // kind still sign, and an unknown kind stays signable envelope-only.
+        for (kind, body) in [
+            (
+                FRIEND_REMOVE,
+                json!({"a": public(1), "b": public(2), "requests": [valid_id(1)]}),
+            ),
+            (HOME_DECLARED, json!({"account": public(1), "servers": []})),
+            (
+                DOCUMENT,
+                json!({"media_type": "application/json", "content": {"text": "x"}}),
+            ),
+            (
+                TAG,
+                json!({"subject": public(2), "name": "author", "value": null}),
+            ),
+        ] {
+            let signed = SignedArtifact::sign(&key(1), 1, "", kind, body).unwrap();
+            assert!(
+                matches!(signed.parsed(), Ok(Some(_))),
+                "{kind} valid body refused"
+            );
+        }
+        let future =
+            SignedArtifact::sign(&key(1), 1, "", "future_kind", json!({"anything": true})).unwrap();
+        assert_eq!(future.parsed().unwrap(), None);
+    }
+    #[test]
+    fn an_unknown_kind_is_stored_and_has_no_meaning_here() {
+        let mut log = ArtifactLog::default();
+        let future =
+            SignedArtifact::sign(&key(1), 1, "", "future_kind", json!({"anything": [1, 2]}))
+                .unwrap();
+        assert_eq!(log.insert(future.clone()).unwrap(), Stored::New);
+        assert_eq!(future.parsed().unwrap(), None);
+        assert_eq!(log.head_seq(&public(1)), 1);
+    }
+    #[test]
+    fn a_home_declaration_is_checked_and_the_latest_one_wins() {
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &declared(1, 7)).unwrap();
+        log.insert(first.clone()).unwrap();
+        let second = log.sign(&key(1), &declared(1, 8)).unwrap();
+        log.insert(second).unwrap();
+        assert_eq!(
+            log.declared(&public(1)).unwrap().servers[0].endpoint,
+            endpoint_of(8)
+        );
+        assert_eq!(log.insert(first).unwrap(), Stored::Duplicate);
+        assert_eq!(
+            log.declared(&public(1)).unwrap().servers[0].endpoint,
+            endpoint_of(8)
+        );
+
+        let plain = SignedArtifact::sign_unchecked(
+            &key(1),
+            3,
+            &log.page(&public(1), 0)[1].hash,
+            HOME_DECLARED,
+            json!({"account": public(1), "servers": [{"endpoint": "not a node", "world_id": "w"}]}),
+        )
+        .unwrap();
+        let refused = log.insert(plain).unwrap_err();
+        assert!(
+            matches!(
+                refused.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{refused:#}"
+        );
+        let other_account = SignedArtifact::sign_unchecked(
+            &key(2),
+            1,
+            "",
+            HOME_DECLARED,
+            json!({"account": public(1), "servers": []}),
+        )
+        .unwrap();
+        assert!(log.insert(other_account).is_err());
+    }
+    #[test]
+    fn artifacts_survive_a_restart_and_a_torn_tail_is_dropped() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &removal(1, 2, &["r1"])).unwrap();
+        log.insert(first.clone()).unwrap();
+        append(&path, &first).unwrap();
+        let second = log.sign(&key(1), &declared(1, 7)).unwrap();
+        log.insert(second.clone()).unwrap();
+        append(&path, &second).unwrap();
+        let complete = fs::read(&path).unwrap();
+        let mut torn = complete.clone();
+        torn.extend_from_slice(b"{\"name\":\"Jos");
+        torn.push(0xc3); // First byte of "é".
+        fs::write(&path, torn).unwrap();
+
+        let mut reopened = ArtifactLog::open(&path).unwrap();
+        assert_eq!(reopened, log);
+        assert_eq!(fs::read(&path).unwrap(), complete);
+        assert_eq!(reopened.head_seq(&public(1)), 2);
+        let third = reopened.sign(&key(1), &declared(1, 9)).unwrap();
+        reopened.insert(third.clone()).unwrap();
+        append(&path, &third).unwrap();
+        assert_eq!(ArtifactLog::open(&path).unwrap(), reopened);
+    }
+    #[test]
+    fn blank_lines_in_the_journal_are_skipped() {
+        // #2128: a blank line must not brick the open - Directory::replay
+        // skips them in its own journal. Middle (incl. whitespace-only),
+        // trailing, and blank-only states all open with artifacts intact.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &removal(1, 2, &["r1"])).unwrap();
+        log.insert(first.clone()).unwrap();
+        append(&path, &first).unwrap();
+        let second = log.sign(&key(1), &declared(1, 7)).unwrap();
+        log.insert(second.clone()).unwrap();
+        append(&path, &second).unwrap();
+
+        let text = fs::read_to_string(&path).unwrap();
+        let first_nl = text.find('\n').unwrap();
+        let mut mangled = text.clone();
+        mangled.insert_str(first_nl + 1, "\n  \n");
+        mangled.push('\n');
+        fs::write(&path, mangled).unwrap();
+        assert_eq!(ArtifactLog::open(&path).unwrap(), log);
+
+        let blank_only = dir.path().join("blank.artifacts");
+        fs::write(&blank_only, "\n\n").unwrap();
+        assert_eq!(
+            ArtifactLog::open(&blank_only).unwrap(),
+            ArtifactLog::default()
+        );
+    }
+    #[test]
+    fn a_corrupt_line_after_a_blank_line_reports_its_physical_line() {
+        // #2128: skipping blanks must not renumber - the corrupt line is
+        // physically line 3 and the refusal must say so.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &removal(1, 2, &["r1"])).unwrap();
+        log.insert(first.clone()).unwrap();
+        append(&path, &first).unwrap();
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str("\nnot json\n");
+        fs::write(&path, text).unwrap();
+
+        let refused = ArtifactLog::open(&path).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("artifact line 3 is corrupt"),
+            "{refused:#}"
+        );
+    }
+    /// The bytes a page takes on the wire, as the server sends it.
+    fn wire_len(page: &[SignedArtifact]) -> usize {
+        serde_json::to_vec(&Page {
+            artifacts: page.to_vec(),
+        })
+        .unwrap()
+        .len()
+    }
+    /// Pages through `author`'s chain from the start, checking each page as it comes.
+    fn every_page(log: &ArtifactLog, author: &str) -> Vec<Vec<SignedArtifact>> {
+        let total = log.head_seq(author);
+        let mut pages = Vec::new();
+        let mut after = 0;
+        while after < total {
+            let page = log.page(author, after);
+            assert!(!page.is_empty(), "no progress after sequence {after}");
+            assert!(
+                fills_the_budget(log, author, &page),
+                "a page of {} artifacts leaves room for the next",
+                page.len()
+            );
+            after = page.last().unwrap().seq;
+            pages.push(page);
+        }
+        pages
+    }
+    /// Whether `page` is as full as the budget allows: the artifact after its last
+    /// one would not fit in it. A page cut short by a count, not by bytes, fails.
+    fn fills_the_budget(log: &ArtifactLog, author: &str, page: &[SignedArtifact]) -> bool {
+        let Some(last) = page.last() else {
+            return true;
+        };
+        let Some(next) = log.page(author, last.seq).into_iter().next() else {
+            return true;
+        };
+        let mut bigger = page.to_vec();
+        bigger.push(next);
+        wire_len(&bigger) > PAGE_BYTES
+    }
+    #[test]
+    fn a_page_is_in_order_and_within_the_byte_budget() {
+        let mut log = ArtifactLog::default();
+        for _ in 0..12 {
+            let next = log
+                .sign(&key(1), &document(&"x".repeat(MAX_DOCUMENT_BYTES - 32)))
+                .unwrap();
+            log.insert(next).unwrap();
+        }
+        let first = log.page(&public(1), 0);
+        assert_eq!(first[0].seq, 1);
+        assert!(first.len() > 1 && first.len() < 12, "{}", first.len());
+        assert!(wire_len(&first) <= PAGE_BYTES, "{}", wire_len(&first));
+
+        let pages = every_page(&log, &public(1));
+        assert!(pages.len() >= 3, "12 documents of 64 KiB take three pages");
+        let seqs: Vec<u64> = pages.iter().flatten().map(|a| a.seq).collect();
+        assert_eq!(seqs, (1..=12).collect::<Vec<_>>());
+    }
+    #[test]
+    fn a_lone_oversized_artifact_is_a_page_of_its_own() {
+        let mut log = ArtifactLog::default();
+        let big = SignedArtifact::sign(
+            &key(1),
+            1,
+            "",
+            "future_kind",
+            json!({"blob": "x".repeat(PAGE_BYTES * 2)}),
+        )
+        .unwrap();
+        log.insert(big).unwrap();
+        for _ in 0..3 {
+            let next = log.sign(&key(1), &document("small")).unwrap();
+            log.insert(next).unwrap();
+        }
+        let first = log.page(&public(1), 0);
+        assert_eq!(first.len(), 1, "the oversized artifact goes alone");
+        assert!(wire_len(&first) > PAGE_BYTES);
+        let pages = every_page(&log, &public(1));
+        assert_eq!(pages.len(), 2, "then the three small ones together");
+        assert_eq!(
+            pages[1].iter().map(|a| a.seq).collect::<Vec<_>>(),
+            [2, 3, 4]
+        );
+    }
+    /// An artifact whose JSON is `bytes` long. Its kind is unknown, so no parser
+    /// limits its size, and its body is padding.
+    fn unknown_kind_of_size(bytes: usize) -> SignedArtifact {
+        let signed = |pad: usize| {
+            SignedArtifact::sign(
+                &key(1),
+                1,
+                "",
+                "future_kind",
+                json!({ "pad": "x".repeat(pad) }),
+            )
+            .unwrap()
+        };
+        let base = serde_json::to_vec(&signed(0)).unwrap().len();
+        signed(bytes.saturating_sub(base))
+    }
+    /// An artifact is stored exactly when one page can carry it in a frame. A
+    /// pull then never meets an artifact that the server cannot send.
+    #[test]
+    fn an_artifact_is_stored_exactly_when_one_frame_can_carry_it() {
+        let mut wrong = Vec::new();
+        for slack in [0_usize, 1, 15, 16, 17, 40, 4096] {
+            let artifact = unknown_kind_of_size(MAX_FRAME_BYTES - slack);
+            let fits = wire_len(std::slice::from_ref(&artifact)) <= MAX_FRAME_BYTES;
+            let stored = ArtifactLog::default().insert(artifact).is_ok();
+            if stored != fits {
+                wrong.push(format!(
+                    "{slack} bytes under the cap: stored {stored}, fits {fits}"
+                ));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+    /// A log file written before the frame check can hold an artifact that one
+    /// frame cannot carry. Opening the file must keep it: the directory loads its
+    /// log at start-up, so refusing the line would stop the server from starting.
+    #[test]
+    fn a_stored_artifact_too_large_for_one_frame_still_opens() {
+        for bytes in [MAX_FRAME_BYTES - 5, MAX_FRAME_BYTES + 1024] {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join(FILE);
+            let line = serde_json::to_string(&unknown_kind_of_size(bytes)).unwrap();
+            fs::write(&path, format!("{line}\n")).unwrap();
+            let log = ArtifactLog::open(&path)
+                .unwrap_or_else(|error| panic!("a {bytes}-byte line: {error:#}"));
+            assert_eq!(log.head_seq(&public(1)), 1, "a {bytes}-byte line");
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        /// Random record sizes, mostly small with some near the limit: every page
+        /// fits the byte budget unless it holds one artifact, and paging returns
+        /// each artifact exactly once, in order. Debug-mode hashing is slow, so the
+        /// sizes skew small to keep the case count useful.
+        #[test]
+        fn pages_fit_the_budget_and_neither_lose_nor_repeat_an_artifact(
+            sizes in proptest::collection::vec(
+                prop_oneof![
+                    3 => 0..4096_usize,
+                    1 => 0..(MAX_DOCUMENT_BYTES - 32),
+                ],
+                1..40,
+            ),
+        ) {
+            let mut log = ArtifactLog::default();
+            for size in &sizes {
+                let next = log.sign(&key(1), &document(&"x".repeat(*size))).unwrap();
+                log.insert(next).unwrap();
+            }
+            let total = sizes.len() as u64;
+            let mut after = 0;
+            let mut paged = Vec::new();
+            while after < total {
+                let page = log.page(&public(1), after);
+                prop_assert!(!page.is_empty(), "no progress after sequence {after}");
+                prop_assert!(
+                    page.len() == 1 || wire_len(&page) <= PAGE_BYTES,
+                    "a page of {} artifacts takes {} bytes",
+                    page.len(),
+                    wire_len(&page)
+                );
+                prop_assert!(
+                    fills_the_budget(&log, &public(1), &page),
+                    "a page of {} artifacts leaves room for the next",
+                    page.len()
+                );
+                after = page.last().map_or(after, |last| last.seq);
+                paged.extend(page);
+            }
+            prop_assert_eq!(
+                paged.iter().map(|a| a.seq).collect::<Vec<_>>(),
+                (1..=total).collect::<Vec<_>>()
+            );
+        }
+    }
+    async fn endpoint() -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    }
+    fn loopback(endpoint: &Endpoint) -> EndpointAddr {
+        EndpointAddr::from_parts(
+            endpoint.id(),
+            endpoint.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                TransportAddr::Ip(SocketAddr::new(ip, a.port()))
+            }),
+        )
+    }
+    #[test]
+    fn causal_references_are_signed_and_bounded() {
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &document("first")).unwrap();
+        log.insert(first.clone()).unwrap();
+        let second = log
+            .sign_after(&key(1), &document("second"), vec![first.hash.clone()])
+            .unwrap();
+        assert_eq!(second.after, vec![first.hash.clone()]);
+        log.insert(second.clone()).unwrap();
+
+        let second_hash = second.hash.clone();
+        let mut stripped = second;
+        stripped.after.clear();
+        let error = ArtifactLog::default().insert(stripped).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<Refusal>(),
+                Some(Refusal::Unauthenticated(_))
+            ),
+            "{error:#}"
+        );
+
+        let malformed = sign_raw_after(
+            &key(1),
+            3,
+            &second_hash,
+            &document("third"),
+            vec!["not a hash".to_owned()],
+        );
+        assert!(log.insert(malformed).is_err());
+        let crowded = sign_raw_after(
+            &key(1),
+            3,
+            &second_hash,
+            &document("fourth"),
+            vec![first.hash; MAX_AFTER + 1],
+        );
+        assert!(log.insert(crowded).is_err());
+        assert_eq!(log.head_seq(&public(1)), 2);
+    }
+    #[test]
+    fn test_duplicate_after_hashes_are_refused() {
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &document("first")).unwrap();
+        log.insert(first.clone()).unwrap();
+
+        let doubled = sign_raw_after(
+            &key(1),
+            2,
+            &first.hash,
+            &document("second"),
+            vec![first.hash.clone(), first.hash.clone()],
+        );
+        // A validly signed duplicate frontier is a policy refusal, not an
+        // authenticity failure (#3196).
+        let refused = doubled.verify().unwrap_err();
+        assert!(
+            matches!(
+                refused.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{refused:#}"
+        );
+        assert!(log.insert(doubled).is_err());
+
+        // The builder refuses the same frontier before receipt sees it.
+        assert!(
+            log.sign_after(
+                &key(1),
+                &document("second"),
+                vec![first.hash.clone(), first.hash.clone()],
+            )
+            .is_err()
+        );
+
+        let repeated = sign_raw_after(
+            &key(1),
+            2,
+            &first.hash,
+            &document("third"),
+            vec![first.hash.clone(); MAX_AFTER],
+        );
+        assert!(repeated.verify().is_err());
+        assert!(log.insert(repeated).is_err());
+        assert_eq!(log.head_seq(&public(1)), 1);
+
+        let distinct: Vec<String> = (0..MAX_AFTER).map(|i| format!("{i:064x}")).collect();
+        let frontier = log
+            .sign_after(&key(1), &document("fourth"), distinct)
+            .unwrap();
+        assert!(frontier.verify().is_ok());
+        assert_eq!(log.insert(frontier).unwrap(), Stored::New);
+    }
+    fn home_declared_with(servers: Vec<HomeServer>) -> SignedArtifact {
+        sign_kind_unchecked(
+            &key(1),
+            &Kind::HomeDeclared(HomeDeclared {
+                account: public(1),
+                servers,
+            }),
+        )
+    }
+    fn home_server(endpoint: String, world_id: &str) -> HomeServer {
+        HomeServer {
+            endpoint,
+            world_id: world_id.to_owned(),
+        }
+    }
+    #[test]
+    fn parsed_home_world_id_is_bounded_and_clean() {
+        let control = home_declared_with(vec![home_server(endpoint_of(7), "home")]);
+        assert!(matches!(control.parsed(), Ok(Some(Kind::HomeDeclared(_)))));
+
+        let at_bound = home_declared_with(vec![home_server(endpoint_of(7), &"w".repeat(64))]);
+        assert!(matches!(at_bound.parsed(), Ok(Some(Kind::HomeDeclared(_)))));
+
+        for world_id in [
+            "w".repeat(65),
+            "   ".to_owned(),
+            "home\nFORGED".to_owned(),
+            "ho\u{1}me".to_owned(),
+            "home\u{202e}".to_owned(),
+        ] {
+            let refused = home_declared_with(vec![home_server(endpoint_of(7), &world_id)]);
+            assert!(refused.parsed().is_err(), "world_id {world_id:?} accepted");
+        }
+    }
+    #[test]
+    fn parsed_home_declaration_refuses_duplicate_endpoints() {
+        let distinct = home_declared_with(vec![
+            home_server(endpoint_of(7), "home"),
+            home_server(endpoint_of(8), "lobby"),
+        ]);
+        assert!(matches!(distinct.parsed(), Ok(Some(Kind::HomeDeclared(_)))));
+
+        let duplicate = home_declared_with(vec![
+            home_server(endpoint_of(7), "home"),
+            home_server(endpoint_of(7), "lobby"),
+        ]);
+        assert!(duplicate.parsed().is_err());
+
+        // The same node named once by bare ID and once by an endpoint
+        // ticket for that ID is still a duplicate.
+        let ticket = iroh_tickets::endpoint::EndpointTicket::new(EndpointAddr::from(
+            SecretKey::from_bytes(&[7; 32]).public(),
+        ))
+        .to_string();
+        let aliased = home_declared_with(vec![
+            home_server(endpoint_of(7), "home"),
+            home_server(ticket, "lobby"),
+        ]);
+        assert!(aliased.parsed().is_err());
+    }
+    #[test]
+    fn a_legacy_home_declaration_still_replays() {
+        // A declaration accepted before the #3187 bounds (here: a world ID
+        // past MAX_WORLD_ID_BYTES) must not brick reopening its log: replay
+        // is lenient, while a fresh receipt of the same artifact is refused.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let legacy = home_declared_with(vec![home_server(endpoint_of(7), &"w".repeat(65))]);
+        assert!(legacy.parsed().is_err());
+        assert!(ArtifactLog::default().insert(legacy.clone()).is_err());
+        append(&path, &legacy).unwrap();
+
+        let reopened = ArtifactLog::open(&path).unwrap();
+        assert_eq!(
+            reopened.declared(&public(1)).unwrap().servers[0].world_id,
+            "w".repeat(65)
+        );
+    }
+    #[test]
+    fn parsed_document_media_type_must_be_nfc() {
+        let nfc = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Document(Document {
+                    media_type: "application/json".to_owned(),
+                    content: json!({ "text": "ok" }),
+                }),
+            )
+            .unwrap();
+        assert!(matches!(nfc.parsed(), Ok(Some(Kind::Document(_)))));
+
+        let decomposed = sign_kind_unchecked(
+            &key(1),
+            &Kind::Document(Document {
+                media_type: "application/jso\u{301}n".to_owned(),
+                content: json!({ "text": "ok" }),
+            }),
+        );
+        assert!(decomposed.parsed().is_err());
+    }
+    #[test]
+    fn parsed_tag_name_must_be_nfc() {
+        let control = ArtifactLog::default()
+            .sign(&key(1), &author_tag(&public(2), 1))
+            .unwrap();
+        assert!(matches!(control.parsed(), Ok(Some(Kind::Tag(_)))));
+
+        let decomposed = sign_kind_unchecked(
+            &key(1),
+            &Kind::Tag(Tag {
+                subject: public(2),
+                name: "e\u{301}".to_owned(),
+                value: None,
+            }),
+        );
+        assert!(decomposed.parsed().is_err());
+    }
+    #[test]
+    fn parsed_tag_value_must_be_nfc() {
+        let control = ArtifactLog::default()
+            .sign(&key(1), &author_tag(&public(2), 1))
+            .unwrap();
+        assert!(matches!(control.parsed(), Ok(Some(Kind::Tag(_)))));
+
+        let decomposed = sign_kind_unchecked(
+            &key(1),
+            &Kind::Tag(Tag {
+                subject: public(2),
+                name: "author".to_owned(),
+                value: Some("e\u{301}".to_owned()),
+            }),
+        );
+        assert!(decomposed.parsed().is_err());
+    }
+    /// A home server that answers every pull with `0` as one page, whatever the budget.
+    #[derive(Debug)]
+    struct OverfullPage(Vec<SignedArtifact>);
+    impl ProtocolHandler for OverfullPage {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            let (mut send, mut recv) = conn.accept_bi().await?;
+            let _request = read_frame(&mut recv).await.map_err(refused)?;
+            let bytes = serde_json::to_vec(&Page {
+                artifacts: self.0.clone(),
+            })
+            .map_err(|error| refused(error.into()))?;
+            write_frame(&mut send, &bytes).await.map_err(refused)?;
+            send.finish()?;
+            conn.closed().await;
+            Ok(())
+        }
+    }
+    /// What a pull of `public(1)` gets from a server that sends `artifacts` as one page.
+    async fn pulled_from_overfull(artifacts: Vec<SignedArtifact>) -> Result<Vec<SignedArtifact>> {
+        let server = endpoint().await;
+        let _router = Router::builder(server.clone())
+            .accept(PULL_ALPN, OverfullPage(artifacts))
+            .spawn();
+        let client = endpoint().await;
+        fetch_page(&client, loopback(&server), &public(1), 0).await
+    }
+    /// The client checks the budget of each page it is sent. A page of several
+    /// artifacts over the budget is refused, and one oversized artifact alone is not.
+    #[tokio::test]
+    async fn a_page_over_the_byte_budget_is_refused_and_a_lone_oversized_artifact_is_not() {
+        let mut log = ArtifactLog::default();
+        let mut documents = Vec::new();
+        for _ in 0..5 {
+            let next = log
+                .sign(&key(1), &document(&"x".repeat(MAX_DOCUMENT_BYTES - 32)))
+                .unwrap();
+            log.insert(next.clone()).unwrap();
+            documents.push(next);
+        }
+        let error = pulled_from_overfull(documents).await.unwrap_err();
+        assert!(
+            format!("{error:#}").contains("over its byte budget"),
+            "{error:#}"
+        );
+
+        let lone = unknown_kind_of_size(PAGE_BYTES + 1024);
+        let pulled = pulled_from_overfull(vec![lone]).await.unwrap();
+        assert_eq!(pulled.len(), 1);
+    }
+    /// A pull to an address nothing answers must end at its deadline, not wait out
+    /// the handshake.
+    #[tokio::test]
+    async fn a_pull_from_an_unanswered_address_ends_at_its_deadline() {
+        let client = endpoint().await;
+        let mut directory = LogSink::default();
+        let started = Instant::now();
+        let error = pull_within(
+            &client,
+            unanswered_addr(),
+            &public(1),
+            &mut directory,
+            Duration::from_millis(500),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{error:#}").contains("timed out"), "{error:#}");
+    }
+    /// A pull by node ID whose address lookup never answers must end at its deadline.
+    #[tokio::test]
+    async fn a_pull_whose_lookup_never_answers_ends_at_its_deadline() {
+        let client = endpoint_with_silent_lookup().await;
+        let mut directory = LogSink::default();
+        let started = Instant::now();
+        let error = pull_within(
+            &client,
+            unanswered_id(),
+            &public(1),
+            &mut directory,
+            Duration::from_millis(500),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{error:#}").contains("timed out"), "{error:#}");
+    }
+    /// An [`ArtifactSink`] over a bare log, for the pull tests that run
+    /// without a directory.
+    #[derive(Default)]
+    struct LogSink(ArtifactLog);
+
+    impl ArtifactSink for LogSink {
+        fn receive_artifact(&mut self, artifact: &SignedArtifact) -> Result<Stored> {
+            self.0.insert(artifact.clone())
+        }
+
+        fn artifact_head_seq(&self, account: &str) -> u64 {
+            self.0.head_seq(account)
+        }
+    }
+}

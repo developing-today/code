@@ -107,26 +107,62 @@ def parse_inventory(text: str) -> list[str]:
 
 
 def normalize_issue(raw: dict) -> dict | None:
-    """Project an API issue onto the persisted fields; None for PRs."""
+    """Project an API issue onto the persisted fields; None for PRs.
+
+    A non-object item is a failed fetch (#6652): valid JSON with the
+    wrong shape must surface as FetchError — the per-repo ERROR the
+    header contract promises — never as a TypeError / AttributeError
+    that aborts the whole run.
+    """
+    if not isinstance(raw, dict):
+        raise FetchError(f"issue entry is not a JSON object: {raw!r:.80}")
     if "pull_request" in raw:
         return None
-    return {field: raw.get(field) for field in ISSUE_FIELDS}
+    projected = {field: raw.get(field) for field in ISSUE_FIELDS}
+    error = _issue_field_error(projected)
+    if error is not None:
+        raise FetchError(error)
+    return projected
+
+
+def _issue_field_error(issue) -> str | None:
+    """Field-level shape rule for one issue mapping (#6757).
+
+    Shared by the fetch path (via normalize_issue) and the persisted
+    state path (via _valid_prior_entry), so a malformed issue is the
+    same defect in both places. Oracle: the GitHub issues API shape
+    this checker consumes — `number` is a JSON integer (never a bool,
+    string, or list) and every other persisted field is a string.
+    Returns a human-readable reason, or None when well-formed.
+    """
+    if not isinstance(issue, dict):
+        return f"issue entry is not a JSON object: {issue!r:.80}"
+    number = issue.get("number")
+    if isinstance(number, bool) or not isinstance(number, int):
+        return f"issue field 'number' is not an int: {number!r:.80}"
+    for field in ("state", "title", "updated_at", "html_url"):
+        value = issue.get(field)
+        if not isinstance(value, str):
+            return f"issue field {field!r} is not a string: {value!r:.80}"
+    return None
 
 
 def fetch_issues_gh(repo: str) -> list[dict]:
     """Fetch all issues for a repo via `gh api --paginate` (read-only)."""
     try:
         out = subprocess.run(
-            ["gh", "api", "--paginate",
-             f"repos/{repo}/issues?state=all&per_page=100"],
-            capture_output=True, text=True, timeout=300,
+            ["gh", "api", "--paginate", f"repos/{repo}/issues?state=all&per_page=100"],
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise FetchError(f"gh invocation failed: {exc}") from exc
     if out.returncode != 0:
         detail = (out.stderr or out.stdout).strip().splitlines()
-        raise FetchError(f"gh api failed for {repo}: "
-                         f"{detail[0] if detail else 'unknown error'}")
+        raise FetchError(
+            f"gh api failed for {repo}: {detail[0] if detail else 'unknown error'}"
+        )
     try:
         pages = json.loads(out.stdout)
     except ValueError as exc:
@@ -135,6 +171,10 @@ def fetch_issues_gh(repo: str) -> list[dict]:
     # stream; gh emits a single merged array for JSON endpoints.
     if isinstance(pages, dict):
         pages = [pages]
+    if not isinstance(pages, list):
+        raise FetchError(
+            f"unexpected gh api output for {repo}: not a JSON array of issues"
+        )
     issues = []
     for item in pages:
         normalized = normalize_issue(item)
@@ -148,11 +188,15 @@ def load_fixture(path: Path) -> dict:
 
 
 def fetch_issues_fixture(repo: str, fixture: dict) -> list[dict]:
+    if not isinstance(fixture, dict):
+        raise FetchError("fixture is not a JSON object mapping repos to issue lists")
     entry = fixture.get(repo)
     if entry is None:
         raise FetchError(f"repo {repo} absent from fixture")
     if isinstance(entry, dict) and "error" in entry:
         raise FetchError(str(entry["error"]))
+    if not isinstance(entry, list):
+        raise FetchError(f"fixture entry for {repo} is not a list of issues")
     issues = []
     for item in entry:
         normalized = normalize_issue(item)
@@ -169,11 +213,19 @@ def diff_repo(prior: dict | None, current: list[dict]) -> dict:
     """
     current_by_number = {str(i["number"]): i for i in current}
     if prior is None:
-        return {"baseline": True, "state": current_by_number,
-                "counts": {"open": sum(1 for i in current if i["state"] == "open"),
-                           "closed": sum(1 for i in current if i["state"] == "closed"),
-                           "total": len(current)},
-                "new": [], "closed": [], "reopened": [], "changed": []}
+        return {
+            "baseline": True,
+            "state": current_by_number,
+            "counts": {
+                "open": sum(1 for i in current if i["state"] == "open"),
+                "closed": sum(1 for i in current if i["state"] == "closed"),
+                "total": len(current),
+            },
+            "new": [],
+            "closed": [],
+            "reopened": [],
+            "changed": [],
+        }
     new, closed, reopened, changed = [], [], [], []
     for number, issue in current_by_number.items():
         old = prior.get(number)
@@ -183,28 +235,70 @@ def diff_repo(prior: dict | None, current: list[dict]) -> dict:
             closed.append(issue)
         elif old["state"] == "closed" and issue["state"] == "open":
             reopened.append(issue)
-        elif (old["title"] != issue["title"]
-              or old["updated_at"] != issue["updated_at"]
-              or old["state"] != issue["state"]):
+        elif (
+            old["title"] != issue["title"]
+            or old["updated_at"] != issue["updated_at"]
+            or old["state"] != issue["state"]
+        ):
             changed.append(issue)
-    return {"baseline": False, "state": current_by_number,
-            "counts": None, "new": new, "closed": closed,
-            "reopened": reopened, "changed": changed}
+    return {
+        "baseline": False,
+        "state": current_by_number,
+        "counts": None,
+        "new": new,
+        "closed": closed,
+        "reopened": reopened,
+        "changed": changed,
+    }
 
 
-def run_check(inventory_text: str, state: dict, fetch, now: str) -> tuple[dict, list[str], bool]:
+def _valid_prior_entry(entry) -> bool:
+    """Shape-check one persisted per-repo state entry (#6652).
+
+    A wrong-shape persisted entry (an int, a list, an issues mapping
+    whose values are not objects, or — #6757 — an issue object whose
+    fields are missing or wrong-typed, or whose key disagrees with its
+    number) is reported per-repo by run_check instead of crashing
+    diff_repo's subscripts for every repo.
+    """
+    if not isinstance(entry, dict):
+        return False
+    issues = entry.get("issues")
+    return isinstance(issues, dict) and all(
+        isinstance(v, dict) and _issue_field_error(v) is None and k == str(v["number"])
+        for k, v in issues.items()
+    )
+
+
+def run_check(
+    inventory_text: str, state: dict, fetch, now: str
+) -> tuple[dict, list[str], bool]:
     """Run one check over all watched repos.
 
     Returns (new_state, report_lines, had_error). Pure apart from the
     injected `fetch` callable, so tests drive it with fixtures.
     """
     repos = parse_inventory(inventory_text)
+    if not isinstance(state, dict):
+        raise FetchError("persisted state is not a JSON object")
     prior_repos = state.get("repos", {})
+    if not isinstance(prior_repos, dict):
+        raise FetchError("persisted state 'repos' is not a JSON object")
     new_repos = dict(prior_repos)
     lines = [f"# Repo-universe issue check — {now}", ""]
     had_error = False
     total_delta = 0
     for repo in repos:
+        prior_entry = prior_repos.get(repo)
+        if prior_entry is not None and not _valid_prior_entry(prior_entry):
+            had_error = True
+            lines.append(f"## {repo}")
+            lines.append(
+                "- ERROR: persisted state entry is malformed; "
+                "repo skipped, state left untouched"
+            )
+            lines.append("")
+            continue
         try:
             issues = fetch(repo)
         except FetchError as exc:
@@ -213,34 +307,49 @@ def run_check(inventory_text: str, state: dict, fetch, now: str) -> tuple[dict, 
             lines.append(f"- ERROR: fetch failed: {exc}")
             lines.append("")
             continue
-        prior_entry = prior_repos.get(repo)
         result = diff_repo(prior_entry["issues"] if prior_entry else None, issues)
-        entry = {"watermark": max((i["updated_at"] or "" for i in issues), default=None),
-                 "issues": result["state"]}
+        entry = {
+            "watermark": max((i["updated_at"] or "" for i in issues), default=None),
+            "issues": result["state"],
+        }
         if prior_entry and prior_entry.get("issues") == result["state"]:
             entry["watermark"] = prior_entry.get("watermark")
         new_repos[repo] = entry
         lines.append(f"## {repo}")
         if result["baseline"]:
             c = result["counts"]
-            lines.append(f"- baseline: {c['total']} issues recorded "
-                         f"({c['open']} open, {c['closed']} closed); "
-                         f"history not listed as new")
+            lines.append(
+                f"- baseline: {c['total']} issues recorded "
+                f"({c['open']} open, {c['closed']} closed); "
+                f"history not listed as new"
+            )
         else:
-            delta = (result["new"] + result["closed"]
-                     + result["reopened"] + result["changed"])
+            delta = (
+                result["new"]
+                + result["closed"]
+                + result["reopened"]
+                + result["changed"]
+            )
             total_delta += len(delta)
             if not delta:
                 lines.append("- no changes")
-            for label, group in (("new", result["new"]), ("closed", result["closed"]),
-                                 ("reopened", result["reopened"]),
-                                 ("changed", result["changed"])):
+            for label, group in (
+                ("new", result["new"]),
+                ("closed", result["closed"]),
+                ("reopened", result["reopened"]),
+                ("changed", result["changed"]),
+            ):
                 for issue in sorted(group, key=lambda i: i["number"]):
-                    lines.append(f"- {label}: #{issue['number']} {issue['title']} "
-                                 f"({issue['html_url']})")
+                    lines.append(
+                        f"- {label}: #{issue['number']} {issue['title']} "
+                        f"({issue['html_url']})"
+                    )
         lines.append("")
-    lines.insert(2, f"Repos checked: {len(repos)}; issues changed: {total_delta}; "
-                    f"errors: {'yes' if had_error else 'no'}")
+    lines.insert(
+        2,
+        f"Repos checked: {len(repos)}; issues changed: {total_delta}; "
+        f"errors: {'yes' if had_error else 'no'}",
+    )
     new_state = {"version": 1, "last_run": now, "repos": new_repos}
     return new_state, lines, had_error
 
@@ -248,8 +357,9 @@ def run_check(inventory_text: str, state: dict, fetch, now: str) -> tuple[dict, 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--inventory", default="doc/fleet/repo-universe.yaml")
-    parser.add_argument("--state-dir",
-                        default="~/.local/state/repo-universe-issue-checker")
+    parser.add_argument(
+        "--state-dir", default="~/.local/state/repo-universe-issue-checker"
+    )
     parser.add_argument("--fixture", help="JSON fixture replacing GitHub fetches")
     parser.add_argument("--now", help="ISO-8601 run timestamp (default: now, UTC)")
     args = parser.parse_args(argv)
@@ -258,8 +368,11 @@ def main(argv: list[str] | None = None) -> int:
     state_dir = Path(args.state_dir).expanduser()
     state_dir.mkdir(parents=True, exist_ok=True)
     state_path = state_dir / "state.json"
-    state = (json.loads(state_path.read_text())
-             if state_path.exists() else {"version": 1, "repos": {}})
+    state = (
+        json.loads(state_path.read_text())
+        if state_path.exists()
+        else {"version": 1, "repos": {}}
+    )
     inventory_text = Path(args.inventory).read_text()
 
     if args.fixture:
@@ -268,7 +381,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         fetch = fetch_issues_gh
 
-    new_state, lines, had_error = run_check(inventory_text, state, fetch, now)
+    try:
+        new_state, lines, had_error = run_check(inventory_text, state, fetch, now)
+    except FetchError as exc:
+        # A single named load error for state-level shape failures
+        # (#6652): no traceback, no report, no state write.
+        print(f"error: {exc}; no report or state written", file=sys.stderr)
+        return 2
 
     date = now[:10]
     report_path = state_dir / f"report-{date}.md"

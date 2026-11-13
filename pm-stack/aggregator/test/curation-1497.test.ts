@@ -61,6 +61,10 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   // archive page enters at dropdown tier — no curation ruling promotes
   // it, and new pages do not take primary slots without one.
   digest: "dropdown",
+  // Post-#1497 addition (#8867, 2026-11-12): the decision-sets index
+  // enters at dropdown tier — no curation ruling promotes it, and
+  // new pages do not take primary slots without one.
+  decisions: "dropdown",
 };
 
 describe("the #1497 decision table is applied to the manifest", () => {

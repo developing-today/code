@@ -139,7 +139,13 @@ export function dnsSectionFromRegisterJson(
     // isIsoDate re-checks the components, so leap dates
     // (2024-02-29) still parse.
     if (typeof renewal !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(renewal) || !isIsoDate(renewal)) return null;
-    if (price !== null && price !== undefined && (typeof price !== "number" || !Number.isFinite(price))) return null;
+    // Money is non-negative: the shared gate isDnsSection refuses
+    // negative prices (#4226), so a finite negative price here is a
+    // malformation like any other — return null and let the caller
+    // fall back to the Markdown parse instead of minting a section
+    // the gate will discard whole (#4883). Zero stays valid.
+    if (price !== null && price !== undefined && (typeof price !== "number" || !Number.isFinite(price) || price < 0))
+      return null;
     if (autoRenew !== null && autoRenew !== undefined && typeof autoRenew !== "boolean") return null;
     seen.add(domain);
     const md = mdByDomain.get(domain);

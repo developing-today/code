@@ -304,7 +304,11 @@ in
           Service = {
             Type = "oneshot";
             ExecStart = cfg.coldStoreNightly.script;
-            TimeoutStartSec = "30m";
+            # 120m, not 30m: the Turso export leg alone ran past
+            # 30m on 2026-11-08/09/10, and systemd's timeout kill
+            # leaked its scratch directory each night
+            # (darwin-nix#373).
+            TimeoutStartSec = "120m";
           };
         };
       })

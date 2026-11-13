@@ -44,6 +44,7 @@ async function supabaseQuery(token: string, ref: string, sql: string): Promise<u
  * Create the shared muse-dev2 client resolver. In-flight calls share one
  * attempt and successful clients stay cached; a null result is fail-soft
  * but not permanent, so a later call can recover.
+ * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
  */
 export function createSupabaseClientGetter(
   resolveSecret: typeof resolveBwsSecret = resolveBwsSecret,
@@ -56,7 +57,9 @@ export function createSupabaseClientGetter(
         const token = await resolveSecret("supabase.muse-dev2.access-token-muse-cli");
         if (!token) return null;
         const ref =
-          process.env.SUPABASE_PROJECT_REF ?? (await resolveSecret("supabase.muse-dev2.project-ref")) ?? "keihfchslgjetkmnmzra";
+          process.env.SUPABASE_PROJECT_REF ??
+          (await resolveSecret("supabase.muse-dev2.project-ref")) ??
+          "keihfchslgjetkmnmzra";
         return {
           ref,
           async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
@@ -71,7 +74,7 @@ export function createSupabaseClientGetter(
       });
     }
     return clientPromise;
-  }
+  };
 }
 
 /** The shared muse-dev2 client, fail-soft while its management token is unavailable. */

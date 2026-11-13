@@ -15,7 +15,7 @@ the #5410 triage (task 10035) checked:
 
 - `pkgs/atlas-search/crates/atlas-core/src/filters.rs` defines
   `Filters { kinds, topics, projects, clients, max_sensitivity, since,
-  until, until_exclusive }` in code. Dimensions are hand-built in both
+until, until_exclusive }` in code. Dimensions are hand-built in both
   `Filters::where_clause` and `Filters::session_clauses`, with two
   different storage shapes: scalar columns matched by `IN (...)`
   (`l.kind`, `s.client`) and JSON-list text columns matched by `LIKE`
@@ -39,10 +39,10 @@ the #5410 triage (task 10035) checked:
 
 ## 1. Problem
 
-The filter *vocabulary* is already data-driven — filters match whatever
+The filter _vocabulary_ is already data-driven — filters match whatever
 labels the classification pass wrote onto chunks (kinds, topics,
 projects, clients), so a new label value is filterable immediately. The
-*dimensions and their semantics* are not: adding one classification
+_dimensions and their semantics_ are not: adding one classification
 dimension (say a source-app label) today means a coordinated code change
 in atlas-core's SQL builders, the CLI flag surface, atlas-proto's
 request types, and serve-mode validation — plus the dedupe key. Match
@@ -51,7 +51,7 @@ projects matching is a raw `LIKE` interpolation, which is #5375
 (unescaped `%`/`_` act as wildcards; a `"` in a value crosses JSON
 element boundaries).
 
-The cost is not the four edits; it is that a *reclassification* — a data
+The cost is not the four edits; it is that a _reclassification_ — a data
 event — cannot change what searches can slice by without a binary
 release, and every new dimension re-opens the semantics question in
 four places at once.
@@ -97,25 +97,25 @@ Today's two shapes, plus the date range, become the manifest's closed
 shape vocabulary — the manifest names one of these, never a column or
 SQL fragment of its own:
 
-| shape | storage | today's example |
-|---|---|---|
-| `scalar_in` | one value per row in a label column | `l.kind`, `s.client` |
-| `json_list` | JSON list text in a label column | `l.topics`, `l.projects` |
-| `timestamp_range` | timestamp column, `since`/`until` pair | `s.created_at` |
-| `generic_list` | one row per (session, dimension key) in the generic label store, value = JSON list text | — (new in phase 2) |
+| shape             | storage                                                                                 | today's example          |
+| ----------------- | --------------------------------------------------------------------------------------- | ------------------------ |
+| `scalar_in`       | one value per row in a label column                                                     | `l.kind`, `s.client`     |
+| `json_list`       | JSON list text in a label column                                                        | `l.topics`, `l.projects` |
+| `timestamp_range` | timestamp column, `since`/`until` pair                                                  | `s.created_at`           |
+| `generic_list`    | one row per (session, dimension key) in the generic label store, value = JSON list text | — (new in phase 2)       |
 
 A new dimension is a new manifest row of an existing shape. A new
-*shape* is a code change — deliberately: shapes are where SQL is born,
+_shape_ is a code change — deliberately: shapes are where SQL is born,
 and SQL stays code (§6).
 
 The `generic_list` shape is what makes "new dimension" mean what §1
-promised. If every dimension needed its own label *column*, a new
+promised. If every dimension needed its own label _column_, a new
 dimension would still need a code/DDL change and the manifest would
 only ever expose pre-existing columns — the release coupling this
 design exists to remove, kept. So phases 2–4 include one generic,
 code-built label store: a table keyed by (session, dimension) whose
 value is a JSON list, written by the classification pass for every
-manifest-declared `generic_list` dimension. The dimension *key* is
+manifest-declared `generic_list` dimension. The dimension _key_ is
 data; the store, its shapes, and its query construction are code,
 once. Today's `topics`/`projects` columns may stay as `json_list`
 or migrate into the generic store — an implementation choice that
@@ -128,7 +128,7 @@ Each dimension declares `exact` or `pattern`:
 - **`exact` is the default and the only semantics a manifest may assume
   silently.** For `scalar_in`, `IN (...)` as today. For `json_list`,
   element equality — and element equality is a statement about
-  *decoded* JSON, so the construction has two steps, both required:
+  _decoded_ JSON, so the construction has two steps, both required:
   (1) JSON-encode the requested value, so the value `a", "b` becomes
   the element text `"a\", \"b"` and can never line up with the two
   elements `"a"`, `"b"`; (2) match that encoded element text with
@@ -139,7 +139,7 @@ Each dimension declares `exact` or `pattern`:
   the boundary-crossing match, and a pattern built from the raw value
   reproduces it). A `json_each` decoded-element comparison is an
   equally valid implementation of the same semantics; the invariant
-  the phase-1 tests must pin is *decoded element equality*, not any
+  the phase-1 tests must pin is _decoded element equality_, not any
   particular SQL spelling.
 - **`pattern` is an explicit per-dimension opt-in** for dimensions
   whose values are meant to be globbed. Pattern values are translated
@@ -167,7 +167,7 @@ could carry. The design holds #5410's hard constraint by construction:
    `filters.rs`, untouched. A manifest row naming a sensitivity or
    ceiling dimension is a validation error (§7), not a feature.
 2. **Dimensions bind to an allowlist, in code.** A manifest row's
-   binding is its *shape* plus, for the column shapes, one of the
+   binding is its _shape_ plus, for the column shapes, one of the
    code-known label columns (today: `kind`, `client`, `topics`,
    `projects`, `created_at`). For `generic_list` the binding is the
    generic label store itself and the dimension key is data — that
@@ -177,7 +177,7 @@ could carry. The design holds #5410's hard constraint by construction:
    dimensions, and no key in the sensitivity namespace exists at
    all, per point 1). An unknown shape, an unknown column, or a
    reserved key fails validation. What a manifest can never bind is
-   a new *storage mechanism*: stores and shapes are code, keys and
+   a new _storage mechanism_: stores and shapes are code, keys and
    columns-from-the-allowlist are data.
 3. **A manifest can narrow or extend the non-sensitivity surface; it
    can never widen visibility.** The ceiling clause is emitted first,
@@ -204,7 +204,7 @@ could carry. The design holds #5410's hard constraint by construction:
   reason, on every backend open, until fixed. Never a silent widening:
   the built-in surface filters a subset of what a valid manifest could
   declare, and the ceiling is code either way. A corpus whose manifest
-  *newer than the binary understands* (`manifest_version` above the
+  _newer than the binary understands_ (`manifest_version` above the
   supported maximum) is the same case: built-in + loud log, because a
   newer manifest can only add non-sensitivity dimensions.
 - **Dedupe-key versioning.** Serve mode's `CacheKey` gains the
@@ -220,25 +220,25 @@ could carry. The design holds #5410's hard constraint by construction:
 ## 8. Delivery phases (for the implementation issues, not this note)
 
 1. **#5375 escaping patch** — §5 `exact` semantics in the current
-  hand-coded builder; parity fixtures updated deliberately.
+   hand-coded builder; parity fixtures updated deliberately.
 2. **Manifest schema + loader in atlas-core**, with today's surface
-  expressed as the built-in manifest, plus the generic label store
-  (§4 `generic_list`) and its query construction. Acceptance test:
-  SQL emitted under the built-in manifest is byte-identical to
-  today's (the parity fixtures are the oracle).
+   expressed as the built-in manifest, plus the generic label store
+   (§4 `generic_list`) and its query construction. Acceptance test:
+   SQL emitted under the built-in manifest is byte-identical to
+   today's (the parity fixtures are the oracle).
 3. **Generic dimensions end-to-end:** atlas-proto `FilterSpec` gains a
-  dimension map (the four named fields remain as aliases for one
-  release), the CLI generates its flags from the loaded surface
-  instead of the two hand-mapped call sites, serve-mode validation
-  checks requests against the effective surface.
+   dimension map (the four named fields remain as aliases for one
+   release), the CLI generates its flags from the loaded surface
+   instead of the two hand-mapped call sites, serve-mode validation
+   checks requests against the effective surface.
 4. **CacheKey versioning** per §7, plus the surface identity in job
-  metadata.
+   metadata.
 5. **Manifest writer** in the classification/publish pass, same
-  transaction as the labels (§3); first real consumer: one new
-  `generic_list` dimension (e.g. source-app) declared by manifest
-  only — dimension key, classification values, and filter surface
-  all data, no binary change — the acceptance demonstration for the
-  whole design.
+   transaction as the labels (§3); first real consumer: one new
+   `generic_list` dimension (e.g. source-app) declared by manifest
+   only — dimension key, classification values, and filter surface
+   all data, no binary change — the acceptance demonstration for the
+   whole design.
 
 Each phase is independently shippable and independently revertible;
 phases 2–4 change no visible behaviour with a built-in manifest in
@@ -277,13 +277,13 @@ revisited instead of declaring victory.
 
 **NO-GO trigger, named in advance:** if the classification/publish
 pass cannot write the manifest in the same transaction as the labels
-in *both* modes (local publish file and Turso), §3's atomicity premise
+in _both_ modes (local publish file and Turso), §3's atomicity premise
 fails and the home decision must be re-taken before any loader work.
 
 ---
 
-*Evidence index: #5410 (issue + task 10035 triage, 2026-11-05); #5375
+_Evidence index: #5410 (issue + task 10035 triage, 2026-11-05); #5375
 (LIKE-escaping probes, verified on `a65000aeabf`); `filters.rs`,
 `atlas-proto/src/lib.rs`, `atlas-search/src/main.rs`,
 `atlas-search/src/server.rs` (`CacheKey`), `atlas-core/src/local.rs`
-(publish-copy attach + provenance strings) at `04f78696ab`.*
+(publish-copy attach + provenance strings) at `04f78696ab`._

@@ -31,8 +31,10 @@ clippy-lint
 clippy-native-shell
 web-lint
 cargo-check
+prod-lines-check
 test-unit
 test-native-shell
+test-rust-examples
 test-shard-0
 test-shard-1
 test-shard-2
@@ -41,9 +43,12 @@ test-web-unit
 test-web-typecheck
 roc-test
 roc-examples
+rust-counter-wasm
 crash-gate-sampled
 crash-gate-sweep
 crash-gate-control
 crash-gate-ingest
 just-recipes-drift
+build-sh-test
+just-recipes-alias-admission
 doc

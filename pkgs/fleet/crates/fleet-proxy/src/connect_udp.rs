@@ -58,7 +58,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -260,7 +260,18 @@ fn percent_decode(s: &str) -> String {
 /// the trailing CR/LF. `Ok(None)` is a clean EOF before any byte.
 fn read_head_line(reader: &mut impl BufRead, total: &mut usize) -> std::io::Result<Option<String>> {
     let mut line = Vec::new();
-    let n = reader.read_until(b'\n', &mut line)?;
+    // Bound the read itself, not just the accounting after it
+    // (#6511): take() caps accumulation at one byte past the
+    // remaining head budget, so a single newline-free line is
+    // refused as soon as the cumulative total crosses
+    // MAX_HEAD_BYTES instead of after the whole line has already
+    // been allocated. The +1 lets a line that exactly fills the
+    // remaining budget (total == MAX_HEAD_BYTES) still succeed.
+    let remaining = MAX_HEAD_BYTES.saturating_sub(*total);
+    let n = reader
+        .by_ref()
+        .take((remaining + 1) as u64)
+        .read_until(b'\n', &mut line)?;
     *total += n;
     if *total > MAX_HEAD_BYTES {
         return Err(std::io::Error::new(
@@ -536,10 +547,61 @@ pub fn listen(listen_addr: &str) -> std::io::Result<TcpListener> {
 /// capability is enabled; also driven directly by the tests and
 /// the proof harness.
 pub fn serve(listener: TcpListener) {
+    serve_with_cap(listener, MAX_SESSIONS);
+}
+
+/// Maximum concurrent CONNECT-UDP sessions per endpoint
+/// listener (#6152). One accepted connection spawns one thread
+/// plus one UDP socket in [`serve_session`], so an unbounded
+/// accept loop lets a burst of one-datagram sources pin
+/// unbounded threads and sockets for the full relay idle
+/// horizon. Past the cap a connection is
+/// refused loudly (closed at accept, peer and cap named in the
+/// log) and no thread spawns for it.
+pub const MAX_SESSIONS: usize = 64;
+
+/// Accept loop with an explicit session cap, sharing one live
+/// count across the loop's spawned sessions: each admitted
+/// session holds one count until [`serve_session`] returns.
+/// Preferred over a process-global counter so tests and
+/// harnesses driving several listeners stay isolated from each
+/// other.
+pub fn serve_with_cap(listener: TcpListener, max_sessions: usize) {
+    let live = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                std::thread::spawn(move || serve_session(stream));
+                let mut cur = live.load(Ordering::SeqCst);
+                let admitted = loop {
+                    if cur >= max_sessions {
+                        break false;
+                    }
+                    match live.compare_exchange_weak(
+                        cur,
+                        cur + 1,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => break true,
+                        Err(next) => cur = next,
+                    }
+                };
+                if !admitted {
+                    let peer = stream
+                        .peer_addr()
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|_| "<unknown>".to_string());
+                    eprintln!(
+                        "fleet connect-udp: at session cap ({max_sessions} sessions); refusing {peer}: closing without spawning a session"
+                    );
+                    drop(stream);
+                    continue;
+                }
+                let live = Arc::clone(&live);
+                std::thread::spawn(move || {
+                    serve_session(stream);
+                    live.fetch_sub(1, Ordering::SeqCst);
+                });
             }
             Err(_) => continue,
         }
@@ -947,6 +1009,33 @@ mod tests {
         addr
     }
 
+    /// The endpoint cap (#6152): with two session slots, two
+    /// genuine sessions occupy the cap and a third connection
+    /// is refused — accepted, then closed without a session.
+    #[test]
+    fn session_cap_refuses_excess_connections() {
+        assert_eq!(MAX_SESSIONS, 64);
+        let listener = listen("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || serve_with_cap(listener, 2));
+        // Two genuine sessions hold both slots for the rest of
+        // the test (idle horizon far exceeds the test).
+        let _a = UdpProxyClient::connect(&addr.to_string(), "127.0.0.1", 9).unwrap();
+        let _b = UdpProxyClient::connect(&addr.to_string(), "127.0.0.1", 9).unwrap();
+        // The excess connection is closed, not served: a read
+        // sees clean EOF rather than a proxy greeting.
+        let mut third = std::net::TcpStream::connect(addr).unwrap();
+        third
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut one = [0u8; 1];
+        match third.read(&mut one) {
+            Ok(0) => {}
+            Ok(_) => panic!("excess connection received bytes instead of a refusal close"),
+            Err(e) => panic!("excess connection read failed unexpectedly: {e}"),
+        }
+    }
+
     #[test]
     fn relay_ping_pong_and_burst() {
         let echo_port = spawn_echo();
@@ -1012,6 +1101,71 @@ mod tests {
         let mut total = 0;
         let line = read_head_line(&mut reader, &mut total).unwrap().unwrap();
         assert!(line.contains("400"), "expected 400, got: {line}");
+    }
+
+    #[test]
+    fn head_line_bound_applies_during_the_read() {
+        // #6511: a single newline-free line must be refused once
+        // the cumulative total crosses MAX_HEAD_BYTES, with the
+        // accumulation itself capped -- not after the whole line
+        // has already been read into memory.
+        use std::io::Cursor;
+        let mut reader = Cursor::new(vec![b'x'; MAX_HEAD_BYTES + 4096]);
+        let mut total = 0;
+        let err = read_head_line(&mut reader, &mut total).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert!(err.to_string().contains("exceeds the byte bound"), "{err}");
+        // The reader stopped at most one byte past the bound, and
+        // the accounting never ran past it either.
+        assert!(
+            reader.position() <= (MAX_HEAD_BYTES + 1) as u64,
+            "consumed {}",
+            reader.position()
+        );
+        assert!(total <= MAX_HEAD_BYTES + 1, "total {total}");
+    }
+
+    #[test]
+    fn head_line_bound_is_cumulative_across_lines() {
+        // #6511: the bound is on the whole head, so a second line
+        // gets only the remaining budget plus the one probe byte.
+        use std::io::Cursor;
+        let mut data = vec![b'a'; MAX_HEAD_BYTES - 10];
+        data.push(b'\n');
+        data.extend(vec![b'b'; 4096]);
+        let mut reader = Cursor::new(data);
+        let mut total = 0;
+        let line = read_head_line(&mut reader, &mut total).unwrap().unwrap();
+        assert_eq!(line.len(), MAX_HEAD_BYTES - 10);
+        let err = read_head_line(&mut reader, &mut total).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert!(total <= MAX_HEAD_BYTES + 1, "total {total}");
+    }
+
+    #[test]
+    fn head_line_exactly_at_the_bound_still_reads() {
+        // #6511: a line whose bytes (newline included) exactly
+        // fill the budget is at the bound, not over it, and a
+        // clean EOF right at the bound is still Ok(None).
+        use std::io::Cursor;
+        let mut data = vec![b'c'; MAX_HEAD_BYTES - 1];
+        data.push(b'\n');
+        let mut reader = Cursor::new(data);
+        let mut total = 0;
+        let line = read_head_line(&mut reader, &mut total).unwrap().unwrap();
+        assert_eq!(line.len(), MAX_HEAD_BYTES - 1);
+        assert_eq!(total, MAX_HEAD_BYTES);
+        assert!(read_head_line(&mut reader, &mut total).unwrap().is_none());
+    }
+
+    #[test]
+    fn request_head_over_bound_single_line_is_a_400() {
+        // #6511: at the read_request boundary the refusal surfaces
+        // as the existing 400 shape, promptly on the one line.
+        use std::io::Cursor;
+        let mut reader = Cursor::new(vec![b'x'; MAX_HEAD_BYTES + 1024]);
+        let (status, _reason) = read_request(&mut reader).unwrap_err();
+        assert_eq!(status, 400);
     }
 
     #[test]

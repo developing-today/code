@@ -15,6 +15,13 @@
       url = "github:numtide/flake-utils";
       inputs.systems.follows = "systems";
     };
+    # Crane: splits dependency compilation out of the package build
+    # so workspace-source changes reuse the dependency layer
+    # (code#8392). Pinned to the rev the code repo's root lock
+    # already carries.
+    crane = {
+      url = "github:ipetkov/crane/01bc1d404a51a0a07e9d8759cd50a7903e218c82";
+    };
   };
 
   outputs =
@@ -23,6 +30,7 @@
       nixpkgs,
       rust-overlay,
       flake-utils,
+      crane,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -41,7 +49,8 @@
           cargo = rustToolchain;
           rustc = rustToolchain;
         };
-        atlas-search = pkgs.callPackage ./default.nix { inherit rustPlatform; };
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        atlas-search = pkgs.callPackage ./default.nix { inherit rustPlatform craneLib; };
       in
       {
         packages = {

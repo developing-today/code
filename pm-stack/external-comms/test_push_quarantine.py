@@ -4,11 +4,14 @@ silently drop a malformed outbox line.
 
 Each case runs the real `record-external-send push` as a subprocess
 with an isolated EXTERNAL_COMMS_STATE_DIR and a loopback-refused
-Supabase URL (127.0.0.1:9), so valid records stay pending with retry
+Turso URL (127.0.0.1:9), so valid records stay pending with retry
 bookkeeping and no database is needed.
 
 Run: python3 -m unittest test_push_quarantine -v   (from this dir)
 """
+
+import contextlib
+import io
 import json
 import os
 import random
@@ -20,10 +23,17 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "record-external-send")
 TORN = '{"id":"torn-record","identity":"drew","channel":"emai'
-VALID = {"id": "valid-record", "identity": "drew", "channel": "email",
-         "destination": "x@example.com", "kind": "bug-report",
-         "approval_basis": "per-item", "summary": "control record",
-         "sent_at": "2026-11-05T00:00:00+00:00", "_attempts": 0}
+VALID = {
+    "id": "valid-record",
+    "identity": "drew",
+    "channel": "email",
+    "destination": "x@example.com",
+    "kind": "bug-report",
+    "approval_basis": "per-item",
+    "summary": "control record",
+    "sent_at": "2026-11-05T00:00:00+00:00",
+    "_attempts": 0,
+}
 
 
 class PushCase(unittest.TestCase):
@@ -32,12 +42,19 @@ class PushCase(unittest.TestCase):
         with open(os.path.join(state, "outbox.jsonl"), "w") as f:
             for ln in lines:
                 f.write(ln + "\n")
-        env = dict(os.environ,
-                   EXTERNAL_COMMS_STATE_DIR=state,
-                   EXTERNAL_COMMS_SUPABASE_URL="http://127.0.0.1:9",
-                   EXTERNAL_COMMS_SERVICE_KEY="dummy-test-key")
-        out = subprocess.run([sys.executable, SCRIPT, "push"], env=env,
-                             capture_output=True, text=True, timeout=60)
+        env = dict(
+            os.environ,
+            EXTERNAL_COMMS_STATE_DIR=state,
+            EXTERNAL_COMMS_TURSO_URL="http://127.0.0.1:9",
+            EXTERNAL_COMMS_TURSO_TOKEN="dummy-test-key",
+        )
+        out = subprocess.run(
+            [sys.executable, SCRIPT, "push"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
         self.assertEqual(out.returncode, 0, out.stderr)
         health = {}
         hpath = os.path.join(state, "pusher-health.json")
@@ -66,15 +83,12 @@ class PushCase(unittest.TestCase):
         # health accounts for the loss; no clean-drain claim
         self.assertEqual(health["last_run_quarantined"], 1)
         self.assertEqual(health["total_quarantined"], 1)
-        self.assertEqual(health["last_quarantine_reason"],
-                         quarantine[0]["_reason"])
+        self.assertEqual(health["last_quarantine_reason"], quarantine[0]["_reason"])
         self.assertNotIn("last_drain_ok_at", health)
-        self.assertEqual(health["last_lossy_drain_at"],
-                         health["last_run_at"])
+        self.assertEqual(health["last_lossy_drain_at"], health["last_run_at"])
 
     def test_mixed_valid_and_torn(self):
-        summary, health, quarantine, outbox = self.run_push(
-            [json.dumps(VALID), TORN])
+        summary, health, quarantine, outbox = self.run_push([json.dumps(VALID), TORN])
         self.assertEqual(summary["quarantined"], 1)
         self.assertEqual(summary["pending"], 1)
         # valid control stays pending with retry bookkeeping
@@ -88,8 +102,7 @@ class PushCase(unittest.TestCase):
         self.assertEqual(health["total_quarantined"], 1)
 
     def test_valid_only_control_has_no_quarantine(self):
-        summary, health, quarantine, outbox = self.run_push(
-            [json.dumps(VALID)])
+        summary, health, quarantine, outbox = self.run_push([json.dumps(VALID)])
         self.assertEqual(summary["quarantined"], 0)
         self.assertEqual(quarantine, [])
         self.assertEqual(health["last_run_quarantined"], 0)
@@ -132,24 +145,23 @@ class GeneratedConservationCase(unittest.TestCase):
                 lines.append(json.dumps(val))
                 want_quarantined.append(json.dumps(val))
             else:
-                junk = "x" + "".join(rng.choice("abcdefghij")
-                                     for _ in range(rng.randrange(1, 30)))
+                junk = "x" + "".join(
+                    rng.choice("abcdefghij") for _ in range(rng.randrange(1, 30))
+                )
                 lines.append(junk)
                 want_quarantined.append(junk)
         rng.shuffle(lines)
         summary, health, quarantine, outbox = case.run_push(lines)
         self.assertEqual(summary["quarantined"], len(want_quarantined))
         self.assertEqual(summary["pending"], len(want_valid_ids))
-        self.assertEqual(summary["quarantined"] + summary["pending"],
-                         len(lines))
-        self.assertEqual(sorted(q["_raw"] for q in quarantine),
-                         sorted(want_quarantined))
+        self.assertEqual(summary["quarantined"] + summary["pending"], len(lines))
+        self.assertEqual(
+            sorted(q["_raw"] for q in quarantine), sorted(want_quarantined)
+        )
         kept = [json.loads(ln) for ln in outbox]
-        self.assertEqual(sorted(r["id"] for r in kept),
-                         sorted(want_valid_ids))
+        self.assertEqual(sorted(r["id"] for r in kept), sorted(want_valid_ids))
         self.assertTrue(all(r["_attempts"] == 1 for r in kept))
-        self.assertEqual(health["total_quarantined"],
-                         len(want_quarantined))
+        self.assertEqual(health["total_quarantined"], len(want_quarantined))
 
 
 class QuarantineRollbackCase(unittest.TestCase):
@@ -160,15 +172,14 @@ class QuarantineRollbackCase(unittest.TestCase):
     def test_failed_append_rolls_back_to_starting_offset(self):
         import importlib.machinery
         import importlib.util
+
         state = tempfile.mkdtemp(prefix="extcomms-rollback-")
         os.environ["EXTERNAL_COMMS_STATE_DIR"] = state
-        loader = importlib.machinery.SourceFileLoader("rec_ext_send",
-                                                      SCRIPT)
+        loader = importlib.machinery.SourceFileLoader("rec_ext_send", SCRIPT)
         spec = importlib.util.spec_from_loader("rec_ext_send", loader)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        mod.quarantine_line('{"good"', "2026-11-05T00:00:00+00:00",
-                            "json-decode: seed")
+        mod.quarantine_line('{"good"', "2026-11-05T00:00:00+00:00", "json-decode: seed")
         with open(mod.QUARANTINE) as f:
             before = f.read()
         real_fsync = os.fsync
@@ -179,17 +190,93 @@ class QuarantineRollbackCase(unittest.TestCase):
         os.fsync = boom
         try:
             with self.assertRaises(OSError):
-                mod.quarantine_line(TORN, "2026-11-05T00:01:00+00:00",
-                                    "json-decode: torn")
+                mod.quarantine_line(
+                    TORN, "2026-11-05T00:01:00+00:00", "json-decode: torn"
+                )
         finally:
             os.fsync = real_fsync
         with open(mod.QUARANTINE) as f:
             self.assertEqual(f.read(), before)
-        mod.quarantine_line(TORN, "2026-11-05T00:02:00+00:00",
-                            "json-decode: torn")
+        mod.quarantine_line(TORN, "2026-11-05T00:02:00+00:00", "json-decode: torn")
         with open(mod.QUARANTINE) as f:
             entries = [json.loads(ln) for ln in f if ln.strip()]
         self.assertEqual(entries[-1]["_raw"], TORN)
+
+
+class MidDrainSpillCase(unittest.TestCase):
+    """#6875: a record spilled while the pusher drains must survive the
+    drain. The old do_push() rewrote the outbox from its initial read
+    set alone, so a line appended between the read and the os.replace
+    was never inserted and silently vanished while the pusher reported
+    a clean drain. Driven in-process (the #6875 probe's shape): the
+    transport is stubbed, and inserting record A triggers the real
+    spill() of record B mid-drain."""
+
+    def load_module(self, state):
+        import importlib.machinery
+        import importlib.util
+
+        os.environ["EXTERNAL_COMMS_STATE_DIR"] = state
+        loader = importlib.machinery.SourceFileLoader("rec_ext_send_6875", SCRIPT)
+        spec = importlib.util.spec_from_loader("rec_ext_send_6875", loader)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.db_config = lambda: ("stub", "stub")
+        return mod
+
+    def run_push(self, mod):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = mod.do_push()
+        self.assertEqual(rc, 0)
+        return json.loads(out.getvalue().strip())
+
+    def outbox_records(self, mod):
+        if not os.path.exists(mod.OUTBOX):
+            return []
+        with open(mod.OUTBOX) as f:
+            return [json.loads(ln) for ln in f if ln.strip()]
+
+    def test_spill_during_drain_survives_the_rewrite(self):
+        state = tempfile.mkdtemp(prefix="extcomms-race-")
+        mod = self.load_module(state)
+        rec_a = dict(VALID, id="record-a")
+        rec_b = dict(VALID, id="record-b")
+        mod.spill(rec_a)
+        landed = []
+
+        def fake_insert(base, key, rec):
+            landed.append(rec["id"])
+            if rec["id"] == "record-a":
+                # Exactly what do_record does after a failed DB insert,
+                # while the pusher is mid-drain.
+                mod.spill(rec_b)
+
+        mod.insert_record = fake_insert
+        summary = self.run_push(mod)
+        # B was not in the pusher's read set: not landed, but still
+        # pending in the outbox, and the run is not a clean drain.
+        self.assertEqual(landed, ["record-a"])
+        self.assertEqual(summary["landed"], 1)
+        self.assertEqual(summary["pending"], 1)
+        self.assertEqual([r["id"] for r in self.outbox_records(mod)], ["record-b"])
+        with open(mod.HEALTH) as f:
+            health = json.load(f)
+        self.assertEqual(health["pending_count"], 1)
+        self.assertNotIn("last_drain_ok_at", health)
+
+    def test_spill_before_drain_control_both_land(self):
+        state = tempfile.mkdtemp(prefix="extcomms-race-control-")
+        mod = self.load_module(state)
+        mod.spill(dict(VALID, id="record-a"))
+        mod.spill(dict(VALID, id="record-b"))
+        landed = []
+        mod.insert_record = lambda base, key, rec: landed.append(rec["id"])
+        summary = self.run_push(mod)
+        self.assertEqual(sorted(landed), ["record-a", "record-b"])
+        self.assertEqual(summary["landed"], 2)
+        self.assertEqual(summary["pending"], 0)
+        self.assertEqual(self.outbox_records(mod), [])
 
 
 if __name__ == "__main__":

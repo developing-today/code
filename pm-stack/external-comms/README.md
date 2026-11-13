@@ -13,20 +13,20 @@ with its approval basis: (a) per-item approval, (b) surfaced-with-link
 
 ## Where things live
 
-| Piece | Location |
-|---|---|
-| Table | `agent.external_comms` in Supabase project **muse-dev2** (fleet ops schema, beside `agent.tasks` / `agent.quota_records`) |
-| Migration | `migration-0001-agent-external-comms.sql` (this directory) |
-| Writer CLI + pusher | `record-external-send` (this directory; deployed from the primary clone `~/git/code` on the laptop) |
-| Outbox (spill) | `~/.local/state/external-comms/outbox.jsonl` on the laptop |
-| Pusher health | `~/.local/state/external-comms/pusher-health.json` on the laptop |
-| Pusher supervision | systemd **user** units `external-comms-pusher.service` / `.timer` (this directory; installed to `~/.config/systemd/user/`, timer every minute) |
-| Backfill | `backfill-2026-11-05.jsonl` — the 68 sends enumerated by the 2026-11-05 audit, loaded once via `record-many` |
+| Piece               | Location                                                                                                                                                                                                                      |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Table               | `agent_external_comms` in the Turso database **fleet-platform** (repointed 2026-11-07; before that `agent.external_comms` in Supabase project muse-dev2 — the 58 pre-repoint rows stay in Postgres until the finalize top-up) |
+| Migration           | `migration-0001-agent-external-comms.sql` (original Postgres DDL) + `migration-0002-agent-external-comms-turso.sql` (Turso DDL, executed 2026-11-07)                                                                          |
+| Writer CLI + pusher | `record-external-send` (this directory; deployed from the primary clone `~/git/code` on the laptop)                                                                                                                           |
+| Outbox (spill)      | `~/.local/state/external-comms/outbox.jsonl` on the laptop                                                                                                                                                                    |
+| Pusher health       | `~/.local/state/external-comms/pusher-health.json` on the laptop                                                                                                                                                              |
+| Pusher supervision  | systemd **user** units `external-comms-pusher.service` / `.timer` (this directory; installed to `~/.config/systemd/user/`, timer every minute)                                                                                |
+| Backfill            | `backfill-2026-11-05.jsonl` — the 68 sends enumerated by the 2026-11-05 audit, loaded once via `record-many`                                                                                                                  |
 
 ## Write pattern: database-first, spill to outbox, pusher drains
 
-Drew's direction (2026-11-05): *"use database spill to outbox or use
-outbox always ensure pusher. all on laptop."*
+Drew's direction (2026-11-05): _"use database spill to outbox or use
+outbox always ensure pusher. all on laptop."_
 
 Chosen: **database-first with spill to outbox** — the proven pm-stack
 pattern (the aggregator's `events.ts` retry outbox: write to the store
@@ -37,15 +37,15 @@ not files), while no record can be lost to a DB/network outage at
 send time:
 
 1. `record-external-send …` builds a record with a stable id and
-   tries a direct PostgREST insert into `agent.external_comms`
-   (service-role key resolved **by name** through the secrets broker:
-   `supabase.muse-dev2.service-role-key` + `…project-url` — the same
-   route the queue broker uses; values never touch disk or logs).
+   tries a direct libSQL pipeline insert (INSERT OR IGNORE on the
+   id) into `agent_external_comms` in Turso fleet-platform
+   (DB token resolved **by name** through the secrets broker:
+   `turso.fleet-platform-rw-token`; values never touch disk or logs).
 2. On any failure it appends the record to the local outbox
    (fsync'd) and still exits 0 — recording never blocks the send it
-   logs. Exit is non-zero only when *both* paths fail.
+   logs. Exit is non-zero only when _both_ paths fail.
 3. The **pusher** (`record-external-send push`, timer every minute)
-   drains the outbox: insert with `resolution=ignore-duplicates` on
+   drains the outbox: insert with INSERT OR IGNORE on
    the id PK (safe retry after ambiguous failures), drop landed
    lines, keep failures with `_attempts` / `_last_error`. Every run
    rewrites `pusher-health.json` (`last_run_at`, `last_drain_ok_at`,

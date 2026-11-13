@@ -4,7 +4,7 @@
 // render + HTTP routes. Follows test/slice3.test.ts / program.test.ts.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,6 +15,7 @@ import {
   aaPoints,
   caiFamily,
   num,
+  aaApplyPriceOverlay,
   aaSectionFromSupabase,
   computeAaCoverage,
   effortRank,
@@ -601,6 +602,62 @@ describe("Coding Agent Index points (Coding agents perspective)", () => {
   });
 });
 
+describe("price overlay re-derivation (#8211)", () => {
+  const price = (input: number, output: number): AaPrice[] => [
+    {
+      modelName: "openai/gpt-6-luna",
+      inputPer1M: input,
+      outputPer1M: output,
+      cacheReadPer1M: null,
+      cacheWritePer1M: null,
+      contextMinTokens: null,
+      contextMaxTokens: null,
+      windowKind: "flat",
+    },
+  ];
+  const sectionWith = (batch: string, prices: AaPrice[]) => {
+    const raw = rawPayload();
+    raw.batch = batch;
+    raw.prices = prices;
+    return aaSectionFromSupabase(raw, CONFIG_SNIPPET, "2026-10-26T18:05:00Z")!;
+  };
+
+  test("two cached batches with differing prices both report the refreshed overlay's rates", () => {
+    const oldPrices = price(1.0, 4.0);
+    const midPrices = price(2.0, 8.0);
+    const newPrices = price(3.5, 14.0);
+    const latest = sectionWith("8152e746-4805-4a11-9664-317b44ca9f1b", midPrices);
+    const historical = sectionWith("8152e746-4805-4a11-9664-317b44ca9f1c", oldPrices);
+    // Sanity: before the refresh, each section serves its own frozen rates.
+    expect(historical.prices).toEqual(oldPrices);
+    expect(historical.catalog?.find((e) => e.id === "openai/gpt-6-luna")?.rate?.bands[0].input).toBe(1.0);
+
+    const refreshedLatest = aaApplyPriceOverlay(latest, newPrices);
+    const refreshedHistorical = aaApplyPriceOverlay(historical, newPrices);
+    for (const served of [refreshedLatest, refreshedHistorical]) {
+      expect(served.prices).toEqual(newPrices);
+      const luna = served.catalog?.find((e) => e.id === "openai/gpt-6-luna");
+      expect(luna?.rate?.bands).toHaveLength(1);
+      expect(luna?.rate?.bands[0].input).toBe(3.5);
+      expect(luna?.rate?.bands[0].output).toBe(14.0);
+    }
+    // Batch-bound data is untouched and the inputs are not mutated.
+    expect(refreshedHistorical.batch).toBe(historical.batch);
+    expect(refreshedHistorical.rankings).toEqual(historical.rankings);
+    expect(refreshedHistorical.configs).toEqual(historical.configs);
+    expect(historical.prices).toEqual(oldPrices);
+    expect(historical.catalog?.find((e) => e.id === "openai/gpt-6-luna")?.rate?.bands[0].input).toBe(1.0);
+    expect(isAaSection(refreshedHistorical)).toBe(true);
+  });
+
+  test("an empty overlay clears prices and nulls catalog rates, like a fresh build", () => {
+    const section = sectionWith("8152e746-4805-4a11-9664-317b44ca9f1b", price(1.0, 4.0));
+    const cleared = aaApplyPriceOverlay(section, []);
+    expect(cleared.prices).toBeUndefined();
+    expect(cleared.catalog?.find((e) => e.id === "openai/gpt-6-luna")?.rate).toBeNull();
+  });
+});
+
 describe("aa-explorer manifest + render", () => {
   test("PAGES carries the aa-explorer page with unique routes", () => {
     const page = PAGES.find((p) => p.id === "aa-explorer");
@@ -654,17 +711,12 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('data-recpreset="fast"');
     expect(html).toContain('id="xpl-bandgroups"'); // band comparisons
     expect(html).toContain('id="xf-bandscale"');
-    expect(html).toContain("function bandLaneChart"); // lane chart renderer is part of the emitted explorer
-    expect(html).toContain("const pointY = py.toFixed(1)"); // do not shadow the lane's cy before computing py
-    expect(html).not.toContain("const cy = py.toFixed(1)");
-    expect(html).toContain('class="xpl-band-lanes"');
     expect(html).toContain('bandGroup("Fastest within each score band"');
     expect(html).toContain('g3, "time", "Time / task (lower is faster)"');
     expect(html).toContain('bandGroup("Smartest within each speed band"');
     expect(html).toContain('g4, "score", scoreWord()');
     expect(html).toContain('bandGroup("Fastest within each task-cost band"');
     expect(html).toContain('g5, "time", "Time / task (lower is faster)"');
-    expect(html).toContain('bandLaneChart("Lowest price within each speed target", "cost"');
     expect(html).toContain("g6Lanes.push"); // group 6 charts reuse the table's same qualifying choices
     expect(html).toContain('data-pj="inputTokens"'); // task-assumptions projection
     expect(html).toContain('data-pjpreset="repo"');
@@ -791,6 +843,25 @@ describe("aa routes (HTTP, fixtures)", () => {
     expect(asset).toContain("export function computeRecommendations");
     expect(asset).toContain("export function projectTask");
   });
+
+  test("/aa page script does not redefine the computations it imports (#7562)", async () => {
+    // Oracle: the emitted page must execute the tested module copies.
+    // Any inline "function <name>(" for an imported name shadows the
+    // module implementation inside the page script (#3737 regression).
+    const page = await (await fetch("http://127.0.0.1:" + port + "/aa")).text();
+    const importMatch = page.match(/import \{([^}]+)\} from "\/assets\/aa-explorer-computations\.js";/);
+    expect(importMatch).not.toBeNull();
+    const imported = (importMatch as RegExpMatchArray)[1]
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    expect(imported).toContain("logEdges");
+    expect(imported).toContain("scoreEdges");
+    expect(imported).toContain("bandIndex");
+    for (const name of imported) {
+      expect(page).not.toMatch(new RegExp("function " + name + "\\s*\\("));
+    }
+  });
 });
 
 describe("aa chart expand + zoom/pan (#3298)", () => {
@@ -818,7 +889,13 @@ describe("aa chart expand + zoom/pan (#3298)", () => {
     expect(html).toContain("setPointerCapture(drag.id)");
     expect(html).toContain("Recommendation inputs redraw #xpl-recs directly");
     expect(html).toContain("data-zbound");
-    expect(html).toContain(".chart-expanded { position: fixed");
+    // Phase C (#6153): page CSS is the external /assets/app.css build; the
+    // expanded-chart rule lives in its source (src/ui.css), not in page HTML
+    // (same pattern as render.test.ts / epic-graph.test.ts).
+    expect(html).toContain('href="/assets/app.css"');
+    expect(readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8")).toContain(
+      ".chart-expanded { position: fixed",
+    );
     // the emitted script still parses (same check as #1215)
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
     expect(scripts.length).toBeGreaterThan(0);

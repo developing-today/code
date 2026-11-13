@@ -4,13 +4,11 @@ This file is managed by Nix (source: `home/openclaw/` in the developing-today/co
 
 ## The fleet on this laptop (all systemd _user_ services; linger is on, so they start at boot)
 
-| Service                | What                                                 | Address                                    |
-| ---------------------- | ---------------------------------------------------- | ------------------------------------------ |
-| `openclaw-gateway`     | This gateway                                         | tailnet, port 18789 (Control UI + WebChat) |
-| `openchamber`          | OpenChamber server (GUI over OpenCode)               | 127.0.0.1:3000, socket-activated           |
-| `mcpx`                 | Standing MCP gateway daemon                          | config `~/.config/mcpx/config.json`        |
-| `codex-proxy`          | ChatGPT/Codex plan proxy (OpenAI — final reserve)    | 127.0.0.1:18744                            |
-| `muse-proxy`           | Meta High Usage plan proxy                           | 127.0.0.1:18747                            |
+| Service            | What                                   | Address                                    |
+| ------------------ | -------------------------------------- | ------------------------------------------ |
+| `openclaw-gateway` | This gateway                           | tailnet, port 18789 (Control UI + WebChat) |
+| `openchamber`      | OpenChamber server (GUI over OpenCode) | 127.0.0.1:3000, socket-activated           |
+| `mcpx`             | Standing MCP gateway daemon            | config `~/.config/mcpx/config.json`        |
 
 - Check one: `systemctl --user status <name>` · logs: `journalctl --user -u <name> -f`
 - OpenCode (the engine under OpenChamber) keeps its live managed-server port in `~/.config/openchamber/managed-opencode/state.json` — it changes on restart; never hardcode it.

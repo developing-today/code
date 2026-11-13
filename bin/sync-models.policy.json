@@ -2,13 +2,14 @@
   "families": {
     "gemini-flash": "^gemini-(\\d+(?:\\.\\d+)?)-flash$",
     "gemini-argon": "^gemini-(\\d+(?:\\.\\d+)?)-argon$",
+    "gemini-hydrogen": "^gemini-(\\d+(?:\\.\\d+)?)-hydrogen$",
     "claude-opus": "^claude-opus-(\\d+(?:-\\d+)?)$",
     "claude-sonnet": "^claude-sonnet-(\\d+(?:-\\d+)?)$",
     "claude-haiku": "^claude-haiku-(\\d+(?:-\\d+)?)$"
   },
   "providers": {
-    "antigravity-direct": {
-      "keep": ["gemini-flash", "gemini-argon", "claude-opus", "claude-sonnet", "claude-haiku"],
+    "_antigravity": {
+      "keep": ["gemini-flash", "gemini-argon", "gemini-hydrogen", "claude-opus", "claude-sonnet", "claude-haiku"],
       "exclude": []
     }
   }

@@ -4,13 +4,18 @@
 Implements Drew's ratified rule (2026-11-05): EXTERNAL COMMS ARE NEVER
 SILENT. Every send outside our own repos/channels under Drew's identity
 or a fleet identity is recorded at send time in the ledger table
-`agent.external_comms` (Supabase muse-dev2).
+`agent_external_comms` in the Turso database fleet-platform
+(repointed 2026-11-07 from `agent.external_comms` in Supabase
+muse-dev2, whose data plane has been down since 2026-11-06,
+code#6619; DDL: migration-0002-agent-external-comms-turso.sql.
+The 58 rows recorded in Postgres before the repoint stay there
+until the finalize pass tops this table up by id.)
 
 Write pattern (the pm-stack durability pattern, cf. aggregator
 events.ts): DATABASE-FIRST WITH SPILL TO OUTBOX.
 
-  record        Try a direct insert into agent.external_comms
-                (PostgREST, service-role key resolved by name through
+  record        Try a direct insert into agent_external_comms
+                (libSQL pipeline, DB token resolved by name through
                 `fleet secrets get`). On ANY failure — DB down,
                 network, secrets broker — the record is appended to
                 the local outbox (~/.local/state/external-comms/
@@ -35,16 +40,35 @@ events.ts): DATABASE-FIRST WITH SPILL TO OUTBOX.
                 pusher-health.json — the visible surface a stewardship
                 visibility pass reads to spot a stuck pusher.
 
+  outbox lock   The outbox file itself is guarded by a short flock
+                (outbox.jsonl.lock, #6875): spill() holds it only for
+                its append+fsync, and the pusher holds it only to read
+                the outbox and again to rewrite it — never across the
+                per-record inserts, so recording never waits on a
+                drain. Before the rewrite, the pusher re-reads the
+                outbox under that lock and carries every line that
+                arrived after its first read verbatim into the new
+                outbox: a record spilled mid-drain was never in the
+                pusher's read set, so without the merge the rewrite
+                would replace the inode its line was appended to and
+                the record would vanish while the drain reported
+                clean. Mid-drain arrivals stay pending for the next
+                run and are counted in pending_count, so such a run
+                is not a clean drain.
+
   status        Print pusher health + outbox depth + DB row count.
 
   record-many   Batch form of record (one JSON object per line) —
                 used for the 2026-11-05 audit backfill.
 
 Secrets are referenced by NAME only and held in memory:
-  supabase.muse-dev2.project-url, supabase.muse-dev2.service-role-key
-Test hooks (env): EXTERNAL_COMMS_SUPABASE_URL overrides the project
-URL; EXTERNAL_COMMS_STATE_DIR overrides the state directory.
+  turso.fleet-platform-rw-token
+Test hooks (env): EXTERNAL_COMMS_TURSO_URL overrides the database
+URL; EXTERNAL_COMMS_TURSO_TOKEN overrides the token;
+EXTERNAL_COMMS_STATE_DIR overrides the state directory.
 """
+import collections
+import contextlib
 import fcntl
 import json
 import os
@@ -59,10 +83,12 @@ STATE_DIR = os.environ.get(
     "EXTERNAL_COMMS_STATE_DIR",
     os.path.expanduser("~/.local/state/external-comms"))
 OUTBOX = os.path.join(STATE_DIR, "outbox.jsonl")
+OUTBOX_LOCK = OUTBOX + ".lock"
 HEALTH = os.path.join(STATE_DIR, "pusher-health.json")
 QUARANTINE = os.path.join(STATE_DIR, "quarantine.jsonl")
 LOCK = os.path.join(STATE_DIR, "pusher.lock")
-TABLE = "external_comms"
+TABLE = "agent_external_comms"
+DB_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
 TIMEOUT = 8  # seconds; a send-time caller must never hang on the ledger
 
 
@@ -106,32 +132,88 @@ _DB_CONFIG = None
 def db_config():
     global _DB_CONFIG
     if _DB_CONFIG is None:
-        base = os.environ.get("EXTERNAL_COMMS_SUPABASE_URL") or \
-            secret("supabase.muse-dev2.project-url")
-        key = os.environ.get("EXTERNAL_COMMS_SERVICE_KEY") or \
-            secret("supabase.muse-dev2.service-role-key")
+        base = os.environ.get("EXTERNAL_COMMS_TURSO_URL") or DB_URL
+        key = os.environ.get("EXTERNAL_COMMS_TURSO_TOKEN") or \
+            secret("turso.fleet-platform-rw-token")
         _DB_CONFIG = (base.rstrip("/"), key)
     return _DB_CONFIG
 
 
+def _enc(v):
+    if v is None:
+        return {"type": "null"}
+    if isinstance(v, int):
+        return {"type": "integer", "value": str(v)}
+    if isinstance(v, float):
+        return {"type": "float", "value": v}
+    return {"type": "text", "value": str(v)}
+
+
+def _pipeline(base, key, stmts):
+    """Run [(sql, args), ...] as one libSQL pipeline batch against the
+    ledger DB. Returns the per-statement result objects; raises on
+    transport or statement failure."""
+    body = json.dumps({"requests":
+                       [{"type": "execute",
+                         "stmt": {"sql": sql,
+                                  "args": [_enc(a) for a in args]}}
+                        for sql, args in stmts] + [{"type": "close"}]})
+    req = urllib.request.Request(
+        f"{base}/v2/pipeline",
+        data=body.encode(),
+        method="POST",
+        headers={"Authorization": f"Bearer {key}",
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"turso pipeline HTTP {resp.status}")
+        out = json.loads(resp.read().decode())
+    results = []
+    for res in out.get("results", []):
+        if res.get("type") == "error":
+            raise RuntimeError(f"turso statement failed: {res['error']}")
+        results.append(res.get("response", {}).get("result", {}))
+    return results
+
+
+# Column order of agent_external_comms (migration-0002). Every record
+# field maps 1:1; payload is stored as JSON text.
+COLUMNS = ("id", "sent_at", "recorded_at", "identity", "channel",
+           "destination", "item_ref", "kind", "approval_basis",
+           "approver", "approval_evidence", "summary", "payload",
+           "source")
+
+
 def insert_record(base, key, rec):
-    """One PostgREST insert, ignore-duplicates on the id PK.
+    """One pipeline insert, INSERT OR IGNORE on the id PK (the
+    ignore-duplicates retry semantics of the old PostgREST path).
     Returns None on success; raises on failure."""
     row = {k: v for k, v in rec.items() if not k.startswith("_")}
-    req = urllib.request.Request(
-        f"{base}/rest/v1/{TABLE}",
-        data=json.dumps(row).encode(),
-        method="POST",
-        headers={
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "Content-Profile": "agent",
-            "Prefer": "resolution=ignore-duplicates,return=minimal",
-        })
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        if resp.status not in (200, 201, 204):
-            raise RuntimeError(f"PostgREST HTTP {resp.status}")
+    row.setdefault("payload", {})
+    if not isinstance(row["payload"], str):
+        row["payload"] = json.dumps(row["payload"])
+    row.setdefault("source", "record-external-send")
+    row["recorded_at"] = now_iso()
+    sql = (f"INSERT OR IGNORE INTO {TABLE} "
+           f"({', '.join(COLUMNS)}) "
+           f"VALUES ({', '.join('?' for _ in COLUMNS)})")
+    _pipeline(base, key, [(sql, tuple(row.get(c) for c in COLUMNS))])
+
+
+@contextlib.contextmanager
+def outbox_locked():
+    """Hold the outbox flock for one short critical section (#6875).
+
+    Serializes spill()'s append against the pusher's outbox read and
+    rewrite. Holders never do network or DB work inside the section,
+    so the wait is bounded by a local file append/read/rewrite."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(OUTBOX_LOCK, "a") as lockf:
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lockf, fcntl.LOCK_UN)
 
 
 def spill(rec):
@@ -139,10 +221,27 @@ def spill(rec):
     rec = dict(rec)
     rec.setdefault("_spilled_at", now_iso())
     rec.setdefault("_attempts", 0)
-    with open(OUTBOX, "a") as f:
-        f.write(json.dumps(rec) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+    with outbox_locked():
+        with open(OUTBOX, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+
+def _lines_arrived_since(original, current):
+    """Lines in `current` that were not in `original`, in file order.
+
+    Multiset difference on the exact line strings: a line the pusher
+    already read is accounted for once per read occurrence, so a
+    mid-drain spill of an identical line still counts as arrived."""
+    remaining = collections.Counter(original)
+    arrived = []
+    for ln in current:
+        if remaining[ln] > 0:
+            remaining[ln] -= 1
+        else:
+            arrived.append(ln)
+    return arrived
 
 
 def write_health(_remove=(), **fields):
@@ -220,6 +319,7 @@ def do_push():
     run_at = now_iso()
     pending, landed, last_error = [], 0, None
     pending_raw = []  # malformed lines whose quarantine write failed
+    arrived_lines = []  # lines spilled mid-drain, carried over verbatim
     quarantined, last_quarantine_reason = 0, None
     total_landed, total_quarantined = 0, 0
     if os.path.exists(HEALTH):
@@ -231,9 +331,10 @@ def do_push():
         except Exception:
             total_landed, total_quarantined = 0, 0
     lines = []
-    if os.path.exists(OUTBOX):
-        with open(OUTBOX) as f:
-            lines = [ln for ln in f if ln.strip()]
+    with outbox_locked():
+        if os.path.exists(OUTBOX):
+            with open(OUTBOX) as f:
+                lines = [ln for ln in f if ln.strip()]
     if lines:
         try:
             base, key = db_config()
@@ -276,16 +377,29 @@ def do_push():
                 rec["_last_attempt_at"] = run_at
                 last_error = str(e)[:300]
                 pending.append(rec)
-        tmp = OUTBOX + ".tmp"
-        with open(tmp, "w") as f:
-            for rec in pending:
-                f.write(json.dumps(rec) + "\n")
-            for ln in pending_raw:
-                f.write(ln)
-        os.replace(tmp, OUTBOX)
+        # Re-read and merge under the outbox lock (#6875): lines a
+        # concurrent record spilled while this drain was inserting are
+        # not in `lines`, were never inserted, and must survive the
+        # rewrite verbatim as pending — replacing the outbox from the
+        # stale read set alone silently lost them.
+        with outbox_locked():
+            current = []
+            if os.path.exists(OUTBOX):
+                with open(OUTBOX) as f:
+                    current = [ln for ln in f if ln.strip()]
+            arrived_lines = _lines_arrived_since(lines, current)
+            tmp = OUTBOX + ".tmp"
+            with open(tmp, "w") as f:
+                for rec in pending:
+                    f.write(json.dumps(rec) + "\n")
+                for ln in pending_raw:
+                    f.write(ln)
+                for ln in arrived_lines:
+                    f.write(ln if ln.endswith("\n") else ln + "\n")
+            os.replace(tmp, OUTBOX)
     total_landed += landed
     total_quarantined += quarantined
-    pending_total = len(pending) + len(pending_raw)
+    pending_total = len(pending) + len(pending_raw) + len(arrived_lines)
     health_fields = dict(
         last_run_at=run_at,
         pending_count=pending_total,
@@ -321,13 +435,11 @@ def do_status():
     count = None
     try:
         base, key = db_config()
-        req = urllib.request.Request(
-            f"{base}/rest/v1/{TABLE}?select=id",
-            headers={"apikey": key, "Authorization": f"Bearer {key}",
-                     "Accept-Profile": "agent",
-                     "Prefer": "count=exact", "Range": "0-0"})
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            count = resp.headers.get("Content-Range", "").split("/")[-1]
+        res = _pipeline(base, key,
+                        [(f"SELECT count(*) FROM {TABLE}", ())])
+        cell = res[0]["rows"][0][0]
+        count = int(cell["value"]) if cell.get("type") == "integer" \
+            else cell.get("value")
     except Exception as e:
         count = f"unreachable ({e})"
     print(json.dumps({"health": health, "outbox_depth": depth,

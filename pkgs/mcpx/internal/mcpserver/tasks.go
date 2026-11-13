@@ -109,7 +109,7 @@ func (s *Server) startTask(ctx context.Context, owner string, ttl int64, fn func
 	t, err := s.tasks().Start(tasks.Caller(identity), ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		result, err := fn(ctx)
 		if err != nil {
-			return nil, &tasks.Fault{Code: err.Code, Message: err.Message, Data: err.Data}
+			return nil, &tasks.Fault{Code: err.Code, Message: err.Message, Data: err.Data, Relayed: err.relayed}
 		}
 		return result, nil
 	})
@@ -297,6 +297,22 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 	if !peer.Modern {
 		want, ttl := wantsTask(req.Params)
 		if !want {
+			// 2025-11-25 tool-level negotiation: a tool whose
+			// execution.taskSupport is "required" MUST be refused
+			// when the client does not attempt task augmentation.
+			// The code is the tool-level rule's -32601, not the
+			// protocol-errors list's -32600: that list is for
+			// request types with no tool-level rule, and for
+			// tools/call the MUST wins (#1974 headline 13,
+			// section C item C10). The refusal binds only a
+			// 2025-11-25 peer: an earlier legacy revision defines
+			// no tasks, never saw the requirement (downgradeItems
+			// strips `execution` from its listings), and its plain
+			// call runs as it always did (PR #8652 review).
+			if AtLeast(peer.Version, "2025-11-25") && s.legacyTaskSupport(ctx, req.Params) == supportRequired {
+				return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: codeMethodNotFound,
+					Message: "this tool requires task-augmented execution (execution.taskSupport is required)"}}
+			}
 			return nil
 		}
 		if sup := s.legacyTaskSupport(ctx, req.Params); sup != supportOptional && sup != supportRequired {
@@ -350,7 +366,7 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 		// stays in the store until its TTL, harmlessly; nobody holds its id.
 		if fault != nil {
 			return &response{JSONRPC: "2.0", ID: req.ID,
-				Error: &rpcError{Code: fault.Code, Message: fault.Message, Data: fault.Data}}
+				Error: &rpcError{Code: fault.Code, Message: fault.Message, Data: fault.Data, relayed: fault.Relayed}}
 		}
 		return &response{JSONRPC: "2.0", ID: req.ID, Result: result}
 	}
@@ -452,7 +468,7 @@ func (s *Server) driveAsked(ctx context.Context, req request, peer Peer, callID 
 		if out.Done {
 			resp := finishedAsk(req, out, peer, true)
 			if resp.Error != nil {
-				return nil, &tasks.Fault{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
+				return nil, &tasks.Fault{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data, Relayed: resp.Error.relayed}
 			}
 			return resp.Result, nil
 		}
@@ -681,7 +697,7 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 			return fail(codeInternal, "the request ended before the task did")
 		case fault != nil:
 			return &response{JSONRPC: "2.0", ID: req.ID,
-				Error: &rpcError{Code: fault.Code, Message: fault.Message, Data: fault.Data}}
+				Error: &rpcError{Code: fault.Code, Message: fault.Message, Data: fault.Data, relayed: fault.Relayed}}
 		}
 		// 2025-11-25: the tasks/result response MUST carry the
 		// related-task _meta naming its task, since the result itself is

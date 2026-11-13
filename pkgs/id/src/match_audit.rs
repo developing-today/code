@@ -371,6 +371,9 @@ pub enum AuditErrorV0 {
     /// The wire value could not be encoded or decoded.
     #[error("match-audit wire encoding failed: {0}")]
     Wire(#[from] postcard::Error),
+    /// Bytes remain after the first complete log value.
+    #[error("match-audit log has {0} trailing byte(s) after the encoded log")]
+    TrailingBytes(usize),
     /// The format version is not supported.
     #[error("unsupported match-audit format version {0}")]
     UnsupportedVersion(u8),
@@ -472,8 +475,10 @@ fn hash_parts(parts: &[&[u8]]) -> Hash {
 ///
 /// # Errors
 ///
-/// Returns [`AuditErrorV0::SignerNotInRoster`] when the caller's key is
-/// absent from `header.players`, and
+/// Returns [`AuditErrorV0::UnsupportedVersion`] for a header version this
+/// implementation does not understand, [`AuditErrorV0::Roster`] for an
+/// empty or duplicate-key roster, [`AuditErrorV0::SignerNotInRoster`] when
+/// the caller's key is absent from `header.players`, and
 /// [`AuditErrorV0::SeedCommitmentMismatch`] when the digest of
 /// `footer.seed_reveal` differs from `header.seed_commitment` — the
 /// footer-local rules [`MatchLogV0::verify_integrity`] applies, checked
@@ -485,6 +490,10 @@ pub fn sign_footer(
     metadata: &MetadataV0,
     footer: &FooterV0,
 ) -> Result<PlayerSignatureV0, AuditErrorV0> {
+    if header.version != FORMAT_VERSION_V0 {
+        return Err(AuditErrorV0::UnsupportedVersion(header.version));
+    }
+    validate_roster(&header.players)?;
     validate_signer(key, header)?;
     if Hash::digest(&footer.seed_reveal) != header.seed_commitment {
         return Err(AuditErrorV0::SeedCommitmentMismatch);
@@ -501,8 +510,17 @@ impl MatchLogV0 {
 
     /// Decodes a complete v0 log. Structural and cryptographic checks are
     /// performed separately by [`MatchLogV0::verify_integrity`].
+    ///
+    /// Bytes after the first complete value are refused: a log is a canonical
+    /// self-authenticating record, and an unsigned suffix would give one match
+    /// many byte spellings that all verify. This is a consumed-length check
+    /// only, not re-encode-and-compare canonicalisation.
     pub fn decode(bytes: &[u8]) -> Result<Self, AuditErrorV0> {
-        Ok(postcard::from_bytes(bytes)?)
+        let (log, rest) = postcard::take_from_bytes::<Self>(bytes)?;
+        if !rest.is_empty() {
+            return Err(AuditErrorV0::TrailingBytes(rest.len()));
+        }
+        Ok(log)
     }
 
     /// Verifies version, signatures, seed commitment, tick ordering, and the
@@ -893,7 +911,9 @@ fn actual_validity(_metadata: &MetadataV0) -> ActualValidityV0 {
 #[cfg(feature = "sandbox")]
 fn integrity_reason(error: &AuditErrorV0) -> IntegrityFailureV0 {
     match error {
-        AuditErrorV0::Wire(_) => IntegrityFailureV0::MalformedEncoding,
+        AuditErrorV0::Wire(_) | AuditErrorV0::TrailingBytes(_) => {
+            IntegrityFailureV0::MalformedEncoding
+        }
         AuditErrorV0::UnsupportedVersion(_) => IntegrityFailureV0::UnsupportedVersion,
         AuditErrorV0::Signature("header") => IntegrityFailureV0::HeaderSignature,
         AuditErrorV0::Signature("footer") => IntegrityFailureV0::FooterSignature,
@@ -999,7 +1019,7 @@ fn footer_message(
 
 #[cfg(all(test, feature = "sandbox"))]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use super::*;
 
@@ -1133,6 +1153,41 @@ mod tests {
     }
 
     #[test]
+    fn sign_footer_refuses_unsupported_version() {
+        let log = fixture();
+        let mut header = log.header.clone();
+        header.version = FORMAT_VERSION_V0 + 1;
+        let error = sign_footer(
+            &key(1),
+            &header,
+            log.entries[1].hash,
+            &log.metadata,
+            &log.footer,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, AuditErrorV0::UnsupportedVersion(version) if version == FORMAT_VERSION_V0 + 1)
+        );
+    }
+
+    #[test]
+    fn sign_footer_refuses_duplicate_roster() {
+        let log = fixture();
+        let mut header = log.header.clone();
+        let duplicate = header.players[0].clone();
+        header.players.push(duplicate);
+        let error = sign_footer(
+            &key(1),
+            &header,
+            log.entries[1].hash,
+            &log.metadata,
+            &log.footer,
+        )
+        .unwrap_err();
+        assert!(matches!(error, AuditErrorV0::Roster));
+    }
+
+    #[test]
     fn sign_footer_refuses_non_roster_signer() {
         let log = fixture();
         let error = sign_footer(
@@ -1205,6 +1260,56 @@ mod tests {
         let decoded = MatchLogV0::decode(&bytes).unwrap();
         assert_eq!(decoded, log);
         assert_eq!(decoded.verify_integrity().unwrap(), decoded.entries[1].hash);
+    }
+
+    #[test]
+    fn decode_rejects_trailing_bytes() {
+        let log = fixture();
+        let bytes = log.encode().unwrap();
+
+        let mut one = bytes.clone();
+        one.push(0);
+        assert!(matches!(
+            MatchLogV0::decode(&one),
+            Err(AuditErrorV0::TrailingBytes(1))
+        ));
+
+        let mut garbage = bytes.clone();
+        garbage.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        assert!(matches!(
+            MatchLogV0::decode(&garbage),
+            Err(AuditErrorV0::TrailingBytes(4))
+        ));
+
+        let mut doubled = bytes.clone();
+        doubled.extend_from_slice(&bytes);
+        assert!(matches!(
+            MatchLogV0::decode(&doubled),
+            Err(AuditErrorV0::TrailingBytes(n)) if n == bytes.len()
+        ));
+
+        assert_eq!(MatchLogV0::decode(&bytes).unwrap(), log);
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn suffixed_reference_log_is_an_invalid_record() {
+        let players = [key(1), key(2)];
+        let log = export_tic_tac_toe_reference(
+            [&players[0], &players[1]],
+            "reference-match-1",
+            "reference-world-1",
+            7,
+        )
+        .unwrap();
+        let mut bytes = log.encode().unwrap();
+        bytes.push(0);
+        assert_eq!(
+            verify_tic_tac_toe_v0(&bytes).technical,
+            TechnicalVerdictV0::InvalidRecord {
+                reason: IntegrityFailureV0::MalformedEncoding,
+            }
+        );
     }
 
     #[test]

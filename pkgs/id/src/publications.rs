@@ -177,6 +177,22 @@ fn normalise_mount_spelling(path: &str) -> String {
     }
 }
 
+/// Whether two placements name the same placement. Path mounts
+/// compare by normalised spelling, matching unpublish and
+/// boot_warnings: a stored record that bypassed publish() (a
+/// hand-edited file, a direct `publications` push) must still block
+/// a canonical re-spelling of itself, or the one-program-per-
+/// placement check is defeated by `//world` or `/api/`. Listeners
+/// compare by exact SocketAddr equality.
+fn same_placement(a: &Placement, b: &Placement) -> bool {
+    match (a, b) {
+        (Placement::PathMount { path: x }, Placement::PathMount { path: y }) => {
+            normalise_mount_spelling(x) == normalise_mount_spelling(y)
+        }
+        _ => a == b,
+    }
+}
+
 /// Whether mount path `mount` shadows Explorer route `route`:
 /// a segment-boundary prefix relation in either direction.
 fn shadows(mount: &str, route: &str) -> bool {
@@ -239,7 +255,7 @@ impl Registry {
             !self
                 .publications
                 .iter()
-                .any(|existing| existing.placement == publication.placement),
+                .any(|existing| same_placement(&existing.placement, &publication.placement)),
             "placement already published: {} (unpublish it first)",
             publication.placement.describe()
         );
@@ -425,6 +441,7 @@ pub fn publications_file() -> PathBuf {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -533,6 +550,63 @@ mod tests {
         other.world = "other".to_string();
         assert!(registry.publish(other, KNOWN_EXPLORER_ROUTES).is_err());
         assert_eq!(registry.publications.len(), 1);
+    }
+
+    #[test]
+    fn publish_rejects_a_duplicate_of_a_trailing_slash_stored_spelling() {
+        // #6459: the stored record bypassed publish() (direct push),
+        // so its spelling was never canonicalised; the canonical
+        // re-spelling names the same placement and must be refused.
+        let mut registry = Registry::default();
+        registry.publications.push(mount("/arena/", false));
+        let mut other = mount("/arena", false);
+        other.world = "other".to_string();
+        let err = registry.publish(other, KNOWN_EXPLORER_ROUTES).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("placement already published"),
+            "{err:#}"
+        );
+        assert_eq!(registry.publications.len(), 1);
+    }
+
+    #[test]
+    fn publish_rejects_a_duplicate_of_a_doubled_separator_stored_spelling() {
+        let mut registry = Registry::default();
+        registry.publications.push(mount("//arena", false));
+        let mut other = mount("/arena", false);
+        other.world = "other".to_string();
+        assert!(registry.publish(other, KNOWN_EXPLORER_ROUTES).is_err());
+        assert_eq!(registry.publications.len(), 1);
+    }
+
+    #[test]
+    fn publish_rejects_a_duplicate_shadow_mount_despite_acknowledgement() {
+        // The duplicate check fires before shadow handling: an
+        // acknowledged shadow does not entitle a second program to
+        // a placement a non-canonical stored record already holds.
+        let mut registry = Registry::default();
+        registry.publications.push(mount("/world/", false));
+        let err = registry
+            .publish(mount("/world", true), KNOWN_EXPLORER_ROUTES)
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("placement already published"),
+            "{err:#}"
+        );
+        assert_eq!(registry.publications.len(), 1);
+    }
+
+    #[test]
+    fn publish_allows_a_genuinely_different_mount_beside_a_stored_spelling() {
+        let mut registry = Registry::default();
+        registry.publications.push(mount("/api/", false));
+        assert!(
+            registry
+                .publish(mount("/arena", false), KNOWN_EXPLORER_ROUTES)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(registry.publications.len(), 2);
     }
 
     #[test]
@@ -664,6 +738,76 @@ mod tests {
                 "stored spelling {spelling} must not load"
             );
         }
+    }
+
+    fn write_raw_registry_file(name: &str, raw: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "id-publications-test-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("publications.json");
+        std::fs::write(&file, raw).unwrap();
+        file
+    }
+
+    #[test]
+    fn load_refuses_duplicate_json_keys_naming_the_file() {
+        // #6504: a key spelled twice must be refused outright, never
+        // collapsed (last wins) before `validate_persisted` runs — an
+        // invalid first spelling would otherwise be silently restored
+        // as the valid second one. Each case hides an invalid value
+        // first; the controls below prove each shape loads or fails on
+        // its own merits.
+        let cases: [(&str, &str, &str); 3] = [
+            (
+                "dup-publications",
+                "publications",
+                r#"{"publications":[{"world":"","placement":{"kind":"path_mount","path":"//bad"}}],
+                    "publications":[{"world":"arena","placement":{"kind":"path_mount","path":"/arena"}}]}"#,
+            ),
+            (
+                "dup-world",
+                "world",
+                r#"{"publications":[{"world":"","world":"arena",
+                    "placement":{"kind":"path_mount","path":"/arena"}}]}"#,
+            ),
+            (
+                "dup-path",
+                "path",
+                r#"{"publications":[{"world":"arena",
+                    "placement":{"kind":"path_mount","path":"//bad","path":"/good"}}]}"#,
+            ),
+        ];
+        for (name, key, raw) in cases {
+            let file = write_raw_registry_file(name, raw);
+            let err = Registry::load(&file)
+                .expect_err(&format!("duplicate `{key}` must be refused ({name})"));
+            let text = format!("{err:#}");
+            assert!(
+                text.contains("duplicate field"),
+                "{name}: error must say duplicate field: {text}"
+            );
+            assert!(
+                text.contains(&format!("`{key}`")),
+                "{name}: error must name the key `{key}`: {text}"
+            );
+            assert!(
+                text.contains(&file.display().to_string()),
+                "{name}: error must name the file: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_accepts_the_single_spelling_of_each_duplicate_key_case() {
+        // Controls for the duplicate-key test: the same records with
+        // each key spelled once (the valid spelling) load.
+        let raw = r#"{"publications":[{"world":"arena",
+            "placement":{"kind":"path_mount","path":"/arena"}}]}"#;
+        let file = write_raw_registry_file("single-spelling", raw);
+        let loaded = Registry::load(&file).unwrap();
+        assert_eq!(loaded.publications, vec![mount("/arena", false)]);
     }
 
     #[test]

@@ -59,10 +59,10 @@
  *   read-failed    any other read error. Exit 6.
  */
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import fs, { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 export const SOURCE = "file-export/opencode-usage-laptop";
@@ -301,21 +301,73 @@ async function writeDocument(outDir, doc) {
 }
 
 async function readState(outDir) {
+  let parsed;
   try {
-    return JSON.parse(await readFile(join(outDir, "state.json"), "utf8"));
+    parsed = JSON.parse(await readFile(join(outDir, "state.json"), "utf8"));
   } catch {
     return {};
   }
+  // Valid JSON of the wrong shape (null, an array, a bare string/number)
+  // is not state: treat it like a missing file instead of dereferencing
+  // it downstream (#6915). Only a string storePath is a previous path;
+  // anything else would fabricate a moved report in resolveStore.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  return {
+    storePath: typeof parsed.storePath === "string" && parsed.storePath ? parsed.storePath : null,
+  };
+}
+
+/** Validate one hour-valued flag (#4739). The exporter is fail-closed:
+ * a junk window must never publish a zero-filled `status: "ok"`
+ * document, and a junk freshness must never be diagnosed as a moved
+ * store — so a missing, non-numeric, NaN, infinite, zero, or negative
+ * value is rejected here, before any store read, with the bad
+ * argument named. The error carries the partially parsed args so
+ * `run` can still route the failure document to --out-dir. */
+function parseHourFlag(flag, raw, args) {
+  const value = Number(raw);
+  if (raw === undefined || !Number.isFinite(value) || value <= 0) {
+    const err = new ExportError(
+      "invalid-argument",
+      2,
+      `${flag} must be a positive finite number of hours (got ${raw === undefined ? "no value" : JSON.stringify(raw)})`,
+    );
+    err.args = args;
+    throw err;
+  }
+  return value;
+}
+
+/** Validate one path-valued flag (#6934). A present --db or --out-dir
+ * must carry a real value: a missing (trailing), empty, or flag-like
+ * value used to be consumed blindly -- a trailing --db silently fell
+ * back to OPENCODE_USAGE_DB / the default store, and a flag-like value
+ * swallowed the next flag and surfaced later as a bogus unknown
+ * argument. Reject in the #4739 invalid-argument style, before any
+ * store read, with the flag and bad value named. The error carries the
+ * partially parsed args so `run` can still route the failure document
+ * to --out-dir when one was validly parsed. */
+function parsePathFlag(flag, raw, args) {
+  if (raw === undefined || raw === "" || raw.startsWith("--")) {
+    const err = new ExportError(
+      "invalid-argument",
+      2,
+      `${flag} requires a path value (got ${raw === undefined ? "no value" : JSON.stringify(raw)})`,
+    );
+    err.args = args;
+    throw err;
+  }
+  return raw;
 }
 
 function parseArgs(argv) {
   const args = { db: null, outDir: null, windowHours: DEFAULT_WINDOW_HOURS, freshHours: DEFAULT_FRESH_HOURS };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
-    if (a === "--db") args.db = argv[++i];
-    else if (a === "--out-dir") args.outDir = argv[++i];
-    else if (a === "--window-hours") args.windowHours = Number(argv[++i]);
-    else if (a === "--fresh-hours") args.freshHours = Number(argv[++i]);
+    if (a === "--db") args.db = parsePathFlag("--db", argv[++i], args);
+    else if (a === "--out-dir") args.outDir = parsePathFlag("--out-dir", argv[++i], args);
+    else if (a === "--window-hours") args.windowHours = parseHourFlag("--window-hours", argv[++i], args);
+    else if (a === "--fresh-hours") args.freshHours = parseHourFlag("--fresh-hours", argv[++i], args);
     else throw new Error(`unknown argument: ${a}`);
   }
   return args;
@@ -329,9 +381,27 @@ export async function run({
   now = Date.now(),
   home = homedir(),
 } = {}) {
-  const args = parseArgs(argv);
-  const outDir = args.outDir ?? join(home, "atlas/opencode-usage-export");
   const attemptedAt = new Date(now).toISOString();
+  let args;
+  try {
+    args = parseArgs(argv);
+  } catch (err) {
+    // Argument errors are fail-closed too (#4739): a failure document
+    // naming the bad argument and a non-zero exit, never a throw that
+    // leaves the previous tick's document looking current.
+    const e =
+      err instanceof ExportError
+        ? err
+        : new ExportError("invalid-argument", 2, `opencode usage export: ${err?.message ?? err}`);
+    const doc = failureDocument(e.status, e.message, attemptedAt);
+    try {
+      await writeDocument(err?.args?.outDir ?? join(home, "atlas/opencode-usage-export"), doc);
+    } catch {
+      /* nowhere to write the failure either; exit code carries it */
+    }
+    return { exitCode: e.exitCode, doc };
+  }
+  const outDir = args.outDir ?? join(home, "atlas/opencode-usage-export");
   try {
     const explicit = args.db ?? env.OPENCODE_USAGE_DB ?? null;
     const candidates = explicit ? [explicit] : defaultCandidatePaths(home);
@@ -380,7 +450,15 @@ export async function run({
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (isMain) {
   const { exitCode, doc } = await run({ argv: process.argv.slice(2) });
   console.log(JSON.stringify({ status: doc.status, exitCode }));
   process.exit(exitCode);
