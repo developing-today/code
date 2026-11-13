@@ -2575,10 +2575,17 @@ impl WorldActor {
                 reply,
             } => {
                 // Author-key bindings change what later inputs the world
-                // accepts; a replica takes no such local state.
-                let result = self
-                    .check_writable()
-                    .and_then(|()| self.core.bind_author_key(&token, author_key));
+                // accepts; a replica takes no such local state. A new
+                // binding is journaled (#4346) so the participant's chain
+                // position survives a restart.
+                let result = self.check_writable().and_then(|()| {
+                    let (participant_id, entry) =
+                        self.core.bind_author_key_entry(&token, author_key)?;
+                    if let Some(entry) = entry {
+                        self.persist(entry)?;
+                    }
+                    Ok(participant_id)
+                });
                 let _ = reply.send(result);
             }
             WorldCommand::Presence {
@@ -2658,7 +2665,11 @@ impl WorldActor {
                                 .and_then(|()| self.core.commit_prepared(candidate))
                                 .and_then(|event| {
                                     if let Some(signed) = &signed {
-                                        self.core.record_signed_move(&event, signed)?;
+                                        let record =
+                                            self.core.record_signed_move(&event, signed)?;
+                                        self.persist(JournalEntry::SignedMoveAccepted {
+                                            record: JournalSignedMove::from_record(&record),
+                                        })?;
                                     }
                                     Ok(event)
                                 })

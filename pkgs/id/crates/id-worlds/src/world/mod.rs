@@ -89,8 +89,9 @@ pub use upgrade::{
 };
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
-    constant_time_eq, hex_decode_32, is_pre_fix_mint_display_name, legacy_sanitize_display_name,
-    pre_fix_sanitize_display_name, sanitize_chat, sanitize_display_name, token_digest,
+    constant_time_eq, hex_decode, hex_decode_32, is_pre_fix_mint_display_name,
+    legacy_sanitize_display_name, pre_fix_sanitize_display_name, sanitize_chat,
+    sanitize_display_name, token_digest,
 };
 
 /// Identity of one live connection. It stays in memory only and is never part
@@ -1148,6 +1149,68 @@ pub fn is_capability_denied(error: &anyhow::Error) -> bool {
         .any(|cause| cause.downcast_ref::<CapabilityDenied>().is_some())
 }
 
+/// One accepted signed move as journaled (#4346): the journal form of
+/// [`signed::SignedMoveRecord`], with the key, event id, and signed bytes
+/// hex-encoded like the journal's other digests and payloads. Replay
+/// converts it back and re-verifies the move against the author's chain
+/// (see `WorldCore::restore`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalSignedMove {
+    /// Host world sequence of the committed input event.
+    pub world_sequence: u64,
+    /// Server-assigned participant that submitted the move.
+    pub participant_id: u64,
+    /// The author's verifying key bytes (hex), as bound to the participant.
+    pub author: String,
+    /// The move's sequence in the author's own chain.
+    pub author_seq: u32,
+    /// The signed event's id (hex).
+    pub event_id: String,
+    /// The signed event's encoded header bytes (hex).
+    pub bytes: String,
+}
+
+impl JournalSignedMove {
+    /// The journal form of an accepted signed-move record.
+    #[must_use]
+    pub fn from_record(record: &signed::SignedMoveRecord) -> Self {
+        Self {
+            world_sequence: record.world_sequence,
+            participant_id: record.participant_id,
+            author: hex_encode(&record.author),
+            author_seq: record.author_seq,
+            event_id: record.event_id.to_string(),
+            bytes: hex_encode(&record.bytes),
+        }
+    }
+
+    /// Back to the runtime record, refusing malformed encodings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a hex field does not decode, the author key
+    /// is not 32 bytes, or the event id does not parse.
+    pub fn to_record(&self) -> anyhow::Result<signed::SignedMoveRecord> {
+        use anyhow::Context as _;
+        let author: [u8; 32] = hex_decode(&self.author)
+            .and_then(|bytes| bytes.try_into().ok())
+            .context("malformed author key in journaled signed move")?;
+        let event_id: p2panda_core::Hash = self
+            .event_id
+            .parse()
+            .map_err(|_| anyhow::anyhow!("malformed event id in journaled signed move"))?;
+        let bytes = hex_decode(&self.bytes).context("malformed signed move bytes in journal")?;
+        Ok(signed::SignedMoveRecord {
+            world_sequence: self.world_sequence,
+            participant_id: self.participant_id,
+            author,
+            author_seq: self.author_seq,
+            event_id,
+            bytes,
+        })
+    }
+}
+
 /// One durable fact about a world, in commit order.
 ///
 /// Capability secrets are never journaled, only their SHA-256 digests, so a
@@ -1295,6 +1358,27 @@ pub enum JournalEntry {
     ScheduleFired {
         /// The fired schedule's id.
         id: String,
+    },
+    /// A participant's author key was bound for signed play (#2814,
+    /// #4346). Written when the binding is first made; replaying it
+    /// restores the binding and the author's (still empty) chain, so a
+    /// bound participant's chain position survives a restart without
+    /// re-anchoring. Re-binding the same key replays as a no-op, exactly
+    /// as at runtime.
+    AuthorKeyBound {
+        /// The participant the key is bound to.
+        participant_id: u64,
+        /// The player's ed25519 verifying key bytes (hex).
+        author: String,
+    },
+    /// A signed move was accepted (#2814, #4346): follows the `Committed`
+    /// entry of the input event it cross-references, in the order the
+    /// actor persisted them. Replay re-verifies the move against the
+    /// author's restored chain before accepting it, so a journal whose
+    /// signed history was tampered with is refused, not restored.
+    SignedMoveAccepted {
+        /// The accepted move, in journal form.
+        record: JournalSignedMove,
     },
     /// An application-owned entity was exported to another region shard
     /// (#3870 phase 1, design #2818 §3). Written persist-before-apply: once
@@ -1582,10 +1666,17 @@ pub const JOURNAL_VERSION_CHECKPOINT_PARTS: u32 = 6;
 /// must refuse the journal at the header check.
 pub const JOURNAL_VERSION_WRITE_LEASE: u32 = 7;
 
+/// Header version of a journal that contains a signed-play entry
+/// ([`JournalEntry::AuthorKeyBound`] / [`JournalEntry::SignedMoveAccepted`],
+/// issue #4346). Version-7 binaries cannot read these entries and would
+/// restore a world whose signed chains were silently lost, so they must
+/// refuse the journal at the header check.
+pub const JOURNAL_VERSION_SIGNED_PLAY: u32 = 8;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_WRITE_LEASE;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_SIGNED_PLAY;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
@@ -1613,6 +1704,9 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         | JournalEntry::LeaseHandedOff { .. }
         | JournalEntry::LeaseRevoked { .. }
         | JournalEntry::LeaseWriteRejected { .. } => JOURNAL_VERSION_WRITE_LEASE,
+        JournalEntry::AuthorKeyBound { .. } | JournalEntry::SignedMoveAccepted { .. } => {
+            JOURNAL_VERSION_SIGNED_PLAY
+        }
         JournalEntry::CheckpointSnapshotPart { .. }
         | JournalEntry::CheckpointEventsPart { .. }
         | JournalEntry::CheckpointAdminPart { .. } => JOURNAL_VERSION_CHECKPOINT_PARTS,
