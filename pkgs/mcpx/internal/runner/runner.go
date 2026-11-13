@@ -516,12 +516,15 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// so hits the runtime's type-check cache, and a different program
 		// cannot be mistaken for it.
 		source := opts.Source
-		if strings.Contains(opts.ClientSource, "__mcpxFinal") {
+		if opts.Export == "" && strings.Contains(opts.ClientSource, "__mcpxFinal") {
 			// CODE-19: a snippet's final top-level expression is
 			// its result; rewrite it to report through the client
-			// (whose capture global exists only when there is a
-			// client source). The transform abstains on anything
-			// it cannot classify, leaving the source as written.
+			// (whose capture global exists only when the client
+			// carries it). A selected named export is an entry
+			// point with its own result rule, like the default
+			// export the transform itself abstains on. The
+			// transform abstains on anything it cannot classify,
+			// leaving the source as written.
 			source, _ = rewriteFinalExpression(source)
 		}
 		src := opts.Prelude + source

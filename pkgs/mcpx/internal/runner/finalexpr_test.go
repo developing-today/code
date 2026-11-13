@@ -53,3 +53,35 @@ func TestRewriteFinalExpression(t *testing.T) {
 		})
 	}
 }
+
+// Review cases (PR #9344): TypeScript declaration tails are not
+// expressions, and a newline after an operand-taking keyword does
+// not split the expression it belongs to.
+func TestRewriteFinalExpressionReviewCases(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+		ok   bool
+	}{
+		{"ts type tail abstains", "const a = 1;\ntype Answer = number;", "", false},
+		{"ts interface tail abstains", "interface Answer { value: number }", "", false},
+		{"ts enum tail abstains", "enum Colour { Red, Green }", "", false},
+		{"new across a newline", "class C {}\nnew\nC()", "class C {}\n__mcpxFinal(await (new\nC()));", true},
+		{"typeof across a newline", "typeof\nfoo", "__mcpxFinal(await (typeof\nfoo));", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := rewriteFinalExpression(tc.src)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v (got %q)", ok, tc.ok, got)
+			}
+			if tc.ok && got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+			if !tc.ok && got != tc.src {
+				t.Errorf("abstention changed the source: got %q want %q", got, tc.src)
+			}
+		})
+	}
+}

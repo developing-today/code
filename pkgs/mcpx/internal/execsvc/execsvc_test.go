@@ -780,3 +780,79 @@ func TestFinalExpressionIsTheResult(t *testing.T) {
 		t.Errorf("declaration tail: result = %#v, want the stdout object", res.Result)
 	}
 }
+
+// CODE-19 review (PR #9344): an explicit null final expression is
+// a deliberate result -- present, framed, and ahead of stdout --
+// not the absence of one.
+func TestFinalNullIsADeliberateResult(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	var frames []execsvc.Frame
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source: `console.log("1"); null`, ClientSource: module, Permissions: "all",
+	}, execsvc.Options{Output: execsvc.OutputStructured}, func(f execsvc.Frame) error {
+		frames = append(frames, f)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.ResultPresent || res.Result != nil {
+		t.Errorf("null final: present = %v, result = %#v, want present with nil", res.ResultPresent, res.Result)
+	}
+	found := false
+	for _, f := range frames {
+		if f.Type == execsvc.FrameResult && string(f.Value) == "null" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no null result frame in %v", frames)
+	}
+}
+
+// CODE-19 review (PR #9344): a selected named export is an entry
+// point; the module's trailing expression must not replace its
+// result.
+func TestNamedExportKeepsItsResult(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source: "export function main() { return 42; }\n1",
+		ClientSource: module, Permissions: "all", Export: "main",
+	}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Error != "" {
+		t.Fatalf("named export run failed: %s", res.Error)
+	}
+	if res.Result != float64(42) {
+		t.Errorf("named export: result = %#v, want 42 from main, not the trailing 1", res.Result)
+	}
+}
+
+// CODE-19 review (PR #9344): a before hook's own final expression
+// must not leak into the main script's result.
+func TestBeforeHookFinalExpressionDoesNotLeak(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source: `console.log(JSON.stringify({ answer: 42 }));`, ClientSource: module, Permissions: "all",
+	}, execsvc.Options{
+		Output: execsvc.OutputStructured,
+		Hooks:  []execsvc.Hook{{Phase: execsvc.HookBefore, Name: "leak", Script: `1 + 2`}},
+	}, func(execsvc.Frame) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Error != "" {
+		t.Fatalf("hooked run failed: %s", res.Error)
+	}
+	if got, ok := res.Result.(map[string]any); !ok || got["answer"] != float64(42) {
+		t.Errorf("main result = %#v, want the stdout answer object, not the hook's 3", res.Result)
+	}
+}

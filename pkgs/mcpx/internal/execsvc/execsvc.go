@@ -490,11 +490,16 @@ type LogRecord struct {
 
 // Result is the structured answer.
 type Result struct {
-	RunID  string            `json:"runId"`
-	Result any               `json:"result,omitempty"`
-	Emits  []json.RawMessage `json:"emits"`
-	Logs   []LogRecord       `json:"logs"`
-	Stdout string            `json:"stdout"`
+	RunID  string `json:"runId"`
+	Result any    `json:"result,omitempty"`
+	// ResultPresent records that the run produced a result even
+	// when its value is null (CODE-19): a snippet whose final
+	// expression is `null` answered deliberately, which the value
+	// alone cannot distinguish from a run with no result at all.
+	ResultPresent bool              `json:"resultPresent,omitempty"`
+	Emits         []json.RawMessage `json:"emits"`
+	Logs          []LogRecord       `json:"logs"`
+	Stdout        string            `json:"stdout"`
 	// StdoutTruncated is set when Stdout was capped at
 	// Limits.StdoutLimit (exec.maxOutputBytes, CODE-16); the end of
 	// Stdout itself carries the marker naming the dropped byte count.
@@ -1074,6 +1079,11 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		hookCtx.Phase = HookBefore
 		s.runHooks(runCtx, HookBefore, before, hookCtx, ropts, res, emitFrame)
 	}
+	// A before hook is a snippet too, and the runner rewrote its
+	// final expression like any other: its capture must not become
+	// the main script's answer (CODE-19). The main run starts from
+	// a clean capture.
+	finalValue, finalCaptured = nil, false
 	priorArtifact := ropts.OnArtifact
 	ropts.OnArtifact = func(a logging.Artifacted) {
 		// Re-read from the store so the frame carries what the daemon
@@ -1215,6 +1225,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		var parsed any
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			res.Result = parsed
+			res.ResultPresent = true
 			stdoutParsed, haveStdoutParsed = parsed, true
 		}
 	}
@@ -1229,6 +1240,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		var v any
 		if err := json.Unmarshal(finalValue, &v); err == nil {
 			res.Result = v
+			res.ResultPresent = true
 			stdoutParsed, haveStdoutParsed = nil, false
 		}
 	}
@@ -1277,7 +1289,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 
 	if res.Error != "" {
 		emitFrame(Frame{Type: FrameError, Error: res.Error})
-	} else if res.Result != nil {
+	} else if res.Result != nil || res.ResultPresent {
 		b, merr := json.Marshal(res.Result)
 		if merr == nil {
 			emitFrame(Frame{Type: FrameResult, Value: b})

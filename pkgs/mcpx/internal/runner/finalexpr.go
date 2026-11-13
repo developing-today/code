@@ -50,6 +50,22 @@ var nonExpressionHeads = map[string]bool{
 	"while": true, "do": true, "switch": true, "try": true,
 	"catch": true, "finally": true, "break": true, "continue": true,
 	"debugger": true,
+	// TypeScript declaration heads: exec sources are TypeScript,
+	// and a type-level tail is not an expression. A plain
+	// identifier with one of these names loses the rewrite --
+	// abstention is the safe direction.
+	"type": true, "interface": true, "enum": true,
+	"namespace": true, "declare": true, "abstract": true,
+}
+
+// operandKeywords end an unfinished expression, never a statement:
+// a newline after one continues the same statement (new\nC(),
+// typeof\nx), so it is not a boundary.
+var operandKeywords = map[string]bool{
+	"new": true, "typeof": true, "delete": true, "void": true,
+	"await": true, "yield": true, "return": true, "throw": true,
+	"case": true, "instanceof": true, "in": true, "of": true,
+	"extends": true, "else": true, "do": true,
 }
 
 // blockHeads are the first words of statements a closing brace at
@@ -342,7 +358,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			// can end one and what follows plainly does not continue
 			// it (a chained call, a binary operator, an else/catch
 			// belonging to the statement above).
-			if canEndAtNewline(src, lastEnd) && !continuesOnNextLine(src, i+1) {
+			if canEndAtNewline(src, lastEnd) && !operandKeywords[lastWordOf(src, lastEnd)] && !continuesOnNextLine(src, i+1) {
 				boundary()
 			}
 			i++
@@ -390,6 +406,21 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 	}
 	boundary()
 	return spans, hasDefault, true
+}
+
+// lastWordOf returns the identifier the code up to end finishes
+// with, or "" when it ends with anything else.
+func lastWordOf(src string, end int) string {
+	if end > len(src) {
+		end = len(src)
+	}
+	i := end
+	for i > 0 && (src[i-1] == '_' || src[i-1] == '$' ||
+		('a' <= src[i-1] && src[i-1] <= 'z') || ('A' <= src[i-1] && src[i-1] <= 'Z') ||
+		('0' <= src[i-1] && src[i-1] <= '9')) {
+		i--
+	}
+	return src[i:end]
 }
 
 // canEndAtNewline reports whether the code up to end can close a
