@@ -55,8 +55,8 @@ use hkdf::Hkdf;
 use redb::{Database, DatabaseError, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use tokio::sync::RwLock;
 use tokio::sync::watch;
+use tokio::sync::{RwLock, oneshot};
 
 /// Maximum allowed display name length (Unicode scalar values).
 const MAX_NAME_LENGTH: usize = 48;
@@ -285,6 +285,17 @@ impl IdentityStore {
     /// Generates a unique client ID, stores the identity, and returns
     /// a signed token + the new identity.
     pub async fn register(&self, name: Option<String>) -> anyhow::Result<(String, ClientIdentity)> {
+        #[cfg(test)]
+        return self.register_inner(name, None).await;
+        #[cfg(not(test))]
+        self.register_inner(name).await
+    }
+
+    async fn register_inner(
+        &self,
+        name: Option<String>,
+        #[cfg(test)] test_hook: Option<RegistrationTestHook>,
+    ) -> anyhow::Result<(String, ClientIdentity)> {
         let name = sanitize_name(name);
         let client_id = generate_client_id();
         let now = unix_timestamp();
@@ -295,74 +306,106 @@ impl IdentityStore {
             created_at: now,
             updated_at: now,
         };
-
-        // Admission bound (#1766): hold the clients write lock across
-        // check + persist + insert, so concurrent registrations cannot
-        // race past the bound (the redb create used to happen before
-        // the in-memory insert with no lock spanning both, which would
-        // have made a count check racy). Registrations are rare, so
-        // verify/refresh readers waiting out one create is acceptable.
-        // At capacity the refusal is the typed IdentityCapacityError —
-        // existing records are never deleted to make room.
-        //
-        // The critical section runs in a detached task (Codex P2 on
-        // PR #4143): spawn_blocking is not aborted when the awaiting
-        // future is cancelled, so a section owned by the caller's
-        // future could drop the lock with the record committed to disk
-        // but never inserted — the in-memory count would then
-        // under-count persisted records and repeated cancellations
-        // would bypass the bound (and the uncounted records would all
-        // load on restart). Detached, the section keeps the admission
-        // reservation and the in-memory accounting alive through
-        // completion of the blocking write, independently of the
-        // requesting future; awaiting the handle only observes the
-        // outcome.
-        {
-            let clients = Arc::clone(&self.clients);
-            let db = self.db.clone();
-            let max_identities = self.max_identities;
-            let record = identity.clone();
-            let persist = tokio::spawn(async move {
-                let mut clients = clients.write().await;
-                if let Some(limit) = max_identities {
-                    let registered = clients.len();
-                    if registered >= limit {
-                        tracing::warn!(
-                            "[identity] Registration refused at capacity: {registered}/{limit} identities (admission bound, issue 1766)"
-                        );
-                        return Err(anyhow::Error::from(IdentityCapacityError {
-                            limit,
-                            registered,
-                        }));
-                    }
-                }
-
-                // Persist to database first (if available)
-                if let Some(db) = &db {
-                    let db = Arc::clone(db);
-                    let record = record.clone();
-                    run_blocking(move || db.create(&record)).await?;
-                }
-
-                clients.insert(record.client_id.clone(), record);
-                Ok::<(), anyhow::Error>(())
-            });
-            persist
-                .await
-                .map_err(|e| anyhow::anyhow!("identity registration task failed: {e}"))??;
-        }
-
-        // Create a watch channel for name changes
-        {
-            let (tx, _rx) = watch::channel(name);
-            let mut watchers = self.name_watchers.write().await;
-            watchers.insert(client_id.clone(), tx);
-        }
-
-        // Create and sign a token
         let token = self.create_token(&client_id, now)?;
 
-        Ok((token, identity))
+        // Keep capacity check, persistence and in-memory insertion under the
+        // same lock. The detached task also owns the complete result: it waits
+        // for the caller to acknowledge receipt before committing the
+        // registration. Dropping the caller before that acknowledgement rolls
+        // back all three representations, including the persistent row.
+        let clients = Arc::clone(&self.clients);
+        let watchers = Arc::clone(&self.name_watchers);
+        let db = self.db.clone();
+        let max_identities = self.max_identities;
+        let record = identity.clone();
+        let (result_tx, result_rx) = oneshot::channel();
+        let (ack_tx, ack_rx) = oneshot::channel();
+        #[cfg(test)]
+        let (test_persisted, test_resume, test_rolled_back) = match test_hook {
+            Some(hook) => (
+                Some(hook.persisted),
+                Some(hook.resume),
+                Some(hook.rolled_back),
+            ),
+            None => (None, None, None),
+        };
+
+        tokio::spawn(async move {
+            let mut clients = clients.write().await;
+            if let Some(limit) = max_identities {
+                let registered = clients.len();
+                if registered >= limit {
+                    tracing::warn!(
+                        "[identity] Registration refused at capacity: {registered}/{limit} identities (admission bound, issue 1766)"
+                    );
+                    let _ = result_tx.send(Err(anyhow::Error::from(IdentityCapacityError {
+                        limit,
+                        registered,
+                    })));
+                    return;
+                }
+            }
+
+            if let Some(db) = &db {
+                let db = Arc::clone(db);
+                let record = record.clone();
+                if let Err(error) = run_blocking(move || db.create(&record)).await {
+                    let _ = result_tx.send(Err(error));
+                    return;
+                }
+            }
+
+            let (watcher, _receiver) = watch::channel(record.name.clone());
+            clients.insert(record.client_id.clone(), record.clone());
+            watchers
+                .write()
+                .await
+                .insert(record.client_id.clone(), watcher);
+
+            #[cfg(test)]
+            {
+                if let Some(persisted) = test_persisted {
+                    let _ = persisted.send(());
+                }
+                if let Some(resume) = test_resume {
+                    let _ = resume.await;
+                }
+            }
+
+            if result_tx.send(Ok((token, record.clone()))).is_err() || ack_rx.await.is_err() {
+                let rollback_persisted = if let Some(db) = db {
+                    let client_id = record.client_id.clone();
+                    match run_blocking(move || db.delete(&client_id)).await {
+                        Ok(()) => true,
+                        Err(error) => {
+                            tracing::error!(
+                                "[identity] Failed to roll back cancelled registration {}; retaining it in memory to preserve admission accounting: {error:#}",
+                                short_id(&record.client_id)
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    true
+                };
+                if rollback_persisted {
+                    watchers.write().await.remove(&record.client_id);
+                    clients.remove(&record.client_id);
+                }
+                #[cfg(test)]
+                if let Some(rolled_back) = test_rolled_back {
+                    let _ = rolled_back.send(());
+                }
+            }
+        });
+
+        let result = result_rx
+            .await
+            .map_err(|e| anyhow::anyhow!("identity registration task failed: {e}"))??;
+        // No await point between acknowledgement and returning: once the
+        // detached task sees this acknowledgement, the caller owns the result.
+        let _ = ack_tx.send(());
+        Ok(result)
     }
 
     /// Verify a token and return the associated client identity (if valid).
@@ -712,6 +755,17 @@ impl IdentityDb {
         Ok(())
     }
 
+    /// Delete a record whose registration result was cancelled before receipt.
+    fn delete(&self, client_id: &str) -> anyhow::Result<()> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(IDENTITIES)?;
+            table.remove(client_id)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
     /// Encrypt a record under a fresh random nonce, as `nonce || ciphertext`.
     ///
     /// Nonces are random, not counters, so the store needs no persisted nonce
@@ -987,6 +1041,13 @@ fn base64url_decode(encoded: &str) -> Option<Vec<u8>> {
 // =============================================================================
 
 #[cfg(test)]
+struct RegistrationTestHook {
+    persisted: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+    rolled_back: oneshot::Sender<()>,
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -1139,6 +1200,47 @@ mod tests {
 
         let verified = store.verify_token(&token).await.unwrap();
         assert_eq!(verified.name, None);
+    }
+
+    #[tokio::test]
+    async fn test_cancelled_registration_rolls_back_persistent_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identities.redb");
+        let secret = [9u8; 32];
+        let store = Arc::new(
+            IdentityStore::new_with_max_identities(secret, path.clone(), Some(5))
+                .await
+                .unwrap(),
+        );
+        let (persisted_tx, persisted_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        let (rolled_back_tx, rolled_back_rx) = oneshot::channel();
+        let hook = RegistrationTestHook {
+            persisted: persisted_tx,
+            resume: resume_rx,
+            rolled_back: rolled_back_tx,
+        };
+        let registering_store = Arc::clone(&store);
+        let registration = tokio::spawn(async move {
+            registering_store
+                .register_inner(Some("Cancelled".to_owned()), Some(hook))
+                .await
+        });
+
+        persisted_rx.await.unwrap();
+        registration.abort();
+        resume_tx.send(()).unwrap();
+        rolled_back_rx.await.unwrap();
+
+        assert_eq!(store.len().await, 0);
+        assert!(store.name_watchers.read().await.is_empty());
+        drop(store);
+
+        let reopened = IdentityStore::new_with_max_identities(secret, path, Some(5))
+            .await
+            .unwrap();
+        assert!(reopened.is_empty().await);
+        assert!(reopened.db.as_ref().unwrap().read_all().unwrap().is_empty());
     }
 
     #[tokio::test]
