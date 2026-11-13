@@ -17,6 +17,14 @@ it is neither multi-master priority replication nor a wholesale event-sourcing m
 The existing creation outbox is evidence of a bounded pattern, **not** an already-general
 transactional lifecycle outbox. Its pilot is not expanded by this design pass.
 
+"One authority" is the target interface and existing queue doctrine, **not a claim that
+every V1 producer already complies**. Pinned `pm-stack/dispatch/src/queue.ts` still contains
+a Supabase/PostgREST enqueue and direct task-PATCH path; #9028 already owns that bypass.
+Its deployment liveness is unverified. Consume #9028: reconcile or quarantine that producer
+before canonical dispatch cutover. Any temporary compatibility adapter must forward to the
+authoritative broker, retain the same operation/dedup identity, verify the returned authority
+and binding, and never dual-write stores or roll back to the bypass on broker failure.
+
 ```mermaid
 flowchart LR
   Human[Human rulings / CLI] --> Command[Shared validated command interface]
@@ -82,7 +90,7 @@ versioned, typed envelope; do not implement a collection of independent CLI back
 Command {
   schema_version, operation_id, idempotency_key, request_digest,
   work: { authority_id, work_id }, kind, arguments,
-  actor_ref, source_ref, source_event_ref?, session_ref?,
+  actor_ref, source_ref, source_event_ref?, delivery_id?, source_revision?, session_ref?,
   expected_work_version?, lease_generation?, observed_snapshot_ref?,
   reason: { code, evidence_refs[], confidence? }, dry_run
 }
@@ -94,12 +102,25 @@ Result {
 
 - Authentication supplies the principal and capabilities. A client-provided `actor_ref`
   or `authorized: true` is **not** proof of authorization. Check current field/action
-  permission at acceptance and again before delayed consequential delivery.
+  permission at acceptance and again before delayed consequential delivery. Immutable
+  accepted intent records the authenticated principal, exact permitted effect/request
+  digest, authority decision and policy version. Re-check revocable permission and target
+  preconditions before send; revocation stops future sends, not a request already sent.
+  An authenticated broker recorder can retain independently verified late-effect evidence
+  for that exact operation after lease expiry/revocation; an old worker's assertion alone
+  is not verification or a grant to mutate current work state.
 - Parse the complete invocation before side effects. Reject unknown flags, missing values,
   ambiguous targets, invalid ranges and incompatible version/precondition combinations.
 - Reusing an idempotency key with the same canonical request returns the original operation;
   a different request digest is a conflict. Separate command identity, transport delivery
   identity, per-item revision, relay lease generation and cross-item read snapshot.
+- Deduplicate `delivery_id` independently from `(source_ref, source_event_ref,
+  source_revision)` and normalized command identity. Broker-assigned accepted item revisions
+  are monotone: older observations cannot overwrite newer accepted state; a duplicate of
+  the same revision and payload is a no-op, while divergent payloads at that revision are
+  a conflict. A missing accepted revision triggers reconciliation. A delayed source event
+  without trustworthy causal order requires fresh source read/triage, not timestamp LWW.
+  Retain uncertain or unattributable observations rather than silently suppressing them.
 - Shared wire names are `snake_case` in the eventual v1 schema. Existing component examples
   using camelCase are design notation, not additional wire spellings. Contract fixtures
   must make serialization, integer/string handling and unknown-version behavior explicit.
@@ -129,6 +150,13 @@ not mean OR eligibility. Default predicates are both true. Then apply hard eligi
 then compare effective urgency, explicit exact peer rank within equal urgency, creation
 time and normalized canonical ID. Record policy, graph, item revisions and as-of time.
 Claim revalidates current predicates; a projection or sampled candidate cannot grant a lease.
+The consistency boundary is the broker's claim transaction: validate item/work version,
+graph revision, active policy/profile revision, ownership and relevant eligibility inputs
+against the proposed snapshot, and evaluate time-sensitive conditions at broker-authoritative
+claim time. A changed input requires recomputation/reselection or a typed stale result.
+If the adapter cannot provide that atomic validation, it cannot advertise this capability.
+Graph revision validation and edge insertion share a transaction/serialized edit protocol;
+two individually valid opposite-edge checks must not both commit.
 
 The source explicitly requests before/after placement: retain that feature, with exact
 integer peer ranks and an auditable rebalance contract. A cross-urgency move requires an
@@ -167,11 +195,23 @@ undo a successful merge merely because a later issue closure failed. A final rea
 atomically exclude a new GitHub comment; expose the freshness boundary and residual race.
 Closed epics, labels and session shells are not completion or launch proof.
 
+Completion policy names its invalidating activity classes: changed expected PR head,
+required check/review/branch-policy failure, newly unresolved hard blocker, authorization
+revocation or explicit hold/cancel always stop further consequential effects. An authorized
+actionable requirement comment/review observed before local finalization holds the operation
+for policy evaluation; routine informational activity need not. Record the final refresh
+watermark and the residual read→merge interval, not an absolute "no external changes" claim.
+Activity discovered after completion appends evidence and applies an explicit post-completion
+triage/reopen policy; it never silently rewrites completion history or undoes a merge.
+
 The source's managed-body feature remains traced. GitHub endpoints without documented
 conditional-write support cannot guarantee prevention of human lost updates via a mere
 GET-compare-PATCH sequence. Default to private journal plus explicitly mirrored, known-ID
 managed comments; any body-section mutation must expose the weaker guarantee or remain
 unsupported until an adequate adapter is proven. Never quietly discard the feature.
+Default capability for automatic body-section writes is **unsupported without verified
+conditional-write support**. A separately approved best-effort mode must disclose lost-update
+risk in its preview/receipt and retain before/after evidence; it is not optimistic concurrency.
 
 ## Implementation locality and ownership
 
@@ -200,6 +240,10 @@ independent of broker/client feature-gated adapters. Storage still belongs to ex
 stay in existing aggregator/projector/dispatch modules. One integration slice owns shared
 `lib.rs`, CLI `main.rs` and registry registration so parallel implementation does not race
 over those files. New module files/tests can otherwise be independent.
+Placement is a concrete implementation-planning default, not allocation of storage/schema
+ownership. Reconcile it with #3424/#8575/#8579 and the QTI provenance disposition before
+schema-coupled work. `operations.rs` requires its own scoped mutation-outbox issue; it does
+not silently enroll this program as another producer of the bounded creation-outbox pilot.
 
 Future Rust issue done checks use the actual workspace/package, for example:
 
