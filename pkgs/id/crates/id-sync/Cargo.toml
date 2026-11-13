@@ -51,6 +51,8 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 
 [dev-dependencies]
+# The artifact and envelope network tests use id-core's silent lookup helpers.
+id-core = { path = "../id-core", default-features = false, features = ["test-utils"] }
 p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = ["serde"] }
 proptest = "1.12"
 tempfile = "3"
