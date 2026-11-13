@@ -349,7 +349,7 @@ pub(crate) use id_worlds::world_terminal;
 #[cfg(feature = "web")]
 pub use id_core::qr;
 #[cfg(feature = "web")]
-pub mod web;
+pub use id_web as web;
 
 // Re-export commonly used types for convenience
 pub use cli::{Cli, Command, KeyCommand, TagCommand};

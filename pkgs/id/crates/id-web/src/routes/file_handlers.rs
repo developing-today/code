@@ -111,7 +111,7 @@ pub(super) async fn save_handler(
     }
 
     // Update metadata tags: set created (if first save) and modified
-    let now_str = crate::tags::now_unix().to_string();
+    let now_str = id_store::tags::now_unix().to_string();
     // `created_fresh` gates the origin stamp below: a legacy file
     // (created before origin stamping existed) keeps an unknown
     // origin on overwrite instead of claiming this node (Codex
@@ -269,7 +269,7 @@ pub(super) async fn new_file_handler(
     }
 
     // Set metadata tags: created + modified
-    let now_str = crate::tags::now_unix().to_string();
+    let now_str = id_store::tags::now_unix().to_string();
     // `created_fresh` gates the origin stamp below: a legacy file
     // (created before origin stamping existed) keeps an unknown
     // origin on overwrite instead of claiming this node (Codex
@@ -555,7 +555,7 @@ pub(super) async fn upload_handler(
     }
 
     // Set metadata tags (created, modified, content-type)
-    let now_str = crate::tags::now_unix().to_string();
+    let now_str = id_store::tags::now_unix().to_string();
     // `created_fresh` gates the origin stamp below: a legacy file
     // (created before origin stamping existed) keeps an unknown
     // origin on overwrite instead of claiming this node (Codex
@@ -657,7 +657,7 @@ pub(super) async fn images_list_handler(State(state): State<AppState>) -> Respon
         let hash_str = tag_info.hash.to_string();
 
         // Skip internal tags
-        if crate::tags::is_internal_tag(&name) {
+        if id_store::tags::is_internal_tag(&name) {
             continue;
         }
 
@@ -904,7 +904,7 @@ pub(super) async fn delete_handler(
     }
 
     // Add "deleted" tag with timestamp
-    let now_str = crate::tags::now_unix().to_string();
+    let now_str = id_store::tags::now_unix().to_string();
     if let Err(err) = state
         .tag_store
         .set_singleton(

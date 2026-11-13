@@ -21,7 +21,7 @@ use rust_embed::Embed;
 /// - `*.css` - Stylesheets
 /// - `*.html` - HTML templates
 #[derive(Embed)]
-#[folder = "web/dist"]
+#[folder = "../../web/dist"]
 #[prefix = ""]
 pub struct Assets;
 

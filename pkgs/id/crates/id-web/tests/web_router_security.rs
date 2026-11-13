@@ -14,11 +14,10 @@ use p2panda_core::SigningKey;
 use tokio::sync::Mutex;
 use tower::ServiceExt as _;
 
-use id::{
-    local_events::LocalEvents,
-    tags::TagStore,
-    web::{self, AppState, WebSecurity},
-};
+use id_events::local_events::LocalEvents;
+use id_store::tags::TagStore;
+use id_web as web;
+use id_web::{AppState, WebSecurity};
 
 const TOKEN: &str = "router-security-integration-token";
 

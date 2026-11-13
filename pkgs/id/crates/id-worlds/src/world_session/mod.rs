@@ -1120,7 +1120,7 @@ async fn records_ticket_session<I: SessionIo>(
 }
 
 /// Compatibility alias for the provider manifest's shared records-page bound.
-pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = crate::world_caps::MAX_RECORDS_PAGE_BYTES;
+pub const MAX_RECORDS_PAGE_BYTES: usize = crate::world_caps::MAX_RECORDS_PAGE_BYTES;
 
 async fn records_session<I: SessionIo>(
     meter: &WorldMetrics,
@@ -2617,7 +2617,7 @@ pub fn decode_hex(encoded: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-pub(crate) fn encode_hex(bytes: &[u8]) -> String {
+pub fn encode_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut result = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
