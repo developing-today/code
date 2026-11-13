@@ -28,6 +28,20 @@ func TestPrimitiveTypes(t *testing.T) {
 	}
 }
 
+func TestGeneratedSearchSupportsStableOffsetPages(t *testing.T) {
+	got := codegen.Module([]codegen.Namespace{sampleNamespace()}, "http://127.0.0.1:1", "session")
+	for _, want := range []string{
+		"search(query: string, limit = 20, offset = 0)",
+		"a.match.namespace.localeCompare(b.match.namespace)",
+		"const start = Math.max(0, Math.trunc(offset));",
+		"scored.slice(start, start + count)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("generated client missing %q", want)
+		}
+	}
+}
+
 func TestNullableTypeArrayBecomesUnion(t *testing.T) {
 	if got := typeOf(t, `{"type":["integer","null"]}`); got != "number | null" {
 		t.Fatalf("got %q", got)

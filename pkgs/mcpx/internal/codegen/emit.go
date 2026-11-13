@@ -1326,7 +1326,7 @@ export interface ToolMatch {
  * Synchronous, because everything it searches is already in this file. A
  * promise here would only be a promise of work already done.
  */
-export function search(query: string, limit = 20): ToolMatch[] {
+export function search(query: string, limit = 20, offset = 0): ToolMatch[] {
   const words = String(query).toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length === 0) return [];
 
@@ -1361,8 +1361,12 @@ export function search(query: string, limit = 20): ToolMatch[] {
       });
     }
   }
-  scored.sort((a, b) => b.score - a.score || a.match.tool.localeCompare(b.match.tool));
-  return scored.slice(0, limit).map((s) => s.match);
+  scored.sort((a, b) => b.score - a.score ||
+    a.match.namespace.localeCompare(b.match.namespace) ||
+    a.match.tool.localeCompare(b.match.tool));
+  const start = Math.max(0, Math.trunc(offset));
+  const count = Math.max(0, Math.trunc(limit));
+  return scored.slice(start, start + count).map((s) => s.match);
 }
 
 /**
