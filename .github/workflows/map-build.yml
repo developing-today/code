@@ -17,10 +17,6 @@ on:
     paths:
       - "pkgs/map/**"
       - ".github/workflows/map-build.yml"
-  pull_request:
-    paths:
-      - "pkgs/map/**"
-      - ".github/workflows/map-build.yml"
   workflow_dispatch:
 
 permissions:

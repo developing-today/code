@@ -1,28 +1,10 @@
 #!/usr/bin/env bash
-# CI-policy agreement checker (#7089, Phase 1 of the ci-policy
-# agreement contract; design: code-ci-policy-agreement.md).
-#
-# The contract: for every workflow in the registry below, three
-# records must agree — the tier(s) .github/ci-policy.md assigns, the
-# triggers the workflow declares, and the recorded waiver set. A
-# disagreement with no waiver fails, naming the workflow and the
-# missing leg; a waiver whose leg now agrees is stale and also
-# fails, so the waiver set cannot silently outlive the disagreement
-# it records. Enablement (Actions API state, e.g. disabled_manually)
-# is not visible from the tree: it is audited on the #6187 recurring
-# cadence, and the currently disabled in-scope venues are exactly
-# the waiver set below (recorded in ci-policy.md, #7089 section).
-#
-# Tier -> trigger mapping (pinned in ci-policy.md, #7089 section;
-# updated for Drew's 2026-11-08 no-merge-queue ruling, which
-# supersedes the design's original merge_group pin):
-#   pr      (basic/PR tier)  -> pull_request trigger
-#   main    (main tier)      -> push trigger (branches: [main])
-#   nightly (nightly tier)   -> schedule trigger
-# A workflow_dispatch-only block satisfies NO tier.
-#
-# Usage: check-ci-policy-agreement.sh [ROOT]   (default: repo root)
+# Check the owner-approved main-only automatic CI policy (2026-11-13).
+# Registry venues must remain main or manually runnable; all workflows reject
+# PR-derived triggers and push events other than canonical branches: [main].
+# Usage: check-ci-policy-agreement.sh [ROOT] (default: repository root).
 set -euo pipefail
+[[ $# -le 1 ]] || { echo "Usage: check-ci-policy-agreement.sh [ROOT]" >&2; exit 2; }
 
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 POLICY="$ROOT/.github/ci-policy.md"
@@ -36,16 +18,16 @@ WF_DIR="$ROOT/.github/workflows"
 # basic-tier guards. Test-suite venues are #6185's registry, not
 # this one; Phase 4 of #7089 inventories widening the scope.
 REGISTRY=(
-  "workflow-lint.yml|workflow-lint|pr"
-  "proxy-port-fallbacks.yml|proxy-port-fallbacks|pr"
-  "fleet-search-parity-guard.yml|fleet-search-parity-guard|pr"
-  "opencode-config-guard.yml|opencode-config-guard|pr,main"
-  "mcpx-fix-test-guard.yml|mcpx fix-test guard|pr,main"
-  "production-line-guard.yml|production-line guard|pr"
-  "go-modules-build.yml|go modules build|pr,main"
-  "identity-build.yml|identity build|pr,main"
-  "map-build.yml|map build|pr,main"
-  "mcpx-nixbuild.yml|mcpx nix build|pr,main"
+  "workflow-lint.yml|workflow-lint|manual"
+  "proxy-port-fallbacks.yml|proxy-port-fallbacks|manual"
+  "fleet-search-parity-guard.yml|fleet-search-parity-guard|manual"
+  "opencode-config-guard.yml|opencode-config-guard|main"
+  "mcpx-fix-test-guard.yml|mcpx fix-test guard|main"
+  "production-line-guard.yml|production-line guard|main"
+  "go-modules-build.yml|go modules build|main"
+  "identity-build.yml|identity build|main"
+  "map-build.yml|map build|main"
+  "mcpx-nixbuild.yml|mcpx nix build|main"
 )
 
 # Waivers: workflow-file|tier-leg|phase issue. Each waiver records a
@@ -63,7 +45,7 @@ WAIVERS=(
 
 required_trigger() {
   case "$1" in
-  pr) echo "pull_request" ;;
+  manual) echo "workflow_dispatch" ;;
   main) echo "push" ;;
   nightly) echo "schedule" ;;
   *) echo "" ;;
@@ -763,6 +745,26 @@ if [ ! -f "$POLICY" ]; then
   echo "::error::ci-policy agreement: $POLICY not found"
   exit 1
 fi
+
+# Owner ruling 2026-11-13: automatic branch pushes are main-only; PR/tag runs are off.
+for wf in "$WF_DIR"/*.yml "$WF_DIR"/*.yaml; do
+  [ -f "$wf" ] || continue
+  if grep -Eq '^["']?on["']?:.*[{&*]' "$wf"; then
+    echo "::error::Use explicit block-form triggers, not aliases/flow maps: $wf"; fail=1
+  fi
+  triggers="$(triggers_of "$wf")"
+  if printf '%s\n' "$triggers" | grep -Eq '^(pull_request.*|merge_group)$'; then
+    echo "::error::PR-derived trigger forbidden: $wf"; fail=1
+  fi
+  if printf '%s\n' "$triggers" | grep -qx push; then
+    # Deliberately accept only canonical branches: [main]. Reject broad branches,
+    # ignored branches, tag pushes and unfiltered/inline push events.
+    block="$(awk '/^  push:/ {p=1;next} p && /^  [a-z_]+:/ {exit} p && /^[^ #]/ {exit} p {print}' "$wf")"
+    if ! printf '%s\n' "$block" | grep -Eq '^    branches: \[main\][[:space:]]*(#.*)?$' || printf '%s\n' "$block" | grep -Eq '^    (tags|tags-ignore|branches-ignore):'; then
+      echo "::error::push must target only branches: [main], without tag filters: $wf"; fail=1
+    fi
+  fi
+done
 
 for row in "${REGISTRY[@]}"; do
   file="${row%%|*}"

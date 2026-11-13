@@ -19,10 +19,6 @@ name: mcpx conformance
 # "Variables: read and write" on this repository, stored as the secret MCPX_CONFORMANCE_VARS_TOKEN.
 
 on:
-  pull_request:
-    paths:
-      - "pkgs/mcpx/**"
-      - ".github/workflows/mcpx-conformance.yml"
   push:
     branches: [main]
     paths:
