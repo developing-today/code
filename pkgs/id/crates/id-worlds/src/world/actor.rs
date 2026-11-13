@@ -2960,6 +2960,19 @@ impl WorldActor {
                     let _ = reply.send(Err(error));
                     return;
                 }
+                let sequence = match self.core.sequence.checked_add(1) {
+                    Some(sequence) => sequence,
+                    None => {
+                        self.audit_admin_result(
+                            installed_by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                            "InstallProgram",
+                            serde_json::json!({"module_hash": module_hash, "seed": seed, "installed_by": installed_by}),
+                            false,
+                        );
+                        let _ = reply.send(Err(anyhow::anyhow!("world sequence exhausted")));
+                        return;
+                    }
+                };
                 // A program whose initial records are invalid is refused
                 // before anything is journaled.
                 let new_records = match program_records(replacement.as_mut()) {
@@ -2978,7 +2991,7 @@ impl WorldActor {
                 // Actor serialization makes activation and its event atomic
                 // with respect to other world commands.
                 let candidate = WorldEvent {
-                    sequence: self.core.sequence.saturating_add(1),
+                    sequence,
                     participant_id: 0,
                     kind: WorldEventKind::ProgramInstalled {
                         module_hash: module_hash.clone(),

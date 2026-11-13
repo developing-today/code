@@ -2499,8 +2499,12 @@ impl WorldCore {
     }
 
     pub(crate) fn commit_prepared(&mut self, event: WorldEvent) -> Result<WorldEvent> {
+        let next_sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("world sequence exhausted"))?;
         ensure!(
-            event.sequence == self.sequence.saturating_add(1),
+            event.sequence == next_sequence,
             "prepared world event is stale"
         );
         self.sequence = event.sequence;
