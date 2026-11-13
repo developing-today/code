@@ -749,7 +749,7 @@ fi
 # Owner ruling 2026-11-13: automatic branch pushes are main-only; PR/tag runs are off.
 for wf in "$WF_DIR"/*.yml "$WF_DIR"/*.yaml; do
   [ -f "$wf" ] || continue
-  if grep -Eq '^["']?on["']?:.*[{&*]' "$wf"; then
+  if grep -Eq "^[\"']?on[\"']?:.*[{&*]" "$wf"; then
     echo "::error::Use explicit block-form triggers, not aliases/flow maps: $wf"; fail=1
   fi
   triggers="$(triggers_of "$wf")"
