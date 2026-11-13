@@ -4117,7 +4117,7 @@ ${dnsTable(section.entries, renewingSoon, next)}`;
  * Written without template literals on purpose — it lives inside one.
  */
 const AA_EXPLORER_SCRIPT = `<script type="module">
-import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, normName, paretoSet, pctRank, projectTask, scoreEdges } from "/assets/aa-explorer-computations.js";
+import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, zoomChartView } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -4454,11 +4454,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     if (!svg.getAttribute("data-zkey")) svg.setAttribute("data-zkey", "zx" + Math.random().toString(36).slice(2, 9));
     return svg.getAttribute("data-zkey");
   }
-  function parseViewBox(s) {
-    var p = (s || "").split(/\\s+/).map(Number);
-    if (p.length !== 4 || p.some(function (n) { return !isFinite(n); })) return null;
-    return p;
-  }
+  function parseViewBox(s) { return parseChartViewBox(s); }
   function chartState(svg) {
     var key = chartKeyFor(svg);
     var attr = svg.getAttribute("viewBox") || "";
@@ -4471,45 +4467,32 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     return st;
   }
   function applyChartView(svg, st) {
-    var v = st.cur || st.base;
+    var v = effectiveChartView(st);
     var s = v.join(" ");
     svg.setAttribute("viewBox", s);
     st.applied = s;
   }
-  function clampChartView(st) {
-    var b = st.base, c = st.cur;
-    c[0] = Math.min(Math.max(c[0], b[0]), b[0] + b[2] - c[2]);
-    c[1] = Math.min(Math.max(c[1], b[1]), b[1] + b[3] - c[3]);
-  }
+  // The viewBox math itself lives in aa-explorer-computations.js
+  // (#9581, same pattern as #7562): these wrappers only adapt the
+  // module functions to an svg's chart state — no inline copies, so
+  // the Bun tests exercise exactly the code the browser runs.
   function zoomChart(svg, factor, fx, fy) {
     var st = chartState(svg);
     if (!st) return;
-    var cur = st.cur ? st.cur.slice() : st.base.slice();
-    var nw = Math.min(Math.max(cur[2] * factor, st.base[2] / 16), st.base[2]);
-    var nh = nw * st.base[3] / st.base[2];
-    var cx = cur[0] + (fx == null ? 0.5 : fx) * cur[2];
-    var cy = cur[1] + (fy == null ? 0.5 : fy) * cur[3];
-    cur[0] = cx - (fx == null ? 0.5 : fx) * nw;
-    cur[1] = cy - (fy == null ? 0.5 : fy) * nh;
-    cur[2] = nw; cur[3] = nh;
-    st.cur = nw >= st.base[2] ? null : cur;
-    if (st.cur) clampChartView(st);
+    zoomChartView(st, factor, fx, fy);
     applyChartView(svg, st);
   }
   function panChart(svg, dx, dy) {
     var st = chartState(svg);
     if (!st || !st.cur) return;
     var r = svg.getBoundingClientRect();
-    if (!r.width || !r.height) return;
-    st.cur[0] -= dx * st.cur[2] / r.width;
-    st.cur[1] -= dy * st.cur[3] / r.height;
-    clampChartView(st);
+    if (!panChartView(st, dx, dy, r.width, r.height)) return;
     applyChartView(svg, st);
   }
   function resetChart(svg) {
     var st = chartState(svg);
     if (!st) return;
-    st.cur = null;
+    resetChartView(st);
     applyChartView(svg, st);
   }
   function chartHost(svg) { return svg.closest(".chart") || svg.parentElement; }
@@ -4588,8 +4571,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
       drag = null;
     });
     svg.addEventListener("click", function (e) {
-      var t = Number(svg.getAttribute("data-zsuppress") || 0);
-      if (t && Date.now() - t < 400) { e.stopPropagation(); e.preventDefault(); svg.removeAttribute("data-zsuppress"); }
+      if (chartClickSuppressed(svg.getAttribute("data-zsuppress"), Date.now())) { e.stopPropagation(); e.preventDefault(); svg.removeAttribute("data-zsuppress"); }
     }, true);
     svg.addEventListener("wheel", function (e) {
       e.preventDefault();
