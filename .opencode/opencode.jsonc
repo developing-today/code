@@ -2819,6 +2819,18 @@
       },
       "scout": {
         "name": "Scout - routine work: cheapest, fastest, smart enough",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Scout's own edge (workhorse) is a PROPOSAL (Drew has not
+        // ruled on scout yet, 2026-11-13): routine work that
+        // exhausts the free/cheap seats escalates to the standard
+        // tier rather than erroring.
         // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
         // 2026-11-11 (Drew): scout order — Beam ahead of DeepSeek Flash.
         // 2026-10-26 (pool remap review): all three routes addressed at #low — the rung every
@@ -2838,13 +2850,26 @@
         "targets": [
           "opencode-route/beam-plan",
           "opencode-route/deepseek-flash-plan#low",
-          "opencode-route/haiku-plan#low"
+          "opencode-route/haiku-plan#low",
+          "opencode-route/workhorse"
         ],
         "selection": "ordered",
         "autonomy": "rules"
       },
       "background": {
         "name": "Background - patient queue work: best value first, no latency contract",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Background's own edge (workhorse) is a PROPOSAL (Drew
+        // has not ruled on background yet, 2026-11-13): patient
+        // queue work that exhausts the value seats escalates to
+        // the standard tier rather than erroring.
         // NEW 2026-10-27 (pool redesign): the tier for machinery-dispatched
         // work no human watches — repo sweeps, issue-queue workers,
         // stewardship cycles, batch classification. Ordered chain in value
@@ -2897,7 +2922,8 @@
             "model": "opencode-route/deepseek-flash-plan#high",
             "window": "deepseek-peak-early"
           },
-          "opencode-route/mimo-flash-plan"
+          "opencode-route/mimo-flash-plan",
+          "opencode-route/workhorse"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -3110,6 +3136,21 @@
       },
       "workhorse": {
         "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it, Fable #low last resort if all else is down",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Workhorse's chain: scout FIRST (its failure mode is
+        // quota exhaustion; scout diversifies onto different
+        // doors - free Beam via CommandCode, DeepSeek #low,
+        // Haiku #low), then specialist (the sink). Reached FROM
+        // speed or scout, the visited-set pruning skips the
+        // scout edge's re-entry and the call lands on
+        // specialist.
         // 2026-10-27 pool redesign (Drew's structure): incremental —
         // DeepSeek Flash #high is the primary every session tries first;
         // the weighted relief pool (workhorse-weighted) absorbs failover
@@ -3145,7 +3186,9 @@
           "opencode-route/workhorse-ordered",
           "opencode-route/workhorse-primary",
           "opencode-route/workhorse-weighted",
-          "opencode-route/workhorse-last-resort"
+          "opencode-route/workhorse-last-resort",
+          "opencode-route/scout",
+          "opencode-route/specialist"
         ],
         "selection": "ordered",
         "autonomy": "rules",
@@ -3351,6 +3394,10 @@
       },
       "specialist": {
         "name": "Specialist - hard work: quality first, Fable #low head, then Claude Sonnet, Argon, Meta Spark, OpenAI",
+        // Class fallback (Drew 2026-11-13): specialist is the
+        // SINK - no class fallback out of specialist. If every
+        // specialist leg is down, the call errors; there is no
+        // cheaper class to fall back to and nothing above it.
         // 2026-11-10 (Drew, direct order): Fable #low (fable-plan,
         // _claude door) takes the HEAD of this chain. AA v5 #low
         // II 53.9 tops every member it now leads (the former head,
@@ -3392,6 +3439,15 @@
       },
       "summit": {
         "name": "Summit - very complex design only, deliberate use: Fable #low head, then Opus, Argon, Hydrogen, Wonder, Sol",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Summit's only edge: specialist (the sink).
         // 2026-11-11 (Drew, direct order): fable-plan leg low -> medium.
         // 2026-11-10 (Drew, direct order): Fable #low (fable-plan,
         // _claude door) takes the HEAD of this chain. AA v5 #low
@@ -3429,13 +3485,24 @@
           "opencode-route/argon-plan#high",
           "_antigravity/gemini-4-hydrogen#high",
           "_muse/muse-wonder-1.0-contributor#xhigh",
-          "opencode-route/sol-plan#xhigh"
+          "opencode-route/sol-plan#xhigh",
+          "opencode-route/specialist"
         ],
         "selection": "ordered",
         "autonomy": "rules"
       },
       "speed": {
         "name": "Speed - fastest seats at or above the Haiku bar, for latency-bound work",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Speed's chain: workhorse first (cheaper, more
+        // available), then summit, then specialist (the sink).
         // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
         // 2026-10-26 pass 3 (AA figures re-baselined to v5 2026-10-31, #1673): a latency pool is judged on
         // time-to-first-token as much as decode — Spark contributor #xhigh / TTFT 19.1s /
@@ -3469,7 +3536,10 @@
           "_muse/muse-spark-1.3-contributor#xhigh",
           "opencode-route/deepseek-flash-plan#high",
           "opencode-route/gemini-hydrogen-plan#high",
-          "opencode-route/haiku-plan#high"
+          "opencode-route/haiku-plan#high",
+          "opencode-route/workhorse",
+          "opencode-route/summit",
+          "opencode-route/specialist"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -3560,7 +3630,9 @@
         // 2026-10-27 from luna-haiku-100k; the pre-2026-11-13
         // shape seated luna-plan#xhigh + haiku-plan#high under
         // a 200k route cap.
-        "targets": ["opencode-route/limited"],
+        // Class fallback (Drew 2026-11-13): small -> speed (see
+        // the scout route's note + route-fallbacks.md).
+        "targets": ["opencode-route/limited", "opencode-route/speed"],
         "selection": "ordered",
         "autonomy": "rules"
       }
