@@ -197,6 +197,40 @@ describe("actions store corruption handling (#1452)", () => {
     expect(readFileSync(join(dir, quarantine[0]))).toEqual(raw);
   });
 
+  test("duplicate-id rows are quarantined with diagnostics; the first row and unique rows survive (#9580)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-actions-dup-id-"));
+    const file = join(dir, "actions.json");
+    const source = {
+      version: 1,
+      actions: [
+        validAction("a-dup", { state: "applied" }),
+        validAction("a-dup", { state: "new" }),
+        validAction("a-unique"),
+      ],
+    };
+    const raw = Buffer.from(JSON.stringify(source));
+    writeFileSync(file, raw);
+
+    const store = new ActionsStore(file);
+    // The active store never retains two rows under one id: the later
+    // duplicate is rejected, so find-first consumers and counts agree.
+    expect((await store.all()).map((action) => action.id)).toEqual(["a-dup", "a-unique"]);
+    expect((await store.all()).find((action) => action.id === "a-dup")?.state).toBe("applied");
+    expect(await store.pendingCounts()).toEqual({ triage: 1, statusRequests: 0, session: 0, preference: 0 });
+
+    const quarantine = quarantinedIn(dir, "actions.json");
+    expect(quarantine).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantine[0]))).toEqual(raw);
+    expect(diagnosticEntries(dir, "actions.json")).toEqual([
+      { index: 1, reason: 'duplicates id "a-dup" (first occurrence at row 0)' },
+    ]);
+
+    // The load-time persist rewrote the active file without the duplicate.
+    const persisted = JSON.parse(readFileSync(file, "utf8"));
+    expect(persisted.actions.map((action: { id: string }) => action.id)).toEqual(["a-dup", "a-unique"]);
+    expect(readFileSync(join(dir, quarantine[0]))).toEqual(raw);
+  });
+
   test("archive failure rejects reads and writes without changing the source", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agg-actions-archive-failure-"));
     const file = join(dir, "actions.json");
@@ -345,6 +379,40 @@ describe("comments store corruption handling (#1452)", () => {
       persisted.comments.find((comment: { id: string }) => comment.id === "legacy-message-without-state").triageState,
     ).toBeUndefined();
     expect(persisted.comments.map((comment: { id: string }) => comment.id)).not.toContain("missing-created-at");
+    expect(readFileSync(join(dir, quarantine[0]))).toEqual(raw);
+  });
+
+  test("duplicate-id rows are quarantined with diagnostics; the first row and unique rows survive (#9580)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-comments-dup-id-"));
+    const file = join(dir, "comments.json");
+    const source = {
+      version: 1,
+      comments: [
+        validComment("c-dup", { body: "first copy" }),
+        validComment("c-dup", { body: "shadowed copy" }),
+        validComment("c-unique"),
+      ],
+    };
+    const raw = Buffer.from(JSON.stringify(source));
+    writeFileSync(file, raw);
+
+    const store = new CommentsStore(file);
+    // The active store never retains two rows under one id: the later
+    // duplicate is rejected, so find-first consumers and counts agree.
+    expect((await store.all()).map((comment) => comment.id)).toEqual(["c-dup", "c-unique"]);
+    expect((await store.all()).find((comment) => comment.id === "c-dup")?.body).toBe("first copy");
+    expect([...(await store.counts()).entries()]).toEqual([["gh:developing-today/code#2347", 2]]);
+
+    const quarantine = quarantinedIn(dir, "comments.json");
+    expect(quarantine).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantine[0]))).toEqual(raw);
+    expect(diagnosticEntries(dir, "comments.json")).toEqual([
+      { index: 1, reason: 'duplicates id "c-dup" (first occurrence at row 0)' },
+    ]);
+
+    // The load-time persist rewrote the active file without the duplicate.
+    const persisted = JSON.parse(readFileSync(file, "utf8"));
+    expect(persisted.comments.map((comment: { id: string }) => comment.id)).toEqual(["c-dup", "c-unique"]);
     expect(readFileSync(join(dir, quarantine[0]))).toEqual(raw);
   });
 

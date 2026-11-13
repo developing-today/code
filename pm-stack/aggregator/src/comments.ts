@@ -286,10 +286,28 @@ export class CommentsStore {
     );
     const valid: DashComment[] = [];
     const invalid: InvalidStoreRecord[] = [];
+    // Cross-row check (#9580, following the ViewsStore precedent in
+    // views.ts): the per-record validator cannot see that two valid
+    // rows share one id. Id-addressed consumers use find-first, so a
+    // duplicate silently shadows the later row while counts include
+    // both. Treat each later duplicate as an invalid record: it goes
+    // through the same #4151 quarantine (archive + diagnostics naming
+    // the row index and id) and never reaches the active store.
+    const firstIndexById = new Map<string, number>();
     parsed.comments.forEach((comment, index) => {
       const reason = commentRecordProblem(comment);
-      if (reason) invalid.push({ index, reason });
-      else valid.push(comment as DashComment);
+      if (reason) {
+        invalid.push({ index, reason });
+        return;
+      }
+      const id = (comment as DashComment).id;
+      const firstIndex = firstIndexById.get(id);
+      if (firstIndex !== undefined) {
+        invalid.push({ index, reason: `duplicates id "${id}" (first occurrence at row ${firstIndex})` });
+        return;
+      }
+      firstIndexById.set(id, index);
+      valid.push(comment as DashComment);
     });
     this.comments = valid;
     if (invalid.length > 0) {
