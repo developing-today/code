@@ -1,0 +1,4594 @@
+[
+  {
+    "id": "B1.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "9",
+    "text": "Set appropriate pools for all OpenChamber categories.",
+    "kind": "requirement",
+    "theme": "T1 categories-auto",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/openchamber",
+        "number": 14,
+        "title": "feat(routing): interactive model tier chooser and quota fallback card via render.page awaitAnswer",
+        "state": "OPEN",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B1.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "10",
+    "text": "wire up clef jev opencodego free then paid then cloudflare etc.",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9399,
+        "title": "Program: pool & effort system — effort tiers per pool, OpenChamber category pools, granular stats store (design mill)",
+        "state": "OPEN",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "research",
+    "notes": "Read as: wire the decision models (clef, jev, OpenCode Go free ones) free -> paid -> Cloudflare; see ambiguity A1."
+  },
+  {
+    "id": "B1.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "12",
+    "text": "reads as a provider order (free tiers first, then paid, then Cloudflare)",
+    "kind": "question",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "research",
+    "notes": "Orchestrator note inside brief §1, not Drew's words. Kept as a question; the supplement answers it (A1)."
+  },
+  {
+    "id": "B1.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "13-14",
+    "text": "\"clef jev\" is carried verbatim for the statement inventory to map against the real OpenChamber category list",
+    "kind": "question",
+    "theme": "T1 categories-auto",
+    "existing_issues": [],
+    "disposition_hint": "research",
+    "notes": "Orchestrator note. Decoded by supplement §0 (decision models); mapped to the decision pool, not a category name (A1)."
+  },
+  {
+    "id": "B1.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "15",
+    "text": "Ensure auto works",
+    "kind": "requirement",
+    "theme": "T1 categories-auto",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B1.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "15",
+    "text": "categories on auto model selection must actually run",
+    "kind": "requirement",
+    "theme": "T1 categories-auto",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B1.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "16",
+    "text": "Make appropriate customizations",
+    "kind": "requirement",
+    "theme": "T1 categories-auto",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B1.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "16",
+    "text": "ensure it's wired well",
+    "kind": "requirement",
+    "theme": "T1 categories-auto",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B2.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "20",
+    "text": "Allow a model to suggest/switch its own pool",
+    "kind": "requirement",
+    "theme": "T2 self-switch-subsessions",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 2384,
+        "title": "feat(core): agent-side tier chooser + quota fallback card wiring (split from openchamber#14)",
+        "state": "OPEN",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B2.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "20-21",
+    "text": "only to category pools or opencode-route pools",
+    "kind": "constraint",
+    "theme": "T2 self-switch-subsessions",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B2.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "22",
+    "text": "Encourage heavy use of parallel sub-sessions with limited context",
+    "kind": "requirement",
+    "theme": "T2 self-switch-subsessions",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 1881,
+        "title": "Workshop test: subsession machinery from a workhorse session — results and system-prompt suggestions",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B2.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "23",
+    "text": "when not to use auto",
+    "kind": "requirement",
+    "theme": "T2 self-switch-subsessions",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Shared lead-in 'guidance on' with the next statement."
+  },
+  {
+    "id": "B2.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "23",
+    "text": "when to change its own model",
+    "kind": "requirement",
+    "theme": "T2 self-switch-subsessions",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Shared lead-in 'guidance on' with the previous statement."
+  },
+  {
+    "id": "B2.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "24",
+    "text": "Let them know sub-sessions can make sub-sessions",
+    "kind": "requirement",
+    "theme": "T2 self-switch-subsessions",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 1887,
+        "title": "docs/prompts: base system prompt is silent on the entire subsession machinery",
+        "state": "CLOSED",
+        "coverage": "related"
+      },
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 1889,
+        "title": "docs: `subagent` tool description omits inheritance, background semantics, and the question-stall warning",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B2.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "25",
+    "text": "By default use auto.",
+    "kind": "requirement",
+    "theme": "T1 categories-auto",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B2.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "25-26",
+    "text": "If auto breaks: fall back to workhorse / general / build",
+    "kind": "requirement",
+    "theme": "T1 categories-auto",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B2.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "26",
+    "text": "set small, scout, speed as the small-model options",
+    "kind": "requirement",
+    "theme": "T1 categories-auto",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": "'(or so)' makes the set soft; see ambiguity A2."
+  },
+  {
+    "id": "B3.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "30",
+    "text": "Use the strictest context limits for in / out / cache / total for each",
+    "kind": "requirement",
+    "theme": "T3 context-limits",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B3.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "31",
+    "text": "going up the pool (each tier applies the strictest limits that fit it)",
+    "kind": "requirement",
+    "theme": "T3 context-limits",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "35",
+    "text": "Ensure low, high (and low/medium/high at least) work for every pool",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9018,
+        "title": "opencode config: workhorse Luna seat round-robins medium/high via luna-effort-rr (Drew 2026-11-12)",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "35",
+    "text": "low/medium/high at least",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Parenthetical inside the statement above; kept as its own statement."
+  },
+  {
+    "id": "B4.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "36",
+    "text": "Align current seats as medium.",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9381,
+        "title": "Workhorse DeepSeek effort trial: deepseek-effort-rr (high/low 3:1) in workhorse-ordered",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B4.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "36",
+    "text": "Medium is the default.",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "37",
+    "text": "Using AA scores and other factors",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 8211,
+        "title": "aggregator(aa-explorer): cached historical AA batches freeze the v_current_prices overlay — version switching silently switches token rates",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "37-38",
+    "text": "determine a relative equivalent option for every model and provider at low and at high",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "39-40",
+    "text": "entirely separate member lists per model (scaling)",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "40",
+    "text": "overlay on top of the defaults",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "41",
+    "text": "Until implemented, make xhigh / max / ultra / fast all point to high.",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 2203,
+        "title": "fix(ai): v1-dialect reasoning_effort silently dropped by native providers other than muse-direct — fork-wide follow-up flagged on #1825, never split",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B4.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "42",
+    "text": "Overlays must be able to:",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "42",
+    "text": "set any effort",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "42",
+    "text": "remove a model-effort",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.13",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "42-43",
+    "text": "replace a specific model or a specific model-effort",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.14",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "44-45",
+    "text": "If there isn't a good low or high (low not capable enough; high too expensive for the improvement, or too slow, or whatever)",
+    "kind": "constraint",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.15",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "45-46",
+    "text": "set it to the same value as medium, or don't overlay it, depending",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.16",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "47",
+    "text": "Cross-pool equivalences are real",
+    "kind": "constraint",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.17",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "47",
+    "text": "sometimes summit low is workhorse high",
+    "kind": "example",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.18",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "48",
+    "text": "or the middle between workhorse high and summit low",
+    "kind": "example",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.19",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "48-49",
+    "text": "sometimes other factors dominate",
+    "kind": "constraint",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.20",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "49",
+    "text": "speed, or cost per point bracket",
+    "kind": "example",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B4.21",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "50",
+    "text": "Present and implement low/medium/high for every pool",
+    "kind": "requirement",
+    "theme": "T4 effort-tiers-overlays",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "52",
+    "text": "Data the effort mapping must take into account (all of it)",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "54",
+    "text": "AA data and current real fleet data",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 8211,
+        "title": "aggregator(aa-explorer): cached historical AA batches freeze the v_current_prices overlay — version switching silently switches token rates",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "54",
+    "text": "provider / model / effort",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "54",
+    "text": "pool;",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Item of the §5 data list."
+  },
+  {
+    "id": "B5.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "55",
+    "text": "ratio per session",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "55",
+    "text": "number of and depth of sub-sessions",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "55-56",
+    "text": "which models, pools, and sub-sessions are used",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "56",
+    "text": "tool usage",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "56-57",
+    "text": "mcpx and fleet tool usage, each per subcommand / action",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9373,
+        "title": "fleet CLI: append-only invocation ledger (subcommand use is inference-only today)",
+        "state": "OPEN",
+        "coverage": "partial"
+      },
+      {
+        "repo": "developing-today/code",
+        "number": 9374,
+        "title": "mcpx daemon: durable call ledger (direct daemon calls are invisible to analytics)",
+        "state": "OPEN",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": "Per-subcommand usage is partly inference until code#9373/#9374 land (brief §9)."
+  },
+  {
+    "id": "B5.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "57",
+    "text": "real diff +/-",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "57",
+    "text": "number of attempts",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "57",
+    "text": "triages",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.13",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "57-58",
+    "text": "days to complete from created / started, in hours or minutes of actual work",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.14",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "58-59",
+    "text": "success rate",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.15",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "59",
+    "text": "existing time and quota % per session, task, PR, or attempt",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9363,
+        "title": "feat(pm-aggregator): quota analytics & projection section",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.16",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "61",
+    "text": "Statistics wherever possible",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.17",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "61",
+    "text": "min, max, stddev, count, median, mean, sum",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.18",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "62",
+    "text": "p90, p99, p99.9",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B5.19",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "62",
+    "text": "quartiles (Q1–Q3, IQR)",
+    "kind": "requirement",
+    "theme": "T5 data-basis-stats",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "66",
+    "text": "Build all the report details as a table",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 8297,
+        "title": "feat(aggregator): versioned project/epic spend rollup store (#4823)",
+        "state": "CLOSED",
+        "coverage": "related"
+      },
+      {
+        "repo": "developing-today/code",
+        "number": 8373,
+        "title": "feat(pm-stack): flow analytics computation + JSON twin (#4829)",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "66-67",
+    "text": "materialized view or aggregated facts log over time",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 8297,
+        "title": "feat(aggregator): versioned project/epic spend rollup store (#4823)",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "67",
+    "text": "allowing review per sample",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "67",
+    "text": "rolled up to intervals",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "68",
+    "text": "aggregated by space and time (min / max / avg / med / mode / mode±x / etc.)",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "69",
+    "text": "group-by on any tag or label",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "69",
+    "text": "all possible groupings and subgroups",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "70",
+    "text": "Ideally constantly review stored aggregate stats",
+    "kind": "preference",
+    "theme": "T6 stats-store",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9363,
+        "title": "feat(pm-aggregator): quota analytics & projection section",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "70-71",
+    "text": "that are incredibly detailed and granular",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "71",
+    "text": "as events",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "71",
+    "text": "marking: when generated",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "71",
+    "text": "AA version",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.13",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "72",
+    "text": "time frame",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.14",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "72",
+    "text": "number of sessions, turns, tokens",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.15",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "72-73",
+    "text": "models, efforts, providers, pools across all",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.16",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "73",
+    "text": "AA test version and test date",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.17",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "73-74",
+    "text": "the model's known successors / predecessors, in order",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.18",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "74-75",
+    "text": "the model-efforts it is aimed to match in price, ability, or speed",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.19",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "75-76",
+    "text": "capabilities and unique details as tags and labels",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.20",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "77",
+    "text": "keep full granularity and measure storage growth",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B6.21",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "77-78",
+    "text": "later support rollup based on time since inject, time since capture, time since AA version",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.22",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "79",
+    "text": "Variants merged or split as separate",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.23",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "79-80",
+    "text": "e.g. marking known dates where a significant change happened",
+    "kind": "example",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.24",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "80-81",
+    "text": "with expected and actual measurable difference",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.25",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "81",
+    "text": "e.g. the newer DeepSeek 1107",
+    "kind": "example",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.26",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "81-82",
+    "text": "Luna 6 and Luna 6.1 are fully separate",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.27",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "82",
+    "text": "If variants like 1107 matter",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.28",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "82-83",
+    "text": "split classic and 1107 as pools based on",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.29",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "83",
+    "text": "which variant each provider actually serves",
+    "kind": "requirement",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.30",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "83-85",
+    "text": "whether a provider offers DeepSeek 1107 and DeepSeek Flash original as separate variants",
+    "kind": "question",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "research",
+    "notes": ""
+  },
+  {
+    "id": "B6.31",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "85",
+    "text": "Then e.g. deepseek-plan might be ordered",
+    "kind": "example",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B6.32",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "85-87",
+    "text": "ds1107-offpeak, ds-classic-offpeak, ds1107-peak, ds-classic-peak, ds-payg-offpeak, ds-payg-peak",
+    "kind": "example",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "91",
+    "text": "In low, use or prefer:",
+    "kind": "requirement",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "91",
+    "text": "DeepSeek off-peak",
+    "kind": "example",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "91",
+    "text": "Luna 100k",
+    "kind": "example",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "91-92",
+    "text": "the OpenAI equivalent at 388k",
+    "kind": "example",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "92",
+    "text": "free models/providers",
+    "kind": "example",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "92",
+    "text": "lower effort",
+    "kind": "example",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "92-94",
+    "text": "where appropriate: cost-efficient, and the level of up/down in score, cost, and real data where we have it",
+    "kind": "requirement",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "95",
+    "text": "Extrapolate where our scores differ from AA in cost, success, or speed",
+    "kind": "requirement",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 6972,
+        "title": "Flag: right-size the Beam seat in beam-plan / scout — AA II sub-20 on two consecutive pulls (17.7 → 17.73)",
+        "state": "OPEN",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "96",
+    "text": "OpenAI is much cheaper on small models",
+    "kind": "example",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "96-97",
+    "text": "punishes effort above high significantly (relevant per model)",
+    "kind": "example",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "97-98",
+    "text": "off-peak or low context can be heavily valuable",
+    "kind": "example",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "98",
+    "text": "no AA score other than inferring from a mirror pair",
+    "kind": "example",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.13",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "98-99",
+    "text": "all Claude may cost way more per %-dollar than AA scores would expect",
+    "kind": "example",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.14",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "99-100",
+    "text": "a provider may in real life be much slower or faster than benchmarks imply",
+    "kind": "example",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.15",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "100-101",
+    "text": "that doesn't matter in background or specialist",
+    "kind": "constraint",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.16",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "101",
+    "text": "but might for speed or scout",
+    "kind": "constraint",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.17",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "101-102",
+    "text": "cost efficiency is king in workhorse",
+    "kind": "preference",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B7.18",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "102-103",
+    "text": "if a model is much slower or only a little dumber with real cost savings, switch",
+    "kind": "requirement",
+    "theme": "T7 low-tier-extrapolation",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "107",
+    "text": "Schedule tests for models we never tried",
+    "kind": "requirement",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9018,
+        "title": "opencode config: workhorse Luna seat round-robins medium/high via luna-effort-rr (Drew 2026-11-12)",
+        "state": "CLOSED",
+        "coverage": "related"
+      },
+      {
+        "repo": "developing-today/code",
+        "number": 9381,
+        "title": "Workhorse DeepSeek effort trial: deepseek-effort-rr (high/low 3:1) in workhorse-ordered",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B8.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "107",
+    "text": "like the Luna test",
+    "kind": "example",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "107-108",
+    "text": "round-robin cheaper-or-better trials depending on appropriateness",
+    "kind": "requirement",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "108-109",
+    "text": "Usually aiming for cheaper",
+    "kind": "preference",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "109",
+    "text": "sometimes parallel or sensitive",
+    "kind": "constraint",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "109",
+    "text": "small summit deviations",
+    "kind": "example",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "109-110",
+    "text": "too much expense in small could have outsized impact",
+    "kind": "constraint",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "111",
+    "text": "Try replacing clear successors or dominated models",
+    "kind": "requirement",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "111-112",
+    "text": "slower, dumber, and more expensive than an alternative",
+    "kind": "constraint",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "112",
+    "text": "across same or all providers",
+    "kind": "requirement",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "112-113",
+    "text": "ensure all providers are adequately used",
+    "kind": "requirement",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "114",
+    "text": "Maybe almost all places with DS Flash should only use that",
+    "kind": "preference",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.13",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "114-116",
+    "text": "only places with the best Luna quota or worst DeepSeek-Flash quota get DS Flash as last resort in other pools",
+    "kind": "requirement",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.14",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "116",
+    "text": "to increase provider options per pool",
+    "kind": "preference",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.15",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "117-118",
+    "text": "Aim for best dollar efficiency where all tasks are possible and as cheap as can be",
+    "kind": "requirement",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.16",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "118",
+    "text": "not caring about speed except in small, speed, and scout",
+    "kind": "constraint",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.17",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "119",
+    "text": "Add Beam on fast roads",
+    "kind": "requirement",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 6972,
+        "title": "Flag: right-size the Beam seat in beam-plan / scout — AA II sub-20 on two consecutive pulls (17.7 → 17.73)",
+        "state": "OPEN",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B8.18",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "119-120",
+    "text": "where it isn't stealing useful DS Flash (etc.) quotas",
+    "kind": "constraint",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.19",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "121",
+    "text": "Make a testing plan",
+    "kind": "requirement",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9018,
+        "title": "opencode config: workhorse Luna seat round-robins medium/high via luna-effort-rr (Drew 2026-11-12)",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "B8.20",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "121",
+    "text": "trial many/most major models at 2+ effort levels",
+    "kind": "requirement",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B8.21",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "122",
+    "text": "where the efforts' price efficiency, cheapness, and scores align",
+    "kind": "constraint",
+    "theme": "T8 trials-dominated",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B9.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "126",
+    "text": "Route classes and fallback chains landed (PR #9385)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9385,
+        "title": "Class fallback chains (second-pass escalation, visited-set semantics) + guard extension",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "126-127",
+    "text": "small → speed → workhorse/scout → summit → specialists (sink)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9385,
+        "title": "Class fallback chains (second-pass escalation, visited-set semantics) + guard extension",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "127-128",
+    "text": "semantics = regular chain first, fallback as second pass, walked with a per-call visited set",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9385,
+        "title": "Class fallback chains (second-pass escalation, visited-set semantics) + guard extension",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "128-129",
+    "text": "guard tests enforce reachability + termination",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9385,
+        "title": "Class fallback chains (second-pass escalation, visited-set semantics) + guard extension",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "130",
+    "text": "`.opencode/route-fallbacks.md` on main",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "131",
+    "text": "`limited` pool landed (PR #9384)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9384,
+        "title": "Limited pool: rebuild small on per-member plan limits, delete small-100k",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "131",
+    "text": "Luna @100k #medium",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "131",
+    "text": "Terra @388k #low",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "132",
+    "text": "DeepSeek @1M #low peak-aware",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "132",
+    "text": "Haiku @388k #medium-last",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "132",
+    "text": "388k = policy caps",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "133",
+    "text": "natives are 1M / 1.05M",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.13",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "133",
+    "text": "`small-100k` deleted",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.14",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "133",
+    "text": "`small` consumes `limited`",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.15",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "134",
+    "text": "DeepSeek effort trial landed (PR #9381)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9381,
+        "title": "Workhorse DeepSeek effort trial: deepseek-effort-rr (high/low 3:1) in workhorse-ordered",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.16",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "134-135",
+    "text": "`deepseek-effort-rr` (#high w3 / #low w1) in workhorse-ordered",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9381,
+        "title": "Workhorse DeepSeek effort trial: deepseek-effort-rr (high/low 3:1) in workhorse-ordered",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.17",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "135",
+    "text": "DeepSeek #medium is not a real rung",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.18",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "135-136",
+    "text": "it silently remaps to #high on the Go and ClinePass doors",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.19",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "137",
+    "text": "Explore sub-sessions pinned to scout (PR #9382)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9382,
+        "title": "Subsession routing: explore agent pinned to scout route",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.20",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "137-138",
+    "text": "Agent model pins exist in the jsonc `agents` object",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.21",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "138-139",
+    "text": "classifier→scout, reasoner→specialist, coder→workhorse precedents",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.22",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "140",
+    "text": "Haiku #high leads workhorse-last-resort (PR #9388)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9388,
+        "title": "config(routes): workhorse-last-resort head Sonnet #medium → Haiku #high — land Drew's 2026-11-12 edit (primary reconcile)",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.23",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "141",
+    "text": "Luna effort round-robin (PR #9018) is the standing trial pattern",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9018,
+        "title": "opencode config: workhorse Luna seat round-robins medium/high via luna-effort-rr (Drew 2026-11-12)",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.24",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "141-142",
+    "text": "named measurement, review date, revert condition",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.25",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "143",
+    "text": "Quota analytics page + API live (/quota#analytics, /api/quota-analytics.json)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9363,
+        "title": "feat(pm-aggregator): quota analytics & projection section",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.26",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "144",
+    "text": "per pool/model/effort burn, ratios, projections, hour/day patterns",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.27",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "145",
+    "text": "Roadmap & Stats Space (fleet-roadmap-stats) + its daily pipeline",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.28",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "146",
+    "text": "~/workspace/goals/keep-the-four-repos-healthy/hidden_files/roadmap-stats/",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.29",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "147",
+    "text": "compute throughput, churn, redo/duplicate, per-pool/per-model stats",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.30",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "147-148",
+    "text": "the granular store in §6 extends this, it does not replace it",
+    "kind": "constraint",
+    "theme": "T6 stats-store",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "B9.31",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "149",
+    "text": "Time-of-day aware routing is ticketed: code#9378",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9378,
+        "title": "Time-of-day aware routing: peak/off-peak pool, model, and effort selection",
+        "state": "OPEN",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.32",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "149-150",
+    "text": "DeepSeek peak windows already exist in config",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.33",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "150-151",
+    "text": "`model_route_windows`, deepseek-peak-early/late; the background route composes them",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.34",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "151-152",
+    "text": "Windows have no calendar/holiday support yet (fork issue opencode#821)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 821,
+        "title": "feat(routes): date-aware route windows — specific dates / holiday exclusions (DeepSeek peak suspends on Chinese public holidays)",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": "Conflict: brief says no support yet, but gh shows opencode#821 CLOSED. Recorded, not resolved (A10)."
+  },
+  {
+    "id": "B9.35",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "153",
+    "text": "Fleet tooling gaps already ticketed",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.36",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "153-154",
+    "text": "code#9373 (fleet CLI invocation ledger)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9373,
+        "title": "fleet CLI: append-only invocation ledger (subcommand use is inference-only today)",
+        "state": "OPEN",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.37",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "154",
+    "text": "code#9374 (mcpx daemon call ledger)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9374,
+        "title": "mcpx daemon: durable call ledger (direct daemon calls are invisible to analytics)",
+        "state": "OPEN",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.38",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "154-155",
+    "text": "per-subcommand usage data in §5 is partly inference until those land",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9373,
+        "title": "fleet CLI: append-only invocation ledger (subcommand use is inference-only today)",
+        "state": "OPEN",
+        "coverage": "partial"
+      },
+      {
+        "repo": "developing-today/code",
+        "number": 9374,
+        "title": "mcpx daemon: durable call ledger (direct daemon calls are invisible to analytics)",
+        "state": "OPEN",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.39",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "156",
+    "text": "AA data: ~/workspace/model-review-2026-11-12/aa-results.md/.json (AA v5.0.1)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.40",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "157",
+    "text": "the AI Benchmarks Space",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.41",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "157",
+    "text": "Claim-model stamping works (code#8176 fix)",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 8176,
+        "title": "queue: stamp the claiming session's own model on the task at claim time",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "B9.42",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md",
+    "lines": "158",
+    "text": "new trials are attributable per task",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "S0.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "7",
+    "text": "Clef and Jev are not regular LLM models",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S0.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "7",
+    "text": "They are decision models",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S0.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "7",
+    "text": "the schema is known as System 1 decisions",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S0.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "9",
+    "text": "Jev is Command Code's decision model, served on the `v1/systemone` contract",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "ruling-needed",
+    "notes": "Conflicts with R12 (_commandcode suspect) and questions.md Q5 (Jev is a Zen/TypeSafe/OpenRouter/Vercel model in V1). A4."
+  },
+  {
+    "id": "S0.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "9",
+    "text": "JSON state + typed questions in",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S0.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "9",
+    "text": "probabilities out, never text",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S0.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "10",
+    "text": "Clef fronts that same shape for OpenChamber's classifier client",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 1651,
+        "title": "fix(providers): cloudflare-ai-gateway credential fails upstream auth (code 10000), blocking clef classifications",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S0.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "11",
+    "text": "Existing anchors in the fork",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S0.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "11",
+    "text": "the façade program opencode#1146",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 1146,
+        "title": "Design: generic OpenAI façades on the server — /v1/chat/completions + /v1/responses, one translation layer, proxy doors retire",
+        "state": "OPEN",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S0.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "11",
+    "text": "one endpoint per real standard",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 1146,
+        "title": "Design: generic OpenAI façades on the server — /v1/chat/completions + /v1/responses, one translation layer, proxy doors retire",
+        "state": "OPEN",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S0.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "11",
+    "text": "chat-shaped traffic gets `/v1/chat/completions` + `/v1/responses`",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 1146,
+        "title": "Design: generic OpenAI façades on the server — /v1/chat/completions + /v1/responses, one translation layer, proxy doors retire",
+        "state": "OPEN",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S0.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "11",
+    "text": "the decision family keeps a systemone-standard endpoint",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 1146,
+        "title": "Design: generic OpenAI façades on the server — /v1/chat/completions + /v1/responses, one translation layer, proxy doors retire",
+        "state": "OPEN",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S0.13",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "11",
+    "text": "the clef fold-in opencode#1410",
+    "kind": "constraint",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 1410,
+        "title": "Door front migration: clef-proxy (18742) callers repoint to the façade",
+        "state": "CLOSED",
+        "coverage": "related"
+      },
+      {
+        "repo": "developing-today/code",
+        "number": 5583,
+        "title": "Retire the clef door (opencode#1410)",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S1.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "15",
+    "text": "OpenCode should support the System 1 standard if it doesn't already",
+    "kind": "requirement",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 1146,
+        "title": "Design: generic OpenAI façades on the server — /v1/chat/completions + /v1/responses, one translation layer, proxy doors retire",
+        "state": "OPEN",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S1.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "15",
+    "text": "all conversation/etc. endpoints are accepted coming in",
+    "kind": "requirement",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S1.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "15",
+    "text": "either pass through or adapt to the appropriate end state",
+    "kind": "requirement",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S1.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "16",
+    "text": "If one protocol is always better when supported",
+    "kind": "preference",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S1.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "16",
+    "text": "a smarter protocol is equivalent for interaction but more wire-efficient",
+    "kind": "preference",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S1.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "16",
+    "text": "or lets us add metadata for better performance or quality",
+    "kind": "preference",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S1.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "16",
+    "text": "prefer it",
+    "kind": "preference",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S1.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "16",
+    "text": "Support long-term caching of all sessions",
+    "kind": "requirement",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S1.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "16",
+    "text": "conversations continuable by id, search id, tags, create/modify date",
+    "kind": "requirement",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S1.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "17",
+    "text": "Accept all model endpoints for raw usage of pools and providers",
+    "kind": "requirement",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S1.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "17",
+    "text": "pass through or transform into a better protocol when there is no downside or a worthwhile upside",
+    "kind": "requirement",
+    "theme": "T9 decision-endpoint",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "21",
+    "text": "Drew gave two taxonomies",
+    "kind": "constraint",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "21",
+    "text": "the mill settles the final shape",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "23",
+    "text": "decision plan · decision LLM plan · decision free · decision LLM free · decision pay-as-you-go · decision LLM pay-as-you-go",
+    "kind": "example",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "24",
+    "text": "decision bland · decision free · decision pay-as-you-go",
+    "kind": "example",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "24",
+    "text": "composed of decision native free, decision LLM free",
+    "kind": "example",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "26",
+    "text": "The parts build up together into the decision pool",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9399,
+        "title": "Program: pool & effort system — effort tiers per pool, OpenChamber category pools, granular stats store (design mill)",
+        "state": "OPEN",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "26",
+    "text": "the one used by default because config sets it as the default decision model",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "28",
+    "text": "Add free decision models from every place we can find them first",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "S2.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "28",
+    "text": "then all the appropriate plan decision models",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "28",
+    "text": "then PAYG",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "29",
+    "text": "Where more than one candidate exists, compare cost and capability",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "30",
+    "text": "Track the $10 (or whatever) of Cloudflare usage included with Workers",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 8807,
+        "title": "Grounded search plane: AI Gateway billing decision — load ~$10 credits vs BYOK vs hold",
+        "state": "OPEN",
+        "coverage": "related"
+      },
+      {
+        "repo": "developing-today/code",
+        "number": 8820,
+        "title": "Cloudflare credential architecture — scoped tokens + Bitwarden backup (shipped — tracking home)",
+        "state": "OPEN",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-slice",
+    "notes": "Q3 default: track a 10,000 neurons/day allowance, not a $10 credit."
+  },
+  {
+    "id": "S2.13",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "30",
+    "text": "use up to that included amount for decision calls",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.14",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "30",
+    "text": "disengaging once the included amount is hit",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.15",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "30",
+    "text": "pivoting after that",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.16",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "31",
+    "text": "Add the OpenAI decision option",
+    "kind": "requirement",
+    "theme": "T10 decision-pools",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 8163,
+        "title": "_openai provider: self-contained main OpenAI door that does it all without Codex (Drew top priority)",
+        "state": "OPEN",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.17",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "31",
+    "text": "if it is cheap enough when converted into dollars of quota percentages",
+    "kind": "constraint",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S2.18",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "32",
+    "text": "Per provider, the mill must answer with data",
+    "kind": "requirement",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "research",
+    "notes": ""
+  },
+  {
+    "id": "S2.19",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "32",
+    "text": "is a native decision model worth using for decisions",
+    "kind": "question",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "research",
+    "notes": ""
+  },
+  {
+    "id": "S2.20",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "32",
+    "text": "or are the alternatives cheap enough that asking a cheap LLM (DeepSeek Flash or something) is the better buy",
+    "kind": "question",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "research",
+    "notes": ""
+  },
+  {
+    "id": "S2.21",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "33",
+    "text": "Possibly integrate local decision models if they exist and are used",
+    "kind": "preference",
+    "theme": "T10 decision-pools",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S3.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "37",
+    "text": "Make a skill or runbook or mcpx tool for executing a decision",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "S3.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "37",
+    "text": "It takes in a JSON decision supporting either of the two or three main formats",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S3.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "37",
+    "text": "returns valid JSON matching the schema",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S3.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "37",
+    "text": "with valid percentages / the response to the decision",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S3.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "38",
+    "text": "Config should set the decision-model default to our decision pool",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "S3.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "39",
+    "text": "Every decision gets an ID.",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-slice",
+    "notes": ""
+  },
+  {
+    "id": "S3.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "39",
+    "text": "Caller and called can each provide points correct / points wrong, 0 to 5, on separate gauges",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S3.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "40",
+    "text": "Decision effort: allow any effort to be set on decisions",
+    "kind": "requirement",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S3.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "40",
+    "text": "by default it has no impact and is not used",
+    "kind": "requirement",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "44",
+    "text": "Don't use `small`.",
+    "kind": "constraint",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "44",
+    "text": "Only Luna small / Luna 100k as the last-resort decision model",
+    "kind": "requirement",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9384,
+        "title": "Limited pool: rebuild small on per-member plan limits, delete small-100k",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "44",
+    "text": "Maybe there is a super-fast free one that doesn't need to be smart at all",
+    "kind": "preference",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "44",
+    "text": "Beam might be too slow *and* too smart",
+    "kind": "constraint",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 6972,
+        "title": "Flag: right-size the Beam seat in beam-plan / scout — AA II sub-20 on two consecutive pulls (17.7 → 17.73)",
+        "state": "OPEN",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "44",
+    "text": "consider Beam or one of the really, really fast ones that are just not decision-API fast",
+    "kind": "preference",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "45",
+    "text": "An LLM decider uses up to its context limit without compaction, or less when possible",
+    "kind": "requirement",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "45",
+    "text": "to review the input and possibly do a few quick scans of files",
+    "kind": "requirement",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "45",
+    "text": "then produces valid JSON matching the schema",
+    "kind": "requirement",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "46",
+    "text": "feed back the invalid JSON, the decision schema, the prompt, and suggestions",
+    "kind": "requirement",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "46",
+    "text": "the result must be valid JSON after two tries",
+    "kind": "requirement",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "46",
+    "text": "Then move on to the next LLM or pool",
+    "kind": "requirement",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S4.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "46",
+    "text": "if all pool routes are exhausted, set a default answer",
+    "kind": "requirement",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "50",
+    "text": "Later we compare model outcomes to cost, speed, etc.",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "50",
+    "text": "Capture, per decision and per linked work item",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "PRs merged",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "issues closed/resolved",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "issues made",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "canceled",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "PRs closed incomplete",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "duplicate work",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "work not pushed",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "PRs and commits reverted",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "rework",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "work undone",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.13",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "caused incident",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.14",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "data loss",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.15",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "invalid",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.16",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "unclear",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.17",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "misunderstood",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.18",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "too-big",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.19",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "overcomplicated",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.20",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "oversimplified",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.21",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "perfect",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.22",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "simple",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.23",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "safe",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.24",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "fixed",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.25",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "partial",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.26",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "cheaper than expectation",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.27",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "unneeded-worry",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.28",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "overtested",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.29",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "undertested",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.30",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "significant expense",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.31",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "slow",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.32",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "heavy",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.33",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "network",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.34",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "52",
+    "text": "not-scalable",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Outcome-label vocabulary item (one of the §5 list)."
+  },
+  {
+    "id": "S5.35",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "53",
+    "text": "Every session everywhere must know it can report",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9373,
+        "title": "fleet CLI: append-only invocation ledger (subcommand use is inference-only today)",
+        "state": "OPEN",
+        "coverage": "related"
+      },
+      {
+        "repo": "developing-today/code",
+        "number": 9374,
+        "title": "mcpx daemon: durable call ledger (direct daemon calls are invisible to analytics)",
+        "state": "OPEN",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.36",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "53",
+    "text": "this issue or that PR got undone",
+    "kind": "example",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.37",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "53",
+    "text": "this issue was misunderstood and caused this PR, which blew a quota and caused perf issues, then an outage",
+    "kind": "example",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.38",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "53",
+    "text": "for every issue and PR",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.39",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "54",
+    "text": "each issue/PR is linked to a task",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 8176,
+        "title": "queue: stamp the claiming session's own model on the task at claim time",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.40",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "54",
+    "text": "the task is linked to one or more sessions and attempts",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.41",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "54",
+    "text": "various subsessions, tool calls, token uses, pools and models hit/failed/used",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.42",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "54",
+    "text": "tokens in, tokens cached, tokens context, user input, thinking, tool calls and reads",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.43",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "54",
+    "text": "TTFT, total step time, first TTFT, total step count and time for every session and input",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.44",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "54",
+    "text": "number of question prompts, number of questions, time until submitted",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.45",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "54",
+    "text": "errors auto-rerouted",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [
+      {
+        "repo": "developing-today-forks/opencode",
+        "number": 2223,
+        "title": "fix(core): route_usage lastServing reports a hedged race won by the hedge leg as a failover",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.46",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "54",
+    "text": "the decision model and the decision",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S5.47",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "54",
+    "text": "the feedback from PRs and issues, parent sessions and subsessions",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "58",
+    "text": "Effort overlaps two related but technically distinct concepts",
+    "kind": "constraint",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "60",
+    "text": "Tie-break lean",
+    "kind": "constraint",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "60",
+    "text": "when using a decision API to determine a routing direction",
+    "kind": "constraint",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "60",
+    "text": "low/medium/high add a *very slight* boost toward the lowest / closest to the middle (workhorse/scout) / closest to specialist-and-summit",
+    "kind": "requirement",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "60",
+    "text": "Not an absolute amount, not a plain multiplication",
+    "kind": "constraint",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "60",
+    "text": "An appropriate mechanism slightly prefers one direction",
+    "kind": "requirement",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "60",
+    "text": "e.g. when the two highest results are within some distance of each other",
+    "kind": "example",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "60",
+    "text": "Low/medium/high might also change which default is used when auto is used",
+    "kind": "requirement",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "61",
+    "text": "Fallback pool choice",
+    "kind": "constraint",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "61",
+    "text": "the pool to use if all decision models fail",
+    "kind": "constraint",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "63",
+    "text": "For now, especially for the UI, leave it this way to avoid new widgets",
+    "kind": "preference",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "63",
+    "text": "In the API and on tasks we can distinguish the two",
+    "kind": "requirement",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.13",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "63",
+    "text": "low/medium/high for quality, speed, and cost as separate axes",
+    "kind": "requirement",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.14",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "63",
+    "text": "if they all match, their ratio is identical, so what does changing low→high mean?",
+    "kind": "question",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "research",
+    "notes": ""
+  },
+  {
+    "id": "S6.15",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "63",
+    "text": "Working answer to test",
+    "kind": "requirement",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.16",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "63",
+    "text": "choose the best all-around at a given overall capability band and pass to the appropriate pool without an effort level",
+    "kind": "requirement",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.17",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "63",
+    "text": "Consider extensions supporting such steering for other decision types, dynamically at runtime, or both",
+    "kind": "preference",
+    "theme": "T14 decision-effort",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.18",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "65",
+    "text": "a short setup context may hold a decision between 3+ probabilities and another with 2",
+    "kind": "constraint",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.19",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "65",
+    "text": "probabilities may change depending on the first question",
+    "kind": "constraint",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.20",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "65",
+    "text": "the combination of Q1+Q3 determines Q4's value",
+    "kind": "constraint",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S6.21",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "65",
+    "text": "Q2+Q4 determine or highly influence Q5",
+    "kind": "constraint",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "69",
+    "text": "On top of the System 1 API, support automatic if-this-then-that",
+    "kind": "requirement",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "69",
+    "text": "Every question submitted to the decision model can carry functions and baked-in clause types",
+    "kind": "requirement",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "71",
+    "text": "If 1, 2, 3 are yes/no/yes → switch Q4 to no",
+    "kind": "example",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "71",
+    "text": "If yes/no/no → Q4 is yes but Q5 is no",
+    "kind": "example",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "71",
+    "text": "If yes/yes/yes → Q4 is \"1 and 2\", Q5 is yes, Q6 is both",
+    "kind": "example",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "72",
+    "text": "`if blank then this is X`",
+    "kind": "requirement",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "72",
+    "text": "`if this and this and this then slight preference / strong preference for or against each of them`",
+    "kind": "requirement",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "72",
+    "text": "optional rankings and other subclasses",
+    "kind": "requirement",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "73",
+    "text": "If this is for 1 and that is for 2, then for Q4, if 3 is yes, strongly boost checking options B and C",
+    "kind": "example",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "74",
+    "text": "If deferred or not answered → prefer checking just option 1",
+    "kind": "example",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "74",
+    "text": "If no, or a number greater than 100 → check all the boxes and insert into the make-your-own",
+    "kind": "example",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "76",
+    "text": "Implementation shape: a template string with access to variables",
+    "kind": "requirement",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.13",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "76",
+    "text": "all dependent questions, answers, and so on",
+    "kind": "requirement",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.14",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "76",
+    "text": "This should not live in the systemone endpoint directly",
+    "kind": "constraint",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S7.15",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "76",
+    "text": "unless it can be done as a superset that does not affect the real standard in any way",
+    "kind": "constraint",
+    "theme": "T15 conditional-clauses",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S8.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "80",
+    "text": "Build review into the PM stack",
+    "kind": "requirement",
+    "theme": "T16 pm-review-surface",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9343,
+        "title": "feat(pm-aggregator): decision sets v2 — rich schema, event log + outbox, submit API (#9335)",
+        "state": "CLOSED",
+        "coverage": "related"
+      },
+      {
+        "repo": "developing-today/code",
+        "number": 9335,
+        "title": "pm-stack decision sets v2: rich questions, event log, submit API + activity webhook/hook",
+        "state": "CLOSED",
+        "coverage": "related"
+      },
+      {
+        "repo": "developing-today/code",
+        "number": 8766,
+        "title": "Decisions page: batched decision sets — one push per set, per-item/partial submit, defer-to-orchestrator with leans (extends #8568)",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S8.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "82",
+    "text": "Review worked items",
+    "kind": "requirement",
+    "theme": "T16 pm-review-surface",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9354,
+        "title": "pm-stack: surface the decision-set question stack inside Today/Needs-you + nav — currently only a standalone /decisions page",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S8.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "82",
+    "text": "provide feedback, labels, and scores",
+    "kind": "requirement",
+    "theme": "T16 pm-review-surface",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9343,
+        "title": "feat(pm-aggregator): decision sets v2 — rich schema, event log + outbox, submit API (#9335)",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S8.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "82",
+    "text": "for one item, a model-selected set of items, a set marked as a set, custom selections within a set, multiple sets, or each item standalone",
+    "kind": "requirement",
+    "theme": "T16 pm-review-surface",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S8.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "83",
+    "text": "Search and review terminal-status items by epic, roadmap, and timeline",
+    "kind": "requirement",
+    "theme": "T16 pm-review-surface",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S8.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "83",
+    "text": "add labels",
+    "kind": "requirement",
+    "theme": "T16 pm-review-surface",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Occurs twice (§8 bullets 2 and 3)."
+  },
+  {
+    "id": "S8.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "84",
+    "text": "Review queued work",
+    "kind": "requirement",
+    "theme": "T16 pm-review-surface",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S8.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "84",
+    "text": "reprioritize it",
+    "kind": "requirement",
+    "theme": "T16 pm-review-surface",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S8.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "84",
+    "text": "add labels",
+    "kind": "requirement",
+    "theme": "T16 pm-review-surface",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Second occurrence (queued-work bullet)."
+  },
+  {
+    "id": "S9.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "88",
+    "text": "Track the decision LLM's prompt with a version and a date",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S9.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "88",
+    "text": "make clear which prompt was used for every decision",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S9.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "90",
+    "text": "tokens used",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S9.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "90",
+    "text": "percentages",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S9.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "90",
+    "text": "quota (maybe)",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S9.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "90",
+    "text": "time to decision",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S9.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "91",
+    "text": "whether the decision resulted in a successful session goal",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S9.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "91",
+    "text": "from the sub-session's own perspective",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S9.9",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "91",
+    "text": "the parent's perspective",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S9.10",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "91",
+    "text": "anyone's perspective",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S9.11",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "91",
+    "text": "through association with an issue, PR, or epic that was provided a rating",
+    "kind": "requirement",
+    "theme": "T13 outcome-feedback-loop",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S9.12",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "92",
+    "text": "the invalid-JSON path (§4) and which pool/model finally answered",
+    "kind": "requirement",
+    "theme": "T11 decision-executor-record",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S10.1",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "96",
+    "text": "Support any number of cycles in the priority of pools and plans accessed",
+    "kind": "requirement",
+    "theme": "T17 cycle-safe-traversal",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9385,
+        "title": "Class fallback chains (second-pass escalation, visited-set semantics) + guard extension",
+        "state": "CLOSED",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S10.2",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "96",
+    "text": "If a pool has already been seen",
+    "kind": "requirement",
+    "theme": "T17 cycle-safe-traversal",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9385,
+        "title": "Class fallback chains (second-pass escalation, visited-set semantics) + guard extension",
+        "state": "CLOSED",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S10.3",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "96",
+    "text": "it has already been processed through all available options",
+    "kind": "requirement",
+    "theme": "T17 cycle-safe-traversal",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9385,
+        "title": "Class fallback chains (second-pass escalation, visited-set semantics) + guard extension",
+        "state": "CLOSED",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S10.4",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "96",
+    "text": "weighted, round-robin, and ordered, for the entirety of the pool",
+    "kind": "requirement",
+    "theme": "T17 cycle-safe-traversal",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S10.5",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "96",
+    "text": "so it can be safely skipped",
+    "kind": "requirement",
+    "theme": "T17 cycle-safe-traversal",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S10.6",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "96",
+    "text": "This prevents cycles and unnecessary error responses from providers we already know are walled or would reject us",
+    "kind": "requirement",
+    "theme": "T17 cycle-safe-traversal",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S10.7",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "96",
+    "text": "Later, mutual references might be supported",
+    "kind": "preference",
+    "theme": "T17 cycle-safe-traversal",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "S10.8",
+    "source": "doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief-decisions-supplement.md",
+    "lines": "96",
+    "text": "using something like the NixOS module fixpoint concept, or another method",
+    "kind": "preference",
+    "theme": "T17 cycle-safe-traversal",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "R1",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "GitHub via gh CLI only",
+    "kind": "rule",
+    "theme": "T18 standing-rules",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "R2",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "merge commits only",
+    "kind": "rule",
+    "theme": "T18 standing-rules",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "R3",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "never force-push main",
+    "kind": "rule",
+    "theme": "T18 standing-rules",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "R4",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "CI runs on main only",
+    "kind": "rule",
+    "theme": "T18 standing-rules",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "R5",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "secrets by name only",
+    "kind": "rule",
+    "theme": "T18 standing-rules",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "R6",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "a 100%-walled pool leg is never attempted",
+    "kind": "rule",
+    "theme": "T18 standing-rules",
+    "existing_issues": [],
+    "disposition_hint": "new-design",
+    "notes": "Same rule already in .opencode/route-fallbacks.md ('a 100%-walled leg is never attempted')."
+  },
+  {
+    "id": "R7",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "parked/abandoned design states are Drew's alone to set",
+    "kind": "rule",
+    "theme": "T18 standing-rules",
+    "existing_issues": [],
+    "disposition_hint": "ruling-needed",
+    "notes": ""
+  },
+  {
+    "id": "R8",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "starter issue is an epic under EPIC GUARD",
+    "kind": "rule",
+    "theme": "T18 standing-rules",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9399,
+        "title": "Program: pool & effort system — effort tiers per pool, OpenChamber category pools, granular stats store (design mill)",
+        "state": "OPEN",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "R9",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "never closed merely because subtasks complete",
+    "kind": "rule",
+    "theme": "T18 standing-rules",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9399,
+        "title": "Program: pool & effort system — effort tiers per pool, OpenChamber category pools, granular stats store (design mill)",
+        "state": "OPEN",
+        "coverage": "partial"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": "questions.md Q1: code#9399 was closed by a bot and reopened on default (b)."
+  },
+  {
+    "id": "R10",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "is a native decision model worth it vs a cheap LLM (DeepSeek Flash class)",
+    "kind": "rule",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "research",
+    "notes": "Restates the supplement §2 per-provider question as a standing rule; the packet requires measured data."
+  },
+  {
+    "id": "R11",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "must be answered with measured data",
+    "kind": "rule",
+    "theme": "T12 llm-decider-protocol",
+    "existing_issues": [],
+    "disposition_hint": "research",
+    "notes": ""
+  },
+  {
+    "id": "R12",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "_commandcode seats are suspect",
+    "kind": "rule",
+    "theme": "T18 standing-rules",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9397,
+        "title": "Fleet-stalling: lane route wall 2026-11-13 — sessions start, models never answer (MODEL_NOT_IN_PLAN gpt-6.1-sol 403; Claude failover rate-limited 429)",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "new-design",
+    "notes": ""
+  },
+  {
+    "id": "R13",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "Command Code lost Sol plan coverage",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9401,
+        "title": "Remove dead _commandcode doors from all plan pools (code#9397)",
+        "state": "CLOSED",
+        "coverage": "related"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "R14",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "free Beam tier ended permanently",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "R15",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "monthly credits exhausted",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  },
+  {
+    "id": "R16",
+    "source": "launch-packet (embedded in inventory/check_inventory.py as LAUNCH_PACKET)",
+    "lines": "packet",
+    "text": "PR #9401 removed it from six pools",
+    "kind": "fact-v1",
+    "theme": "T0 v1-state",
+    "existing_issues": [
+      {
+        "repo": "developing-today/code",
+        "number": 9401,
+        "title": "Remove dead _commandcode doors from all plan pools (code#9397)",
+        "state": "CLOSED",
+        "coverage": "full"
+      }
+    ],
+    "disposition_hint": "v1-exists",
+    "notes": ""
+  }
+]
