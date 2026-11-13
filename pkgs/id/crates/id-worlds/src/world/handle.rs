@@ -257,6 +257,7 @@ impl WorldHandle {
             location_fix: None,
             location_fix_received_at: None,
             loc_watches: BTreeMap::new(),
+            schedule_delivery: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
         };
         tokio::spawn(actor.run(receiver, restored));
@@ -613,6 +614,85 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped schedule response")?
+    }
+
+    /// Admin: set this world's schedule-delivery consent for one peer
+    /// world (#1355 part 2): `send` lets this world's schedules target
+    /// the peer, `receive` lets the peer's schedules be delivered here.
+    /// Journaled before it is visible. Returns the full grant map.
+    ///
+    /// # Errors
+    ///
+    /// A malformed peer name or world storage failure.
+    pub async fn admin_set_schedule_grant(
+        &self,
+        peer: String,
+        send: bool,
+        receive: bool,
+    ) -> Result<BTreeMap<String, ScheduleGrant>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AdminSetScheduleGrant {
+                peer,
+                send,
+                receive,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped schedule grant response")?
+    }
+
+    /// Deliver one cross-world schedule fire arriving from `source`
+    /// (#1355 part 2). True only when this world durably accepted it
+    /// (receive grant, fire journaled, receipt journaled) or already had.
+    ///
+    /// # Errors
+    ///
+    /// Fails only if the world actor is closed; refusal is `Ok(false)`.
+    pub async fn deliver_schedule(
+        &self,
+        source: String,
+        id: String,
+        at_ms: u64,
+        late: bool,
+    ) -> Result<bool> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::DeliverSchedule {
+                source,
+                id,
+                at_ms,
+                late,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped schedule delivery response")
+    }
+
+    /// Install the cross-world schedule delivery sink used by this
+    /// world's actor for its own outbound schedule fires (#1355 part 2).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed.
+    pub async fn set_schedule_delivery(
+        &self,
+        delivery: std::sync::Arc<dyn ScheduleDelivery>,
+    ) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetScheduleDelivery { delivery, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped delivery-install response")
     }
 
     /// Admin: cancel a pending schedule by id (a no-op when absent),

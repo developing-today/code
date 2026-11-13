@@ -2409,6 +2409,7 @@ mod tests {
                 at_ms: 9,
                 interval_ms: None,
                 remaining: None,
+                target: None,
             },
             JournalEntry::ScheduleCancelled { id: "a".to_owned() },
             JournalEntry::ScheduleSet {
@@ -2416,6 +2417,7 @@ mod tests {
                 at_ms: 10,
                 interval_ms: None,
                 remaining: None,
+                target: None,
             },
             JournalEntry::ScheduleFired { id: "b".to_owned() },
         ];
@@ -2494,6 +2496,7 @@ mod tests {
                     at_ms: 9,
                     interval_ms: None,
                     remaining: None,
+                    target: None,
                 })
                 .unwrap();
             // A v1-readable entry does not bump the header.

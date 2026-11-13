@@ -73,6 +73,9 @@ impl WorldCommand {
             Self::ManifestState { .. } => "ManifestState",
             Self::AdminScheduleAt { .. } => "AdminScheduleAt",
             Self::AdminCancelSchedule { .. } => "AdminCancelSchedule",
+            Self::AdminSetScheduleGrant { .. } => "AdminSetScheduleGrant",
+            Self::DeliverSchedule { .. } => "DeliverSchedule",
+            Self::SetScheduleDelivery { .. } => "SetScheduleDelivery",
             Self::CapsInfo { .. } => "CapsInfo",
             Self::SetIsolation { .. } => "SetIsolation",
             Self::IsolationInfo { .. } => "IsolationInfo",
@@ -310,6 +313,28 @@ pub(crate) enum WorldCommand {
         id: String,
         reply: oneshot::Sender<Result<BTreeMap<String, u64>>>,
     },
+    /// Admin: set this world's schedule-delivery consent for one peer
+    /// (#1355 part 2). Replies with the full grant map after the change.
+    AdminSetScheduleGrant {
+        peer: String,
+        send: bool,
+        receive: bool,
+        reply: oneshot::Sender<Result<BTreeMap<String, ScheduleGrant>>>,
+    },
+    /// A cross-world schedule fire arriving from `source` (#1355 part 2).
+    /// Replies true only when this world durably accepted the fire.
+    DeliverSchedule {
+        source: String,
+        id: String,
+        at_ms: u64,
+        late: bool,
+        reply: oneshot::Sender<bool>,
+    },
+    /// Install the cross-world schedule delivery sink (composition layer).
+    SetScheduleDelivery {
+        delivery: std::sync::Arc<dyn ScheduleDelivery>,
+        reply: oneshot::Sender<()>,
+    },
     /// Admin: read the capability report.
     CapsInfo {
         reply: oneshot::Sender<Result<CapsReport>>,
@@ -419,6 +444,10 @@ pub(crate) struct WorldActor {
     pub(crate) auth: crate::directory_auth::DirectoryAuth,
     pub(crate) program: Box<dyn WorldProgram>,
     pub(crate) journal: Option<Box<dyn WorldJournal>>,
+    /// Cross-world schedule delivery sink (#1355 part 2), installed by
+    /// the composition layer. `None` leaves cross-world schedules
+    /// pending: no sink, no delivery.
+    pub(crate) schedule_delivery: Option<std::sync::Arc<dyn ScheduleDelivery>>,
     /// Host metrics registry (F11.7), shared with the handle and the
     /// session layer; see [`WorldMetrics`].
     pub(crate) metrics: WorldMetrics,
@@ -1491,7 +1520,39 @@ impl WorldActor {
         due.truncate(crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP);
         for (_, id) in due {
             let late = self.overdue_at_open.contains(&id);
-            if !self.deliver(schedule_fired_event(&id, late)).await {
+            let Some(schedule) = self.core.schedules.get(&id).cloned() else {
+                continue;
+            };
+            let delivered = match &schedule.target {
+                None => self.deliver(schedule_fired_event(&id, late)).await,
+                Some(target) => {
+                    // Cross-world (#1355 part 2): consent is re-checked at
+                    // fire time — a grant revoked or an isolation change
+                    // since the set leaves the occurrence pending, exactly
+                    // like an unavailable target.
+                    let consented = self.core.isolation == Isolation::Unisolated
+                        && self
+                            .core
+                            .schedule_grants
+                            .get(target)
+                            .is_some_and(|grant| grant.send);
+                    if !consented {
+                        break;
+                    }
+                    let Some(sink) = self.schedule_delivery.clone() else {
+                        break;
+                    };
+                    sink.deliver_schedule(
+                        &self.core.world_id.clone(),
+                        target,
+                        &id,
+                        schedule.at_ms,
+                        late,
+                    )
+                    .await
+                }
+            };
+            if !delivered {
                 break;
             }
             if self
@@ -2022,6 +2083,58 @@ impl WorldActor {
         }
     }
 
+    /// Accept (or refuse) one cross-world schedule fire arriving here
+    /// (#1355 part 2). Acceptance requires this world unisolated, a
+    /// receive grant for the source, and no receipt for the same
+    /// (source, id, planned time) — a retry after the receipt is answered
+    /// true without delivering again. The fire's `System` entry is
+    /// journaled by `deliver`; the receipt follows it, so the source
+    /// consumes its occurrence only once both are durable.
+    async fn accept_schedule_delivery(
+        &mut self,
+        source: &str,
+        id: &str,
+        at_ms: u64,
+        late: bool,
+    ) -> bool {
+        if self.read_only {
+            return false;
+        }
+        if self.core.isolation != Isolation::Unisolated {
+            return false;
+        }
+        if !self
+            .core
+            .schedule_grants
+            .get(source)
+            .is_some_and(|grant| grant.receive)
+        {
+            return false;
+        }
+        let key = (source.to_owned(), id.to_owned(), at_ms);
+        if self.core.schedule_receipts.contains(&key) {
+            return true;
+        }
+        if !self
+            .deliver(schedule_fired_event_from(id, late, Some(source)))
+            .await
+        {
+            return false;
+        }
+        if self
+            .persist(JournalEntry::ScheduleReceived {
+                source: source.to_owned(),
+                id: id.to_owned(),
+                at_ms,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.core.schedule_receipts.insert(key);
+        true
+    }
+
     /// `schedule.at`: pend a fire of `id` at `at` (unix ms). With
     /// `interval_ms` and `count` the schedule is recurring (#1355): it
     /// re-arms fixed-rate after each fire until `count` total fires have
@@ -2052,11 +2165,16 @@ impl WorldActor {
         if args.get("interval_ms").is_some() && interval_ms.is_none() {
             return Err(CapError::bad_args());
         }
-        if let Err(error) = self.core.check_schedule_recurring(
+        let target = args.get("world").and_then(serde_json::Value::as_str);
+        if args.get("world").is_some() && target.is_none() {
+            return Err(CapError::bad_args());
+        }
+        if let Err(error) = self.core.check_schedule_targeted(
             id,
             at_ms,
             interval_ms,
             count,
+            target,
             self.core.clock().now_ms(),
         ) {
             tracing::debug!("world {}: schedule refused: {error:#}", self.core.world_id);
@@ -2068,6 +2186,7 @@ impl WorldActor {
                 at_ms,
                 interval_ms,
                 remaining: count.filter(|_| interval_ms.is_some()),
+                target: target.map(str::to_owned),
             })
             .is_err()
         {
@@ -2079,12 +2198,16 @@ impl WorldActor {
                 at_ms,
                 interval_ms,
                 remaining: count.unwrap_or(1),
+                target: target.map(str::to_owned),
             },
         );
         let mut result = serde_json::json!({"id": id, "fires_at": at_ms});
         if let (Some(interval), Some(count)) = (interval_ms, count) {
             result["interval_ms"] = serde_json::json!(interval);
             result["count"] = serde_json::json!(count);
+        }
+        if let Some(target) = target {
+            result["world"] = serde_json::json!(target);
         }
         Ok(result)
     }
@@ -3229,6 +3352,7 @@ impl WorldActor {
                         at_ms,
                         interval_ms: None,
                         remaining: None,
+                        target: None,
                     })?;
                     self.core
                         .schedules
@@ -3261,6 +3385,54 @@ impl WorldActor {
                     result.is_ok(),
                 );
                 let _ = reply.send(result);
+            }
+            WorldCommand::AdminSetScheduleGrant {
+                peer,
+                send,
+                receive,
+                reply,
+            } => {
+                let audit_peer = peer.clone();
+                let result = (|| -> Result<BTreeMap<String, ScheduleGrant>> {
+                    self.check_writable()?;
+                    crate::world_hub::validate_world_name(&peer)?;
+                    self.persist(JournalEntry::ScheduleGrantSet {
+                        peer: peer.clone(),
+                        send,
+                        receive,
+                    })?;
+                    if send || receive {
+                        self.core
+                            .schedule_grants
+                            .insert(peer, ScheduleGrant { send, receive });
+                    } else {
+                        self.core.schedule_grants.remove(&peer);
+                    }
+                    Ok(self.core.schedule_grants.clone())
+                })();
+                self.audit_admin_result(
+                    "admin",
+                    "AdminSetScheduleGrant",
+                    serde_json::json!({"peer": audit_peer, "send": send, "receive": receive}),
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::DeliverSchedule {
+                source,
+                id,
+                at_ms,
+                late,
+                reply,
+            } => {
+                let accepted = self
+                    .accept_schedule_delivery(&source, &id, at_ms, late)
+                    .await;
+                let _ = reply.send(accepted);
+            }
+            WorldCommand::SetScheduleDelivery { delivery, reply } => {
+                self.schedule_delivery = Some(delivery);
+                let _ = reply.send(());
             }
             WorldCommand::SetIsolation {
                 authority,
@@ -5184,6 +5356,7 @@ impl WorldActor {
             location_fix: None,
             location_fix_received_at: None,
             loc_watches: BTreeMap::new(),
+            schedule_delivery: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
         }

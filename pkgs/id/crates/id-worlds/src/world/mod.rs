@@ -53,7 +53,7 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use coordinator::{
     ActiveHandoff, Coordinator, CoordinatorError, EntityInTransit, EntityOwner, ExportReceipt,
     HandoffCompletion, HandoffStage, ImportReceipt, ObserveOutcome, ReconcileOutcome,
-    TransitStage, STUCK_THRESHOLD_MS,
+    STUCK_THRESHOLD_MS, TransitStage,
 };
 pub(crate) use core::AdminHistoryByteLedger;
 pub use core::WorldCore;
@@ -1289,6 +1289,38 @@ pub enum JournalEntry {
         /// schedule. Absent means one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         remaining: Option<u32>,
+        /// The world the fire is delivered to, for a cross-world schedule
+        /// (#1355 part 2). Absent means this world.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+    },
+    /// The admin set this world's schedule-delivery consent for one peer
+    /// world (#1355 part 2, the F12.14 reciprocal-grant shape): `send`
+    /// lets this world's schedules target `peer`, `receive` lets `peer`'s
+    /// schedules be delivered here. Written whole on every change; both
+    /// false is a revocation. A cross-world fire needs the source's send
+    /// consent and the target's receive consent for the same pair.
+    ScheduleGrantSet {
+        /// The peer world's name.
+        peer: String,
+        /// This world may pend schedule fires for `peer`.
+        send: bool,
+        /// `peer` may deliver schedule fires to this world.
+        receive: bool,
+    },
+    /// This world durably accepted a cross-world schedule fire from
+    /// `source` (#1355 part 2): the receipt, keyed by source world,
+    /// schedule id, and the fire's planned time (its occurrence). Written
+    /// after the fire's `System` entry, so a source retry after a restart
+    /// is answered from the receipt instead of delivering twice.
+    ScheduleReceived {
+        /// The world the schedule belongs to.
+        source: String,
+        /// The schedule's id in the source world.
+        id: String,
+        /// The fire's planned due time in the source world, in unix
+        /// milliseconds: the occurrence key.
+        at_ms: u64,
     },
     /// A pending schedule was cancelled before it fired.
     ScheduleCancelled {
@@ -1644,8 +1676,14 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         JournalEntry::ScheduleSet {
             interval_ms,
             remaining,
+            target,
             ..
-        } if interval_ms.is_some() || remaining.is_some() => JOURNAL_VERSION_SCHEDULE_RECURRENCE,
+        } if interval_ms.is_some() || remaining.is_some() || target.is_some() => {
+            JOURNAL_VERSION_SCHEDULE_RECURRENCE
+        }
+        JournalEntry::ScheduleGrantSet { .. } | JournalEntry::ScheduleReceived { .. } => {
+            JOURNAL_VERSION_SCHEDULE_RECURRENCE
+        }
         JournalEntry::Checkpoint {
             transfers,
             lease,
@@ -1956,7 +1994,7 @@ pub(crate) fn presence_change(text: &str) -> Option<(u64, bool)> {
 /// no interval and one remaining fire. Recurrence is fixed-rate: after
 /// firing at planned time `t` the next due time is `t + interval`, never
 /// `now + interval`, so late delivery and restarts cannot drift a series.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingSchedule {
     /// When the next fire is due, in unix milliseconds.
     pub(crate) at_ms: u64,
@@ -1964,6 +2002,8 @@ pub(crate) struct PendingSchedule {
     pub(crate) interval_ms: Option<u64>,
     /// Fires remaining, the pending one included. Always at least one.
     pub(crate) remaining: u32,
+    /// The world the fire is delivered to; `None` delivers here.
+    pub(crate) target: Option<String>,
 }
 
 impl PendingSchedule {
@@ -1973,6 +2013,7 @@ impl PendingSchedule {
             at_ms,
             interval_ms: None,
             remaining: 1,
+            target: None,
         }
     }
 
@@ -1988,6 +2029,7 @@ impl PendingSchedule {
             at_ms,
             interval_ms: Some(interval),
             remaining: self.remaining - 1,
+            target: self.target,
         })
     }
 }
@@ -2017,11 +2059,13 @@ pub struct CheckpointSchedule {
     pub interval_ms: Option<u64>,
     /// Fires remaining, the pending one included.
     pub remaining: u32,
+    /// The world the fire is delivered to; `None` delivers here.
+    pub target: Option<String>,
 }
 
 impl serde::Serialize for CheckpointSchedule {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.interval_ms.is_none() && self.remaining == 1 {
+        if self.interval_ms.is_none() && self.remaining == 1 && self.target.is_none() {
             return (self.id.clone(), self.at_ms).serialize(serializer);
         }
         #[derive(serde::Serialize)]
@@ -2032,12 +2076,15 @@ impl serde::Serialize for CheckpointSchedule {
             interval_ms: Option<u64>,
             #[serde(skip_serializing_if = "is_default_schedule_remaining")]
             remaining: u32,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            target: Option<&'a str>,
         }
         Current {
             id: &self.id,
             at_ms: self.at_ms,
             interval_ms: self.interval_ms,
             remaining: self.remaining,
+            target: self.target.as_deref(),
         }
         .serialize(serializer)
     }
@@ -2056,6 +2103,8 @@ impl<'de> serde::Deserialize<'de> for CheckpointSchedule {
                 interval_ms: Option<u64>,
                 #[serde(default = "default_schedule_remaining")]
                 remaining: u32,
+                #[serde(default)]
+                target: Option<String>,
             },
         }
         Ok(match Repr::deserialize(deserializer)? {
@@ -2064,28 +2113,76 @@ impl<'de> serde::Deserialize<'de> for CheckpointSchedule {
                 at_ms,
                 interval_ms: None,
                 remaining: 1,
+                target: None,
             },
             Repr::Current {
                 id,
                 at_ms,
                 interval_ms,
                 remaining,
+                target,
             } => Self {
                 id,
                 at_ms,
                 interval_ms,
                 remaining,
+                target,
             },
         })
     }
 }
 
+/// This world's schedule-delivery consent for one peer world (#1355
+/// part 2): the pair must be reciprocal across the two worlds for a
+/// cross-world fire to happen — the source holds `send` for the target,
+/// the target holds `receive` for the source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ScheduleGrant {
+    /// This world may pend schedule fires for the peer.
+    pub(crate) send: bool,
+    /// The peer may deliver schedule fires to this world.
+    pub(crate) receive: bool,
+}
+
+/// A boxed future, so [`ScheduleDelivery`] stays object-safe (the
+/// [`crate::world_hub::WorldOpener`] pattern).
+pub(crate) type ScheduleDeliveryFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
+
+/// Delivers one cross-world schedule fire to its target world (#1355
+/// part 2). Installed on an actor by the composition layer (the hub);
+/// an actor with no sink leaves cross-world schedules pending, exactly
+/// like a target that refuses. `true` means the target durably accepted
+/// the fire (its receipt is journaled), so the source may consume the
+/// occurrence.
+pub(crate) trait ScheduleDelivery: Send + Sync {
+    /// Deliver the fire of schedule `id`, planned for `at_ms`, from
+    /// `source` to `target`.
+    fn deliver_schedule<'a>(
+        &'a self,
+        source: &'a str,
+        target: &'a str,
+        id: &'a str,
+        at_ms: u64,
+        late: bool,
+    ) -> ScheduleDeliveryFuture<'a>;
+}
+
 /// The host event a program receives when schedule `id` fires. `late` is set
 /// only for a schedule the journal left overdue when the world reopened.
 pub(crate) fn schedule_fired_event(id: &str, late: bool) -> String {
+    schedule_fired_event_from(id, late, None)
+}
+
+/// Like [`schedule_fired_event`], for a fire delivered from another
+/// world: the event names its source world as `from`.
+pub(crate) fn schedule_fired_event_from(id: &str, late: bool, source: Option<&str>) -> String {
     let mut event = serde_json::json!({"cap": "schedule", "event": "fired", "id": id});
     if late {
         event["late"] = serde_json::Value::Bool(true);
+    }
+    if let Some(source) = source {
+        event["from"] = serde_json::json!(source);
     }
     event.to_string()
 }

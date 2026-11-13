@@ -30,7 +30,7 @@ use serde::Serialize;
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
-use crate::world::Isolation;
+use crate::world::{Isolation, ScheduleDelivery, ScheduleDeliveryFuture};
 use crate::world_session::WorldService;
 
 /// Longest world name, in bytes.
@@ -675,6 +675,17 @@ impl WorldHub {
         Ok((slot, evicted))
     }
 
+    /// The cross-world schedule delivery sink backed by this hub
+    /// (#1355 part 2): install it on a world's handle
+    /// (`WorldHandle::set_schedule_delivery`) and that world's outbound
+    /// schedule fires are delivered through the hub to their target
+    /// worlds. Delivery leases the target (never creates it) and answers
+    /// with the target's durable acceptance.
+    #[must_use]
+    pub fn schedule_delivery(&self) -> Arc<dyn ScheduleDelivery> {
+        Arc::new(HubScheduleDelivery { hub: self.clone() })
+    }
+
     /// Open the default world (creating it), for startup.
     ///
     /// # Errors
@@ -983,7 +994,10 @@ mod tests {
         drop(lease);
         let listed = hub.list();
         let names: Vec<&str> = listed.iter().map(|info| info.name.as_str()).collect();
-        assert!(names.contains(&"arena") && names.contains(&"vault"), "{names:?}");
+        assert!(
+            names.contains(&"arena") && names.contains(&"vault"),
+            "{names:?}"
+        );
     }
 
     #[test]
@@ -1455,5 +1469,36 @@ mod tests {
         // The cancelled lease must not leak: its slot is gone, so the world
         // is neither stuck open nor un-evictable.
         assert_eq!(hub.open_count(), 0);
+    }
+}
+
+/// [`ScheduleDelivery`] through a [`WorldHub`]: lease the target world
+/// and ask its actor to accept the fire. Any failure — unknown world,
+/// busy hub, closed actor, refusal — is `false`, which leaves the
+/// source occurrence pending for a later retry.
+struct HubScheduleDelivery {
+    hub: WorldHub,
+}
+
+impl ScheduleDelivery for HubScheduleDelivery {
+    fn deliver_schedule<'a>(
+        &'a self,
+        source: &'a str,
+        target: &'a str,
+        id: &'a str,
+        at_ms: u64,
+        late: bool,
+    ) -> ScheduleDeliveryFuture<'a> {
+        Box::pin(async move {
+            let Ok(lease) = self.hub.lease(Some(target), None).await else {
+                return false;
+            };
+            lease
+                .service()
+                .world()
+                .deliver_schedule(source.to_owned(), id.to_owned(), at_ms, late)
+                .await
+                .unwrap_or(false)
+        })
     }
 }

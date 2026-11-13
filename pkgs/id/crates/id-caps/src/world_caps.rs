@@ -323,6 +323,11 @@ const SCHEDULE_AT_ARGUMENTS: &[ProviderArgument] = &[
         value_type: ArgumentType::UnsignedInteger,
         required: false,
     },
+    ProviderArgument {
+        name: "world",
+        value_type: ArgumentType::String,
+        required: false,
+    },
 ];
 /// Argument schema for `schedule.cancel`: one required `id` string.
 const SCHEDULE_CANCEL_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {

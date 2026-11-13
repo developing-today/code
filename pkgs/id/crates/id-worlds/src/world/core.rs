@@ -180,6 +180,13 @@ pub struct WorldCore {
     /// fires remaining. A schedule occupies one slot however many fires
     /// remain.
     pub(crate) schedules: BTreeMap<String, PendingSchedule>,
+    /// Schedule-delivery consent by peer world (#1355 part 2): this
+    /// world's half of the reciprocal F12.14 grant pair.
+    pub(crate) schedule_grants: BTreeMap<String, ScheduleGrant>,
+    /// Cross-world schedule fires this world has durably accepted, keyed
+    /// by (source world, schedule id, planned due time): the receipts a
+    /// source retry is answered from (#1355 part 2).
+    pub(crate) schedule_receipts: BTreeSet<(String, String, u64)>,
     pub(crate) isolation: Isolation,
     pub(crate) cross_world_write: bool,
     pub(crate) cross_world_forced: bool,
@@ -454,6 +461,8 @@ impl WorldCore {
             memory_budget: crate::world_limits::WorldMemoryBudget::default(),
             caps_ceiling: crate::world_caps::default_ceiling_names(),
             schedules: BTreeMap::new(),
+            schedule_grants: BTreeMap::new(),
+            schedule_receipts: BTreeSet::new(),
             isolation: Isolation::default(),
             cross_world_write: false,
             cross_world_forced: false,
@@ -863,6 +872,7 @@ impl WorldCore {
                     at_ms,
                     interval_ms,
                     remaining,
+                    target,
                 } => {
                     crate::world_caps::validate_schedule_id(&id)
                         .context("invalid schedule id in journal")?;
@@ -894,14 +904,38 @@ impl WorldCore {
                     );
                     // No clock here: the due time is what the request set, and
                     // a restore never judges it against now.
+                    if let Some(target) = &target {
+                        crate::world_hub::validate_world_name(target)
+                            .context("invalid schedule target in journal")?;
+                    }
                     core.schedules.insert(
                         id,
                         PendingSchedule {
                             at_ms,
                             interval_ms,
                             remaining,
+                            target,
                         },
                     );
+                }
+                JournalEntry::ScheduleGrantSet {
+                    peer,
+                    send,
+                    receive,
+                } => {
+                    crate::world_hub::validate_world_name(&peer)
+                        .context("invalid schedule grant peer in journal")?;
+                    if send || receive {
+                        core.schedule_grants
+                            .insert(peer, ScheduleGrant { send, receive });
+                    } else {
+                        core.schedule_grants.remove(&peer);
+                    }
+                }
+                JournalEntry::ScheduleReceived { source, id, at_ms } => {
+                    crate::world_caps::validate_schedule_id(&id)
+                        .context("invalid received schedule id in journal")?;
+                    core.schedule_receipts.insert((source, id, at_ms));
                 }
                 JournalEntry::ScheduleCancelled { id } => {
                     ensure!(
@@ -1388,6 +1422,7 @@ impl WorldCore {
                                     at_ms: schedule.at_ms,
                                     interval_ms: schedule.interval_ms,
                                     remaining: schedule.remaining,
+                                    target: schedule.target.clone(),
                                 },
                             )
                         })
@@ -1601,6 +1636,24 @@ impl WorldCore {
                 at_ms: schedule.at_ms,
                 interval_ms: schedule.interval_ms,
                 remaining: (schedule.remaining != 1).then_some(schedule.remaining),
+                target: schedule.target.clone(),
+            });
+        }
+        // Schedule grants and receipts ride along like the schedules:
+        // without them compaction could forget a consent (and re-refuse a
+        // live series) or an acceptance (and deliver a fire twice).
+        for (peer, grant) in &self.schedule_grants {
+            entries.push(JournalEntry::ScheduleGrantSet {
+                peer: peer.clone(),
+                send: grant.send,
+                receive: grant.receive,
+            });
+        }
+        for (source, id, at_ms) in &self.schedule_receipts {
+            entries.push(JournalEntry::ScheduleReceived {
+                source: source.clone(),
+                id: id.clone(),
+                at_ms: *at_ms,
             });
         }
         let schedules: Option<Vec<CheckpointSchedule>> = (!self.schedules.is_empty()).then(|| {
@@ -1611,6 +1664,7 @@ impl WorldCore {
                     at_ms: schedule.at_ms,
                     interval_ms: schedule.interval_ms,
                     remaining: schedule.remaining,
+                    target: schedule.target.clone(),
                 })
                 .collect()
         });
@@ -1754,7 +1808,7 @@ impl WorldCore {
     /// A malformed id, a duplicate pending id, a full schedule, or a time past
     /// the horizon.
     pub(crate) fn check_schedule(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
-        self.check_schedule_inner(id, at_ms, None, None, now_ms, false)
+        self.check_schedule_inner(id, at_ms, None, None, None, now_ms, false)
     }
 
     /// Whether a recurring `schedule.at` (#1355) may be pended: the one-shot
@@ -1768,7 +1822,25 @@ impl WorldCore {
         count: Option<u32>,
         now_ms: u64,
     ) -> Result<()> {
-        self.check_schedule_inner(id, at_ms, interval_ms, count, now_ms, false)
+        self.check_schedule_inner(id, at_ms, interval_ms, count, None, now_ms, false)
+    }
+
+    /// Whether a `schedule.at` may be pended for delivery to another
+    /// world (#1355 part 2): the recurring checks, plus the target must
+    /// be a different, validly named world, this world must be
+    /// unisolated, and this world's admin must have granted send consent
+    /// for that peer. The target's receive consent is the target's own
+    /// journal state, checked there at delivery time.
+    pub(crate) fn check_schedule_targeted(
+        &self,
+        id: &str,
+        at_ms: u64,
+        interval_ms: Option<u64>,
+        count: Option<u32>,
+        target: Option<&str>,
+        now_ms: u64,
+    ) -> Result<()> {
+        self.check_schedule_inner(id, at_ms, interval_ms, count, target, now_ms, false)
     }
 
     /// Apply one fire of a pending schedule: re-arm it in place while
@@ -1778,7 +1850,7 @@ impl WorldCore {
     /// journal replay and the actor's fire path, so both derive the same
     /// next state from the same journaled state.
     pub(crate) fn apply_schedule_fired(&mut self, id: &str) -> bool {
-        let Some(schedule) = self.schedules.get(id).copied() else {
+        let Some(schedule) = self.schedules.get(id).cloned() else {
             return false;
         };
         match schedule.after_fire() {
@@ -1810,20 +1882,40 @@ impl WorldCore {
     /// the existing schedule standing (#807).
     pub(crate) fn check_schedule_replacing(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
         let replacing = self.schedules.contains_key(id);
-        self.check_schedule_inner(id, at_ms, None, None, now_ms, replacing)
+        self.check_schedule_inner(id, at_ms, None, None, None, now_ms, replacing)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check_schedule_inner(
         &self,
         id: &str,
         at_ms: u64,
         interval_ms: Option<u64>,
         count: Option<u32>,
+        target: Option<&str>,
         now_ms: u64,
         replacing: bool,
     ) -> Result<()> {
         crate::world_caps::validate_schedule_id(id)?;
         crate::world_caps::validate_schedule_recurrence(interval_ms, count)?;
+        if let Some(target) = target {
+            crate::world_hub::validate_world_name(target)
+                .context("invalid schedule target world")?;
+            ensure!(
+                target != self.world_id,
+                "schedule {id:?} targets its own world; omit the world to schedule it here"
+            );
+            ensure!(
+                self.isolation == Isolation::Unisolated,
+                "schedule {id:?} cannot target another world while this world is isolated"
+            );
+            ensure!(
+                self.schedule_grants
+                    .get(target)
+                    .is_some_and(|grant| grant.send),
+                "schedule {id:?} has no send grant for world {target:?}; an admin must grant it first"
+            );
+        }
         ensure!(
             replacing || !self.schedules.contains_key(id),
             "schedule {id:?} is already pending; cancel it before scheduling it again"
