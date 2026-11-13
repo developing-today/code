@@ -11,7 +11,7 @@
 //! (slice 2) without parsing prose. `--quick` shrinks every workload to a
 //! smoke size; `--only <name>` runs a single benchmark.
 //!
-//! The four workloads from the issue, and the surface each one measures:
+//! The workloads and the surface each one measures:
 //!
 //! - `guest_replay` — replaying N committed events: `WorldCore::restore`
 //!   over a journal of N `Committed` chat events, then the restored
@@ -28,20 +28,710 @@
 //! - `session_fanout` — one committed chat event delivered to K session
 //!   subscribers through the actor's broadcast channel: spawn a world,
 //!   subscribe K receivers, publish, drain all K.
+//! - `many_worlds` — 1,000 durable idle worlds plus 100 leased worlds at
+//!   20 counter inputs/s each; report command latency percentiles and verify
+//!   recent checkpoints plus records/sequence across idle eviction and reopen.
+//! - `fuel_spin_isolation` — F12.10's exit-criterion measurement (#1067): one
+//!   victim world accepts inputs in a calm phase and again while hostile Wasm
+//!   worlds spin until their fuel budget is exhausted. Prints each phase's
+//!   victim command p99, their ratio, and `target_ratio=1.10`; it measures
+//!   the scheduling gap only and implements no scheduler, quota, or
+//!   back-pressure.
+//! - `bot_battle` (design only, not runnable yet) — a deterministic, mixed-
+//!   strategy territory workload for N=2/4/8 users is specified in
+//!   `../../../doc/2026-11-06T00-50-21Z_design_dynamic_world_tick_cost/`; its current-
+//!   stack proxy must not be reported as a per-user DLL benchmark.
 //!
 //! Numbers are only comparable on the same machine class; baselines must
 //! record where they were taken (slice 2).
 
 use std::hint::black_box;
-use std::path::PathBuf;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
+use id::sandbox::{Sandbox, SandboxLimits};
 use id::world::{
     CapabilityBounds, JournalEntry, WorldCore, WorldEvent, WorldEventKind, WorldHandle,
     WorldJournal, WorldLimits, WorldProgram, WorldScopes,
 };
-use id::world_store::FileJournal;
+use id::world_hub::{HubLimits, OpenFuture, WorldHub, WorldOpener};
+use id::world_limits::RuntimeLimits;
+use id::world_session::{WorldService, module_hash};
+use id::world_store::{FileJournal, open_world};
+
+const MANY_WORLDS_ADMIN: &str = "f11-many-worlds-benchmark";
+const COUNTER_WASM: &[u8] = include_bytes!("../examples/roc-counter/counter.wasm");
+
+struct DurableBenchOpener {
+    root: PathBuf,
+    limits: WorldLimits,
+    runtime: RuntimeLimits,
+    blobs: iroh_blobs::api::Store,
+    counter_hash: String,
+}
+
+impl WorldOpener for DurableBenchOpener {
+    fn open<'a>(&'a self, name: &'a str, create: bool) -> OpenFuture<'a> {
+        Box::pin(async move {
+            let dir = self.root.join(name);
+            if !create && !dir.is_dir() {
+                return Ok(None);
+            }
+
+            let blobs = self.blobs.clone();
+            let (service, _) = open_world(
+                &dir,
+                name,
+                self.limits.clone(),
+                self.runtime,
+                move |handle| {
+                    WorldService::new(handle, Some(MANY_WORLDS_ADMIN.to_owned()))
+                        .with_blob_store(blobs)
+                },
+            )
+            .await?;
+
+            // Idle worlds need only durable headers. Active worlds run the
+            // checked-in counter guest so inputs, records, checkpoints, and
+            // restoration all traverse the real durable-world path.
+            if create && name.starts_with("active-") {
+                service
+                    .install_wasm(
+                        Some(MANY_WORLDS_ADMIN),
+                        COUNTER_WASM.to_vec(),
+                        1,
+                        &self.counter_hash,
+                    )
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("install many-worlds counter module: {error:?}")
+                    })?;
+            }
+
+            Ok(Some(service))
+        })
+    }
+
+    fn exists(&self, name: &str) -> bool {
+        self.root.join(name).is_dir()
+    }
+
+    fn list(&self) -> Vec<String> {
+        std::fs::read_dir(&self.root)
+            .into_iter()
+            .flatten()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect()
+    }
+
+    fn durable(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ManyWorldsConfig {
+    idle_worlds: usize,
+    active_worlds: usize,
+    events_per_second: usize,
+    duration_secs: u64,
+    checkpoint_every: u64,
+}
+
+impl ManyWorldsConfig {
+    fn full() -> Self {
+        Self {
+            idle_worlds: 1_000,
+            active_worlds: 100,
+            events_per_second: 20,
+            duration_secs: 10,
+            // Keep checkpoint compaction out of the timed 20 ev/s window;
+            // one extra input per world below triggers it before eviction.
+            checkpoint_every: 202,
+        }
+    }
+
+    fn quick() -> Self {
+        Self {
+            idle_worlds: 10,
+            active_worlds: 4,
+            events_per_second: 20,
+            duration_secs: 1,
+            checkpoint_every: 22,
+        }
+    }
+}
+
+struct ActiveWorld {
+    name: String,
+    lease: id::world_hub::WorldLease,
+    token: id::world::JoinCapability,
+}
+
+struct ExpectedWorld {
+    name: String,
+    token: id::world::JoinCapability,
+    sequence: u64,
+    records: id::world::Records,
+}
+
+fn percentile(samples: &[Duration], fraction: f64) -> f64 {
+    let mut sorted: Vec<f64> = samples
+        .iter()
+        .map(|sample| sample.as_secs_f64() * 1_000.0)
+        .collect();
+    sorted.sort_by(f64::total_cmp);
+    let index = ((sorted.len() as f64 * fraction).ceil() as usize)
+        .saturating_sub(1)
+        .min(sorted.len().saturating_sub(1));
+    sorted[index]
+}
+
+fn checkpoint_sequences(dir: &Path) -> Result<Vec<u64>> {
+    let journal = std::fs::read_to_string(dir.join("journal.jsonl"))?;
+    let entries: Vec<JournalEntry> = journal
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            JournalEntry::Checkpoint { sequence, .. } => Some(sequence),
+            _ => None,
+        })
+        .collect())
+}
+
+async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
+    let config = if quick {
+        ManyWorldsConfig::quick()
+    } else {
+        ManyWorldsConfig::full()
+    };
+    let mut limits = WorldLimits::default();
+    limits.checkpoint_every = config.checkpoint_every;
+    let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+    let runtime = RuntimeLimits::default();
+    let opener = Arc::new(DurableBenchOpener {
+        root: root.to_owned(),
+        limits,
+        runtime,
+        blobs,
+        counter_hash: module_hash(COUNTER_WASM),
+    });
+    let hub = WorldHub::new(
+        opener,
+        Some(MANY_WORLDS_ADMIN.to_owned()),
+        "lobby",
+        HubLimits::default(),
+    );
+
+    // Materialize 1,000 idle durable worlds on disk while the hub lazily opens
+    // and evicts them through its real 256-open-world ceiling.
+    for index in 0..config.idle_worlds {
+        let name = format!("idle-{index:04}");
+        let lease = hub
+            .lease(Some(&name), Some(MANY_WORLDS_ADMIN))
+            .await
+            .map_err(|error| anyhow::anyhow!(error.message()))?;
+        drop(lease);
+    }
+    let initially_evicted = hub.evict_idle(Duration::ZERO).await;
+    ensure!(
+        hub.open_count() == 0,
+        "idle worlds remained open after eviction"
+    );
+
+    // Hold 100 leases concurrently. Every active world runs the checked-in
+    // counter guest; the idle worlds have durable journals but no resident
+    // actor, matching F12.12's lazy-open target.
+    let mut active = Vec::with_capacity(config.active_worlds);
+    for index in 0..config.active_worlds {
+        let name = format!("active-{index:03}");
+        let lease = hub
+            .lease(Some(&name), Some(MANY_WORLDS_ADMIN))
+            .await
+            .map_err(|error| anyhow::anyhow!(error.message()))?;
+        let (_participant, token) = lease
+            .service()
+            .world()
+            .issue(format!("bench-{index}"), WorldScopes::GUEST)
+            .await?;
+        active.push(ActiveWorld { name, lease, token });
+    }
+    ensure!(
+        hub.open_count() == config.active_worlds,
+        "expected only active worlds to remain open"
+    );
+    ensure!(
+        hub.list().len() == config.idle_worlds + config.active_worlds,
+        "durable world inventory does not match the workload"
+    );
+
+    // Give each world one input every 50 ms, with a phase offset within that
+    // interval. A task per world avoids creating a task for every command and
+    // avoids an artificial 100-world burst on each tick. If an actor or journal
+    // falls behind, the missed deadline remains part of the command-latency
+    // sample.
+    let ticks = config.events_per_second as u64 * config.duration_secs;
+    let mut pending = tokio::task::JoinSet::new();
+    let load_started = Instant::now();
+    let interval_nanos = 1_000_000_000 / config.events_per_second as u64;
+    for (index, world) in active.iter().enumerate() {
+        let handle = world.lease.service().world().clone();
+        let token = world.token.clone();
+        let phase_nanos = index as u64 * interval_nanos / config.active_worlds as u64;
+        pending.spawn(async move {
+            let mut samples = Vec::with_capacity(ticks as usize);
+            for tick in 0..ticks {
+                let deadline =
+                    load_started + Duration::from_nanos(tick * interval_nanos + phase_nanos);
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                handle.input(token.clone(), b"inc".to_vec()).await?;
+                samples.push(deadline.elapsed());
+            }
+            Ok::<Vec<Duration>, anyhow::Error>(samples)
+        });
+    }
+
+    let expected_commands = ticks as usize * config.active_worlds;
+    let mut latencies = Vec::with_capacity(expected_commands);
+    while let Some(result) = pending.join_next().await {
+        latencies.extend(result.context("join many-worlds load task")??);
+    }
+    let load_elapsed_secs = load_started.elapsed().as_secs_f64();
+    ensure!(
+        latencies.len() == expected_commands,
+        "only {} of {expected_commands} inputs were acknowledged",
+        latencies.len()
+    );
+
+    // Force one verified checkpoint per active world after the timed load.
+    // The install event plus the measured inputs leave every world exactly
+    // one event short of its configured checkpoint cadence.
+    for world in &active {
+        let event = world
+            .lease
+            .service()
+            .world()
+            .input(world.token.clone(), b"inc".to_vec())
+            .await?;
+        black_box(event.sequence);
+    }
+    let expected_count = ticks + 1;
+
+    // Capture stable, acknowledged state before eviction. Reading the view is
+    // an actor barrier after the final input, so records include every update.
+    let mut expected = Vec::with_capacity(active.len());
+    for world in &active {
+        let view = world
+            .lease
+            .service()
+            .world()
+            .view(world.token.clone())
+            .await?;
+        ensure!(
+            view.as_deref()
+                .is_some_and(|view| view.contains(&format!("count={expected_count}"))),
+            "{} did not apply all {expected_count} counter inputs: {view:?}",
+            world.name
+        );
+        let snapshot = world
+            .lease
+            .service()
+            .world()
+            .snapshot(world.token.clone())
+            .await?;
+        let (sequence, records) = world.lease.service().world().records();
+        ensure!(
+            snapshot.current_sequence == sequence,
+            "{} sequence changed while capturing records",
+            world.name
+        );
+        expected.push(ExpectedWorld {
+            name: world.name.clone(),
+            token: world.token.clone(),
+            sequence,
+            records: records.as_ref().clone(),
+        });
+    }
+
+    // Release every active lease, let the real hub evict the durable actors,
+    // and require a recent checkpoint in each journal before reopening it.
+    drop(active);
+    let evicted = hub.evict_idle(Duration::ZERO).await;
+    ensure!(
+        evicted == config.active_worlds,
+        "evicted {evicted} active worlds, expected {}",
+        config.active_worlds
+    );
+    let mut total_checkpoints = 0;
+    for world in &expected {
+        let checkpoints = checkpoint_sequences(&root.join(&world.name))?;
+        let latest = checkpoints
+            .iter()
+            .copied()
+            .max()
+            .context("no checkpoint written")?;
+        ensure!(
+            latest <= world.sequence && world.sequence - latest <= config.checkpoint_every,
+            "{} checkpoint at {latest} is not recent enough for sequence {}",
+            world.name,
+            world.sequence
+        );
+        total_checkpoints += checkpoints.len();
+    }
+
+    for world in &expected {
+        let lease = hub
+            .lease(Some(&world.name), None)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.message()))?;
+        let view = lease.service().world().view(world.token.clone()).await?;
+        ensure!(
+            view.as_deref()
+                .is_some_and(|view| view.contains(&format!("count={expected_count}"))),
+            "{} lost counter state after checkpoint/reopen: {view:?}",
+            world.name
+        );
+        let snapshot = lease
+            .service()
+            .world()
+            .snapshot(world.token.clone())
+            .await?;
+        let (sequence, records) = lease.service().world().records();
+        ensure!(
+            sequence == world.sequence && snapshot.current_sequence == world.sequence,
+            "{} reopened at sequence {sequence}, expected {}",
+            world.name,
+            world.sequence
+        );
+        ensure!(
+            records.as_ref() == &world.records,
+            "{} records changed after checkpoint/reopen",
+            world.name
+        );
+        drop(lease);
+    }
+    let reopened_evicted = hub.evict_idle(Duration::ZERO).await;
+    ensure!(
+        reopened_evicted == config.active_worlds,
+        "reopened worlds could not be evicted cleanly"
+    );
+
+    let p50 = percentile(&latencies, 0.50);
+    let p95 = percentile(&latencies, 0.95);
+    let p99 = percentile(&latencies, 0.99);
+    let target_met = p99 < 50.0;
+    let completed_events_per_second = latencies.len() as f64 / load_elapsed_secs;
+    let min = latencies
+        .iter()
+        .map(|latency| latency.as_secs_f64() * 1_000.0)
+        .fold(f64::INFINITY, f64::min);
+    println!(
+        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={}",
+        config.idle_worlds,
+        config.active_worlds,
+        config.events_per_second,
+        config.duration_secs,
+        latencies.len(),
+        expected.len(),
+        total_checkpoints,
+        evicted,
+        expected.len(),
+    );
+    ensure!(
+        hub.open_count() == 0,
+        "many-worlds benchmark left resident worlds open"
+    );
+    black_box(initially_evicted);
+    Ok(())
+}
+
+/// F12.10's exit criterion (#1067): a world that spins on fuel must not raise
+/// another world's command p99 by more than ten percent.
+const TARGET_P99_RATIO: f64 = 1.10;
+
+/// Minimal Plaza guest whose `plaza_update` never returns: the call runs until
+/// its fuel budget is spent, then traps with fuel exhaustion. The required
+/// alloc/init/view/out_len exports stay trivial so only the update burns fuel.
+const FUEL_SPIN_WAT: &str = r#"
+    (module
+      (memory (export "memory") 1 1)
+      (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+      (func (export "plaza_free") (param i32 i32))
+      (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+      (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+        (i32.const 0)
+        (loop $again (br $again)))
+      (func (export "plaza_view") (param i32) (result i32) (i32.const 0))
+      (func (export "plaza_out_len") (result i32) (i32.const 0)))
+"#;
+
+#[derive(Clone, Copy)]
+struct FuelSpinConfig {
+    /// Duration of each phase (calm, then spinning).
+    phase_millis: u64,
+    /// Victim inputs scheduled per second within a phase.
+    commands_per_second: u64,
+    /// Hostile worlds spinning concurrently.
+    spinners: usize,
+    /// Wasm fuel one hostile update may spend before it traps.
+    spin_fuel: u64,
+}
+
+impl FuelSpinConfig {
+    fn full(worker_threads: usize) -> Self {
+        Self {
+            phase_millis: 3_000,
+            commands_per_second: 100,
+            // Leave one worker for the victim and its actor: every other
+            // thread is occupied by a fuel-limited guest call.
+            spinners: worker_threads.saturating_sub(1).max(1),
+            spin_fuel: 20_000_000,
+        }
+    }
+
+    fn quick(worker_threads: usize) -> Self {
+        Self {
+            phase_millis: 750,
+            commands_per_second: 100,
+            spinners: worker_threads.saturating_sub(1).clamp(1, 4),
+            spin_fuel: 2_000_000,
+        }
+    }
+
+    fn ticks(&self) -> u64 {
+        self.phase_millis * self.commands_per_second / 1_000
+    }
+
+    fn interval_nanos(&self) -> u64 {
+        1_000_000_000 / self.commands_per_second
+    }
+}
+
+struct BenchWorld {
+    handle: WorldHandle,
+    token: id::world::JoinCapability,
+}
+
+fn spawn_guest_world(
+    name: &str,
+    participant: &str,
+    program: Box<dyn WorldProgram>,
+) -> Result<BenchWorld> {
+    let mut core = WorldCore::new(name, WorldLimits::default())?;
+    let (_participant, token) = core.issue_capability(
+        participant,
+        WorldScopes::GUEST,
+        CapabilityBounds {
+            expires_at: None,
+            uses: None,
+        },
+    )?;
+    Ok(BenchWorld {
+        handle: WorldHandle::spawn_with_program(core, program),
+        token,
+    })
+}
+
+fn counter_program() -> Result<Box<dyn WorldProgram>> {
+    let guest = Sandbox::compile(COUNTER_WASM, SandboxLimits::default())?.instantiate(1)?;
+    Ok(Box::new(guest))
+}
+
+fn fuel_spin_sandbox(fuel: u64) -> Result<Sandbox> {
+    let wasm = wat::parse_str(FUEL_SPIN_WAT).context("parse fuel-spin WAT fixture")?;
+    Sandbox::compile(
+        &wasm,
+        SandboxLimits {
+            fuel,
+            ..SandboxLimits::default()
+        },
+    )
+    .context("compile fuel-spin guest")
+}
+
+/// Keep hostile Wasm worlds spinning until their fuel budget is exhausted.
+///
+/// The stack poisons a program instance after a trapping call, so each world
+/// contributes exactly one spin: the task replaces it with a freshly
+/// instantiated world and spins again. Every spin must fail with fuel
+/// exhaustion — a spin that returns is a harness bug, not a measurement.
+async fn spin_worlds(
+    sandbox: Sandbox,
+    stop: Arc<AtomicBool>,
+    hard_deadline: Instant,
+    worker: usize,
+) -> Result<u64> {
+    let mut spins = 0u64;
+    while !stop.load(Ordering::Relaxed) && Instant::now() < hard_deadline {
+        let guest = sandbox.instantiate(spins)?;
+        let world = spawn_guest_world(
+            &format!("fuel-spin-{worker}-{spins}"),
+            "bench-spinner",
+            Box::new(guest),
+        )?;
+        match world
+            .handle
+            .input(world.token.clone(), b"spin until fuel is gone".to_vec())
+            .await
+        {
+            Ok(event) => anyhow::bail!(
+                "fuel-spin guest acknowledged input at sequence {} instead of exhausting its fuel",
+                event.sequence
+            ),
+            Err(error) => {
+                let message = format!("{error:#}");
+                ensure!(
+                    message.contains("fuel exhausted"),
+                    "fuel-spin guest failed without fuel exhaustion: {message}"
+                );
+            }
+        }
+        spins += 1;
+        let _ = world.handle.shutdown().await;
+    }
+    Ok(spins)
+}
+
+/// Submit `ticks` victim inputs on absolute deadlines; each sample is the
+/// deadline-to-acknowledgement latency, so a late acknowledgement stays in
+/// the sample rather than shrinking the phase.
+async fn drive_victim(
+    victim: &BenchWorld,
+    start: Instant,
+    ticks: u64,
+    interval_nanos: u64,
+) -> Result<Vec<Duration>> {
+    let mut samples = Vec::with_capacity(usize::try_from(ticks)?);
+    for tick in 0..ticks {
+        let deadline = start + Duration::from_nanos(tick * interval_nanos);
+        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+        victim
+            .handle
+            .input(victim.token.clone(), b"inc".to_vec())
+            .await?;
+        samples.push(deadline.elapsed());
+    }
+    Ok(samples)
+}
+
+async fn run_calm_phase(victim: &BenchWorld, config: FuelSpinConfig) -> Result<Vec<Duration>> {
+    let start = Instant::now() + Duration::from_millis(50);
+    tokio::time::sleep_until(tokio::time::Instant::from_std(start)).await;
+    drive_victim(victim, start, config.ticks(), config.interval_nanos()).await
+}
+
+/// Run the victim load while hostile worlds spin, returning the victim's
+/// samples and how many fuel-exhausted spins the phase observed.
+async fn run_spinning_phase(
+    victim: &BenchWorld,
+    config: FuelSpinConfig,
+) -> Result<(Vec<Duration>, u64)> {
+    let sandbox = fuel_spin_sandbox(config.spin_fuel)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let phase = Duration::from_millis(config.phase_millis);
+    // The stop flag ends a healthy run; the hard deadline only bounds a
+    // pathological one (a spin wider than the whole phase).
+    let hard_deadline = Instant::now() + phase + Duration::from_secs(10);
+    let mut spinners = tokio::task::JoinSet::new();
+    for worker in 0..config.spinners {
+        let sandbox = sandbox.clone();
+        let stop = Arc::clone(&stop);
+        spinners.spawn(spin_worlds(sandbox, stop, hard_deadline, worker));
+    }
+
+    let start = Instant::now() + Duration::from_millis(100);
+    tokio::time::sleep_until(tokio::time::Instant::from_std(start)).await;
+    let samples = drive_victim(victim, start, config.ticks(), config.interval_nanos()).await?;
+
+    stop.store(true, Ordering::Relaxed);
+    let mut spins = 0u64;
+    while let Some(result) = spinners.join_next().await {
+        spins += result.context("join fuel-spin task")??;
+    }
+    Ok((samples, spins))
+}
+
+/// F12.10 exit measurement (#1067): the victim world's command p99 calm
+/// versus while hostile Wasm worlds spin until their fuel budget is gone.
+///
+/// This slice measures the gap only. It implements no fair scheduler,
+/// per-account quota, or slow-client back-pressure, so an unmet target is
+/// the expected recorded result rather than a regression.
+async fn bench_fuel_spin_isolation(worker_threads: usize, quick: bool) -> Result<()> {
+    let config = if quick {
+        FuelSpinConfig::quick(worker_threads)
+    } else {
+        FuelSpinConfig::full(worker_threads)
+    };
+    let victim = spawn_guest_world("fuel-spin-victim", "bench-victim", counter_program()?)?;
+
+    let calm_started = Instant::now();
+    let calm = run_calm_phase(&victim, config).await?;
+    let calm_elapsed = calm_started.elapsed().as_secs_f64();
+
+    let spinning_started = Instant::now();
+    let (spinning, spins) = run_spinning_phase(&victim, config).await?;
+    let spinning_elapsed = spinning_started.elapsed().as_secs_f64();
+
+    // An empty phase is a harness failure, never a result: CI must not pass
+    // on a measurement that collected nothing.
+    let expected = usize::try_from(config.ticks())?;
+    ensure!(
+        !calm.is_empty(),
+        "fuel_spin_isolation calm phase collected no victim samples"
+    );
+    ensure!(
+        !spinning.is_empty(),
+        "fuel_spin_isolation spinning phase collected no victim samples"
+    );
+    ensure!(
+        calm.len() == expected,
+        "calm phase acknowledged {} of {expected} victim inputs",
+        calm.len()
+    );
+    ensure!(
+        spinning.len() == expected,
+        "spinning phase acknowledged {} of {expected} victim inputs",
+        spinning.len()
+    );
+    ensure!(
+        spins > 0,
+        "fuel_spin_isolation observed no fuel-exhausted spinning world"
+    );
+
+    let calm_p99 = percentile(&calm, 0.99);
+    let spinning_p50 = percentile(&spinning, 0.50);
+    let spinning_p99 = percentile(&spinning, 0.99);
+    let spinning_min = spinning
+        .iter()
+        .map(|sample| sample.as_secs_f64() * 1_000.0)
+        .fold(f64::INFINITY, f64::min);
+    let ratio = if calm_p99 > 0.0 {
+        spinning_p99 / calm_p99
+    } else {
+        f64::INFINITY
+    };
+    let target_met = ratio <= TARGET_P99_RATIO;
+    println!(
+        "bench fuel_spin_isolation unit=ms_per_command median={spinning_p50:.3} min={spinning_min:.3} reps=1 victim_p99_ms_calm={calm_p99:.3} victim_p99_ms_spinning={spinning_p99:.3} ratio={ratio:.3} target_ratio=1.10 target_met={target_met} calm_samples={} spinning_samples={} spins={spins} spinners={} phase_ms={} commands_per_second={} spin_fuel={} calm_elapsed_secs={calm_elapsed:.3} spinning_elapsed_secs={spinning_elapsed:.3}",
+        calm.len(),
+        spinning.len(),
+        config.spinners,
+        config.phase_millis,
+        config.commands_per_second,
+        config.spin_fuel,
+    );
+    let _ = victim.handle.shutdown().await;
+    Ok(())
+}
 
 /// A guest that counts the events replayed through it.
 #[derive(Default)]
@@ -257,11 +947,13 @@ fn main() -> Result<()> {
     let dir = std::env::temp_dir().join(format!("id-bench-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
 
-    const BENCHMARKS: [&str; 4] = [
+    const BENCHMARKS: [&str; 6] = [
         "journal_append_fsync",
         "checkpoint_compaction",
         "guest_replay",
         "session_fanout",
+        "many_worlds",
+        "fuel_spin_isolation",
     ];
     if let Some(name) = only
         && !BENCHMARKS.contains(&name)
@@ -300,6 +992,24 @@ fn main() -> Result<()> {
             "us_per_delivery",
             bench_fanout(clients, rounds, reps)?,
         );
+    }
+    if run("many_worlds") {
+        let worker_threads = std::thread::available_parallelism().map_or(1, usize::from);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(worker_threads)
+            .enable_all()
+            .build()?;
+        runtime.block_on(bench_many_worlds(&dir.join("many-worlds"), quick))?;
+    }
+    if run("fuel_spin_isolation") {
+        // A single-threaded runtime cannot show contention between worlds:
+        // the hostile guests must occupy real worker threads.
+        let worker_threads = std::thread::available_parallelism().map_or(1, usize::from);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(worker_threads)
+            .enable_all()
+            .build()?;
+        runtime.block_on(bench_fuel_spin_isolation(worker_threads, quick))?;
     }
 
     let _ = std::fs::remove_dir_all(&dir);

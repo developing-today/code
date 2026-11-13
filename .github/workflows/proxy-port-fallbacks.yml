@@ -1,0 +1,20 @@
+name: proxy port fallbacks
+
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  proxy-port-fallbacks:
+    name: "basic: proxy port fallbacks"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check proxy port fallbacks match their definitions
+        run: .github/scripts/check-proxy-port-fallbacks.sh
+      - name: Check generated openclaw units carry no undeclared proxy Wants
+        run: .github/scripts/check-openclaw-unit-wants.sh
+      - name: Self-test the openclaw unit Wants guard
+        run: .github/scripts/check-openclaw-unit-wants.test.sh

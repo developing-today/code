@@ -74,12 +74,34 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "digest",
+    title: "Digest",
+    route: "/digest",
+    api: "/api/digest.json",
+    blurb:
+      "The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.",
+    group: "overview",
+    nav: "dropdown",
+  },
+  {
     id: "attention",
     title: "Needs you",
     route: "/attention",
     api: "/api/attention.json",
     blurb: "NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.",
     group: "overview",
+    nav: "primary",
+  },
+  {
+    id: "decisions",
+    title: "Decision sets",
+    route: "/decisions",
+    blurb:
+      "Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.",
+    group: "overview",
+    // Promoted to primary in #9354 (Drew 2026-11-13): at dropdown
+    // tier the index was invisible in practice — no visible nav
+    // anchor on any page Drew uses.
     nav: "primary",
   },
   {
@@ -99,6 +121,15 @@ export const PAGES: PageDef[] = [
     blurb: "The program roadmap at every grain.",
     group: "overview",
     nav: "primary",
+  },
+  {
+    id: "conflicts",
+    title: "Source conflicts",
+    route: "/conflicts",
+    api: "/api/conflicts.json",
+    blurb: "One read-only queue of every live source disagreement, with both values and its age.",
+    group: "work",
+    nav: "dropdown",
   },
   {
     id: "quota",
@@ -134,6 +165,24 @@ export const PAGES: PageDef[] = [
     route: "/sessions",
     api: "/api/registry.json",
     blurb: "The agent/session identity registry: who ran what, tokens, task links.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
+    id: "search",
+    title: "Search",
+    route: "/search",
+    api: "/api/search.json",
+    blurb: "Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
+    id: "events",
+    title: "Events",
+    route: "/events",
+    api: "/api/events.json",
+    blurb: "The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.",
     group: "work",
     nav: "dropdown",
   },
@@ -190,6 +239,16 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "notifications",
+    title: "Notifications",
+    route: "/notifications",
+    api: "/api/notifications.json",
+    blurb:
+      "Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.",
+    group: "ops",
+    nav: "dropdown",
+  },
+  {
     id: "pages",
     title: "All pages",
     route: "/pages",
@@ -228,6 +287,9 @@ export const SUBROUTE_PARENTS: { name: string; prefix: string; parent: string }[
   { name: "discuss", prefix: "/discuss/", parent: "/" },
   { name: "program-project", prefix: "/program/", parent: "/program" },
   { name: "service-detail", prefix: "/quota/service/", parent: "/quota" },
+  // #3318: the notification preferences page is reached from /alerts
+  // (and linked from the /notifications measurement page).
+  { name: "alerts-preferences", prefix: "/alerts/preferences", parent: "/alerts" },
   // #1497: Projects merged into Program — /projects redirects to the
   // pool section of /program, which is its manifest parent.
   { name: "projects-merge", prefix: "/projects", parent: "/program" },

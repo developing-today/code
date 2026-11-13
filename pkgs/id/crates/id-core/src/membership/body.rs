@@ -102,6 +102,11 @@ pub fn encode_body(action: &GroupAction<AuthId, ()>) -> Result<Vec<u8>, BodyErro
                     initial_members.len()
                 )));
             }
+            if has_duplicate_member(initial_members) {
+                return Err(BodyError::Unencodable(
+                    "create lists the same member more than once (duplicate member)".to_owned(),
+                ));
+            }
             let pairs = initial_members
                 .iter()
                 .map(|(member, access)| member_and_access(member, access))
@@ -218,6 +223,21 @@ fn access_value(access: &Access<()>) -> Result<Value<'static>, BodyError> {
     Ok(Value::Unsigned(level))
 }
 
+/// Whether a `create` member list names the same member more than once, at any access
+/// levels. A founding membership must be a set: the group fold refuses a repeated member
+/// and the membership layer would collapse the pair by map order, so the codec refuses
+/// the shape instead of letting the founding membership depend on the reader.
+fn has_duplicate_member(members: &[(GroupMember<AuthId>, Access<()>)]) -> bool {
+    members
+        .iter()
+        .enumerate()
+        .any(|(index, (member, _access))| {
+            members[..index]
+                .iter()
+                .any(|(earlier, _access)| earlier == member)
+        })
+}
+
 /// Decodes the args of one kind. The kind table is the one in the module docs.
 fn decode_kind(kind: &str, args: &Value<'static>) -> Result<GroupAction<AuthId, ()>, BodyError> {
     match kind {
@@ -240,6 +260,11 @@ fn decode_kind(kind: &str, args: &Value<'static>) -> Result<GroupAction<AuthId, 
                     Ok((decode_member(member)?, decode_access(access)?))
                 })
                 .collect::<Result<Vec<_>, BodyError>>()?;
+            if has_duplicate_member(&initial_members) {
+                return Err(BodyError::Shape(
+                    "create lists the same member more than once (duplicate member)".to_owned(),
+                ));
+            }
             Ok(GroupAction::Create { initial_members })
         }
         "join" | "promote" | "demote" => {
@@ -513,6 +538,80 @@ mod tests {
         ])
         .encode();
         assert!(matches!(decode_body(&body), Err(BodyError::Shape(_))));
+    }
+
+    #[test]
+    fn test_encode_refuses_a_create_with_a_duplicate_member() {
+        // The same member at conflicting levels, and the identical pair twice: both
+        // are refused as unencodable, naming the duplication.
+        for second in [Access::write(), Access::read()] {
+            let action = GroupAction::Create {
+                initial_members: vec![
+                    (individual(1), Access::read()),
+                    (individual(2), Access::write()),
+                    (individual(1), second),
+                ],
+            };
+            let err = encode_body(&action).unwrap_err();
+            assert!(
+                matches!(err, BodyError::Unencodable(_)),
+                "a duplicate create member is unencodable: {err}"
+            );
+            assert!(
+                err.to_string().contains("duplicate"),
+                "the refusal names the duplication: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_decode_refuses_a_create_with_a_duplicate_member() {
+        // Hand-built CBOR, since encode_body (correctly) will not produce this shape:
+        // the same member at conflicting levels (read=1, write=2), and identically twice.
+        let pair = |level: u64| {
+            Value::Array(vec![
+                Value::Array(vec![
+                    Value::Unsigned(0),
+                    Value::ByteString(auth_bytes(&key(1)).into()),
+                ]),
+                Value::Unsigned(level),
+            ])
+        };
+        for pairs in [vec![pair(1), pair(2)], vec![pair(1), pair(1)]] {
+            let body = Value::Array(vec![
+                Value::TextString(TAG.into()),
+                Value::Unsigned(VERSION),
+                Value::TextString("create".into()),
+                Value::Array(pairs),
+            ])
+            .encode();
+            let err = decode_body(&body).unwrap_err();
+            assert!(
+                matches!(err, BodyError::Shape(_)),
+                "a duplicate create member is a shape refusal: {err}"
+            );
+            assert!(
+                err.to_string().contains("duplicate"),
+                "the refusal names the duplication: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_a_create_with_distinct_members_still_round_trips() {
+        // Control: distinct members at the same access level are not duplicates.
+        let action = GroupAction::Create {
+            initial_members: vec![
+                (individual(1), Access::read()),
+                (individual(2), Access::read()),
+                (
+                    GroupMember::Group(AuthId::Group(Hash::digest(b"a group"))),
+                    Access::read(),
+                ),
+            ],
+        };
+        let body = encode_body(&action).unwrap();
+        assert_eq!(decode_body(&body).unwrap(), Some(action));
     }
 
     #[test]

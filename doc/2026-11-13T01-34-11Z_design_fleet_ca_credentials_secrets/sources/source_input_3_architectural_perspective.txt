@@ -1,0 +1,1796 @@
+
+
+I would turn these notes into a single implementation specification and execution prompt, rather than simply cleaning up the wording. The goal is for the implementing agent to make sound architectural decisions, build the tooling, test it, and then use that tooling to generate the actual PKI artifacts.
+
+There are several important refinements I would incorporate.
+
+First, I would retain the four-algorithm architecture we developed, with RSA-4096, P-256, Ed25519, and ML-DSA-44. The three classical roots should support mutual cross-signing, while the ML-DSA root remains a distinct post-quantum trust boundary. Classical roots may certify the ML-DSA root key for compatibility, but the reverse must not occur by default. Fully post-quantum clients must be able to enforce ML-DSA-only paths.
+
+Second, I would distinguish root key generations, independent key partitions, certificate renewals, and cross-signature variants. They are different concepts and should not be conflated into a single `g4b` identifier. A predictable identifier can still be generated for filenames and secret-store paths.
+
+Third, I would make the root bundle a portable, versioned object with a manifest, rather than merely a directory of PEM files. The manifest would carry identities, algorithms, generations, issuance relationships, security policies, secret references, validity periods, and artifact hashes. This makes long-term regeneration and migration much more reliable.
+
+Fourth, I would distinguish X.509 certificates from native SSH certificates. The same `fleet` command family can manage both, but OpenSSH certificates are not interchangeable with X.509 certificates, and the CLI must not pretend otherwise.
+
+Finally, I would make the implementation library-first, transactional, idempotent where appropriate, and security-conscious. An agent should be able to run a high-level command without needing to understand the internal implementation, while advanced callers can use the same underlying Rust crates without writing temporary files.
+
+The specification below is written to be given directly to the implementing agent.
+
+# Fleet: Unified Secrets, Cryptography, PKI, and Certificate Lifecycle System
+
+## 1. Mission and authority
+
+Design, implement, test, document, and use a production-quality, extensible Rust-based system within the existing `fleet` tooling for cryptographic key generation, certificate authority management, certificate issuance, secret-store synchronization, artifact packaging, distribution preparation, and long-term lifecycle management.
+
+This is an implementation assignment, not merely a request for an architectural proposal.
+
+The final result must include:
+
+1. Working Rust libraries and `fleet` CLI subcommands.
+2. Integrated 1Password (`op`) and Bitwarden Secrets Manager (`bws`) support, consistent with the existing secrets infrastructure.
+3. A complete four-algorithm PKI root bundle.
+4. A general-purpose base intermediate issuer set.
+5. A restricted internal-web intermediate issuer set.
+6. A general-purpose leaf artifact package.
+7. A web certificate package for `developing.today` and `developing-today.com`.
+8. Machine-readable manifests, DNS publication records, deployment instructions, and generated documentation.
+9. Automated unit, integration, compatibility, security, and end-to-end tests.
+10. Verification that the artifacts were generated through the completed `fleet` interface rather than through one-off manual procedures.
+
+You have authority to improve the architecture, introduce additional functionality, restructure the proposed implementation, and select appropriate libraries.
+
+**The requirements below are minimum acceptance criteria, not an exhaustive feature ceiling.**
+
+Prefer a coherent, secure, maintainable system over literal adherence to speculative examples in this document. Where a proposed interface or mechanism is technically unsuitable, replace it with a better implementation, document the reason, and preserve the intended user experience.
+
+Do not silently discard requirements.
+
+The intended users include experienced developers, automation agents, occasional administrators, and someone returning to the system after twenty years with little recollection of its internal structure.
+
+The system must remain understandable, recoverable, extensible, and operable under those circumstances.
+
+---
+
+# Part I — Architecture and Security Model
+
+## 2. Architectural principles
+
+Follow these principles throughout the implementation.
+
+### 2.1 Library-first design
+
+Implement reusable Rust crates that expose the underlying capabilities independently of the CLI.
+
+The `fleet` executable must be a thin orchestration and presentation layer over those libraries.
+
+An application should be able to invoke the same operations without spawning a process, constructing command-line arguments, or writing intermediate files.
+
+### 2.2 Declarative desired state
+
+Represent PKI bundles, issuing CAs, certificate profiles, storage locations, and lifecycle policies as versioned, machine-readable configuration.
+
+Commands should resolve configuration into an explicit execution plan.
+
+Support:
+
+- Interactive execution.
+- Noninteractive execution.
+- Dry-run planning.
+- Machine-readable plans.
+- Repeatable execution.
+- Resume and recovery after partial failure.
+- Reconciliation of actual and desired state.
+
+### 2.3 Safe defaults
+
+The simplest command should produce a secure, complete result whenever sufficient information is available.
+
+Defaults must be discoverable and overridable.
+
+Potentially dangerous operations require explicit authorization. Distinguish ordinary overwrite controls from security-sensitive operations such as exporting a root private key, weakening certificate constraints, or replacing active trust anchors.
+
+### 2.4 Extensibility
+
+Algorithms, certificate profiles, storage providers, serialization formats, secret backends, signing providers, and distribution methods should be independently extensible.
+
+Adding another algorithm in five years should not require rewriting the issuance pipeline.
+
+Changing the preferred algorithm should generally be a configuration or policy change, provided the implementation supports it.
+
+### 2.5 Performance
+
+Optimize routine leaf issuance and verification without sacrificing security.
+
+Avoid unnecessary subprocesses, temporary files, repeated parsing, redundant secret-store requests, and heavyweight packaging operations on the critical issuance path.
+
+Support a minimal fast path and a comprehensive artifact-generation path.
+
+### 2.6 Security boundaries
+
+Treat root keys, intermediate keys, leaf keys, and secret-store credentials as distinct security classes.
+
+Never assume that a certificate being cryptographically valid means it satisfies an application's intended trust policy.
+
+Maintain explicit boundaries between classical compatibility and post-quantum assurance.
+
+---
+
+## 3. Cryptographic algorithms
+
+The initial implementation must support:
+
+| Identifier | Algorithm   | Role                             |
+| ---------- | ----------- | -------------------------------- |
+| `rsa4096`  | RSA-4096    | Classical compatibility          |
+| `p256`     | ECDSA P-256 | Classical compatibility          |
+| `ed25519`  | Ed25519     | Preferred classical algorithm    |
+| `mldsa44`  | ML-DSA-44   | Post-quantum signature algorithm |
+
+Use standards-compliant implementations and certificate encodings.
+
+Do not confuse ML-DSA-44 with legacy experimental Dilithium encodings.
+
+Do not assume every algorithm is supported by every backend, TLS stack, operating system, or certificate consumer.
+
+### 3.1 Algorithm adapter interface
+
+Create a well-defined adapter abstraction exposing capabilities such as:
+
+- Key generation.
+- Public-key encoding.
+- Private-key serialization where permitted.
+- Signing and verification.
+- Algorithm identifiers and OIDs.
+- Supported certificate formats.
+- Backend compatibility.
+- Key validation.
+- Security-strength metadata.
+- Supported usage profiles.
+- Hardware-backed or nonexportable key support.
+- Optional external signing providers.
+
+Algorithm adapters must declare unsupported operations rather than silently substitute another algorithm.
+
+### 3.2 Aliases
+
+Support reasonable aliases, including:
+
+- `rsa`, `rsa4096`
+- `ecc`, `ec`, `ecdsa`, `p256`, `p-256`, `secp256r1`
+- `ed`, `ed25519`
+- `pq`, `quantum`, `mldsa`, `ml-dsa`, `mldsa44`, `ml-dsa-44`, `dilithium2`
+
+Aliases should resolve to canonical identifiers and be documented.
+
+Do not accept ambiguous aliases such as `dsa` without clarification or a documented unambiguous interpretation.
+
+The preferred algorithm selection must be configurable.
+
+---
+
+# Part II — Root Trust Architecture
+
+## 4. Root bundle
+
+Create one logical root bundle containing four independent root key pairs and their corresponding self-signed certificates.
+
+Each algorithm must have its own key pair.
+
+The default root bundle should include:
+
+- RSA-4096 root.
+- P-256 root.
+- Ed25519 root.
+- ML-DSA-44 root.
+
+The bundle represents one administrative PKI identity, not one cryptographic key.
+
+### 4.1 Cross-signing architecture
+
+Use asymmetric trust relationships.
+
+The three classical roots should mutually cross-sign one another.
+
+The classical roots may also certify the ML-DSA root public key to provide compatibility paths.
+
+The ML-DSA root must not cross-sign classical roots by default.
+
+| Signing root / Certified root | RSA   | P-256 | Ed25519 | ML-DSA |
+| ----------------------------- | ----- | ----- | ------- | ------ |
+| RSA                           | Self  | Cross | Cross   | Cross  |
+| P-256                         | Cross | Self  | Cross   | Cross  |
+| Ed25519                       | Cross | Cross | Self    | Cross  |
+| ML-DSA                        | No    | No    | No      | Self   |
+
+This initially produces:
+
+- Four self-signed root certificates.
+- Six classical-to-classical cross-certificates.
+- Three classical-to-ML-DSA cross-certificates.
+- Thirteen root-level certificates total.
+- Four independent root key pairs.
+
+Cross-signing must not be implemented as sharing private keys between algorithms.
+
+Each cross-certificate contains the public key of the certified CA and is signed by the issuing CA.
+
+### 4.2 Trust profiles
+
+Generate explicit trust profiles.
+
+**Full compatibility**
+
+Trusts all four self-signed roots.
+
+**Classical compatibility**
+
+Trusts the three classical roots, or a selected subset.
+
+**Post-quantum enforced**
+
+Trusts only the ML-DSA root and requires an entirely acceptable post-quantum certificate path.
+
+**Single-root compatibility**
+
+Supports a client trusting only one selected root, using cross-certificates where algorithm support and path-building behavior permit.
+
+The system must not claim that cross-signing provides cryptographic algorithm support absent from the client.
+
+The system must also recognize that trusting a classical root for an unrestricted identity can weaken the assurance of that identity even if it also has a post-quantum certificate.
+
+### 4.3 Root cross-signing versus intermediate cross-signing
+
+Root-level cross-signing is the default architecture.
+
+Purpose-specific intermediates should normally be issued once by their designated parent root.
+
+Alternative paths should use root cross-certificates instead of multiplying intermediate certificates unnecessarily.
+
+Nevertheless, intermediate-level cross-signing must remain supported as an explicit advanced operation for migration, compatibility, and application-specific requirements.
+
+Do not assume every client can construct alternative paths reliably.
+
+### 4.4 Root trust and certification policy
+
+Implement certificate policy identifiers, appropriate constraints, and validation profiles.
+
+Distinguish:
+
+- Constraints encoded in certificates.
+- Local trust-anchor configuration.
+- Application-enforced signature algorithm policy.
+- Issuance authorization.
+- Intended key usage.
+- Certificate path-building behavior.
+
+Do not represent certificate policy OIDs as automatically enforced security controls.
+
+---
+
+## 5. Root validity and generations
+
+Default root validity should be twenty years, subject to an explicit policy decision regarding exact validity semantics.
+
+Support both absolute expiry timestamps and human-readable durations.
+
+Examples:
+
+```
+fleet cert root create
+fleet cert root create --expires 2050-07-07T12:00:00Z
+fleet cert root create --valid-for 20y
+fleet cert root create --valid-for "15 years 7 days"
+```
+
+Use RFC 3339 timestamps for displayed and persisted absolute times.
+
+For durations involving calendar years, define whether they mean calendar arithmetic or fixed elapsed time. Prefer calendar arithmetic for years and months, with documented handling of leap days.
+
+Store both the original duration expression and the resolved timestamp where useful.
+
+Never silently extend a CA certificate beyond an explicitly requested expiry.
+
+### 5.1 Renewal and rotation
+
+Support:
+
+```
+fleet cert root renew --bundle <reference>
+fleet cert root rotate --bundle <reference>
+fleet cert root renew --cert <reference>
+```
+
+Clearly distinguish:
+
+- Reissuing a certificate with the existing key.
+- Generating a replacement key pair.
+- Replacing a trust anchor.
+- Creating an overlapping migration generation.
+- Replacing an individual algorithm within a bundle.
+
+Root renewal must not accidentally rotate a private key or change the trust identity.
+
+Where the requested operation requires changing the key, the CLI should explicitly identify it as rotation.
+
+### 5.2 Generation and partition identifiers
+
+Use separate fields for:
+
+- Logical identity.
+- Key generation.
+- Certificate issuance revision.
+- Independent key partition or shard.
+- Cross-signature variant.
+- Algorithm.
+- Parent CA identity.
+
+For example:
+
+```
+rsa-root-g4-b
+rsa-root-g4-b-cert-r2
+rsa-root-g4-b-by-p256-g2-a
+```
+
+These are illustrative, not mandatory exact filenames.
+
+A generation identifies a key lifecycle generation. A partition identifies an independently generated key of the same logical role. A certificate revision identifies reissuance using the same key.
+
+Provide concise human-readable identifiers, but never use them as substitutes for cryptographic fingerprints or globally unique internal identifiers.
+
+The naming scheme must scale to many generations and partitions without collisions.
+
+---
+
+# Part III — Intermediate CA Architecture
+
+## 6. Intermediate issuer sets
+
+An intermediate set is a logical collection of issuing CAs, issuance profiles, signing policies, distribution artifacts, and associated metadata.
+
+The default configuration must create:
+
+1. A base or standard issuer set.
+2. An internal-web issuer set.
+
+Future sets must be creatable without changing source code.
+
+Examples:
+
+```
+fleet cert issuer create --root <bundle>
+fleet cert issuer create Standard --root <bundle>
+fleet cert issuer create "Public Web" --root <bundle> --usage server-auth
+fleet cert issuer create "Device Identity" --usage client-auth
+```
+
+An issuer set may contain multiple algorithm-specific CAs.
+
+The default should generate the appropriate algorithm set from the parent bundle, subject to security policy and compatibility requirements.
+
+### 6.1 Default parent inference
+
+If no parent is specified, discover the configured canonical root bundle using the secrets and bundle-resolution subsystem.
+
+Support:
+
+```
+fleet cert issuer create
+fleet cert issuer create "Public Web"
+fleet cert issuer create "Public Web" --root ./root-bundle
+fleet cert issuer create "Public Web" --root op://...
+```
+
+The exact command grammar may be improved, but the simple cases must remain concise.
+
+Do not silently choose among multiple ambiguous parent bundles.
+
+### 6.2 Inherited metadata
+
+Intermediates should inherit appropriate organization, country, naming conventions, distribution configuration, algorithm defaults, and security policies from their parent.
+
+Allow explicit overrides.
+
+Do not blindly copy root-only extensions or constraints into subordinate certificates.
+
+Generate an appropriate intermediate subject name from the parent identity and the requested purpose.
+
+### 6.3 Purpose-specific constraints
+
+Support issuance profiles such as:
+
+- General-purpose.
+- TLS server authentication.
+- TLS client authentication.
+- Device identity.
+- Code signing.
+- Email protection.
+- Document signing.
+- Other explicitly defined X.509 usages.
+
+Do not assume all usage restrictions are universally enforced on intermediate certificates.
+
+Implement appropriate EKU, key usage, certificate policy, name constraints, and issuance-policy controls where applicable.
+
+When an application cannot reliably enforce a constraint, document the limitation and consider separate trust configuration.
+
+### 6.4 Base issuer set
+
+Generate a standard issuer set from the root bundle.
+
+Use the explicitly requested expiry:
+
+```
+2032-07-07T12:00:00Z
+```
+
+The default intermediate validity should otherwise be five years, subject to parent validity and policy constraints.
+
+The base set should support multiple authorized certificate profiles but must not become an unrestricted signing authority by accident.
+
+### 6.5 Internal-web issuer set
+
+Generate a second issuer set dedicated to internal web services.
+
+Accept a human-friendly name such as:
+
+```
+Internal Web
+```
+
+Infer appropriate subject naming and descriptive metadata.
+
+Support an explicitly supplied OU, but do not rely on OU for security enforcement.
+
+Use appropriate server-authentication issuance restrictions.
+
+Do not issue client-authentication or code-signing certificates through this set unless explicitly authorized by a changed policy.
+
+The original notes request a special expiry override for this issuer set but do not specify its exact date. Make the date configurable and do not invent an override.
+
+### 6.6 Future issuer sets
+
+The system must support:
+
+```
+fleet cert issuer create "Public Web" --usage server-auth
+fleet cert issuer create "Code Signing" --usage code-signing
+fleet cert issuer create "Hardware Devices" --usage client-auth
+```
+
+The name should determine human-readable metadata and predictable filesystem and secret-store identifiers.
+
+The usage profile should determine cryptographic constraints and operational policy.
+
+The name alone must not silently grant broad signing permissions.
+
+---
+
+# Part IV — Certificate Issuance
+
+## 7. Leaf issuance
+
+Provide a concise interface for leaf generation.
+
+Examples:
+
+```
+fleet cert leaf create laptop-amd
+fleet cert leaf create laptop-amd --issuer standard
+fleet cert leaf create --issuer ./standard-bundle --valid-for 1y
+fleet cert leaf create --type web --dns developing.today
+fleet cert web create developing.today
+```
+
+The CLI may support aliases, but it must have one clearly documented canonical command grammar.
+
+### 7.1 Required identity information
+
+Do not generate a misleading production certificate when essential identity information is missing.
+
+If no identity is supplied, allow a clearly labeled test or generic artifact where appropriate, or require an explicit `--test` or equivalent option.
+
+An unattended production command must fail clearly when required identity information cannot be inferred.
+
+### 7.2 General-purpose leaf example
+
+Generate a one-year leaf from the base issuer set.
+
+The command should inherit all appropriate defaults and produce the comprehensive artifact package.
+
+Where the general-purpose issuer permits multiple usages, require or infer a specific leaf profile rather than producing an unsafe all-purpose leaf by default.
+
+### 7.3 Web leaf example
+
+Generate a web certificate package for:
+
+```
+developing.today
+developing-today.com
+```
+
+Support both exact DNS SANs and wildcard expansion.
+
+Examples:
+
+```
+fleet cert web create developing.today developing-today.com
+fleet cert web create --wildcard developing.today developing-today.com
+fleet cert web create --san DNS:developing.today --san DNS:developing-today.com
+```
+
+For the wildcard convenience mode, include both the apex domain and its single-label wildcard:
+
+```
+developing.today
+*.developing.today
+developing-today.com
+*.developing-today.com
+```
+
+Do not assume a wildcard covers the apex domain or arbitrarily deep subdomains.
+
+Provide explicit controls for SAN expansion, exact SANs, and name validation.
+
+### 7.4 Algorithm selection
+
+Support commands such as:
+
+```
+fleet cert web create developing.today --algorithms ed25519,p256,rsa4096
+fleet cert leaf create laptop-amd --algorithms all
+fleet cert leaf create laptop-amd --algorithm mldsa44
+```
+
+Algorithm selection should operate on the relevant certificate/key profiles.
+
+When multiple algorithms are requested, generate separate leaf key pairs and certificates unless a standardized, explicitly selected composite mechanism is supported.
+
+Do not pretend one ordinary X.509 certificate can contain four independently selectable issuer signatures.
+
+### 7.5 Default leaf package
+
+The comprehensive mode should generate a portable directory containing the appropriate:
+
+- Private keys.
+- Public keys.
+- DER certificates.
+- PEM certificates.
+- Certificate chains.
+- Full chains.
+- Relevant trust bundles.
+- Cross-certificate variants.
+- CMS/PKCS#7 certificate collections.
+- PKCS#12 identity containers where appropriate.
+- Manifest and artifact checksums.
+- Installation instructions.
+- Application configuration examples.
+- Security and compatibility notes.
+
+Only generate formats that can be represented correctly for the selected algorithm and use case.
+
+Protect private keys and PKCS#12 files appropriately.
+
+Do not place sensitive material in a public distribution package.
+
+### 7.6 Minimal output mode
+
+Support:
+
+```
+fleet cert web create developing.today --minimal
+fleet cert leaf create laptop-amd --format pem --stdout
+fleet cert leaf create laptop-amd --no-package
+```
+
+Minimal mode should avoid unnecessary documentation, packaging, conversion, and filesystem work.
+
+Provide separate controls for:
+
+- Keys only.
+- Certificates only.
+- Chains only.
+- Full package.
+- Public artifacts only.
+- Selected output formats.
+
+Do not output private keys to stdout or logs accidentally.
+
+---
+
+# Part V — AIA, CRLs, OCSP, and Distribution
+
+## 8. PKI publication conventions
+
+Use the following general URL layout:
+
+```
+http://pki.<domain>/certs/
+http://pki.<domain>/crl/
+http://pki.<domain>/ocsp
+```
+
+Support configurable hostnames and path layouts.
+
+Prefer stable, immutable URLs for issued certificate artifacts.
+
+Use HTTP for embedded AIA, CRL, and OCSP endpoints by default, with optional HTTPS publication.
+
+Do not require HTTPS redirects for certificate-discovery endpoints.
+
+### 8.1 AIA issuer discovery
+
+Generate appropriate AIA `caIssuers` references for leaf, intermediate, and cross-signed CA certificates.
+
+Support:
+
+- Individual DER issuer certificates.
+- Multiple AIA issuer locations.
+- Certs-only CMS/PKCS#7 issuer collections where supported.
+- Explicit alternative-chain artifacts.
+- Proactive distribution to managed clients.
+
+Do not rely on clients fetching every AIA URL.
+
+Do not assume a client will continue searching after retrieving an unsuitable issuer certificate.
+
+Do not assume all clients support CMS responses through AIA.
+
+Generate stable individual issuer URLs as the compatibility baseline, with optional multi-certificate containers and client-specific chain distribution.
+
+The implementation must verify that every AIA location points to the actual issuer certificate or a valid issuer-certificate collection.
+
+### 8.2 Cross-certificate publication
+
+Publish root cross-certificates individually and in suitable collections.
+
+Example:
+
+```
+/certs/roots/rsa.crt
+/certs/roots/p256.crt
+/certs/roots/ed25519.crt
+/certs/roots/mldsa44.crt
+
+/certs/cross/rsa-by-p256.crt
+/certs/cross/rsa-by-ed25519.crt
+/certs/cross/mldsa44-by-rsa.crt
+```
+
+Support additional collections such as:
+
+```
+/certs/cross/rsa.p7c
+/certs/cross/mldsa44.p7c
+```
+
+A collection named for a CA must contain certificates for that CA's public key, not merely certificates that CA issued.
+
+### 8.3 CRL distribution
+
+Generate CRL distribution point URLs and valid initial signed CRLs.
+
+Support:
+
+- Empty initial CRLs.
+- Scheduled CRL regeneration.
+- Revocation recording.
+- CRL number tracking.
+- `thisUpdate` and `nextUpdate`.
+- Revocation reason codes.
+- Issuer-specific CRLs.
+- Publication staging and atomic replacement.
+- Validation that CRLs are signed by the appropriate authority.
+
+Never embed a CRL URL without defining how that CRL will be maintained.
+
+### 8.4 OCSP
+
+Support OCSP responder configuration and artifact generation as an optional subsystem.
+
+Do not advertise OCSP in issued certificates until the responder is operational and has an appropriate signing and revocation-data model.
+
+Support multi-issuer responders where practical.
+
+Document the distinction between publication of revocation information and client enforcement of revocation checking.
+
+### 8.5 DNS publication records
+
+Generate a standards-compatible DNS zone fragment as the primary DNS artifact.
+
+For example:
+
+```
+dns/
+  proposed.zone
+  proposed.json
+  README.md
+```
+
+Include records required or recommended for the chosen publication architecture.
+
+Support DNS provider adapters later.
+
+Do not invent DNS records when the target IP addresses, CNAME targets, or other required values are unknown.
+
+Instead, produce a validated proposal with explicit unresolved inputs.
+
+### 8.6 Publication instructions
+
+Every issuer and root bundle should contain a generated publication guide describing:
+
+- Which files to publish.
+- Their relative paths.
+- Their destination URLs.
+- Their MIME types.
+- Their DNS dependencies.
+- Required server behavior.
+- Cache-control considerations.
+- How to test successful retrieval.
+- How to verify certificate and CRL signatures.
+- How to detect stale or missing publication.
+- Which artifacts must remain private.
+
+Generate instructions specific to the bundle and its actual artifacts.
+
+---
+
+# Part VI — Bundles, Manifests, and Storage
+
+## 9. Canonical bundle format
+
+A bundle is a logical, versioned PKI object.
+
+It may be represented as:
+
+- A directory.
+- ZIP archive.
+- TAR archive.
+- TAR.GZ archive.
+- TAR.ZST archive.
+- A secret-store reference.
+- A canonical bundle identifier.
+- A manifest and associated remotely stored artifacts.
+
+The system should use a consistent internal representation regardless of input transport.
+
+### 9.1 Manifest
+
+Each bundle must include a versioned manifest describing:
+
+- Schema version.
+- Logical bundle ID.
+- Bundle type.
+- Organization and subject metadata.
+- Parent bundle.
+- Algorithms.
+- Key identities.
+- Certificate identities.
+- Generations and partitions.
+- Certificate revisions.
+- Cross-signing relationships.
+- Certificate validity.
+- Key usage and policy.
+- AIA, CRL, and OCSP configuration.
+- Secret references.
+- Public artifact references.
+- Artifact checksums.
+- Issuance history.
+- Tool version.
+- Relevant compatibility information.
+
+Avoid storing secrets directly in manifests.
+
+Include enough metadata to reconstruct the intended configuration, audit the existing artifacts, and perform future rotations.
+
+### 9.2 Example structure
+
+```
+root-bundle/
+  manifest.yaml
+  README.md
+  policy.yaml
+  public/
+    roots/
+    cross/
+    trust/
+    crl/
+  private/
+    key-references.yaml
+  dns/
+    proposed.zone
+  docs/
+    installation.md
+    publication.md
+    recovery.md
+    renewal.md
+  verification/
+    checksums.json
+    results.json
+```
+
+This is illustrative.
+
+Prefer a coherent structure over exact adherence to the example.
+
+### 9.3 Portable bundle resolution
+
+A bundle reference should accept:
+
+```
+./root-bundle/
+./root-bundle.zip
+./root-bundle.tar.zst
+op://...
+bws://...
+pki.<org>....
+```
+
+Implement an extensible resolver.
+
+Support omitted conventional prefixes and suffixes when unambiguous.
+
+Support a configured canonical default root bundle.
+
+Do not silently choose between conflicting or stale copies.
+
+### 9.4 Secret-store synchronization
+
+Integrate with the existing `fleet secrets` subsystem rather than implementing unrelated PKI-specific secret handling.
+
+Support 1Password and Bitwarden Secrets Manager.
+
+Provide:
+
+- Provider discovery.
+- Authentication checks.
+- Read and write operations.
+- Canonical path resolution.
+- Sync planning.
+- Conflict detection.
+- Version tracking.
+- Integrity verification.
+- Safe retries.
+- Partial-failure recovery.
+- Provider-specific capabilities.
+
+Default automatic synchronization should occur only for approved destinations and key classes.
+
+**Root private keys must not be automatically uploaded to every configured secret store merely because synchronization is enabled.**
+
+Support explicit root-key export and storage policies, offline custody, hardware-backed signing, and nonexportable keys.
+
+Never silently duplicate highly sensitive key material across providers.
+
+### 9.5 Canonical secret naming
+
+Use predictable, lowercased, hyphenated identifiers.
+
+Start from a structure resembling:
+
+```
+pki.<organization>.<scope>.<role>.<bundle>.<algorithm>.<generation>
+```
+
+But improve it to account for:
+
+- Independent partitions.
+- Certificate revisions.
+- Cross-signatures.
+- Issuer relationships.
+- Storage provider constraints.
+- Long-term stability.
+- Human readability.
+
+Provide a migration mechanism if naming conventions change.
+
+---
+
+# Part VII — Organization and Naming Defaults
+
+## 10. Default organization
+
+Use:
+
+```
+Organization: developing.today LLC
+Country: US
+```
+
+These values are defaults, not hardcoded constants.
+
+Support configuration at global, organization, bundle, issuer, and individual issuance levels.
+
+Apply inheritance consistently.
+
+Do not assume organization names or OU values establish cryptographic authorization.
+
+### 10.1 Naming conventions
+
+Generate readable names automatically.
+
+Examples:
+
+```
+Developing Today Root CA
+Developing Today Standard Issuing CA
+Developing Today Internal Web Issuing CA
+Developing Today Public Web Issuing CA
+```
+
+Include algorithm identifiers and generation information where useful for distinguishing CA identities.
+
+Use consistent distinctions between:
+
+- Display name.
+- X.509 subject name.
+- Filesystem slug.
+- Secret-store identifier.
+- Stable logical ID.
+- Certificate fingerprint.
+
+Avoid collisions when certificates share subjects or keys.
+
+### 10.2 OU behavior
+
+Treat OU as descriptive metadata.
+
+For restricted issuer sets, infer an appropriate descriptive OU where permitted by policy.
+
+Allow an explicit OU override.
+
+Do not rely on OU to enforce certificate usage restrictions.
+
+---
+
+# Part VIII — CLI Design
+
+## 11. Command structure
+
+Build a coherent command hierarchy under `fleet`.
+
+An illustrative structure is:
+
+```
+fleet
+├── secrets
+│   ├── get
+│   ├── put
+│   ├── sync
+│   ├── inspect
+│   └── resolve
+├── crypto
+│   ├── keygen
+│   ├── inspect
+│   ├── convert
+│   ├── sign
+│   └── verify
+└── cert
+    ├── root
+    │   ├── create
+    │   ├── renew
+    │   ├── rotate
+    │   └── inspect
+    ├── issuer
+    │   ├── create
+    │   ├── renew
+    │   └── inspect
+    ├── leaf
+    │   ├── create
+    │   ├── renew
+    │   └── inspect
+    ├── web
+    │   └── create
+    ├── revoke
+    ├── crl
+    ├── ocsp
+    ├── chain
+    ├── bundle
+    ├── publish
+    ├── verify
+    └── doctor
+```
+
+Adapt this to the existing `fleet` design.
+
+Do not create redundant commands where one well-designed command with profiles would be clearer.
+
+### 11.1 Command aliases
+
+Support intuitive shortcuts for common operations.
+
+For example:
+
+```
+fleet cert web developing.today
+fleet cert issuer "Public Web"
+```
+
+Aliases must be documented and unambiguous.
+
+### 11.2 Comprehensive help
+
+Every command should provide:
+
+- Concise description.
+- Examples.
+- Required inputs.
+- Inherited defaults.
+- Available profiles.
+- Security implications.
+- Supported formats.
+- Exit codes.
+- Automation examples.
+- Related commands.
+
+Implement shell completions for Bash, Zsh, Fish, and PowerShell where practical.
+
+### 11.3 Safety controls
+
+Distinguish:
+
+```
+--force
+--yes
+--dry-run
+--allow-unsafe
+--export-private-key
+```
+
+These are illustrative.
+
+A generic `--force` must not bypass all security controls.
+
+High-risk operations should require explicit, narrowly scoped authorization.
+
+### 11.4 Input and output
+
+Support:
+
+- Files.
+- Directories.
+- Archives.
+- Stdin.
+- Stdout.
+- JSON.
+- YAML.
+- Human-readable output.
+- Structured diagnostics.
+- Batch command files.
+- Machine-readable execution results.
+
+Use stdout for requested output and stderr for diagnostics.
+
+Avoid emitting progress messages into machine-readable stdout.
+
+Support predictable exit codes.
+
+### 11.5 Batch execution
+
+Support declarative batch files containing one or more operations.
+
+Provide:
+
+- Dependency ordering.
+- Validation before execution.
+- Dry-run plans.
+- Resume behavior.
+- Per-operation results.
+- Failure isolation.
+- Rollback or compensating actions where feasible.
+
+Do not attempt to roll back irreversible security actions by pretending they never occurred.
+
+### 11.6 Structured logging
+
+Support configurable structured logs with timestamps, operation identifiers, and correlation IDs.
+
+Use an explicit log destination and retention policy.
+
+Never log private keys, passphrases, raw secrets, or authentication tokens.
+
+---
+
+# Part IX — Rust Library and Performance Architecture
+
+## 12. Reusable crates
+
+Separate responsibilities into focused crates or modules.
+
+Potential components include:
+
+```
+fleet-core
+fleet-crypto
+fleet-pki
+fleet-pki-profiles
+fleet-pki-bundles
+fleet-pki-distribution
+fleet-secrets
+fleet-cli
+```
+
+These names are suggestions, not mandatory package names.
+
+The API must support both high-level and low-level usage.
+
+### 12.1 High-level APIs
+
+Provide functions conceptually equivalent to:
+
+```
+create_root_bundle(options)
+create_issuer_set(parent, options)
+issue_certificate(issuer, request)
+renew_certificate(reference, options)
+build_certificate_chains(reference, options)
+package_bundle(reference, options)
+sync_bundle(reference, destinations)
+verify_bundle(reference, policy)
+```
+
+The exact Rust signatures should use appropriate types, traits, errors, and asynchronous boundaries.
+
+### 12.2 Low-level APIs
+
+Expose primitives for:
+
+- Key generation.
+- CSR creation and validation.
+- Certificate template construction.
+- Extension encoding.
+- Serial number allocation.
+- Signing.
+- Certificate parsing.
+- Chain building.
+- Revocation processing.
+- Encoding and conversion.
+- Signing-provider integration.
+- Manifest operations.
+
+### 12.3 In-memory workflows
+
+Support applications that:
+
+- Receive issuance requests from NATS.
+- Load policies from a database.
+- Use nonexportable signing keys.
+- Generate certificates without filesystem intermediates.
+- Publish results to a database and Redis.
+- Return certificate objects or encoded bytes directly.
+
+Filesystem packaging must be optional.
+
+### 12.4 Fast issuance path
+
+Provide a minimal issuance API that avoids the full bundle-generation workflow.
+
+Benchmark:
+
+- Key generation.
+- CSR processing.
+- Certificate signing.
+- Serialization.
+- End-to-end issuance latency.
+- Throughput under concurrency.
+- Memory allocation.
+- External signing latency.
+
+Optimize only after establishing correctness and baseline measurements.
+
+### 12.5 Cryptographic backends
+
+Evaluate OpenSSL and suitable Rust-native cryptographic and X.509 libraries.
+
+Use well-maintained implementations with appropriate algorithm support.
+
+Do not choose a faster backend if it cannot correctly represent the required certificates, extensions, or signature algorithms.
+
+Use adapters to accommodate backend-specific capabilities.
+
+---
+
+# Part X — SSH and Other Certificate Systems
+
+## 13. Multi-protocol support
+
+The system is intended to support more than HTTPS.
+
+Include an extensible model for:
+
+- X.509 TLS certificates.
+- X.509 client authentication.
+- Device certificates.
+- Code signing.
+- Email protection.
+- Document signing.
+- Native OpenSSH user certificates.
+- Native OpenSSH host certificates.
+- Future certificate or signing formats.
+
+Do not conflate native OpenSSH certificates with X.509 certificates.
+
+OpenSSH certificates use different encodings, trust mechanisms, and authorization models.
+
+Support separate SSH CA keys and appropriate SSH-specific signing operations.
+
+Where useful, share common cryptographic providers, secret storage, metadata, lifecycle infrastructure, and command conventions.
+
+### 13.1 Generated application instructions
+
+Produce instructions appropriate to the actual artifact.
+
+For X.509 web certificates, include examples for:
+
+- Nginx.
+- Apache.
+- Common reverse proxies.
+- Linux trust stores.
+- Windows trust stores.
+- macOS trust stores.
+- Java trust stores.
+- Firefox.
+- Chrome and platform-dependent trust behavior.
+- Common Rust TLS stacks where relevant.
+
+For native SSH certificates, include:
+
+- `known_hosts` CA trust entries.
+- `TrustedUserCAKeys`.
+- SSH host certificate configuration.
+- SSH client configuration.
+- Principal handling.
+
+Do not generate SSH snippets for an X.509 certificate unless they are genuinely applicable.
+
+---
+
+# Part XI — Documentation and User Experience
+
+## 14. Documentation requirements
+
+Produce comprehensive documentation, but keep the common path simple.
+
+The repository must include:
+
+- Quick start.
+- Architecture overview.
+- CLI reference.
+- Library API reference.
+- Configuration reference.
+- Bundle format specification.
+- Algorithm adapter guide.
+- Secrets integration guide.
+- Trust model.
+- Cross-signing explanation.
+- PKI publication guide.
+- Revocation guide.
+- Renewal and rotation runbook.
+- Disaster recovery guide.
+- Compatibility matrix.
+- Security considerations.
+- Automation examples.
+- Troubleshooting guide.
+
+### 14.1 Generated bundle documentation
+
+Each generated bundle must include documentation specific to its contents.
+
+A root bundle should explain:
+
+- Which certificates are trust anchors.
+- Which certificates are cross-certificates.
+- Which private keys exist.
+- How the trust relationships work.
+- How to install trust anchors.
+- How to publish issuer certificates.
+- How to renew and rotate the hierarchy.
+
+An intermediate bundle should explain:
+
+- Its parent.
+- Its permitted usages.
+- Its certificate chains.
+- Its publication requirements.
+- Its revocation configuration.
+- Its renewal process.
+
+A leaf package should explain:
+
+- Its identity.
+- Its SANs.
+- Its algorithms.
+- Its validity.
+- Its chain options.
+- Its intended applications.
+- Which files are private.
+- Which files can be distributed.
+- How to install it.
+- How to verify it.
+
+### 14.2 Future discoverability
+
+Assume the administrator returns after twenty years.
+
+A command such as:
+
+```
+fleet cert doctor
+```
+
+should help identify:
+
+- Available bundles.
+- Configured secret stores.
+- Active root generations.
+- Expiring certificates.
+- Missing publication artifacts.
+- Stale CRLs.
+- Unavailable signing keys.
+- Unsupported algorithms.
+- Required migration actions.
+
+Provide a discoverable path from a short help command to the complete documentation.
+
+---
+
+# Part XII — Testing and Verification
+
+## 15. Test requirements
+
+Testing is a primary deliverable.
+
+Do not consider successful file generation sufficient evidence of correctness.
+
+### 15.1 Unit tests
+
+Test:
+
+- Algorithm selection.
+- Alias resolution.
+- Naming.
+- Subject inheritance.
+- Validity calculations.
+- Generation numbering.
+- Partition identifiers.
+- Manifest serialization.
+- Certificate extensions.
+- Key usage profiles.
+- Bundle resolution.
+- Archive handling.
+- Secret references.
+- Error handling.
+
+### 15.2 Cross-signing tests
+
+Verify every intended classical trust path.
+
+For each classical root, test validation of certificates issued under the other classical roots using the required cross-certificates.
+
+Test the classical-root-to-ML-DSA paths where supported.
+
+Verify that an ML-DSA-only trust profile rejects classical-only paths.
+
+Test that an attacker-controlled classical root cannot satisfy the explicit post-quantum validation profile merely by producing a valid classical chain.
+
+### 15.3 Chain discovery tests
+
+Test:
+
+- Individual AIA issuer retrieval.
+- Multiple AIA locations.
+- CMS/PKCS#7 issuer containers.
+- Missing AIA endpoints.
+- Incorrect issuer certificates.
+- Cross-certificate selection.
+- Client-provided intermediate certificates.
+- Preloaded intermediate stores.
+- Explicit server-provided chains.
+- Offline validation.
+
+Document implementation-dependent behavior.
+
+### 15.4 External compatibility
+
+Use OpenSSL as a primary independent validation tool where it supports the selected algorithms and formats.
+
+Also test with at least one or two suitable independent Rust X.509/TLS implementations where capabilities permit.
+
+Test against additional relevant consumers when practical.
+
+Do not claim compatibility for algorithms unsupported by the test implementation.
+
+Record versions and supported capabilities.
+
+### 15.5 Negative security tests
+
+Include tests for:
+
+- Incorrect issuer.
+- Wrong signature.
+- Expired certificates.
+- Not-yet-valid certificates.
+- Invalid CA constraints.
+- Invalid key usage.
+- Path length violations.
+- Revoked certificates.
+- Stale CRLs.
+- Duplicate or conflicting serial numbers.
+- Wrong algorithm.
+- Wrong trust anchor.
+- Missing intermediates.
+- Invalid SANs.
+- Unauthorized issuance.
+- Insecure key export.
+- Secret-store failures.
+- Corrupt bundles.
+- Manifest tampering.
+
+### 15.6 Property and fuzz testing
+
+Where appropriate, fuzz parsers, manifest handling, archive extraction, certificate input processing, and other untrusted input boundaries.
+
+Include property tests for naming, serialization round trips, and identifier uniqueness.
+
+### 15.7 Performance tests
+
+Benchmark the fast issuance path separately from comprehensive artifact generation.
+
+Provide reproducible benchmark commands and representative results.
+
+Avoid performance claims without measurements.
+
+### 15.8 End-to-end acceptance
+
+The final acceptance test must use the compiled `fleet` CLI to generate the requested root, intermediate, and leaf artifacts.
+
+Verify those artifacts independently.
+
+Do not bypass the tool with temporary OpenSSL scripts to manufacture the final deliverables.
+
+External tools may be used for independent verification.
+
+---
+
+# Part XIII — Required Execution Sequence
+
+## 16. Implementation workflow
+
+Execute the project in the following phases.
+
+### Phase 1 — Repository and environment inspection
+
+Inspect the existing `fleet` repository, current secrets tooling, coding conventions, dependencies, configuration, tests, and documentation.
+
+Identify reusable components and existing abstractions.
+
+Do not introduce duplicate infrastructure unnecessarily.
+
+### Phase 2 — Architecture and design
+
+Produce a concise implementation design covering:
+
+- Crate boundaries.
+- Cryptographic backends.
+- Signing providers.
+- Trust architecture.
+- Manifest schema.
+- Bundle resolution.
+- Storage architecture.
+- CLI grammar.
+- Lifecycle model.
+- Security policies.
+- Testing strategy.
+
+Resolve significant ambiguities before irreversible actions.
+
+Routine implementation choices should not require repeated permission requests.
+
+### Phase 3 — Core implementation
+
+Build the shared cryptographic, certificate, manifest, and bundle infrastructure.
+
+Implement the high-level library APIs.
+
+Implement the CLI commands.
+
+### Phase 4 — Secrets integration
+
+Integrate the existing `op` and `bws` mechanisms.
+
+Test retrieval, synchronization, conflicts, retries, and safe handling of sensitive material.
+
+### Phase 5 — PKI distribution and documentation
+
+Implement AIA, CRL, cross-certificate packaging, DNS proposal generation, publication manifests, and generated runbooks.
+
+### Phase 6 — Testing
+
+Run the automated test suites.
+
+Resolve failures.
+
+Validate cross-algorithm trust paths and post-quantum isolation.
+
+Verify supported formats using independent tools.
+
+### Phase 7 — Generate the root bundle
+
+Using only the completed `fleet` interface, generate the four-algorithm root bundle.
+
+Use the organization defaults.
+
+Use the configured twenty-year validity unless an explicit absolute expiry is provided.
+
+Generate the root cross-certificates and trust profiles.
+
+Verify the root bundle before proceeding.
+
+### Phase 8 — Generate the base intermediate set
+
+Using the generated root bundle, create the Standard issuer set.
+
+Set expiry to:
+
+```
+2032-07-07T12:00:00Z
+```
+
+Generate all appropriate algorithm-specific intermediate certificates and artifacts.
+
+Verify issuance and path construction.
+
+### Phase 9 — Generate the internal-web intermediate set
+
+Create the Internal Web issuer set using the root bundle.
+
+Apply the server-authentication profile and appropriate constraints.
+
+Use the explicitly configured expiry.
+
+Generate publication instructions and artifacts.
+
+Verify that prohibited certificate usages cannot be issued through this set.
+
+### Phase 10 — Generate the general leaf package
+
+Create a one-year leaf using the base issuer set and an appropriate explicitly identified leaf profile.
+
+Generate the comprehensive package.
+
+Verify its keys, certificates, chains, documentation, and installation examples.
+
+### Phase 11 — Generate the web leaf package
+
+Create a web certificate package for:
+
+```
+developing.today
+developing-today.com
+```
+
+Use the internal-web issuer set.
+
+Generate the appropriate SANs and wildcard variants according to the selected flags.
+
+Use the minimal output mode for the requested demonstration.
+
+Verify the resulting certificates and chains.
+
+### Phase 12 — Final verification and report
+
+Run the complete acceptance suite.
+
+Provide:
+
+- Summary of implemented functionality.
+- Commands executed.
+- Artifact locations.
+- Secret-store synchronization status.
+- Certificate inventory.
+- Trust and cross-signing verification results.
+- External compatibility results.
+- Performance results.
+- Known limitations.
+- Security considerations.
+- Recovery instructions.
+- Recommended future improvements.
+
+Clearly distinguish verified functionality from incomplete or untested features.
+
+---
+
+# Part XIV — Additional Engineering Requirements
+
+## 17. Operational correctness
+
+The system must handle partial failure without corrupting existing bundles or silently losing keys.
+
+Use atomic filesystem writes where practical.
+
+Avoid overwriting active signing keys.
+
+Validate output paths and archive contents.
+
+Protect against path traversal during extraction.
+
+Use secure file permissions.
+
+Use cryptographically secure randomness.
+
+Maintain a reliable serial-number allocation mechanism suitable for concurrent issuance.
+
+Support clock-skew considerations and validity-window policy.
+
+Maintain audit records for CA operations.
+
+### 17.1 Idempotency
+
+Distinguish between:
+
+- Repeating a read-only command.
+- Rebuilding a public artifact from existing state.
+- Reissuing a certificate.
+- Generating a new private key.
+- Rotating a CA.
+
+A repeated command must not unexpectedly generate a new trust identity.
+
+Provide idempotency keys or equivalent operation identifiers for automated issuance.
+
+### 17.2 Offline root support
+
+The system must support roots that eventually move offline.
+
+Intermediate issuance must not require permanent online access to root private keys.
+
+Support signing requests, offline signing workflows, import of completed signatures or certificates, and hardware-backed signing providers.
+
+Do not require root private keys to reside alongside the `fleet` binary.
+
+### 17.3 Revocation and lifecycle
+
+Implement a consistent model for:
+
+- Certificate issuance.
+- Renewal.
+- Revocation.
+- Expiration.
+- Key compromise.
+- Key rotation.
+- Root migration.
+- Intermediate replacement.
+- Trust-anchor rollout.
+- Publication updates.
+
+Avoid coupling certificate expiration to secret-store retention.
+
+### 17.4 Schema evolution
+
+Version every persistent schema.
+
+Provide migration tooling.
+
+Preserve backward compatibility where practical.
+
+Do not require old cryptographic algorithms to remain preferred merely to read historical bundles.
+
+### 17.5 Automation safety
+
+Support noninteractive operation without disabling security checks.
+
+Make all relevant inputs explicit or resolvable through configuration.
+
+Provide predictable machine-readable results.
+
+Do not require a terminal for normal scripted operations.
+
+### 17.6 Security review
+
+Before final acceptance, review the implementation for:
+
+- Key disclosure.
+- Insecure defaults.
+- Algorithm downgrade.
+- Unintended trust expansion.
+- Unsafe certificate profiles.
+- Incorrect path validation.
+- Secret-store synchronization hazards.
+- Race conditions.
+- Archive extraction vulnerabilities.
+- Improper randomness.
+- Incorrect revocation behavior.
+- Insufficient auditability.
+
+Document the residual risks.
+
+---
+
+# Part XV — Acceptance Criteria and Autonomy
+
+## 18. Minimum acceptance criteria
+
+The project is complete only when:
+
+1. The `fleet` executable exposes a coherent certificate-management command family.
+2. The underlying functionality is available through reusable Rust APIs.
+3. The four required algorithms are implemented or explicitly capability-gated where a selected backend cannot support them.
+4. Root-level cross-signing follows the asymmetric trust architecture.
+5. Post-quantum validation profiles do not silently accept classical certificate paths.
+6. Root, issuer, and leaf bundles have versioned manifests.
+7. Bundle references resolve consistently across local and supported remote sources.
+8. The secrets integration works without duplicating unrelated infrastructure.
+9. Root renewal and rotation have distinct, safe semantics.
+10. Purpose-specific issuer sets can be generated with simple commands.
+11. Certificate usage restrictions are implemented and tested.
+12. AIA, CRL, and publication artifacts are generated correctly.
+13. Individual certificates, chain files, and applicable container formats are available.
+14. Comprehensive and minimal output modes both work.
+15. Generated documentation is specific to the actual artifacts.
+16. CLI help, completions, structured output, and batch operation are implemented.
+17. Cross-signing and certificate-path tests pass for supported clients.
+18. Independent compatibility tests are executed and recorded.
+19. The requested root, intermediate, and leaf artifacts are generated through `fleet`.
+20. The final report includes evidence of correctness and clearly identifies any remaining limitations.
+
+## 19. Implementation discretion
+
+You are expected to improve this design.
+
+You may introduce additional crates, interfaces, commands, profiles, test frameworks, manifests, formats, and operational safeguards where they materially improve the system.
+
+You may replace examples with more appropriate conventions.
+
+You may simplify interfaces that would otherwise become confusing.
+
+You may add compatibility adapters and future-facing extension points.
+
+You must preserve the essential outcomes:
+
+- Simple operation for humans.
+- Reliable operation for agents and automation.
+- Reusable libraries.
+- Strong defaults.
+- Flexible overrides.
+- Long-term recoverability.
+- Cross-algorithm classical compatibility.
+- A distinct post-quantum trust boundary.
+- Correct certificate issuance and lifecycle behavior.
+- Portable artifacts.
+- Independent verification.
+
+Do not treat a checklist as permission to ignore architectural problems.
+
+If a proposed requirement conflicts with cryptographic standards, actual client behavior, or a security invariant, explain the conflict and implement the safest viable equivalent.
+
+## 20. Final instruction
+
+Proceed through design, implementation, testing, and artifact generation in sequence.
+
+Use the tools you build to perform the final PKI operations.
+
+Do not stop at documentation or scaffolding.
+
+Do not claim success from compilation alone.
+
+Prefer tested, working functionality over broad but incomplete abstractions.
+
+Make the result usable by an experienced developer, an unattended automation agent, or an administrator returning years later with only the binary and its documentation.
+
+The objective is not merely to generate certificates today. It is to establish a durable cryptographic infrastructure that can evolve through new algorithms, changing trust requirements, future key generations, new certificate purposes, and decades of operational use without requiring the entire system to be reinvented.
+
+## Additional architectural decisions I would make before execution
+
+There are four areas where I would tighten the implementation further.
+
+1\. Don't let the base issuer become a universal signing authority. The Standard set can provide multiple certificate profiles, but unrestricted issuance for arbitrary purposes is a significant security risk. I would make profile authorization explicit and eventually use separate issuer sets for SSH, code signing, and other sensitive purposes.
+
+2\. Treat ML-DSA as a separate security domain, not merely a fourth algorithm. Your root cross-signing design is compatible with this. However, the critical enforcement happens at the verifier: an ML-DSA-only device must reject classical signatures in its selected certification path, even if the relevant identities have cross-certificates.
+
+3\. Make the manifest the durable source of identity and lifecycle state. Filenames are presentation details. Key IDs, certificate fingerprints, issuer relationships, serial numbers, and generation identifiers must be independently represented. This becomes particularly important when reissuing certificates with existing keys twenty years later.
+
+4\. Don't confuse a root bundle with a distributable trust bundle. Your canonical root bundle may contain private key references, cross-certificates, manifests, and operational policies. A client-facing `roots.pem` should contain only the trust anchors appropriate to that client's profile. The tool should generate both automatically.
+
+One final implementation detail: the base intermediate expiry is specified, but the internal-web intermediate's special expiry is not. I deliberately left that configurable rather than assigning an arbitrary date.
+
+The resulting specification gives the implementing agent substantial discretion while preserving the architectural requirements and the specific end-to-end commands and artifacts you want.tha

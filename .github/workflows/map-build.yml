@@ -14,6 +14,9 @@ name: map build
 on:
   push:
     branches: [main]
+    paths:
+      - "pkgs/map/**"
+      - ".github/workflows/map-build.yml"
   workflow_dispatch:
 
 permissions:

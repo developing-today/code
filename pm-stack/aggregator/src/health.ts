@@ -17,21 +17,29 @@
 // - In fixtures mode there are no live probes to make: every service
 //   reports "fixtures", which is also the degraded-state test fixture.
 import type { PendingCommentCounts } from "./comments.ts";
+import type { ConflictInbox } from "./conflicts.ts";
 import type { Config } from "./config.ts";
 import { unreportedCheckoutDrift, type CheckoutDrift } from "./checkout-drift.ts";
 import {
   ageMsText,
+  FEED_STALE_MS,
   GENERATED_AT_FUTURE_SKEW_MS,
   type FeedSectionStatus,
   type FleetFeed,
   type SectionDiagnosis,
 } from "./feed.ts";
 import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
+import type { PushHealthView } from "./freshness-reconcile.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
+import {
+  fetchRfaState,
+  rfaHealthDown,
+  rfaHealthFacet,
+  type RfaHealthFacet,
+  type RfaState,
+} from "./sources/ready-for-agent.ts";
 
-/** Same staleness threshold live.ts applies to feed-backed facets. */
-const FEED_STALE_MS = 15 * 60_000;
 /** Orchestration cadence: hourly; next run is an expectation, not a promise. */
 const ORCHESTRATION_CADENCE_MS = 3_600_000;
 
@@ -150,6 +158,15 @@ export function summarizeItemCoverage(items: Map<RefKey, GhItem>): ItemsCoverage
   return { resolvedLive, fixture, total, ratio: total ? resolvedLive / total : null };
 }
 
+/** The conflict-inbox count as the health surface carries it (#1282). */
+export interface ConflictsHealth {
+  total: number;
+  byClass: Array<{ classId: string; label: string; count: number }>;
+  /** Oldest live disagreement in whole days, or null when none is dated. */
+  oldestAgeDays: number | null;
+  generatedAt: string;
+}
+
 export interface HealthView {
   /** The aggregator process itself is up if it assembled this view. */
   status: "ok";
@@ -193,6 +210,24 @@ export interface HealthView {
   /** Dashboard comment loops (#1145): pending triage/posting counts,
    *  so an unworked comment queue is visible on /health. */
   comments: PendingCommentCounts;
+  /** Source-conflict inbox (#1282 slice 1): how many live disagreements the
+   *  facets report, so a growing conflict backlog is itself visible. Null
+   *  when the caller did not assemble the inbox (older call sites/tests). */
+  conflicts: ConflictsHealth | null;
+  /** ready-for-agent harness facet (#1203): live GraphQL state —
+   *  registered repositories, backend readiness, work-item counts —
+   *  from src/sources/ready-for-agent.ts, not just the topology
+   *  probe's HTTP 200. "down" with the error when the harness cannot
+   *  be read; never an invented state. */
+  rfa: RfaHealthFacet;
+  /** #3976: push health — the freshness journal + 5-minute reconciler
+   *  state (push up/degraded/down, last event, last successful
+   *  reconcile, per-source age/lag, open/reset gaps), assembled by
+   *  src/freshness-reconcile.ts. Separate from source freshness on
+   *  purpose: a connected stream is not proof of fresh data, and a
+   *  quiet source is not an outage. Null when the caller did not
+   *  assemble it (fixtures mode, older call sites) — never invented. */
+  push: PushHealthView | null;
 }
 
 // --- Render registry -------------------------------------------------------
@@ -280,7 +315,6 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
     section("attention", undefined, true),
     section("orchestration", feed.orchestration?.generatedAt, feed.orchestration !== undefined),
     section("dns", feed.dns?.generatedAt, feed.dns !== undefined),
-    section("julesSummary", undefined, feed.julesSummary !== undefined),
     section("registry", undefined, feed.registry !== undefined),
     section("projects", undefined, feed.projects !== undefined),
     section("coverage", undefined, feed.coverage !== undefined),
@@ -308,12 +342,20 @@ export interface HealthInputs {
   detail?: ProvenanceDetail;
   itemsCoverage?: ItemsCoverage | null;
   comments?: PendingCommentCounts;
+  /** Source-conflict inbox (#1282 slice 1) — counted on the stack health
+   *  surface so the backlog is visible where the stack's state already is. */
+  conflicts?: ConflictInbox | null;
+  /** #3976: the reconciler's current push-health view (server.ts
+   *  supplies it in live mode); absent/null renders as unassembled. */
+  pushHealth?: PushHealthView | null;
 }
 
 export interface HealthDeps {
   fetcher?: ProbeFetch;
   cache?: ProbeCache;
   now?: number;
+  /** #1203 test seam: replace the live harness read. */
+  rfaState?: () => Promise<RfaState>;
 }
 
 export function resolveBuildVersion(env: Record<string, string | undefined> = process.env): string {
@@ -352,8 +394,12 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
                 ok: false,
                 detail: `feed generatedAt ${feed.generatedAt} is >60s in the future — never fresh`,
               }
-            : feedAgeMs !== null && feedAgeMs > FEED_STALE_MS
-              ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — past the 15m freshness threshold` }
+            : feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS
+              ? {
+                  state: "stale",
+                  ok: false,
+                  detail: `feed ${ageMsText(feedAgeMs)} — at or past the 5m freshness threshold`,
+                }
               : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
     } else if (def.probe === "section") {
       if (!diagnosis) {
@@ -409,13 +455,34 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     });
   }
 
+  // #1203: the harness facet — a real GraphQL read of the dispatch
+  // layer (cached 60 s inside fetchRfaState), reported down with its
+  // error rather than hidden when the harness cannot be read.
+  let rfa: RfaHealthFacet;
+  if (inputs.mode === "fixtures") {
+    rfa = { state: "fixtures", detail: "fixtures mode — no live harness read", repositories: [], backends: [] };
+  } else {
+    try {
+      const state = deps.rfaState ? await deps.rfaState() : await fetchRfaState(cfg.readyForAgent.baseUrl);
+      rfa = rfaHealthFacet(state);
+    } catch (err) {
+      rfa = rfaHealthDown(`harness read failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   const checkout = feed?.checkout ?? unreportedCheckoutDrift();
   const sectionHealth = feedSections(feed, now);
   const degraded =
     inputs.mode === "live" &&
     (services.some((s) => s.ok === false) ||
-      (feedAgeMs !== null && feedAgeMs > FEED_STALE_MS) ||
+      (feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS) ||
       checkout.state === "behind" ||
+      // #3976: an unreadable freshness journal means push state
+      // cannot be proven — that is degraded, never silently ok.
+      (inputs.pushHealth != null && inputs.pushHealth.state === "down") ||
+      // #1203: a harness whose GraphQL cannot be read (or whose backend
+      // is not READY) is a degraded dependency, not an invisible one.
+      rfa.state === "down" ||
       sectionHealth.some((section) => section.status === "error"));
 
   return {
@@ -451,8 +518,18 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       },
     },
     pages: pageHealth(now),
+    rfa,
+    push: inputs.pushHealth ?? null,
     facets: inputs.detail ?? null,
     itemsCoverage: inputs.itemsCoverage ?? null,
     comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },
+    conflicts: inputs.conflicts
+      ? {
+          total: inputs.conflicts.total,
+          byClass: inputs.conflicts.byClass,
+          oldestAgeDays: inputs.conflicts.oldestAgeDays,
+          generatedAt: inputs.conflicts.generatedAt,
+        }
+      : null,
   };
 }

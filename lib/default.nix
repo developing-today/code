@@ -583,6 +583,32 @@ let
                   actionlint
                 ];
               };
+
+              # Lean shell for the fleet build container and GHA job
+              # containers (dezren39/fleet, containers/fleet-build).
+              # Same motivation as mcpx-lint above: `default` is the
+              # whole monorepo workstation environment (Android SDK,
+              # clan, desktop tooling via nix-common.nix) and is far
+              # too heavy to warm into a shared CI image. This shell
+              # carries only the CI toolchains — the repo's pinned
+              # Rust toolchain, Go, Bun, Node, zig — plus basic tools,
+              # all from the same nixpkgs-unstable tree as `default`,
+              # so container CI and the workstation agree on versions.
+              # The fleet image warms THIS shell for this repo.
+              fleet = pkgs.mkShell {
+                packages = [
+                  nixCommon.rustToolchain
+                ]
+                ++ (with pkgs; [
+                  git
+                  jq
+                  ripgrep
+                  go_1_27
+                  bun
+                  nodejs
+                  zig
+                ]);
+              };
             }
           );
     };
@@ -634,6 +660,20 @@ let
       ) justRecipes.recipes;
 
       mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      mcpxContainer = pkgs.callPackage ../pkgs/mcpx/container-image.nix {
+        mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix {
+          wrapWithRuntimes = false;
+          doCheck = false;
+        };
+      };
+      identity = pkgs.callPackage ../pkgs/identity/package.nix { };
+      identityImage = pkgs.callPackage ../pkgs/identity/container-image.nix {
+        inherit identity;
+      };
+      identityProviderImage = pkgs.callPackage ../pkgs/identity/provider-image.nix { };
+      genericRuntime = pkgs.callPackage ../pkgs/generic-containers/runtime-base.nix { };
+      genericJsRuntime = pkgs.callPackage ../pkgs/generic-containers/js-runtime.nix { };
+      genericPythonRuntime = pkgs.callPackage ../pkgs/generic-containers/python-runtime.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
@@ -646,12 +686,19 @@ let
       packages = {
         inherit
           mcpx
+          identity
           idMailDeploy
           pkarrDeploy
           developingTodayBackupDeploy
           ;
         mcpx-docs = mcpxDocs;
         mcpx-real-servers = mcpxRealServers;
+        mcpx-container = mcpxContainer;
+        identity-image = identityImage;
+        identity-provider-image = identityProviderImage;
+        generic-runtime = genericRuntime;
+        generic-js-runtime = genericJsRuntime;
+        generic-python-runtime = genericPythonRuntime;
       };
       checks = {
         # The packaging test (#1981): run the built mcpx artifact --
@@ -759,17 +806,67 @@ let
           };
           nixCommon = import ../nix-common.nix { inherit pkgs; };
           inherit (nixCommon) fmtBins;
+
+          # Read excludes from treefmt.toml so we can filter passed files
+          treefmtConfig = builtins.fromTOML (builtins.readFile ../treefmt.toml);
+          excludes =
+            if treefmtConfig ? global && treefmtConfig.global ? excludes then
+              treefmtConfig.global.excludes
+            else
+              [ ];
+
           formatCheck = pkgs.writeShellScriptBin "format-check" ''
-            export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
-            if [ "$#" -eq 0 ]; then
-              echo "usage: nix run .#format-check -- <changed-file>..." >&2
-              exit 2
-            fi
-            exec treefmt \
-              --config-file "$PWD/treefmt.toml" \
-              --tree-root "$PWD" \
-              --fail-on-change \
-              "$@"
+                        export PATH="${pkgs.lib.makeBinPath (fmtBins ++ [ pkgs.python3 ])}:$PATH"
+                        if [ "$#" -eq 0 ]; then
+                          echo "usage: nix run .#format-check -- <changed-file>..." >&2
+                          return 2 2>/dev/null || exit 2
+                        fi
+
+                        filter_script=$(cat << 'PYEOF'
+            import sys, fnmatch
+
+            excludes = [
+            ${builtins.concatStringsSep "\n" (map (x: "    \"${x}\",") excludes)}
+            ]
+
+            filtered = []
+            for f in sys.argv[1:]:
+                excluded = False
+                for excl in excludes:
+                    if fnmatch.fnmatch(f, excl):
+                        excluded = True
+                        break
+                    if excl.endswith("/**") and f.startswith(excl[:-2]):
+                        excluded = True
+                        break
+                    if excl.startswith("**/") and (f == excl[3:] or f.endswith("/" + excl[3:])):
+                        excluded = True
+                        break
+                    if f == excl:
+                        excluded = True
+                        break
+                if not excluded:
+                    filtered.append(f)
+
+            for f in filtered:
+                print(f + '\0', end=''')
+            PYEOF
+            )
+                        filtered_files=()
+                        while IFS= read -r -d $'\0' file; do
+                            filtered_files+=("$file")
+                        done < <(python3 -c "$filter_script" "$@")
+
+                        if [ ''${#filtered_files[@]} -eq 0 ]; then
+                          echo "No files to format after applying treefmt excludes."
+                          return 0 2>/dev/null || exit 0
+                        else
+                          exec treefmt \
+                            --config-file "$PWD/treefmt.toml" \
+                            --tree-root "$PWD" \
+                            --fail-on-change \
+                            "''${filtered_files[@]}"
+                        fi
           '';
           # Write-mode twin of format-check, for the auto-format
           # workflow (.github/workflows/auto-format.yml): same
@@ -1069,8 +1166,8 @@ let
       ))
     ];
 
-  # Flake checks for the laptop-backups shell suites (#1841): the seven
-  # suites in nixos/home drive the real backup and watchdog scripts with
+  # Flake checks for the laptop-backups shell suites (#1841): the suites
+  # in nixos/home drive the real backup and watchdog scripts with
   # stubbed systemctl/bws/journalctl/rclone, so each is a runCommandLocal
   # that copies nixos/home somewhere writable and runs one suite. Until
   # this wiring they ran only by hand on the laptop, so a regression in
@@ -1082,12 +1179,18 @@ let
     let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
       suites = [
+        "laptop-autocommit-in-progress"
+        "laptop-autocommit-merge-abort"
         "laptop-backups-watchdog"
         "laptop-state-backup"
+        "laptop-repo-keeper"
+        "laptop-untracked-review"
+        "openclaw-backup"
         "pm-dashboard-backup"
         "pm-dashboard-backup-copy"
         "pm-dashboard-backup-date"
         "pm-dashboard-backup-manifest"
+        "pm-dashboard-backup-pmp-links"
         "pm-dashboard-backup-prune"
         "pm-dashboard-backup-record"
       ];
@@ -1106,10 +1209,12 @@ let
                   pkgs.findutils
                   pkgs.gnugrep
                   pkgs.gnused
+                  pkgs.git
                   pkgs.gnutar
                   pkgs.gzip
                   pkgs.jq
                   pkgs.python3
+                  pkgs.sqlite
                   pkgs.util-linux
                   pkgs.zstd
                 ];
@@ -1127,6 +1232,337 @@ let
     }
   );
 
+  # fleet multicall binary packages (pkgs/fleet; epic code#5412,
+  # step 1 code#5429). One workspace, capability variants as
+  # separate attrs; the connect-static flavor (musl) is only
+  # offered on Linux, where a static target makes sense.
+  make-fleet = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      # Crane libs for the dependency-split package build (code#8392):
+      # pkgs/fleet compiles its registry dependencies as a separate
+      # derivation per variant when these are passed.
+      craneLib = inputs.crane.mkLib pkgs;
+      fleetPkgs = pkgs.callPackage ../pkgs/fleet {
+        sourceRev = inputs.self.rev or "dirty";
+        inherit craneLib;
+      };
+    in
+    {
+      packages = {
+        inherit (fleetPkgs)
+          fleet
+          fleet-serve
+          fleet-connect
+          fleet-brokers
+          ;
+      }
+      // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
+        inherit (fleetPkgs) fleet-connect-static fleet-static;
+      };
+    }
+  );
+
+  # pm-stack apps (pkgs/pm-*; code#8171): the projector, aggregator,
+  # dispatch, and git-sync as Nix derivations built from this repo's
+  # pm-stack source. The nixos pm-stack module callPackages the same
+  # files into its units; these outputs make `nix build .#pm-<app>`
+  # the package-level check.
+  make-pm-stack = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      pmPackages = {
+        pm-projector = pkgs.callPackage ../pkgs/pm-projector/package.nix { };
+        pm-aggregator = pkgs.callPackage ../pkgs/pm-aggregator/package.nix { };
+        pm-dispatch = pkgs.callPackage ../pkgs/pm-dispatch/package.nix { };
+        pm-git-sync = pkgs.callPackage ../pkgs/pm-git-sync/package.nix { };
+      };
+      mkApp = pkg: program: {
+        type = "app";
+        program = "${pkg}/bin/${program}";
+      };
+    in
+    {
+      packages = pmPackages;
+      # One flake app per program the pm-stack services run, so every
+      # unit's ExecStart binary is also `nix run .#<name>`-able and the
+      # deploy surface is uniform: app + derivation + service (#8171).
+      apps = {
+        pm-projector = mkApp pmPackages.pm-projector "pm-projector";
+        pm-projector-cli = mkApp pmPackages.pm-projector "pm-projector-cli";
+        pm-aggregator = mkApp pmPackages.pm-aggregator "pm-aggregator";
+        pm-aggregator-gather-quota = mkApp pmPackages.pm-aggregator "pm-aggregator-gather-quota";
+        pm-aggregator-generate-digest = mkApp pmPackages.pm-aggregator "pm-aggregator-generate-digest";
+        pm-dispatch = mkApp pmPackages.pm-dispatch "pm-dispatch";
+        pm-git-sync = mkApp pmPackages.pm-git-sync "pm-git-sync";
+      };
+    }
+  );
+
+  # deploy registry + CLI (pkgs/deploy; issue #5766 slice 1):
+  # deployTargets merges this repo's service definitions (design
+  # 2026-11-04 section 3); the checks pin the packet's acceptance --
+  # `deploy list` enumerates the real registry and refuses a malformed one.
+  make-deploy = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      deployPkgs = pkgs.callPackage ../pkgs/deploy {
+        sourceRev = inputs.self.rev or "dirty";
+      };
+      badRegistry = pkgs.writeText "deploy-targets-malformed.json" (
+        builtins.toJSON {
+          broken = {
+            entryPoint = 3;
+            ports = [ 70000 ];
+          };
+        }
+      );
+      validationService = {
+        package = "test-package";
+        entryPoint = "bin/service";
+        args = [ ];
+        environment = { };
+        secrets = [ ];
+        user = "nobody";
+        ports = [ ];
+        restart = "always";
+        healthCheck = null;
+        targets = [ "laptop" ];
+        class = "systemd";
+      };
+      # Keep each registry valid except for the exact issue #6383 shape.
+      newlineNameRegistry = pkgs.writeText "deploy-targets-newline-name.json" ''
+        {"svc\n": ${builtins.toJSON validationService}}
+      '';
+      duplicateSecretsRegistry = pkgs.writeText "deploy-targets-duplicate-secrets.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            secrets = [
+              "secret.name"
+              "secret.name"
+            ];
+          };
+        }
+      );
+      duplicateTargetsRegistry = pkgs.writeText "deploy-targets-duplicate-targets.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            targets = [
+              "laptop"
+              "laptop"
+            ];
+          };
+        }
+      );
+      hostlessHealthCheckRegistry = pkgs.writeText "deploy-targets-hostless-health-check.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            healthCheck = "http://";
+          };
+        }
+      );
+      duplicatePortsRegistry = pkgs.writeText "deploy-targets-duplicate-ports.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            ports = [
+              8080
+              8080
+            ];
+          };
+        }
+      );
+      # Duplicate keys cannot be expressed as a Nix attrset, so these
+      # registries are raw JSON text (issue #6384): load_registry must
+      # reject them naming the duplicated key.
+      dupServiceRegistry = pkgs.writeText "deploy-targets-dup-service.json" ''
+        {"svc": {"class": "bogus-class"}, "svc": {"class": "systemd"}}
+      '';
+      dupFieldRegistry = pkgs.writeText "deploy-targets-dup-field.json" ''
+        {"svc": {"ports": "notalist", "ports": []}}
+      '';
+      # Unhashable restart/class values (issue #6388): arrays/objects
+      # where validate() expects a string. validate() must report
+      # them by field, not crash with a TypeError, and one
+      # crashing-shape service must not suppress another service's
+      # ordinary field reports.
+      unhashableRegistry = pkgs.writeText "deploy-targets-unhashable.json" ''
+        {"bad": {"class": ["systemd"], "restart": ["always"]}, "other": {"class": {"x": 1}, "restart": "sometimes"}}
+      '';
+      validTargetService = {
+        package = "test-package";
+        entryPoint = "bin/service";
+        args = [ ];
+        environment = { };
+        secrets = [ ];
+        user = "nobody";
+        ports = [ ];
+        restart = "always";
+        healthCheck = null;
+        targets = [ "laptop" ];
+        class = "systemd";
+      };
+      invalidTargetRegistry =
+        name: target:
+        pkgs.writeText name (
+          builtins.toJSON {
+            svc = validTargetService // {
+              targets = [ target ];
+            };
+          }
+        );
+      newlineTargetRegistry = invalidTargetRegistry "deploy-targets-newline.json" "laptop\nFAKE  systemd     evil";
+      spaceTargetRegistry = invalidTargetRegistry "deploy-targets-space.json" "bad name";
+    in
+    {
+      packages.deploy = deployPkgs.deploy;
+      inherit (deployPkgs) deployTargets;
+      checks = {
+        deploy-list =
+          pkgs.runCommandLocal "check-deploy-list"
+            {
+              nativeBuildInputs = [ pkgs.gnugrep ];
+            }
+            ''
+              ${deployPkgs.deploy}/bin/deploy list > list.txt
+              cat list.txt
+              grep -q "queue-broker" list.txt
+              grep -q "secrets-broker" list.txt
+              grep -q "session-proxy" list.txt
+              grep -q "mcpx" list.txt
+              grep -q "laptop" list.txt
+              mkdir -p $out
+              cp list.txt $out/list.txt
+            '';
+        deploy-dupkeys-property =
+          pkgs.runCommandLocal "check-deploy-dupkeys-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-target-shape-property =
+          pkgs.runCommandLocal "check-deploy-target-shape-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_target_shape_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice2-tests =
+          pkgs.runCommandLocal "check-deploy-slice2-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice2.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice3-tests =
+          pkgs.runCommandLocal "check-deploy-slice3-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice3.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-argv =
+          pkgs.runCommandLocal "check-deploy-argv"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_argv.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-argv-property =
+          pkgs.runCommandLocal "check-deploy-argv-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_argv_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-list-malformed = pkgs.runCommandLocal "check-deploy-list-malformed" { } ''
+          expect_invalid() {
+            registry="$1"
+            expected="$2"
+            if ${deployPkgs.deploy}/bin/deploy list --registry "$registry" > out.txt 2> err.txt; then
+              echo "deploy list accepted a malformed registry: $registry" >&2
+              exit 1
+            fi
+            if ! grep -Fq "$expected" err.txt; then
+              echo "deploy list did not report '$expected' for $registry" >&2
+              cat err.txt >&2
+              exit 1
+            fi
+            test ! -s out.txt
+          }
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${badRegistry} > out.txt 2> err.txt; then
+            echo "deploy list accepted a malformed registry" >&2
+            exit 1
+          fi
+          grep -q "entryPoint" err.txt
+          grep -q "ports" err.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${dupServiceRegistry} > dup-svc-out.txt 2> dup-svc-err.txt; then
+            echo "deploy list accepted a registry with a duplicate service key" >&2
+            exit 1
+          fi
+          grep -q "duplicate key 'svc'" dup-svc-err.txt
+          test ! -s dup-svc-out.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${dupFieldRegistry} > dup-field-out.txt 2> dup-field-err.txt; then
+            echo "deploy list accepted a registry with a duplicate field" >&2
+            exit 1
+          fi
+          grep -q "duplicate key 'ports'" dup-field-err.txt
+          test ! -s dup-field-out.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${unhashableRegistry} > unhash-out.txt 2> unhash-err.txt; then
+            echo "deploy list accepted a registry with unhashable restart/class values" >&2
+            exit 1
+          fi
+          grep -q "service 'bad': restart must be one of" unhash-err.txt
+          grep -q "service 'bad': class must be one of" unhash-err.txt
+          grep -q "service 'other': class must be one of" unhash-err.txt
+          grep -q "service 'other': restart must be one of" unhash-err.txt
+          if grep -q "Traceback" unhash-err.txt; then
+            echo "deploy list crashed with a traceback on unhashable values" >&2
+            exit 1
+          fi
+          test ! -s unhash-out.txt
+          expect_invalid ${newlineNameRegistry} "name must match"
+          expect_invalid ${duplicateSecretsRegistry} "secrets must not repeat a secret name"
+          expect_invalid ${duplicateTargetsRegistry} "targets must not repeat a target"
+          expect_invalid ${hostlessHealthCheckRegistry} "healthCheck must be an http(s) URL with a host"
+          expect_invalid ${duplicatePortsRegistry} "ports must not repeat a port"
+          expect_invalid_target() {
+            registry="$1"
+            if ${deployPkgs.deploy}/bin/deploy list --registry "$registry" > target-out.txt 2> target-err.txt; then
+              echo "deploy list accepted a target with an invalid shape: $registry" >&2
+              exit 1
+            fi
+            if ! grep -Fq "targets must be host/class names matching" target-err.txt; then
+              echo "deploy list did not report the targets field for $registry" >&2
+              cat target-err.txt >&2
+              exit 1
+            fi
+            test ! -s target-out.txt
+          }
+          expect_invalid_target ${newlineTargetRegistry}
+          expect_invalid_target ${spaceTargetRegistry}
+          mkdir -p $out
+          cp err.txt $out/errors.txt
+        '';
+      };
+    }
+  );
+
   make-mcpx-overlay = {
     overlays = {
       default = final: prev: {
@@ -1137,6 +1573,27 @@ let
       };
     };
   };
+
+  # The mcpx daemon modules (code#4801): the canonical module files
+  # live in pkgs/mcpx/modules; these outputs wrap them with this
+  # flake's own mcpx build as the package default. The opencode fork
+  # re-exports the same files defaulted to its build, and
+  # openchamber passes them through — the option set never forks.
+  make-mcpx-modules =
+    let
+      wrap =
+        module:
+        { lib, pkgs, ... }:
+        {
+          imports = [ module ];
+          services.mcpx.package = lib.mkDefault (pkgs.callPackage ../pkgs/mcpx/package.nix { });
+        };
+    in
+    {
+      nixosModules.mcpx = wrap ../pkgs/mcpx/modules/nixos.nix;
+      homeManagerModules.mcpx = wrap ../pkgs/mcpx/modules/home-manager.nix;
+      darwinModules.mcpx = wrap ../pkgs/mcpx/modules/darwin.nix;
+    };
 
   _self = merge [
     lib
@@ -1182,7 +1639,11 @@ let
         make-root-apps
         make-id
         make-mcpx-overlay
+        make-mcpx-modules
+        make-pm-stack
         make-laptop-backups-checks
+        make-fleet
+        make-deploy
         ;
     }
   ];

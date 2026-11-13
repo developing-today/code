@@ -1,0 +1,32 @@
+name: fleet-search-parity-guard
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Byte-parity drift guard (#5920, contract origin #5433): the
+# fleet-search copies of atlas-search's pyjson.rs / render.rs writers
+# must stay byte-identical to the originals outside their pinned
+# parity headers, or the fleet verb silently stops rendering service
+# envelopes byte-identically to atlas-search. Pure bash -- no nix, no
+# toolchain -- so this stays a seconds-long basic check.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fleet-search-parity-guard-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity-guard:
+    name: "basic: fleet-search pyjson/render parity (#5920)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Guard contract tests (#5920)
+        run: bash .github/scripts/check-fleet-search-parity.test.sh
+      - name: Check fleet-search writers match atlas-search (#5433)
+        run: bash .github/scripts/check-fleet-search-parity.sh

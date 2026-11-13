@@ -1,0 +1,2415 @@
+//! REPL runner - main interactive loop and command dispatch.
+//!
+//! This module contains the main REPL loop ([`run_repl`]) and command
+//! dispatch logic. It handles user input, preprocessing, command parsing,
+//! and execution.
+//!
+//! # Main Loop
+//!
+//! The REPL loop:
+//!
+//! 1. Displays prompt (`> `)
+//! 2. Reads input line
+//! 3. Handles special cases (Ctrl+C, Ctrl+D, shell escape)
+//! 4. Preprocesses the line (see [`input`](super::input) module)
+//! 5. Dispatches to appropriate command handler
+//! 6. Displays result or error
+//! 7. Repeats until quit
+//!
+//! # Exit Conditions
+//!
+//! The REPL exits when:
+//! - User types `quit`, `exit`, or `q`
+//! - User presses Ctrl+D (EOF)
+//! - User presses Ctrl+C twice in a row
+//!
+//! # Command Dispatch
+//!
+//! Commands are parsed as whitespace-separated tokens and matched against
+//! known patterns. The first token is the command name, with optional
+//! `@NODE_ID` as second token for remote targeting.
+//!
+//! # Error Handling
+//!
+//! Errors from command execution are caught and displayed to the user,
+//! but don't terminate the REPL. This allows the user to try again or
+//! correct their input.
+
+use anyhow::Result;
+use rustyline::{DefaultEditor, error::ReadlineError};
+use std::io::Write;
+
+use super::{ReplInput, continue_heredoc, preprocess_repl_line};
+use crate::{
+    FindMatch, MatchKind, PeekOptions, ReplContext, SearchOptions, download_output_path,
+    is_node_id, print_match_repl,
+};
+
+/// Run the interactive REPL.
+///
+/// This is the main entry point for the REPL. It creates a [`ReplContext`],
+/// sets up readline, and runs the main input loop.
+///
+/// # Arguments
+///
+/// * `target_node` - Optional remote node ID to connect to.
+///   If provided, connects to that remote peer for all operations.
+///
+/// # Features
+///
+/// - **Command history**: Uses rustyline for readline functionality
+/// - **Shell escape**: Lines starting with `!` are executed as shell commands
+/// - **Graceful exit**: Ctrl+C once warns, twice exits; Ctrl+D exits immediately
+/// - **Error recovery**: Command errors are displayed but don't exit the REPL
+///
+/// # Example Session
+///
+/// ```text
+/// $ id repl
+/// id repl (local-serve)
+/// commands: list, put, get, cat, gethash, help, quit
+/// input: $(...), `...`, |>, <<<, <<EOF supported
+/// > list
+/// abc123...  config.json
+/// def456...  data.txt
+/// > cat config.json
+/// {"key": "value"}
+/// > !ls -la
+/// total 16
+/// drwxr-xr-x  3 user user 4096 Jan  1 12:00 .
+/// > quit
+/// $
+/// ```
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Context creation fails (see [`ReplContext::new`])
+/// - Readline initialization fails
+/// - Context shutdown fails
+pub async fn run_repl(target_node: Option<String>) -> Result<()> {
+    let mut ctx = ReplContext::new(target_node).await?;
+    println!("id repl ({})", ctx.mode_str());
+    println!("commands: list, put, get, cat, gethash, peers, help, quit");
+    println!("input: $(...), `...`, |>, <<<, <<EOF supported");
+
+    let mut rl = DefaultEditor::new()?;
+    let mut ctrl_c_count = 0u8;
+
+    loop {
+        match rl.readline("> ") {
+            Ok(raw_line) => {
+                ctrl_c_count = 0; // Reset on any input
+                let raw_line = raw_line.trim();
+                if raw_line.is_empty() {
+                    continue;
+                }
+                let _ = rl.add_history_entry(raw_line);
+
+                // Shell escape: !command (no preprocessing)
+                if let Some(cmd) = raw_line.strip_prefix('!') {
+                    let cmd = cmd.trim();
+                    if !cmd.is_empty() {
+                        let status = std::process::Command::new("sh").arg("-c").arg(cmd).status();
+                        match status {
+                            Ok(s) if !s.success() => {
+                                if let Some(code) = s.code() {
+                                    println!("exit: {code}");
+                                }
+                            }
+                            Err(e) => println!("error: {e}"),
+                            _ => {}
+                        }
+                    }
+                    continue;
+                }
+
+                // Preprocess the line (handle $(), ``, |>, <<<, <<)
+                let line = match preprocess_repl_line(raw_line) {
+                    Ok(ReplInput::Empty) => continue,
+                    Ok(ReplInput::Ready(line)) => line,
+                    Ok(ReplInput::NeedMore {
+                        delimiter,
+                        mut lines,
+                        original_line,
+                    }) => {
+                        // Heredoc mode - read until delimiter
+                        match continue_heredoc(&mut rl, &delimiter, &mut lines) {
+                            Ok(Some(content)) => {
+                                substitute_heredoc_content(&original_line, &content)
+                            }
+                            Ok(None) => continue, // Cancelled
+                            Err(e) => {
+                                println!("error: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("error: {e}");
+                        continue;
+                    }
+                };
+
+                // Execute command and handle result
+                let result = execute_repl_command(&mut ctx, &mut rl, &line).await;
+
+                // Check for quit signal
+                if matches!(result, Ok(ReplAction::Quit)) {
+                    break;
+                }
+
+                if let Err(e) = result {
+                    println!("error: {e}");
+                }
+            }
+            Err(ReadlineError::Interrupted) => {
+                ctrl_c_count += 1;
+                if ctrl_c_count >= 2 {
+                    println!("^C");
+                    break;
+                }
+                println!("^C (press Ctrl+C again, Ctrl+D, or type 'quit' to exit)");
+            }
+            Err(ReadlineError::Eof) => {
+                break;
+            }
+            Err(e) => {
+                println!("readline error: {e}");
+                break;
+            }
+        }
+    }
+
+    ctx.shutdown().await?;
+    Ok(())
+}
+
+/// Action returned by command execution to control the REPL loop.
+///
+/// Commands return this enum to indicate whether the REPL should
+/// continue running or exit.
+#[derive(Debug)]
+pub enum ReplAction {
+    /// Continue the REPL loop (default for most commands).
+    Continue,
+    /// Exit the REPL (returned by quit/exit commands).
+    Quit,
+}
+
+/// Execute a single REPL command.
+///
+/// This function parses the command line and dispatches to the appropriate
+/// handler method on [`ReplContext`].
+///
+/// # Command Format
+///
+/// Commands follow this general format:
+/// ```text
+/// <command> [@NODE_ID] [arguments...]
+/// ```
+///
+/// Where `@NODE_ID` is an optional remote target (64 hex chars prefixed with @).
+///
+/// # Supported Commands
+///
+/// ## Storage Commands
+/// - `list`, `ls`: List stored files
+/// - `put <FILE> [NAME]`: Store a file
+/// - `get <NAME> [OUTPUT]`: Retrieve a file
+/// - `cat <NAME>`: Print file to stdout
+/// - `gethash <HASH> <OUTPUT>`: Retrieve by hash
+/// - `delete`, `rm <NAME>`: Delete a file
+/// - `rename <FROM> <TO>`: Rename a file
+/// - `copy`, `cp <FROM> <TO>`: Copy a file
+///
+/// ## Discovery Commands
+/// - `peers`: List discovered peers
+///
+/// ## Search Commands
+/// - `find <QUERY>...`: Find and output matches
+/// - `search <QUERY>...`: List matches
+///
+/// ## Control Commands
+/// - `help`, `?`: Show help
+/// - `quit`, `exit`, `q`: Exit REPL
+///
+/// # Returns
+///
+/// - `Ok(ReplAction::Continue)` for most commands
+/// - `Ok(ReplAction::Quit)` for quit/exit commands
+/// - `Err(...)` on command execution failure
+async fn execute_repl_command(
+    ctx: &mut ReplContext,
+    rl: &mut DefaultEditor,
+    line: &str,
+) -> Result<ReplAction> {
+    // Special handling for __STDIN_CONTENT__: marker
+    if line.contains("__STDIN_CONTENT__:") {
+        return handle_stdin_content(ctx, line).await;
+    }
+
+    let parts: Vec<&str> = line.split_whitespace().collect();
+
+    // Check for @NODE_ID prefix on commands
+    let (target_node, cmd_parts) = parse_target_node(&parts);
+
+    match (target_node, cmd_parts.as_slice()) {
+        // Commands with @NODE_ID target
+        (Some(node), ["list" | "ls"]) => {
+            ctx.list_on_node(node).await?;
+            Ok(ReplAction::Continue)
+        }
+        (Some(node), ["put", path]) => {
+            ctx.put_on_node(node, path, None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (Some(node), ["put", path, name]) => {
+            ctx.put_on_node(node, path, Some(name)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (Some(node), ["get", name]) => {
+            ctx.get_on_node(node, name, None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (Some(node), ["get", name, output]) => {
+            ctx.get_on_node(node, name, Some(output)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (Some(node), ["cat", name]) => {
+            ctx.get_on_node(node, name, Some("-")).await?;
+            Ok(ReplAction::Continue)
+        }
+        (Some(node), ["delete" | "rm", name]) => {
+            ctx.delete_on_node(node, name).await?;
+            Ok(ReplAction::Continue)
+        }
+        (Some(node), ["peers"]) => {
+            ctx.peers_on_node(node).await?;
+            Ok(ReplAction::Continue)
+        }
+        (Some(_node), _) => {
+            println!("@NODE_ID not supported for this command");
+            Ok(ReplAction::Continue)
+        }
+
+        // Regular commands (no @NODE_ID)
+        (None, ["quit" | "exit" | "q"]) => Ok(ReplAction::Quit),
+        (None, ["help" | "?"]) => {
+            print_help();
+            Ok(ReplAction::Continue)
+        }
+        (None, ["list" | "ls"]) => {
+            ctx.list().await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["put" | "in", path]) => {
+            ctx.put(path, None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["put" | "in", path, name]) => {
+            ctx.put(path, Some(name)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["get", name]) => {
+            ctx.get(name, None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["get", name, output]) => {
+            ctx.get(name, Some(output)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["cat" | "output" | "out", name]) => {
+            ctx.get(name, Some("-")).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["gethash", hash, output]) => {
+            ctx.gethash(hash, output).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["delete" | "rm", name]) => {
+            ctx.delete(name).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["rename", from, to]) => {
+            ctx.rename(from, to).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["copy" | "cp", from, to]) => {
+            ctx.copy(from, to).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["peers"]) => {
+            ctx.peers().await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["find", rest @ ..]) => {
+            handle_find_command(ctx, rl, rest).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["search", rest @ ..]) => {
+            handle_search_command(ctx, rest).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag" | "label" | "link", "set" | "add", subject, key]) => {
+            ctx.set_tag(subject, key, None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag" | "label" | "link", "set" | "add", subject, key, value]) => {
+            ctx.set_tag(subject, key, Some(value)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (
+            None,
+            [
+                "tag" | "label" | "link",
+                "del" | "rm" | "remove" | "rem" | "delete" | "unset",
+                subject,
+                key,
+            ],
+        ) => {
+            ctx.del_tag(subject, key, None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (
+            None,
+            [
+                "tag" | "label" | "link",
+                "del" | "rm" | "remove" | "rem" | "delete" | "unset",
+                subject,
+                key,
+                value,
+            ],
+        ) => {
+            ctx.del_tag(subject, key, Some(value)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tags" | "labels" | "links"]) => {
+            ctx.get_tags(None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tags" | "labels" | "links", subject]) => {
+            ctx.get_tags(Some(subject)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag" | "label" | "link", "search" | "find", rest @ ..]) if !rest.is_empty() => {
+            let query = rest.join(" ");
+            ctx.search_tags(&query).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag" | "label" | "link", "search" | "find"]) => {
+            ctx.search_tags("").await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag" | "label" | "link", "list" | "ls"]) => {
+            ctx.get_tags(None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag" | "label" | "link", "list" | "ls", subject]) => {
+            ctx.get_tags(Some(subject)).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["migrate-tags" | "migrate"]) => {
+            ctx.migrate_tags().await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["show" | "view", rest @ ..]) => {
+            handle_show_command(ctx, rest).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["peek", rest @ ..]) => {
+            handle_peek_command(ctx, rest).await?;
+            Ok(ReplAction::Continue)
+        }
+        _ => {
+            println!("unknown command: {line}");
+            println!("type 'help' for available commands");
+            Ok(ReplAction::Continue)
+        }
+    }
+}
+
+/// Substitute a collected heredoc body for the `-` placeholder in
+/// the original command line. Only the mid-line form can reach this
+/// point: a trailing placeholder is rejected when the heredoc starts
+/// (see `preprocess_repl_line` in input.rs, #2280), and this helper
+/// intentionally has no end-of-line case — the historical literal
+/// `" -$"` replace here never matched anything.
+fn substitute_heredoc_content(original_line: &str, content: &str) -> String {
+    original_line.replace(" - ", &format!(" __STDIN_CONTENT__:{content} "))
+}
+
+/// Handle commands containing the `__STDIN_CONTENT__:` marker.
+///
+/// This function processes commands where content was inlined via
+/// preprocessing (from `$()`, `<<<`, or `|>`). It extracts the content
+/// and name, then calls the appropriate command handler.
+///
+/// # Marker Format
+///
+/// The marker format is: `__STDIN_CONTENT__:<content> <name>`
+///
+/// For example, `put __STDIN_CONTENT__:hello world greeting` becomes
+/// a put command with content "hello world" and name "greeting".
+async fn handle_stdin_content(ctx: &mut ReplContext, line: &str) -> Result<ReplAction> {
+    if let Some(start) = line.find("__STDIN_CONTENT__:") {
+        let before = line[..start].trim();
+        let after_marker = &line[start + 18..]; // 18 = len("__STDIN_CONTENT__:")
+
+        // Find the last whitespace-separated token (the name)
+        let after_trimmed = after_marker.trim();
+        if let Some(last_space) = after_trimmed.rfind(' ') {
+            let content = &after_trimmed[..last_space];
+            let name = &after_trimmed[last_space + 1..];
+
+            if before == "put" {
+                let content_marker = format!("__STDIN_CONTENT__:{content}");
+                ctx.put(&content_marker, Some(name)).await?;
+            } else {
+                println!("unknown command with content: {before}");
+            }
+        } else {
+            println!("error: content requires a name (e.g., put $(cmd) name.txt)");
+        }
+    }
+    Ok(ReplAction::Continue)
+}
+
+/// Parse `@NODE_ID` prefix from command parts.
+///
+/// Checks if the second token is a valid `@NODE_ID` (@ followed by 64 hex chars).
+/// If so, returns the node ID and remaining parts; otherwise returns None and
+/// original parts.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // With @NODE_ID
+/// let (node, parts) = parse_target_node(&["list", "@abc123..."]);
+/// assert!(node.is_some());
+/// assert_eq!(parts, vec!["list"]);
+///
+/// // Without @NODE_ID
+/// let (node, parts) = parse_target_node(&["list"]);
+/// assert!(node.is_none());
+/// assert_eq!(parts, vec!["list"]);
+/// ```
+fn parse_target_node<'a>(parts: &[&'a str]) -> (Option<&'a str>, Vec<&'a str>) {
+    if parts.len() >= 2
+        && let Some(node_str) = parts[1].strip_prefix('@')
+        && is_node_id(node_str)
+    {
+        let mut new_parts = vec![parts[0]];
+        new_parts.extend(&parts[2..]);
+        return (Some(node_str), new_parts);
+    }
+    (None, parts.to_vec())
+}
+
+/// Print the REPL help message.
+///
+/// Displays all available commands, their syntax, and usage examples
+/// for remote targeting and input methods.
+fn print_help() {
+    println!("commands:");
+    println!("  list                   - List all stored files");
+    println!("  put <FILE> [NAME]      - Store file (NAME defaults to filename)");
+    println!("  get <NAME> [OUTPUT]    - Retrieve file (OUTPUT defaults to NAME, - for stdout)");
+    println!("  cat <NAME>             - Print file to stdout");
+    println!("  gethash <HASH> <OUTPUT> - Retrieve by hash (- for stdout)");
+    println!("  delete <NAME>          - Delete a file (alias: rm)");
+    println!("  rename <FROM> <TO>     - Rename a file");
+    println!("  copy <FROM> <TO>       - Copy a file (alias: cp)");
+    println!("  peers                  - List discovered peers");
+    println!("  find <QUERY>...        - Find & output matches");
+    println!("  search <QUERY>...      - List matches");
+    println!("  tags [FILE]            - List all tags (or tags for FILE)");
+    println!("      aliases: labels, links");
+    println!("  tag set <FILE> <KEY> [VALUE] - Set a metadata tag (alias: add)");
+    println!("  tag del <FILE> <KEY> [VALUE] - Delete a metadata tag");
+    println!("      aliases: rm, remove, rem, delete, unset");
+    println!("  tag list [FILE]              - List tags (same as 'tags')");
+    println!("  tag search <QUERY>...        - Search tags (alias: find)");
+    println!("      query syntax: key:  :value  key:value  \"literal\"  bare");
+    println!("      note: 'tag' can be replaced with 'label' or 'link'");
+    println!("  migrate-tags                 - Add name/file tags to all existing files");
+    println!("      alias: migrate");
+    println!("  show <QUERY>...        - Find & cat to stdout (alias: view)");
+    println!("  peek <QUERY>...        - Preview with head/tail display");
+    println!("  !<cmd>                 - Run shell command");
+    println!("  help                   - Show this help");
+    println!("  quit                   - Exit repl");
+    println!();
+    println!("search/find flags:");
+    println!("  --name                 - Prefer name matches over hash matches");
+    println!("  --all                  - Output all matches");
+    println!("  --first [N]            - Return first N matches (default 1)");
+    println!("  --last [N]             - Return last N matches (default 1)");
+    println!("  --count                - Print match count only");
+    println!("  --exclude PAT          - Exclude matches containing PAT (repeatable)");
+    println!("  --dir <DIR>            - Save matches to directory");
+    println!("  --file, >FILE          - Save to file");
+    println!();
+    println!("peek flags:");
+    println!("  --all                  - Peek all matches (excerpt of each)");
+    println!("  --lines N, -n N        - Lines to show from head/tail (default 5)");
+    println!("  --head-only            - Show only head lines");
+    println!("  --tail-only            - Show only tail lines");
+    println!("  --chars                - Count by characters instead of lines");
+    println!("  --words                - Count by words instead of lines");
+    println!("  --quiet, -q            - No header banner");
+    println!("  -o FILE                - Output to file");
+    println!();
+    println!("remote targeting:");
+    println!("  list @NODE_ID          - List files on remote node");
+    println!("  put @NODE_ID FILE      - Store file on remote node");
+    println!("  get @NODE_ID NAME      - Get file from remote node");
+    println!("  cat @NODE_ID NAME      - Print remote file to stdout");
+    println!("  delete @NODE_ID NAME   - Delete file on remote node");
+    println!("  peers @NODE_ID         - List peers known to remote node");
+    println!();
+    println!("input methods:");
+    println!("  put $(cmd) name        - Store output of command");
+    println!("  put `cmd` name         - Store output of command (alt)");
+    println!("  cmd |> put - name      - Pipe command output to put");
+    println!("  put - name <<< 'text'  - Store literal text");
+    println!("  put - name <<EOF       - Start heredoc (end with EOF)");
+}
+
+/// Parsed arguments for find/search commands.
+///
+/// This struct holds the parsed options for find and search commands,
+/// including queries, flags, and output configuration.
+struct FindArgs<'a> {
+    /// Search queries (patterns to match)
+    queries: Vec<&'a str>,
+    /// Prefer name matches over hash matches
+    prefer_name: bool,
+    /// Output all matches (not just first)
+    all: bool,
+    /// Explicit output filename (from `>filename`)
+    output_file: Option<&'a str>,
+    /// Directory to save files to (from `--dir`)
+    dir: Option<&'a str>,
+    /// Save to file instead of stdout
+    to_file: bool,
+    /// Output format: "tag", "group", or "union"
+    format: &'a str,
+    /// Set when `--format` named an unknown value: the handlers surface
+    /// this error instead of letting the value reach the printers, whose
+    /// fallthrough arm would silently render it as the tag format.
+    format_error: Option<&'a str>,
+    /// Return only first N matches
+    first: Option<usize>,
+    /// Return only last N matches
+    last: Option<usize>,
+    /// Print count instead of matches
+    count: bool,
+    /// Exclude patterns (names/hashes containing these are excluded)
+    exclude: Vec<&'a str>,
+}
+
+impl FindArgs<'_> {
+    /// Reject mutually exclusive and zero result limits before any search work starts.
+    fn validate_result_limits(&self) -> Result<()> {
+        if self.first.is_some() && self.last.is_some() {
+            anyhow::bail!("--first and --last cannot be used together");
+        }
+        // #3059: an explicit zero limit is an error, never a silent empty result.
+        // Nonnumeric option values are rejected by the argument parsers.
+        if self.first == Some(0) {
+            anyhow::bail!("--first must be at least 1 (got 0)");
+        }
+        if self.last == Some(0) {
+            anyhow::bail!("--last must be at least 1 (got 0)");
+        }
+        Ok(())
+    }
+
+    /// Convert to `SearchOptions` for filtering.
+    fn to_search_options(&self) -> SearchOptions {
+        SearchOptions::new(
+            self.first,
+            self.last,
+            self.count,
+            self.exclude.iter().map(ToString::to_string).collect(),
+        )
+    }
+}
+
+/// Parse find/search command arguments from tokens.
+///
+/// Supports:
+/// - Multiple queries (non-flag arguments)
+/// - `--name`: Prefer name matches
+/// - `--all`, `--out`, `--export`, `--save`, `--full`: Output all matches
+/// - `--file`: Save to file
+/// - `>filename`: Save to specific file
+/// - `--dir <path>`: Save all to directory
+/// - `--format <fmt>`: Set output format
+/// - `--tag`, `--group`, `--union`: Format shortcuts
+/// - `--first [N]`: Return only first N matches (default 1)
+/// - `--last [N]`: Return only last N matches (default 1)
+/// - `--count`: Print count instead of matches
+/// - `--exclude PATTERN`: Exclude matches containing pattern (repeatable)
+fn required_value<'a>(rest: &[&'a str], i: &mut usize) -> Result<&'a str> {
+    let flag = rest[*i];
+    let value = rest
+        .get(*i + 1)
+        .copied()
+        .filter(|value| !value.is_empty() && (!value.starts_with('-') || *value == "-"))
+        .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))?;
+    *i += 1;
+    Ok(value)
+}
+
+/// Like `required_value`, but for `--exclude`: exclusion patterns are
+/// data, and a pattern may legitimately start with a single hyphen (e.g.
+/// `--exclude -draft`). Double-hyphen tokens are reserved for flags; use
+/// another spelling for patterns that begin with `--`.
+fn required_pattern<'a>(rest: &[&'a str], i: &mut usize) -> Result<&'a str> {
+    let flag = rest[*i];
+    let value = rest
+        .get(*i + 1)
+        .copied()
+        .filter(|value| !value.is_empty() && !value.starts_with("--"))
+        .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))?;
+    *i += 1;
+    Ok(value)
+}
+
+fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<FindArgs<'a>> {
+    let mut args = FindArgs {
+        queries: Vec::new(),
+        prefer_name: false,
+        all: false,
+        output_file: None,
+        dir: None,
+        to_file: false,
+        format: default_format,
+        format_error: None,
+        first: None,
+        last: None,
+        count: false,
+        exclude: Vec::new(),
+    };
+
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = rest[i];
+        if arg == "--name" {
+            args.prefer_name = true;
+        } else if arg == "--all"
+            || arg == "--out"
+            || arg == "--export"
+            || arg == "--save"
+            || arg == "--full"
+        {
+            args.all = true;
+        } else if arg == "--file" {
+            args.to_file = true;
+        } else if let Some(path) = arg.strip_prefix('>') {
+            anyhow::ensure!(
+                !path.is_empty(),
+                "redirect > requires a non-empty output path"
+            );
+            args.output_file = Some(path);
+            args.to_file = true;
+        } else if arg == "-o" || arg == "--output" {
+            args.output_file = Some(required_value(rest, &mut i)?);
+            args.to_file = true;
+        } else if arg == "--dir" {
+            args.dir = Some(required_value(rest, &mut i)?);
+        } else if arg == "--format" {
+            let value = required_value(rest, &mut i)?;
+            if matches!(value, "tag" | "group" | "union") {
+                args.format = value;
+            } else {
+                args.format_error = Some(value);
+            }
+        } else if arg == "--tag" {
+            args.format = "tag";
+        } else if arg == "--group" {
+            args.format = "group";
+        } else if arg == "--union" {
+            args.format = "union";
+        } else if arg == "--first" {
+            // --first with optional number argument; a `>file`
+            // redirection token is not the number (it is handled by
+            // the output branch below), so `--first >out.txt` keeps
+            // the default limit of 1.
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
+            {
+                let value = rest[i + 1];
+                args.first =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--first requires an integer (got {value:?})")
+                    })?);
+                i += 1;
+            } else {
+                args.first = Some(1); // default to 1
+            }
+        } else if arg == "--last" {
+            // --last with optional number argument; same
+            // redirection exclusion as --first.
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
+            {
+                let value = rest[i + 1];
+                args.last =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--last requires an integer (got {value:?})")
+                    })?);
+                i += 1;
+            } else {
+                args.last = Some(1); // default to 1
+            }
+        } else if arg == "--count" {
+            args.count = true;
+        } else if arg == "--exclude" {
+            args.exclude.push(required_pattern(rest, &mut i)?);
+        } else if arg.starts_with('-') {
+            anyhow::bail!("unknown flag: {arg}");
+        } else {
+            args.queries.push(arg);
+        }
+        i += 1;
+    }
+    args.validate_result_limits()?;
+    Ok(args)
+}
+
+/// Handle the `find` command in the REPL.
+///
+/// Searches for blobs matching the queries and outputs their content.
+/// If multiple matches are found and `--all` is not set, presents an
+/// interactive selection prompt.
+///
+/// # Behavior
+///
+/// - Single match: Output immediately
+/// - Multiple matches: Show numbered list, prompt for selection
+/// - `--all` flag: Output all matches without prompting
+/// - `--count` flag: Just print count
+/// - `--first N` / `--last N`: Limit results
+/// - `--exclude PATTERN`: Filter out matches
+async fn handle_find_command(
+    ctx: &mut ReplContext,
+    rl: &mut DefaultEditor,
+    rest: &[&str],
+) -> Result<()> {
+    let args = parse_find_args(rest, "union")?;
+
+    if let Some(bad) = args.format_error {
+        println!("error: invalid --format \"{bad}\": expected tag, group, or union");
+        return Ok(());
+    }
+
+    if args.queries.is_empty() {
+        println!(
+            "usage: find <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]"
+        );
+        return Ok(());
+    }
+
+    // Collect matches for all queries
+    let all_matches = collect_matches(ctx, &args.queries, args.prefer_name).await;
+
+    // Apply filtering and limiting via SearchOptions
+    let search_opts = args.to_search_options();
+    let filtered_matches = apply_search_options(&all_matches, &search_opts);
+
+    if filtered_matches.is_empty() {
+        println!("no matches found for: {}", args.queries.join(", "));
+        return Ok(());
+    }
+
+    // --count mode: just print the count
+    if args.count {
+        println!("{}", filtered_matches.len());
+        return Ok(());
+    }
+
+    // --all mode: output all matches
+    if args.all {
+        return output_all_matches_filtered(ctx, &filtered_matches, args.dir, args.format).await;
+    }
+
+    // Single match
+    if filtered_matches.len() == 1 {
+        let (_, m) = &filtered_matches[0];
+        let output = if args.to_file {
+            match args.output_file {
+                // Explicit user path stays the user's choice.
+                Some(path) => path.to_owned(),
+                // Match-derived default: confine via the shared CLI ruling.
+                None => download_output_path(None, &m.name)?,
+            }
+        } else {
+            "-".to_owned()
+        };
+        return ctx.get(&m.name, Some(&output)).await;
+    }
+
+    // Multiple matches - interactive selection
+    select_and_output_matches_filtered(
+        ctx,
+        rl,
+        &filtered_matches,
+        args.dir,
+        args.output_file,
+        args.to_file,
+        args.format,
+    )
+    .await
+}
+
+/// Handle the `search` command in the REPL.
+///
+/// Lists blobs matching the queries without outputting content by default.
+/// With `--all` or `--file`, also retrieves the matching files.
+async fn handle_search_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
+    let args = parse_find_args(rest, "union")?;
+
+    if let Some(bad) = args.format_error {
+        println!("error: invalid --format \"{bad}\": expected tag, group, or union");
+        return Ok(());
+    }
+
+    if args.queries.is_empty() {
+        println!(
+            "usage: search <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]"
+        );
+        return Ok(());
+    }
+
+    // Collect matches for all queries
+    let all_matches = collect_matches(ctx, &args.queries, args.prefer_name).await;
+
+    // Apply filtering and limiting via SearchOptions
+    let search_opts = args.to_search_options();
+    let filtered_matches = apply_search_options(&all_matches, &search_opts);
+
+    if filtered_matches.is_empty() {
+        println!("no matches found for: {}", args.queries.join(", "));
+        return Ok(());
+    }
+
+    // --count mode: just print the count
+    if args.count {
+        println!("{}", filtered_matches.len());
+        return Ok(());
+    }
+
+    // --all mode: output all matches to files
+    if args.all {
+        return output_all_matches_filtered(ctx, &filtered_matches, args.dir, args.format).await;
+    }
+
+    // Default: list matches
+    for (query, m) in &filtered_matches {
+        print_match_repl(query, m, args.format);
+    }
+
+    // If --file or >filename, also output first match to file
+    if args.to_file {
+        let (_, m) = &filtered_matches[0];
+        let output = match args.output_file {
+            // Explicit user path stays the user's choice.
+            Some(path) => path.to_owned(),
+            // Match-derived default: confine via the shared CLI ruling.
+            None => download_output_path(None, &m.name)?,
+        };
+        ctx.get(&m.name, Some(&output)).await
+    } else {
+        Ok(())
+    }
+}
+
+/// Handle the `show` command in the REPL (find + cat to stdout).
+///
+/// Searches for blobs matching the queries and outputs their content
+/// to stdout (or file with -o).
+async fn handle_show_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
+    let args = parse_find_args(rest, "union")?;
+
+    if let Some(bad) = args.format_error {
+        println!("error: invalid --format \"{bad}\": expected tag, group, or union");
+        return Ok(());
+    }
+
+    if args.queries.is_empty() {
+        println!(
+            "usage: show <query>... [--all] [--first [N]] [--last [N]] [--exclude PAT] [-o FILE]"
+        );
+        return Ok(());
+    }
+
+    // Collect matches for all queries
+    let all_matches = collect_matches(ctx, &args.queries, args.prefer_name).await;
+
+    // Apply filtering and limiting
+    let search_opts = args.to_search_options();
+    let filtered_matches = apply_search_options(&all_matches, &search_opts);
+
+    if filtered_matches.is_empty() {
+        println!("no matches found for: {}", args.queries.join(", "));
+        return Ok(());
+    }
+
+    // Determine output destination
+    let output = args.output_file.unwrap_or("-");
+
+    if args.all {
+        // Output all matches
+        let mut seen = std::collections::HashSet::new();
+        for (_, m) in &filtered_matches {
+            let key = format!("{}:{}", m.hash, m.name);
+            if seen.insert(key)
+                && let Err(e) = ctx.get(&m.name, Some(output)).await
+            {
+                println!("error: {e}");
+            }
+        }
+    } else {
+        // Output first match only
+        let (_, m) = &filtered_matches[0];
+        ctx.get(&m.name, Some(output)).await?;
+    }
+
+    Ok(())
+}
+
+/// Handle the `peek` command in the REPL (preview with head/tail).
+///
+/// Searches for blobs and shows a preview with configurable head/tail lines.
+async fn handle_peek_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
+    let (args, peek_opts) = parse_peek_args(rest)?;
+
+    if args.queries.is_empty() {
+        println!(
+            "usage: peek <query>... [--all] [--lines N] [--head-only] [--tail-only] [--chars] [--words] [--quiet] [-o FILE]"
+        );
+        return Ok(());
+    }
+
+    // Collect matches for all queries
+    let all_matches = collect_matches(ctx, &args.queries, args.prefer_name).await;
+
+    // Apply filtering and limiting
+    let search_opts = args.to_search_options();
+    let filtered_matches = apply_search_options(&all_matches, &search_opts);
+
+    if filtered_matches.is_empty() {
+        println!("no matches found for: {}", args.queries.join(", "));
+        return Ok(());
+    }
+
+    // Determine which matches to peek (deduplicated)
+    let mut seen = std::collections::HashSet::new();
+    let matches_to_peek: Vec<&(String, FindMatch)> = if args.all {
+        filtered_matches
+            .iter()
+            .filter(|(_, m)| seen.insert(format!("{}:{}", m.hash, m.name)))
+            .collect()
+    } else {
+        // Just first unique match
+        filtered_matches
+            .iter()
+            .filter(|(_, m)| seen.insert(format!("{}:{}", m.hash, m.name)))
+            .take(1)
+            .collect()
+    };
+
+    // Output destination
+    let mut out: Box<dyn Write> = if let Some(path) = args.output_file {
+        Box::new(std::fs::File::create(path)?)
+    } else {
+        Box::new(std::io::stdout())
+    };
+
+    for (idx, (_, m)) in matches_to_peek.iter().enumerate() {
+        if idx > 0 {
+            writeln!(out)?;
+        }
+
+        // Fetch content to string (via get to temp file)
+        let content = fetch_content_for_peek(ctx, m).await?;
+
+        // Print the peek
+        print_peek(
+            &mut out,
+            &m.name,
+            &m.hash.to_string(),
+            &content,
+            &peek_opts,
+            matches_to_peek.len(),
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Collect matches for multiple queries.
+///
+/// Executes find for each query and collects all results into a single
+/// vector. Errors for individual queries are printed but don't stop
+/// processing of other queries.
+async fn collect_matches(
+    ctx: &mut ReplContext,
+    queries: &[&str],
+    prefer_name: bool,
+) -> Vec<(String, FindMatch)> {
+    let mut all_matches = Vec::new();
+    for query in queries {
+        match ctx.find(query, prefer_name).await {
+            Ok(matches) => {
+                for m in matches {
+                    all_matches.push((String::from(*query), m));
+                }
+            }
+            Err(e) => {
+                println!("error searching for '{query}': {e}");
+            }
+        }
+    }
+    all_matches
+}
+
+/// Apply `SearchOptions` to filter and limit matches.
+fn apply_search_options(
+    matches: &[(String, FindMatch)],
+    opts: &SearchOptions,
+) -> Vec<(String, FindMatch)> {
+    // First, apply exclusions
+    let filtered: Vec<(String, FindMatch)> = matches
+        .iter()
+        .filter(|(_, m)| !opts.should_exclude(&m.name, &m.hash.to_string()))
+        .cloned()
+        .collect();
+
+    // Then apply first/last limiting
+    if let Some(n) = opts.first {
+        filtered.into_iter().take(n).collect()
+    } else if let Some(n) = opts.last {
+        let len = filtered.len();
+        if n >= len {
+            filtered
+        } else {
+            filtered.into_iter().skip(len - n).collect()
+        }
+    } else {
+        filtered
+    }
+}
+
+/// Output all filtered matches (for `--all` mode).
+async fn output_all_matches_filtered(
+    ctx: &mut ReplContext,
+    filtered_matches: &[(String, FindMatch)],
+    dir: Option<&str>,
+    format: &str,
+) -> Result<()> {
+    if let Some(dir_path) = dir {
+        // Preflight every destination through the shared final-component
+        // ruling before creating the directory or writing anything, so a
+        // single unsafe name or basename collision writes nothing (mirrors
+        // the CLI `plan_download_paths` batch refusal, #2178).
+        let mut seen = std::collections::HashSet::new();
+        let mut destinations = std::collections::HashMap::new();
+        let mut plan: Vec<(&(String, FindMatch), String)> = Vec::new();
+        for entry @ (_, m) in filtered_matches {
+            let key = format!("{}:{}", m.hash, m.name);
+            if !seen.insert(key) {
+                continue;
+            }
+            let output_path = match download_output_path(Some(dir_path), &m.name) {
+                Ok(path) => path,
+                Err(e) => {
+                    println!("error: {e}");
+                    return Ok(());
+                }
+            };
+            if let Some(previous) = destinations.insert(output_path.clone(), m.name.as_str()) {
+                println!(
+                    "refusing bulk download: destination collision between matches {:?} and {:?} at {:?}",
+                    previous, m.name, output_path
+                );
+                return Ok(());
+            }
+            plan.push((entry, output_path));
+        }
+        if let Err(e) = std::fs::create_dir_all(dir_path) {
+            println!("error creating directory: {e}");
+            return Ok(());
+        }
+        for ((query, m), output_path) in plan {
+            if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
+                println!("error: {e}");
+            } else {
+                print_match_repl(query, m, format);
+            }
+        }
+    } else {
+        // Output all to stdout
+        let mut seen = std::collections::HashSet::new();
+        for (_, m) in filtered_matches {
+            let key = format!("{}:{}", m.hash, m.name);
+            if seen.insert(key)
+                && let Err(e) = ctx.get(&m.name, Some("-")).await
+            {
+                println!("error: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse a find selection prompt answer (#1999), strictly and
+/// all-or-nothing: every non-empty token must be a valid in-range
+/// 1-based match number, otherwise the whole selection is invalid
+/// (`None`) and the caller acts on nothing. Silently dropping a bad
+/// token would change which blobs the user confirmed. Duplicate
+/// numbers are deduplicated, first-occurrence order preserved, so a
+/// blob is never fetched or written twice for one answer.
+fn parse_selection(sel: &str, match_count: usize) -> Option<Vec<usize>> {
+    let mut selections: Vec<usize> = Vec::new();
+    for token in sel.split([',', ' ']).filter(|s| !s.is_empty()) {
+        let n: usize = token.trim().parse().ok()?;
+        if n < 1 || n > match_count {
+            return None;
+        }
+        if !selections.contains(&n) {
+            selections.push(n);
+        }
+    }
+    if selections.is_empty() {
+        None
+    } else {
+        Some(selections)
+    }
+}
+
+trait MatchGetter {
+    async fn get_match(&mut self, name: &str, destination: Option<&str>) -> Result<()>;
+}
+
+impl MatchGetter for ReplContext {
+    async fn get_match(&mut self, name: &str, destination: Option<&str>) -> Result<()> {
+        self.get(name, destination).await
+    }
+}
+
+async fn output_selected_matches_to_dir<G: MatchGetter>(
+    ctx: &mut G,
+    selections: &[usize],
+    filtered_matches: &[(String, FindMatch)],
+    dir_path: &str,
+) {
+    // Preflight the selected destinations through the shared final-component
+    // ruling before writing anything, so one unsafe name or basename
+    // collision writes nothing (batch refusal, consistent with #2178).
+    let mut destinations = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut plan: Vec<(&FindMatch, String)> = Vec::new();
+    for n in selections {
+        let (_, m) = &filtered_matches[n - 1];
+        // Identical matches listed twice (overlapping queries) are one
+        // download, not a collision (Codex review on PR #4472).
+        if !seen.insert(format!("{}:{}", m.hash, m.name)) {
+            continue;
+        }
+        let output_path = match download_output_path(Some(dir_path), &m.name) {
+            Ok(path) => path,
+            Err(e) => {
+                println!("error: {e}");
+                return;
+            }
+        };
+        if let Some(previous) = destinations.insert(output_path.clone(), m.name.as_str()) {
+            println!(
+                "refusing bulk download: destination collision between matches {:?} and {:?} at {:?}",
+                previous, m.name, output_path
+            );
+            return;
+        }
+        plan.push((m, output_path));
+    }
+    for (m, output_path) in plan {
+        if let Err(e) = ctx.get_match(&m.name, Some(&output_path)).await {
+            println!("error: {e}");
+        }
+    }
+}
+
+/// Interactive selection and output of filtered matches.
+#[allow(clippy::if_same_then_else)] // Both branches return Ok(()), but have different side effects
+async fn select_and_output_matches_filtered(
+    ctx: &mut ReplContext,
+    rl: &mut DefaultEditor,
+    filtered_matches: &[(String, FindMatch)],
+    dir: Option<&str>,
+    output_file: Option<&str>,
+    to_file: bool,
+    format: &str,
+) -> Result<()> {
+    // Print numbered list
+    println!("found {} matches:", filtered_matches.len());
+    for (i, (query, m)) in filtered_matches.iter().enumerate() {
+        let kind_str = match m.kind {
+            MatchKind::Exact => "exact",
+            MatchKind::Prefix => "prefix",
+            MatchKind::Contains => "contains",
+        };
+        let match_type = if m.is_hash_match { "hash" } else { "name" };
+        match format {
+            "tag" => println!(
+                "[{}]\t{}\t{}\t{}\t({} {})",
+                i + 1,
+                query,
+                m.hash,
+                m.name,
+                kind_str,
+                match_type
+            ),
+            "group" => println!(
+                "[{}]\t{}\t{}\t({} {})",
+                i + 1,
+                m.hash,
+                m.name,
+                kind_str,
+                match_type
+            ),
+            _ => println!(
+                "[{}]\t{}\t{}\t({} {}) [{}]",
+                i + 1,
+                m.hash,
+                m.name,
+                kind_str,
+                match_type,
+                query
+            ),
+        }
+    }
+    println!("select numbers (e.g., '1 3 5' or '1,2,3') or enter to cancel:");
+
+    if let Ok(sel) = rl.readline("? ") {
+        let sel = sel.trim();
+        if sel.is_empty() {
+            println!("cancelled");
+            return Ok(());
+        }
+
+        // Parse selection — strict and all-or-nothing (#1999): any
+        // bad token invalidates the whole answer instead of silently
+        // dropping it and acting on the surviving numbers.
+        let selections = match parse_selection(sel, filtered_matches.len()) {
+            Some(selections) => selections,
+            None => {
+                println!("invalid selection");
+                return Ok(());
+            }
+        };
+
+        // Output based on mode
+        if let Some(dir_path) = dir {
+            if let Err(e) = std::fs::create_dir_all(dir_path) {
+                println!("error creating directory: {e}");
+                return Ok(());
+            }
+            output_selected_matches_to_dir(ctx, &selections, filtered_matches, dir_path).await;
+        } else if to_file {
+            // Preflight match-derived defaults through the shared ruling so
+            // colliding basenames are refused before any write; an explicit
+            // user path stays the user's choice.
+            if output_file.is_some() {
+                for n in &selections {
+                    let (_, m) = &filtered_matches[n - 1];
+                    let output = output_file.unwrap_or(&m.name);
+                    if let Err(e) = ctx.get(&m.name, Some(output)).await {
+                        println!("error: {e}");
+                    }
+                }
+            } else {
+                let mut destinations = std::collections::HashSet::new();
+                let mut seen = std::collections::HashSet::new();
+                let mut plan: Vec<(&FindMatch, String)> = Vec::new();
+                let mut refused = false;
+                for n in &selections {
+                    let (_, m) = &filtered_matches[n - 1];
+                    // Identical matches listed twice are one download,
+                    // not a collision (Codex review on PR #4472).
+                    if !seen.insert(format!("{}:{}", m.hash, m.name)) {
+                        continue;
+                    }
+                    match download_output_path(None, &m.name) {
+                        Ok(output) => {
+                            if !destinations.insert(output.clone()) {
+                                println!(
+                                    "refusing bulk download: destination collision at {:?}",
+                                    output
+                                );
+                                refused = true;
+                                break;
+                            }
+                            plan.push((m, output));
+                        }
+                        Err(e) => {
+                            println!("error: {e}");
+                            refused = true;
+                            break;
+                        }
+                    }
+                }
+                if !refused {
+                    for (m, output) in plan {
+                        if let Err(e) = ctx.get(&m.name, Some(&output)).await {
+                            println!("error: {e}");
+                        }
+                    }
+                }
+            }
+        } else {
+            for n in &selections {
+                let (_, m) = &filtered_matches[n - 1];
+                if let Err(e) = ctx.get(&m.name, Some("-")).await {
+                    println!("error: {e}");
+                }
+            }
+        }
+    } else {
+        println!("cancelled");
+    }
+    Ok(())
+}
+
+/// Parse peek command arguments.
+fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> {
+    let mut find_args = FindArgs {
+        queries: Vec::new(),
+        prefer_name: false,
+        all: false,
+        output_file: None,
+        dir: None,
+        to_file: false,
+        format: "union",
+        format_error: None,
+        first: None,
+        last: None,
+        count: false,
+        exclude: Vec::new(),
+    };
+    let mut peek_opts = PeekOptions::default();
+
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = rest[i];
+        if arg == "--name" {
+            find_args.prefer_name = true;
+        } else if arg == "--all" {
+            find_args.all = true;
+        } else if arg == "-o" || arg == "--output" {
+            find_args.output_file = Some(required_value(rest, &mut i)?);
+        } else if let Some(path) = arg.strip_prefix('>') {
+            // Mirror parse_find_args: `>file` redirects the preview to
+            // a file (the peek handler already honors output_file).
+            anyhow::ensure!(
+                !path.is_empty(),
+                "redirect > requires a non-empty output path"
+            );
+            find_args.output_file = Some(path);
+            find_args.to_file = true;
+        } else if arg == "--first" {
+            // A `>file` redirection token is not the number (handled
+            // by the output branch above), so `--first >out.txt`
+            // keeps the default limit of 1.
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
+            {
+                let value = rest[i + 1];
+                find_args.first =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--first requires an integer (got {value:?})")
+                    })?);
+                i += 1;
+            } else {
+                find_args.first = Some(1);
+            }
+        } else if arg == "--last" {
+            // Same redirection exclusion as --first.
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
+            {
+                let value = rest[i + 1];
+                find_args.last =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--last requires an integer (got {value:?})")
+                    })?);
+                i += 1;
+            } else {
+                find_args.last = Some(1);
+            }
+        } else if arg == "--exclude" {
+            find_args.exclude.push(required_pattern(rest, &mut i)?);
+        } else if arg == "--lines" || arg == "-n" {
+            // Same redirection exclusion: `--lines >out.txt` keeps
+            // the default line count and lets the `>` branch run.
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
+            {
+                let value = rest[i + 1];
+                let n = value
+                    .parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("--lines requires an integer (got {value:?})"))?;
+                peek_opts.lines = n;
+                i += 1;
+            }
+        } else if arg == "--head-only" || arg == "--head" {
+            peek_opts.head_only = true;
+        } else if arg == "--tail-only" || arg == "--tail" {
+            peek_opts.tail_only = true;
+        } else if arg == "--chars" {
+            peek_opts.chars = true;
+        } else if arg == "--words" {
+            peek_opts.words = true;
+        } else if arg == "--quiet" || arg == "-q" {
+            peek_opts.quiet = true;
+        } else if arg.starts_with('-') {
+            anyhow::bail!("unknown flag: {arg}");
+        } else {
+            find_args.queries.push(arg);
+        }
+        i += 1;
+    }
+
+    find_args.validate_result_limits()?;
+    // #3059: `--lines 0` / `-n 0` would render a header/elision-only preview.
+    if peek_opts.lines == 0 {
+        anyhow::bail!("--lines must be at least 1 (got 0)");
+    }
+    // The CLI declares both pairs conflicts_with (cli.rs); accepting
+    // both would silently render only one member (#3890).
+    anyhow::ensure!(
+        !(peek_opts.head_only && peek_opts.tail_only),
+        "--head-only and --tail-only cannot be used together"
+    );
+    anyhow::ensure!(
+        !(peek_opts.chars && peek_opts.words),
+        "--chars and --words cannot be used together"
+    );
+    Ok((find_args, peek_opts))
+}
+
+/// Fetch content for peek preview.
+async fn fetch_content_for_peek(ctx: &mut ReplContext, m: &FindMatch) -> Result<String> {
+    use tempfile::NamedTempFile;
+
+    // Create a temp file to fetch into
+    let temp_file = NamedTempFile::new()?;
+    let temp_path = temp_file.path().to_string_lossy().to_string();
+
+    ctx.get(&m.name, Some(&temp_path)).await?;
+
+    // Read content
+    let content = std::fs::read_to_string(&temp_path)?;
+
+    Ok(content)
+}
+
+/// Print peek preview.
+fn print_peek(
+    out: &mut dyn Write,
+    name: &str,
+    hash: &str,
+    content: &str,
+    opts: &PeekOptions,
+    total_files: usize,
+) -> Result<()> {
+    if opts.chars {
+        print_peek_chars(out, name, hash, content, opts, total_files)
+    } else if opts.words {
+        print_peek_words(out, name, hash, content, opts, total_files)
+    } else {
+        print_peek_lines(out, name, hash, content, opts, total_files)
+    }
+}
+
+/// Print peek by lines.
+fn print_peek_lines(
+    out: &mut dyn Write,
+    name: &str,
+    hash: &str,
+    content: &str,
+    opts: &PeekOptions,
+    total_files: usize,
+) -> Result<()> {
+    let lines: Vec<&str> = content.lines().collect();
+    let total_lines = lines.len();
+    let n = opts.lines;
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
+
+    // Print header if not quiet
+    if !opts.quiet {
+        writeln!(out, "─── {name} ───")?;
+        writeln!(
+            out,
+            "hash: {hash_short}  lines: {total_lines}  files: {total_files}"
+        )?;
+        writeln!(out, "───────────────────────────────────────")?;
+    }
+
+    // If small enough, show all
+    if total_lines <= n.saturating_mul(2) {
+        for line in &lines {
+            writeln!(out, "{line}")?;
+        }
+    } else if opts.head_only {
+        // Show only head
+        for line in lines.iter().take(n) {
+            writeln!(out, "{line}")?;
+        }
+        if total_lines > n && !opts.quiet {
+            writeln!(out, "... ({} more lines)", total_lines - n)?;
+        }
+    } else if opts.tail_only {
+        // Show only tail
+        if total_lines > n && !opts.quiet {
+            writeln!(out, "... ({} lines above)", total_lines - n)?;
+        }
+        for line in lines.iter().skip(total_lines.saturating_sub(n)) {
+            writeln!(out, "{line}")?;
+        }
+    } else {
+        // Show head + tail
+        for line in lines.iter().take(n) {
+            writeln!(out, "{line}")?;
+        }
+        writeln!(out, "...")?;
+        writeln!(
+            out,
+            "... ({} lines omitted)",
+            total_lines.saturating_sub(n.saturating_mul(2))
+        )?;
+        writeln!(out, "...")?;
+        for line in lines.iter().skip(total_lines.saturating_sub(n)) {
+            writeln!(out, "{line}")?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Print peek by characters.
+fn print_peek_chars(
+    out: &mut dyn Write,
+    name: &str,
+    hash: &str,
+    content: &str,
+    opts: &PeekOptions,
+    total_files: usize,
+) -> Result<()> {
+    let total_chars = content.chars().count();
+    let n = opts.lines; // reuse lines as char count
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
+
+    if !opts.quiet {
+        writeln!(out, "─── {name} ───")?;
+        writeln!(
+            out,
+            "hash: {hash_short}  chars: {total_chars}  files: {total_files}"
+        )?;
+        writeln!(out, "───────────────────────────────────────")?;
+    }
+
+    if total_chars <= n.saturating_mul(2) {
+        write!(out, "{content}")?;
+    } else if opts.head_only {
+        let head: String = content.chars().take(n).collect();
+        write!(out, "{head}")?;
+        if !opts.quiet {
+            writeln!(out, "\n... ({} more chars)", total_chars - n)?;
+        }
+    } else if opts.tail_only {
+        if !opts.quiet {
+            writeln!(out, "... ({} chars above)", total_chars - n)?;
+        }
+        let tail: String = content
+            .chars()
+            .skip(total_chars.saturating_sub(n))
+            .collect();
+        write!(out, "{tail}")?;
+    } else {
+        let head: String = content.chars().take(n).collect();
+        let tail: String = content
+            .chars()
+            .skip(total_chars.saturating_sub(n))
+            .collect();
+        write!(out, "{head}")?;
+        writeln!(
+            out,
+            "\n... ({} chars omitted)",
+            total_chars.saturating_sub(n.saturating_mul(2))
+        )?;
+        write!(out, "{tail}")?;
+    }
+    writeln!(out)?;
+
+    Ok(())
+}
+
+/// Print peek by words.
+fn print_peek_words(
+    out: &mut dyn Write,
+    name: &str,
+    hash: &str,
+    content: &str,
+    opts: &PeekOptions,
+    total_files: usize,
+) -> Result<()> {
+    let words: Vec<&str> = content.split_whitespace().collect();
+    let total_words = words.len();
+    let n = opts.lines; // reuse lines as word count
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
+
+    if !opts.quiet {
+        writeln!(out, "─── {name} ───")?;
+        writeln!(
+            out,
+            "hash: {hash_short}  words: {total_words}  files: {total_files}"
+        )?;
+        writeln!(out, "───────────────────────────────────────")?;
+    }
+
+    if total_words <= n.saturating_mul(2) {
+        writeln!(out, "{}", words.join(" "))?;
+    } else if opts.head_only {
+        let head: Vec<&str> = words.iter().take(n).copied().collect();
+        writeln!(out, "{}", head.join(" "))?;
+        if !opts.quiet {
+            writeln!(out, "... ({} more words)", total_words - n)?;
+        }
+    } else if opts.tail_only {
+        if !opts.quiet {
+            writeln!(out, "... ({} words above)", total_words - n)?;
+        }
+        let tail: Vec<&str> = words
+            .iter()
+            .skip(total_words.saturating_sub(n))
+            .copied()
+            .collect();
+        writeln!(out, "{}", tail.join(" "))?;
+    } else {
+        let head: Vec<&str> = words.iter().take(n).copied().collect();
+        let tail: Vec<&str> = words
+            .iter()
+            .skip(total_words.saturating_sub(n))
+            .copied()
+            .collect();
+        writeln!(out, "{}", head.join(" "))?;
+        writeln!(
+            out,
+            "... ({} words omitted)",
+            total_words.saturating_sub(n.saturating_mul(2))
+        )?;
+        writeln!(out, "{}", tail.join(" "))?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingGetter {
+        calls: Vec<(String, Option<String>)>,
+    }
+
+    impl MatchGetter for RecordingGetter {
+        async fn get_match(&mut self, name: &str, destination: Option<&str>) -> Result<()> {
+            self.calls
+                .push((name.to_owned(), destination.map(str::to_owned)));
+            Ok(())
+        }
+    }
+
+    fn test_find_match(name: &str) -> (String, FindMatch) {
+        (
+            "query".to_owned(),
+            FindMatch {
+                hash: iroh_blobs::Hash::from_bytes([0; 32]),
+                name: name.to_owned(),
+                kind: MatchKind::Exact,
+                is_hash_match: false,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_fetches_each_selected_match_once_to_its_file() {
+        let matches = vec![test_find_match("one.txt"), test_find_match("two.txt")];
+
+        let mut single = RecordingGetter::default();
+        output_selected_matches_to_dir(&mut single, &[1], &matches, "downloads").await;
+        assert_eq!(
+            single.calls,
+            vec![("one.txt".to_owned(), Some("downloads/one.txt".to_owned()))]
+        );
+
+        let mut multiple = RecordingGetter::default();
+        output_selected_matches_to_dir(&mut multiple, &[1, 2], &matches, "downloads").await;
+        assert_eq!(
+            multiple.calls,
+            vec![
+                ("one.txt".to_owned(), Some("downloads/one.txt".to_owned())),
+                ("two.txt".to_owned(), Some("downloads/two.txt".to_owned())),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_confines_traversal_to_final_component() {
+        // #2307: match-derived directory destinations must never escape the
+        // requested directory; the shared final-component ruling applies.
+        let cases = [
+            ("../victim.txt", "downloads/victim.txt"),
+            ("../../x", "downloads/x"),
+            ("a/../../y", "downloads/y"),
+            ("/tmp/x", "downloads/x"),
+            ("/absolute.txt", "downloads/absolute.txt"),
+            ("plain.txt", "downloads/plain.txt"),
+            ("my file.txt", "downloads/my file.txt"),
+            ("ünïcode_ß.txt", "downloads/ünïcode_ß.txt"),
+        ];
+        for (name, expected) in cases {
+            let matches = vec![test_find_match(name)];
+            let mut rec = RecordingGetter::default();
+            output_selected_matches_to_dir(&mut rec, &[1], &matches, "downloads").await;
+            assert_eq!(
+                rec.calls,
+                vec![(name.to_owned(), Some(expected.to_owned()))],
+                "name {name:?} must be confined to its final component"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_refuses_names_without_final_component() {
+        // Names with no final component are refused and nothing is written.
+        for name in ["", "..", "/", "trailing/"] {
+            let matches = vec![test_find_match(name)];
+            let mut rec = RecordingGetter::default();
+            output_selected_matches_to_dir(&mut rec, &[1], &matches, "downloads").await;
+            assert!(
+                rec.calls.is_empty(),
+                "name {name:?} must refuse without writing"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_refuses_basename_collisions_without_partial_writes() {
+        // Distinct matches reducing to the same final component are refused
+        // as a batch before any write (consistent with #2178 CLI batching).
+        let matches = vec![test_find_match("a/same.txt"), test_find_match("b/same.txt")];
+        let mut rec = RecordingGetter::default();
+        output_selected_matches_to_dir(&mut rec, &[1, 2], &matches, "downloads").await;
+        assert!(
+            rec.calls.is_empty(),
+            "colliding basenames must write nothing, got {:?}",
+            rec.calls
+        );
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_duplicate_identical_selections_fetch_once() {
+        // Overlapping queries can list the same (hash, name) match twice;
+        // selecting both entries is one download, not a basename collision.
+        let matches = vec![test_find_match("report.txt"), test_find_match("report.txt")];
+        let mut rec = RecordingGetter::default();
+        output_selected_matches_to_dir(&mut rec, &[1, 2], &matches, "downloads").await;
+        assert_eq!(
+            rec.calls,
+            vec![(
+                "report.txt".to_owned(),
+                Some("downloads/report.txt".to_owned())
+            )]
+        );
+    }
+
+    #[test]
+    fn test_substitute_heredoc_content_midline() {
+        // Supported form: the placeholder sits before the name, and
+        // body content with spaces lands inline (#2280 control).
+        assert_eq!(
+            substitute_heredoc_content("put - name", "hello world"),
+            "put __STDIN_CONTENT__:hello world name"
+        );
+    }
+
+    #[test]
+    fn test_substitute_heredoc_content_multiline() {
+        assert_eq!(
+            substitute_heredoc_content("put - name", "line one\nline two"),
+            "put __STDIN_CONTENT__:line one\nline two name"
+        );
+    }
+
+    #[test]
+    fn test_substitute_heredoc_content_no_placeholder() {
+        // No placeholder: the line passes through unchanged (the
+        // trailing form is rejected at heredoc start, in input.rs).
+        assert_eq!(substitute_heredoc_content("put name", "body"), "put name");
+    }
+
+    #[test]
+    fn test_parse_target_node_with_node() {
+        let parts = vec![
+            "list",
+            "@0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ];
+        let (node, cmd_parts) = parse_target_node(&parts);
+        assert!(node.is_some());
+        assert_eq!(cmd_parts, vec!["list"]);
+    }
+
+    #[test]
+    fn test_parse_target_node_without_node() {
+        let parts = vec!["list"];
+        let (node, cmd_parts) = parse_target_node(&parts);
+        assert!(node.is_none());
+        assert_eq!(cmd_parts, vec!["list"]);
+    }
+
+    #[test]
+    fn test_parse_target_node_invalid_node() {
+        let parts = vec!["list", "@invalid"];
+        let (node, cmd_parts) = parse_target_node(&parts);
+        assert!(node.is_none());
+        assert_eq!(cmd_parts, vec!["list", "@invalid"]);
+    }
+
+    #[test]
+    fn test_parse_rejects_zero_result_limits() {
+        // #3059: explicit zero limits are errors at the REPL boundary.
+        assert!(parse_find_args(&["q", "--first", "0"], "tag").is_err());
+        assert!(parse_find_args(&["q", "--last", "0"], "tag").is_err());
+        assert!(parse_peek_args(&["q", "--lines", "0"]).is_err());
+        assert!(parse_peek_args(&["q", "-n", "0"]).is_err());
+        assert!(parse_peek_args(&["q", "--first", "0"]).is_err());
+        // Bare flags keep the default of 1; a nonnumeric value keeps the #2009 fallback.
+        assert_eq!(
+            parse_find_args(&["q", "--first"], "tag").unwrap().first,
+            Some(1)
+        );
+        assert_eq!(
+            parse_find_args(&["q", "--last"], "tag").unwrap().last,
+            Some(1)
+        );
+        assert_eq!(parse_peek_args(&["q", "--first"]).unwrap().0.first, Some(1));
+        assert_eq!(parse_peek_args(&["q", "--last"]).unwrap().0.last, Some(1));
+        // Peek without --lines keeps the default of 5.
+        assert_eq!(parse_peek_args(&["q"]).unwrap().1.lines, 5);
+    }
+
+    #[test]
+    fn test_parse_rejects_nonnumeric_result_limit_values() {
+        for (flag, value) in [("--first", "two"), ("--last", "abc")] {
+            let find_error = parse_find_args(&["q", flag, value], "tag")
+                .err()
+                .expect("find parser should reject a nonnumeric limit");
+            assert!(find_error.to_string().contains(flag));
+            assert!(find_error.to_string().contains(value));
+
+            let peek_error = parse_peek_args(&["q", flag, value])
+                .err()
+                .expect("peek parser should reject a nonnumeric limit");
+            assert!(peek_error.to_string().contains(flag));
+            assert!(peek_error.to_string().contains(value));
+        }
+
+        for flag in ["--lines", "-n"] {
+            let error = parse_peek_args(&["q", flag, "abc"])
+                .err()
+                .expect("peek parser should reject a nonnumeric line count");
+            assert!(error.to_string().contains("abc"));
+        }
+    }
+
+    #[test]
+    fn test_parse_peek_args_with_output_file_redirect() {
+        // #4161: peek learns the `>file` redirect find already has.
+        let (args, _) = parse_peek_args(&["q", ">out.txt"]).unwrap();
+        assert_eq!(args.queries, vec!["q"]);
+        assert!(args.to_file);
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        // A redirect after an optional numeric flag is not its value:
+        // the flag keeps its default and the redirect still applies.
+        let (args, _) = parse_peek_args(&["q", "--first", ">out.txt"]).unwrap();
+        assert_eq!(args.first, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        let (args, _) = parse_peek_args(&["q", "--last", ">out.txt"]).unwrap();
+        assert_eq!(args.last, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        let (args, opts) = parse_peek_args(&["q", "--lines", ">out.txt"]).unwrap();
+        assert_eq!(opts.lines, 5);
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        // A real numeric value still parses before the redirect.
+        let (args, opts) = parse_peek_args(&["q", "--lines", "3", ">out.txt"]).unwrap();
+        assert_eq!(opts.lines, 3);
+        assert_eq!(args.queries, vec!["q"]);
+        assert_eq!(args.output_file, Some("out.txt"));
+    }
+
+    #[test]
+    fn test_parse_find_args_basic() {
+        let rest = vec!["query1", "query2"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.queries, vec!["query1", "query2"]);
+        assert!(!args.prefer_name);
+        assert!(!args.all);
+        assert_eq!(args.format, "union");
+    }
+
+    #[test]
+    fn test_find_rejects_malformed_flags_and_redirects() {
+        for (tokens, expected) in [
+            (vec!["report", "--bogus"], "--bogus"),
+            (vec!["report", "--fist", "2"], "--fist"),
+            (vec!["report", "--dir"], "--dir"),
+            (vec!["report", "--exclude"], "--exclude"),
+            (vec!["report", "--format"], "--format"),
+            (vec!["report", "-o"], "-o"),
+            (vec!["report", "--output", "--all"], "--output"),
+            (vec!["report", ">"], ">"),
+        ] {
+            let error = parse_find_args(&tokens, "union").err().unwrap().to_string();
+            assert!(error.contains(expected), "{tokens:?}: {error}");
+        }
+        // Invalid --format values are carried as format_error for the
+        // handlers to report (main's 3488a51ac design, which superseded
+        // this branch's original immediate parse error on rebase).
+        let args = parse_find_args(&["report", "--format", "yaml"], "union").unwrap();
+        assert_eq!(args.format_error, Some("yaml"));
+        assert_eq!(
+            parse_find_args(&["report", "-o", "out"], "union")
+                .unwrap()
+                .output_file,
+            Some("out")
+        );
+        assert_eq!(
+            parse_find_args(&["report", "--exclude", "-draft"], "union")
+                .unwrap()
+                .exclude,
+            vec!["-draft"]
+        );
+        // A double-dash option is not swallowed as an exclusion pattern;
+        // single-dash patterns remain supported (#2274).
+        for tokens in [
+            vec!["report", "--dir", "--all"],
+            vec!["report", "--format", "--tag"],
+            vec!["report", "--exclude", "--count"],
+        ] {
+            let error = parse_find_args(&tokens, "union").err().unwrap().to_string();
+            assert!(error.contains("requires a value"), "{tokens:?}: {error}");
+            assert!(!error.contains(tokens[2]), "{tokens:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn test_peek_rejects_malformed_flags_and_missing_values() {
+        for (tokens, expected) in [
+            (vec!["report", "--bogus"], "--bogus"),
+            (vec!["report", "--fist", "2"], "--fist"),
+            (vec!["report", "-o"], "-o"),
+            (vec!["report", "--output"], "--output"),
+            (vec!["report", "--exclude"], "--exclude"),
+            (vec!["report", "--lines", "wrong"], "wrong"),
+            (vec!["report", ">"], ">"),
+        ] {
+            let error = parse_peek_args(&tokens).err().unwrap().to_string();
+            assert!(error.contains(expected), "{tokens:?}: {error}");
+        }
+        // A bare --lines/-n keeps the default line count, matching the
+        // merged-first set's bare --first/--last default design (#4072).
+        assert_eq!(
+            parse_peek_args(&["report", "--exclude", "-draft"])
+                .unwrap()
+                .0
+                .exclude,
+            vec!["-draft"]
+        );
+        for tokens in [
+            vec!["report", "-o", "--quiet"],
+            vec!["report", "--output", "--quiet"],
+            vec!["report", "--exclude", "--all"],
+        ] {
+            let error = parse_peek_args(&tokens).err().unwrap().to_string();
+            assert!(error.contains("requires a value"), "{tokens:?}: {error}");
+            assert!(!error.contains(tokens[2]), "{tokens:?}: {error}");
+        }
+        assert_eq!(parse_peek_args(&["report", "--lines"]).unwrap().1.lines, 5);
+        assert_eq!(
+            parse_peek_args(&["report", "-n", "--quiet"])
+                .unwrap()
+                .1
+                .lines,
+            5
+        );
+    }
+
+    #[test]
+    fn test_parse_find_args_with_flags() {
+        let rest = vec!["query", "--name", "--all", "--format", "tag"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.queries, vec!["query"]);
+        assert!(args.prefer_name);
+        assert!(args.all);
+        assert_eq!(args.format, "tag");
+    }
+
+    #[test]
+    fn test_parse_find_args_with_output_file() {
+        let rest = vec!["query", ">output.txt"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.queries, vec!["query"]);
+        assert!(args.to_file);
+        assert_eq!(args.output_file, Some("output.txt"));
+    }
+
+    #[test]
+    fn test_parse_find_args_with_dir() {
+        let rest = vec!["query", "--dir", "/tmp/out"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.queries, vec!["query"]);
+        assert_eq!(args.dir, Some("/tmp/out"));
+    }
+
+    #[test]
+    fn test_parse_find_args_shorthand_formats() {
+        let rest = vec!["query", "--tag"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.format, "tag");
+
+        let rest = vec!["query", "--group"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.format, "group");
+
+        let rest = vec!["query", "--union"];
+        let args = parse_find_args(&rest, "tag").unwrap();
+        assert_eq!(args.format, "union");
+    }
+
+    #[test]
+    fn test_parse_find_args_invalid_format_is_error() {
+        let rest = ["--format", "gorup", "hello"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.format_error, Some("gorup"));
+        assert_eq!(args.format, "union");
+
+        let rest = ["--format", "yaml", "hello"];
+        let args = parse_find_args(&rest, "tag").unwrap();
+        assert_eq!(args.format_error, Some("yaml"));
+    }
+
+    #[test]
+    fn test_parse_find_args_valid_format_is_stored() {
+        for good in ["tag", "group", "union"] {
+            let rest = ["--format", good, "hello"];
+            let args = parse_find_args(&rest, "union").unwrap();
+            assert_eq!(args.format_error, None);
+            assert_eq!(args.format, good);
+        }
+    }
+
+    #[test]
+    fn test_parse_find_args_first_with_number() {
+        let rest = vec!["query", "--first", "5"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.first, Some(5));
+        assert_eq!(args.last, None);
+    }
+
+    #[test]
+    fn test_parse_find_args_first_without_number() {
+        let rest = vec!["query", "--first"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.first, Some(1)); // defaults to 1
+    }
+
+    #[test]
+    fn test_parse_find_args_last_with_number() {
+        let rest = vec!["query", "--last", "3"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.last, Some(3));
+        assert_eq!(args.first, None);
+    }
+
+    #[test]
+    fn test_parse_find_args_rejects_first_and_last_together() {
+        let err = parse_find_args(&["query", "--first", "2", "--last", "3"], "union")
+            .err()
+            .expect("both limits should be rejected");
+        assert_eq!(
+            err.to_string(),
+            "--first and --last cannot be used together"
+        );
+
+        assert!(parse_find_args(&["query", "--first", "2"], "union").is_ok());
+        assert!(parse_find_args(&["query", "--last", "3"], "union").is_ok());
+    }
+
+    #[test]
+    fn test_parse_find_args_first_before_redirection_keeps_default() {
+        // `--first >out.txt`: the redirection token is the output
+        // option, not the optional number (Codex P2 on PR #4072).
+        let args = parse_find_args(&["query", "--first", ">out.txt"], "union").unwrap();
+        assert_eq!(args.first, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+        assert!(args.to_file);
+    }
+
+    #[test]
+    fn test_parse_find_args_last_before_redirection_keeps_default() {
+        let args = parse_find_args(&["query", "--last", ">out.txt"], "union").unwrap();
+        assert_eq!(args.last, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+        assert!(args.to_file);
+    }
+
+    #[test]
+    fn test_parse_find_args_count() {
+        let rest = vec!["query", "--count"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert!(args.count);
+    }
+
+    #[test]
+    fn test_parse_find_args_exclude() {
+        let rest = vec!["query", "--exclude", ".bak", "--exclude", ".tmp"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.exclude, vec![".bak", ".tmp"]);
+    }
+
+    #[test]
+    fn test_parse_find_args_combined_filters() {
+        let rest = vec!["query", "--first", "10", "--exclude", ".bak", "--name"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        assert_eq!(args.first, Some(10));
+        assert_eq!(args.exclude, vec![".bak"]);
+        assert!(args.prefer_name);
+    }
+
+    // Regression (#1787): lines = usize::MAX/2 + 1 must not overflow the
+    // printers' doubling — saturating arithmetic prints short content once,
+    // with no omitted-count line and no panic.
+    #[test]
+    fn test_print_peek_lines_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: false,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "line1\nline2\nline3";
+        print_peek_lines(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("line1").count(), 1);
+        assert_eq!(result.matches("line3").count(), 1);
+        assert!(!result.contains("omitted"));
+    }
+
+    #[test]
+    fn test_print_peek_chars_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: true,
+            words: false,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "Hello world";
+        print_peek_chars(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("Hello world").count(), 1);
+        assert!(!result.contains("omitted"));
+    }
+
+    #[test]
+    fn test_print_peek_words_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: true,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "alpha beta gamma";
+        print_peek_words(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("alpha").count(), 1);
+        assert_eq!(result.matches("gamma").count(), 1);
+        assert!(!result.contains("omitted"));
+    }
+
+    #[test]
+    fn test_parse_peek_args_basic() {
+        let rest = vec!["readme"];
+        let (find_args, peek_opts) = parse_peek_args(&rest).unwrap();
+        assert_eq!(find_args.queries, vec!["readme"]);
+        assert_eq!(peek_opts.lines, 5); // default
+        assert!(!peek_opts.head_only);
+        assert!(!peek_opts.tail_only);
+    }
+
+    #[test]
+    fn test_parse_peek_args_with_lines() {
+        let rest = vec!["readme", "--lines", "10"];
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
+        assert_eq!(peek_opts.lines, 10);
+    }
+
+    #[test]
+    fn test_parse_peek_args_head_only() {
+        let rest = vec!["readme", "--head-only"];
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
+        assert!(peek_opts.head_only);
+        assert!(!peek_opts.tail_only);
+    }
+
+    #[test]
+    fn test_parse_peek_args_tail_only() {
+        let rest = vec!["readme", "--tail-only"];
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
+        assert!(!peek_opts.head_only);
+        assert!(peek_opts.tail_only);
+    }
+
+    #[test]
+    fn test_parse_peek_args_chars() {
+        let rest = vec!["readme", "--chars"];
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
+        assert!(peek_opts.chars);
+        assert!(!peek_opts.words);
+    }
+
+    #[test]
+    fn test_parse_peek_args_words() {
+        let rest = vec!["readme", "--words"];
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
+        assert!(!peek_opts.chars);
+        assert!(peek_opts.words);
+    }
+
+    #[test]
+    fn test_parse_peek_args_quiet() {
+        let rest = vec!["readme", "-q"];
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
+        assert!(peek_opts.quiet);
+    }
+
+    #[test]
+    fn test_parse_peek_args_output_file() {
+        let rest = vec!["readme", "-o", "out.txt"];
+        let (find_args, _) = parse_peek_args(&rest).unwrap();
+        assert_eq!(find_args.output_file, Some("out.txt"));
+
+        let (find_args, _) = parse_peek_args(&["readme", "--output", "out.txt"]).unwrap();
+        assert_eq!(find_args.output_file, Some("out.txt"));
+    }
+
+    #[test]
+    fn test_parse_peek_args_rejects_first_and_last_together() {
+        let err = parse_peek_args(&["readme", "--first", "2", "--last", "3"])
+            .err()
+            .expect("both limits should be rejected");
+        assert_eq!(
+            err.to_string(),
+            "--first and --last cannot be used together"
+        );
+
+        assert!(parse_peek_args(&["readme", "--first", "2"]).is_ok());
+        assert!(parse_peek_args(&["readme", "--last", "3"]).is_ok());
+    }
+
+    #[test]
+    fn test_parse_peek_args_rejects_head_only_and_tail_only_together() {
+        let err = parse_peek_args(&["readme", "--head-only", "--tail-only"])
+            .err()
+            .expect("conflicting peek modes should be rejected");
+        assert_eq!(
+            err.to_string(),
+            "--head-only and --tail-only cannot be used together"
+        );
+
+        assert!(parse_peek_args(&["readme", "--head-only"]).is_ok());
+        assert!(parse_peek_args(&["readme", "--tail-only"]).is_ok());
+    }
+
+    #[test]
+    fn test_parse_peek_args_rejects_chars_and_words_together() {
+        let err = parse_peek_args(&["readme", "--chars", "--words"])
+            .err()
+            .expect("conflicting peek units should be rejected");
+        assert_eq!(
+            err.to_string(),
+            "--chars and --words cannot be used together"
+        );
+
+        assert!(parse_peek_args(&["readme", "--chars"]).is_ok());
+        assert!(parse_peek_args(&["readme", "--words"]).is_ok());
+    }
+
+    #[test]
+    fn test_find_args_to_search_options() {
+        let rest = vec!["query", "--first", "5", "--exclude", ".bak"];
+        let args = parse_find_args(&rest, "union").unwrap();
+        let opts = args.to_search_options();
+        assert_eq!(opts.first, Some(5));
+        assert_eq!(opts.exclude, vec![".bak".to_owned()]);
+        assert!(!opts.count);
+    }
+
+    #[test]
+    fn test_parse_selection_control() {
+        assert_eq!(parse_selection("1 3 5", 5), Some(vec![1, 3, 5]));
+        assert_eq!(parse_selection("1,2,3", 5), Some(vec![1, 2, 3]));
+        assert_eq!(parse_selection("1, 2 3", 5), Some(vec![1, 2, 3]));
+        assert_eq!(parse_selection("  2 , 1 ", 5), Some(vec![2, 1]));
+    }
+
+    #[test]
+    fn test_parse_selection_bad_token_invalidates_all() {
+        assert_eq!(parse_selection("1 x 3", 5), None);
+        assert_eq!(parse_selection("1 6", 5), None);
+        assert_eq!(parse_selection("0", 5), None);
+    }
+
+    #[test]
+    fn test_parse_selection_fractional_and_overflow() {
+        assert_eq!(parse_selection("2.9 4", 5), None);
+        assert_eq!(parse_selection("99999999999999999999999 2", 5), None);
+    }
+
+    #[test]
+    fn test_parse_selection_duplicates_deduped() {
+        assert_eq!(parse_selection("1 1", 5), Some(vec![1]));
+        assert_eq!(parse_selection("2 1 2 3 1", 5), Some(vec![2, 1, 3]));
+    }
+
+    #[test]
+    fn test_parse_selection_all_invalid() {
+        assert_eq!(parse_selection("x y", 5), None);
+        assert_eq!(parse_selection("", 5), None);
+        assert_eq!(parse_selection(" , ", 5), None);
+    }
+}

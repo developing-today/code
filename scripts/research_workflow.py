@@ -65,6 +65,20 @@ def fail(message):
     raise ValueError(message)
 
 
+def _concepts(state, owner):
+    concepts = state.get("concepts") if isinstance(state, dict) else None
+    if not isinstance(concepts, list) or not all(isinstance(c, dict) for c in concepts):
+        fail(f"{owner}: concepts must be a list of objects")
+    return concepts
+
+
+def _dependency_edges(state, owner):
+    edges = state.get("dependencies") if isinstance(state, dict) else None
+    if not isinstance(edges, list) or not all(isinstance(e, dict) for e in edges):
+        fail(f"{owner}: dependencies must be a list of objects")
+    return edges
+
+
 def contained(root, relative):
     path = Path(relative)
     if path.is_absolute() or ".." in path.parts:
@@ -77,6 +91,11 @@ def contained(root, relative):
 
 def profile(root):
     data = json.loads((root / PROFILE).read_text())
+    if not isinstance(data, dict):
+        fail(
+            f"{root / PROFILE}: profile must be a JSON object "
+            "(mapping of profile fields)"
+        )
     if data.get("version") != 1:
         fail("Unsupported research-workflow profile version")
     for key in (
@@ -122,6 +141,37 @@ def slug(value):
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value):
         fail(f"Invalid lowercase kebab slug: {value}")
     return value
+
+
+def load_outline(path):
+    """Load an --outline file, rejecting wrong shapes via fail().
+
+    Every rejection names the outline file and the field/expectation, so
+    a malformed outline produces the tool's clean diagnostic instead of
+    a raw AttributeError/TypeError/JSONDecodeError from deep in
+    scaffold() (issue #6862).
+    """
+    try:
+        outline = json.loads(Path(path).read_text())
+    except json.JSONDecodeError as error:
+        fail(f"Outline {path} is not valid JSON: {error}")
+    if not isinstance(outline, dict):
+        fail(f"Outline {path} must be a JSON object at the top level")
+    for field in ("title", "introduction"):
+        if field in outline and not isinstance(outline[field], str):
+            fail(f"Outline {path} field '{field}' must be a string")
+    concepts = outline.get("concepts")
+    if isinstance(concepts, list):
+        for index, concept in enumerate(concepts, 1):
+            if not isinstance(concept, dict):
+                fail(f"Outline {path} concept {index} must be a JSON object")
+            for field in ("slug", "summary"):
+                if field in concept and not isinstance(concept[field], str):
+                    fail(
+                        f"Outline {path} concept {index} field '{field}'"
+                        " must be a string"
+                    )
+    return outline
 
 
 def marker(kind, data):
@@ -180,10 +230,18 @@ def coverage(concepts, lines):
 
 
 def dependencies(state):
-    ids = {x["id"] for x in state["concepts"]}
+    if not isinstance(state, dict):
+        fail(
+            "Workflow state must be a JSON object: dependencies requires an object state"
+        )
+    concepts = _concepts(state, "workflow state")
+    edges = _dependency_edges(state, "workflow state")
+    if any(not isinstance(x.get("id"), str) for x in concepts):
+        fail("workflow state: concepts entries require a string id")
+    ids = {x["id"] for x in concepts}
     graph = {x: [] for x in ids}
     seen = set()
-    for edge in state["dependencies"]:
+    for edge in edges:
         key = (edge.get("from"), edge.get("to"), edge.get("kind"))
         if (
             key[0] not in ids
@@ -241,7 +299,7 @@ def scaffold(args, root, config):
     if package.exists() or package.is_symlink():
         fail(f"Package already exists: {package}")
     outline = (
-        json.loads(Path(args.outline).read_text())
+        load_outline(args.outline)
         if args.outline
         else {
             "title": args.concept or args.slug.replace("-", " ").title(),
@@ -692,6 +750,10 @@ def read_state(package):
     if len(matches) != 1:
         fail(f"{package}: expected exactly one workflow state block")
     state = json.loads(matches[0])
+    if not isinstance(state, dict):
+        fail(
+            f"{package}: workflow state must be a JSON object (mapping of state fields)"
+        )
     if state.get("version") != 1:
         fail("Unsupported workflow state version")
     return state
@@ -699,11 +761,16 @@ def read_state(package):
 
 def frontier(state):
     graph = dependencies(state)
-    finished = {c["id"] for c in state["concepts"] if c["status"] in COMPLETE}
+    concepts = _concepts(state, "workflow state")
+    edges = _dependency_edges(state, "workflow state")
+    if any(
+        not isinstance(c.get("id"), str) or not isinstance(c.get("status"), str)
+        for c in concepts
+    ):
+        fail("workflow state: concepts entries require string id and status")
+    finished = {c["id"] for c in concepts if c["status"] in COMPLETE}
     busy = {
-        c["id"]
-        for c in state["concepts"]
-        if c["status"] in ACTIVE or c["status"] in COMPLETE
+        c["id"] for c in concepts if c["status"] in ACTIVE or c["status"] in COMPLETE
     }
     blocked = {
         node: [p for p in prereqs if p not in finished]
@@ -711,24 +778,20 @@ def frontier(state):
     }
     return {
         "ready": sorted(
-            c["id"]
-            for c in state["concepts"]
-            if c["id"] not in busy and not blocked[c["id"]]
+            c["id"] for c in concepts if c["id"] not in busy and not blocked[c["id"]]
         ),
         "blocked": {
             key: value
             for key, value in blocked.items()
             if value and key not in finished
         },
-        "constraints": [
-            edge for edge in state["dependencies"] if edge["kind"] != "requires"
-        ],
+        "constraints": [edge for edge in edges if edge.get("kind") != "requires"],
         "dimensions": {
             c["id"]: {
                 k: c.get(k, "unspecified")
                 for k in ("priority", "criticality", "horizon")
             }
-            for c in state["concepts"]
+            for c in concepts
         },
     }
 
@@ -750,12 +813,26 @@ def check_package(package, root, require_resolved=False):
         for key in ("stage", "status", "created_at")
     ):
         fail("Package requires nonempty stage, status and created_at")
+    transcript_record = state.get("transcript")
+    if (
+        not isinstance(transcript_record, dict)
+        or not isinstance(transcript_record.get("path"), str)
+        or not isinstance(transcript_record.get("sha256"), str)
+    ):
+        fail(f"{package}: transcript must be an object with string path and sha256")
+    _concepts(state, package)
+    _dependency_edges(state, package)
     transcript = contained(package, state["transcript"]["path"])
     raw = transcript.read_bytes()
     if hashlib.sha256(raw).hexdigest() != state["transcript"]["sha256"]:
         fail(f"{package}: transcript hash mismatch")
     lines = raw.decode("utf-8").splitlines(keepends=True)
     items = state["concepts"]
+    if any(
+        not isinstance(c.get("id"), str) or not isinstance(c.get("path"), str)
+        for c in items
+    ):
+        fail(f"{package}: concepts entries require string id and path")
     ids = [c["id"] for c in items]
     paths = [c["path"] for c in items]
     if not items or len(set(ids)) != len(ids) or len(set(paths)) != len(paths):
@@ -807,10 +884,11 @@ def check_package(package, root, require_resolved=False):
             owners.append((owned, task["owner"]))
     resolutions = {}
     for item in items:
-        for block in RESOLUTION.findall(
-            unfenced(contained(package, item["path"]).read_text())
-        ):
+        document = contained(package, item["path"])
+        for block in RESOLUTION.findall(unfenced(document.read_text())):
             entry = json.loads(block)
+            if not isinstance(entry, dict):
+                fail(f"{document}: resolution block must be a JSON object")
             if entry.get("note") in resolutions:
                 fail("Duplicate note disposition")
             resolutions[entry.get("note")] = (item["id"], entry)
@@ -832,6 +910,8 @@ def check_package(package, root, require_resolved=False):
         if not found:
             fail(f"{path}: expected one immutable note marker")
         note = json.loads(found[1])
+        if not isinstance(note, dict):
+            fail(f"{path}: note marker must be a JSON object")
         body = content[found.end() :]
         if not body.startswith("\n\n") or hashlib.sha256(
             body[2:].encode()
@@ -947,6 +1027,8 @@ def check_profile(root, config):
         if not isinstance(triggers, list):
             fail("Trigger fixtures must be an array")
         for entry in triggers:
+            if not isinstance(entry, dict):
+                fail("Trigger fixture entries must be objects with a skill field")
             if not isinstance(entry.get("skill"), str):
                 fail("Trigger fixture requires skill")
             for key in ("should_load", "should_not_load"):

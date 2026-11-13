@@ -162,7 +162,7 @@ Goal: observed-remove tags, the tag index, compaction, documents, and search.
 | P5.3 | Compaction: snapshot at a causal cut, then the tail (N33)                                                                                                                                                   | P5.1       | P5.2, P5.4    | the S8 counterexample as a regression test; a new device's state is preserved               |
 | P5.4 | Documents: content events; snapshots from the collab server; save on explicit save and on idle close (task 10, item 6)                                                                                      | P5.1       | P5.2, P5.3    | integration; e2e: edit, save, reload                                                        |
 | P5.5 | Search over the tag index                                                                                                                                                                                   | P5.2       | P5.3, P5.4    | unit; e2e                                                                                   |
-| P5.7 | Aliases as tags: alias list (text, date, creator), contested sets shown, shortest-unique-prefix disambiguation, server primary alias (decisions 2026-10-12); later preferred and user aliases, sort methods | P5.1, P2.9 | P5.4          | alias contest shown, never picked; prefix disambiguation; user subject decided before merge |
+| P5.7 | Aliases as tags: alias list (text, creator; no date: signed headers have no timestamp, and local receipt time is not intrinsic; #1422), contested sets shown, shortest-unique-prefix disambiguation, server primary alias (decisions 2026-10-12); later preferred and user aliases, sort methods | P5.1, P2.9 | P5.4          | alias contest shown, never picked; prefix disambiguation; user subject decided before merge |
 | P5.6 | Content on removal, kept (decision 4)                                                                                                                                                                       | P2.6       | P5.3, P5.4    | integration                                                                                 |
 
 ## 11. Phase 6: invites, pull, and the CLI
@@ -196,7 +196,7 @@ Goal: invites and links that work, pull, fork recovery, and the CLI that exposes
 
 **Phase 8** (each becomes a phase document when it starts):
 
-- P8.1 Time and witnesses (task 09, deferred).
+- P8.1 Time and witnesses (task 09): not reopened. Owner ruling 2026-11-03 on issue #802 made causal-validity-only the permanent Phase 8 scope; time/witness features are not part of Phase 8 (ruling: https://github.com/developing-today/code/issues/802#issuecomment-6599887845).
 - P8.2 Retention and pruning (task 10, item 1). Needed before large groups run for a long time.
 - P8.3 Multi-device (task 10, item 2).
 - P8.4 Views: explorer and web (task 10, item 7).

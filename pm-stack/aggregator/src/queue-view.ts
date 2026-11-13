@@ -3,7 +3,9 @@
 // It owns no persistence or new feed contract.
 import { DONE_BOARD_WINDOW_MS, isRetiredDoneTableTitle } from "./board-policy.ts";
 import type { BoardItem, GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
-import { refUrl } from "./model.ts";
+import { isValidRef, refUrl } from "./model.ts";
+import { FEED_STALE_MS } from "./feed.ts";
+import type { HealthView } from "./health.ts";
 
 export interface QueueRow {
   id: string;
@@ -12,7 +14,7 @@ export interface QueueRow {
   url?: string;
   repo: string;
   area?: string;
-  epic?: { ref: RefKey; title: string; url: string };
+  epic?: { ref: RefKey; title: string; url?: string };
   status: string;
   updatedAt?: string;
   ageDays?: number;
@@ -39,6 +41,30 @@ export interface QueueViewInput {
   now?: Date;
 }
 
+/** Whether any source used by the queue projection is stale or unavailable.
+ * The projection's generatedAt is intentionally not used: it only records
+ * when this process assembled the view, not when its inputs were collected. */
+export function queueInputsStale(health: Pick<HealthView, "mode" | "facets" | "feed" | "jobs"> | null): boolean {
+  if (!health) return true;
+  // Fixture mode is an intentional static source, not a failed live read.
+  if (health.mode === "fixtures") return false;
+
+  const facetStale = (key: "board" | "items") => {
+    const facet = health.facets?.[key];
+    return !facet || facet.state !== "live" || (facet.ageMs !== undefined && facet.ageMs >= FEED_STALE_MS);
+  };
+  const projects = health.feed.sections.find((section) => section.key === "projects");
+  const projectsStale =
+    !projects ||
+    !projects.present ||
+    projects.status === "error" ||
+    projects.status === "skipped" ||
+    projects.ageMs === undefined ||
+    projects.ageMs >= FEED_STALE_MS;
+
+  return facetStale("board") || facetStale("items") || projectsStale || health.jobs.orchestration.state !== "live";
+}
+
 const DAY = 86_400_000;
 const HORIZON_ORDER: Record<string, number> = {
   today: 0,
@@ -51,8 +77,6 @@ const HORIZON_ORDER: Record<string, number> = {
   quarter: 4,
   incoming: 5,
 };
-const PRIORITY_ORDER: Record<string, number> = { urgent: 0, critical: 0, high: 1, normal: 2, medium: 2, low: 3 };
-
 function norm(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase().replace(/[ _]+/g, "-");
 }
@@ -84,7 +108,8 @@ export function buildQueueView(input: QueueViewInput): QueueView {
     const ref = poolItem?.epicRef;
     if (!ref) return undefined;
     const parent = poolByRef.get(ref);
-    return { ref, title: parent?.title ?? ref, url: parent?.issueUrl ?? parent?.url ?? refUrl(ref) };
+    const url = parent?.issueUrl ?? parent?.url ?? (isValidRef(ref) ? refUrl(ref) : undefined);
+    return { ref, title: parent?.title ?? ref, ...(url ? { url } : {}) };
   };
   const row = (args: {
     ref?: RefKey;
@@ -110,7 +135,11 @@ export function buildQueueView(input: QueueViewInput): QueueView {
       id: args.id ?? (args.ref ? `gh:${args.ref}` : `${repo}:${args.title}`),
       title: args.title,
       ...(args.ref ? { ref: args.ref } : {}),
-      url: projectItem?.issueUrl ?? ghItem?.url ?? args.url ?? (args.ref ? refUrl(args.ref, ghItem?.kind) : undefined),
+      url:
+        projectItem?.issueUrl ??
+        ghItem?.url ??
+        args.url ??
+        (args.ref && isValidRef(args.ref) ? refUrl(args.ref, ghItem?.kind) : undefined),
       repo,
       ...(projectItem?.area ? { area: projectItem.area } : {}),
       ...(parent ? { epic: parent } : {}),
@@ -293,14 +322,13 @@ export function buildQueueView(input: QueueViewInput): QueueView {
       ),
   ]);
 
-  const nextCandidates: { row: QueueRow; horizonRank: number; priorityRank: number; sequence: number }[] = [];
+  const nextCandidates: { row: QueueRow; horizonRank: number; sequence: number }[] = [];
   let sequence = 0;
-  const addNext = (args: Parameters<typeof row>[0], horizon?: string, priority?: string) => {
+  const addNext = (args: Parameters<typeof row>[0], horizon?: string) => {
     const normalizedHorizon = norm(horizon);
     nextCandidates.push({
       row: row({ ...args, horizon: horizon ?? args.horizon }),
       horizonRank: HORIZON_ORDER[normalizedHorizon] ?? 5,
-      priorityRank: PRIORITY_ORDER[norm(priority)] ?? 2,
       sequence: sequence++,
     });
   };
@@ -361,7 +389,7 @@ export function buildQueueView(input: QueueViewInput): QueueView {
   }
   const nextUp = unique(
     nextCandidates
-      .sort((a, b) => a.horizonRank - b.horizonRank || a.priorityRank - b.priorityRank || a.sequence - b.sequence)
+      .sort((a, b) => a.horizonRank - b.horizonRank || a.sequence - b.sequence)
       .map((candidate) => candidate.row),
   );
 

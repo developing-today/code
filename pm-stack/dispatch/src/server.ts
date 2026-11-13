@@ -5,6 +5,12 @@
 //                      usually a GitHub issue.
 //   POST /v1/tasks     enqueue-only: a repo-task/v1 packet into the
 //                      Supabase queue, optionally with a GitHub issue.
+//   GET  /v1/tasks/:id    authenticated read: that task's status,
+//                      worker and progress (issue #5555) — callers no
+//                      longer cross domains into the queue store.
+//   GET  /v1/sessions/:id authenticated read: that OpenCode session's
+//                      existence/state, proxied from the OpenCode
+//                      server (issue #5555).
 //   GET  /health       unauthenticated {ok, version}, aggregator-style.
 //
 // Everything else requires auth (GitHub Actions OIDC or the static bearer
@@ -31,10 +37,15 @@ import {
   validatePayload,
 } from "./packet.ts";
 import { QueueClient, QueueError, type TaskRow } from "./queue.ts";
-import { handleLaunchFailure, withCreatedSession, type LaunchFailureContext } from "./launch_failure.ts";
+import {
+  compensateOrphanedIssue,
+  handleLaunchFailure,
+  withCreatedSession,
+  type LaunchFailureContext,
+} from "./launch_failure.ts";
 import { annotateLaunch } from "./launch_annotations.ts";
 import { GitHubClient } from "./github.ts";
-import { OpenCodeClient } from "./opencode.ts";
+import { OpenCodeClient, OpenCodeError } from "./opencode.ts";
 
 const cfg: Config = loadConfig();
 const queue = cfg.supabaseServiceRoleKey ? new QueueClient(cfg.supabaseUrl, cfg.supabaseServiceRoleKey) : null;
@@ -219,14 +230,21 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   );
   const payloadErrors = validatePayload(packet.payload);
   if (payloadErrors.length) {
-    return json(500, { error: `internal packet validation failed: ${payloadErrors.join("; ")}` });
+    // #4917: the tracking issue already exists but no task ever will —
+    // compensate it (note + close as not planned) instead of orphaning it.
+    const err = new Error(`internal packet validation failed: ${payloadErrors.join("; ")}`);
+    await compensateOrphanedIssue(github, body.repo, issue?.number ?? null, "packet validation", err);
+    return json(500, { error: err.message });
   }
   let task: TaskRow;
   try {
     task = await requireQueue().enqueue(packet, body.repo);
   } catch (e) {
+    // #4917: same compensation on the enqueue failure path — this is
+    // the exact shape that produced the 66 orphan tracking issues.
+    const msg = await compensateOrphanedIssue(github, body.repo, issue?.number ?? null, "enqueue", e);
     return json(502, {
-      error: e instanceof Error ? e.message : String(e),
+      error: msg,
       issue_number: issue?.number ?? null,
       ...(warnings.length ? { warnings } : {}),
     });
@@ -305,17 +323,19 @@ export const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled", "failed"]);
 /**
  * The enqueue RPC dedupes on dedupe_key against ALL rows incl. terminal
  * ones and returns the pre-existing row as-is. A returned row is
- * pre-existing when it was created before this request started, or when
- * its status is already terminal — it is never the task this request
- * just queued.
+ * pre-existing when it is the row a pre-enqueue lookup already saw under
+ * the same dedupe key (compared by row id), or when its status is already
+ * terminal — it is never the task this request just queued.
+ *
+ * Deliberately clock-independent (issue #4661): the row's created_at is
+ * assigned by the Supabase Postgres server while any request-side
+ * timestamp comes from the dispatch host, so comparing the two
+ * misclassifies in both directions under ordinary skew (a DB-behind
+ * fresh row reads pre-existing; a DB-ahead live row reads fresh).
  */
-export function isPreExistingTaskRow(row: TaskRow, requestStartedAt: Date): boolean {
+export function isPreExistingTaskRow(row: TaskRow, existing: TaskRow | null): boolean {
   if (TERMINAL_TASK_STATUSES.has(row.status)) return true;
-  const createdAt = row.created_at;
-  if (typeof createdAt === "string") {
-    const parsed = Date.parse(createdAt);
-    if (!Number.isNaN(parsed)) return parsed < requestStartedAt.getTime();
-  }
+  if (existing !== null && row.id === existing.id) return true;
   return false;
 }
 
@@ -341,13 +361,18 @@ export interface EnqueueDispatchOutcome {
  */
 export async function enqueueDispatchTask(args: {
   enqueue: (dedupeKey: string) => Promise<TaskRow>;
+  /** Pre-enqueue lookup: the row already stored under a dedupe key, if
+   * any. Compared by row id after each enqueue — the clock-independent
+   * replacement for the old created_at-vs-requestStartedAt check (#4661).
+   * Lookup failures must resolve to null (unknown), never throw. */
+  findExisting: (dedupeKey: string) => Promise<TaskRow | null>;
   dedupeKey: string;
   attach: boolean;
   callerSuppliedKey: boolean;
-  requestStartedAt: Date;
 }): Promise<EnqueueDispatchOutcome> {
+  const knownFirst = await args.findExisting(args.dedupeKey);
   const first = await args.enqueue(args.dedupeKey);
-  if (!isPreExistingTaskRow(first, args.requestStartedAt)) {
+  if (!isPreExistingTaskRow(first, knownFirst)) {
     return { task: first, preExisting: false, retried: false, warnings: [] };
   }
   if (!args.attach || args.callerSuppliedKey) {
@@ -361,8 +386,13 @@ export async function enqueueDispatchTask(args: {
     };
   }
   const retryKey = `${args.dedupeKey}:dispatch:${randomDispatchSuffix()}`;
+  const knownSecond = await args.findExisting(retryKey);
   const second = await args.enqueue(retryKey);
-  if (!isPreExistingTaskRow(second, args.requestStartedAt)) {
+  // A retry key is freshly random, so a second row carrying the first
+  // row's id means the retry returned no new task even where the
+  // lookup-based check cannot see it (defensive; same-row return).
+  const secondPreExisting = isPreExistingTaskRow(second, knownSecond) || second.id === first.id;
+  if (!secondPreExisting) {
     return {
       task: second,
       preExisting: false,
@@ -387,7 +417,6 @@ export async function enqueueDispatchTask(args: {
 // ---------------------------------------------------------------------------
 
 async function handleTasks(req: Request, caller: CallerIdentity): Promise<Response> {
-  const requestStartedAt = new Date();
   const body: TaskRequest = parseTaskRequest(await readJsonBody(req));
   assertCallerRepo(caller, body.repo, cfg.repoAllowlist);
   const warnings: string[] = [];
@@ -452,7 +481,17 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
   const packet = buildPacket(packetInput, dedupeKey);
   const payloadErrors = validatePayload(packet.payload);
   if (payloadErrors.length) {
-    return json(500, { error: `internal packet validation failed: ${payloadErrors.join("; ")}` });
+    // #4917: compensate an issue THIS request created; an attach target
+    // (body.issueNumber) is the caller's issue and is never closed here.
+    const err = new Error(`internal packet validation failed: ${payloadErrors.join("; ")}`);
+    await compensateOrphanedIssue(
+      github,
+      body.repo,
+      body.issueNumber === undefined ? (issue?.number ?? null) : null,
+      "packet validation",
+      err,
+    );
+    return json(500, { error: err.message });
   }
   let outcome: EnqueueDispatchOutcome;
   try {
@@ -463,17 +502,22 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
         if (errs.length) throw new QueueError(`internal packet validation failed: ${errs.join("; ")}`);
         return requireQueue().enqueue(p, body.repo);
       },
+      findExisting: (key) => requireQueue().findByDedupeKey(key),
       dedupeKey,
       attach: body.issueNumber !== undefined,
       callerSuppliedKey: body.dedupeKey !== undefined,
-      requestStartedAt,
     });
   } catch (e) {
+    // #4917: compensate an issue THIS request created (never an attach
+    // target) on either enqueue failure shape.
+    const createdIssueNumber = body.issueNumber === undefined ? (issue?.number ?? null) : null;
     if (e instanceof QueueError && e.message.startsWith("internal packet validation failed")) {
+      await compensateOrphanedIssue(github, body.repo, createdIssueNumber, "packet validation", e);
       return json(500, { error: e.message });
     }
+    const msg = await compensateOrphanedIssue(github, body.repo, createdIssueNumber, "enqueue", e);
     return json(502, {
-      error: e instanceof Error ? e.message : String(e),
+      error: msg,
       issue_number: issue?.number ?? null,
       ...(body.issueNumber !== undefined && issue ? { issue_url: issue.url } : {}),
       ...(warnings.length ? { warnings } : {}),
@@ -592,6 +636,127 @@ export async function verifyAttachTarget(args: {
 }
 
 // ---------------------------------------------------------------------------
+// GET /v1/tasks/:id and GET /v1/sessions/:id — read/status (issue #5555)
+// ---------------------------------------------------------------------------
+
+/** The caller-facing view of a queue task row: identity, lifecycle and
+ * the fields a dispatch caller needs to answer "what happened to task
+ * N?" — status, worker, progress, result — without the packet body or
+ * payload internals (the payload can carry caller prompts verbatim;
+ * the read route is a status surface, not a packet dump). */
+export function taskStatusView(row: TaskRow): Record<string, unknown> {
+  const payload = (row.payload ?? null) as Record<string, unknown> | null;
+  return {
+    task_id: row.id,
+    queue: row.queue,
+    title: row.title ?? null,
+    status: row.status,
+    worker_id: row.worker_id ?? null,
+    lane_id: row.lane_id ?? null,
+    repo: payload && typeof payload.repo === "string" ? payload.repo : null,
+    kind: payload && typeof payload.kind === "string" ? payload.kind : null,
+    attempts: row.attempts ?? null,
+    max_attempts: row.max_attempts ?? null,
+    claimed_at: row.claimed_at ?? null,
+    lease_until: row.lease_until ?? null,
+    created_at: row.created_at ?? null,
+    updated_at: row.updated_at ?? null,
+    completed_at: row.completed_at ?? null,
+    progress: row.progress ?? null,
+    result: row.result ?? null,
+    last_error: row.last_error ?? null,
+    dedupe_key: row.dedupe_key,
+  };
+}
+
+/** The caller-facing view of an OpenCode session: existence plus the
+ * identifying/state fields the server reports. Unknown extra fields
+ * are not forwarded — the session object is another service's schema
+ * and this route promises a stable minimal shape. */
+export function sessionStatusView(raw: unknown): Record<string, unknown> {
+  const obj = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+  return {
+    session_id: typeof obj.id === "string" ? obj.id : null,
+    title: typeof obj.title === "string" ? obj.title : null,
+    directory:
+      typeof obj.directory === "string"
+        ? obj.directory
+        : typeof (obj.location as Record<string, unknown> | undefined)?.directory === "string"
+          ? ((obj.location as Record<string, unknown>).directory as string)
+          : null,
+    time: typeof obj.time === "object" && obj.time !== null ? obj.time : null,
+  };
+}
+
+async function handleGetTask(caller: CallerIdentity, idSegment: string): Promise<Response> {
+  if (!/^\d+$/.test(idSegment)) throw new ValidationError("task id: must be a positive integer");
+  const id = Number(idSegment);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new ValidationError("task id: must be a positive integer");
+  const row = await requireQueue().getTask(id);
+  if (!row) return json(404, { error: `task ${id} not found` });
+  const view = taskStatusView(row);
+  // Same repo gate as the write routes: a task whose packet names a
+  // repo is only readable by callers allowed for that repo. A denied
+  // task answers exactly like a missing one — surfacing the auth
+  // error would confirm the id exists and leak the repo it names to
+  // an ID probe.
+  if (typeof view.repo === "string") {
+    try {
+      assertCallerRepo(caller, view.repo, cfg.repoAllowlist);
+    } catch (e) {
+      if (e instanceof AuthError) return json(404, { error: `task ${id} not found` });
+      throw e;
+    }
+  }
+  return json(200, view);
+}
+
+async function handleGetSession(caller: CallerIdentity, idSegment: string): Promise<Response> {
+  let sessionId: string;
+  try {
+    sessionId = decodeURIComponent(idSegment);
+  } catch {
+    // A malformed percent-encoding is a bad request, not a 500.
+    throw new ValidationError("session id: malformed percent-encoding");
+  }
+  if (!sessionId.trim()) throw new ValidationError("session id: required");
+  let raw: unknown;
+  try {
+    raw = await opencode.getSession(sessionId);
+  } catch (e) {
+    if (e instanceof OpenCodeError) return json(e.status, { error: e.message });
+    throw e;
+  }
+  if (raw === null || raw === undefined) return json(404, { error: `session ${sessionId} not found` });
+  // Repo gate, the task read's rule applied to sessions: a
+  // dispatch-launched session is bound to the queue task that
+  // launched it - by the live progress.session_id binding, or by
+  // the durable progress.session_cleared record the queue keeps
+  // after a park/lease-expiry unbinds it - and that task's repo must be
+  // in the current allowlist for the session's status to be
+  // readable — removing a repo from the allowlist closes its
+  // sessions too. A denied session answers like a missing one: no
+  // title, no directory, no repo name. Sessions with no dispatch
+  // task carry no repo association in any record; a queue-less
+  // deployment (queue === null) can have no dispatch sessions at
+  // all, so the gate applies exactly when the record is reachable,
+  // and a failed lookup fails closed via QueueError (502).
+  if (queue) {
+    const task = await queue.findTaskBySessionId(sessionId);
+    const repo = task ? taskStatusView(task).repo : null;
+    if (typeof repo === "string") {
+      try {
+        assertCallerRepo(caller, repo, cfg.repoAllowlist);
+      } catch (e) {
+        if (e instanceof AuthError) return json(404, { error: `session ${sessionId} not found` });
+        throw e;
+      }
+    }
+  }
+  return json(200, sessionStatusView(raw));
+}
+
+// ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
 
@@ -611,6 +776,16 @@ export async function handler(req: Request): Promise<Response> {
         allowlist: cfg.repoAllowlist,
       });
       return path === "/v1/sessions" ? await handleSessions(req, caller) : await handleTasks(req, caller);
+    }
+    const taskMatch = path.match(/^\/v1\/tasks\/([^/]+)$/);
+    const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)$/);
+    if (req.method === "GET" && (taskMatch || sessionMatch)) {
+      const caller = await authenticate(req, {
+        apiToken: cfg.apiToken,
+        oidcAudience: cfg.oidcAudience,
+        allowlist: cfg.repoAllowlist,
+      });
+      return taskMatch ? await handleGetTask(caller, taskMatch[1]) : await handleGetSession(caller, sessionMatch![1]);
     }
     return json(404, { error: "not found" });
   } catch (e) {

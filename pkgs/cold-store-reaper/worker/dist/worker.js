@@ -582,46 +582,235 @@ var cct = function(bufs, ol) {
   }
   return buf;
 };
-function decompress(dat, buf) {
-  var bufs = [], nb = +!buf;
-  var bt = 0, ol = 0;
-  for (; dat.length; ) {
-    var st = rzfh(dat, nb || buf);
-    if (typeof st == "object") {
-      if (nb) {
-        buf = null;
-        if (st.w.length == st.u) {
-          bufs.push(buf = st.w);
-          ol += st.u;
-        }
-      } else {
-        bufs.push(buf);
-        st.e = 0;
-      }
-      for (; !st.l; ) {
-        var blk = rzb(dat, st, buf);
-        if (!blk)
-          err(5);
-        if (buf)
-          st.e = st.y;
-        else {
-          bufs.push(blk);
-          ol += blk.length;
-          cpw(st.w, 0, blk.length);
-          st.w.set(blk, st.w.length - blk.length);
-        }
-      }
-      bt = st.b + st.c * 4;
-    } else
-      bt = st;
-    dat = dat.subarray(bt);
+var Decompress = /* @__PURE__ */ (function() {
+  function Decompress2(ondata) {
+    this.ondata = ondata;
+    this.c = [];
+    this.l = 0;
+    this.z = 0;
   }
-  return cct(bufs, ol);
-}
+  Decompress2.prototype.push = function(chunk, final) {
+    if (typeof this.s == "number") {
+      var sub = Math.min(chunk.length, this.s);
+      chunk = chunk.subarray(sub);
+      this.s -= sub;
+    }
+    var sl = chunk.length;
+    var ncs = sl + this.l;
+    if (!this.s) {
+      if (final) {
+        if (!ncs) {
+          this.ondata(new u8(0), true);
+          return;
+        }
+        if (ncs < 5)
+          err(5);
+      } else if (ncs < 18) {
+        this.c.push(chunk);
+        this.l = ncs;
+        return;
+      }
+      if (this.l) {
+        this.c.push(chunk);
+        chunk = cct(this.c, ncs);
+        this.c = [];
+        this.l = 0;
+      }
+      if (typeof (this.s = rzfh(chunk)) == "number")
+        return this.push(chunk, final);
+    }
+    if (typeof this.s != "number") {
+      if (ncs < (this.z || 3)) {
+        if (final)
+          err(5);
+        this.c.push(chunk);
+        this.l = ncs;
+        return;
+      }
+      if (this.l) {
+        this.c.push(chunk);
+        chunk = cct(this.c, ncs);
+        this.c = [];
+        this.l = 0;
+      }
+      if (!this.z && ncs < (this.z = chunk[this.s.b] & 2 ? 4 : 3 + (chunk[this.s.b] >> 3 | chunk[this.s.b + 1] << 5 | chunk[this.s.b + 2] << 13))) {
+        if (final)
+          err(5);
+        this.c.push(chunk);
+        this.l = ncs;
+        return;
+      } else
+        this.z = 0;
+      for (; ; ) {
+        var blk = rzb(chunk, this.s);
+        if (!blk) {
+          if (final)
+            err(5);
+          var adc = chunk.subarray(this.s.b);
+          this.s.b = 0;
+          this.c.push(adc), this.l += adc.length;
+          return;
+        } else {
+          this.ondata(blk, false);
+          cpw(this.s.w, 0, blk.length);
+          this.s.w.set(blk, this.s.w.length - blk.length);
+        }
+        if (this.s.l) {
+          var rest = chunk.subarray(this.s.b);
+          this.s = this.s.c * 4;
+          this.push(rest, final);
+          return;
+        }
+      }
+    } else if (final)
+      err(5);
+  };
+  return Decompress2;
+})();
 
 // src/decoder.js
-function decompressFrame(frameBytes) {
-  return decompress(frameBytes);
+var ExpansionLimitError = class extends Error {
+  constructor(limit, produced, message) {
+    super(
+      message ?? `zstd frame expands past the expected size: limit ${limit} bytes, already produced ${produced} bytes \u2014 refusing to return unverified bytes`
+    );
+    this.name = "ExpansionLimitError";
+    this.limit = limit;
+  }
+};
+var INPUT_SLICE_BYTES = 16 * 1024;
+var MIN_WINDOW_ALLOWANCE_BYTES = 8 * 1024 * 1024;
+var ZSTD_MAGIC = 4247762216;
+var SKIPPABLE_MAGIC_MIN = 407710288;
+var SKIPPABLE_MAGIC_MAX = 407710303;
+function parseZstdFrameHeader(bytes) {
+  let off = 0;
+  for (; ; ) {
+    if (bytes.length - off < 5) return null;
+    const view2 = new DataView(bytes.buffer, bytes.byteOffset + off);
+    const magic = view2.getUint32(0, true);
+    if (magic >= SKIPPABLE_MAGIC_MIN && magic <= SKIPPABLE_MAGIC_MAX) {
+      if (bytes.length - off < 8) return null;
+      off += 8 + view2.getUint32(4, true);
+      continue;
+    }
+    if (magic !== ZSTD_MAGIC) return null;
+    break;
+  }
+  const head = off + 4;
+  const descriptor = bytes[head];
+  const fcsCode = descriptor >> 6;
+  const singleSegment = (descriptor & 32) !== 0;
+  const checksum = (descriptor & 4) !== 0;
+  const dictIdCode = descriptor & 3;
+  const dictIdBytes = [0, 1, 2, 4][dictIdCode];
+  const fcsBytes = singleSegment ? [1, 2, 4, 8][fcsCode] : [0, 2, 4, 8][fcsCode];
+  const headerLength = 1 + (singleSegment ? 0 : 1) + dictIdBytes + fcsBytes;
+  if (bytes.length - head < headerLength) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset + head);
+  let pos = 1;
+  let windowSize;
+  if (singleSegment) {
+    windowSize = null;
+  } else {
+    const wd = view.getUint8(pos);
+    pos += 1;
+    const windowLog = 10 + (wd >> 3);
+    const windowBase = 2 ** windowLog;
+    windowSize = windowBase + windowBase / 8 * (wd & 7);
+  }
+  pos += dictIdBytes;
+  let contentSize = null;
+  if (fcsBytes > 0) {
+    if (fcsBytes === 8) {
+      const v = view.getBigUint64(pos, true);
+      contentSize = v > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(v);
+    } else {
+      let v = 0;
+      for (let i = fcsBytes - 1; i >= 0; i--) v = v * 256 + view.getUint8(pos + i);
+      contentSize = fcsBytes === 2 ? v + 256 : v;
+    }
+  }
+  if (singleSegment) windowSize = contentSize;
+  return { contentSize, windowSize, frameStart: off, headerLength, checksum };
+}
+function zstdFrameEnd(bytes, info) {
+  let pos = info.frameStart + 4 + info.headerLength;
+  for (; ; ) {
+    if (pos + 3 > bytes.length) return null;
+    const bh = bytes[pos] | bytes[pos + 1] << 8 | bytes[pos + 2] << 16;
+    pos += 3;
+    const last = (bh & 1) !== 0;
+    const type = bh >> 1 & 3;
+    const size = bh >> 3;
+    if (type === 3) return null;
+    pos += type === 1 ? 1 : size;
+    if (pos > bytes.length) return null;
+    if (last) break;
+  }
+  if (info.checksum) pos += 4;
+  return pos <= bytes.length ? pos : null;
+}
+function decompressFrame(frameBytes, maxPlainBytes) {
+  if (!Number.isSafeInteger(maxPlainBytes) || maxPlainBytes < 0) {
+    throw new TypeError(
+      `decompressFrame requires a non-negative integer byte limit, got ${maxPlainBytes}`
+    );
+  }
+  const header = parseZstdFrameHeader(frameBytes);
+  if (header !== null) {
+    if (header.contentSize !== null && header.contentSize > maxPlainBytes) {
+      throw new ExpansionLimitError(
+        maxPlainBytes,
+        header.contentSize,
+        `zstd frame declares a content size of ${header.contentSize} bytes, past the expected size (limit ${maxPlainBytes} bytes) \u2014 refusing to return unverified bytes`
+      );
+    }
+    const windowCap = Math.max(maxPlainBytes, MIN_WINDOW_ALLOWANCE_BYTES);
+    if (header.windowSize !== null && header.windowSize > windowCap) {
+      throw new ExpansionLimitError(
+        maxPlainBytes,
+        header.windowSize,
+        `zstd frame declares a ${header.windowSize}-byte window, over the ${windowCap}-byte bound for an expected size of ${maxPlainBytes} bytes \u2014 refusing to return unverified bytes`
+      );
+    }
+    const end = zstdFrameEnd(frameBytes, header);
+    if (end !== null && end < frameBytes.length) {
+      throw new Error(
+        `expected exactly one zstd frame, but ${frameBytes.length - end} trailing byte(s) follow it \u2014 refusing to decode concatenated frames`
+      );
+    }
+  }
+  const chunks = [];
+  let total = 0;
+  let exceeded = false;
+  const stream = new Decompress((data) => {
+    if (exceeded) return;
+    total += data.length;
+    if (total > maxPlainBytes) {
+      exceeded = true;
+      chunks.length = 0;
+      return;
+    }
+    chunks.push(data);
+  });
+  if (frameBytes.length === 0) {
+    stream.push(new Uint8Array(0), true);
+  }
+  for (let off = 0; off < frameBytes.length && !exceeded; off += INPUT_SLICE_BYTES) {
+    const end = Math.min(frameBytes.length, off + INPUT_SLICE_BYTES);
+    stream.push(frameBytes.subarray(off, end), end === frameBytes.length);
+  }
+  if (exceeded) {
+    throw new ExpansionLimitError(maxPlainBytes, total);
+  }
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, pos);
+    pos += chunk.length;
+  }
+  return out;
 }
 
 // src/index.js
@@ -646,6 +835,41 @@ function errorResponse(message, status) {
 async function sha256Hex(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function readStreamedFrame(resp, offset, frameLength) {
+  if (!resp.body || typeof resp.body.getReader !== "function") {
+    const whole = new Uint8Array(await resp.arrayBuffer());
+    return whole.slice(offset, offset + frameLength);
+  }
+  const reader = resp.body.getReader();
+  const parts = [];
+  let skip = offset;
+  let remaining = frameLength;
+  try {
+    while (remaining > 0) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (skip >= value.length) {
+        skip -= value.length;
+        continue;
+      }
+      const take = value.subarray(skip, skip + remaining);
+      parts.push(take);
+      remaining -= take.length;
+      skip = 0;
+    }
+  } finally {
+    await reader.cancel().catch(() => {
+    });
+    reader.releaseLock();
+  }
+  const frame = new Uint8Array(frameLength - remaining);
+  let pos = 0;
+  for (const part of parts) {
+    frame.set(part, pos);
+    pos += part.length;
+  }
+  return frame;
 }
 var BundleFlight = class {
   constructor(state, env) {
@@ -687,7 +911,7 @@ var BundleFlight = class {
   }
   async accessToken() {
     const cached = await this.state.storage.get("google_token");
-    if (cached && cached.expires_at_ms > Date.now() + 6e4) {
+    if (cached && typeof cached.token === "string" && cached.token !== "" && cached.expires_at_ms > Date.now() + 6e4) {
       return cached.token;
     }
     const form = new URLSearchParams({
@@ -704,16 +928,38 @@ var BundleFlight = class {
     if (!resp.ok) {
       throw new HttpError(502, `google token exchange failed (HTTP ${resp.status})`);
     }
-    const payload = await resp.json();
+    let payload;
+    try {
+      payload = await resp.json();
+    } catch {
+      throw new HttpError(
+        502,
+        "google token exchange failed (response body was not JSON)"
+      );
+    }
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload) || typeof payload.access_token !== "string" || payload.access_token === "") {
+      throw new HttpError(
+        502,
+        "google token exchange failed (response did not contain an access_token)"
+      );
+    }
+    const expiresIn = typeof payload.expires_in === "number" && Number.isFinite(payload.expires_in) && payload.expires_in > 0 ? payload.expires_in : 3600;
     const entry = {
       token: payload.access_token,
-      expires_at_ms: Date.now() + (payload.expires_in ?? 3600) * 1e3
+      expires_at_ms: Date.now() + expiresIn * 1e3
     };
     await this.state.storage.put("google_token", entry);
     return entry.token;
   }
   async rehydrate(job) {
     const { drive_file_id, offset, frame_length, sha256, bundle_id } = job;
+    const expectedSize = typeof job.size === "string" && job.size.trim() !== "" ? Number(job.size) : job.size;
+    if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) {
+      throw new HttpError(
+        502,
+        "manifest entry has no usable expected size \u2014 refusing unbounded decompression"
+      );
+    }
     const token = await this.accessToken();
     const range = `bytes=${offset}-${offset + frame_length - 1}`;
     const resp = await fetch(`${DRIVE_FILES_URL}/${drive_file_id}?alt=media`, {
@@ -722,9 +968,11 @@ var BundleFlight = class {
     if (resp.status !== 206 && resp.status !== 200) {
       throw new HttpError(502, `drive range download failed (HTTP ${resp.status})`);
     }
-    let frame = new Uint8Array(await resp.arrayBuffer());
+    let frame;
     if (resp.status === 200) {
-      frame = frame.slice(offset, offset + frame_length);
+      frame = await readStreamedFrame(resp, offset, frame_length);
+    } else {
+      frame = new Uint8Array(await resp.arrayBuffer());
     }
     if (frame.length !== frame_length) {
       throw new HttpError(
@@ -734,8 +982,11 @@ var BundleFlight = class {
     }
     let plain;
     try {
-      plain = decompressFrame(frame);
-    } catch {
+      plain = decompressFrame(frame, expectedSize);
+    } catch (err2) {
+      if (err2 instanceof ExpansionLimitError) {
+        throw new HttpError(502, err2.message);
+      }
       throw new HttpError(502, "zstd frame decompression failed");
     }
     const digest = await sha256Hex(plain);
@@ -775,5 +1026,6 @@ var index_default = {
 };
 export {
   BundleFlight,
-  index_default as default
+  index_default as default,
+  readStreamedFrame
 };

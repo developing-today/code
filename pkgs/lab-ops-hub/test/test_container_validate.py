@@ -1,12 +1,17 @@
 # Tests for the container crawler's validate_crawl_url (container/app.py).
 # The TypeScript validator has its own suite (lib.test.ts); the Python copy
 # is the component that actually fetches, so its policy is pinned here.
-# Run with plain Python: `python3 -m unittest discover -s test -p "test_*.py"`
-# from pkgs/lab-ops-hub (stdlib only).
+# Run with the configured Python environment (including the pinned `idna`
+# dependency): `python3 -m unittest discover -s test -p "test_*.py"` from
+# pkgs/lab-ops-hub.
 import importlib.util
+import json
 import pathlib
+import socket
+import threading
 import time
 import unittest
+from http.server import HTTPServer
 
 _APP_PATH = pathlib.Path(__file__).resolve().parent.parent / "container" / "app.py"
 _spec = importlib.util.spec_from_file_location("labops_container_app", _APP_PATH)
@@ -818,6 +823,37 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused("http://\u05d0\u06611.com/")
         self.assertRefused("http://\u0661\u0627.com/")
 
+    def test_fallback_return_applies_uts46_mapping_before_nfkc(self):
+        # Codex review of PR #5231: a label python-idna refuses
+        # (here over the underscore) fell back to raw NFKC, which
+        # maps U+03F2 (lunate sigma) to U+03C2 (final sigma) where
+        # UTS-46 — and the Worker — map it to U+03C3, so ϲ_.com
+        # returned the final-sigma host xn--_-xmb instead of the
+        # WHATWG host xn--_-zmb. The fallback now remaps with
+        # UTS-46 before NFKC.
+        self.assertEqual(
+            validate_crawl_url("http://ϲ_.com/"),
+            "http://xn--_-zmb.com/",
+        )
+        # Control: the plain lunate-sigma label takes the primary
+        # codec path and returns the same sigma mapping.
+        self.assertEqual(
+            validate_crawl_url("http://ϲ.com/"),
+            "http://xn--4xa.com/",
+        )
+
+    def test_fallback_return_ascii_remapping_has_no_punycode_prefix(self):
+        # Codex review of PR #5231 (round 2): UTS-46 deletes the
+        # U+FE0F variation selector, so the label a_ + U+FE0F remaps
+        # to pure-ASCII a_. The fallback punycode-encoded it anyway,
+        # returning xn--a_- \u2014 a different host than the Worker's
+        # (and the previous codec's) a_. An ASCII remapping returns
+        # directly, with no xn-- prefix.
+        self.assertEqual(
+            validate_crawl_url("http://a_\ufe0f.com/"),
+            "http://a_.com/",
+        )
+
     def test_judges_u0345_by_its_uts46_mapping(self):
         # UTS-46 maps U+0345 (combining Greek ypogegrammeni) to
         # U+03B9 (ι, bidi class L), but NFKC leaves it unchanged, so
@@ -1455,6 +1491,23 @@ class TestValidateCrawlUrl(unittest.TestCase):
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
 
+    def test_returns_uts46_nontransitional_alabels_matching_whatwg(self):
+        # These are new URL(raw).hostname values from the Worker runtime.
+        # Keep the Python copy aligned for nontransitional sharp S,
+        # final/ordinary/lunate sigma, and post-Unicode-3.2 mappings.
+        cases = {
+            "http://ß.com/": "http://xn--zca.com/",
+            "http://a.ß.com/": "http://a.xn--zca.com/",
+            "http://ẞ.com/": "http://xn--zca.com/",
+            "http://ς.com/": "http://xn--3xa.com/",
+            "http://σ.com/": "http://xn--4xa.com/",
+            "http://ϲ.com/": "http://xn--4xa.com/",
+            "http://ꭰ.com/": "http://xn--58d.com/",
+            "http://Ა.com/": "http://xn--lod.com/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+
     def test_returns_alabel_fallback_applies_compatibility_mappings(self):
         # Codex review round 2 on PR #3781: an accepted RTL label
         # containing a compatibility character can be refused by the
@@ -2086,6 +2139,169 @@ class TestFetchCrawl(unittest.TestCase):
         # propagating so do_POST returns a genuine 502.
         with self.assertRaises(urllib.error.URLError):
             app._fetch_crawl("http://127.0.0.1:1/nope")
+
+
+class TestCrawlContentLength(unittest.TestCase):
+    """#7036: POST /crawl validates Content-Length before reading and
+    bounds the body read, so a malformed or stalled body cannot wedge
+    the single-threaded server. The Handler runs over a real socket
+    with validate_crawl_url / _fetch_crawl stubbed at the module."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._orig_validate = app.validate_crawl_url
+        cls._orig_fetch = app._fetch_crawl
+        app.validate_crawl_url = lambda url: url
+        app._fetch_crawl = lambda url: (200, b"<html><title>T</title>hello</html>")
+        cls.server = HTTPServer(("127.0.0.1", 0), app.Handler)
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        app.validate_crawl_url = cls._orig_validate
+        app._fetch_crawl = cls._orig_fetch
+
+    def raw_request(self, head, body_prefix=b"", hold_seconds=0.0, read_timeout=5.0):
+        """Send one raw request; return (status, raw response bytes).
+
+        body_prefix is sent immediately; the socket is then held open
+        for hold_seconds (the wedge posture) before reading."""
+        with socket.create_connection(
+            ("127.0.0.1", self.port), timeout=read_timeout
+        ) as sock:
+            sock.sendall(head)
+            if body_prefix:
+                sock.sendall(body_prefix)
+            if hold_seconds:
+                time.sleep(hold_seconds)
+            sock.settimeout(read_timeout)
+            chunks = []
+            try:
+                while True:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+            except socket.timeout:
+                raise AssertionError("server did not answer promptly")
+            raw = b"".join(chunks)
+        status = int(raw.split(b" ", 2)[1])
+        return status, raw
+
+    def post_head(self, length_header):
+        lines = [b"POST /crawl HTTP/1.0", b"Host: 127.0.0.1"]
+        if length_header is not None:
+            lines.append(b"Content-Length: " + length_header)
+        return b"\r\n".join(lines) + b"\r\n\r\n"
+
+    def assert_get_still_answers(self):
+        status, _ = self.raw_request(b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+        self.assertEqual(status, 200)
+
+    def test_negative_length_gets_prompt_400(self):
+        status, raw = self.raw_request(
+            self.post_head(b"-1"), body_prefix=b'{"url":', hold_seconds=0.2
+        )
+        self.assertEqual(status, 400)
+        self.assertIn(b"Content-Length", raw)
+        self.assert_get_still_answers()
+
+    def test_oversized_length_gets_prompt_400(self):
+        status, raw = self.raw_request(
+            self.post_head(str(app._CRAWL_REQUEST_MAX_BODY_BYTES + 1).encode()),
+            body_prefix=b'{"url":',
+            hold_seconds=0.2,
+        )
+        self.assertEqual(status, 400)
+        self.assertIn(b"Content-Length", raw)
+        self.assert_get_still_answers()
+
+    def test_non_numeric_length_gets_400(self):
+        status, raw = self.raw_request(self.post_head(b"abc"))
+        self.assertEqual(status, 400)
+        self.assertIn(b"invalid Content-Length", raw)
+        self.assert_get_still_answers()
+
+    def test_missing_length_gets_400(self):
+        status, raw = self.raw_request(self.post_head(None))
+        self.assertEqual(status, 400)
+        self.assertIn(b"missing Content-Length", raw)
+        self.assert_get_still_answers()
+
+    def test_stalled_in_cap_body_times_out_and_server_recovers(self):
+        orig = app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS
+        app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS = 1
+        try:
+            status, _ = self.raw_request(
+                self.post_head(b"100"), body_prefix=b'{"url": "x"', read_timeout=8.0
+            )
+        finally:
+            app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS = orig
+        self.assertEqual(status, 408)
+        self.assert_get_still_answers()
+
+    def test_trickling_in_cap_body_is_cut_off_at_the_deadline(self):
+        # #8906 (Codex P1 on PR #8705): a client dribbling bytes at
+        # intervals below the socket timeout must still be cut off at
+        # the absolute deadline. The buffered read() this guards
+        # against keeps recv-ing until the declared length arrives -
+        # every recv succeeds, so read() never returns and the
+        # deadline is never rechecked; read1() returns after one raw
+        # read, so the loop rechecks the deadline between chunks.
+        # Oracle: the server answers 408 at ~the deadline (1s patched)
+        # while the drip would need ~20s to satisfy Content-Length.
+        orig = app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS
+        app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS = 1
+        stop = threading.Event()
+
+        def drip(sock):
+            try:
+                while not stop.is_set():
+                    sock.sendall(b"x")
+                    time.sleep(0.2)
+            except OSError:
+                pass
+
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", self.port), timeout=8.0
+            ) as sock:
+                sock.sendall(self.post_head(b"100"))
+                sender = threading.Thread(target=drip, args=(sock,), daemon=True)
+                sender.start()
+                started = time.monotonic()
+                chunks = []
+                try:
+                    while True:
+                        chunk = sock.recv(65536)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                except socket.timeout:
+                    raise AssertionError(
+                        "server did not cut off the trickling body promptly"
+                    )
+                elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+            app._CRAWL_REQUEST_READ_TIMEOUT_SECONDS = orig
+        status = int(b"".join(chunks).split(b" ", 2)[1])
+        self.assertEqual(status, 408)
+        self.assertLess(elapsed, 5.0)
+        self.assert_get_still_answers()
+
+    def test_well_formed_control_still_200(self):
+        body = json.dumps({"url": "http://example.com/"}).encode()
+        status, raw = self.raw_request(
+            self.post_head(str(len(body)).encode()), body_prefix=body
+        )
+        self.assertEqual(status, 200)
+        self.assertIn(b'"status_code": 200', raw)
+        self.assert_get_still_answers()
 
 
 if __name__ == "__main__":

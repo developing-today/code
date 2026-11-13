@@ -20,11 +20,12 @@
 //!   untouched (#2063 §2).
 //!
 //! State is a fold over the objects alone ([`fold_authorisation`]):
-//! the live object is the highest version; a signed revoke covering
-//! that version folds the authorisation as revoked, and no older
-//! version revives in its place. A body naming an issuer other than
-//! the event's verified author is invalid, not merely untrusted
-//! (design record, gateway verification step 1).
+//! the live object is the highest version, with the lexicographically
+//! greatest canonical body bytes breaking equal-version ties; a signed
+//! revoke covering that version folds the authorisation as revoked,
+//! and no older version revives in its place. A body naming an issuer
+//! other than the event's verified author is invalid, not merely
+//! untrusted (design record, gateway verification step 1).
 //!
 //! Library-only: no gateway or control-plane code lives here (that is
 //! Phases 2–3, #3801/#3802).
@@ -34,34 +35,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::chain::{self, ChainExt, Event};
 
+pub use id_store::issuer_rotation::{IssuerId, author_id, issuer_id};
+
+/// Graph-native currency definitions and value-event contracts.
+pub mod graph;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 
 /// The event kind carrying a rate authorisation revocation body.
 pub const RATE_AUTHORISATION_REVOKE_KIND: &str = "currency.rate_authorisation_revoke";
 
-/// An issuer identity: the 32 bytes of its signing key's verifying
-/// key, the same bytes the event store uses as an author key.
-pub type IssuerId = [u8; 32];
-
-/// The issuer id of a signing key.
-#[must_use]
-pub fn issuer_id(key: &SigningKey) -> IssuerId {
-    *key.verifying_key().as_bytes()
-}
-
-/// The author of a decoded (signature-verified) event, as an issuer id.
-#[must_use]
-pub fn author_id(event: &Event) -> IssuerId {
-    *event.header.verifying_key.as_bytes()
-}
-
 /// Who may convert under an authorisation (#2063 §2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthorisedCallers {
     /// Any caller.
     Any,
-    /// Only the listed identities.
+    /// Only the listed identities; the list must be non-empty.
     Allowlist(Vec<IssuerId>),
     /// Only this one counterparty.
     Single(IssuerId),
@@ -94,31 +84,35 @@ pub struct RateAuthorisation {
     pub version: u64,
     /// The offering LP; must equal the event author (verifying key).
     pub issuer_id: IssuerId,
-    /// The ledger conversions draw from.
+    /// The ledger conversions draw from; must be non-empty and differ
+    /// from `dest_ledger`.
     pub source_ledger: String,
-    /// The ledger conversions pay into.
+    /// The ledger conversions pay into; must be non-empty and differ
+    /// from `source_ledger`.
     pub dest_ledger: String,
-    /// Rate numerator (integer-rational rate, #2063 §2).
+    /// Positive rate numerator (integer-rational rate, #2063 §2).
     pub rate_num: u128,
     /// Rate denominator; non-zero in a valid authorisation.
     pub rate_den: u128,
-    /// Smallest convertible amount, in source-ledger units.
+    /// Smallest convertible amount, in source-ledger units; at most
+    /// `max_amount`.
     pub min_amount: u128,
     /// Largest convertible amount, in source-ledger units.
     pub max_amount: u128,
-    /// Total convertible volume, in source-ledger units.
+    /// Positive total convertible volume, in source-ledger units.
     pub total_cap: u128,
     /// Who may convert under this authorisation.
     pub authorised_callers: AuthorisedCallers,
     /// No conversions before this time (unix seconds).
     pub not_before: u64,
-    /// Mandatory expiry (unix seconds): no conversions at or after.
+    /// Mandatory expiry (unix seconds), strictly after `not_before`;
+    /// no conversions at or after this time.
     pub expires_at: u64,
     /// Optional window (seconds) in which a posted conversion may be
     /// reversed at the original rate (#2063 §4.4).
     pub reversal_window_secs: Option<u64>,
-    /// Optional fee in basis points; fees are non-refundable unless
-    /// stated (#2063 §4.4).
+    /// Optional fee in basis points, at most 10,000; fees are
+    /// non-refundable unless stated (#2063 §4.4).
     pub fee_bps: Option<u32>,
 }
 
@@ -146,15 +140,45 @@ impl RateAuthorisation {
     ///
     /// # Errors
     ///
-    /// Returns [`ValidateError::IssuerMismatch`] if the body names an
-    /// issuer other than the event author, and
-    /// [`ValidateError::ZeroRateDenominator`] if `rate_den` is zero.
+    /// Returns a [`ValidateError`] when the issuer does not match, the
+    /// rate numerator or denominator is zero, the amount bounds or time
+    /// window are invalid, the fee exceeds 10,000 basis points, either
+    /// ledger is empty or both ledgers are equal, the total cap is zero,
+    /// or the caller allowlist is empty.
     pub fn validate(&self, author: &IssuerId) -> Result<(), ValidateError> {
         if self.issuer_id != *author {
             return Err(ValidateError::IssuerMismatch);
         }
         if self.rate_den == 0 {
             return Err(ValidateError::ZeroRateDenominator);
+        }
+        if self.rate_num == 0 {
+            return Err(ValidateError::ZeroRateNumerator);
+        }
+        if self.min_amount > self.max_amount {
+            return Err(ValidateError::MinAmountExceedsMaxAmount);
+        }
+        if self.expires_at <= self.not_before {
+            return Err(ValidateError::InvalidTimeWindow);
+        }
+        if self.fee_bps.is_some_and(|fee_bps| fee_bps > 10_000) {
+            return Err(ValidateError::FeeBpsTooHigh);
+        }
+        if self.source_ledger.is_empty() {
+            return Err(ValidateError::EmptySourceLedger);
+        }
+        if self.dest_ledger.is_empty() {
+            return Err(ValidateError::EmptyDestinationLedger);
+        }
+        if self.source_ledger == self.dest_ledger {
+            return Err(ValidateError::SameSourceAndDestinationLedger);
+        }
+        if self.total_cap == 0 {
+            return Err(ValidateError::ZeroTotalCap);
+        }
+        if matches!(&self.authorised_callers, AuthorisedCallers::Allowlist(list) if list.is_empty())
+        {
+            return Err(ValidateError::EmptyAllowlist);
         }
         Ok(())
     }
@@ -214,20 +238,55 @@ impl RateAuthorisationRevoke {
 pub enum ValidateError {
     /// The body names an issuer other than the event author.
     IssuerMismatch,
+    /// The rate numerator is zero.
+    ZeroRateNumerator,
     /// The rate denominator is zero.
     ZeroRateDenominator,
+    /// The minimum amount is greater than the maximum amount.
+    MinAmountExceedsMaxAmount,
+    /// The expiry is not after the start of the validity window.
+    InvalidTimeWindow,
+    /// The optional fee is greater than 10,000 basis points.
+    FeeBpsTooHigh,
+    /// The source ledger is empty.
+    EmptySourceLedger,
+    /// The destination ledger is empty.
+    EmptyDestinationLedger,
+    /// The source and destination ledgers are equal.
+    SameSourceAndDestinationLedger,
+    /// The total conversion cap is zero.
+    ZeroTotalCap,
+    /// The caller allowlist contains no identities.
+    EmptyAllowlist,
 }
 
 impl std::fmt::Display for ValidateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::IssuerMismatch => {
-                write!(
-                    f,
-                    "authorisation body names an issuer other than the event author"
-                )
-            }
+            Self::IssuerMismatch => write!(
+                f,
+                "authorisation body names an issuer other than the event author"
+            ),
+            Self::ZeroRateNumerator => write!(f, "authorisation rate numerator is zero"),
             Self::ZeroRateDenominator => write!(f, "authorisation rate denominator is zero"),
+            Self::MinAmountExceedsMaxAmount => {
+                write!(f, "authorisation minimum amount exceeds maximum amount")
+            }
+            Self::InvalidTimeWindow => {
+                write!(f, "authorisation expiry must be after not-before time")
+            }
+            Self::FeeBpsTooHigh => {
+                write!(f, "authorisation fee exceeds 10,000 basis points")
+            }
+            Self::EmptySourceLedger => write!(f, "authorisation source ledger is empty"),
+            Self::EmptyDestinationLedger => {
+                write!(f, "authorisation destination ledger is empty")
+            }
+            Self::SameSourceAndDestinationLedger => {
+                write!(f, "authorisation source and destination ledgers are equal")
+            }
+            Self::ZeroTotalCap => write!(f, "authorisation total cap is zero"),
+            Self::EmptyAllowlist => write!(f, "authorisation caller allowlist is empty"),
         }
     }
 }
@@ -253,6 +312,13 @@ pub enum AuthorisationState {
     },
 }
 
+// Every field in RateAuthorisation is infallibly serializable by serde_json.
+#[allow(clippy::expect_used, clippy::panic)]
+fn canonical_authorisation_body_bytes(body: &RateAuthorisation) -> Vec<u8> {
+    body.body()
+        .expect("RateAuthorisation fields are always JSON-serializable")
+}
+
 /// Folds one authorisation's state from its signed objects alone.
 ///
 /// `authorisations` pairs each authorisation event's verified author
@@ -273,8 +339,10 @@ pub enum AuthorisationState {
 /// [`AuthorisationState::Revoked`] with the *earliest* effective
 /// covering revocation (ties break to the smallest
 /// `revoked_version_from`, deterministically); otherwise
-/// [`AuthorisationState::Live`]. Returns `None` when the expected
-/// issuer has no valid version of the authorisation.
+/// [`AuthorisationState::Live`]. If valid bodies tie at the highest
+/// version, the lexicographically greatest canonical body bytes win,
+/// independent of input order. Returns `None` when the expected issuer
+/// has no valid version of the authorisation.
 #[must_use]
 pub fn fold_authorisation(
     authorisation_id: u128,
@@ -287,7 +355,12 @@ pub fn fold_authorisation(
         .filter(|(author, _)| author == expected_issuer)
         .filter(|(_, body)| body.authorisation_id == authorisation_id)
         .filter(|(author, body)| body.validate(author).is_ok())
-        .max_by_key(|(_, body)| body.version)?;
+        .max_by(|(_, left), (_, right)| {
+            left.version.cmp(&right.version).then_with(|| {
+                canonical_authorisation_body_bytes(left)
+                    .cmp(&canonical_authorisation_body_bytes(right))
+            })
+        })?;
     let covering = revokes
         .iter()
         .filter(|(author, _)| author == expected_issuer)
@@ -306,10 +379,18 @@ pub fn fold_authorisation(
 
 /// Signs a rate authorisation as a `currency.rate_authorisation` event.
 ///
+/// The authorisation is validated against the signing key's issuer
+/// before anything is signed (#6422): a body the fold would always
+/// ignore — one naming another issuer, a zero rate denominator, and
+/// the rest of [`RateAuthorisation::validate`]'s rules — is refused
+/// here instead of signing successfully and being dead on arrival.
+///
 /// # Errors
 ///
-/// Returns a chain error if the extension or backlink is invalid, or a
-/// JSON error if the authorisation cannot be serialized.
+/// Returns a validation error if the authorisation fails
+/// [`RateAuthorisation::validate`] for the signing key's issuer, a
+/// chain error if the extension or backlink is invalid, or a JSON
+/// error if the authorisation cannot be serialized.
 pub fn sign_authorisation(
     key: &SigningKey,
     seq_num: SeqNum,
@@ -317,6 +398,7 @@ pub fn sign_authorisation(
     authorisation: &RateAuthorisation,
     after: Vec<Hash>,
 ) -> Result<Event, SignError> {
+    authorisation.validate(&issuer_id(key))?;
     let body = authorisation.body()?;
     Ok(chain::sign(
         key,
@@ -332,6 +414,10 @@ pub fn sign_authorisation(
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
+            rotation: None,
+
+            chat: None,
         },
     )?)
 }
@@ -363,6 +449,10 @@ pub fn sign_revoke(
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
+            rotation: None,
+
+            chat: None,
         },
     )?)
 }
@@ -375,6 +465,10 @@ pub enum SignError {
     Json(serde_json::Error),
     /// The chain refused the event (extension or backlink rules).
     Chain(chain::ChainError),
+    /// The authorisation failed validation for the signing issuer
+    /// (#6422): signing it would produce an event the fold always
+    /// ignores.
+    Validate(ValidateError),
 }
 
 impl From<serde_json::Error> for SignError {
@@ -389,11 +483,18 @@ impl From<chain::ChainError> for SignError {
     }
 }
 
+impl From<ValidateError> for SignError {
+    fn from(err: ValidateError) -> Self {
+        Self::Validate(err)
+    }
+}
+
 impl std::fmt::Display for SignError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Json(err) => write!(f, "currency object would not serialize: {err}"),
             Self::Chain(err) => write!(f, "chain refused the currency event: {err:?}"),
+            Self::Validate(err) => write!(f, "authorisation failed validation: {err}"),
         }
     }
 }
@@ -401,6 +502,7 @@ impl std::fmt::Display for SignError {
 impl std::error::Error for SignError {}
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -466,6 +568,118 @@ mod tests {
     }
 
     #[test]
+    fn test_rejects_minimum_above_maximum_amount() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.min_amount = auth.max_amount + 1;
+        assert_eq!(
+            auth.validate(&author),
+            Err(ValidateError::MinAmountExceedsMaxAmount)
+        );
+    }
+
+    #[test]
+    fn test_rejects_expiry_at_or_before_not_before() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.not_before = 2_000;
+        for expires_at in [2_000, 1_999] {
+            auth.expires_at = expires_at;
+            assert_eq!(
+                auth.validate(&author),
+                Err(ValidateError::InvalidTimeWindow)
+            );
+        }
+    }
+
+    #[test]
+    fn test_rejects_fee_above_ten_thousand_basis_points() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.fee_bps = Some(10_001);
+        assert_eq!(auth.validate(&author), Err(ValidateError::FeeBpsTooHigh));
+    }
+
+    #[test]
+    fn test_rejects_empty_source_ledger() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.source_ledger.clear();
+        assert_eq!(
+            auth.validate(&author),
+            Err(ValidateError::EmptySourceLedger)
+        );
+    }
+
+    #[test]
+    fn test_rejects_empty_destination_ledger() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.dest_ledger.clear();
+        assert_eq!(
+            auth.validate(&author),
+            Err(ValidateError::EmptyDestinationLedger)
+        );
+    }
+
+    #[test]
+    fn test_rejects_equal_source_and_destination_ledgers() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.dest_ledger = auth.source_ledger.clone();
+        assert_eq!(
+            auth.validate(&author),
+            Err(ValidateError::SameSourceAndDestinationLedger)
+        );
+    }
+
+    #[test]
+    fn test_rejects_zero_rate_numerator() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.rate_num = 0;
+        assert_eq!(
+            auth.validate(&author),
+            Err(ValidateError::ZeroRateNumerator)
+        );
+    }
+
+    #[test]
+    fn test_rejects_zero_total_cap() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.total_cap = 0;
+        assert_eq!(auth.validate(&author), Err(ValidateError::ZeroTotalCap));
+    }
+
+    #[test]
+    fn test_rejects_empty_caller_allowlist() {
+        let author = issuer_id(&lp_key());
+        let mut auth = forward();
+        auth.authorised_callers = AuthorisedCallers::Allowlist(vec![]);
+        assert_eq!(auth.validate(&author), Err(ValidateError::EmptyAllowlist));
+    }
+
+    #[test]
+    fn test_fold_ignores_invalid_higher_version_and_keeps_prior_valid_body() {
+        let author = issuer_id(&lp_key());
+        let valid = forward();
+        let mut invalid = valid.clone();
+        invalid.version = 2;
+        invalid.min_amount = invalid.max_amount + 1;
+
+        assert_eq!(
+            fold_authorisation(
+                7,
+                &author,
+                &[(author, valid.clone()), (author, invalid)],
+                &[]
+            ),
+            Some(AuthorisationState::Live(valid))
+        );
+    }
+
+    #[test]
     fn golden_reverse_is_a_separate_object() {
         let fwd = forward();
         let rev = reverse();
@@ -509,6 +723,34 @@ mod tests {
         assert_eq!(
             fold_authorisation(7, &author, &objects, &[]),
             Some(AuthorisationState::Live(v2))
+        );
+    }
+
+    #[test]
+    fn same_version_authorisation_tie_break_is_input_order_independent() {
+        let author = issuer_id(&lp_key());
+        let mut rate_8000 = forward();
+        rate_8000.rate_num = 8000;
+        let mut rate_9000 = rate_8000.clone();
+        rate_9000.rate_num = 9000;
+
+        // The canonical signed body is the tie-break key. For these two
+        // valid bodies, the lexicographically greater bytes select 9000.
+        assert!(matches!(
+            (rate_8000.body(), rate_9000.body()),
+            (Ok(lower), Ok(greater)) if lower < greater
+        ));
+
+        let forward_order = [(author, rate_8000.clone()), (author, rate_9000.clone())];
+        let reverse_order = [(author, rate_9000.clone()), (author, rate_8000)];
+        let expected = Some(AuthorisationState::Live(rate_9000));
+        assert_eq!(
+            fold_authorisation(7, &author, &forward_order, &[]),
+            expected
+        );
+        assert_eq!(
+            fold_authorisation(7, &author, &reverse_order, &[]),
+            expected
         );
     }
 
@@ -620,6 +862,38 @@ mod tests {
                 revoked_version_from: 2,
                 effective_at: 100,
             })
+        );
+    }
+
+    #[test]
+    fn sign_authorisation_refuses_an_authorisation_for_another_issuer() {
+        // Oracle: #6422 — the fold ignores any authorisation whose
+        // body names an issuer other than the event author, so
+        // signing one with a different key must refuse at sign time
+        // instead of succeeding silently.
+        let auth = forward();
+        let error = sign_authorisation(&other_key(), 0, None, &auth, vec![])
+            .expect_err("an authorisation naming another issuer must not sign");
+        assert!(
+            matches!(error, SignError::Validate(ValidateError::IssuerMismatch)),
+            "expected SignError::Validate(IssuerMismatch), got {error:?}"
+        );
+    }
+
+    #[test]
+    fn sign_authorisation_refuses_a_zero_rate_denominator() {
+        // Oracle: #6422 — a rate_den of 0 is dead on arrival in the
+        // fold (validate's ZeroRateDenominator); signing must refuse.
+        let mut auth = forward();
+        auth.rate_den = 0;
+        let error = sign_authorisation(&lp_key(), 0, None, &auth, vec![])
+            .expect_err("a zero rate denominator must not sign");
+        assert!(
+            matches!(
+                error,
+                SignError::Validate(ValidateError::ZeroRateDenominator)
+            ),
+            "expected SignError::Validate(ZeroRateDenominator), got {error:?}"
         );
     }
 

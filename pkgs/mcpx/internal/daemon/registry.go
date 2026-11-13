@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
@@ -27,6 +28,8 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/nearmiss"
+	"github.com/developing-today/code/pkgs/mcpx/internal/policy"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 	"github.com/developing-today/code/pkgs/mcpx/internal/secrets"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
@@ -48,7 +51,15 @@ type Registry struct {
 	paths Paths
 	hash  string
 
-	mu sync.RWMutex
+	// reloadMu serializes configuration swaps with asynchronous cleanup from
+	// earlier swaps. A cleanup must not remove sessions created by a later
+	// reload that re-adds the same server name.
+	reloadMu sync.Mutex
+	// pendingSessionCleanup protects persisted records until the removed
+	// pool has drained and can terminate them with its last live config.
+	// Access is serialized by reloadMu.
+	pendingSessionCleanup map[string]int
+	mu                    sync.RWMutex
 	// pools may be shared between names; views never are. A view carries the
 	// per-name presentation -- namespace, tool subset, prelude, profiles --
 	// that must not follow the shared process.
@@ -107,6 +118,14 @@ type Registry struct {
 	// wait for them. Both are memory only; see internal/secrets.
 	secrets *secrets.Store
 	board   *secrets.Board
+	// writeLedger persists post-dispatch calls whose outcome could not be
+	// established, so a restart cannot make a retry silently unsafe.
+	writeLedger *WriteLedger
+
+	// scriptRun executes a file-backed tool view (#1933 slice 2). It is
+	// installed by the daemon, which owns the exec service; a registry
+	// built directly by a test may leave it nil.
+	scriptRun func(ctx context.Context, tool string, view config.ToolView, values map[string]any, session string) (json.RawMessage, error)
 }
 
 // leaseState remembers which pool keys a caller created, so releasing a
@@ -199,18 +218,23 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 		return nil, err
 	}
 	raw, _ := json.Marshal(cfg.MCPServers)
+	writeLedger, err := OpenWriteLedger(paths.State, cfg.Sources...)
+	if err != nil {
+		return nil, err
+	}
 
 	r := &Registry{
-		cfg:     cfg,
-		paths:   paths,
-		hash:    HashConfig(raw),
-		pools:   make(map[string]*pool.Pool, len(servers)),
-		views:   make(map[string]*config.Resolved, len(servers)),
-		leases:  map[string]*leaseState{},
-		asks:    newAskTable(),
-		logf:    logf,
-		secrets: secrets.NewStore(),
-		board:   secrets.NewBoard(defaults.SecretRequestRetention),
+		cfg:         cfg,
+		paths:       paths,
+		hash:        HashConfig(raw),
+		pools:       make(map[string]*pool.Pool, len(servers)),
+		views:       make(map[string]*config.Resolved, len(servers)),
+		leases:      map[string]*leaseState{},
+		asks:        newAskTable(),
+		logf:        logf,
+		secrets:     secrets.NewStore(),
+		board:       secrets.NewBoard(defaults.SecretRequestRetention),
+		writeLedger: writeLedger,
 	}
 	r.loadSessions()
 	if paths.State != "" {
@@ -238,6 +262,18 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 		r.bindSecrets(s)
 
 		id := s.ProcessID()
+		if s.ScriptOnly() {
+			// A script-only namespace has no process to share: the
+			// pool exists to hand out one running child, and there
+			// is none. Two such namespaces with otherwise-default
+			// settings hash to the same ProcessID, which used to
+			// give them one pool -- and the write ledger blocks by
+			// pool, so an unknown outcome in one namespace blocked
+			// writes in the other (Codex P2 on PR #8317). Their
+			// declared scripts are the substance, not a view over
+			// a shared process, so each gets its own pool.
+			id += "\x00script:" + s.Namespace
+		}
 		p, shared := byPoolID[id]
 		if !shared {
 			p = pool.New(s)
@@ -397,6 +433,105 @@ func visibleTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool 
 	return out
 }
 
+// virtualCatalogue assembles the catalogue a virtual namespace's
+// listing is built from (#1933 slice 3): the visible tools of every
+// server the namespace mounts from, each renamed to its qualified
+// "server.tool" form, so viewTools finds a mount by exactly the
+// From its author wrote. Mount sources are visited in view-name
+// order and each contributes once; a source whose cache is empty
+// contributes nothing yet -- the mount appears when its catalogue
+// does, and load-time validation defers the same way.
+// declaredToolNames is the set of names a view presents its
+// tools under: renames applied and static include/exclude lists
+// honored, but transient precondition gates (a secret not yet
+// supplied, a required server not running) NOT applied -- those
+// block calls, they do not unname tools. Mount validation judges
+// existence against this set, so a mount may name a tool an alias
+// renamed, and a presently gated tool is blocked rather than
+// unknown.
+func declaredToolNames(view *config.Resolved, all []mcpclient.Tool) map[string]bool {
+	if view == nil {
+		return nil
+	}
+	cp := *view
+	cp.Preconditions = nil
+	// Secret gates (the view's own RequiresSecrets and per-tool
+	// RequiresSecret preconditions) are transient too: on the
+	// copy, every secret reads as supplied, so a tool whose only
+	// obstacle is a secret not yet provided still counts as
+	// declared. (RequiresServer gates need an activity callback
+	// the presentation path never passes, so they never hid a
+	// tool here in the first place.)
+	cp.Runtime = func(string) (string, bool) { return "declared", true }
+	names := map[string]bool{}
+	for _, t := range visibleTools(&cp, all) {
+		names[t.Name] = true
+	}
+	return names
+}
+
+// catalogueKey is the internal key under which a tool view's
+// target sits in an assembled catalogue. For an ordinary view it
+// is the From name itself. For a mount (#1933 slice 3) it is the
+// resolved (MountServer, MountTool) pair, separated by a NUL --
+// a byte neither a configured server name nor an upstream tool
+// name carries in practice -- because the plain concatenation
+// "server.tool" is ambiguous exactly when it matters most: with
+// servers "a" and "a.b", a's tool "b.c" and a.b's tool "c" would
+// share a key and overwrite each other.
+func catalogueKey(tv config.ToolView) string {
+	if tv.MountServer != "" {
+		return tv.MountServer + "\x00" + tv.MountTool
+	}
+	return tv.From
+}
+
+func virtualCatalogue(view *config.Resolved, views map[string]*config.Resolved, pools map[string]*pool.Pool) []mcpclient.Tool {
+	names := make([]string, 0, len(view.ToolViews))
+	for vn := range view.ToolViews {
+		names = append(names, vn)
+	}
+	sort.Strings(names)
+	seen := map[string]bool{}
+	var out []mcpclient.Tool
+	for _, vn := range names {
+		tv := view.ToolViews[vn]
+		if tv.MountServer == "" || seen[tv.MountServer] {
+			continue
+		}
+		seen[tv.MountServer] = true
+		tp, ok := pools[tv.MountServer]
+		if !ok || tp == nil {
+			continue
+		}
+		tall, _, _ := tp.CachedSchemas()
+		for _, t := range visibleTools(views[tv.MountServer], tall) {
+			// The advertised schema is the one the call will be
+			// judged against: bake the home server's own
+			// effective schema for the tool (its view's pins
+			// removed, its argument rules applied -- the rules
+			// the delegated call enforces) into the assembled
+			// catalogue; the mounting view's own presentation
+			// (its pins, its renames) applies on top, in
+			// viewTools, exactly as for an alias.
+			t.InputSchema = effectiveViewSchema(views[tv.MountServer], t.Name, t.InputSchema)
+			t.Name = tv.MountServer + "\x00" + t.Name
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// viewCatalogue is the catalogue a view's listings are built from:
+// the view's own pool cache, or -- for a virtual namespace, which
+// has no catalogue of its own -- the assembled mounts.
+func (r *Registry) viewCatalogue(name string, view *config.Resolved, own []mcpclient.Tool) []mcpclient.Tool {
+	if view == nil || !view.Virtual() {
+		return own
+	}
+	return virtualCatalogue(view, r.views, r.pools)
+}
+
 // viewTools materialises a view's declared tool views (#1933 slice 1):
 // exactly the named target tools, under their view names, with any
 // description override and the pinned properties hidden from the
@@ -412,7 +547,7 @@ func visibleTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool 
 // advertised without ever being enforced.
 func ruleToolName(view *config.Resolved, name string) string {
 	if view != nil {
-		if tv, ok := view.ToolViews[name]; ok {
+		if tv, ok := view.ToolViews[name]; ok && tv.From != "" {
 			return tv.From
 		}
 	}
@@ -452,9 +587,15 @@ func viewTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool {
 			continue
 		}
 		tv := view.ToolViews[name]
-		t, ok := byName[tv.From]
-		if !ok {
-			continue // load-time validation names this; listing must not invent it
+		var t mcpclient.Tool
+		if tv.Command != "" || tv.File != "" {
+			t = scriptViewTool(name, tv)
+		} else {
+			up, ok := byName[catalogueKey(tv)]
+			if !ok {
+				continue // load-time validation names this; listing must not invent it
+			}
+			t = up
 		}
 		t.Name = name
 		if tv.Description != "" {
@@ -1349,7 +1490,56 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 			continue
 		}
 		all, _, _ := p.CachedSchemas()
-		if len(all) == 0 || p.SchemaExpired() {
+		deferred := map[string]bool{}
+		if view.Virtual() {
+			// A virtual namespace validates its mounts against the
+			// assembled catalogue, per source: a mount is checked
+			// only when its own source's catalogue is cached and
+			// unexpired. One uncached source must not make its
+			// mounts read as unknown merely because another
+			// source filled the assembly, and a stale source must
+			// not reject tools it has since gained; when every
+			// source defers, the whole view defers exactly as an
+			// uncached server's does.
+			for _, tv := range view.ToolViews {
+				if tv.MountServer == "" || deferred[tv.MountServer] {
+					continue
+				}
+				sp, ok := pools[tv.MountServer]
+				if !ok || sp == nil {
+					deferred[tv.MountServer] = true
+					continue
+				}
+				if _, _, sat := sp.CachedSchemas(); sat.IsZero() || sp.SchemaExpired() {
+					deferred[tv.MountServer] = true
+				}
+			}
+			// Existence is judged against each source's
+			// declared presentation, not the assembled
+			// catalogue: the names the source's own view
+			// presents its tools under (renames applied --
+			// a mount may name an alias's renamed tool),
+			// with transient precondition gates (a required
+			// secret not yet supplied, a required server not
+			// running) not applied. A gated tool contributes
+			// nothing to the assembly, but its mount is not
+			// unknown -- it is blocked until the gate lifts,
+			// and failing registry creation would outlast
+			// the gate (Codex P2 on PR #8632).
+			for vn, tv := range view.ToolViews {
+				if tv.MountServer == "" || deferred[tv.MountServer] {
+					continue
+				}
+				stools, _, _ := pools[tv.MountServer].CachedSchemas()
+				if !declaredToolNames(views[tv.MountServer], stools)[tv.MountTool] {
+					return fmt.Errorf("server %q: toolView %q: unknown target tool %q", name, vn, tv.From)
+				}
+			}
+			all = virtualCatalogue(view, views, pools)
+			if len(all) == 0 {
+				continue
+			}
+		} else if len(all) == 0 || p.SchemaExpired() {
 			continue
 		}
 		byName := make(map[string]mcpclient.Tool, len(all))
@@ -1363,8 +1553,17 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 		sort.Strings(viewNames)
 		for _, vn := range viewNames {
 			tv := view.ToolViews[vn]
-			t, ok := byName[tv.From]
+			if tv.Command != "" || tv.File != "" {
+				continue // a script-backed view has no target to check (#1933 slice 2)
+			}
+			if tv.MountServer != "" && deferred[tv.MountServer] {
+				continue // this mount's source has no fresh catalogue; it defers
+			}
+			t, ok := byName[catalogueKey(tv)]
 			if !ok {
+				if tv.MountServer != "" {
+					continue // judged against the source's raw catalogue above
+				}
 				return fmt.Errorf("server %q: toolView %q: unknown target tool %q", name, vn, tv.From)
 			}
 			props := schemaProps(t.InputSchema)
@@ -1438,6 +1637,30 @@ func (r *Registry) Pool(nameOrNS string) (*pool.Pool, bool) {
 		}
 	}
 	return nil, false
+}
+
+// KnownServer reports whether nameOrNS names a configured server --
+// by its configured name, by a live pool under that name, or by the
+// namespace of a configured server. It is a map read only, like
+// CanonicalName: no lease, no upstream. Callers that must not act on
+// names the registry does not know (the completion rate limiter,
+// #6978) check this first, so a request naming nothing real is
+// refused by the pool lookup without side effects.
+func (r *Registry) KnownServer(nameOrNS string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.pools[nameOrNS]; ok {
+		return true
+	}
+	if _, ok := r.views[nameOrNS]; ok {
+		return true
+	}
+	for _, name := range r.order {
+		if r.views[name].Namespace == nameOrNS {
+			return true
+		}
+	}
+	return false
 }
 
 // CanonicalName resolves a name-or-namespace the way Pool does and
@@ -1535,6 +1758,27 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, p := range pools {
+		// A script-only server has no process to list: its tools are
+		// declared views, and warming it would record a failure for a
+		// server that was never meant to start (#1933 slice 2).
+		if cfg := p.Config(); cfg != nil && cfg.ScriptOnly() {
+			// Its catalog is locally declared, so it is initialized
+			// by definition: seed the timestamp, or Namespaces
+			// reports it uncached forever and every CLI invocation
+			// pays for a global refresh that re-lists every other
+			// server too (Codex P2 on PR #8317). A virtual
+			// namespace is the exception: its catalogue is
+			// assembled from its mount sources, so seeding it
+			// would report a cold namespace as cached while its
+			// sources are still loading (Codex P2 on PR #8632);
+			// Namespaces derives its readiness from the sources.
+			if !cfg.Virtual() {
+				if tools, res, at := p.CachedSchemas(); at.IsZero() {
+					p.SetSchemas(tools, res, p.CachedPrompts(), p.Instructions(), time.Now(), time.Time{}, false)
+				}
+			}
+			continue
+		}
 		_, _, at := p.CachedSchemas()
 		if !force && !at.IsZero() {
 			continue
@@ -1543,6 +1787,14 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 		// would be recorded as its error. It is started once it has its
 		// secrets, by the first call or refresh that finds it ready.
 		if blocker, _ := r.blocked(p.Config()); blocker != nil {
+			continue
+		}
+		// A caller-scoped server (its definition references
+		// ${mcpx.root}/${mcpx.cwd}) cannot start from this background
+		// pass, which has no caller: defer it to the first
+		// caller-backed refresh rather than recording a guaranteed
+		// rootless-start failure as its error (PR #5135).
+		if p.CallerScoped() {
 			continue
 		}
 		wg.Add(1)
@@ -1603,8 +1855,16 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 			continue
 		}
 		allTools, res, at := p.CachedSchemas()
-		tools := visibleTools(view, allTools)
+		tools := visibleTools(view, r.viewCatalogue(name, view, allTools))
 		st := p.Status()
+		cached := !at.IsZero() || view.ScriptOnly()
+		if view.Virtual() {
+			// A virtual namespace has no catalogue of its own:
+			// it is cached exactly when every mount source is,
+			// so a cold source never lets a partial assembly
+			// present as authoritative.
+			cached = r.virtualCached(view)
+		}
 		out = append(out, NamespaceInfo{
 			Namespace:       view.Namespace,
 			Server:          name,
@@ -1616,14 +1876,13 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 			Sharing:         st.Sharing,
 			Scope:           st.Scope,
 			Error:           st.LastError,
-			Cached:          !at.IsZero(),
+			Cached:          cached,
 			RequiresSecrets: view.RequiresSecrets,
 		})
 	}
 	return out
 }
 
-// ToolInfo describes one tool for search results.
 // TermScore is one term's contribution to a search hit's Score: the field
 // it matched and the points that field's tier awards (#1923, --explain).
 type TermScore struct {
@@ -1632,6 +1891,7 @@ type TermScore struct {
 	Points int    `json:"points"`
 }
 
+// ToolInfo describes one tool for search results.
 type ToolInfo struct {
 	Namespace string `json:"namespace"`
 	Server    string `json:"server"`
@@ -1704,7 +1964,7 @@ func (r *Registry) Tools(namespaces []string) []ToolInfo {
 			continue
 		}
 		all, _, _ := p.CachedSchemas()
-		for _, t := range visibleTools(view, all) {
+		for _, t := range visibleTools(view, r.viewCatalogue(name, view, all)) {
 			fn := codegen.ToolFuncName(t.Name)
 			out = append(out, ToolInfo{
 				Namespace:    view.Namespace,
@@ -1890,7 +2150,9 @@ func rankOpts(all []ToolInfo, terms []string, requireAll bool, explain bool) []T
 // scoreTool sums termScore over the query terms and reports whether every
 // term matched something. The tiers, highest first: exact name 100, name
 // prefix 60, tag 50, name substring 40, a split/stemmed name word 40,
-// function substring 30, namespace 20, description 10 (#1923).
+// function substring 30, namespace 20, description 10, and — only when a
+// term matched no exact tier — a typo of a name word or the namespace 5
+// (#1923 slice 2).
 func scoreTool(t ToolInfo, terms []string) (int, bool, []TermScore) {
 	name := strings.ToLower(t.Tool)
 	fn := strings.ToLower(t.Function)
@@ -1929,8 +2191,46 @@ func termScore(term, name, fn, desc, ns string, words []string, tags []string) (
 		return "namespace", 20
 	case strings.Contains(desc, term):
 		return "description", 10
+	case typoMatch(term, ns, words):
+		return "name-typo", 5
 	}
 	return "", 0
+}
+
+// typoMatch is the #1923 slice-2 typo tier: the term is a near miss of a
+// tool-name word or of the namespace, measured by the shared nearmiss
+// matcher (Damerau-Levenshtein, so a transposition costs one edit). The
+// reach is the docs/proposals.md distance of at most 2, scaled by name
+// length in the nearmiss spirit: a name shorter than five characters
+// allows only one edit, because at that length two edits is a different
+// word, not a typo ("disk" is not a misspelling of "dir"). It runs only
+// after every exact tier above has missed, against names only (never
+// descriptions or tags), and scores below all of them, so an exact
+// query's results and ordering are unchanged. A term shorter than three
+// characters is never a typo candidate.
+func typoMatch(term, ns string, words []string) bool {
+	if len(term) < 3 {
+		return false
+	}
+	if ns != "" && nearmiss.Distance(term, ns) <= typoReach(ns) {
+		return true
+	}
+	for _, w := range words {
+		if nearmiss.Distance(term, w) <= typoReach(w) {
+			return true
+		}
+	}
+	return false
+}
+
+// typoReach is how far a name of this length may drift and still count
+// as a typo of the term: two edits for names of five or more characters,
+// one below that.
+func typoReach(name string) int {
+	if len(name) >= 5 {
+		return 2
+	}
+	return 1
 }
 
 // tagMatch: a term matches a tag when it equals the tag, equals the tag
@@ -2119,7 +2419,7 @@ func (r *Registry) CodegenNamespaces(names []string, prof config.Profile) ([]cod
 		matchedNS[ns], matchedNS[name] = true, true
 
 		all, _, _ := p.CachedSchemas()
-		cached := visibleTools(view, all)
+		cached := visibleTools(view, r.viewCatalogue(name, view, all))
 		cn := codegen.Namespace{
 			Name: ns, Server: name,
 			Description: view.Description,
@@ -2191,11 +2491,23 @@ func failureStatus(err error) int {
 	var hidden HiddenTool
 	var secret SecretRequired
 	var denied ErrWriteDenied
+	var notConfirmed ErrNotConfirmed
 	var argDenied ErrArgumentRuleDenied
+	var unknownOutcome ErrUnknownOutcome
 	switch {
+	case errors.As(err, &unknownOutcome):
+		// The daemon has durable state that makes repeating this write unsafe.
+		return http.StatusConflict
 	case errors.As(err, &denied):
 		// The write policy refused the call: a permission answer, not
 		// a bad request and not an upstream failure.
+		return http.StatusForbidden
+	case errors.As(err, &notConfirmed):
+		// The confirmation gate refused the call (#6116): nobody
+		// confirmed it -- in a headless session, nobody could. That
+		// is a permission answer like the write policy's, not an
+		// upstream failure; answering 502 here made the gate
+		// indistinguishable from a tool that ran and broke.
 		return http.StatusForbidden
 	case errors.As(err, &secret):
 		// A conflict with the state of the daemon, not a fault in the request
@@ -2211,6 +2523,86 @@ func failureStatus(err error) int {
 
 // Call dispatches a tool call, resolving the server's scope against the
 // caller's context to pick the instance.
+// mountCall resolves a call addressed to a tool of a virtual
+// namespace (#1933 slice 3). handled is false when the addressed
+// tool is not a mount (an ordinary tool, or a script view of the
+// namespace), and the caller proceeds as usual. For a mount it
+// returns the home server, the tool's real name there, and the
+// arguments with the mount's pins merged over the caller's. The
+// namespace's own gate runs here, before the call leaves it --
+// visibility (its include/exclude lists) and preconditions -- so a
+// mount the namespace hides is not callable by name either; the
+// home server's views, policies and process then see the call
+// exactly as if it had been addressed there, so history and the
+// write ledger record the home server and the real tool name.
+// Argument rules apply at both levels, matching the advertised
+// schema: the mounting namespace's (keyed by the qualified From)
+// are checked here, and the home view's apply on the far side.
+// Every call
+// entry point (Call, CallAsk, CallReporting) routes through here,
+// so a mount behaves the same however it is invoked.
+func (r *Registry) mountCall(server, tool string, cc config.CallContext, args any) (string, string, any, bool, error) {
+	view, ok := r.View(server)
+	if !ok || !view.Virtual() {
+		return "", "", nil, false, nil
+	}
+	tv, ok := view.ToolViews[tool]
+	if !ok || tv.MountServer == "" {
+		return "", "", nil, false, nil
+	}
+	// The addressed namespace's own blocked state gates the call
+	// before it leaves, exactly as resolveAndGuard gates an
+	// ordinary one: its own missing secrets, the servers it
+	// requires, and -- through blockedBy -- its mount sources.
+	// Without this a namespace whose declared dependency waits on
+	// a secret would still execute any mount whose home server is
+	// ready, and the dependency's secret request would never be
+	// raised on the call path (Codex P2 on PR #8632).
+	if err := r.refuseBlocked(server); err != nil {
+		return "", "", nil, false, err
+	}
+	if !view.VisibleTool(tool) {
+		// The same answer resolveAndGuard gives for a tool the
+		// addressed namespace does not expose.
+		if ok, reason := view.PassesPreconditions(tool, func(s string) bool { _, exists := r.Pool(s); return exists }); !ok {
+			return "", "", nil, false, fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
+		}
+		return "", "", nil, false, HiddenTool{Server: server, Tool: tool}
+	}
+	merged := mergePinnedArgs(args, tv.Pin)
+	// The mounting namespace's own argument rules are advertised
+	// on the mount (keyed by the qualified From, as
+	// effectiveViewSchema generates them), so they are enforced
+	// here, against the pin-merged arguments the home server
+	// will receive; the home view's rules then apply there as
+	// usual (Codex P2 on PR #8632).
+	if !view.ArgumentRules.Empty() {
+		if v := view.ArgumentRules.Check(ruleToolName(view, tool), merged); v != nil {
+			return "", "", nil, false, ErrArgumentRuleDenied{Tool: server + "." + tool, Violation: v}
+		}
+	}
+	return tv.MountServer, tv.MountTool, merged, true, nil
+}
+
+// virtualCached reports whether every mount source of a virtual
+// namespace has a cached catalogue. A virtual namespace has no
+// catalogue of its own to be ready; its readiness is its sources'.
+func (r *Registry) virtualCached(view *config.Resolved) bool {
+	for _, tv := range view.ToolViews {
+		if tv.MountServer == "" {
+			continue
+		}
+		sp, ok := r.pools[tv.MountServer]
+		if !ok || sp == nil {
+			return false
+		}
+		if _, _, sat := sp.CachedSchemas(); sat.IsZero() {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *Registry) Call(ctx context.Context, server, tool string, cc config.CallContext, args any) (json.RawMessage, error) {
 	if server == "" {
 		if idx := strings.IndexAny(tool, ":."); idx > 0 {
@@ -2251,16 +2643,34 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 		r.mu.RUnlock()
 	}
 
+	// A call into a virtual namespace (#1933 slice 3) is a call to
+	// the mounted tool on its home server: the mount's pins merge
+	// over the caller's arguments first, then the home server's own
+	// views, policies and pool see the call exactly as if it had
+	// been addressed there -- so history and the write ledger record
+	// the home server and the real tool name, while the caller
+	// addressed the mount. The home server is never itself virtual
+	// (config validation refuses a mount of a mount), so this
+	// delegation is exactly one hop.
+	if target, targetTool, merged, handled, err := r.mountCall(server, tool, cc, args); err != nil {
+		return nil, err
+	} else if handled {
+		return r.Call(ctx, target, targetTool, cc, merged)
+	}
+
 	p, ok := r.Pool(server)
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
-	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+	rs, effTool, effArgs, script, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 	if err != nil {
 		return nil, err
 	}
+	if script != nil {
+		return r.callScriptWithLedger(withParentSession(ctx, cc.ParentSessionID), p, server, effTool, script, effArgs, cc.SessionID, "call")
+	}
 	defer r.joinAsk(ctx, server, rs.Key)()
-	res, err := p.Call(withRequestedCallTimeout(ctx), rs, effTool, effArgs)
+	res, err := r.callWithLedger(withRequestedCallTimeout(ctx), p, server, effTool, effArgs, rs, "call")
 
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
@@ -2268,17 +2678,117 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 	return res, nil
 }
 
+func toolReadOnly(p *pool.Pool, tool string) bool {
+	if p == nil {
+		return false
+	}
+	tools, _, at := p.CachedSchemas()
+	// A missing, invalidated, or expired catalogue cannot be trusted to
+	// exempt the call: Pool.Invalidate clears the timestamp but retains
+	// the old tools, and an expired deadline means the annotations may
+	// no longer hold. Conservatively treat all of those as a write.
+	if at.IsZero() || p.SchemaExpired() {
+		return false
+	}
+	for _, candidate := range tools {
+		if candidate.Name == tool {
+			return policy.Classify(candidate.Annotations).ReadOnly
+		}
+	}
+	// Missing annotations are conservatively treated as a write.
+	return false
+}
+
+func (r *Registry) callWithLedger(ctx context.Context, p *pool.Pool, server, tool string, args any, rs config.ResolvedScope, surface string) (json.RawMessage, error) {
+	var dispatched atomic.Bool
+	callCtx := mcpclient.WithToolCallDispatchHook(ctx, func() { dispatched.Store(true) })
+	result, err := p.Call(callCtx, rs, tool, args)
+	// The unknown-outcome classification honors the operator's
+	// readOnlyTools declaration (#6493) as well as the annotation-based
+	// classification: a declared read-only tool's post-dispatch failure
+	// cannot have written, so it must not record an unknown outcome and
+	// block later writes. declaredReadOnly reads the requested server's
+	// view -- the same name this call was made under.
+	readOnly := toolReadOnly(p, tool) || r.declaredReadOnly(server, tool)
+	if err != nil && dispatched.Load() && !readOnly && r.writeLedger != nil && !mcpclient.IsConclusiveUpstreamError(err) {
+		return nil, r.recordUnknownOutcome(p, server, tool, args, surface)
+	}
+	return result, err
+}
+
+// ledgerLookupFor finds an unknown-outcome block affecting server, across
+// every name sharing its pool. Pools are shared by process identity, so an
+// alias added later must not lose the block recorded under the earlier
+// creating name: all names mapping to the same pool are checked, plus the
+// requested and canonical spellings.
+func (r *Registry) ledgerLookupFor(server string, p *pool.Pool) (unknownWriteRecord, bool) {
+	if r.writeLedger == nil {
+		return unknownWriteRecord{}, false
+	}
+	seen := map[string]bool{}
+	var candidates []string
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		candidates = append(candidates, name)
+	}
+	add(server)
+	add(r.CanonicalName(server))
+	if p != nil {
+		add(p.Name())
+		r.mu.RLock()
+		for name, other := range r.pools {
+			if other == p {
+				add(name)
+			}
+		}
+		r.mu.RUnlock()
+	}
+	for _, name := range candidates {
+		if record, blocked := r.writeLedger.Lookup(name); blocked {
+			return record, true
+		}
+	}
+	return unknownWriteRecord{}, false
+}
+
+func (r *Registry) recordUnknownOutcome(p *pool.Pool, fallbackServer, tool string, args any, surface string) error {
+	// Record under the requested server's canonical name so `mcpx writes
+	// clear <server>` names the same key the refusal names, and so the
+	// block survives a restart that changes which alias created the pool.
+	server := r.CanonicalName(fallbackServer)
+	if server == "" {
+		server = fallbackServer
+	}
+	if server == "" && p != nil {
+		server = p.Name()
+	}
+	digest := sha256.Sum256([]byte(policy.CanonicalArgs(args)))
+	record := unknownWriteRecord{
+		Server: server, Tool: tool,
+		ArgsSHA256: hex.EncodeToString(digest[:]),
+		At:         time.Now().UTC(), Surface: surface,
+	}
+	return ErrUnknownOutcome{Record: record, PersistenceError: r.writeLedger.Record(record)}
+}
+
 // resolveAndGuard picks the instance key for a tool call and applies the
 // consumer policies. Every path that calls a tool goes through it: the ask
 // path once skipped both, so a destructive-tool guard was off for exactly the
 // clients that declared they could answer it.
-
-func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (config.ResolvedScope, string, any, error) {
+//
+// script is non-nil when the call names a script-backed view (#1933 slice
+// 2): the caller must run it locally with callScriptView, never through
+// the pool, so a script view cannot fall through to an upstream tool.
+func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (config.ResolvedScope, string, any, *config.ToolView, error) {
 	// A call through a declared tool view (#1933 slice 1) names the
 	// view; everything past this point -- policies, the destructive
 	// floor, the pool, history -- works with the target's real name
 	// and the effective arguments, pins merged over the caller's.
 	effTool, effArgs := tool, args
+	var script *config.ToolView
 
 	// The view, not the pool: aliases share one pool and filter differently.
 	if view, ok := r.View(server); ok {
@@ -2286,16 +2796,22 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 		// started just to fail.
 		if err := r.refuseBlocked(server); err != nil {
 
-			return config.ResolvedScope{}, "", nil, err
+			return config.ResolvedScope{}, "", nil, nil, err
 		}
 		if !view.VisibleTool(tool) {
 			if ok, reason := view.PassesPreconditions(tool, func(s string) bool { _, exists := r.Pool(s); return exists }); !ok {
-				return config.ResolvedScope{}, "", nil, fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
+				return config.ResolvedScope{}, "", nil, nil, fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
 			}
-			return config.ResolvedScope{}, "", nil, HiddenTool{Server: server, Tool: tool}
+			return config.ResolvedScope{}, "", nil, nil, HiddenTool{Server: server, Tool: tool}
 		}
 		if tv, isView := view.ToolViews[tool]; isView {
-			effTool = tv.From
+			if tv.Command != "" || tv.File != "" {
+				// A script-backed view has no upstream name: the view's
+				// own name is what policies and rules identify it by.
+				script = &tv
+			} else {
+				effTool = tv.From
+			}
 			effArgs = mergePinnedArgs(args, tv.Pin)
 
 		}
@@ -2304,20 +2820,20 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 	// Two policies sit between resolving the instance and using it, and both
 	// are off unless somebody turned them on. See internal/daemon/consumer.go.
 	rs = r.disambiguate(ctx, p, cc, rs)
-	asked, err := r.applyWritePolicy(ctx, p, server, effTool, cc, effArgs)
+	asked, err := r.applyWritePolicyFor(ctx, p, server, effTool, cc, effArgs, script)
 	if err != nil {
-		return config.ResolvedScope{}, "", nil, err
+		return config.ResolvedScope{}, "", nil, nil, err
 
 	}
 	if !asked {
 		// Not asked by the write policy: the destructive floor still
 		// gets its say. Under ask the policy already asked once, and
 		// asking twice about one call would be noise, not consent.
-		if err := r.confirmDestructive(ctx, p, effTool, cc); err != nil {
-			return config.ResolvedScope{}, "", nil, err
+		if err := r.confirmDestructiveFor(ctx, p, server, effTool, cc, script); err != nil {
+			return config.ResolvedScope{}, "", nil, nil, err
 		}
 	}
-	return rs, effTool, effArgs, nil
+	return rs, effTool, effArgs, script, nil
 
 }
 
@@ -2474,12 +2990,6 @@ func (r *Registry) GetPrompt(ctx context.Context, server, name string, args map[
 		return nil, err
 	}
 	return p.GetPrompt(ctx, r.resolvedFor(p, cc), name, args)
-}
-
-// keyFor resolves a server's scope key; resolvedFor is the full
-// resolution, for callers that also pass the root to the pool.
-func (r *Registry) keyFor(p *pool.Pool, cc config.CallContext) string {
-	return r.resolvedFor(p, cc).Key
 }
 
 // resolvedFor resolves a server's scope and records the association so
@@ -2664,6 +3174,15 @@ func (r *Registry) Embedder() catalog.Embedder {
 		return &catalog.SubwordEmbedder{}
 	}
 	return r.embedder
+}
+
+// SetScriptToolRunner installs the daemon's executor for file-backed tool
+// views (#1933 slice 2). A registry built without one still lists and guards
+// such tools; only a call that reaches one reports that no runner is set.
+func (r *Registry) SetScriptToolRunner(fn func(ctx context.Context, tool string, view config.ToolView, values map[string]any, session string) (json.RawMessage, error)) {
+	r.mu.Lock()
+	r.scriptRun = fn
+	r.mu.Unlock()
 }
 
 // UseSettings gives the registry the daemon's resolved configuration.

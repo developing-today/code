@@ -68,20 +68,33 @@ type InputQuestion struct {
 // under id, so a question the server raises is attributed to it and can be
 // reported rather than waited on.
 func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, cc config.CallContext, args any) (json.RawMessage, error) {
+	// A mounted tool (#1933 slice 3) delegates to its home server
+	// through this same entry point, keeping the call's id.
+	if target, targetTool, merged, handled, err := r.mountCall(server, tool, cc, args); err != nil {
+		return nil, err
+	} else if handled {
+		return r.CallReporting(ctx, id, target, targetTool, cc, merged)
+	}
 	p, ok := r.Pool(server)
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
 
-	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+	rs, effTool, effArgs, script, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 
 	if err != nil {
 		return nil, err
 	}
+	if script != nil {
+		r.beginAsk(id, server, rs.Key, cc.SessionID)
+		defer r.endAsk(id)
+		ctx = withAskCall(ctx, id)
+		return r.callScriptWithLedger(withParentSession(ctx, cc.ParentSessionID), p, server, effTool, script, effArgs, cc.SessionID, "reporting")
+	}
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
 
-	res, err := p.Call(withRequestedCallTimeout(ctx), rs, effTool, effArgs)
+	res, err := r.callWithLedger(withRequestedCallTimeout(ctx), p, server, effTool, effArgs, rs, "reporting")
 
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
@@ -127,7 +140,13 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 		func(ctx context.Context) (any, *tasks.Fault) {
 			id := <-ready
 			callCtx := withCallSettings(withRun(ctx, run), s.callSettings(r))
-			res, err := s.reg.CallReporting(callCtx, id, req.Server, req.Tool, cc, args)
+			var res json.RawMessage
+			var err error
+			if syn, ok := s.dryRunResult(callCtx, req.Server, req.Tool); ok {
+				res = syn
+			} else {
+				res, err = s.reg.CallReporting(callCtx, id, req.Server, req.Tool, cc, args)
+			}
 			// This path returns before handleCall's own reporting, so
 			// report the completed call here: an exec run whose calls
 			// ask questions is still a run whose calls belong in its

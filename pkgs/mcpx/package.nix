@@ -19,8 +19,14 @@
   # (docs/git-discovery.md). Kept on the wrapper's PATH so those still
   # resolve; the container image leaves it out.
   git,
+  stdenv,
   makeBinaryWrapper,
   installShellFiles,
+  doCheck ? true,
+  # The OCI image runs exactly this binary plus its explicitly selected
+  # JavaScript runtime; it must not inherit the workstation wrapper's full
+  # runtime PATH (Deno, Node and git).
+  wrapWithRuntimes ? true,
 }:
 let
   # The mcpx version's single source is the VERSION file beside this
@@ -46,7 +52,7 @@ buildGo127Module {
       !(base == "bin" || base == "result" || lib.hasPrefix "result-" base || base == "mcpx-client.ts");
   };
 
-  # Five direct Go dependencies.
+  # Eleven direct Go dependencies.
   #
   # modernc.org/sqlite backs the log index. It is a pure-Go translation rather
   # than the usual mattn driver, because a cgo driver would make this
@@ -57,10 +63,29 @@ buildGo127Module {
   # 1.2 MB in the stripped binary and replace what would otherwise be raw
   # terminal handling: escape sequences, resize, and a redraw loop. That is
   # the kind of code that is never finished and never correct on every
-  # terminal.
+  # terminal. mattn/go-runewidth supplies the cell arithmetic that browser
+  # needs: wide characters and emoji take two cells, and truncation has to
+  # agree with the terminal.
   #
   # gopkg.in/yaml.v3 reads OpenAPI documents, which are published as YAML as
   # often as JSON and which one you get is not the caller's choice.
+  #
+  # santhosh-tekuri/jsonschema/v6 is a real JSON Schema validator for tool
+  # input/output and elicitation schemas, rather than hand-rolled checks.
+  #
+  # tetratelabs/wazero runs wasm tooling and the embeddings worker without a
+  # cgo toolchain, keeping the pure-Go build.
+  #
+  # golang.org/x/sys exposes the OS-specific syscalls the standard library
+  # does not: peer credentials on the daemon socket, and process groups.
+  #
+  # golang.org/x/net carries publicsuffix and idna for the elicitation answer
+  # review: the registrable domain under a URL about to be answered, plus both
+  # host forms and a punycode warning (#1678).
+  #
+  # tailscale.com is the tsnet identity transport (#1967): the daemon embeds a
+  # Tailscale node and is reachable by its tailnet identity, still as a pure-Go
+  # CGO_ENABLED=0 binary.
   #
   # Everything else -- the MCP client, the process pools, the JSON Schema to
   # TypeScript compiler, the CLI -- is standard library.
@@ -107,14 +132,14 @@ buildGo127Module {
   # so a new one is tested by default, minus checkExclude below. Each entry in
   # checkExclude needs a comment on the line above it saying why it cannot run
   # in the sandbox; internal/buildcheck enforces both.
-  # The exact `go test -timeout 30m $pkgs` line in the checkPhase below is
-  # load-bearing downstream (#418): dezren39/nix's flake.nix rewrites that
-  # line to add its darwin takeover/handoff -skip list. That rewrite now
-  # fails loudly there (a throw plus the mcpx-darwin-skip flake check and a
-  # CI eval step) when the line stops matching, but changing the line here
-  # still requires updating the pattern in dezren39/nix's flake.nix in the
-  # same change set, or its next mcpx-src pin bump will fail evaluation.
-  doCheck = true;
+  # The platform adaptations of the test command (Linux -p 1, darwin
+  # -skip list) live in this package since 2026-11-03 (#4798). They were
+  # previously applied downstream by dezren39/nix rewriting this phase
+  # (#418's load-bearing-line coupling, with its throw guards and the
+  # mcpx-darwin-skip flake check there); constructing the command here
+  # dissolves that coupling — dezren39/nix now consumes the fork's mcpx
+  # build unmodified.
+  inherit doCheck;
   # The runner and e2e suites spawn real scripts, so they get the same runtimes
   # the wrapper pins.
   nativeCheckInputs = [
@@ -124,9 +149,27 @@ buildGo127Module {
     python3
     git
   ];
+  # ops.gen.ts is generated from the /v1 table (internal/api's
+  # PluginTS) but checked in, because the TypeScript plugin consumes
+  # it from the source tree. Regenerate it here, in the build tree,
+  # before the check phase compares it: a nix build then never fails
+  # on a stale checked-in copy (code#4806), while the freshness test
+  # still guards the checked-in file where that matters — plain
+  # `go test` runs outside nix.
+  preCheck = ''
+    export HOME=$TMPDIR/home MCPX_STATE_DIR=$TMPDIR/state MCPX_CACHE_DIR=$TMPDIR/cache
+    mkdir -p "$HOME"
+    go test ./internal/api -run TestPluginOpsAreGenerated -update
+  '';
+
   checkPhase =
     let
       checkExclude = [
+        # internal/refdoc and internal/api are NOT excluded: their
+        # tests are the generated-reference guards (#4909) — pure
+        # rendering and byte comparisons over the committed docs;
+        # they spawn no runtimes, daemons or sockets, so they run in
+        # this checkPhase like every package not listed below.
         # internal/e2e spawns real script subprocess trees and the build
         # sandbox has no init reaping them: they pile up as zombies and the
         # package burns its whole 30m timeout (#2686). It runs in CI on
@@ -155,14 +198,44 @@ buildGo127Module {
         # reasoning as internal/conformance above: interim exclusion,
         # tracked in CI on main.
         "internal/defaults"
-        # examples fails on main itself right now: TestExamples
-        # destructive calls end "not confirmed: the answer was cancel"
-        # under the #1678 confirmation flow, reproduced with a plain
-        # go test outside the sandbox as well (#2896). Interim
-        # exclusion so the package builds again; remove it when the
-        # #2896 fix lands.
-        "examples"
       ];
+      # The Linux-only takeover/handoff tests (#418): they exercise
+      # /proc and systemd-mainpid mechanics that do not exist on
+      # darwin, so the darwin check run skips them by name.
+      darwinSkip = "^(${
+        lib.concatStringsSep "|" [
+          "TestACallInFlightAtATakeoverIsAnsweredAndItsConnectionMovesOn"
+          "TestAnIdleKeepAliveConnectionSurvivesATakeover"
+          "TestClientHandoffCommitsOnlyWhenActivated"
+          "TestClientLeaseSurvivesDaemonTakeover"
+          "TestDetachedChildKeepsItsPipesAndAdoptionResumesThem"
+          "TestDetachRefusesWhileACallIsInFlight"
+          "TestHandoffDoesNotSplitAFrameAcrossTheTwoProcesses"
+          "TestKeepAliveCallersLoseNoCallsAcrossARealTakeover"
+          "TestTakeoverKeepsTheChildAndTheListener"
+          "TestTakeoverLosesNoCallsWhileAClientKeepsCalling"
+          "TestTakeoverRestartsAChangedServerAndKeepsTheRest"
+          "TestUpgradeKeepsTheChildAndHandsMainPIDToTheSuccessor"
+          "TestACallInFlightAtTheHandoverIsAnsweredByTheOldDaemon"
+          "TestAClientLeaseSurvivesADaemonTakeover"
+          "TestAnIdleConnectionSurvivesATakeoverInProcess"
+          "TestCallsIssuedDuringATakeoverNeverFail"
+          "TestHandoffRecordsTheIdentityAPoolWasMadeWith"
+          "TestKeepAliveCallersLoseNoCallsAcrossATakeover"
+          "TestRegistryHandoffKeepsTheChildAcrossTheSuccessor"
+          "TestRegistryHandoffThatIsNotCommittedRestoresTheChild"
+        ]
+      })$";
+      # Linux: -p 1 serialises the package tests — run concurrently,
+      # they can starve the timing-sensitive retention/reopen test
+      # (400ms TTL, 200ms margin) on a loaded builder. Darwin: the
+      # skip list above. Everywhere else: the plain command.
+      goTestCmd =
+        "go test "
+        + lib.optionalString stdenv.hostPlatform.isLinux "-p 1 "
+        + "-timeout 30m "
+        + lib.optionalString stdenv.hostPlatform.isDarwin "-skip='${darwinSkip}' "
+        + "$pkgs";
     in
     ''
       runHook preCheck
@@ -179,7 +252,7 @@ buildGo127Module {
       # depend on it (dezren39/nix#510). The timeout is per package, so one
       # explicit 30m budget covers e2e without sharding the suite; the
       # other packages finish far under it.
-      go test -timeout 30m $pkgs
+      ${goTestCmd}
       runHook postCheck
     '';
 
@@ -190,11 +263,22 @@ buildGo127Module {
     mkdir -p $out/share/man/man1
     $out/bin/mcpx man > $out/share/man/man1/mcpx.1
 
+    # The Markdown reference tree (#4909): one page per command, the
+    # global flags, the /v1 operations, the MCP tools and the protocol
+    # tables, generated from the same declarations as the man page.
+    # The two OpenAPI specifications are part of the tree
+    # (api/openapi.json, the static /v1 document, and
+    # api/openapi-serve.json, the serve-surface document).
+    mkdir -p $out/share/doc/mcpx/reference
+    $out/bin/mcpx man --format markdown -o $out/share/doc/mcpx/reference
+
     installShellCompletion --cmd mcpx \
       --bash <($out/bin/mcpx completion bash) \
       --zsh <($out/bin/mcpx completion zsh) \
       --fish <($out/bin/mcpx completion fish)
 
+  ''
+  + lib.optionalString wrapWithRuntimes ''
     wrapProgram $out/bin/mcpx \
       --suffix PATH : ${
         lib.makeBinPath [

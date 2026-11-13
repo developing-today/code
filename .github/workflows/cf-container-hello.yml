@@ -1,5 +1,7 @@
 name: cf-container-hello
 
+# CI tier policy: see .github/ci-policy.md
+
 # Test verification for pkgs/cf-container-hello (#1439).
 #
 # The package's only test suite — the Python regression suite for the
@@ -18,15 +20,22 @@ name: cf-container-hello
 # relative), so a change to that file can break this suite and is a
 # trigger path below even though it lives in another package.
 #
-# The suite is stdlib-only, so there is deliberately no `npm install`
-# step.
+# The suite imports the production crawler validator, which uses the
+# pinned dependency in pkgs/lab-ops-hub/container/requirements.txt. That
+# Python dependency is installed directly; no npm packages are needed.
 
 on:
+  # Restored (#7716): the blanket trigger removal (5a94833ea3) left
+  # this suite dispatch-only, so the #955 hardening pins had no
+  # signal on the changes that can break them -- the package itself
+  # and the cross-package validator it loads. Path-gated to exactly
+  # those changes, per the header above and .github/ci-policy.md.
   push:
     branches: [main]
     paths:
       - "pkgs/cf-container-hello/**"
       - "pkgs/lab-ops-hub/container/app.py"
+      - "pkgs/lab-ops-hub/container/requirements.txt"
       - ".github/workflows/cf-container-hello.yml"
   workflow_dispatch:
 
@@ -60,6 +69,9 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+
+      - name: Install validator runtime dependency
+        run: python -m pip install -r pkgs/lab-ops-hub/container/requirements.txt
 
       - name: Run the #955 hardening suite
         working-directory: pkgs/cf-container-hello

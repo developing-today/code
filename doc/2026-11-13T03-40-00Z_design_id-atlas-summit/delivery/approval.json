@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "decision": "approved-after-merged-tree-verification",
+  "manifest_sha256": "3b5bce3523945bf5adaa28739f0b90b7b70ff1d6522b4ac827246654e8ff6b06",
+  "report_sha256": "668c87c3de13e62360fabf24aa5dbc018b20579f57ab4e2144676d17ab85d1a4",
+  "generator_sha256": "a623c066532705b112a356ad0de2bc2bec2e5c37d3ffde70099fce03ff734087",
+  "research_validator_sha256": "5d7fb08d7148770493401e200dca15a1b64c14b11ee5c754cbb77a97e9f561d2",
+  "records": 126,
+  "statements": 384,
+  "component_homes": 38,
+  "expected_published_issues_including_orchestration": 127,
+  "queue": "repo-health-code-pilot",
+  "design_review": "review/final-design-judge.md",
+  "handoff_reviews": [
+    "review/issue-reader-part-a.md",
+    "review/issue-reader-part-b.md",
+    "review/issue-reader-crosscut-c.md"
+  ],
+  "limits": [
+    "No production implementation or rollout authorization",
+    "No cloud/laptop benchmark winner claimed",
+    "Original thirty-item list remains transparently unrecovered",
+    "Actions queued; targeted local checks are not mislabeled as remote green checks"
+  ]
+}

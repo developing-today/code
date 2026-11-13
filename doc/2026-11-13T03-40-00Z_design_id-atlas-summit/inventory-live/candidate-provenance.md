@@ -1,0 +1,56 @@
+# Part B candidate provenance recovery
+
+Checked 2026-11-13 as a bounded, task-scoped provenance pass. **No original authoritative list of 30 candidate slices was recovered.** The list below is a clearly labeled reconstruction, not a transcription of intake and not proof that these were the original 30.
+
+## Sources queried
+
+1. **Proto design** `doc/2026-11-13T00-41-00Z_design_id-atlas-primitives-federation-namespaces/note.md`, §2 line 18 and §3 lines 105–112. It asserts 30 Part B candidates under #9141–#9148, but names only example categories: key lifecycle, replay protection, ack primitive, prioritization scoring, reputation-abuse research, privacy surface, interop kit, “and more.” No enumeration follows.
+2. **Live #9106 comments**, included in `live-issues.json`: intake-complete comment [#9106 comment 6842551257](https://github.com/developing-today/code/issues/9106#issuecomment-6842551257), 2026-11-13T03:04:16Z (reports proto/statement map and task enqueue); launch packet [#9106 comment 6843006010](https://github.com/developing-today/code/issues/9106#issuecomment-6843006010), 2026-11-13T03:34:37Z, which calls for “the 30 candidate Part B sub-items named in the proto design” but gives no list. Queried all seven comments on #9106; none contains the enumeration.
+3. **Live Part B parent and component issue bodies/comments**, #9108 and #9141–#9148 in `live-issues.json` (snapshot time `2026-11-13T03:39:19Z` for the original 51-issue fetch; #9106 was appended separately). #9108 has one comment; each component has one CODE task-link comment; none enumerates candidate sub-items. Their native child lists are empty.
+4. **Accessible comms session catalog/logs/messages:** searched session titles for `9106`, “federation namespaces ID Atlas directive,” “extensible primitives federation,” “ID Atlas intake design,” and “Part B peer trust federation”; only the current #9106 summit session was discoverable by the #9106 title. Searched comms messages for the original 30-item list and related phrases; results did not identify a task-related source. Searched the current summit session log (`ses_e5e2d06f0ccffefg2Z4FGyW3mW`) for “30 candidate Part B,” “intake 9106 federation sub-items,” and “9141-9148 key lifecycle replay acknowledgment privacy interop”; it contains the known gap note, not the original list. No upstream intake-session ID was exposed in the accessible catalog.
+5. **Hatch-personal workspace follow-up (corrected source path):** both `/home/user/git/hatch-personal` and `/home/user/hatch-personal` exist. The earlier pass searched `/home/user/hatch`, which is not either named checkout; treat that earlier search as **no evidence** about hatch-personal. Task-specific locations checked in both workspaces: `workspace/ts-spaces/id-atlas/` (`space.json`, `AGENTS.md`, `index.html`, `icon.webp`), `workspace/turso-atlas/`, `workspace/scratch/atlas-ingestion-brief-2026-11-04/`, `workspace/scratch/id-gap-pass/`, and `workspace/research_notes/`; these yielded no original #9106/15354/“30 candidate” source. `workspace/cron.d/hourly/id-atlas-refresh__interval@6h.md` exists only under `/home/user/hatch-personal`; it contains a generic live-source refresh instruction for ID epic #2056 (lines 19–25), not the directive or candidate enumeration. A task-string content pass restricted to workspace `*.md`, `*.jsonl`, `*.txt`, and `*.log` files found no task-specific source in `/home/user/git/hatch-personal`; in `/home/user/hatch-personal`, the only relevant ID/Atlas content hit was the generic cron above. The task-specific file `/home/user/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/conductor-log.md` has one `#9106` hit at line 10535, a recent status entry for session `ses_e5e2d06f0ccffefg2Z4FGyW3mW` / task 15354; separate searches for `15354`, `30 candidate`, and `Part B` in that log found only that status line (no intake notes or candidate enumeration). Exact-token searches across other workspace JSON/JSONL/text also returned unrelated numeric/session-ID collisions (e.g. old OpenCode snapshots and ID-issue scratch files); these were not opened or treated as source. The workspace roots were accessible and the named directories were present; this is a bounded task-specific path check, not an exhaustive search of every private file in either checkout. No original-list provenance was recovered.
+
+Consequently the recoverable provenance identifies the count and seven category labels, but not the other 23 titles or the original boundaries. This pass stops here rather than continuing through unrelated records.
+
+## Reconstruction (not original; 30 distinct candidate slices)
+
+These slices are inferred from the 384 numbered statements and live component scopes. They are candidate-sized units another Part B worker may combine, split, or reject. The explicit category anchors are marked **[named in proto]**; every other line is **[statement-derived]**. Not a claim that these were filed or included in the original 30.
+
+| # | Component | Reconstructed slice | Anchor / source statements |
+|---:|---|---|---|
+| 1 | #9141 | Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key. | **[named category]**; S1.21 |
+| 2 | #9141 | Key compromise/revocation effect on previously accepted data (revalidate, flag, or quarantine). | **[statement-derived]**; S1.22 |
+| 3 | #9141 | Replay/freshness rules for re-presented signed data. | **[named category]**; S1.23 |
+| 4 | #9141 | Signature-suite agility and algorithm deprecation/migration. | **[statement-derived]**; S1.24 |
+| 5 | #9141 | Signer identity binding and validation distinct from mere signature presence. | **[statement-derived]**; S1.17–S1.18 |
+| 6 | #9141 | Observable, recordable rejection events at the universal signed-ingest gate. | **[statement-derived]**; S1.19, S1.25 |
+| 7 | #9142 | First-class conflict-report artifact: versions, signers/sources, disputed data, retention/actionability. | **[statement-derived]**; S1.34–S1.38 |
+| 8 | #9142 | Implicit-trust sync scope/tolerance under capacity, retention, tenant and trust-domain boundaries. | **[statement-derived]**; S1.28–S1.31 |
+| 9 | #9142 | Divergence detection and anti-entropy/reconciliation requirements before any later merge. | **[statement-derived]**; S1.32–S1.40 |
+| 10 | #9143 | Automerge fit/evaluation against the shared CRDT criteria. | **[statement-derived]**; S1.41 |
+| 11 | #9143 | Identify “diamonds” as Diamond Types and evaluate it on the shared criteria. | **[statement-derived]**; S1.42 |
+| 12 | #9143 | Willow protocol fit against reconciliation, scoping and signed-only acceptance. | **[statement-derived]**; S1.43 |
+| 13 | #9143 | OCAPN capability/attenuation fit for peer classes. | **[statement-derived]**; S1.44 |
+| 14 | #9143 | Common comparison matrix, non-exhaustive prior art and revisit threshold/recommendation. | **[statement-derived]**; S1.45–S1.46 |
+| 15 | #9144 | Prioritized remote selection: inputs, ordering, and treatment of a remote negative answer. | **[named category: prioritization scoring]**; S1.47–S1.53 |
+| 16 | #9144 | Trusted-relay permission, max-hop propagation, and breadth×depth resource bounds. | **[statement-derived]**; S1.54–S1.57, S1.61 |
+| 17 | #9144 | Query/relay/response signature validation, end-to-end responder provenance and stable request identity. | **[statement-derived]**; S1.58–S1.62 |
+| 18 | #9144 | Privacy surface of query-interest disclosure and explicit mitigation/acceptance decision. | **[named category: privacy surface]**; S1.63 |
+| 19 | #9144 | Acknowledgment primitive for reliable receipt evidence across transfers/relays. | **[named category: ack primitive]**; S1.100–S1.104 (coordinate with #9148) |
+| 20 | #9145 | Request identity, duplicate-vs-loop classification, finite dedup state and expiry. | **[statement-derived]**; S1.64, S1.70–S1.72 |
+| 21 | #9145 | Short-circuit and deduplicate in-flight/answered requests into coherent results. | **[statement-derived]**; S1.67–S1.68 |
+| 22 | #9145 | Inform requester/parties about duplicates and specifically signal detected loops. | **[statement-derived]**; S1.65–S1.66, S1.69 |
+| 23 | #9146 | Routing-state freshness, periodic validation, and detection of peer/topology changes. | **[statement-derived]**; S1.73–S1.76 |
+| 24 | #9146 | Signed/validated routing updates and protection against poisoning, suppression and manufactured loops. | **[statement-derived]**; S1.77–S1.78 |
+| 25 | #9147 | Evidence-based ratings and explicit way reputation affects prioritization/class changes. | **[statement-derived]**; S1.79–S1.82 |
+| 26 | #9147 | Abuse-protection research: manipulation, retaliation, Sybils, whitewashing, collusion and spam claims. | **[named category: reputation-abuse research]**; S1.88–S1.91, S1.99 |
+| 27 | #9147 | Public signed append-only claims/disputes log, right of reply, and use of evidence in reputation. | **[statement-derived]**; S1.92–S1.98 |
+| 28 | #9148 | Highly trusted server takeover/key compromise: rapid revocation, blast-radius identification and prior-data posture. | **[statement-derived]**; S1.83–S1.87 |
+| 29 | #9148 | Ack/recipient-list contradiction detection, evidence retention, collusion threshold and public-log integration. | **[statement-derived]**; S1.100–S1.108 |
+| 30 | #9148 | Federated-search tampering threat model: omission/injection/reordering/staleness and completeness claims. | **[statement-derived]**; S1.109–S1.113 |
+
+Cross-cutting **interop kit** is the seventh explicitly named category but maps to program-level non-specialness/conformance #9110 and statements S1.114–S1.120, rather than one of the eight Part B component homes. It is intentionally not forced into this 30-item Part B reconstruction; decide explicitly whether the intake count included it or whether the example list crosses Part B's boundary. This is an additional provenance ambiguity, not a recovered candidate.
+
+## Hierarchy terminology correction
+
+The JSON is heterogeneous because the initial 51-issue fetch and later #9106 GraphQL append used different serializers. In the saved JSON, `native_children` contains 20, 8, and 8 children on #9107, #9108, and #9109; #9106 has six `subIssues.nodes`. Together these are **42 native child edges in the #9106 program hierarchy**, corroborated by each component's `parent` field. #9078 has nine additional native children outside this program. The 36 component issues #9113–#9148 have no native children in this snapshot. Correct the semantic audit to report these scoped totals; do not confuse the six direct children of #9106 with 42 edges across it and its part epics.

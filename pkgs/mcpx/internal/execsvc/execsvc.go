@@ -35,10 +35,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/deps"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
 	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scriptresolve"
 )
 
 // Delivery says how artifact bodies reach the caller.
@@ -115,18 +118,32 @@ type Options struct {
 	// (flag aliases, env, config) and forwards the result, so a remote
 	// run honours the caller's policy instead of silently substituting
 	// the daemon's.
-	CwdPolicy    string            `json:"cwdPolicy,omitempty"`
-	Timeout      string            `json:"timeout,omitempty"`
-	Permissions  string            `json:"permissions,omitempty"`
-	Placeholders map[string]any    `json:"placeholders,omitempty"`
-	Session      string            `json:"session,omitempty"`
-	Cwd          string            `json:"cwd,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`
-	Stdin        string            `json:"stdin,omitempty"`
-	Output       string            `json:"output,omitempty"`
-	Capabilities []string          `json:"capabilities,omitempty"`
-	Artifacts    *ArtifactOptions  `json:"artifacts,omitempty"`
-	Task         *TaskOptions      `json:"task,omitempty"`
+	CwdPolicy    string         `json:"cwdPolicy,omitempty"`
+	Timeout      string         `json:"timeout,omitempty"`
+	Permissions  string         `json:"permissions,omitempty"`
+	Placeholders map[string]any `json:"placeholders,omitempty"`
+	// BorrowSession marks Session as borrowed from a still-running
+	// caller: this run may use the session's instances but must not
+	// release them when it ends -- the caller owns their lifetime and
+	// may use them again after this run returns (a nested file-backed
+	// tool call inside an outer exec run, #1933 slice 2). A run that
+	// owns its session leaves it false and releases as before.
+	BorrowSession bool              `json:"borrowSession,omitempty"`
+	Session       string            `json:"session,omitempty"`
+	Cwd           string            `json:"cwd,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	Stdin         string            `json:"stdin,omitempty"`
+	Output        string            `json:"output,omitempty"`
+	Capabilities  []string          `json:"capabilities,omitempty"`
+	Artifacts     *ArtifactOptions  `json:"artifacts,omitempty"`
+	Task          *TaskOptions      `json:"task,omitempty"`
+	// DryRun runs the script with every tool call intercepted
+	// (#1927 rung: dry run): no call reaches a server, each returns a
+	// schema-valid synthetic result, and the calls that would have
+	// run are reported as call frames marked dryRun. The static
+	// scanner cannot see dynamic calls; a dry run sees all of them,
+	// at the cost of the results being fake.
+	DryRun bool `json:"dryRun,omitempty"`
 
 	// NS restricts the generated client to these namespaces, and Args are
 	// handed to the script. Neither is in the design's list, and both are
@@ -144,12 +161,19 @@ type Options struct {
 	// Phase lines and the launcher arrive as source: a path would name the
 	// daemon's filesystem, and the caller meant theirs.
 
-	// TypeCheck is off, on or strict; empty takes the daemon's default.
+	// TypeCheck is off, syntax, types or strict; on remains an alias for types.
+	// Empty takes the daemon's default.
 	TypeCheck string `json:"typecheck,omitempty"`
-	// Imports is off or report; empty takes the daemon's default.
+	// TypeCheckOnError and TypeCheckOnUnsupported carry the caller's preflight policies.
+	TypeCheckOnError       string `json:"checkOnError,omitempty"`
+	TypeCheckOnUnsupported string `json:"checkOnUnsupported,omitempty"`
+	// Imports is off, report or prepare; empty takes the daemon's default.
 	Imports string `json:"imports,omitempty"`
 	// ImportsOnDynamic is warn, fail or ignore; empty takes the daemon's.
-	ImportsOnDynamic string `json:"importsOnDynamic,omitempty"`
+	ImportsOnDynamic    string `json:"importsOnDynamic,omitempty"`
+	ImportsOnMissing    string `json:"importsOnMissing,omitempty"`
+	ImportsCrossProject string `json:"importsCrossProject,omitempty"`
+	ImportsNetwork      string `json:"importsNetwork,omitempty"`
 	// Launcher replaces the generated launcher with this template text;
 	// "none" runs the script with no launcher at all.
 	Launcher     string `json:"launcher,omitempty"`
@@ -318,6 +342,10 @@ type CallInfo struct {
 	OK              bool   `json:"ok"`
 	Error           string `json:"error,omitempty"`
 	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+	// DryRun marks a call that was intercepted by a dry run: it was
+	// reported, never executed, and the script saw a synthetic
+	// result.
+	DryRun bool `json:"dryRun,omitempty"`
 }
 
 // ArgsHash is the stable fingerprint of a call's arguments: sha256 of
@@ -341,6 +369,11 @@ func ArgsHash(args any) string {
 type CallRegistry struct {
 	mu    sync.Mutex
 	sinks map[string]*callSink
+	// dryRuns are the runs whose calls are intercepted rather than
+	// executed (#1927 dry run). The daemon's call path consults
+	// IsDryRun before dispatching; the exec service marks the run
+	// for the length of the run.
+	dryRuns map[string]bool
 }
 
 // callSink is one run's registered sink plus its delivery lifetime:
@@ -354,7 +387,31 @@ type callSink struct {
 
 // NewCallRegistry builds an empty registry.
 func NewCallRegistry() *CallRegistry {
-	return &CallRegistry{sinks: map[string]*callSink{}}
+	return &CallRegistry{sinks: map[string]*callSink{}, dryRuns: map[string]bool{}}
+}
+
+// RegisterDryRun marks runID as a dry run until the returned
+// function is called: the daemon's call path intercepts its calls
+// instead of executing them. The unregister is idempotent.
+func (r *CallRegistry) RegisterDryRun(runID string) (unregister func()) {
+	r.mu.Lock()
+	r.dryRuns[runID] = true
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			delete(r.dryRuns, runID)
+			r.mu.Unlock()
+		})
+	}
+}
+
+// IsDryRun reports whether runID is currently marked as a dry run.
+func (r *CallRegistry) IsDryRun(runID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dryRuns[runID]
 }
 
 // Register installs sink for runID and returns the function that
@@ -405,7 +462,7 @@ func (r *CallRegistry) ReportCall(runID, server, tool string, args any, dur time
 	info := &CallInfo{
 		Server: server, Tool: tool, ArgsHash: ArgsHash(args),
 		DurationMs: dur.Milliseconds(), OK: callErr == nil,
-		DestructiveHint: destructive,
+		DestructiveHint: destructive, DryRun: r.IsDryRun(runID),
 	}
 	if callErr != nil {
 		info.Error = callErr.Error()
@@ -434,11 +491,16 @@ type LogRecord struct {
 
 // Result is the structured answer.
 type Result struct {
-	RunID  string            `json:"runId"`
-	Result any               `json:"result,omitempty"`
-	Emits  []json.RawMessage `json:"emits"`
-	Logs   []LogRecord       `json:"logs"`
-	Stdout string            `json:"stdout"`
+	RunID  string `json:"runId"`
+	Result any    `json:"result,omitempty"`
+	// ResultPresent records that the run produced a result even
+	// when its value is null (CODE-19): a snippet whose final
+	// expression is `null` answered deliberately, which the value
+	// alone cannot distinguish from a run with no result at all.
+	ResultPresent bool              `json:"resultPresent,omitempty"`
+	Emits         []json.RawMessage `json:"emits"`
+	Logs          []LogRecord       `json:"logs"`
+	Stdout        string            `json:"stdout"`
 	// StdoutTruncated is set when Stdout was capped at
 	// Limits.StdoutLimit (exec.maxOutputBytes, CODE-16); the end of
 	// Stdout itself carries the marker naming the dropped byte count.
@@ -449,10 +511,58 @@ type Result struct {
 	Runtime         string     `json:"runtime,omitempty"`
 	TimedOut        bool       `json:"timedOut,omitempty"`
 	Error           string     `json:"error,omitempty"`
+	// ErrorKind is the typed failure kind (CODE-30): one of the
+	// Failure* values below, set exactly when Error is. It lets a
+	// caller branch -- retry a timeout, fix the code on an execution
+	// failure, repair the environment on a not-started failure --
+	// without parsing the message.
+	ErrorKind string `json:"errorKind,omitempty"`
 	// Notice carries the runner's one-line statement of what a
 	// dispatched (non-JavaScript) run does not have: no generated
 	// client, no enforced permission profiles.
 	Notice string `json:"notice,omitempty"`
+	// DryRun records that the run was a dry run (#1927): every tool
+	// call was intercepted and answered synthetically, so nothing
+	// the script "did" happened.
+	DryRun bool `json:"dryRun,omitempty"`
+	// Hooks retains every hook frame the run produced, in run order.
+	// The frames are also streamed to the sink as they happen, but a
+	// caller that asked for the structured result (the /v1/exec
+	// default, with a nil sink) had nowhere for them to land: a
+	// prompt hook's advice — its entire output — was generated and
+	// then discarded (Codex review, PR #9021). Retaining them here
+	// changes neither the script's result nor its error.
+	Hooks []HookFrame `json:"hooks,omitempty"`
+}
+
+// Typed failure kinds (CODE-30), the values Result.ErrorKind takes.
+const (
+	// FailureTimeout: the run exceeded its time bound.
+	FailureTimeout = "timeout"
+	// FailureNotStarted: the script never started -- a missing
+	// runtime, an unreadable launcher, a type error found before
+	// execution.
+	FailureNotStarted = "not_started"
+	// FailureExecution: the script started and failed -- it threw,
+	// exited non-zero, or the runner reported the failure.
+	FailureExecution = "execution"
+)
+
+// failureKind classifies a finished run's failure from the signals
+// the runner already reports, in the order that separates them: a
+// timeout is its own kind even though it also leaves an error
+// string, and a failure with no run behind it never started.
+func failureKind(res *Result, started bool) string {
+	if res.Error == "" {
+		return ""
+	}
+	if res.TimedOut {
+		return FailureTimeout
+	}
+	if !started {
+		return FailureNotStarted
+	}
+	return FailureExecution
 }
 
 // Source supplies the generated client the script is run against.
@@ -468,6 +578,11 @@ type Source interface {
 	Globals(ctx context.Context, ns []string) (string, error)
 	// Namespaces are the names to bind as bare identifiers in a snippet.
 	Namespaces(ctx context.Context, ns []string) ([]string, error)
+	// ClientModuleFor is ClientModule and Globals for one named script
+	// language (#1917 Phase 2): the module the runner installs beside a
+	// script of that language and the ambient declarations written with it.
+	// The default target keeps its own two methods, unchanged.
+	ClientModuleFor(ctx context.Context, language string, ns []string) (module, globals string, err error)
 }
 
 // Limits are the resolved settings one service runs under.
@@ -482,15 +597,20 @@ type Limits struct {
 	// Setup holds declared runtimes, the auto order and user profiles.
 	Setup runner.Setup
 	// SetupErr is why Setup could not be read; every run reports it.
-	SetupErr         error
-	CaptureConsole   bool
-	Typecheck        string
-	Imports          string
-	ImportsOnDynamic string
-	Delivery         string
-	InlineMaxBytes   int64
-	ChunkBytes       int64
-	InterceptImages  bool
+	SetupErr               error
+	CaptureConsole         bool
+	Typecheck              string
+	TypeCheckOnError       string
+	TypeCheckOnUnsupported string
+	Imports                string
+	ImportsOnDynamic       string
+	ImportsOnMissing       string
+	ImportsCrossProject    string
+	ImportsNetwork         string
+	Delivery               string
+	InlineMaxBytes         int64
+	ChunkBytes             int64
+	InterceptImages        bool
 	// StdoutLimit caps the stdout a Result returns (bytes); <= 0 is no cap.
 	StdoutLimit int64
 }
@@ -547,6 +667,35 @@ type Service struct {
 	// Hooks run at the edges of every run this service performs. They are the
 	// config-declared list; a caller's Options.Hooks append to them.
 	Hooks []Hook
+	// ModelProvider is the configured model layer (internal/model) a
+	// prompt hook asks for advice. Nil means no provider is configured:
+	// a prompt hook then reports its advice as unavailable in its frame
+	// and the run continues deterministically (prompt_hooks.go).
+	ModelProvider model.Provider
+	// ModelProviderErr, when set, is why a configured provider could not
+	// be built; a prompt hook's unavailable message names it, so a
+	// misconfigured provider is distinguishable from none configured.
+	ModelProviderErr error
+	// ModelMaxTokens is the resolved token cap a prompt hook's
+	// generation runs under: the per-call ask (prompt.maxTokens)
+	// capped by the global budget (model.budget), resolved by whoever
+	// built this service (execsvc.ModelTokenCap) because the policy
+	// lives on their side of the boundary. Zero means no cap was
+	// resolved, and the provider's own limit applies — which must
+	// never be how a CONFIGURED budget ends up (Codex review,
+	// PR #9021): the daemon and the CLI both resolve it whenever
+	// they resolve the provider.
+	ModelMaxTokens int
+	// ModelDefault is the configured default model (model.default) a
+	// prompt hook's generation uses when the hook names no model of
+	// its own. The OpenAI provider and the profile router already
+	// fall back to their configured default, but the sampling and
+	// plugin providers forward the request as given, so an empty
+	// hook model reached them empty and the configured default was
+	// lost (Codex review, PR #9021). Whoever resolves the provider
+	// (daemon policy, CLI settings) stamps it here, the same way
+	// ModelMaxTokens is stamped.
+	ModelDefault string
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)
@@ -556,6 +705,14 @@ type Service struct {
 	// shares one registry between the services it builds and its call
 	// handlers.
 	Calls *CallRegistry
+
+	// Scripts resolves a Request's File when it names a script rather than
+	// a path (#2168). The zero value resolves against the process working
+	// directory, the MCPX_PATHS_SCRIPTS environment variable and the
+	// built-in search path. The daemon sets Configured from its own
+	// resolved paths.scripts setting — the same setting the CLI reads,
+	// not a daemon-specific one.
+	Scripts scriptresolve.Resolver
 }
 
 // Request is one execution.
@@ -563,7 +720,11 @@ type Request struct {
 	// Source is inline TypeScript; File is a path. Exactly one.
 	Source string
 	File   string
-	Opts   Options
+	// SourceName is the name of the file Source was rendered from, when
+	// the caller rendered a declared file itself. Language evidence
+	// only (see runner.Options.SourceName); never an execution target.
+	SourceName string
+	Opts       Options
 	// RunID, when set, is used instead of a fresh one: the daemon registers
 	// a script's run for question correlation before the script starts.
 	RunID string
@@ -612,9 +773,38 @@ func resolveExecTimeout(limit time.Duration, requested string) (time.Duration, e
 // This is the /v1 and MCP entry point: everything the caller can ask for
 // arrives as Options and nothing is inherited from a terminal that is not
 // there.
+// resolveFile applies the one script-resolution rule to a request's File
+// (#2168): a bare name is searched on the script search path exactly as the
+// CLI searches it, and a miss names every directory searched. A path-shaped
+// file passes through unchanged. The search is rooted at the caller's
+// working directory when the request names one (Options.Cwd), and at this
+// process's working directory otherwise — for the daemon, that is the
+// project it was started for.
+func (s *Service) resolveFile(req Request) (string, error) {
+	r := s.Scripts
+	if req.Opts.Cwd != "" {
+		r.Dir = req.Opts.Cwd
+	}
+	return r.Resolve(req.File)
+}
+
 func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, error) {
 	if req.Source == "" && req.File == "" {
 		return nil, errors.New("exec: need source or a file")
+	}
+	if req.Source == "" && req.File != "" {
+		// Resolve here, before anything is built: /v1/exec's file field
+		// used to pass straight into runner.Options.File unresolved, so
+		// the same name that `mcpx run report` found was a missing raw
+		// path on the daemon (#2168). Resolving the file (rather than
+		// reading its text) is also what makes Options.Export work on
+		// this path: the runner's launcher imports the resolved file
+		// and calls the named export there, as it does locally.
+		resolved, err := s.resolveFile(req)
+		if err != nil {
+			return nil, err
+		}
+		req.File = resolved
 	}
 	if s.Limits.SetupErr != nil {
 		return nil, s.Limits.SetupErr
@@ -631,35 +821,52 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		return nil, err
 	}
 	globals, _ := s.Src.Globals(ctx, opts.NS)
+	// A run in another language gets that language's client instead
+	// (#1917 Phase 2). The language rule is the runner's, so a request the
+	// runner will treat as Python is exactly the request that fetches the
+	// Python client.
+	clients := map[string]runner.Client{}
+	if runner.ScriptLanguage(firstNonEmpty(req.File, req.SourceName), req.Source) == codegen.Python.Name {
+		if module, pyGlobals, cerr := s.Src.ClientModuleFor(ctx, codegen.Python.Name, opts.NS); cerr == nil {
+			clients[codegen.Python.Name] = runner.Client{Module: module, Globals: pyGlobals}
+		}
+	}
 
 	capture := s.Limits.CaptureConsole
 	if opts.CaptureConsole != nil {
 		capture = *opts.CaptureConsole
 	}
 	ropts := runner.Options{
-		Source:           req.Source,
-		File:             req.File,
-		ClientSource:     clientSrc,
-		GlobalsSource:    globals,
-		WorkDir:          s.WorkDir,
-		WorkRoot:         s.WorkRoot,
-		Runtime:          firstNonEmpty(opts.Runtime, s.Limits.Runtime),
-		Interpreter:      firstNonEmpty(opts.Interpreter, s.Limits.Interpreter),
-		CwdPolicy:        firstNonEmpty(opts.CwdPolicy, s.Limits.CwdPolicy),
-		ConfigDir:        s.ConfigDir,
-		Setup:            s.Limits.Setup,
-		Timeout:          timeout,
-		Permissions:      firstNonEmpty(opts.Permissions, s.Limits.Permissions),
-		CaptureConsole:   capture,
-		TypeCheck:        firstNonEmpty(opts.TypeCheck, s.Limits.Typecheck),
-		Imports:          firstNonEmpty(opts.Imports, s.Limits.Imports),
-		ImportsOnDynamic: firstNonEmpty(opts.ImportsOnDynamic, s.Limits.ImportsOnDynamic),
-		Launcher:         opts.Launcher,
-		LauncherName:     opts.LauncherName,
-		AllowRepeat:      opts.AllowRepeat,
-		Export:           opts.Export,
-		Args:             opts.Args,
-		Dir:              opts.Cwd,
+		Source:                 req.Source,
+		File:                   req.File,
+		SourceName:             req.SourceName,
+		ClientSource:           clientSrc,
+		GlobalsSource:          globals,
+		Clients:                clients,
+		WorkDir:                s.WorkDir,
+		WorkRoot:               s.WorkRoot,
+		Runtime:                firstNonEmpty(opts.Runtime, s.Limits.Runtime),
+		Interpreter:            firstNonEmpty(opts.Interpreter, s.Limits.Interpreter),
+		CwdPolicy:              firstNonEmpty(opts.CwdPolicy, s.Limits.CwdPolicy),
+		ConfigDir:              s.ConfigDir,
+		Setup:                  s.Limits.Setup,
+		Timeout:                timeout,
+		Permissions:            firstNonEmpty(opts.Permissions, s.Limits.Permissions),
+		CaptureConsole:         capture,
+		TypeCheck:              firstNonEmpty(opts.TypeCheck, s.Limits.Typecheck),
+		TypeCheckOnError:       firstNonEmpty(opts.TypeCheckOnError, s.Limits.TypeCheckOnError),
+		TypeCheckOnUnsupported: firstNonEmpty(opts.TypeCheckOnUnsupported, s.Limits.TypeCheckOnUnsupported),
+		Imports:                firstNonEmpty(opts.Imports, s.Limits.Imports),
+		ImportsOnDynamic:       firstNonEmpty(opts.ImportsOnDynamic, s.Limits.ImportsOnDynamic),
+		ImportsOnMissing:       firstNonEmpty(opts.ImportsOnMissing, s.Limits.ImportsOnMissing),
+		ImportsCrossProject:    firstNonEmpty(opts.ImportsCrossProject, s.Limits.ImportsCrossProject),
+		ImportsNetwork:         firstNonEmpty(opts.ImportsNetwork, s.Limits.ImportsNetwork),
+		Launcher:               opts.Launcher,
+		LauncherName:           opts.LauncherName,
+		AllowRepeat:            opts.AllowRepeat,
+		Export:                 opts.Export,
+		Args:                   opts.Args,
+		Dir:                    opts.Cwd,
 		// Explicitly not the daemon's standard input. A script run on
 		// somebody else's behalf reading the daemon's stdin would be reading
 		// whatever started the daemon.
@@ -817,9 +1024,36 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// each call as a call frame, interleaved with the run's own output
 	// exactly where it happened.
 	unregisterCalls := func() {}
-	if s.Calls != nil {
-		unregisterCalls = s.Calls.Register(runID, emitFrame)
+	unregisterDryRun := func() {}
+	// Call frames are also retained for this run, so an outcome hook's
+	// context can name the calls the script made (@calls for a prompt
+	// hook, the calls field of a script hook's stdin context). Only the
+	// hashed-arguments CallInfo is kept, never the arguments.
+	var callsMu sync.Mutex
+	var runCalls []CallInfo
+	snapshotCalls := func() []CallInfo {
+		callsMu.Lock()
+		defer callsMu.Unlock()
+		return append([]CallInfo(nil), runCalls...)
 	}
+	if s.Calls != nil {
+		unregisterCalls = s.Calls.Register(runID, func(f Frame) {
+			if f.Call != nil {
+				callsMu.Lock()
+				runCalls = append(runCalls, *f.Call)
+				callsMu.Unlock()
+			}
+			emitFrame(f)
+		})
+		if opts.DryRun {
+			// Marked for the whole run: the daemon's call path
+			// checks the registry before dispatching a call that
+			// carries this run id, and answers it synthetically.
+			unregisterDryRun = s.Calls.RegisterDryRun(runID)
+			res.DryRun = true
+		}
+	}
+	defer unregisterDryRun()
 	// Safety net only: the explicit close below, before the terminal
 	// frames, is the one that orders call frames ahead of them.
 	defer unregisterCalls()
@@ -878,6 +1112,15 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			priorLogs(r)
 		}
 	}
+	var finalValue json.RawMessage
+	var finalCaptured bool
+	priorFinal := ropts.OnFinal
+	ropts.OnFinal = func(v logging.Streamed) {
+		finalValue, finalCaptured = v.Value, true
+		if priorFinal != nil {
+			priorFinal(v)
+		}
+	}
 	priorResult := ropts.OnResult
 	ropts.OnResult = func(v logging.Streamed) {
 		res.Emits = append(res.Emits, v.Value)
@@ -892,6 +1135,11 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		hookCtx.Phase = HookBefore
 		s.runHooks(runCtx, HookBefore, before, hookCtx, ropts, res, emitFrame)
 	}
+	// A before hook is a snippet too, and the runner rewrote its
+	// final expression like any other: its capture must not become
+	// the main script's answer (CODE-19). The main run starts from
+	// a clean capture.
+	finalValue, finalCaptured = nil, false
 	priorArtifact := ropts.OnArtifact
 	ropts.OnArtifact = func(a logging.Artifacted) {
 		// Re-read from the store so the frame carries what the daemon
@@ -906,13 +1154,32 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		}
 	}
 
+	// The runner's non-fatal preflight diagnostics -- a check warning
+	// under checkOnError=warn, an import noted rather than fatal -- are
+	// written to Stderr, and this service captures Stderr in the tail
+	// buffer it only surfaces on a non-zero exit. On a successful run
+	// the diagnostic would vanish, leaving the `warn` policy
+	// indistinguishable from `run` for a remote caller. Route each one
+	// through the result and the frame stream as well, so /v1 exec and
+	// MCP callers receive it either way (Codex review, PR #6111).
+	ropts.OnWarning = func(msg string) {
+		rec := LogRecord{
+			Time:    time.Now().Format(time.RFC3339Nano),
+			Level:   logging.LevelName(slog.LevelWarn),
+			Message: msg,
+			Attrs:   map[string]any{"stage": "preflight"},
+		}
+		res.Logs = append(res.Logs, rec)
+		emitFrame(Frame{Type: FrameLog, Level: rec.Level, Message: rec.Message, Attrs: rec.Attrs})
+	}
+
 	// Session release happens after every hook has run, not here: the
 	// daemon wires Release to stopping the session's caller-private
 	// instances, and an onSuccess/onError/suffix hook may still need the
 	// servers the script used -- or start ones that this release must also
 	// stop. One closure, called on every exit path below.
 	release := func() {
-		if s.Release != nil && session != "" {
+		if s.Release != nil && session != "" && !opts.BorrowSession {
 			relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), defaults.ShutdownGrace)
 			_ = s.Release(relCtx, session)
 			relCancel()
@@ -925,6 +1192,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// frame lands here, in order, and drops any report that comes
 	// later — nothing may be written to the stream after end.
 	unregisterCalls()
+	unregisterDryRun()
 	if sinkErr != nil {
 		// The consumer left. Nothing more can be delivered, and the script
 		// has already been killed by the cancelled context.
@@ -941,6 +1209,17 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			msg = rerr.Error()
 		}
 		res.Error = msg
+		res.ErrorKind = FailureNotStarted
+		if errors.Is(rerr, context.DeadlineExceeded) {
+			// The run's bound expired before the script started -- a
+			// dependency install or a directory-lock wait in runner
+			// preflight: a timeout, not a startup failure, so a caller
+			// deciding whether to retry sees the true kind (Codex
+			// review, PR #9205). The runner preserves the deadline
+			// signal on those preflight errors for exactly this check.
+			res.ErrorKind = FailureTimeout
+			res.TimedOut = true
+		}
 		res.ExitCode = 1
 		emitFrame(Frame{Type: FrameError, Error: msg})
 		// Suffix is documented as running on both paths: a `before` hook
@@ -1002,7 +1281,23 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		var parsed any
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			res.Result = parsed
+			res.ResultPresent = true
 			stdoutParsed, haveStdoutParsed = parsed, true
+		}
+	}
+
+	// A snippet's final top-level expression is its result
+	// (CODE-19): the runner rewrote it to report through the record
+	// channel, and what it reported outranks the stdout parse --
+	// the expression is the deliberate answer, stdout is what the
+	// script printed along the way. The outcome hooks below still
+	// see (and may replace) this result.
+	if finalCaptured {
+		var v any
+		if err := json.Unmarshal(finalValue, &v); err == nil {
+			res.Result = v
+			res.ResultPresent = true
+			stdoutParsed, haveStdoutParsed = nil, false
 		}
 	}
 
@@ -1013,6 +1308,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	hookCtx.Diagnostic = hookDiagnostic(res.Error)
 	hookCtx.ExitCode, hookCtx.DurationMs = res.ExitCode, res.DurationMs
 	hookCtx.Artifacts = res.Artifacts
+	hookCtx.Calls = snapshotCalls()
 	phase := HookOnSuccess
 	if res.Error != "" {
 		phase = HookOnError
@@ -1042,9 +1338,15 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		hookCtx.Error = res.Error
 	}
 
+	// The kind is classified last, from the final outcome: an onError
+	// hook may have replaced the error with a result (then there is
+	// no kind), and the delivery step may have added its own failure
+	// to the text.
+	res.ErrorKind = failureKind(res, true)
+
 	if res.Error != "" {
 		emitFrame(Frame{Type: FrameError, Error: res.Error})
-	} else if res.Result != nil {
+	} else if res.Result != nil || res.ResultPresent {
 		b, merr := json.Marshal(res.Result)
 		if merr == nil {
 			emitFrame(Frame{Type: FrameResult, Value: b})
@@ -1057,6 +1359,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	if hs := phaseHooks(hooks, HookSuffix); len(hs) > 0 {
 		hookCtx.Phase = HookSuffix
 		hookCtx.Result, hookCtx.Error = res.Result, res.Error
+		hookCtx.Calls = snapshotCalls()
 		s.runHooks(runCtx, HookSuffix, hs, hookCtx, ropts, res, emitFrame)
 	}
 
@@ -1091,6 +1394,11 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			if rb, err := json.Marshal(res.Result); err == nil {
 				if pb, err := json.Marshal(stdoutParsed); err == nil && string(rb) == string(pb) {
 					res.Result = nil
+					// Presence described the discarded result; it
+					// must not survive it, or consumers would
+					// present the discard as a deliberate null
+					// (CODE-19 review, PR #9344).
+					res.ResultPresent = false
 				}
 			}
 		}
@@ -1294,7 +1602,7 @@ func (s *Service) streamBodies(res *Result, opts Options, emit func(Frame)) {
 				break
 			}
 		}
-		f.Close()
+		_ = f.Close()
 		emit(Frame{Type: FrameArtifactEnd, ID: a.ID})
 	}
 }

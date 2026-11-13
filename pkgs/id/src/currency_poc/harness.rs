@@ -53,7 +53,16 @@ pub fn verify_pinned_version(binary: &PathBuf) -> Result<()> {
         .lines()
         .next()
         .and_then(|line| line.trim().strip_prefix("TigerBeetle version "));
-    if !output.status.success() || reported_version != Some(TIGERBEETLE_PINNED_VERSION) {
+    // The pinned release binary reports its version with a build
+    // suffix (e.g. "0.17.9+cc1c06a"); accept the exact pin or the pin
+    // plus build metadata, nothing else.
+    let version_matches = reported_version.is_some_and(|reported| {
+        reported == TIGERBEETLE_PINNED_VERSION
+            || reported
+                .strip_prefix(TIGERBEETLE_PINNED_VERSION)
+                .is_some_and(|suffix| suffix.starts_with('+'))
+    });
+    if !output.status.success() || !version_matches {
         bail!(
             "tigerbeetle binary at {} reports {:?}, expected exact pinned version {} \
              (acquire it from {})",
@@ -153,6 +162,7 @@ impl Drop for TestCluster {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -186,10 +196,20 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn accepts_pinned_version_with_build_suffix() {
+        // The real 0.17.9 release binary reports "0.17.9+cc1c06a".
+        let (_dir, binary) = stub_binary("TigerBeetle version 0.17.9+cc1c06a\n", 0);
+
+        assert!(verify_pinned_version(&binary).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn rejects_nonexact_reported_versions() {
         for output in [
             "TigerBeetle version 0.17.99\n",
             "TigerBeetle version 0.17.90\n",
+            "TigerBeetle version 0.17.9x\n",
             "TigerBeetle version 0.16.0\n",
             "TigerBeetle build deadbee0.17.9custom\n",
         ] {

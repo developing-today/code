@@ -1,7 +1,9 @@
 # CI for pkgs/id — P2P file sharing CLI
 #
-# Runs on push to main and PRs that touch pkgs/id/ files.
-# Uses nix flake checks to run all sandboxed CI checks:
+# Pushes to main run the affected-check matrix below. Scheduled and manual
+# runs execute the full pkgs/id flake check instead; the guard runs on every
+# event.
+# The full nix flake check covers all sandboxed CI checks:
 #   - Rust: fmt, clippy, cargo-check, unit tests, integration tests, doc
 #   - Web: biome fmt, biome lint, bun unit tests, TypeScript typecheck
 #   - Build: debug + release (web variant with embedded assets)
@@ -44,13 +46,6 @@ name: id
 on:
   push:
     branches: [main]
-    paths:
-      - "pkgs/id/**"
-      - ".github/workflows/id-check.yml"
-      - ".github/scripts/id-pr-checks.txt"
-      - ".github/scripts/check-id-pr-checks.sh"
-      - ".github/scripts/check-crash-gate-coverage.sh"
-      - ".github/scripts/check-id-source-snapshot.sh"
   schedule:
     # Nightly backstop for the full flake check (main tier, #1781).
     - cron: "41 8 * * *"
@@ -62,19 +57,18 @@ permissions:
 # Push-to-main runs each get their own group (keyed by run_id), so a
 # later merge can never cancel — or displace a pending — verification
 # run for an earlier merge: every merged tree gets its own completed
-# run. Pull-request runs keep sharing a per-ref group, so a new push
-# to a PR still supersedes its stale run (#392). A conditional
-# cancel-in-progress (the mcpx-conformance pattern) would still let a
-# third rapid merge displace the second merge's pending run, so push
-# runs are keyed by run_id here, matching dezren39/nix PR #495.
+# run. Non-push runs share a per-ref group, so a newer run on that ref
+# supersedes the older one. Push runs are keyed by run_id here, matching
+# dezren39/nix PR #495.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # Runs the flake-drift guard once and emits the PR check list as a
-  # JSON array for the matrix. The list file stays the single source of
-  # truth: adding a check to id-pr-checks.txt adds a parallel job.
+  # Runs the flake-drift guard once for every event and emits the basic
+  # check list as a JSON array for push runs. The list file stays the
+  # single source of truth: adding a check to id-pr-checks.txt adds a
+  # parallel job.
   guard:
     name: "basic: guard PR check list"
     runs-on: ubuntu-latest
@@ -84,31 +78,46 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Test matrix normalization
+        run: bash .github/scripts/id-pr-checks-matrix.test.sh
+
+      - name: Test source-snapshot guard behavior
+        run: bash .github/scripts/check-id-source-snapshot.test.sh
+
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           extra-conf: |
             accept-flake-config = true
 
-      # The PR list is enumerated, so guard it against the flake (#300):
+      # The basic check list is enumerated, so guard it against the flake (#300):
       # a new flake check that is neither listed nor excluded fails here
-      # by name instead of silently getting no PR coverage.
-      - name: Guard PR check list against flake drift
+      # by name instead of silently getting no matrix coverage.
+      # The guard's own contract tests (#6881) run first (#7628):
+      # its misdiagnosis pins (duplicates, whitespace/CRLF) were
+      # verified nowhere — no workflow ran the .test.sh suite.
+      - name: Contract tests for the PR check list guard
+        run: bash .github/scripts/check-id-pr-checks.test.sh
+
+      - name: Guard basic check list against flake drift
         run: .github/scripts/check-id-pr-checks.sh
 
       # The crash-gate composition asserted in check-id-pr-checks.sh is
       # itself checked (#1635): an #[ignore]d crash test matching none
       # of the PR split filters fails here by name.
-      - name: Guard crash-gate PR partition coverage
+      - name: Guard crash-gate matrix coverage
         run: .github/scripts/check-crash-gate-coverage.sh
 
-      - name: Emit PR check list for the matrix
+      - name: Test the crash-gate coverage guard enumeration
+        run: .github/scripts/check-crash-gate-coverage.test.sh
+
+      - name: Emit basic check list for the matrix
         id: list
         run: |
-          checks=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' .github/scripts/id-pr-checks.txt | jq -R . | jq -cs .)
+          checks=$(bash .github/scripts/id-pr-checks-matrix.sh)
           echo "checks=$checks" >> "$GITHUB_OUTPUT"
-          echo "PR checks: $checks"
+          echo "Basic checks: $checks"
 
-  # One parallel job per PR check. Fast PR set: unit + integration
+  # One parallel job per basic check. Fast set: unit + integration
   # tests, lint, format, typecheck, doc and the crash gates, listed in
   # id-pr-checks.txt. The heavy remainder — test-e2e (Playwright),
   # nixos-serve, nixos-e2e, nixos-integration and nixos-playwright-e2e —
@@ -120,6 +129,7 @@ jobs:
   check_each:
     name: "basic: nix flake check (${{ matrix.check }})"
     needs: guard
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -140,10 +150,15 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
+            # #774 recurrence (2026-11-12): when the Magic Nix Cache proxy
+            # throttles (HTTP 418), fall back to building from source
+            # instead of hard-failing the check on the narinfo fetch.
+            fallback = true
 
-      # Cache the nix store on GitHub's cache so PRs do not rebuild
+      # Cache the nix store on GitHub's cache so main runs do not rebuild
       # unchanged derivations from a cold store every run (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
         with:
           # FlakeHub Cache off (#2120): no id-token is granted and the
           # developing-today org is not registered, so the action's
@@ -171,7 +186,7 @@ jobs:
           fi
           .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src"
 
-      - name: Run PR check
+      - name: Run basic check
         run: nix build -L --no-link "./pkgs/id#checks.x86_64-linux.${{ matrix.check }}"
 
   # Replay the same checked-in WASM session natively on ARM64. This is a
@@ -179,6 +194,7 @@ jobs:
   # digests must match the x86_64-pinned values above.
   world-snapshot-arm64:
     name: "native arm64: world snapshot determinism"
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     env:
@@ -192,46 +208,76 @@ jobs:
           extra-conf: |
             accept-flake-config = true
 
+      # Select the workspace default members, not `-p id` (#3923). The
+      # #3447 crate split moved test targets into id-core, and `-p id`
+      # silently skipped building that crate's lib test target — which is
+      # how a missing id-core dev-dependency went unnoticed. The name
+      # filter below still runs only the determinism test; id-core's lib
+      # test target is compiled as part of the same invocation.
       - name: Run the checked-in session snapshot test natively
         run: >-
-          nix develop ./pkgs/id --command cargo test -p id
+          nix develop ./pkgs/id --command cargo test
           --manifest-path pkgs/id/Cargo.toml --lib
           world_fixture::tests::replay_tests::checked_in_session_snapshot_hashes_are_stable
           -- --exact
+
+  # The issue #3850 regression is not covered by the normal default-feature
+  # matrix: keep a direct no-world build in the PR tier.
+  no-world:
+    name: "basic: id builds without world feature"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+            # #774 recurrence (2026-11-12): when the Magic Nix Cache proxy
+            # throttles (HTTP 418), fall back to building from source
+            # instead of hard-failing the check on the narinfo fetch.
+            fallback = true
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+      - name: Check id without default/world features
+        run: nix develop ./pkgs/id --command cargo check -p id --manifest-path pkgs/id/Cargo.toml --no-default-features
 
   # Aggregator: preserves the historical required status context
   # "nix flake check" so branch protection keeps working unchanged,
   # while the matrix above does the real work in parallel.
   check:
     name: nix flake check
-    needs: [check_each, world-snapshot-arm64]
-    if: always()
+    needs: [check_each, world-snapshot-arm64, no-world]
+    if: always() && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require every PR check job to succeed
+      - name: Require every basic-tier job to succeed
         run: |
           matrix_result="${{ needs.check_each.result }}"
           arm64_result="${{ needs.world-snapshot-arm64.result }}"
+          no_world_result="${{ needs.no-world.result }}"
           echo "matrix result: $matrix_result"
           echo "native arm64 snapshot result: $arm64_result"
-          if [ "$matrix_result" != "success" ] || [ "$arm64_result" != "success" ]; then
-            echo "::error::the x86_64 PR checks or native arm64 determinism check did not succeed — see the jobs above."
+          echo "no-world result: $no_world_result"
+          if [ "$matrix_result" != "success" ] || [ "$arm64_result" != "success" ] || [ "$no_world_result" != "success" ]; then
+            echo "::error::the x86_64 basic checks, native arm64 determinism check, or no-world build did not succeed — see the jobs above."
             exit 1
           fi
 
-  # Main tier (Phase 2, #1781): the FULL flake check for pkgs/id. The PR
-  # tier above keeps guard + the affected-crate matrix from
-  # id-pr-checks.txt; the full check (including the heavy checks the PR
-  # list excludes) runs once per merge on main, plus the nightly
-  # schedule above -- and nightly in id-e2e-nightly.yml as a second
-  # backstop. Nothing from the old PR matrix is lost: the union of this
-  # job, id-e2e-nightly, and the PR matrix covers it.
+  # Full tier (Phase 2, #1781): run the complete pkgs/id flake check on
+  # schedule and manual dispatch. Pushes use the guard plus the affected-
+  # check matrix from id-pr-checks.txt instead. The full check includes
+  # the heavy checks excluded from that matrix; id-e2e-nightly.yml remains
+  # an independent nightly backstop.
   full-flake-check:
     name: "full (main tier): nix flake check"
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       # Source-snapshot integrity guard (#1569): see check_each above.
@@ -241,7 +287,12 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
+            # #774 recurrence (2026-11-12): when the Magic Nix Cache proxy
+            # throttles (HTTP 418), fall back to building from source
+            # instead of hard-failing the check on the narinfo fetch.
+            fallback = true
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
         with:
           # FlakeHub Cache off (#2120): no id-token is granted and the
           # developing-today org is not registered, so the action's

@@ -1,17 +1,9 @@
 name: scripts-test
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - "scripts/update-nixpkgs-inputs.py"
-      - "scripts/update-nixpkgs-inputs.sh"
-      - "pkgs/id/scripts/update-nixpkgs-inputs.py"
-      - "pkgs/id/scripts/update-nixpkgs-inputs.sh"
-      - "scripts/tests/test_update_nixpkgs_inputs.py"
-      - ".github/workflows/scripts-test.yml"
-  workflow_dispatch:
-
 permissions:
   contents: read
 
@@ -38,3 +30,48 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run update-nixpkgs-inputs contract tests (#603)
         run: python3 -m unittest discover -s scripts/tests -p 'test_update_nixpkgs_inputs.py' -v
+      - name: Run worker preflight contract tests (#4862)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_worker_preflight.py' -v
+      - name: Run failure classifier contract tests (#2176)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_classify_failure.py' -v
+      - name: Run bitwarden-load-secrets multiline contract tests (#5650)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_bitwarden_load_secrets.py' -v
+      - name: Run hardware-doc-init branch-routing regression tests (#7597)
+        run: |
+          test -f scripts/tests/test_hardware_doc_init.py
+          python3 -m unittest discover -s scripts/tests -p 'test_hardware_doc_init.py' -v
+      - name: Run provider retirement gate contract tests (#5610)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_check_provider_retirement_gate.py' -v
+      - name: Run auto-format workflow contract tests (#7664)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_auto_format_workflow.py' -v
+      - name: Run power-guard timing validation tests (#6477)
+        run: python3 -m unittest discover -s nixos/services/power-guard -p 'test_*.py' -v
+      - name: Run sops atomic writers regression tests (#6555)
+        run: bash lib/sops-atomic-writers.test.sh
+      - name: Run run-switch regression tests (#7667)
+        run: |
+          test -f lib/run-switch.test.sh
+          bash lib/run-switch.test.sh
+      - name: Run drain-wrapper credential fallback tests (#5222)
+        run: |
+          test -f infra/github-backup/systemd/drain-wrapper.test.sh
+          bash infra/github-backup/systemd/drain-wrapper.test.sh
+      - name: Run identity provider core static confinement regression tests (#6180)
+        run: |
+          test -f pkgs/identity/provider/core-static-test.sh
+          bash pkgs/identity/provider/core-static-test.sh
+
+  mcpx-affected-embed-regressions:
+    name: "basic: mcpx affected-embed regressions"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Run mcpx embed-selector regression tests (#6866)
+        run: |
+          test -f pkgs/mcpx/scripts/tests/test_affected_embeds.py
+          command -v git >/dev/null
+          python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_embeds.py' -v

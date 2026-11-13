@@ -1,7 +1,8 @@
 # Benchmark regression reporting for pkgs/id — F11.8 slice 3 (#1513).
 #
-# Runs the four slice-1 benchmarks (world_bench) and diffs their medians
-# against the committed slice-2 baselines in pkgs/id/benches/baseline.txt,
+# Runs the existing F11.8 workloads plus the #557 many-worlds measurement
+# (world_bench) and diffs their medians against the committed baselines in
+# pkgs/id/benches/baseline.txt,
 # using .github/scripts/id-bench-compare.sh. The report lands in the job
 # summary and as a run artifact.
 #
@@ -51,10 +52,15 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
+            # #774 recurrence (2026-11-12): when the Magic Nix Cache proxy
+            # throttles (HTTP 418), fall back to building from source
+            # instead of hard-failing the check on the narinfo fetch.
+            fallback = true
 
       # Same store cache as the PR gate, so the bench build starts warm
       # (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
         with:
           # FlakeHub Cache off (#2120): no id-token is granted and the
           # developing-today org is not registered, so the action's

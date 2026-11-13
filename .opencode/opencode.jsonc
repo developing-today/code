@@ -1,4 +1,15 @@
 {
+  // PROVIDER RENAME (2026-11-07, Drew; opencode#1823): providers the
+  // fleet custom-built in the fork now carry a leading underscore —
+  // claude-code -> _claude, antigravity-direct -> _antigravity,
+  // vibe-direct -> _vibe, commandcode -> _commandcode,
+  // muse-direct -> _muse (config and fork source ids converged).
+  // Upstream providers keep their ids (meta included: the fork's
+  // meta provider is upstream code). Config-only doors over upstream
+  // SDK packages (opendesign, cline-pass) are unchanged. The
+  // underscore is a config/source marker only; display surfaces
+  // strip it. Older comments below narrate the pre-rename ids as
+  // history. Quota keeps the old spellings as aliases.
   // PROVIDER ALIGNMENT (2026-10-24, Drew): both machines carry the same
   // providers; unneeded ones are disabled here, identically on both.
   // - Token-based Google/Gemini paths are OFF. EARMARK: when a token-based
@@ -19,7 +30,7 @@
   //   "antigravity-agy" are in disabled_providers below and their proxy
   //   services are retired in home/common/default.nix; their definitions
   //   stay FULL below per the switchboard rule. The Gemini seats moved
-  //   to antigravity-direct (gemini-flash-plan, argon-plan). The Claude
+  //   to antigravity-direct (gemini-hydrogen-plan, argon-plan). The Claude
   //   seats in sonnet-plan and opus-plan still name antigravity-ls:
   //   they are inert while the provider is disabled, until they are
   //   re-pointed or the door is restored. Undo: delete both ids from
@@ -28,12 +39,21 @@
   //   replace all others": the sonnet-plan and opus-plan Claude seats
   //   are re-pointed to antigravity-direct as well; no route leaf
   //   names antigravity-ls or antigravity-agy anymore.
-  // - "claude-code" is TEMPORARILY disabled (2026-10-27, Drew): the Claude
+  // - 2026-11-04 (opencode#1414): the antigravity-direct block below no
+  //   longer names the :18751 proxy — it resolves to the fork native
+  //   antigravity provider (opencode#1457). Same id, same wire; the
+  //   door unit and bin/antigravity-direct.mjs retire once :18751
+  //   shows a zero-traffic window.
+  // - "claude-code" was TEMPORARILY disabled (2026-10-27, Drew; RE-ENABLED 2026-11-06, Drew - see the dated note above disabled_providers): the Claude
   //   plan is on the FREE tier for now and the API may be down. The setup
-  //   itself is confirmed working — the proxy (:18749) is live and serves
-  //   claude-haiku-5-5 (verified 2026-10-27) — this is a config-level pause
-  //   only: the proxy, its catalog entries, and every route that references
-  //   it stay in place. Claude MODELS via other plans (antigravity-ls,
+  //   itself was confirmed working at pause time — the proxy (:18749)
+  //   was live and served claude-haiku-5-5 (verified 2026-10-27) — and
+  //   the pause began as config-level only. That changed on 2026-11-05:
+  //   the provider block below was repointed from the proxy to the
+  //   fork's native claude-code provider (code#6117, opencode#1749),
+  //   and on 2026-11-06 the proxy itself (bin/claude-code-proxy.mjs,
+  //   its systemd unit and :18749) was removed in the proxy-infra
+  //   decommission. Claude MODELS via other plans (antigravity-ls,
   //   cline-pass, opendesign leaves in haiku/sonnet/opus-plan) are NOT the
   //   Claude plan and are unaffected. To re-enable: delete "claude-code"
   //   from disabled_providers and restore the "default" below.
@@ -65,8 +85,9 @@
   // (the pools below already ship that way — haiku-plan seats claude-code
   // while it is off).
   //
-  // WORKED EXAMPLE — Claude: "claude-code" sits in the list today because
-  // the Claude plan is on the free tier (see the header note). The day it
+  // WORKED EXAMPLE — Claude (resolved 2026-11-06, when claude-code
+  // left the list): "claude-code" sat in the list because the Claude
+  // plan was on the free tier (see the header note). The day it
   // comes back, delete the "claude-code" line from the list and Claude is
   // live: its definition, model catalog, and haiku-plan seat are already in
   // place, and every tier that consumes haiku-plan (scout, workhorse,
@@ -82,11 +103,11 @@
   // routes seat muse/* leaves where the meta/* leaves sat, at the
   // same weights and positions.
   //
-  // KNOWN EXCEPTION: the design-code / code-design / open-design proxy
-  // blocks further down stay commented out (preserved legacy: four blocks,
-  // three ids, two keyed "design-code"). They are off via this list too,
-  // but re-enabling one needs a dedupe decision first. Their live door is
-  // "opendesign" (on).
+  // KNOWN EXCEPTION -- RESOLVED 2026-11-03 (Drew, direct order): the
+  // design-code / code-design / open-design proxy blocks that stayed
+  // commented out here as preserved legacy were DELETED, together with
+  // the design-code door's persona routes. The only design provider in
+  // this config is "opendesign" (on).
   // ==========================================================================
   // 2026-10-30 (route audit): "deepseek" joins the list below. Its
   // definition is the DeepSeek OFFICIAL API — a pay-as-you-go funds
@@ -96,6 +117,35 @@
   // 2026-10-25. Per the switchboard rule this flip is the whole job;
   // its full definition stays in the provider block, and deleting
   // the line re-enables it if the direct door is ever wanted.
+  // 2026-11-05 (Drew, direct order — supersedes the 2026-10-30 note
+  // above for this seat): "deepseek" LEAVES the list. The official-API
+  // door is re-enabled to serve one seat: deepseek/deepseek-flash
+  // ("1017") joins the deepseek-flash-plan route as its API leg under a
+  // weighted 2:1 plan:API split (see that route). The NEVER-FUNDS
+  // default stands for every other route; this seat is Drew's named
+  // exception, sized at the minority share of one pool.
+  // CORRECTED 2026-11-05 (Drew, later direct order — supersedes the
+  // paragraph directly above): "no don't re enable deepseek." The
+  // provider RETURNS to the list below. Its deepseek-flash-plan seat
+  // is a named SLOT, not an enablement exception: it stays in the
+  // pool in LAST position, and while the provider is disabled the
+  // seat contributes no leaf and can never be drawn (disabled
+  // providers are absent from the catalog, so route expansion drops
+  // the target entirely — it appears in neither the candidate list
+  // nor the exclusion list of the route's decision records, unlike
+  // quota/cooldown exclusions, which are recorded with reasons; the
+  // quota-block mechanism is a separate key and is untouched by
+  // this). The NEVER-FUNDS default stands with NO exception: the
+  // seat exists so that re-enabling, if Drew ever orders it, is the
+  // usual one-line flip. The DEEPSEEK_API_KEY plumbing
+  // (nixos/agent-auth + home/common materializer) is KEPT for the
+  // same reason — slotted and ready, just disabled.
+  // UPDATE 2026-11-06 (#6414): the seat itself was later removed
+  // from deepseek-flash-plan — the metered-provider guard rejects a
+  // metered selection even while disabled, and the seated target
+  // failed main's bin-tests CI. The provider, its definition, and
+  // the key plumbing above are unchanged; see the REMOVED note on
+  // the route for the two-step re-enable.
   // 2026-10-30 (Drew, direct order): "meta" joins the list below.
   // The direct api.meta.ai door is dead by Meta's design — the plan
   // API key returns 403 client_attestation_denied from any
@@ -123,6 +173,14 @@
   // retry-looping on "insufficient credits". Per the switchboard
   // rule the definition and every seat stay in place; deleting
   // this line re-enables Command Code if it is ever refilled.
+  // 2026-11-06: "commandcode" LEAVES the list. The blocker named in the
+  // 2026-10-31 note was twofold — an empty balance, and a router that kept
+  // retry-looping its leaves. The router half is fixed by the provider-
+  // availability system (opencode#1828): an exhausted-balance provider now
+  // classifies as quota/balance, benches on its first failure, and costs a
+  // session nothing while stopped; its seats stay seated and it rejoins
+  // automatically when the balance shows a measured increase. Evidence:
+  // the #1828 harness scenarios (seamlessness + measured-increase release).
   // 2026-11-01 (Drew, direct order): "muse-direct" joins the list.
   // The Meta pool is quota-exhausted until 2026-11-02T00:00:00Z and
   // sessions dealt its muse-spark leg die on the 429 with no local
@@ -133,6 +191,22 @@
   // REVERSED 2026-11-02 (Drew, direct order): "muse-direct" leaves
   // the list. The Meta pool reset at 2026-11-02T00:00:00Z and reads
   // fresh 0% with 100 pts headroom; the door is back in service.
+  // 2026-11-06 (Drew, direct order): "claude-code" LEAVES the list
+  // below - the Claude plan is back (Claude Max enabled on the
+  // account) and the provider is re-enabled by this one-line flip,
+  // per the switchboard rule. Its seats were already in place:
+  // haiku-plan (leads), sonnet-plan (leads; feeds specialist head
+  // and workhorse-primary), opus-plan (leads; feeds summit head).
+  // No route edits: Drew ordered no new seats in speed/workhorse,
+  // and the seats there (via haiku-plan / sonnet-plan) are the ones
+  // already shipped. NOTE: re-enabling makes claude-code the live
+  // lead of haiku-plan again, ahead of opendesign - the
+  // haiku-plan re-enable lead-order question (ledger item
+  // haiku-plan-claude-code-reenable-order, issue #1132) is still
+  // open; if Drew rules OpenDesign keeps the lead, that is a
+  // one-line targets reorder in haiku-plan, not a switchboard
+  // change. Credential: ~/.claude/.credentials.json (native
+  // provider reads it in place); live-probed at enable time.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -143,22 +217,28 @@
     "huggingface",
     "opencode",
     "github-copilot",
-    "openai-codex",
-    "chatgpt",
     "openrouter",
-    "cloudflare-gateway",
     "cloudflare-workers-ai",
-    "code-design",
-    "design-code",
-    "open-design",
-    "deepseek",
-    "claude-code",
     "meta",
-    "muse",
-    "antigravity-ls",
-    "antigravity-agy",
-    "commandcode"
+    "deepseek"
   ],
+  // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
+  // design-code, cloudflare-gateway and chatgpt left this list together with
+  // their provider definitions -- retired and deleted, not just disabled.
+  // google, google-vertex, cloudflare-ai-gateway, cloudflare-workers-ai and
+  // github-copilot had their definitions deleted too, but their entries STAY
+  // as tombstones: the provider catalog auto-activates those five ids unless
+  // they are listed here (verified live 2026-11-03 -- with the entries removed
+  // all five reappeared in the running server within minutes). The entries are
+  // the only trace of them left; there are no definitions to flip back on.
+  // openai-codex followed on 2026-11-03: its ten route legs were re-seated
+  // onto openai-plan (the ChatGPT provider route) and the definition was
+  // deleted with the rest. It is a custom id with no catalog entry, so --
+  // unlike the five tombstones above -- no entry stays for it here.
+  // "open-design" (the design-code door shell) followed on 2026-11-03 too:
+  // its commented-out definition and the door's 11 persona routes were
+  // deleted on Drew's direct order, and -- a custom id like openai-codex,
+  // not a catalog id -- no entry stays for it here either.
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
   // what agent configs already default to; restoring the Haiku default
@@ -191,13 +271,15 @@
   // (~/.local/state/opencode/opencode-runtime.jsonc), layered over this file via
   // OPENCODE_CONFIG — see code#4544. Everything else here is deliberate config.
   "provider": {
-    "claude-code": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Claude Code (CLI proxy)",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:CLAUDE_CODE_PROXY_PORT:-18749}/v1",
-        "apiKey": "claude-code-local"
-      },
+    "_claude": {
+      // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
+      // (:18749, @ai-sdk/openai-compatible) to the in-fork native claude-code
+      // provider - same provider id, native wire emulation of the Claude Code
+      // CLI, credential read in place from ~/.claude/.credentials.json; no
+      // baseURL/apiKey (the provider owns auth). STILL in disabled_providers:
+      // re-enabling stays a separate deliberate step.
+      "npm": "@opencode/ai/providers/claude-code",
+      "name": "Claude Code (native wire emulation)",
       "models": {
         "claude-haiku-5-5": {
           "name": "Haiku 5.5 (Claude Code)",
@@ -345,35 +427,19 @@
             "context": 1000000,
             "output": 64000
           }
-        }
-      }
-    },
-    // OFF via disabled_providers (PROVIDER SWITCHBOARD, top of file). Definition kept complete so the flip is the only step.
-    "cloudflare-gateway": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Cloudflare Workers AI (via AI Gateway)",
-      "options": {
-        "baseURL": "https://gateway.ai.cloudflare.com/v1/234b866b99ce2b142d7963d8d139cbfa/opencode-gateway/workers-ai/v1",
-        "apiKey": "{env:CLOUDFLARE_API_TOKEN}"
-      }
-      // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
-    },
-    // OFF via disabled_providers (PROVIDER SWITCHBOARD, top of file).
-    "cloudflare-workers-ai": {},
-    "cloudflare-ai-gateway": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Cloudflare AI Gateway (Unified Routing)",
-      "options": {
-        "baseURL": "https://gateway.ai.cloudflare.com/v1/234b866b99ce2b142d7963d8d139cbfa/opencode-gateway",
-        "apiKey": "{env:CLOUDFLARE_API_TOKEN}"
-      },
-      "models": {
-        "anthropic/claude-sonnet-5.5": {
-          "name": "Claude Sonnet 5.5 (via AI Gateway)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          },
+        },
+        // 2026-11-10 (Drew, direct order): Claude Fable 5.2 joins the
+        // _claude catalog, same shape as the three models above. The
+        // door serves it today: the wire probe on the laptop's Claude
+        // Code credential returned "pong" for --model claude-fable-5-2
+        // (preceded by a [claude-code:unrecognized_model] notice from
+        // the CLI's local catalog, which the endpoint answered
+        // anyway). Seated as fable-plan's lead at #low in specialist,
+        // summit, and the new workhorse-last-resort stage (see those
+        // routes) - it draws the dedicated Fable quota (Drew,
+        // 2026-11-07), not the shared Claude Max allowance.
+        "claude-fable-5-2": {
+          "name": "Fable 5.2 (Claude Code)",
           "variants": {
             "low": {
               "options": {
@@ -387,44 +453,11 @@
               "options": {
                 "thinking": {
                   "type": "enabled",
-                  "budget_tokens": 16384
-                }
-              }
-            },
-            "high": {
-              "options": {
-                "thinking": {
-                  "type": "enabled",
-                  "budget_tokens": 32768
-                }
-              }
-            },
-            "max": {
-              "options": {
-                "thinking": {
-                  "type": "enabled",
-                  "budget_tokens": 64000
-                }
-              }
-            }
-          }
-        },
-        "anthropic/claude-opus-5.5": {
-          "name": "Claude Opus 5.5 (via AI Gateway)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinking": {
-                  "type": "enabled",
                   "budget_tokens": 8192
                 }
               }
             },
-            "medium": {
+            "high": {
               "options": {
                 "thinking": {
                   "type": "enabled",
@@ -432,7 +465,7 @@
                 }
               }
             },
-            "high": {
+            "xhigh": {
               "options": {
                 "thinking": {
                   "type": "enabled",
@@ -444,657 +477,100 @@
               "options": {
                 "thinking": {
                   "type": "enabled",
-                  "budget_tokens": 64000
+                  "budget_tokens": 65536
                 }
               }
             }
-          }
-        },
-        "anthropic/claude-sonnet-4.5": {
-          "name": "Claude Sonnet 4.5 (via AI Gateway)",
+          },
           "limit": {
             "context": 1000000,
             "output": 64000
           }
-        },
-        "openai/gpt-4o": {
-          "name": "GPT-4o (via AI Gateway)",
-          "limit": {
-            "context": 128000,
-            "output": 16384
-          }
-        },
-        "openai/gpt-4o-mini": {
-          "name": "GPT-4o mini (via AI Gateway)",
-          "limit": {
-            "context": 128000,
-            "output": 16384
-          }
-        },
-        "openai/o1": {
-          "name": "o1 (via AI Gateway)",
-          "limit": {
-            "context": 200000,
-            "output": 100000
-          }
-        },
-        "openai/o3-mini": {
-          "name": "o3-mini (via AI Gateway)",
-          "limit": {
-            "context": 200000,
-            "output": 100000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "openai/gpt-5-mini": {
-          "name": "GPT-5 mini (via AI Gateway)",
-          "limit": {
-            "context": 200000,
-            "output": 32768
-          }
-        },
-        "openai/gpt-5.6-sol": {
-          "name": "GPT-5.6-SOL (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-5.6-sol-fast": {
-          "name": "GPT-5.6-SOL-FAST (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-5.6-luna": {
-          "name": "GPT-5.6-LUNA (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-5.6-luna-fast": {
-          "name": "GPT-5.6-LUNA-FAST (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-5.6-terra": {
-          "name": "GPT-5.6-TERRA (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-5.6-terra-fast": {
-          "name": "GPT-5.6-TERRA-FAST (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-6-sol": {
-          "name": "GPT-6-SOL (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-6-sol-fast": {
-          "name": "GPT-6-SOL-FAST (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-6.1-sol": {
-          "name": "GPT-6.1-SOL (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-6.1-sol-fast": {
-          "name": "GPT-6.1-SOL-FAST (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-6-luna": {
-          "name": "GPT-6-LUNA (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-6-luna-fast": {
-          "name": "GPT-6-LUNA-FAST (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-6-astra": {
-          "name": "GPT-6-ASTRA (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-6-astra-fast": {
-          "name": "GPT-6-ASTRA-FAST (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-5.5": {
-          "name": "GPT-5.5 (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-5.5-fast": {
-          "name": "GPT-5.5-FAST (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-5.4": {
-          "name": "GPT-5.4 (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-5.4-pro": {
-          "name": "GPT-5.4-PRO (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "openai/gpt-5.5-pro": {
-          "name": "GPT-5.5-PRO (via AI Gateway)",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "deepseek/deepseek-v4-pro": {
-          "name": "DeepSeek V4 Pro (via AI Gateway)"
-        },
-        "minimax/m3.1-flash": {
-          "name": "MiniMax-M3.1-Flash (via AI Gateway)"
-        },
-        "alibaba/qwen3.8-max": {
-          "name": "Qwen3.8 Max (via AI Gateway)"
-        },
-        "alibaba/qwen3.5-397b-a17b": {
-          "name": "Qwen3.5 397B-A17B (via AI Gateway)"
-        },
-        "alibaba/qwen3.7-plus": {
-          "name": "Qwen3.7 Plus (via AI Gateway)"
-        },
-        "alibaba/qwen3-max": {
-          "name": "Qwen3 Max (via AI Gateway)"
-        },
-        "alibaba/qwen3.7-max": {
-          "name": "Qwen3.7 Max (via AI Gateway)"
-        },
-        "reflection-ai/beam-1.0-501b-a23b": {
-          "name": "Beam 1.0 501B A23B (via AI Gateway)"
-        },
-        "moonshotai/kimi-k3": {
-          "name": "Kimi K3 (via AI Gateway)"
-        },
-        "unbiased/pareto": {
-          "name": "Pareto (via AI Gateway)"
-        },
-        "openai/gpt-5.4-nano": {
-          "name": "GPT-5.4 nano (via AI Gateway)"
-        },
-        "openai/o4-mini": {
-          "name": "o4-mini (via AI Gateway)"
-        },
-        "openai/gpt-4.1-mini": {
-          "name": "GPT-4.1 mini (via AI Gateway)"
-        },
-        "openai/gpt-4.1-nano": {
-          "name": "GPT-4.1 nano (via AI Gateway)"
-        },
-        "openai/gpt-5-nano": {
-          "name": "GPT-5 Nano (via AI Gateway)"
-        },
-        "openai/gpt-5": {
-          "name": "GPT-5 (via AI Gateway)"
-        },
-        "openai/gpt-5.4-mini": {
-          "name": "GPT-5.4 mini (via AI Gateway)"
-        },
-        "openai/gpt-5.1": {
-          "name": "GPT-5.1 (via AI Gateway)"
-        },
-        "openai/gpt-4.1": {
-          "name": "GPT-4.1 (via AI Gateway)"
-        },
-        "openai/o3": {
-          "name": "o3 (via AI Gateway)"
-        },
-        "xai/grok-4.20-0309-reasoning": {
-          "name": "Grok 4.20 (Reasoning) (via AI Gateway)"
-        },
-        "xai/grok-4.7": {
-          "name": "Grok 4.7 (via AI Gateway)"
-        },
-        "xai/grok-4.6": {
-          "name": "Grok 4.6 (via AI Gateway)"
-        },
-        "xai/grok-4.3": {
-          "name": "Grok 4.3 (via AI Gateway)"
-        },
-        "xai/grok-4.5": {
-          "name": "Grok 4.5 (via AI Gateway)"
-        },
-        "xai/grok-4.20-0309-non-reasoning": {
-          "name": "Grok 4.20 (Non-Reasoning) (via AI Gateway)"
-        },
-        "fireworks/ember-1": {
-          "name": "Ember-1 (via AI Gateway)"
-        },
-        "meta/muse-spark-open": {
-          "name": "Muse Spark Open (via AI Gateway)"
-        },
-        "meta/muse-spark-1.3": {
-          "name": "Muse Spark 1.3 (via AI Gateway)"
-        },
-        "meta/muse-wonder-1.0": {
-          "name": "Muse Wonder (via AI Gateway)"
-        },
-        "meta/muse-spark-1.1": {
-          "name": "Muse Spark 1.1 (via AI Gateway)"
-        },
-        "meta/muse-spark-1.2": {
-          "name": "Muse Spark 1.2 (via AI Gateway)"
-        },
-        "google/gemini-3.1-pro": {
-          "name": "Gemini 3.1 Pro Preview (via AI Gateway)"
-        },
-        "google/gemini-2.5-flash": {
-          "name": "Gemini 2.5 Flash (via AI Gateway)"
-        },
-        "google/gemini-3.5-flash": {
-          "name": "Gemini 3.5 Flash (via AI Gateway)"
-        },
-        "google/gemini-4-argon": {
-          "name": "Gemini 4 Argon (via AI Gateway)"
-        },
-        "google/gemini-3.7-flash": {
-          "name": "Gemini 3.7 Flash (via AI Gateway)"
-        },
-        "google/gemini-3.1-flash-lite": {
-          "name": "Gemini 3.1 Flash Lite (via AI Gateway)"
-        },
-        "google/gemini-3-flash": {
-          "name": "Gemini 3 Flash Preview (via AI Gateway)"
-        },
-        "google/gemini-3.8-flash": {
-          "name": "Gemini 3.8 Flash (via AI Gateway)"
-        },
-        "google/gemini-3.5-flash-lite": {
-          "name": "Gemini 3.5 Flash Lite (via AI Gateway)"
-        },
-        "google/gemini-2.5-flash-lite": {
-          "name": "Gemini 2.5 Flash-Lite (via AI Gateway)"
-        },
-        "google/gemini-3.6-flash": {
-          "name": "Gemini 3.6 Flash (via AI Gateway)"
-        },
-        "google/gemini-2.5-pro": {
-          "name": "Gemini 2.5 Pro (via AI Gateway)"
-        },
-        "anthropic/claude-opus-4.5": {
-          "name": "Claude Opus 4.5 (latest) (via AI Gateway)"
-        },
-        "anthropic/claude-haiku-4.5": {
-          "name": "Claude Haiku 4.5 (latest) (via AI Gateway)"
-        },
-        "anthropic/claude-opus-4.6": {
-          "name": "Claude Opus 4.6 (via AI Gateway)"
-        },
-        "anthropic/claude-haiku-5.5": {
-          "name": "Claude Haiku 5.5 (via AI Gateway)"
-        },
-        "anthropic/claude-fable-5.1": {
-          "name": "Claude Fable 5.1 (via AI Gateway)"
-        },
-        "anthropic/claude-opus-4.8": {
-          "name": "Claude Opus 4.8 (via AI Gateway)"
-        },
-        "anthropic/claude-sonnet-4.6": {
-          "name": "Claude Sonnet 4.6 (via AI Gateway)"
-        },
-        "anthropic/claude-opus-4.7": {
-          "name": "Claude Opus 4.7 (via AI Gateway)"
-        },
-        "anthropic/claude-fable-5": {
-          "name": "Claude Fable 5 (via AI Gateway)"
-        },
-        "anthropic/claude-sonnet-5": {
-          "name": "Claude Sonnet 5 (via AI Gateway)"
-        },
-        "anthropic/claude-opus-5": {
-          "name": "Claude Opus 5 (via AI Gateway)"
         }
-
       }
     },
-    // "google": model catalog maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
-    "antigravity-agy": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Antigravity CLI (via agy)",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:AGY_PROXY_PORT:-18743}/v1",
-        "apiKey": "agy-local"
-      },
-      "models": {
-        "gemini-4-argon": {
-          "name": "Gemini 4 Argon (agy)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-4-argon-low": {
-          "name": "Gemini 4 Argon Low (agy)"
-        },
-        "gemini-4-argon-medium": {
-          "name": "Gemini 4 Argon Medium (agy)"
-        },
-        "gemini-4-argon-high": {
-          "name": "Gemini 4 Argon High (agy)"
-        },
-        "gemini-3.8-flash": {
-          "name": "Gemini 3.8 Flash (agy)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "claude-sonnet-5-5": {
-          "name": "Claude Sonnet 5.5 (agy)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "claude-opus-5-5": {
-          "name": "Claude Opus 5.5 (agy)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "gemini-2.5-flash": {
-          "name": "Gemini 3.5 Flash Lite (agy)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-2.5-flash-lite": {
-          "name": "Gemini 3.5 Flash Lite (agy)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-2.5-flash-thinking": {
-          "name": "Gemini 3.5 Flash Lite (agy)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-2.5-pro": {
-          "name": "Gemini 2.5 Pro (agy)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3-flash": {
-          "name": "Gemini 3 Flash (agy)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.1-flash-image": {
-          "name": "Gemini 3.1 Flash Image (agy)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.1-flash-lite": {
-          "name": "Gemini 3.1 Flash Lite (agy)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.5-flash-lite": {
-          "name": "Gemini 3.5 Flash Lite (agy)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.8-flash-tiered": {
-          "name": "gemini-3.8-flash-tiered (agy)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gpt-oss-120b": {
-          "name": "GPT-OSS 120B (agy)",
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          },
-          "variants": {
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            }
-          }
-        },
-        "gemini-3.8-flash-low": {
-          "name": "Gemini 3.8 Flash Low (agy)"
-        },
-        "gemini-3.8-flash-medium": {
-          "name": "Gemini 3.8 Flash Medium (agy)"
-        },
-        "gemini-3.8-flash-high": {
-          "name": "Gemini 3.8 Flash High (agy)"
-        },
-        "gemini-3.7-flash": {
-          "name": "Gemini 3.7 Flash (agy)"
-        },
-        "gemini-3.7-flash-low": {
-          "name": "Gemini 3.7 Flash Low (agy)"
-        },
-        "gemini-3.7-flash-medium": {
-          "name": "Gemini 3.7 Flash Medium (agy)"
-        },
-        "gemini-3.7-flash-high": {
-          "name": "Gemini 3.7 Flash High (agy)"
-        },
-        "gemini-3.6-flash": {
-          "name": "Gemini 3.6 Flash (agy)"
-        },
-        "gemini-3.6-flash-low": {
-          "name": "Gemini 3.6 Flash Low (agy)"
-        },
-        "gemini-3.6-flash-medium": {
-          "name": "Gemini 3.6 Flash Medium (agy)"
-        },
-        "gemini-3.6-flash-high": {
-          "name": "Gemini 3.6 Flash High (agy)"
-        },
-        "gemini-3.1-pro": {
-          "name": "Gemini 3.1 Pro (agy)"
-        },
-        "gemini-3.1-pro-low": {
-          "name": "Gemini 3.1 Pro Low (agy)"
-        },
-        "gemini-3.1-pro-high": {
-          "name": "Gemini 3.1 Pro High (agy)"
-        },
-        "claude-sonnet-5-5-low": {
-          "name": "Claude Sonnet 5.5 Low (agy)"
-        },
-        "claude-sonnet-5-5-medium": {
-          "name": "Claude Sonnet 5.5 Medium (agy)"
-        },
-        "claude-sonnet-5-5-high": {
-          "name": "Claude Sonnet 5.5 High (agy)"
-        },
-        "claude-opus-5-5-low": {
-          "name": "Claude Opus 5.5 Low (agy)"
-        },
-        "claude-opus-5-5-medium": {
-          "name": "Claude Opus 5.5 Medium (agy)"
-        },
-        "claude-opus-5-5-high": {
-          "name": "Claude Opus 5.5 High (agy)"
-        },
-        "gpt-oss-120b-medium": {
-          "name": "GPT-OSS 120B Medium (agy)"
-        }
-
-      }
-    },
-    "antigravity-direct": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Antigravity Direct (CLI wire clone)",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:ANTIGRAVITY_DIRECT_PORT:-18751}/v1",
-        "apiKey": "antigravity-direct-local"
-      }
+    "_antigravity": {
+      "npm": "@opencode/ai/providers/antigravity",
+      "name": "Antigravity Direct (CLI wire clone)"
+      // 2026-11-04 (opencode#1414): repointed from the :18751 door to
+      // the native in-fork provider (opencode#1457) — same provider id,
+      // same v1internal wire protocol, keyring credential read in place
+      // by the server; no baseURL/apiKey (the provider owns auth). The
+      // door unit + bin/antigravity-direct.mjs retire after a
+      // zero-traffic window on :18751.
       // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     },
-    "antigravity-ls": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Antigravity Language Server (Direct gRPC/ConnectRPC)",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:ANTIGRAVITY_LS_PROXY_PORT:-18745}/v1",
-        "apiKey": "antigravity-local"
-      },
+    "mistral": {
+      "npm": "@opencode/ai/providers/mistral",
+      "name": "Mistral API (drewrypope)"
+      // Credential: the enrolled server credential (integration
+      // "mistral", Bitwarden mistral.api-key) — the only source.
+      // MISTRAL_API_KEY is deliberately NOT materialized into the
+      // server environment: vibe-direct's env-first resolution would
+      // spend this API-budget key (see home/common, opencode#1653).
+      // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
+    },
+    "_vibe": {
+      "npm": "@opencode/ai/providers/vibe",
+      "name": "Mistral Vibe Direct (native wire clone)",
+      // 2026-11-04 (opencode#1653, PR #1661): native in-fork emulation of
+      // the mistral-vibe binary — same Mistral wire, Vibe's presets and
+      // the attribution stamp (metadata.call_source "vibe_code"; billing
+      // follows the KEY, not the stamp — see the credential note).
+      // No vibe subprocess.
+      // Credential: vibe-auth resolution mirrors the binary (config ->
+      // env -> ~/.vibe/.env -> keyring) and the server env must NOT
+      // carry MISTRAL_API_KEY: that key is the API-budget key and
+      // Mistral meters per key, so with the env slot empty vibe-direct
+      // falls through to the keyring "ai.mistral.vibe" sign-in key —
+      // the Vibe plan key.
+      // Models are declared HERE: models.dev has no vibe entry, so
+      // sync-models cannot maintain this catalog. The entries are the
+      // preset ids + names from Vibe's own catalog (opencode#1653).
+      // A model "limit" here must carry "output" alongside
+      // "context": the v1 provider schema requires both, and an
+      // entry that fails schema decode is dropped WHOLE at config
+      // normalization — a context-only limit on the default model
+      // is exactly what kept vibe-direct out of the provider catalog
+      // until code#5934 (2026-11-04→05, opencode#1146). The default
+      // model's limit below restores the binary-verified context
+      // (262144, opencode#1661's preset); its "output" is the fork's
+      // config-model default (32000), NOT a binary-verified figure.
+      // The other models declare no limit and take that same
+      // default (200000/32000) until someone verifies theirs.
       "models": {
-        "gemini-3.8-flash": {
-          "name": "Gemini 3.8 Flash (Direct LS)",
+        "mistral-vibe-cli-latest": {
+          "name": "Mistral Medium 3.5",
+          "limit": {
+            "context": 262144,
+            "output": 32000
+          }
+        },
+        "mistral-medium-latest": {
+          "name": "Mistral Medium"
+        },
+        "mistral-large-latest": {
+          "name": "Mistral Large"
+        },
+        "mistral-small-latest": {
+          "name": "Mistral Small",
+          // Variants declared 2026-11-05: the models.dev catalog
+          // attests none/high (reasoning effort) for this model id on
+          // the Mistral wire this provider clones — the same variants
+          // the "mistral" provider's catalog entry carries. Declaring
+          // them is load-bearing, not cosmetic: a provider-route
+          // group's variant set is the intersection of its legs'
+          // producible variants, so an empty list here emptied
+          // mistral-plan's variant set entirely — and because a
+          // route's offered variants are likewise an intersection
+          // across its targets, seating mistral-plan in
+          // deepseek-flash-plan collapsed that pool's variant set and
+          // broke every pinned-variant session on it (Variant
+          // unavailable: low/high) until these were declared.
           "variants": {
-            "low": {
+            "none": {
               "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
+                "reasoning_effort": "none"
               }
             },
             "high": {
@@ -1102,1163 +578,205 @@
                 "reasoning_effort": "high"
               }
             }
-          },
-          "limit": {
-            "context": 1048576,
-            "output": 65536
           }
         },
-        "claude-sonnet-5-5": {
-          "name": "Claude Sonnet 5.5 (Direct LS)",
+        "deepseek-v4-1-flash-1017": {
+          "name": "DeepSeek V4.1 Flash 1017",
+          // Declared 2026-11-07 (Drew, direct order): NOT a Vibe
+          // preset — a La Plateforme catalog model the Mistral wire
+          // also serves (the "mistral" provider's catalog carries
+          // this id, family deepseek-flash). Declaring it here makes
+          // mistral-plan's ordered draw land on THIS leg for the
+          // model, so deepseek-flash-plan's mistral-plan member
+          // rides the Vibe plan key instead of the account API
+          // budget (billing follows the key — see the credential
+          // note above). The limit mirrors the mistral catalog
+          // entry (context + output both, per the schema warning
+          // above). The variants mirror the same catalog entry
+          // (none/low/high/max) so the provider-route group's
+          // variant intersection for this model is unchanged.
+          "limit": {
+            "context": 1048576,
+            "output": 128000
+          },
           "variants": {
+            "none": {
+              "options": {
+                "reasoning_effort": "none"
+              }
+            },
             "low": {
               "options": {
                 "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
               }
             },
             "high": {
               "options": {
                 "reasoning_effort": "high"
               }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
             }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 64000
           }
         },
-        "claude-opus-5-5": {
-          "name": "Claude Opus 5.5 (Direct LS)",
+        "zai-glm-5-3": {
+          "name": "GLM 5.3",
+          // Declared 2026-11-07 (Drew, direct order): NOT a Vibe
+          // preset — a La Plateforme catalog model the Mistral wire
+          // also serves, billed under Vibe Code on the account's
+          // usage page (verified there 2026-11-07). Declaring it
+          // here makes it addressable through this door at all (the
+          // same move as deepseek-v4-1-flash-1017 above); the
+          // glm-5-3-plan pool seats this leg directly. No limit
+          // declared — most preset entries above declare none and
+          // take the default. The variants mirror the wire set of
+          // the sibling third-party catalog model above
+          // (none/low/high/max).
           "variants": {
+            "none": {
+              "options": {
+                "reasoning_effort": "none"
+              }
+            },
             "low": {
               "options": {
                 "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
               }
             },
             "high": {
               "options": {
                 "reasoning_effort": "high"
               }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "gemini-2.5-flash": {
-          "name": "Gemini 3.5 Flash Lite (Direct LS)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-2.5-flash-lite": {
-          "name": "Gemini 3.5 Flash Lite (Direct LS)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-2.5-flash-thinking": {
-          "name": "Gemini 3.5 Flash Lite (Direct LS)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-2.5-pro": {
-          "name": "Gemini 2.5 Pro (Direct LS)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3-flash": {
-          "name": "Gemini 3 Flash (Direct LS)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.1-flash-image": {
-          "name": "Gemini 3.1 Flash Image (Direct LS)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.1-flash-lite": {
-          "name": "Gemini 3.1 Flash Lite (Direct LS)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.5-flash-lite": {
-          "name": "Gemini 3.5 Flash Lite (Direct LS)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.8-flash-tiered": {
-          "name": "gemini-3.8-flash-tiered (Direct LS)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gpt-oss-120b": {
-          "name": "GPT-OSS 120B (Direct LS)",
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          },
-          "variants": {
-            "medium": {
+            },
+            "max": {
               "options": {
-                "reasoning_effort": "medium"
+                "reasoning_effort": "max"
               }
             }
           }
         },
-        "gemini-3.8-flash-low": {
-          "name": "Gemini 3.8 Flash Low (Direct LS)"
+        "zai-glm-5-3-flash": {
+          "name": "GLM 5.3 Flash",
+          // Declared 2026-11-07 (Drew, direct order): same basis
+          // as zai-glm-5-3 above — billed under Vibe Code on the
+          // account's usage page (verified 2026-11-07); declared
+          // so the glm-5-3-flash-plan pool can seat this leg
+          // directly. Variants mirror the same wire set
+          // (none/low/high/max).
+          "variants": {
+            "none": {
+              "options": {
+                "reasoning_effort": "none"
+              }
+            },
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
         },
-        "gemini-3.8-flash-medium": {
-          "name": "Gemini 3.8 Flash Medium (Direct LS)"
+        "codestral-latest": {
+          "name": "Codestral"
         },
-        "gemini-3.8-flash-high": {
-          "name": "Gemini 3.8 Flash High (Direct LS)"
+        "ministral-14b-latest": {
+          "name": "Ministral 14B"
         },
-        "gemini-3.7-flash": {
-          "name": "Gemini 3.7 Flash (Direct LS)"
+        "ministral-8b-latest": {
+          "name": "Ministral 8B"
         },
-        "gemini-3.7-flash-low": {
-          "name": "Gemini 3.7 Flash Low (Direct LS)"
-        },
-        "gemini-3.7-flash-medium": {
-          "name": "Gemini 3.7 Flash Medium (Direct LS)"
-        },
-        "gemini-3.7-flash-high": {
-          "name": "Gemini 3.7 Flash High (Direct LS)"
-        },
-        "gemini-3.6-flash": {
-          "name": "Gemini 3.6 Flash (Direct LS)"
-        },
-        "gemini-3.6-flash-low": {
-          "name": "Gemini 3.6 Flash Low (Direct LS)"
-        },
-        "gemini-3.6-flash-medium": {
-          "name": "Gemini 3.6 Flash Medium (Direct LS)"
-        },
-        "gemini-3.6-flash-high": {
-          "name": "Gemini 3.6 Flash High (Direct LS)"
-        },
-        "gemini-3.1-pro": {
-          "name": "Gemini 3.1 Pro (Direct LS)"
-        },
-        "gemini-3.1-pro-low": {
-          "name": "Gemini 3.1 Pro Low (Direct LS)"
-        },
-        "gemini-3.1-pro-high": {
-          "name": "Gemini 3.1 Pro High (Direct LS)"
-        },
-        "claude-sonnet-5-5-low": {
-          "name": "Claude Sonnet 5.5 Low (Direct LS)"
-        },
-        "claude-sonnet-5-5-medium": {
-          "name": "Claude Sonnet 5.5 Medium (Direct LS)"
-        },
-        "claude-sonnet-5-5-high": {
-          "name": "Claude Sonnet 5.5 High (Direct LS)"
-        },
-        "claude-opus-5-5-low": {
-          "name": "Claude Opus 5.5 Low (Direct LS)"
-        },
-        "claude-opus-5-5-medium": {
-          "name": "Claude Opus 5.5 Medium (Direct LS)"
-        },
-        "claude-opus-5-5-high": {
-          "name": "Claude Opus 5.5 High (Direct LS)"
-        },
-        "gpt-oss-120b-medium": {
-          "name": "GPT-OSS 120B Medium (Direct LS)"
-        },
-        "chat_20706": {
-          "name": "chat_20706 (Direct LS)"
-        },
-        "chat_23310": {
-          "name": "chat_23310 (Direct LS)"
-        },
-        "tab_flash_lite_preview": {
-          "name": "tab_flash_lite_preview (Direct LS)"
-        },
-        "tab_jump_flash_lite_preview": {
-          "name": "tab_jump_flash_lite_preview (Direct LS)"
+        "ministral-3b-latest": {
+          "name": "Ministral 3B"
         }
-
       }
     },
     // "openai": model catalog maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
-    "openai-codex": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "OpenAI Codex CLI (via codex)",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
-        "apiKey": "codex-local"
-      }
-      // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
-    },
-    "chatgpt": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "ChatGPT (via Codex)",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
-        "apiKey": "codex-local"
-      },
-      "models": {
-        "gpt-6.1-sol": {
-          "name": "GPT-6.1 Sol (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-terra": {
-          "name": "GPT-6.1 Terra (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 500000,
-            "output": 128000
-          }
-        },
-        "gpt-6-astra": {
-          "name": "GPT-6 Astra (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6-sol": {
-          "name": "GPT-6 Sol (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6-luna": {
-          "name": "GPT-6 Luna (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-5.6-sol": {
-          "name": "GPT-5.6 Sol (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-5.6-terra": {
-          "name": "GPT-5.6 Terra (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-5.6-luna": {
-          "name": "GPT-5.6 Luna (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-5.5": {
-          "name": "GPT-5.5 (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-sol-low": {
-          "name": "GPT-6.1 Sol Low (ChatGPT)"
-        },
-        "gpt-6.1-sol-medium": {
-          "name": "GPT-6.1 Sol Medium (ChatGPT)"
-        },
-        "gpt-6.1-sol-high": {
-          "name": "GPT-6.1 Sol High (ChatGPT)"
-        },
-        "gpt-6.1-sol-xhigh": {
-          "name": "GPT-6.1 Sol XHigh (ChatGPT)"
-        },
-        "gpt-6.1-sol-max": {
-          "name": "GPT-6.1 Sol Max (ChatGPT)"
-        },
-        "gpt-6.1-sol-ultra": {
-          "name": "GPT-6.1 Sol Ultra (ChatGPT)"
-        },
-        "gpt-6-astra-low": {
-          "name": "GPT-6 Astra Low (ChatGPT)"
-        },
-        "gpt-6-astra-medium": {
-          "name": "GPT-6 Astra Medium (ChatGPT)"
-        },
-        "gpt-6-astra-high": {
-          "name": "GPT-6 Astra High (ChatGPT)"
-        },
-        "gpt-6-astra-xhigh": {
-          "name": "GPT-6 Astra XHigh (ChatGPT)"
-        },
-        "gpt-6-astra-max": {
-          "name": "GPT-6 Astra Max (ChatGPT)"
-        },
-        "gpt-6-astra-ultra": {
-          "name": "GPT-6 Astra Ultra (ChatGPT)"
-        },
-        "gpt-6-sol-low": {
-          "name": "GPT-6 Sol Low (ChatGPT)"
-        },
-        "gpt-6-sol-medium": {
-          "name": "GPT-6 Sol Medium (ChatGPT)"
-        },
-        "gpt-6-sol-high": {
-          "name": "GPT-6 Sol High (ChatGPT)"
-        },
-        "gpt-6-sol-xhigh": {
-          "name": "GPT-6 Sol XHigh (ChatGPT)"
-        },
-        "gpt-6-sol-max": {
-          "name": "GPT-6 Sol Max (ChatGPT)"
-        },
-        "gpt-6-sol-ultra": {
-          "name": "GPT-6 Sol Ultra (ChatGPT)"
-        },
-        "gpt-6-luna-low": {
-          "name": "GPT-6 Luna Low (ChatGPT)"
-        },
-        "gpt-6-luna-medium": {
-          "name": "GPT-6 Luna Medium (ChatGPT)"
-        },
-        "gpt-6-luna-high": {
-          "name": "GPT-6 Luna High (ChatGPT)"
-        },
-        "gpt-6-luna-xhigh": {
-          "name": "GPT-6 Luna XHigh (ChatGPT)"
-        },
-        "gpt-6-luna-max": {
-          "name": "GPT-6 Luna Max (ChatGPT)"
-        },
-        "gpt-5.6-sol-low": {
-          "name": "GPT-5.6 Sol Low (ChatGPT)"
-        },
-        "gpt-5.6-sol-medium": {
-          "name": "GPT-5.6 Sol Medium (ChatGPT)"
-        },
-        "gpt-5.6-sol-high": {
-          "name": "GPT-5.6 Sol High (ChatGPT)"
-        },
-        "gpt-5.6-sol-xhigh": {
-          "name": "GPT-5.6 Sol XHigh (ChatGPT)"
-        },
-        "gpt-5.6-sol-max": {
-          "name": "GPT-5.6 Sol Max (ChatGPT)"
-        },
-        "gpt-5.6-sol-ultra": {
-          "name": "GPT-5.6 Sol Ultra (ChatGPT)"
-        },
-        "gpt-5.6-terra-low": {
-          "name": "GPT-5.6 Terra Low (ChatGPT)"
-        },
-        "gpt-5.6-terra-medium": {
-          "name": "GPT-5.6 Terra Medium (ChatGPT)"
-        },
-        "gpt-5.6-terra-high": {
-          "name": "GPT-5.6 Terra High (ChatGPT)"
-        },
-        "gpt-5.6-terra-xhigh": {
-          "name": "GPT-5.6 Terra XHigh (ChatGPT)"
-        },
-        "gpt-5.6-terra-max": {
-          "name": "GPT-5.6 Terra Max (ChatGPT)"
-        },
-        "gpt-5.6-terra-ultra": {
-          "name": "GPT-5.6 Terra Ultra (ChatGPT)"
-        },
-        "gpt-5.6-luna-low": {
-          "name": "GPT-5.6 Luna Low (ChatGPT)"
-        },
-        "gpt-5.6-luna-medium": {
-          "name": "GPT-5.6 Luna Medium (ChatGPT)"
-        },
-        "gpt-5.6-luna-high": {
-          "name": "GPT-5.6 Luna High (ChatGPT)"
-        },
-        "gpt-5.6-luna-xhigh": {
-          "name": "GPT-5.6 Luna XHigh (ChatGPT)"
-        },
-        "gpt-5.6-luna-max": {
-          "name": "GPT-5.6 Luna Max (ChatGPT)"
-        },
-        "gpt-5.5-low": {
-          "name": "GPT-5.5 Low (ChatGPT)"
-        },
-        "gpt-5.5-medium": {
-          "name": "GPT-5.5 Medium (ChatGPT)"
-        },
-        "gpt-5.5-high": {
-          "name": "GPT-5.5 High (ChatGPT)"
-        },
-        "gpt-5.5-xhigh": {
-          "name": "GPT-5.5 XHigh (ChatGPT)"
-        },
-        "gpt-reserve": {
-          "name": "GPT Reserve (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-reserve-low": {
-          "name": "GPT Reserve Low (ChatGPT)"
-        },
-        "gpt-reserve-medium": {
-          "name": "GPT Reserve Medium (ChatGPT)"
-        },
-        "gpt-reserve-high": {
-          "name": "GPT Reserve High (ChatGPT)"
-        },
-        "gpt-reserve-xhigh": {
-          "name": "GPT Reserve XHigh (ChatGPT)"
-        },
-        "gpt-reserve-max": {
-          "name": "GPT Reserve Max (ChatGPT)"
-        },
-        "codex-auto-review": {
-          "name": "Codex Auto Review (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "codex-auto-review-low": {
-          "name": "Codex Auto Review Low (ChatGPT)"
-        },
-        "codex-auto-review-medium": {
-          "name": "Codex Auto Review Medium (ChatGPT)"
-        },
-        "codex-auto-review-high": {
-          "name": "Codex Auto Review High (ChatGPT)"
-        },
-        "codex-auto-review-xhigh": {
-          "name": "Codex Auto Review XHigh (ChatGPT)"
-        },
-        "codex-auto-review-max": {
-          "name": "Codex Auto Review Max (ChatGPT)"
-        }
-
-      }
-    },
-    // NOTE (2026-10-25): design-code proxy block (one of three identical copies) - commented out per Drew; only the direct Open Design cloud provider ("opendesign") stays active. Preserved, not deleted.
-//    "design-code": {
-//      "npm": "@ai-sdk/openai-compatible",
-//      "name": "Design Code",
-//      "options": {
-//        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-//        "apiKey": "design-local"
-//      },
-//      "models": {
-//        "claude-haiku-5.5": {
-//          "name": "Claude Haiku 5.5 (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "gpt-6-luna": {
-//          "name": "GPT-6 Luna (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        },
-//        "gpt-6.1-sol": {
-//          "name": "GPT-6.1 Sol (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        },
-//        "deepseek-v4.1-flash": {
-//          "name": "DeepSeek V4.1 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "glm-5.3-flash": {
-//          "name": "GLM 5.3 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "glm-5.3-flashx": {
-//          "name": "GLM 5.3 FlashX (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "mimo-v2.6-flash": {
-//          "name": "MIMO v2.6 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "mimo-v2.6-pro": {
-//          "name": "MIMO v2.6 Pro (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "design-code-pro": {
-//          "name": "Design Code Pro",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "design-code-flash": {
-//          "name": "Design Code Flash",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "open-design-pro": {
-//          "name": "Open Design Pro",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        }
-//      }
-//    },
-    // NOTE (2026-10-25): design-code proxy block (one of three identical copies) - commented out per Drew; only the direct Open Design cloud provider ("opendesign") stays active. Preserved, not deleted.
-//    "code-design": {
-//      "npm": "@ai-sdk/openai-compatible",
-//      "name": "Code Design",
-//      "options": {
-//        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-//        "apiKey": "design-local"
-//      },
-//      "models": {
-//        "claude-haiku-5.5": {
-//          "name": "Claude Haiku 5.5 (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "gpt-6-luna": {
-//          "name": "GPT-6 Luna (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        },
-//        "gpt-6.1-sol": {
-//          "name": "GPT-6.1 Sol (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        },
-//        "deepseek-v4.1-flash": {
-//          "name": "DeepSeek V4.1 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "glm-5.3-flash": {
-//          "name": "GLM 5.3 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "glm-5.3-flashx": {
-//          "name": "GLM 5.3 FlashX (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "mimo-v2.6-flash": {
-//          "name": "MIMO v2.6 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "mimo-v2.6-pro": {
-//          "name": "MIMO v2.6 Pro (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "design-code-pro": {
-//          "name": "Design Code Pro",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "design-code-flash": {
-//          "name": "Design Code Flash",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "open-design-pro": {
-//          "name": "Open Design Pro",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        }
-//      }
-//    },
-    // NOTE (2026-10-25): design-code proxy block (one of three identical copies) - commented out per Drew; only the direct Open Design cloud provider ("opendesign") stays active. Preserved, not deleted.
-//    "open-design": {
-//      "npm": "@ai-sdk/openai-compatible",
-//      "name": "Open Design",
-//      "options": {
-//        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-//        "apiKey": "design-local"
-//      },
-//      "models": {
-//        "claude-haiku-5.5": {
-//          "name": "Claude Haiku 5.5 (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "gpt-6-luna": {
-//          "name": "GPT-6 Luna (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        },
-//        "gpt-6.1-sol": {
-//          "name": "GPT-6.1 Sol (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        },
-//        "deepseek-v4.1-flash": {
-//          "name": "DeepSeek V4.1 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "glm-5.3-flash": {
-//          "name": "GLM 5.3 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "glm-5.3-flashx": {
-//          "name": "GLM 5.3 FlashX (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "mimo-v2.6-flash": {
-//          "name": "MIMO v2.6 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "mimo-v2.6-pro": {
-//          "name": "MIMO v2.6 Pro (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "design-code-pro": {
-//          "name": "Design Code Pro",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "design-code-flash": {
-//          "name": "Design Code Flash",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "open-design-pro": {
-//          "name": "Open Design Pro",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        }
-//      }
-//    },
-    // NOTE (2026-10-25): the block below was keyed "opendesign" until today; renamed to
-    // "design-code" to free the ID for the direct Open Design cloud block (active, further
-    // below). It points at the local design-code proxy, which routes to the
-    // the antigravity-ls/codex proxies. Commented out per Drew (unrecognized/unused) -
-    // preserved, not deleted. An identical ACTIVE "design-code" block already exists above,
-    // so this renamed copy stays commented out to avoid a duplicate key.
-//    "design-code": {
-//      "npm": "@ai-sdk/openai-compatible",
-//      "name": "OpenDesign",
-//      "options": {
-//        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-//        "apiKey": "design-local"
-//      },
-//      "models": {
-//        "claude-haiku-5.5": {
-//          "name": "Claude Haiku 5.5 (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "gpt-6-luna": {
-//          "name": "GPT-6 Luna (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        },
-//        "gpt-6.1-sol": {
-//          "name": "GPT-6.1 Sol (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        },
-//        "deepseek-v4.1-flash": {
-//          "name": "DeepSeek V4.1 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "glm-5.3-flash": {
-//          "name": "GLM 5.3 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "glm-5.3-flashx": {
-//          "name": "GLM 5.3 FlashX (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "mimo-v2.6-flash": {
-//          "name": "MIMO v2.6 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "mimo-v2.6-pro": {
-//          "name": "MIMO v2.6 Pro (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "design-code-pro": {
-//          "name": "Design Code Pro",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "design-code-flash": {
-//          "name": "Design Code Flash",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "open-design-pro": {
-//          "name": "Open Design Pro",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        }
-//      }
-//    },
-    "openai.alternate": {
+    // "openai-codex": retired 2026-11-03 -- definition deleted after its
+    // route legs were re-seated onto openai-plan (see the note at
+    // disabled_providers). The codex door program (:18744) was retired
+    // 2026-11-06 in the proxy-infra decommission, completing the
+    // #1154 cutover.
+    // "open-design" (the design-code door shell, :18746): the commented-out
+    // proxy block preserved here since 2026-10-25 was DELETED 2026-11-03
+    // (Drew, direct order) together with the door's persona routes below.
+    // The only design provider in this config is "opendesign" (further down).
+    // "openai.alternate": retired 2026-11-12 -- definition deleted. The
+    // popesdrew door has been _openai.alt since the #8163 rename
+    // (2026-11-10); a parsed-config walk of this file found no reference
+    // to the old id outside its own definition (evidence in the
+    // retirement PR). Revert that PR to restore the definition.
+    // _openai.alt (2026-11-10, Drew direct order): the popesdrew account
+    // as an _openai-pattern instance - the second of the two self-contained
+    // OpenAI doors (with _openai.main below). Same pattern as _openai.main:
+    // its credential is its own, seeded without the externalRefresh stamp
+    // and refreshed in-process by the provider; no Muse, no
+    // ~/.codex/auth.json read, no codex-sync in its path. Seeded from the
+    // popesdrew account credential openai.alternate already serves with -
+    // the credential-store seeding is tracked with the #8163 follow-up;
+    // this definition is the config side. openai.alternate kept its
+    // definition above, unseated, while the pool sat on this id; that
+    // definition was retired 2026-11-12 (tombstone above).
+    // 2026-11-11 (code#8653): the models maps pinned below these
+    // doors by the #8163 rename are REMOVED. With a declared map the
+    // fork resolves the models as plain Platform-API models and the
+    // ChatGPT OAuth credential is rejected on every call with
+    // "Missing scopes: api.responses.write" - the workhorse route
+    // lost its only un-walled legs for a full morning. The bare
+    // instanceOf shape (the proven _openai form, which authenticated
+    // against the ChatGPT door hours before the rename) inherits
+    // the base catalog as-is. Do not re-pin a catalog here.
+    "_openai.alt": {
       "instanceOf": "openai",
-      "name": "OpenAI Alternate (Student - popesdrew)"
+      "name": "OpenAI Self-Contained Alt (popesdrew, no Codex)"
+    },
+    // "openai.main": retired 2026-11-12 -- definition deleted. The
+    // drewrypope door has been _openai.main since the #8163 rename
+    // (2026-11-10); a parsed-config walk of this file found no reference
+    // to the old id outside its own definition (evidence in the
+    // retirement PR). Revert that PR to restore the definition.
+    // _openai (2026-11-10, Drew direct order, #8163): the self-contained
+    // main OpenAI door. Same drewrypope ChatGPT account as openai.main, but
+    // its credential is its own: seeded into the store without the
+    // externalRefresh stamp, refreshed in-process by the provider (the
+    // openai.alternate pattern, #8102). No Muse, no ~/.codex/auth.json
+    // read, no codex-sync in its path (the fork's CodexSync explicitly
+    // never targets it). Seated in openai-plan by the stage-2 change once
+    // proven with real route traffic; until then openai.main keeps the seat.
+    // 2026-11-10 (Drew, direct order): this door's id is now _openai.main -
+    // the provider id IS the credential key, so the rename pairs with the
+    // credential-store move re-keying this door's credential from _openai
+    // to _openai.main (tracked with the #8163 follow-up; store moves are
+    // not config). The bare _openai id is retired by this rename.
+    "_openai.main": {
+      "instanceOf": "openai",
+      "name": "OpenAI Self-Contained (drewrypope, no Codex)"
     },
     "opendesign": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Open Design",
       "options": {
-        "baseURL": "https://amr-link.open-design.ai/v1"
+        "baseURL": "https://amr-link.open-design.ai/v1",
+        // Membership caps declared on the provider definition (fork #2253): the
+        // router meters every start against this one account — 10 concurrent,
+        // 100 requests/minute — waits briefly for a slot, then fails over
+        // silently instead of letting a session see tier_limit_exceeded.
+        "membership": {
+          "concurrent": 10,
+          "requestsPerMinute": 100
+        }
       },
       "models": {
         "claude-haiku-5.5": {
@@ -2361,7 +879,28 @@
           "name": "DeepSeek V4 Flash Vision Exp"
         },
         "deepseek-flash": {
-          "name": "DeepSeek V4.1 Flash 1017"
+          "name": "DeepSeek V4.1 Flash 1017",
+          "limit": {
+            "context": 1048576,
+            "output": 393216
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
         },
         "deepseek-v4-flash": {
           "name": "DeepSeek V4 Flash"
@@ -2453,6 +992,14 @@
 
       }
     },
+    // meta (Meta API, PAYG key door into the same single Meta pool):
+    // WIRED BUT DISABLED (Drew, direct order 2026-11-04) — the definition
+    // below is complete (api.meta.ai; the key resolves from the auth
+    // store / META_API_KEY) and "meta" stays in disabled_providers
+    // above. Drew: "$150 available as of today" (2026-11-04) on the
+    // PAYG key. Sometime later we might enable it and use those tokens:
+    // enable deliberately, by deleting the disabled_providers line
+    // only — usage past the plan bills PAYG against that balance.
     "meta": {
       "npm": "@ai-sdk/openai",
       "name": "Meta Model API",
@@ -2509,70 +1056,28 @@
 
       }
     },
-// RE-ENABLED 2026-10-30 (Drew, direct order): this provider — the
-// muse program's OAuth session via muse-proxy — is now the ONLY
-// working door into the single Meta plan (the Muse API High Usage
-// plan). Verified 2026-10-30: the direct "meta" provider is dead by
-// Meta's design — the plan API key returns 403
-// client_attestation_denied from any non-Muse-Code client, and the
-// OAuth access_token returns 401 invalid_api_key at
-// /chat/completions; only the genuine muse program passes
-// attestation. (The 2026-10-25 disable assumed the direct key door
-// worked; it does not.) The routes seat muse/* leaves at the
-// positions and weights the meta/* leaves held. The proxy strips
-// META_API_KEY so calls take the OAuth plan route, not the PAYG key
-// route. This is NOT the assistant Muse's Power subscription and
-// NOT a separate pool — same one Meta pool, working door.
-     "muse": {
-       "npm": "@ai-sdk/openai-compatible",
-       "name": "Muse (CLI via muse-proxy)",
-       "options": {
-         "baseURL": "http://127.0.0.1:{env:MUSE_PROXY_PORT:-18747}/v1",
-         "apiKey": "muse-local"
-       },
-       "models": {
-         "muse-spark-1.3": {
-           "name": "Muse Spark 1.3 (muse)"
-         },
-         "muse-spark-1.3-contributor": {
-           "name": "Muse Spark 1.3 Contributor (muse)"
-         },
-         "muse-wonder-1.0": {
-           "name": "Muse Wonder 1.0 (muse)"
-         },
-         "muse-spark-1.3-low": {
-           "name": "Muse Spark 1.3 Low (muse)"
-         },
-         "muse-wonder-1.0-low": {
-           "name": "Muse Wonder 1.0 Low (muse)"
-         }
-       }
-     },
+    // 2026-11-03 (Drew): the "muse" provider block that stood here was retired
+    // and deleted (disabled-only at the end; the routes seat muse-direct
+    // leaves — the block below — not muse/*).
 
-// muse-direct (2026-10-30, #2753): the Responses-native door into the
-// SAME single Meta pool (the Muse API High Usage plan) — not a
-// separate pool, and not the assistant Muse's subscription. It fronts
-// muse-proxy's DIRECT mode: the proxy exchanges the Muse CLI's OAuth
-// account token at /muse-code/key for the plan's minted key and speaks
-// the Responses API, the route that answers that key with bare
-// Authorization (the chat-completions route is the one returning
-// client_attestation_denied to non-CLI clients). This provider uses
-// @ai-sdk/openai so OpenCode speaks Responses to the proxy's
-// /v1/responses passthrough, which swaps in the minted key; the "muse"
-// provider above (chat route into the same proxy) is untouched. The
-// apiKey below is the local placeholder the proxy ignores — the real
-// key never leaves the proxy and no auth.json entry is needed. A call
-// costs ~10 input tokens through this door vs ~26k through the CLI
-// harness. The provider's models are the contributor variants — the
-// ids the routes seat — with the effort variants the "meta" block
-// defines for its contributor models.
-     "muse-direct": {
-       "npm": "@ai-sdk/openai",
-       "name": "Meta Muse Direct (proxy)",
-       "options": {
-         "baseURL": "http://127.0.0.1:{env:MUSE_PROXY_PORT:-18747}/v1",
-         "apiKey": "muse-local"
-       },
+// muse-direct (2026-11-06, Drew: "what part of muse proxy sounds
+// direct"): the provider is NATIVE now. @opencode/ai/providers/
+// muse-direct (fork PR #1872, opencode#1825) speaks the Meta
+// Responses wire in-process — endpoint https://api.meta.ai/v1 —
+// exchanging the Muse account token from ~/.config/muse/auth.json
+// at /muse-code/key for the plan's minted key, exactly the exchange
+// the retired proxy's direct mode performed, with no proxy hop, no
+// subprocess and no placeholder key: this block carries no baseURL
+// and no apiKey, and muse-proxy (:18747) is decommissioned. Same
+// single Meta pool as ever (the Muse API High Usage plan — not a
+// separate pool, and not the assistant Muse's subscription); the
+// "meta" provider remains the separate PAYG door under its own id —
+// do not merge them. The models are the contributor variants the
+// routes seat; the provider normalizes the v1 reasoning_effort
+// variant dialect onto the wire.
+     "_muse": {
+       "npm": "@opencode/ai/providers/muse-direct",
+       "name": "Meta Muse Direct",
        "models": {
          "muse-spark-1.3-contributor": {
            "name": "Muse Spark 1.3 Contributor (muse-direct)",
@@ -2686,35 +1191,44 @@
 
       }
     },
-    // renamed to dot-style aliases 2026-10-25 (opencode-go.personal / opencode-go.lab); dash forms kept commented per the never-delete-config rule
-    "opencode-go.personal": {
+    // Go account instances (dot-style aliases since 2026-10-25).
+    // 2026-11-03: accounts renamed to owner names — opencode-go.drewrypope
+    // (was opencode-go.personal) and opencode-go.popesdrew (new account,
+    // replacing opencode-go.lab). The Home workspace, its commented
+    // opencode-go.home provider, and the retired dash-form aliases were
+    // removed the same day; git history keeps the old forms.
+    "opencode-go.drewrypope": {
       "instanceOf": "opencode-go",
-      "name": "OpenCode Go (Personal)"
+      "name": "OpenCode Go (drewrypope)"
     },
-    "opencode-go.lab": {
+    "opencode-go.popesdrew": {
       "instanceOf": "opencode-go",
-      "name": "OpenCode Go (Lab)"
+      "name": "OpenCode Go (popesdrew)"
     },
-    // "opencode-go-personal": {
-      // "instanceOf": "opencode-go",
-      // "name": "OpenCode Go (Personal)"
-    // },
-    // "opencode-go-lab": {
-      // "instanceOf": "opencode-go",
-      // "name": "OpenCode Go (Lab)"
-    // },
-    // disabled 2026-10-25: Home workspace has no active Go subscription (e2e: "An active OpenCode Go subscription is required"); re-enable when subscribed
-    // "opencode-go.home": {
-      // "instanceOf": "opencode-go",
-      // "name": "OpenCode Go (Home)"
-    // },
-    "commandcode": {
-          "npm": "@ai-sdk/openai-compatible",
-          "name": "Command Code (CLI proxy)",
-          "options": {
-                "baseURL": "http://127.0.0.1:{env:COMMANDCODE_PROXY_PORT:-18748}/v1",
-                "apiKey": "commandcode-local"
-          },
+    "opencode-go.developing-today-0": {
+      "instanceOf": "opencode-go",
+      "name": "OpenCode Go (developing-today-0)"
+    },
+    "_commandcode": {
+          // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
+          // (:18748, @ai-sdk/openai-compatible) to the in-fork native commandcode
+          // provider - same provider id, native wire emulation of the Command
+          // Code CLI (/alpha/generate), credential read in place from
+          // ~/.commandcode/auth.json; no baseURL/apiKey (the provider owns
+          // auth). STILL in disabled_providers: re-enabling stays a separate
+          // deliberate step.
+          // 2026-11-13 (code#9397): every _commandcode door was REMOVED from
+          // the plan pools (sol-plan, beam-plan, deepseek-flash-plan,
+          // deepseek-pro-plan, mimo-flash-plan, spark-plan) in one pass:
+          // Sol lost plan coverage 2026-11-09 (403 MODEL_NOT_IN_PLAN — now
+          // Max plan or on-demand only), the free Beam 1.0 tier ended
+          // 2026-11-13 (403 on every call), and the monthly credit balance
+          // is exhausted ($9.95 of $10; "insufficient credits" on the rest).
+          // The definition stays for the catalog; re-seat doors per pool
+          // only on verified restoration (plan coverage or credits back,
+          // proven by a live completion).
+          "npm": "@opencode/ai/providers/commandcode",
+          "name": "Command Code (native wire emulation)",
           "models": {
                 "deepseek/deepseek-v4-pro": {
                       "name": "DeepSeek v4 Pro (Command Code)"
@@ -3213,6 +1727,32 @@
         }
       ]
     },
+    "explore": {
+      // 2026-11-13 (Drew, direct order): subsession routing.
+      // Child sessions inherit the parent session's model/route
+      // unless the agent definition configures its own (fork
+      // subagent tool: explicit model > agent's configured model
+      // > inherited). Explore children had no configured model,
+      // so search/fetch/summarize work ran on the parent's full
+      // workhorse chain: session_v2 shows 716 of 747 explore
+      // children in the 7 days to 2026-11-13 recorded on the
+      // workhorse route, ~405M input + ~570M cache-read tokens.
+      // Explore is read-only (its permission set denies edit,
+      // shell and subagent), so the scout route - free Beam
+      // first, then DeepSeek Flash #low, then Haiku #low - is
+      // sufficient for it and returns workhorse quota to
+      // implementation work. Only the model is set here;
+      // explore's permissions keep coming from
+      // .opencode/agents/explore.md and the built-in definition
+      // (the config agent plugin applies a model-only entry
+      // without touching permissions). general/build children
+      // are unchanged: implementation work keeps the inherited
+      // route. MEASUREMENT: session_v2 child sessions by agent
+      // - explore model distribution and tokens per session,
+      // 7 days before vs after; route_attempt on the scout and
+      // beam-plan legs for success/latency.
+      "model": "opencode-route/scout"
+    },
     "classifier": {
       "model": "opencode-route/scout",
       "temperature": 0,
@@ -3526,7 +2066,6 @@
     "@franlol/opencode-md-table-formatter@latest",
     "opencode-cmd-provider@latest",
     "opencode-cockpit@latest",
-    "@openchamber/opencode-claude@1.3.8",
     "opencode-models-discovery@latest",
     "opencode-mem@latest",
     "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
@@ -3535,13 +2074,82 @@
     "provider_routes": {
       // openai-plan (2026-11-01): the ChatGPT pair as ONE provider
       // route - openai.alternate (popesdrew) attempted first on every
-      // dispatch, openai (drewrypope) the reserve; main serves only
+      // dispatch, openai.main (drewrypope) the reserve; main serves only
       // when alternate fails or is demoted. Consumed by terra-plan,
       // sol-plan and luna-plan as openai-plan/<model>. Change the
       // account order HERE, in this providers list, and nowhere else.
+      // (2026-11-03: the main account got its own instance id,
+      // openai.main, so the bare openai provider is now only the
+      // instanceOf parent + catalog - no account rides it directly.)
+      // 2026-11-03 (Drew, direct order): WEIGHTED 2:1 main:alternate,
+      // replacing the ordered alternate-first arrangement above - main
+      // (fresh weekly window) carries the pair, alternate backs it.
+      // 2026-11-10 (Drew, direct orders): the pair is re-seated on the two
+      // self-contained doors - _openai.alt (popesdrew) and _openai.main
+      // (drewrypope, the renamed _openai) - listed alt-then-main, and the
+      // selection is ROUND-ROBIN for now: no weights key, both members at
+      // the default tier, so dispatches rotate evenly between the two
+      // accounts. Drew's stated later step, on his call only: switch this
+      // pool to ORDERED in the same listed order (alt first, main the
+      // failover leg). The weighted 2:1 over [_openai, openai.alternate]
+      // is superseded; openai.main and openai.alternate keep their
+      // definitions above, unseated.
       "openai-plan": {
-        "providers": ["openai.alternate", "openai"],
+        // 2026-11-10 (#8163, stage 2): the main seat moves from openai.main
+        // to _openai — the self-contained door that holds and refreshes its
+        // own credential in-process, with no Muse / codex-sync in its
+        // path. Same 2:1 main:alternate split. openai.main's provider
+        // definition stays in place above (unused by this plan); its
+        // Codex-sync dependency is retired for the main door. Proven with
+        // real route traffic under provider id _openai (auth accepted,
+        // QuotaExceeded only while the weekly wall lasts) plus an observed
+        // in-process refresh cycle — see #8163.
+        // 2026-11-10 (Drew, direct orders): stage 3 - the members are now
+        // the two _openai-pattern instances by their final ids:
+        // _openai.alt (popesdrew, new instance) listed first, _openai.main
+        // (drewrypope, _openai renamed) second; selection round-robin,
+        // weights removed. Ordered selection in this same listed order is
+        // the planned later step, on Drew's call.
+        "providers": ["_openai.alt", "_openai.main"],
+        "selection": "round-robin"
+      },
+      // mistral-plan (2026-11-04, Drew): the Mistral pair as ONE
+      // provider route — vibe-direct attempted first on every dispatch
+      // (the Vibe plan leg), the plain Mistral API provider the
+      // reserve; the API leg serves only when vibe-direct fails or is
+      // demoted. The legs use DIFFERENT keys by design (corrected
+      // 2026-11-06): Mistral meters per key — vibe-direct's keyring
+      // sign-in key bills the Vibe plan budget; the API leg's enrolled
+      // "mistral" integration credential bills the account API budget.
+      // Change the leg order HERE, in this providers list, and
+      // nowhere else.
+      "mistral-plan": {
+        "providers": ["_vibe", "mistral"],
         "selection": "ordered"
+      },
+      // opencode-go-plans (2026-11-03, Drew): the OpenCode Go plans as
+      // ONE virtual provider (provider routes, opencode#1132). Consumers
+      // name opencode-go-plans/<model> in lieu of the per-account
+      // providers. Round-robin: the two accounts are peers on the same
+      // plan, so they split traffic evenly (an earlier weighted 3/2
+      // burn-by-expiry tilt was dropped for the simpler equal split).
+      // 2026-11-03 (Drew, direct order): WEIGHTED 2:1
+      // drewrypope:popesdrew, replacing the equal round-robin split
+      // described above; the opencode providers are weighted above
+      // opendesign in every pool that seats both.
+      // 2026-11-07 (Drew, direct order): internal split back to
+      // 1:1 — each account door at weight 1, superseding the 2:1
+      // above.
+      // 2026-11-08 (Drew, direct order): third Go account
+      // opencode-go.developing-today-0 joins as a peer at weight 1.
+      // The bare opencode-go provider is NOT a member: it has no account
+      // of its own and rides whichever console login is active, so its
+      // burn landed on that account unattributed. Quota/health rules
+      // still demote a walled member inside the group.
+      "opencode-go-plans": {
+        "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew", "opencode-go.developing-today-0"],
+        "selection": "weighted",
+        "weights": { "opencode-go.drewrypope": 1, "opencode-go.popesdrew": 1, "opencode-go.developing-today-0": 1 }
       }
     },
     "model_routes": {
@@ -3549,131 +2157,19 @@
       // Per-model pools join every plan provider serving a model; tier pools nest them.
       // Plan routes only. (The DeepSeek PAYG reserve that used to tail the
       // deepseek-flash route was removed 2026-10-27 — see that route.)
-      // Design-code personas (2026-11-02, opencode#1413): the 11 virtual
-      // personas of bin/design-code-proxy.mjs (:18746) carried as routes —
-      // each persona id is the route name, its recipe (primary then
-      // fallback, ordered) is the target list, and the door's injected
-      // design system prompt is the route's `system` (fork support:
-      // opencode#1413 persona-routes PR; the prompt leads any caller
-      // system text, exactly as the door composed it). Antigravity legs
-      // sit on antigravity-direct (:18751) per the #1409 repoint
-      // (code#4626); codex legs on openai-codex (:18744). The door's
-      // keyword fallback for unknown gpt/codex-shaped ids has no route
-      // equivalent and is not carried: unknown ids fail selection
-      // cleanly, as they did at the door (400) via the façade envelope.
+      // Design-code personas REMOVED 2026-11-03 (Drew, direct order): the
+      // 11 persona routes carried here from the retired design-code door
+      // (opencode#1413) are deleted. Drew does not run design personas --
+      // the only design provider in this config is "opendesign".
 
-      "claude-haiku-5.5": {
-        "name": "Claude Haiku 5.5 (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/claude-sonnet-5-5",
-          "antigravity-direct/gemini-3.8-flash"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "gpt-6-luna": {
-        "name": "GPT-6 Luna (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "openai-codex/gpt-6-luna",
-          "antigravity-direct/gemini-3.8-flash"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "gpt-6.1-sol": {
-        "name": "GPT-6.1 Sol (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "openai-codex/gpt-6.1-sol",
-          "antigravity-direct/gemini-3.8-flash"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "deepseek-v4.1-flash": {
-        "name": "DeepSeek V4.1 Flash (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-5.6-luna"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "glm-5.3-flash": {
-        "name": "GLM 5.3 Flash (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-5.6-luna"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "glm-5.3-flashx": {
-        "name": "GLM 5.3 FlashX (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-5.6-luna"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "mimo-v2.6-flash": {
-        "name": "MIMO v2.6 Flash (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-5.6-luna"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "mimo-v2.6-pro": {
-        "name": "MIMO v2.6 Pro (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-6.1-sol"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "design-code-pro": {
-        "name": "Design Code Pro",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-6.1-sol"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "design-code-flash": {
-        "name": "Design Code Flash",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-5.6-luna"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "open-design-pro": {
-        "name": "Open Design Pro",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "openai-codex/gpt-6.1-sol",
-          "antigravity-direct/gemini-3.8-flash"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
       "deepseek-flash-plan": {
-        "name": "DeepSeek Flash - plan providers",
+        "name": "DeepSeek Flash 1017 - plan stack + mistral-plan",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED from this pool —
+        // the Command Code account's monthly credit balance is exhausted
+        // ($9.95 of $10 used, no reset in the quota record; every call answers
+        // "insufficient credits"; last success on the provider 2026-11-10).
+        // Re-seat only after credits are verified back with a live completion.
+        
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
         // developing-today/opencode#541). ClinePass has no medium/xhigh; OpenDesign tops at
         // high. Remaps keep every leaf in the dispatch at its nearest wired rung.
@@ -3685,7 +2181,7 @@
         // largest on those plans (~$80 promo/workspace) and both workspaces
         // are CANCELLED — Personal ends 2026-11-02 (monthly 80% used), Lab
         // 2026-11-06 (62%) — so weights mirror luna-plan's burn-by-expiry
-        // (Personal 3 ahead of Lab 2; the ClinePass/OpenDesign leaves stay
+        // (drewrypope 3 ahead of popesdrew 2; the ClinePass/OpenDesign leaves stay
         // at the default and carry the pool when a Go leaf walls or the Go
         // periods end). Go's Flash natively offers low/high/max, so its
         // remaps match the ClinePass leaf's.
@@ -3696,17 +2192,96 @@
         // Code joins as a minor leaf (weight 0.5; $1 Go tier, $10
         // credits/mo — its boosted Flash allowance is small, the free
         // routes are its durable value; issue #1328 D4).
+        // 2026-11-03 (Drew): opendesign/deepseek-v4-flash leaf REMOVED from this pool — the dotted deepseek-v4.1-flash leaf exists in the same opendesign catalog, so the older v4 leaf is dead weight.
+        // 2026-11-05 (Drew, direct order): the official-API leg joins —
+        // deepseek/deepseek-flash (the model named "1017" in the deepseek
+        // provider) is seated as this pool's second serving route beside
+        // the plan doors, and selection becomes "weighted" with an
+        // aggregate 2:1 plan:API split. The plan leaves keep their tuned
+        // proportions (Go 6, ClinePass 1, OpenDesign 1, Command Code 0.5;
+        // total 8.5) and the API leaf carries half the plan total (4.25),
+        // so the plan doors draw ~2/3 of new sessions and the API door
+        // ~1/3 (weighted draws are proportional; sessions stay sticky).
+        // The deepseek provider is re-enabled in the switchboard for
+        // this seat, keyed by DEEPSEEK_API_KEY (nixos/agent-auth +
+        // home/common materializer). Both legs were probe-verified
+        // responding before this landed: the API leg by a direct
+        // completion on deepseek-flash, the plan legs by the pool's
+        // standing live traffic.
+        // CORRECTED 2026-11-05 (Drew, later direct orders, same day —
+        // supersedes the paragraph directly above): the weighted 2:1
+        // split and the provider re-enablement are BOTH reverted. The
+        // pool is now a ROUND-ROBIN STACK, in this order: the DeepSeek
+        // plan leaves in their standing arrangement (Go plans,
+        // ClinePass, OpenDesign, Command Code), then mistral-plan as
+        // ONE member (the whole virtual provider nested as a unit —
+        // its internal ordered legs, vibe plan first and the Mistral
+        // API as its own fallback, are NOT flattened into this pool),
+        // then deepseek/deepseek-flash LAST. Under this fork's
+        // round-robin (#1122) a member's weight is its priority TIER,
+        // not a traffic share: draws rotate evenly inside the top
+        // tier whose members are eligible, and a lower tier serves
+        // only when every higher tier is ineligible. The weights below
+        // are therefore stack positions, not shares: the plan leaves
+        // keep their relative order (Go 6 over ClinePass/OpenDesign 1
+        // over Command Code 0.5), mistral-plan sits below them at
+        // 0.25, and the deepseek slot is last at 0.1. The deepseek
+        // provider is DISABLED (see the switchboard): its seat is a
+        // slot that contributes no leaf and cannot be drawn while
+        // disabled — see the switchboard note for the mechanism and
+        // the decision-record proof. Every DeepSeek Flash leaf seated
+        // here is the 1017 variant where its provider offers a choice
+        // (Go, ClinePass, OpenDesign and Command Code all seat their
+        // deepseek-v4.1-flash; the deepseek provider seats the model
+        // it names "DeepSeek V4.1 Flash 1017"). The mistral-plan
+        // member seats mistral-small-latest, the Flash-class Mistral
+        // model both of mistral-plan's legs serve (vibe-direct
+        // declares it; the mistral API catalog carries it).
+        // REMOVED 2026-11-06 (#6414): the deepseek/deepseek-flash
+        // target and its 0.1 weight are gone from this route. The
+        // metered-provider guard (bin/check-opencode-metered-providers)
+        // rejects a metered selection even while its provider is
+        // disabled - its test suite names that stance explicitly -
+        // and the slot design above made main's bin-tests CI fail on
+        // exactly that one violation. The deepseek provider stays
+        // DISABLED in the switchboard and its definition and
+        // DEEPSEEK_API_KEY plumbing stay in place; re-enabling is now
+        // a deliberate two-step change: delete "deepseek" from
+        // disabled_providers AND re-seat "deepseek/deepseek-flash" as
+        // this route's last target (weight 0.1) in the same pass that
+        // records Drew's approval for the PAYG use.
+        // 2026-11-07 (Drew, direct order): tier re-weight — the Go
+        // plans leg drops 6 -> 2 and Command Code rises 0.5 -> 1.
+        // The mistral-plan member swaps its model from
+        // mistral-small-latest to DeepSeek Flash at tier 1: the
+        // mistral API catalog serves DeepSeek V4.1 Flash 1017 as
+        // deepseek-v4-1-flash-1017 (family deepseek-flash; variants
+        // none/low/high/max), so the member seats
+        // mistral-plan/deepseek-v4-1-flash-1017. The _vibe leg does
+        // NOT carry that model (Mistral-native presets only), so
+        // inside the group the draw lands on the mistral API leg —
+        // this member no longer rides the Vibe plan budget; it
+        // bills the Mistral account API budget. Its variant remap
+        // changes accordingly: low -> low (the old leg mapped low
+        // -> none because mistral-small on this wire offers only
+        // none/high) and xhigh -> max (mirroring the Go/ClinePass
+        // leaves).
+
+        // SUPERSEDED IN PART 2026-11-07 (Drew, later direct order:
+        // "why isn't vibe ds flash in there"): the model is now
+        // declared on the _vibe provider itself (see its models
+        // block), so inside mistral-plan's ordered group the draw
+        // for this member lands on the VIBE leg and bills the Vibe
+        // plan budget, not the account API budget (which sits
+        // exhausted until 2026-12-01). The mistral API leg remains
+        // the group's fallback for this model, as for every
+        // mistral-plan model. The variant remap below is unchanged:
+        // both legs now declare none/low/high/max for the model, so
+        // the group's variant intersection is the same set the
+        // API-leg seating was written against.
         "targets": [
           {
-            "model": "opencode-go.personal/deepseek-v4.1-flash",
-            "variants": { "medium": "high", "xhigh": "max" }
-          },
-          {
-            "model": "opencode-go.lab/deepseek-v4.1-flash",
-            "variants": { "medium": "high", "xhigh": "max" }
-          },
-          {
-            "model": "opencode-go/deepseek-v4.1-flash",
+            "model": "opencode-go-plans/deepseek-v4.1-flash",
             "variants": { "medium": "high", "xhigh": "max" }
           },
           {
@@ -3718,18 +2293,34 @@
             "variants": { "xhigh": "high", "max": "high" }
           },
           {
-            "model": "opendesign/deepseek-v4-flash",
-            "variants": { "xhigh": "high", "max": "high" }
-          },
-          "commandcode/deepseek/deepseek-v4.1-flash"
+            "model": "mistral-plan/deepseek-v4-1-flash-1017",
+            // Variant remap: the pool's effort rungs map onto the two
+            // variants both mistral-plan legs can produce (none /
+            // high — see the vibe-direct model note). The remap keys
+            // are what let the pool keep offering its rungs with this
+            // member seated; the values keep the plan leg in front at
+            // every rung (a #low draw runs the group at "none", a
+            // #high draw at "high", both producible by vibe-direct
+            // first and the API leg alike).
+            "variants": { "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max" }
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
+        // Round-robin tier keys (#1122), NOT traffic shares — see the
+        // stack note above. Higher tier serves first; rotation is
+        // even within a tier.
         "weights": {
-          "opencode-go.personal/deepseek-v4.1-flash": 3,
-          "opencode-go.lab/deepseek-v4.1-flash": 2,
-          "commandcode/deepseek/deepseek-v4.1-flash": 0.5
-        }
+          "opencode-go-plans/deepseek-v4.1-flash": 2,
+          "cline-pass/deepseek-v4.1-flash": 1,
+          "opendesign/deepseek-v4.1-flash": 1,
+          "mistral-plan/deepseek-v4-1-flash-1017": 1
+        },
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
       },
       "deepseek-flash": {
         "name": "DeepSeek Flash - plan providers only",
@@ -3747,10 +2338,21 @@
         // second target (one block).
         "targets": ["opencode-route/deepseek-flash-plan"],
         "selection": "ordered",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
       },
       "deepseek-pro-plan": {
         "name": "DeepSeek V4 Pro - plan providers",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED from this pool —
+        // the Command Code account's monthly credit balance is exhausted
+        // ($9.95 of $10 used, no reset in the quota record; every call answers
+        // "insufficient credits"; last success on the provider 2026-11-10).
+        // Re-seat only after credits are verified back with a live completion.
+        
         // 2026-10-27 pool redesign: Go x3 + Command Code (minor) join, per
         // the same all-workspaces rule as deepseek-flash-plan. This pool
         // seats no tier (specialist's Pro relief tail was removed in the
@@ -3758,15 +2360,7 @@
         // remains the named pool for direct calls.
         "targets": [
           {
-            "model": "opencode-go.personal/deepseek-v4-pro",
-            "variants": { "medium": "high", "xhigh": "max" }
-          },
-          {
-            "model": "opencode-go.lab/deepseek-v4-pro",
-            "variants": { "medium": "high", "xhigh": "max" }
-          },
-          {
-            "model": "opencode-go/deepseek-v4-pro",
+            "model": "opencode-go-plans/deepseek-v4-pro",
             "variants": { "medium": "high", "xhigh": "max" }
           },
           {
@@ -3776,14 +2370,29 @@
           {
             "model": "opendesign/deepseek-v4-pro",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          "commandcode/deepseek/deepseek-v4-pro"
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "commandcode/deepseek/deepseek-v4-pro": 0.5
+          "opencode-go-plans/deepseek-v4-pro": 3
         }
+      },
+      "fable-plan": {
+        "name": "Claude Fable - plan providers",
+        // NEW 2026-11-10 (Drew, direct order): the Fable plan route,
+        // mirroring opus-plan/sonnet-plan - the _claude door leads.
+        // Single-door by fact, not omission: no other enabled door
+        // serves claude-fable-5-2 (Antigravity's Claude bucket serves
+        // Sonnet/Opus only; the _commandcode catalog carries Fable 5.1
+        // and Fable 5, which are deliberately NOT this route's model).
+        // Seated at #low at the head of specialist and summit, and
+        // alone in workhorse-last-resort (see those routes).
+        "targets": [
+          "_claude/claude-fable-5-2"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "haiku-plan": {
         "name": "Claude Haiku - plan providers",
@@ -3791,20 +2400,20 @@
         // metered Go premium leaves last. The Go x3 leaves
         // (claude-haiku-5-5, 1M context) close the chain — Go's Haiku
         // burns the small premium allowance, so it is spent last.
+        // 2026-11-11 (Drew, direct order #2): the Go leaf LEAVES too —
+        // haiku-plan is now the Claude plan door alone.
+        // 2026-11-11 (Drew, direct order): the opendesign leg LEAVES
+        // haiku-plan — no Open Design Claude model sits in any plan
+        // pool. Remaining doors: _claude (the Claude plan) and the Go
+        // leaf. (Command Code's Claude models were checked the same
+        // day: they hold no seat in any route — catalog only.)
         // 2026-10-28 (Job 2): order is now claude-code → opendesign →
-        // Go.personal → Go.lab → Go.base. claude-code leads (dormant
+        // Go.drewrypope → Go.popesdrew → Go.base. claude-code leads (dormant
         // while the provider is disabled on the Claude free tier — it
         // rejoins automatically on re-enable, issue #1132); OpenDesign
         // is the pool's live flat door today.
         "targets": [
-          "claude-code/claude-haiku-5-5",
-          {
-            "model": "opendesign/claude-haiku-5.5",
-            "variants": { "xhigh": "high", "max": "high" }
-          },
-          "opencode-go.personal/claude-haiku-5-5",
-          "opencode-go.lab/claude-haiku-5-5",
-          "opencode-go/claude-haiku-5-5"
+          "_claude/claude-haiku-5-5",
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -3826,7 +2435,7 @@
         // 2026-11-06, 62% used) — unspent Go quota evaporates, with no
         // rollover and no renewal. Equal round-robin gave each Go leaf the
         // same share as the non-expiring ChatGPT doors, stranding that
-        // quota. Weights now burn Go first (Personal ahead of Lab: sooner
+        // quota. Weights now burn Go first (drewrypope ahead of popesdrew: sooner
         // deadline), the ChatGPT doors stay at the default as the OpenAI
         // reserve, and OpenDesign's small short-window plan keeps the
         // default too. When a Go leaf walls, quota demotion + the remaining
@@ -3860,17 +2469,39 @@
             "model": "opendesign/gpt-6-luna",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "opencode-go.lab/gpt-6-luna",
-          "opencode-go.personal/gpt-6-luna",
-          "opencode-go/gpt-6-luna"
+          "opencode-go-plans/gpt-6-luna"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go.personal/gpt-6-luna": 3,
-          "opencode-go.lab/gpt-6-luna": 2,
+          "opencode-go-plans/gpt-6-luna": 6,
           "openai-plan/gpt-6-luna": 2.5
         }
+      },
+      "luna-effort-rr": {
+        "name": "GPT Luna - workhorse effort round-robin: medium/high data gathering (Drew 2026-11-12)",
+        // 2026-11-12 (Drew, direct order): the workhorse-weighted
+        // Luna member seats through this route instead of the bare
+        // openai-plan/gpt-6-luna#high leaf, so workhorse traffic
+        // alternates medium / high per call and BOTH rungs gather
+        // outcome data under real load. route_attempt records the
+        // resolved variant per call, so the two rungs' success,
+        // latency, and burn can be compared after the fact. AA
+        // v5.0.1: Luna medium II 18, high II 21 - the #high seat
+        // measured sufficient (99.87% of 48,705 attempts since
+        // 2026-11-11) but #medium has ZERO route attempts in 30
+        // days, so there is no fleet data on it at all. This route
+        // is that data-gathering mechanism - the in-production form
+        // of the A/B pilot tracked in code#1191, which never ran.
+        // Only the workhorse-weighted member rides this route;
+        // luna-plan, its #xhigh consumer, and the specialist
+        // #xhigh leaves are unchanged.
+        "targets": [
+          "openai-plan/gpt-6-luna#medium",
+          "openai-plan/gpt-6-luna#high"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
       },
       // glm-flash-plan DISSOLVED 2026-10-27 (pool redesign): GLM 5.3 Flash
       // is seated nowhere. Decline-with-reason: it is dominated on its own
@@ -3878,8 +2509,8 @@
       // level with DeepSeek Flash's) at a higher burn than MiMo, on the
       // same shared plan meters. The provider blocks
       // keep listing the GLM models (catalog rule); no route seats them.
-      "gemini-flash-plan": {
-        "name": "Gemini Flash - plan providers",
+      "gemini-hydrogen-plan": {
+        "name": "Gemini Hydrogen - plan providers",
         // 2026-10-30 (route audit): this pool is single-door on
         // antigravity-ls, and that fragility is real — when the ls
         // proxy was down (2026-10-24/25) every Gemini Flash call
@@ -3899,10 +2530,18 @@
         // Gemini 3 thought_signature round-trip the objection above was
         // about), the ls proxy service is retired, and this pool now
         // rides on the direct door the same way.
+        // 2026-11-12 (Drew, direct order): the seat moves from Gemini
+        // 3.8 Flash to Gemini 4 Hydrogen and the route is renamed
+        // gemini-flash-plan -> gemini-hydrogen-plan (every reference
+        // in this file updated with it). AA v5.0.1: Hydrogen high
+        // II 51 at $1.87/task, where Flash high was II 30.8.
+        // Hydrogen carries a native xhigh tier (II 54), so the
+        // variants clamp is max -> xhigh only. The Flash-era notes
+        // above stay as written; they are this pool's history.
         "targets": [
           {
-            "model": "antigravity-direct/gemini-3.8-flash",
-            "variants": { "xhigh": "high", "max": "high" }
+            "model": "_antigravity/gemini-4-hydrogen",
+            "variants": { "max": "xhigh" }
           }
         ],
         "selection": "round-robin",
@@ -3919,7 +2558,7 @@
         // pool is single-live-door on antigravity-ls. antigravity-agy
         // is deliberately NOT seated as the second door: its proxy
         // is text-only (no tool-call bridging — see the note in
-        // gemini-flash-plan). The pool's resilience is the ls proxy
+        // gemini-hydrogen-plan). The pool's resilience is the ls proxy
         // plus claude-code's return.
         // 2026-10-30 (Drew): the seat moved to antigravity-direct —
         // "only the direct, replace all others". The direct door
@@ -3927,9 +2566,9 @@
         // is single-live-door on the direct door, plus claude-code's
         // return.
         "targets": [
-          "claude-code/claude-sonnet-5-5",
+          "_claude/claude-sonnet-5-5",
           {
-            "model": "antigravity-direct/claude-sonnet-5-5",
+            "model": "_antigravity/claude-sonnet-5-5",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
@@ -3946,14 +2585,14 @@
         // 2026-10-30 (route audit): single-live-door on
         // antigravity-ls, same as sonnet-plan — antigravity-agy is
         // not seated (text-only proxy, no tool-call bridging; see
-        // the note in gemini-flash-plan).
+        // the note in gemini-hydrogen-plan).
         // 2026-10-30 (Drew): the seat moved to antigravity-direct —
         // "only the direct, replace all others". The direct door
         // serves claude-opus-5-5 and bridges tool calls.
         "targets": [
-          "claude-code/claude-opus-5-5",
+          "_claude/claude-opus-5-5",
           {
-            "model": "antigravity-direct/claude-opus-5-5",
+            "model": "_antigravity/claude-opus-5-5",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
@@ -3962,6 +2601,12 @@
       },
       "spark-plan": {
         "name": "Muse Spark 1.3 Contributor - plan providers",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED from this pool —
+        // the Command Code account's monthly credit balance is exhausted
+        // ($9.95 of $10 used, no reset in the quota record; every call answers
+        // "insufficient credits"; last success on the provider 2026-11-10).
+        // Re-seat only after credits are verified back with a live completion.
+        
         // 2026-10-30: the reserve leaf reached the Meta plan through
         // muse-proxy (provider "muse") — the direct meta door is dead
         // (attestation; see the "muse" provider note).
@@ -3972,7 +2617,7 @@
         // every other leaf in this pool. Same last position.
         // NEW 2026-10-28 (Job 2): round-robin over every verified Spark
         // contributor door — meta direct, ClinePass (live completion
-        // probed 2026-10-28), Command Code (live :18748 list), and
+        // probed 2026-10-28), Command Code (live :18748 proxy list, 2026-10-28; the proxy retired 2026-11-06 — the provider is native since 2026-11-05), and
         // OpenCode Go x3 (the live serve catalog lists
         // muse-spark-1.3-contributor on all three workspaces). The
         // tier seats that used to address the meta leaf directly
@@ -3980,7 +2625,7 @@
         // #xhigh w3) now address this pool at unchanged rungs/weights.
         // 2026-10-28 (peak-windows pass): converted from round-robin
         // to ORDERED with a deliberate burn order — the expiring and
-        // shared buckets burn first (OpenCode Go Personal, cancelled,
+        // shared buckets burn first (OpenCode Go drewrypope,
         // period ends 2026-11-02; then Go Lab, ends 2026-11-06; then
         // the Go base workspace; then Command Code; then ClinePass),
         // and the dedicated Meta plan (Muse Code High Usage) sits
@@ -3992,18 +2637,23 @@
         // SKU (muse/muse-spark-1.3-contributor), like every other
         // leaf in this pool.
         "targets": [
-          "opencode-go.personal/muse-spark-1.3-contributor",
-          "opencode-go.lab/muse-spark-1.3-contributor",
-          "opencode-go/muse-spark-1.3-contributor",
-          "commandcode/meta/muse-spark-1.3-contributor",
+          "opencode-go-plans/muse-spark-1.3-contributor",
           "cline-pass/muse-spark-1.3-contributor",
-          "muse-direct/muse-spark-1.3-contributor"
+          "_muse/muse-spark-1.3-contributor"
         ],
         "selection": "ordered",
         "autonomy": "rules"
       },
       "sol-plan": {
         "name": "GPT Sol - plan providers",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED — 403
+        // MODEL_NOT_IN_PLAN on every call since 2026-11-09 (GPT-6.1 Sol is
+        // now Max plan or extra on-demand usage only on Command Code; the
+        // fleet plan does not include it). 328 dead attempts before removal.
+        // The seat stays on its two quota doors (openai-plan, OpenDesign),
+        // which the router skips while walled and which revive at their
+        // resets. Re-seat the door only if plan coverage returns, proven
+        // by a live completion.
         // 2026-10-27 pool-coverage audit: the two opencode-go leaves are
         // REMOVED. They pointed at gpt-5.6-sol, which OpenCode Go does not
         // list — verified in the #1249 recheck (models.dev's opencode-go
@@ -4017,9 +2667,11 @@
         // catalog lists a Sol-class model.
         // 2026-10-28 (Job 2): two plan doors join — OpenDesign (serves
         // gpt-6.1-sol; its block entry is added in this PR) and Command
-        // Code (gpt-6.1-sol verified in the LIVE :18748 /v1/models
-        // list, 85 ids, 2026-10-28 — the running bridge trails the
-        // source catalog but does serve Sol).
+        // Code (gpt-6.1-sol verified in the then-live :18748
+        // /v1/models list, 85 ids, 2026-10-28 — the running bridge
+        // trailed the source catalog but did serve Sol; the bridge
+        // retired 2026-11-06 and the provider is native since
+        // 2026-11-05).
         // 2026-10-31 (Drew): the ChatGPT pair seats through
         // openai-plan/gpt-6.1-sol (ordered: alternate first,
         // main the reserve) at the pair's previous combined weight
@@ -4029,8 +2681,7 @@
           {
             "model": "opendesign/gpt-6.1-sol",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          "commandcode/gpt-6.1-sol"
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -4062,6 +2713,18 @@
         // openai-plan/gpt-6.1-terra (ordered: alternate first,
         // main the reserve). This pool is workhorse's primary seat,
         // so that is the burn order that matters most.
+        // 2026-11-03 (task 8486, issue #4390): AA v5.0 per-rung TTFT for
+        // Terra (Artificial Analysis, read 2026-11-02): medium 4.90s /
+        // high 20.70s / xhigh 68.83s / max 264.33s (II v5: medium 38 /
+        // high 42 / xhigh 45 / max 51). The 1.43s TTFT formerly cited
+        // for Terra #medium in this file was the AA v4.3.2-era reading
+        // and is superseded by the 4.90s v5.0 figure. Current status:
+        // no route in experimental.model_routes targets terra-plan, so
+        // terra-plan currently has no consumer route (an orphan pool);
+        // Terra #medium has held no specialist seat since 2026-10-27
+        // and no workhorse seat since 2026-10-31. The keep-or-retire
+        // decision for this pool belongs to Drew / routing-review and
+        // is recorded on issue #4390 -- this note does not retire it.
         "targets": ["openai-plan/gpt-6.1-terra"],
         "selection": "round-robin",
         "autonomy": "rules"
@@ -4094,16 +2757,23 @@
         // the same CLI wire protocol with no CLI spawn (the agy proxy
         // service is retired). Same model, same pool position.
         "targets": [
-          "opencode-go.personal/gemini-4-argon",
-          "opencode-go.lab/gemini-4-argon",
-          "opencode-go/gemini-4-argon",
-          "antigravity-direct/gemini-4-argon"
+          "opencode-go-plans/gemini-4-argon",
+          "_antigravity/gemini-4-argon"
         ],
         "selection": "round-robin",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        "weights": {
+          "opencode-go-plans/gemini-4-argon": 3
+        }
       },
       "beam-plan": {
         "name": "Reflection Beam - plan providers",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED —
+        // Command Code ended the free Beam 1.0 tier today (403 "The free
+        // Beam 1.0 tier has ended" on all 511 calls from 08:42Z). The Go
+        // beam-free door stays: it is a different provider's offering,
+        // quota-walled until the Sun 2026-11-15 Go reset, and its own
+        // status gets verified from route_attempt after that reset.
         // NEW 2026-10-27 (pool redesign): Beam 1.0 gets its own plan pool
         // (was a raw Command Code leaf inside scout). AA v5: II 18,
         // TTFT 0.59s, ~385 t/s decode — the fleet's fastest starter.
@@ -4111,16 +2781,22 @@
         // on all three workspaces. Leaves are seated unconditionally: the
         // router skips disabled or quota-empty leaves at runtime.
         "targets": [
-          "commandcode/reflection/beam:free",
-          "opencode-go.personal/beam-free",
-          "opencode-go.lab/beam-free",
-          "opencode-go/beam-free"
+          "opencode-go-plans/beam-free"
         ],
         "selection": "round-robin",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        "weights": {
+          "opencode-go-plans/beam-free": 3
+        }
       },
       "mimo-flash-plan": {
         "name": "MiMo Flash - plan providers",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED from this pool —
+        // the Command Code account's monthly credit balance is exhausted
+        // ($9.95 of $10 used, no reset in the quota record; every call answers
+        // "insufficient credits"; last success on the provider 2026-11-10).
+        // Re-seat only after credits are verified back with a live completion.
+        
         // NEW 2026-10-27 (pool redesign): MiMo-V2.6-Flash (AA v5:
         // II 27 at ~$0.13/task — the cheapest workhorse-adjacent
         // seat; slow per task at ~1,253s, so it leads the patient
@@ -4130,21 +2806,72 @@
         // accounting, and MiMo is ClinePass's best seat), OpenDesign,
         // and Command Code as a minor leaf (weight 0.5, $10 credits/mo).
         "targets": [
-          "opencode-go.personal/mimo-v2.6-flash",
-          "opencode-go.lab/mimo-v2.6-flash",
-          "opencode-go/mimo-v2.6-flash",
+          "opencode-go-plans/mimo-v2.6-flash",
           "cline-pass/mimo-v2.6-flash",
-          "opendesign/mimo-v2.6-flash",
-          "commandcode/xiaomi/mimo-v2.6-flash"
+          "opendesign/mimo-v2.6-flash"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "commandcode/xiaomi/mimo-v2.6-flash": 0.5
+          "opencode-go-plans/mimo-v2.6-flash": 3
         }
+      },
+      "glm-5-3-plan": {
+        "name": "GLM 5.3 - plan providers",
+        // NEW 2026-11-07 (Drew, direct order): the GLM 5.3 pool.
+        // For-now membership is the Mistral side only, and per
+        // Drew's clarification the same evening that means the
+        // _vibe door ONLY, as a direct leaf — NOT the mistral-plan
+        // route (its fallback would land draws on the account API
+        // leg: the exact failure just fixed in deepseek-flash-plan)
+        // and no mistral API member. The model is billed under
+        // Vibe Code on the account's usage page (verified
+        // 2026-11-07) and is declared on the _vibe provider above.
+        // DEFINED ONLY (Drew: "don't hook them anywhere") — no
+        // route references this pool.
+        "targets": [
+          {
+            "model": "_vibe/zai-glm-5-3",
+            "variants": { "xhigh": "max" }
+          }
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "glm-5-3-flash-plan": {
+        "name": "GLM 5.3 Flash - plan providers",
+        // NEW 2026-11-07 (Drew, direct order): the GLM 5.3 Flash
+        // pool. Same for-now shape as glm-5-3-plan: the _vibe door
+        // only, as a direct leaf (zai-glm-5-3-flash — billed under
+        // Vibe Code, verified on the account's usage page
+        // 2026-11-07; declared on the _vibe provider above). No
+        // mistral-plan route, no mistral API member. DEFINED ONLY
+        // — no route references this pool.
+        "targets": [
+          {
+            "model": "_vibe/zai-glm-5-3-flash",
+            "variants": { "xhigh": "max" }
+          }
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
       },
       "scout": {
         "name": "Scout - routine work: cheapest, fastest, smart enough",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Scout's own edge (workhorse) is a PROPOSAL (Drew has not
+        // ruled on scout yet, 2026-11-13): routine work that
+        // exhausts the free/cheap seats escalates to the standard
+        // tier rather than erroring.
+        // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
+        // 2026-11-11 (Drew): scout order — Beam ahead of DeepSeek Flash.
         // 2026-10-26 (pool remap review): all three routes addressed at #low — the rung every
         // leaf on every door has wired (Flash/GLM are overpowered for this tier at any rung:
         // AA v5 Flash max II 32, GLM max II 32, Haiku #high II 30). Flash addresses the PLAN pool
@@ -4160,15 +2887,28 @@
         // is addressed through its new beam-plan pool instead of the raw
         // Command Code leaf.
         "targets": [
+          "opencode-route/beam-plan",
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
-          "opencode-route/beam-plan"
+          "opencode-route/workhorse"
         ],
-        "selection": "round-robin",
+        "selection": "ordered",
         "autonomy": "rules"
       },
       "background": {
         "name": "Background - patient queue work: best value first, no latency contract",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Background's own edge (workhorse) is a PROPOSAL (Drew
+        // has not ruled on background yet, 2026-11-13): patient
+        // queue work that exhausts the value seats escalates to
+        // the standard tier rather than erroring.
         // NEW 2026-10-27 (pool redesign): the tier for machinery-dispatched
         // work no human watches — repo sweeps, issue-queue workers,
         // stewardship cycles, batch classification. Ordered chain in value
@@ -4221,14 +2961,75 @@
             "model": "opencode-route/deepseek-flash-plan#high",
             "window": "deepseek-peak-early"
           },
-          "opencode-route/mimo-flash-plan"
+          "opencode-route/mimo-flash-plan",
+          "opencode-route/workhorse"
         ],
         "selection": "ordered",
         "autonomy": "rules"
       },
+      "deepseek-effort-rr": {
+        "name": "DeepSeek Flash - workhorse effort trial: high/low weighted 3:1 data gathering (Drew 2026-11-13)",
+        // 2026-11-13 (Drew, direct order): can workhorse's average
+        // effort be lowered? route_attempt for the 14 days to
+        // 2026-11-13 shows deepseek-v4.1-flash serving almost
+        // exclusively at #high (66,113 attempts on the dotted leaf
+        // id, 86.2% success, ~276 reasoning tokens/call) - the
+        // reasoning burn is the price of the rung. #medium is NOT
+        // a real lower rung on the metered leaves:
+        // deepseek-flash-plan remaps medium->high on its Go and
+        // ClinePass leaves (the model natively offers low/high/max
+        // there), so a medium seat would silently gather #high
+        // data. #low passes through as low on every leaf (Go,
+        // ClinePass, OpenDesign, CommandCode, Mistral), so low is
+        // the only honest lower rung. Fleet data at #low is
+        // effectively zero: 36 wall-era attempts (0 success, no
+        // token data) plus 72 tiny scout/background-shaped
+        // successes. This weighted seat (3 high : 1 low) is the
+        // data-gathering trial, mirroring luna-effort-rr
+        // (PR #9018); only the workhorse-ordered stage rides it -
+        // speed, background, scout and the specialist seats keep
+        // their own effort choices.
+        // MEASUREMENT (named before landing): route_attempt
+        // variant=low vs high on deepseek-v4.1-flash models -
+        // success rate, first-token latency, reasoning tokens per
+        // call, and the workhorse stage fall-through rate; review
+        // after 5,000 low draws or 7 days live, whichever first.
+        // REVERT if low success falls below 90% of high success
+        // or fall-through rises materially. Adds no new pool
+        // load: same plan, same doors, different effort split.
+        "targets": [
+          { "model": "opencode-route/deepseek-flash-plan#high", "weight": 3 },
+          { "model": "opencode-route/deepseek-flash-plan#low", "weight": 1 }
+        ],
+        "selection": "weighted",
+        "autonomy": "rules"
+      },
+      "workhorse-ordered": {
+        "name": "Workhorse ordered - DeepSeek Flash plan first, strictly ordered",
+        // 2026-11-03 (Drew): a dedicated ordered pool in FRONT of
+        // workhorse-primary inside the workhorse chain, seating ONLY
+        // deepseek-flash-plan#high. Workhorse traffic tries this pool
+        // first; the pool yields nothing ready when every Flash door is
+        // walled or demoted, and the chain falls through to
+        // workhorse-primary unchanged. deepseek-flash-plan KEEPS its
+        // workhorse-primary seat (weight 2) in the same edit - this is
+        // an addition, not a move.
+        // 2026-11-13 (Drew, direct order): the seat now rides
+        // deepseek-effort-rr (defined just above) - the high/low
+        // effort trial - instead of addressing
+        // deepseek-flash-plan#high directly.
+        "targets": ["opencode-route/deepseek-effort-rr"],
+        "selection": "ordered",
+        "autonomy": "rules",
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
+      },
       "workhorse-primary": {
-        "name": "Workhorse primary - Codex (Luna) + Meta (Spark contributor)",
-        // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra keeps its specialist-tier seats, where its higher score ceiling (51 max vs Luna 38) earns its cost.
+        "name": "Workhorse primary - EMPTIED 2026-11-07 (Drew): no legs; chain stage kept, contributes nothing",
+        // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra kept its specialist-tier seats at that writing (corrected 2026-11-03, task 8486 / issue #4390: Terra #medium was removed from specialist on 2026-10-27 and left the workhorse relief pool on 2026-10-31, so it now holds no specialist or workhorse seat), where its higher score ceiling (51 max vs Luna 38) earns its cost.
         // 2026-10-31 (Drew): primary swaps to Codex — terra-plan#medium takes the primary seat to burn the Codex pool down (Drew resets the quota once it is used up); Gemini Flash moves to workhorse-weighted at weight 2.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
         // 2026-10-31 (Drew): primary is Antigravity-only. The DeepSeek
@@ -4308,7 +3109,7 @@
         // first-token failover budget (6 of 23 attempts timed out and
         // failed over), so the leg mostly produced stalls; Drew
         // declined raising the budget. The leg is now
-        // opencode-route/gemini-flash-plan#high
+        // opencode-route/gemini-hydrogen-plan#high
         // (antigravity-ls/gemini-3.8-flash -- the tool-capable Gemini
         // door) at the same weight 2. Argon stays seated in
         // argon-plan; the 2026-10-29 Argon note above is history.
@@ -4339,19 +3140,56 @@
         // rule - Luna only from the OpenAI plans, the doors with no
         // DeepSeek - belongs to this seat, not to the shared plan
         // route. luna-plan keeps its full pool (see its own note).
-        "targets": [
-          "openai-plan/gpt-6-luna#xhigh",
-          "muse-direct/muse-spark-1.3-contributor#xhigh"
-        ],
+        // 2026-11-02 (Drew): DeepSeek Flash plan moves INTO primary
+        // from workhorse-weighted: opencode-route/deepseek-flash-plan#high
+        // takes a primary seat at weight 2, equal with Luna and Spark -
+        // three-way round-robin. Its weighted-pool seat is removed in
+        // the same edit (a move, not an addition); workhorse-weighted
+        // keeps haiku-plan#high w2 and spark-plan#xhigh w1. Side
+        // benefit: a third of primary picks leave the Meta pool, which
+        // is pacing to exhaust days before its Nov 9 reset; quota
+        // demotion sheds any walled Flash door on its own.
+        // 2026-11-03 (Drew): sonnet-plan#medium joins primary. This seats
+        // the Antigravity Claude/GPT bucket (0% used at the order, resets
+        // Nov 9 09:00Z) in the workhorse rotation — it is the Claude/GPT
+        // bucket, NOT the Gemini bucket pulled from the primary path on
+        // 2026-10-31. Medium effort: workhorse is the volume tier;
+        // sonnet-plan#high stays specialist's head seat.
+        // 2026-11-07 (Drew, direct order): workhorse-primary is EMPTIED
+        // - targets [] and no weights map. The route definition stays
+        // in the workhorse chain (workhorse-ordered -> workhorse-primary
+        // -> workhorse-weighted) but contributes no legs; workhorse
+        // traffic is served by workhorse-ordered (deepseek-flash-plan
+        // #high) and workhorse-weighted only. History of the former
+        // four legs (Luna #xhigh, Spark contributor #xhigh,
+        // deepseek-flash-plan#high, sonnet-plan#medium, all weight 2)
+        // is in the comment block above and in git history.
+        "targets": [],
         "selection": "round-robin",
         "autonomy": "rules",
-        "weights": {
-          "openai-plan/gpt-6-luna": 2,
-          "muse-direct/muse-spark-1.3-contributor": 2
-        }
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse": {
-        "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it",
+        "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it, Fable #low last resort if all else is down",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Workhorse's chain: scout FIRST (its failure mode is
+        // quota exhaustion; scout diversifies onto different
+        // doors - free Beam via CommandCode, DeepSeek #low,
+        // Haiku #low), then specialist (the sink). Reached FROM
+        // speed or scout, the visited-set pruning skips the
+        // scout edge's re-entry and the call lands on
+        // specialist.
         // 2026-10-27 pool redesign (Drew's structure): incremental —
         // DeepSeek Flash #high is the primary every session tries first;
         // the weighted relief pool (workhorse-weighted) absorbs failover
@@ -4362,28 +3200,45 @@
         //   covers Luna's niche, and the seat only survived by inertia.
         // - Sol #low OUT: workhorse keeps exactly ONE OpenAI seat
         //   (Terra #medium — the ladder's efficiency winner, II 41.3 at
-        //   $0.095/task with a 1.43s TTFT); Sol's low rung was a second
+        //   $0.095/task with a 4.90s TTFT (AA v5.0; the 1.43s figure
+        //   previously cited here was the AA v4.3.2-era reading); Sol's low rung was a second
         //   seat on the same meter at the same job.
         // - Spark contributor #xhigh stays, at weight 1 in the relief
         //   pool: it is the tier's Meta/vendor-diversity seat (its edge
         //   is the separate Meta quota).
         // The relief pool's members are unchanged in kind from the
         // balance pass (AA v5): Haiku #high II 30 / 26.7s TTFT; Terra
-        // #medium II 38 / 1.43s; Spark #xhigh / 19.1s / ~300 t/s.
+        // #medium II 38 / 4.90s (AA v5.0; 1.43s was the v4.3.2-era
+        // reading); Spark #xhigh / 19.1s / ~300 t/s.
         // 2026-10-29 (code#2173): the primary target below is the
         // TEMPORARY workhorse-primary wrapper (round-robin of
         // deepseek-flash#high, meta/muse-spark-1.3, and
         // antigravity-agy/gemini-4-argon#high) — see that route's
         // comment for the revert steps.
+        // 2026-11-03 (Drew): workhorse-ordered (deepseek-flash-plan
+        // only, ordered) joins the chain IN FRONT of workhorse-primary.
+        // deepseek-flash-plan is NOT removed from workhorse-primary.
+        // 2026-11-10 (Drew, direct order): workhorse-last-resort
+        // joins the chain as the FOURTH stage - reached only when
+        // every stage ahead of it yields nothing (see that route).
         "targets": [
+          "opencode-route/workhorse-ordered",
           "opencode-route/workhorse-primary",
-          "opencode-route/workhorse-weighted"
+          "opencode-route/workhorse-weighted",
+          "opencode-route/workhorse-last-resort",
+          "opencode-route/scout",
+          "opencode-route/specialist"
         ],
         "selection": "ordered",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse-weighted": {
-        "name": "Workhorse relief - weighted pool behind the Flash primary",
+        "name": "Workhorse weighted - Luna medium/high round-robin (luna-effort-rr), Spark contributor #high, Gemini 4 Hydrogen #low, Claude Sonnet 5.5 #medium, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09)",
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
@@ -4394,7 +3249,7 @@
         // 2026-10-31 (Drew): Antigravity OUT of the primary path. The
         // Antigravity Gemini bucket was burning ~95 pts/day organically
         // and projecting exhaustion a week before its reset, so both
-        // Antigravity-drawing members leave this pool: gemini-flash-plan
+        // Antigravity-drawing members leave this pool: gemini-hydrogen-plan
         // (single-door antigravity-direct/gemini-3.8-flash — the Gemini
         // bucket) and sonnet-plan (live door antigravity-direct/
         // claude-sonnet-5-5, claude-code leaf dormant — the Claude/GPT
@@ -4403,21 +3258,202 @@
         // routes themselves are untouched (switchboard rule): Gemini
         // Flash and Sonnet stay seated in the deliberate tiers
         // (specialist, summit, speed) exactly as before.
+        // 2026-11-02 (Drew): DeepSeek Flash plan leaves this pool -
+        // it moves up into workhorse-primary at weight 2 (see that
+        // route's note). Haiku and Spark keep their seats and weights.
+        // 2026-11-03 (Drew): deepseek-flash-plan#high rejoins this
+        // pool at weight 2 (it also keeps its workhorse-primary seat
+        // and its new workhorse-ordered seat - additions only).
+        // 2026-11-07 (Drew, direct order): workhorse-weighted is
+        // EMPTIED - targets [] and no weights map, same as
+        // workhorse-primary earlier tonight. The route definition
+        // stays as the third stage of the workhorse chain
+        // (workhorse-ordered -> workhorse-primary ->
+        // workhorse-weighted) but contributes no legs. Workhorse is
+        // now exactly deepseek-flash-plan#high via workhorse-ordered.
+        // Former members: haiku-plan#high w2, spark-plan#xhigh w1,
+        // deepseek-flash-plan#high w2 (history in comments above).
+        // 2026-11-07 (Drew, direct order, later the same night):
+        // Luna joins this stage as its ONLY member -
+        // openai-plan/gpt-6-luna#xhigh at weight 2. This restores
+        // exactly the seat Luna held in workhorse-primary (weight
+        // 2, #xhigh) before tonight's emptying, moved to the LAST
+        // tier of the chain: workhorse reaches Luna only when
+        // workhorse-ordered (deepseek-flash-plan#high) yields
+        // nothing ready and the still-empty workhorse-primary
+        // contributes nothing. Nothing else is re-added -
+        // haiku-plan, spark-plan and deepseek-flash-plan do NOT
+        // return to this stage. openai-plan is the OpenAI provider
+        // route (openai.main + openai.alternate, weights 2:1):
+        // at the order, openai.main's weekly sat 24% used (OPEN)
+        // and openai.alternate was weekly-walled until Mon
+        // 2026-11-09 17:04Z - the provider route's own weighting
+        // and quota demotion shed the walled door, so the leg is
+        // live tonight through openai.main.
+        // 2026-11-07 (Drew, direct order, minutes after the Luna
+        // seat above): Spark joins as the second member -
+        // _muse/muse-spark-1.3-contributor#high at weight 1.
+        // Effort is #high here, NOT the #xhigh of Spark's speed
+        // seat and its old workhorse-primary seat - #high is the
+        // effort Drew named for this stage. _muse is the sole
+        // enabled Meta door (there is no _meta provider id; live
+        // config governs). Known state at seating: the Meta
+        // weekly is 100% quota-walled until Mon 2026-11-09
+        // 00:00Z, so this leg sits quota-gated until the reset -
+        // quota demotion sheds it on its own and the stage serves
+        // through Luna tonight; the leg becomes live fallback
+        // capacity when the Meta weekly reopens.
+        // 2026-11-07 (Drew, direct order, later still): all members
+        // equalized at weight 10, and Gemini joins as the third
+        // member - _antigravity/gemini-3.8-flash#high as a DIRECT
+        // leaf (not via the gemini-hydrogen-plan route: that route
+        // carries no #high variant mapping). Luna stays on the
+        // openai-plan door (openai.main + openai.alternate, 2:1) -
+        // Drew confirmed the plan door after the id check found no
+        // _openai provider exists. Spark stays
+        // _muse/muse-spark-1.3-contributor#high. At seating, the
+        // Antigravity Gemini weekly sat ~4% used and the door had
+        // just been proven live (first routed success 23:00 CST,
+        // after the runtime-overlay rename fix). Weights: Luna
+        // 2 -> 10, Spark 1 -> 10, Gemini new at 10.
+        // 2026-11-09 (fleet fix, minder escalation OB-2026-11-10-FMWALL1):
+        // Claude Sonnet 5.5 joins this stage as the fourth member -
+        // _antigravity/claude-sonnet-5-5#high as a DIRECT leaf, same
+        // pattern as the Gemini leaf below. Reason: tonight every other
+        // workhorse leg is genuinely quota-walled at once (Flash pool:
+        // Go weekly to Nov 16, ClinePass to Nov 13, OpenDesign to
+        // Nov 14, CommandCode to Tue 06:52Z, Vibe budget exhausted;
+        // Luna weekly to Nov 13; Spark weekly to Nov 16; Antigravity
+        // Gemini weekly to Nov 13) and workhorse decisions returned
+        // no-candidates ~2,500 times in 2h while the Antigravity
+        // Claude bucket (weekly 63%, 5h 14%) sat outside the route
+        // serving other tiers. Drew took Antigravity out of the
+        // primary path 2026-10-31 over GEMINI-bucket burn and
+        // re-seated the Gemini leaf in THIS stage 2026-11-07; this
+        // seat is the CLAUDE bucket, same stage, equal weight 10.
+        // 2026-11-09 (Drew, AA-match rule): the Sonnet seat drops
+        // #high -> #medium. A pool is matched by its AA score, not
+        // its effort label. AA v5 (Supabase ainventory via the
+        // aggregator collector's aa-last-good, generated
+        // 2026-11-10T00:40Z, read tonight): this pool sits at Luna
+        // #xhigh II 23, Gemini 3.8 Flash #high II 31, and Spark
+        // contributor II 34 at #xhigh / II 36 at #max (no #high row
+        // recorded), while Claude Sonnet 5.5 runs low II 25 /
+        // medium II 30 / high II 41 / xhigh II 50 / max II 54.
+        // #medium (II 30) is the rung that matches the pool; #high
+        // (II 41) sat above every other member. Same leaf, same
+        // weight 10 — only the effort rung changes.
+        // 2026-11-10 (Drew, direct order): two seat changes in
+        // this stage. (1) The Luna #xhigh seat switches to Terra
+        // #low - openai-plan/gpt-6.1-terra#low at the same weight
+        // 10, on the same openai-plan door (openai.main +
+        // openai.alternate, 2:1). (2) The Gemini 3.8 Flash seat
+        // drops #high -> #medium - same leaf, same weight 10
+        // (AA from today's pool-intelligence pull: medium II 30.1
+        // vs high II 30.8 - same pool band, faster first token).
+        // The other two members (Spark contributor #high, Claude
+        // Sonnet 5.5 #medium) are untouched.
+        // 2026-11-11 (Drew, direct order): the OpenAI seat switches
+        // BACK from Terra #low to Luna #high - openai-plan/gpt-6-luna#high
+        // at the same weight 10, same openai-plan door (_openai.alt +
+        // _openai.main, server-side round-robin). This reverses the
+        // 2026-11-10 seat change above. Reason: Terra burned the OpenAI
+        // weekly buckets faster - after the code#8653 fix it was the
+        // only serving leg in the chain, and the alt door weekly jumped
+        // 81% -> 89% in 30 minutes; Luna is also the lighter model per
+        // request. The other three members are untouched.
+        // 2026-11-12 (Drew, direct order): the Gemini member swaps
+        // from Gemini 3.8 Flash #medium to Gemini 4 Hydrogen #low,
+        // same weight 10. AA v5.0.1: Hydrogen low II 27 at
+        // $0.29/task, TTFT 5.81s - the cheapest and fastest seat in
+        // this pool, with minimal draw on the shared Antigravity
+        // Gemini weekly pool; the Luna #high anchor carries the
+        // pool's quality. (The Flash seat it replaces read II 30.1
+        // at #medium, II 30.8 at #high, on the same AA version.)
+        // 2026-11-12 (Drew, direct order): the Luna member moves
+        // from the bare openai-plan/gpt-6-luna#high leaf to the
+        // luna-effort-rr route (round-robin medium/high), same
+        // weight 10 - see that route's note. Purpose is data:
+        // #medium has zero route attempts in 30 days; alternating
+        // the rungs under real workhorse load gathers the
+        // medium-vs-high outcome record (code#1191).
         "targets": [
-          "opencode-route/haiku-plan#high",
-          "opencode-route/spark-plan#xhigh",
-          "opencode-route/deepseek-flash-plan#high"
+          "opencode-route/luna-effort-rr",
+          "_muse/muse-spark-1.3-contributor#high",
+          "_antigravity/gemini-4-hydrogen#low",
+          "_antigravity/claude-sonnet-5-5#medium"
         ],
         "selection": "weighted",
-        "autonomy": "rules",
         "weights": {
-          "opencode-route/haiku-plan": 2,
-          "opencode-route/spark-plan": 1,
-          "opencode-route/deepseek-flash-plan": 1
-        }
+          "opencode-route/luna-effort-rr": 10,
+          "_muse/muse-spark-1.3-contributor": 10,
+          "_antigravity/gemini-4-hydrogen": 10,
+          "_antigravity/claude-sonnet-5-5": 10
+        },
+        "autonomy": "rules",
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
+      },
+      "workhorse-last-resort": {
+        "name": "Workhorse last resort - Haiku #high from Claude first, then Fable #low, only if all else is down",
+        // NEW 2026-11-10 (Drew, direct order): the fourth and final
+        // stage of the workhorse chain, reached only when
+        // workhorse-ordered, workhorse-primary, and
+        // workhorse-weighted all yield nothing. Two members,
+        // ordered: FIRST the DIRECT real-Claude leaf
+        // _claude/claude-sonnet-5-5 at #medium (Drew confirmed
+        // direct, 2026-11-10 09:04 CST - NOT sonnet-plan and NOT
+        // the Antigravity leaf), THEN Fable #low on the same door
+        // (via fable-plan). Sonnet leads despite the lower score
+        // (AA v5 #medium II 30.8 vs Fable #low II 53.9 at
+        // $3.10/task, TTFT 6.4s): it is the cheaper everyday
+        // fallback and spends the shared Claude Max allowance,
+        // while Fable behind it draws the dedicated Fable quota
+        // (Drew, 2026-11-07) and is spent only when Sonnet also
+        // yields nothing. Both members are Drew's deliberate,
+        // named exception to his 2026-11-06 rule ("do not add
+        // Claude to workhorse") - this last-resort stage only,
+        // ordered by Drew explicitly today (2026-11-10). The burn
+        // case is the point: when every other pool is walled at
+        // once (the 2026-11-09/10 pattern, code#8086), workhorse
+        // sessions land here instead of dying on no-candidates.
+        // 2026-11-12 (Drew, direct order): the head leaf SWAPS
+        // from Sonnet #medium to Haiku #high. Why: this leg
+        // drained Claude's 5h window 39%->100% in one hour
+        // (2026-11-12) at ~180k input tokens per call. AA v5:
+        // Haiku #high II 30 vs Sonnet #medium II 30.8 - a wash -
+        // and Haiku costs ~1/3 per token against the shared
+        // Claude Max allowance, so the same traffic drains the
+        // window ~3x slower. Fable #low behind it is unchanged.
+        // This edit lived uncommitted in the laptop primary
+        // checkout from 2026-11-12 until the 2026-11-13
+        // primary-checkout reconcile (Drew's order) landed it.
+        "targets": [
+          "_claude/claude-haiku-5-5#high",
+          "opencode-route/fable-plan#low"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules",
+        // Same #7927 guard as the sibling stages: 60s sizes the
+        // deadline above observed leg maxima while still bounding
+        // a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
       },
       "specialist": {
-        "name": "Specialist - hard work: quality first, Claude then Argon then Meta Spark then OpenAI",
+        "name": "Specialist - hard work: quality first, Fable #low head, then Claude Sonnet, Argon, Meta Spark, OpenAI",
+        // Class fallback (Drew 2026-11-13): specialist is the
+        // SINK - no class fallback out of specialist. If every
+        // specialist leg is down, the call errors; there is no
+        // cheaper class to fall back to and nothing above it.
+        // 2026-11-10 (Drew, direct order): Fable #low (fable-plan,
+        // _claude door) takes the HEAD of this chain. AA v5 #low
+        // II 53.9 tops every member it now leads (the former head,
+        // Sonnet #high, is II 41.5), and the seat draws the
+        // dedicated Fable quota (Drew, 2026-11-07), not the shared
+        // Claude Max allowance.
         // 2026-10-26 pass 3 (AA figures re-baselined to v5 2026-10-31, #1673): Sonnet #high II 41 / TTFT ~12s /
         // $1.64 per task (AA v5 costing),
         // Spark contributor #max / 42.0s / 176 t/s (single Meta door is the caveat), Sol
@@ -4441,6 +3477,7 @@
         // diversity (if Sol walls on quota, Terra walls too). DeepSeek Pro
         // tail REMOVED: its <=36 ceiling is below this tier's band.
         "targets": [
+          "opencode-route/fable-plan#low",
           "opencode-route/sonnet-plan#high",
           "opencode-route/argon-plan#high",
         // 2026-11-01 (Drew): Spark seat drops max -> xhigh. AA v5: max scores 36 vs xhigh 34 — two points for roughly double the reasoning time (max measured 540s/task). Spark in specialist is the Meta-diversity seat behind Sonnet/Argon; xhigh keeps the failover responsive. This was the last #max target in the tier routes.
@@ -4451,7 +3488,22 @@
         "autonomy": "rules"
       },
       "summit": {
-        "name": "Summit - very complex design only, deliberate use",
+        "name": "Summit - very complex design only, deliberate use: Fable #low head, then Opus, Argon, Hydrogen, Wonder, Sol",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Summit's only edge: specialist (the sink).
+        // 2026-11-11 (Drew, direct order): fable-plan leg low -> medium.
+        // 2026-11-10 (Drew, direct order): Fable #low (fable-plan,
+        // _claude door) takes the HEAD of this chain. AA v5 #low
+        // II 53.9 tops the former head, Opus #high (II 51.8), and
+        // the seat draws the dedicated Fable quota (Drew,
+        // 2026-11-07), not the shared Claude Max allowance.
         // 2026-10-30: the Wonder leaf ran through muse-proxy
         // (provider "muse", muse/muse-wonder-1.0#max) — the direct
         // meta door is dead (attestation; see the "muse" provider
@@ -4469,17 +3521,39 @@
         // evidence here), and Meta (Wonder) before it touches OpenAI at
         // all; the previous order burned Sol ahead of Wonder, backwards
         // under the reserve rule.
+        // 2026-11-12 (Drew, direct order): Gemini 4 Hydrogen #high
+        // joins this chain as a DIRECT _antigravity leaf, after
+        // argon-plan#high and ahead of the Wonder (Meta) and Sol
+        // (OpenAI) reserves. AA v5.0.1: Hydrogen high II 51 -
+        // level with Opus #high (51.8) and edging Argon #high
+        // (50.4) - at $1.87/task and ~6 min/task against Argon's
+        // $9.95 and ~30 min: the fast execution seat in the design
+        // chain, drawing the Antigravity Gemini pool.
         "targets": [
+          "opencode-route/fable-plan#medium",
           "opencode-route/opus-plan#high",
           "opencode-route/argon-plan#high",
-          "muse-direct/muse-wonder-1.0-contributor#xhigh",
-          "opencode-route/sol-plan#xhigh"
+          "_antigravity/gemini-4-hydrogen#high",
+          "_muse/muse-wonder-1.0-contributor#xhigh",
+          "opencode-route/sol-plan#xhigh",
+          "opencode-route/specialist"
         ],
         "selection": "ordered",
         "autonomy": "rules"
       },
       "speed": {
         "name": "Speed - fastest seats at or above the Haiku bar, for latency-bound work",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Speed's chain: workhorse first (cheaper, more
+        // available), then summit, then specialist (the sink).
+        // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
         // 2026-10-26 pass 3 (AA figures re-baselined to v5 2026-10-31, #1673): a latency pool is judged on
         // time-to-first-token as much as decode — Spark contributor #xhigh / TTFT 19.1s /
         // 303 t/s, Flash #max II 32 / 1.1s / 170 t/s (plan pool addressed directly, no PAYG
@@ -4496,63 +3570,121 @@
         // it is scout's speed, not this tier's.
         // 2026-10-28 (Job 2): the Spark seat repoints to spark-plan at
         // the same rung and weight, and Gemini Flash joins at weight 1
-        // via gemini-flash-plan — antigravity-ls serves
+        // via gemini-hydrogen-plan — antigravity-ls serves
         // gemini-3.8-flash live (AA v5: II 31 at high,
         // ~311 t/s decode), which clears this pool's bar.
+        // 2026-11-07 (Drew, direct order): the Spark seat leaves
+        // spark-plan and addresses the Meta door directly —
+        // _muse/muse-spark-1.3-contributor#xhigh at the same weight 3.
+        // spark-plan keeps its seats in the deliberate tiers
+        // (workhorse-weighted, specialist) unchanged.
+        // 2026-11-12 (Drew, direct order): the Gemini leg's route is
+        // renamed gemini-hydrogen-plan and now seats Gemini 4
+        // Hydrogen, so this leg serves Hydrogen #high - AA v5.0.1
+        // II 51 at $1.87/task, up from Flash #high II 30.8.
         "targets": [
-          "opencode-route/spark-plan#xhigh",
+          "_muse/muse-spark-1.3-contributor#xhigh",
           "opencode-route/deepseek-flash-plan#high",
+          "opencode-route/gemini-hydrogen-plan#high",
           "opencode-route/haiku-plan#high",
-          "opencode-route/gemini-flash-plan#high"
+          "opencode-route/workhorse",
+          "opencode-route/summit",
+          "opencode-route/specialist"
         ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-route/spark-plan": 3,
-          "opencode-route/deepseek-flash-plan": 2,
-          "opencode-route/haiku-plan": 2,
-          "opencode-route/gemini-flash-plan": 1
-        }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
-      "small-100k": {
-        "name": "Small 100k - Haiku + Luna below the 100k context cliff",
-        // 2026-10-26 (as luna-haiku-100k): both members price much cheaper below 100k
-        // context. The route's context cap (developing-today/opencode#554) presents a
-        // 100k limit, so sessions pinned here compact before crossing the cliff. On fork
-        // builds predating #554 the decoder strips the unknown limit key and the pool
-        // simply runs uncapped.
-        // AA v5: Haiku #high II 30, Luna #xhigh II 23 (TTFT 24.2s; #max would be 93.8s).
-        // 2026-10-27 pool redesign: this is now the <=100k element of the
-        // renamed `small` pool (below).
+      "limited": {
+        "name": "Limited - light-work pool: every member seated at its own plan's real limits (model @ context # effort)",
+        // 2026-11-13 (Drew, direct order): replaces small-100k. A
+        // route name must not bake in one member's context limit
+        // when members differ, so the pool is ONE route whose
+        // targets each carry their own per-target context cap
+        // (the route schema's target limit; the old small
+        // comment claiming the schema has no per-target limit
+        // predates the fork feature). A request that does not
+        // fit a member's cap skips it like any other ineligible
+        // target, so small requests land on the small members
+        // and larger ones spill to the larger members. Members,
+        // each seated at its own plan's real limits:
+        // - Luna @ 100k #medium: Luna's ChatGPT-plan cheap tier
+        //   ends at 100k context (recorded at the old
+        //   small-100k). Native catalog context is 1.05M; the
+        //   plan's real pricing limit is the 100k cliff.
+        //   luna-plan's legs present different contexts
+        //   (opendesign leg 200k, OpenAI/Go legs 1.05M native);
+        //   the 100k cap is the binding limit across the legs.
+        //   Effort drops from the old seat's #xhigh (II 23,
+        //   TTFT 24.2s) to #medium (II 18): light work does
+        //   not need the top rung; claim-stamped task outcomes
+        //   will show if that judgement is wrong.
+        // - Terra @ 388k #low: seated at the plan-effective
+        //   388k (Drew 2026-11-13); native catalog context is
+        //   1.05M, so 388k is a plan/policy ceiling, not the
+        //   model limit. AA v5: Terra #low II 29 at $0.07/task.
+        //   This is terra-plan's first consumer (it was an
+        //   orphan pool: no route targeted it).
+        // - DeepSeek small variant #low, peak-aware: DeepSeek's
+        //   metered price doubles inside the deepseek-peak
+        //   windows, so during a peak window the MiMo Flash
+        //   plan serves first and DeepSeek #low serves
+        //   off-peak first (the background route's seat
+        //   pattern). Time-of-day routing: code#9378. The
+        //   plan's doors present different contexts (Go,
+        //   ClinePass and Mistral spellings 1M; OpenDesign and
+        //   CommandCode spellings 200k) - the member cap is
+        //   the model's 1M catalog context and each leaf's own
+        //   ceiling still applies, so no door is over-asked.
+        //   MiMo v2.6 Flash catalog context 1048576, same
+        //   per-door note.
+        // - Haiku @ 388k #medium, LAST (fleet rule: the
+        //   haiku-plan leg is last in the light tiers). Seated
+        //   at the plan-effective 388k (Drew 2026-11-13);
+        //   Haiku 5.5 native catalog context is 1M - 388k is a
+        //   plan/policy ceiling, not the model limit. Effort
+        //   #medium, down from the old seat's #high (II 30):
+        //   this is the light tier; harder work belongs to
+        //   speed/workhorse.
+        // MEASUREMENT: route_attempt per member (success,
+        // latency, tokens) plus claim-stamped outcomes for
+        // sessions pinned to small/limited, reviewed with the
+        // deepseek-effort-rr trial after 7 days live.
         "targets": [
-          "opencode-route/haiku-plan#high",
-          "opencode-route/luna-plan#xhigh"
+          { "model": "opencode-route/luna-plan#medium", "limit": { "context": 100000 } },
+          { "model": "opencode-route/terra-plan#low", "limit": { "context": 388000 } },
+          { "model": "opencode-route/mimo-flash-plan", "window": "deepseek-peak-early", "limit": { "context": 1048576 } },
+          { "model": "opencode-route/mimo-flash-plan", "window": "deepseek-peak-late", "limit": { "context": 1048576 } },
+          {
+            "model": "opencode-route/deepseek-flash-plan#low",
+            "window": { "name": "deepseek-peak-early", "invert": true },
+            "limit": { "context": 1000000 }
+          },
+          {
+            "model": "opencode-route/deepseek-flash-plan#low",
+            "window": "deepseek-peak-early",
+            "limit": { "context": 1000000 }
+          },
+          { "model": "opencode-route/haiku-plan#medium", "limit": { "context": 388000 } }
         ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "limit": { "context": 100000 }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "small": {
-        "name": "Small - light work in small contexts, Haiku + Luna value seats",
-        // RENAMED 2026-10-27 (pool redesign) from luna-haiku-100k. Sessions
-        // pinned to the old id need re-pinning. The pool is the fleet's
-        // light/small tier: Haiku and Luna are much cheaper in small
-        // contexts, so membership is organized by context ceiling —
-        //   - the <=100k element (small-100k): Haiku #high + Luna #xhigh
-        //   - the <=200k element: Haiku #high alone (Luna's cheap tier
-        //     ends at 100k)
-        // The route schema has no per-target context limit, so the
-        // elements are expressed as a nested route (small-100k, capped at
-        // 100k) beside the direct Haiku target, under this route's 200k
-        // cap. Haiku 5.5 is 1M native — the 200k element is a cost-policy
-        // ceiling, not a model limit: bigger jobs belong to bigger pools.
-        "targets": [
-          "opencode-route/small-100k",
-          "opencode-route/haiku-plan#high"
-        ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "limit": { "context": 200000 }
+        "name": "Small - light work: draws from the limited pool (per-member plan limits)",
+        // 2026-11-13 (Drew, direct order): rebuilt on the
+        // limited pool above. The route-level 200k cap is gone
+        // - members carry their own plan limits now - and the
+        // <=100k / <=200k element structure (and the small-100k
+        // route) is deleted. Sessions pinned to small-100k need
+        // re-pinning to small or limited. History: renamed
+        // 2026-10-27 from luna-haiku-100k; the pre-2026-11-13
+        // shape seated luna-plan#xhigh + haiku-plan#high under
+        // a 200k route cap.
+        // Class fallback (Drew 2026-11-13): small -> speed (see
+        // the scout route's note + route-fallbacks.md).
+        "targets": ["opencode-route/limited", "opencode-route/speed"],
+        "selection": "ordered",
+        "autonomy": "rules"
       }
     },
     "model_route_windows": {

@@ -91,15 +91,9 @@ let
   dashboardPkg = pkgs.writeShellScriptBin "pm-dashboard-backup" (
     builtins.readFile ./pm-dashboard-backup.sh
   );
-  openclawPkg = pkgs.writeShellScriptBin "openclaw-backup" (
-    builtins.readFile ./openclaw-backup.sh
-  );
-  atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (
-    builtins.readFile ./atlas-backup.sh
-  );
-  statePkg = pkgs.writeShellScriptBin "laptop-state-backup" (
-    builtins.readFile ./laptop-state-backup.sh
-  );
+  openclawPkg = pkgs.writeShellScriptBin "openclaw-backup" (builtins.readFile ./openclaw-backup.sh);
+  atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (builtins.readFile ./atlas-backup.sh);
+  statePkg = pkgs.writeShellScriptBin "laptop-state-backup" (builtins.readFile ./laptop-state-backup.sh);
   watchdogPkg = pkgs.writeShellScriptBin "laptop-backups-watchdog" (
     builtins.readFile ./laptop-backups-watchdog.sh
   );
@@ -342,7 +336,11 @@ in
           Service = {
             Type = "oneshot";
             ExecStart = cfg.coldStoreNightly.script;
-            TimeoutStartSec = "30m";
+            # 120m, not 30m: the Turso export leg alone ran past
+            # 30m on 2026-11-08/09/10, and systemd's timeout kill
+            # leaked its scratch directory each night
+            # (darwin-nix#373).
+            TimeoutStartSec = "120m";
           };
         };
       })
@@ -362,7 +360,13 @@ in
           Service = {
             Type = "oneshot";
             ExecStart = "${watchdogPkg}/bin/laptop-backups-watchdog ${toString cfg.watchdog.maxAgeHours} ${watchdogJobs}";
-            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            # LAPTOP_BACKUPS_OFFSITE_CHECK (#3914): the watchdog also
+            # asserts the dashboard backup's date dir exists on R2.
+            # servicePath carries rclone and ~/tools/bin carries bws.
+            Environment = [
+              "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin"
+              "LAPTOP_BACKUPS_OFFSITE_CHECK=1"
+            ];
           };
         };
       })

@@ -279,6 +279,44 @@ func TestDirectorySkipsDanglingLinkAndFollowsLinkOutsideRoot(t *testing.T) {
 	}
 }
 
+func TestDirectorySkipsSymlinkLoop(t *testing.T) {
+	// Oracle (#7693): a symlink loop entry is skipped like a dangling
+	// link — it can never resolve to a regular target, so the rest of
+	// the tree still resolves instead of the loop aborting the walk.
+	root := t.TempDir()
+	regular := filepath.Join(root, "regular.ts")
+	loop := filepath.Join(root, "loop.ts")
+	if err := os.WriteFile(regular, []byte("regular"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("loop.ts", loop); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	// A two-link loop as well: whichever entry the walk stats first,
+	// the loop must not abort the resolve.
+	loopA := filepath.Join(root, "loop-a.ts")
+	loopB := filepath.Join(root, "loop-b.ts")
+	if err := os.Symlink("loop-b.ts", loopA); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	if err := os.Symlink("loop-a.ts", loopB); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+
+	o := opts(root)
+	o.Recursive = true
+	got, err := source.Resolve("@dir:"+root, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0] != regular {
+		t.Fatalf("got files %v, want exactly the regular file", got.Files)
+	}
+	if !strings.Contains(got.Text, "regular") {
+		t.Errorf("got text %q, want the regular file's contents", got.Text)
+	}
+}
+
 func TestResolveAllJoinsInOrder(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "second.ts"), []byte("SECOND"), 0o644)
@@ -338,5 +376,86 @@ func TestResolveFileWithTildeNameReadsLiteralDirUnderDir(t *testing.T) {
 	}
 	if len(got.Files) != 1 || got.Files[0] != filepath.Join(literal, "note.txt") {
 		t.Errorf("Resolve(@file:~alice/note.txt) files = %v, want [%s]", got.Files, filepath.Join(literal, "note.txt"))
+	}
+}
+
+func TestADirectoryIsConcatenatedInNaturalOrderPastInt64(t *testing.T) {
+	// Digit runs that overflow int64 must still decide the order
+	// numerically (#3775). Before the fix, naturalLess gave up on such
+	// runs and the fragments concatenated in arbitrary or inverted order.
+	cases := []struct {
+		name  string
+		files []string
+		want  string
+	}{
+		{
+			name:  "both overflow, differing suffixes",
+			files: []string{"f100000000000000000000000a.ts", "f99999999999999999999999z.ts"},
+			want:  "f99999999999999999999999z.ts,f100000000000000000000000a.ts",
+		},
+		{
+			name:  "both overflow, no suffix",
+			files: []string{"100000000000000000000000.ts", "99999999999999999999999.ts"},
+			want:  "99999999999999999999999.ts,100000000000000000000000.ts",
+		},
+		{
+			name:  "one side overflows int64",
+			files: []string{"f9999999999999999999.ts", "f8999999999999999999.ts"},
+			want:  "f8999999999999999999.ts,f9999999999999999999.ts",
+		},
+		{
+			name:  "leading zeros in overflow run",
+			files: []string{"f00000000000000000000000002.ts", "f10.ts"},
+			want:  "f00000000000000000000000002.ts,f10.ts",
+		},
+		{
+			name:  "mixed int64 and overflow runs differ from lexical order",
+			files: []string{"f10000000000000000000.ts", "f9000000000000000000.ts"},
+			want:  "f9000000000000000000.ts,f10000000000000000000.ts",
+		},
+		{
+			name:  "equal length overflow runs compare lexically",
+			files: []string{"f20000000000000000000000.ts", "f10000000000000000000000.ts"},
+			want:  "f10000000000000000000000.ts,f20000000000000000000000.ts",
+		},
+		{
+			// compareDigitRuns strips leading zeros before comparing by
+			// length, so a zero-padded small run must not outrank a shorter
+			// run whose value is larger. Without the TrimLeft the 27-digit
+			// run "000000000000000000000000002" looks bigger than "10".
+			name:  "leading zeros do not change numeric order",
+			files: []string{"f00000000000000000000000002.ts", "f10.ts"},
+			want:  "f00000000000000000000000002.ts,f10.ts",
+		},
+		{
+			// A zero-padded run longer than int64 compares numerically
+			// against a run that still fits int64. Its value (30) is larger
+			// while its lexical position is lower than "4", so a lexical
+			// fallback would invert the pair.
+			name:  "padded overflow run orders numerically beside a fitting run",
+			files: []string{"f000000000000000000000000030.ts", "f4.ts"},
+			want:  "f4.ts,f000000000000000000000000030.ts",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, n := range tc.files {
+				if err := os.WriteFile(filepath.Join(dir, n), []byte("// "+n), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := source.Resolve(dir, opts(dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var order []string
+			for _, f := range got.Files {
+				order = append(order, filepath.Base(f))
+			}
+			if strings.Join(order, ",") != tc.want {
+				t.Errorf("natural order past int64: got %v, want %s", order, tc.want)
+			}
+		})
 	}
 }

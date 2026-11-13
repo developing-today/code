@@ -37,7 +37,12 @@ async function hmacSha256Hex(body: Uint8Array): Promise<string> {
   return Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function sendFixture(file: string, event: string, deliveryId?: string): Promise<Response> {
+async function sendFixture(
+  file: string,
+  event: string,
+  deliveryId?: string,
+  requestEnv: ServerEnv = env,
+): Promise<Response> {
   const body = readFileSync(join(FIXTURES, file), "utf8");
   const bytes = new TextEncoder().encode(body);
   const signature = await hmacSha256Hex(bytes);
@@ -48,7 +53,11 @@ async function sendFixture(file: string, event: string, deliveryId?: string): Pr
   });
   if (deliveryId !== undefined) headers.set("x-github-delivery", deliveryId);
 
-  return handleRequest(new Request("http://127.0.0.1/github/webhook", { method: "POST", headers, body }), db, env);
+  return handleRequest(
+    new Request("http://127.0.0.1/github/webhook", { method: "POST", headers, body }),
+    db,
+    requestEnv,
+  );
 }
 
 async function rowCount(table: "pmp_deliveries" | "pmp_items" | "pmp_push_events" | "pmp_comments") {
@@ -79,6 +88,42 @@ afterAll(() => {
 });
 
 describe("GitHub webhook delivery ID validation", () => {
+  test("rejects an invalid signature without publishing a freshness invalidation", async () => {
+    let freshnessAttempts = 0;
+    const sink = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async () => {
+        freshnessAttempts += 1;
+        return new Response(null, { status: 202 });
+      },
+    });
+    try {
+      const body = readFileSync(join(FIXTURES, "02-issue-opened.json"), "utf8");
+      const response = await handleRequest(
+        new Request("http://127.0.0.1/github/webhook", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-github-event": "issues",
+            "x-github-delivery": "invalid-signature-delivery",
+            "x-hub-signature-256": `sha256=${"00".repeat(32)}`,
+          },
+          body,
+        }),
+        db,
+        { ...env, PM_AGG_FRESHNESS_URL: `http://127.0.0.1:${sink.port}/publish` },
+      );
+
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: "invalid_signature" });
+      expect(freshnessAttempts).toBe(0);
+      await expectNoAppliedOrRecordedData();
+    } finally {
+      sink.stop(true);
+    }
+  });
+
   test("rejects distinct deliveries without the header before applying or recording either", async () => {
     const first = await sendFixture("01-push.json", "push");
     expect(first.status).toBe(400);
@@ -107,5 +152,34 @@ describe("GitHub webhook delivery ID validation", () => {
     expect(duplicate.status).toBe(200);
     expect(await duplicate.json()).toEqual({ status: "duplicate" });
     await expect(Promise.all([rowCount("pmp_deliveries"), rowCount("pmp_push_events")])).resolves.toEqual([1, 1]);
+  });
+
+  test("retries source acceptance when the freshness journal is unavailable", async () => {
+    let attempts = 0;
+    const inputs: unknown[] = [];
+    const sink = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        attempts += 1;
+        inputs.push(await request.json());
+        return new Response(null, { status: attempts === 1 ? 503 : 202 });
+      },
+    });
+    const sinkEnv = { ...env, PM_AGG_FRESHNESS_URL: `http://127.0.0.1:${sink.port}/publish` };
+    try {
+      const failed = await sendFixture("02-issue-opened.json", "issues", "delivery-freshness-retry", sinkEnv);
+      expect(failed.status).toBe(500);
+      expect(await failed.json()).toEqual({ error: "apply_failed" });
+
+      const retried = await sendFixture("02-issue-opened.json", "issues", "delivery-freshness-retry", sinkEnv);
+      expect(retried.status).toBe(200);
+      expect(await retried.json()).toMatchObject({ status: "applied" });
+      expect(attempts).toBe(2);
+      expect(inputs[0]).toEqual(inputs[1]);
+      expect(inputs[0]).toMatchObject({ eventId: "github:delivery-freshness-retry", source: "github" });
+    } finally {
+      sink.stop(true);
+    }
   });
 });

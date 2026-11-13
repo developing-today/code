@@ -12,7 +12,7 @@
 // OpenCode server uses (.opencode/opencode.jsonc: model_routes +
 // provider blocks), picks the actual pool member (ordered / round-robin
 // / weighted selection, variant remaps, disabled providers skipped,
-// quota demotion from the route_attempt ledger), expands provider
+// quota demotion from the route_attempt ledger, plus the known-exhausted seating gate #5295), expands provider
 // routes (experimental.provider_routes, #3256) into their member
 // providers, and makes ONE plain
 // chat-completions call to that member's endpoint with the member's
@@ -33,6 +33,9 @@
 //   OPENCODE_ROUTE_PROXY_PORT        listen port (default 18750)
 //   OPENCODE_ROUTE_PROXY_HOST        listen host (default 127.0.0.1)
 //   OPENCODE_ROUTE_PROXY_TIMEOUT_MS  per-request cap (default 1200000)
+//   OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS  first-response cap per leaf
+//                                         (default 3000 ms; below the client
+//                                         no-output window)
 //   OPENCODE_ROUTE_PROXY_CONFIG      opencode.jsonc path (default:
 //                                    ~/.local/share/opencode/opencode.jsonc,
 //                                    else ../.opencode/opencode.jsonc
@@ -56,10 +59,15 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
+import { createRequestBodyCollector } from "./request-body.mjs";
 
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
 const HOST = process.env.OPENCODE_ROUTE_PROXY_HOST || "127.0.0.1";
 const TIMEOUT_MS = parseProxyMillis("OPENCODE_ROUTE_PROXY_TIMEOUT_MS", 1_200_000);
+const LEAF_TIMEOUT_MS = parseProxyMillis(
+  "OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS",
+  3_000,
+);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_CONFIG ||
@@ -115,6 +123,14 @@ const ADVERTISED_MODELS = [
 const MAX_ATTEMPTS = 6;
 const DEMOTE_WINDOW_MS = 4 * 60 * 60 * 1000;
 const DEMOTE_THRESHOLD = 3;
+const STREAM_FIRST_CONTENT_WINDOW_MS = 250;
+const STREAM_PREFACE_MAX_BYTES = 64 * 1024;
+// Hard ceiling for a single in-progress data event in the relay: the
+// preface window (above) rejects non-content prefaces, but one valid
+// content event may be larger than the window, so its enforcement is
+// deferred until the event completes (see relayStream). This ceiling
+// still bounds a never-ending event.
+const STREAM_EVENT_HARD_MAX_BYTES = 16 * 1024 * 1024;
 
 // ---------------------------------------------------------------- config
 
@@ -236,8 +252,8 @@ const expandEnv = (s) =>
 // config fields (options included) win key by key; the built-in
 // table only fills what the block omits.
 const mergedDef = (cfg, id) => {
-  const raw = cfg.providers[id];
-  const builtin = BUILTIN_PROVIDERS[id];
+  const raw = Object.hasOwn(cfg.providers, id) ? cfg.providers[id] : undefined;
+  const builtin = Object.hasOwn(BUILTIN_PROVIDERS, id) ? BUILTIN_PROVIDERS[id] : undefined;
   if (!raw) return builtin || null;
   if (!builtin) return raw;
   return {
@@ -318,8 +334,23 @@ const credentialKey = (providerId) => {
   return key;
 };
 
-// (provider,model) pairs demoted by the doctrine: >=3 quota failures
-// (quota detail recorded, or a RateLimit tag) inside the last 4 hours.
+// The credential a leaf would call with: a static apiKey in its
+// provider config, else its active credential-store row (#3228).
+const leafCredential = (cfg, providerId) => {
+  const def = providerDef(cfg, providerId);
+  const staticKey = def?.options?.apiKey ? expandEnv(def.options.apiKey) : null;
+  return staticKey || credentialKey(providerId);
+};
+const hasCredential = (cfg, providerId) => Boolean(leafCredential(cfg, providerId));
+
+// (provider,model) pairs demoted by the doctrine: >=3 qualifying
+// failures (quota detail recorded, a RateLimit tag, or an
+// Authentication tag) inside the last 4 hours, counting only the
+// current failure run: a success on the pair clears the run and
+// lifts the demotion. The Authentication arm is #8048: a leg whose
+// credential is dead fails 100% with provider.auth and never
+// carried quota detail, so the quota-only filter never demoted it
+// and it stayed first-choice while killing sessions.
 const demotedPairs = () => {
   let db = null;
   try {
@@ -328,7 +359,12 @@ const demotedPairs = () => {
       .prepare(
         `SELECT provider_id, model_id FROM route_attempt
          WHERE time_started > ? AND outcome != 'success'
-           AND (quota IS NOT NULL OR error_tag = 'RateLimit')
+           AND (quota IS NOT NULL OR error_tag IN ('RateLimit', 'Authentication'))
+           AND time_started > COALESCE(
+             (SELECT MAX(s.time_started) FROM route_attempt s
+              WHERE s.provider_id = route_attempt.provider_id
+                AND s.model_id = route_attempt.model_id
+                AND s.outcome = 'success'), 0)
          GROUP BY provider_id, model_id HAVING COUNT(*) >= ?`,
       )
       .all(Date.now() - DEMOTE_WINDOW_MS, DEMOTE_THRESHOLD);
@@ -340,6 +376,131 @@ const demotedPairs = () => {
       db?.close();
     } catch {}
   }
+};
+
+// The reset instant a quota detail promises, if it carries one
+// (#5295): a Retry-After-derived relative wait (the shape
+// classifyHttp records for 429s), or an absolute reset recorded under
+// any of the equivalent field names. A quota record with no reset
+// (e.g. a bare paymentRequired) cannot gate: how long it lasts is
+// unknown, and demotion remains its only handling.
+const quotaResetMs = (timeEnded, quotaText) => {
+  let q;
+  try {
+    q = JSON.parse(quotaText);
+  } catch {
+    return null;
+  }
+  if (!q || typeof q !== "object") return null;
+  // A relative retry delay runs from when the quota response was
+  // RECEIVED (the attempt's time_ended), not from when the request
+  // started: anchoring to the start would let a slow 429 response
+  // consume its own backoff.
+  if (Number.isFinite(q.retryAfterMs) && q.retryAfterMs > 0)
+    return timeEnded + q.retryAfterMs;
+  for (const k of ["resetsAtMs", "resetAtMs", "retryAtMs"])
+    if (Number.isFinite(q[k]) && q[k] > 0) return q[k];
+  for (const k of ["resetsAt", "resetAt", "retryAt"]) {
+    const ms = Date.parse(q[k]);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return null;
+};
+
+// (provider,model) pairs whose binding quota window is KNOWN
+// exhausted (#5295, #4370 acceptance (c)): the pair's latest
+// quota-bearing failure in the ledger carries a reset still in the
+// future, and no success has been recorded for the pair since that
+// failure. Unlike demotion — reactive (>=3 failures in 4h) and
+// reorder-only — this is a seating-time exclusion known BEFORE the
+// next failure: a monthly-walled leg at a known 100% must not be a
+// first-choice candidate while any live candidate exists. The ledger
+// is the only source (no new network dependency in the hot path);
+// the lookback bounds the scan while covering monthly resets.
+const EXHAUSTED_LOOKBACK_MS = 40 * 24 * 60 * 60 * 1000;
+const knownExhaustedPairs = (now) => {
+  let db = null;
+  try {
+    db = openDb();
+    const since = now - EXHAUSTED_LOOKBACK_MS;
+    // All ordering is by COMPLETION time (time_ended): with
+    // overlapping requests, start-time ordering can mistake a
+    // success that finished before a quota response arrived for a
+    // recovery after it.
+    const quotaRows = db
+      .prepare(
+        `SELECT provider_id, model_id, time_started, time_ended, quota FROM route_attempt
+         WHERE quota IS NOT NULL AND outcome != 'success' AND time_ended > ?
+           AND time_ended = (
+             SELECT MAX(time_ended) FROM route_attempt r2
+             WHERE r2.provider_id = route_attempt.provider_id
+               AND r2.model_id = route_attempt.model_id
+               AND r2.quota IS NOT NULL AND r2.outcome != 'success'
+               AND r2.time_ended > ?
+           )`,
+      )
+      .all(since, since);
+    const successRows = db
+      .prepare(
+        `SELECT provider_id, model_id, MAX(time_ended) AS latest
+         FROM route_attempt
+         WHERE outcome = 'success' AND time_ended > ?
+         GROUP BY provider_id, model_id`,
+      )
+      .all(since);
+    const latestSuccess = new Map(
+      successRows.map((r) => [`${r.provider_id}/${r.model_id}`, r.latest]),
+    );
+    const out = new Map();
+    for (const r of quotaRows) {
+      const reset = quotaResetMs(r.time_ended, r.quota);
+      if (reset === null || reset <= now) continue;
+      const key = `${r.provider_id}/${r.model_id}`;
+      const successAt = latestSuccess.get(key);
+      if (successAt !== undefined && successAt > r.time_ended) continue;
+      out.set(key, reset);
+    }
+    return out;
+  } catch {
+    return new Map();
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+};
+
+// Exclude known-exhausted candidates (#5295), following the
+// credential-less exclusion pattern (#3228) — but fail-safe: if the
+// gate would empty the candidate list, the demoted order is kept as
+// it was, because a known-exhausted leg as last resort beats no
+// route at all. Gate decisions are recorded on stderr, the proxy's
+// diagnostics stream.
+const applyKnownExhaustedGate = (cfg, candidates) => {
+  if (!candidates.length) return candidates;
+  const exhausted = knownExhaustedPairs(nowMs());
+  if (!exhausted.size) return candidates;
+  const key = (c) => `${c.providerId}/${c.modelKey}`;
+  const kept = candidates.filter((c) => !exhausted.has(key(c)));
+  // The fail-safe is evaluated against CREDENTIALED survivors: the
+  // credential-less filter (#3228) runs after this gate, so a kept
+  // list whose only members have no credential would still empty the
+  // route — and the exhausted leaf must then stay as the last resort
+  // instead of the request failing with "no credentialed members".
+  if (!kept.some((c) => hasCredential(cfg, c.providerId))) {
+    console.error(
+      "opencode-route-proxy: known-exhausted gate bypassed — no credentialed " +
+        "candidate survives it; keeping the demoted order (#5295)",
+    );
+    return candidates;
+  }
+  for (const c of candidates)
+    if (exhausted.has(key(c)))
+      console.error(
+        `opencode-route-proxy: known-exhausted gate excluded ${key(c)} ` +
+          `until ${new Date(exhausted.get(key(c))).toISOString()} (#5295)`,
+      );
+  return kept;
 };
 
 const recordAttempt = (a) => {
@@ -563,7 +724,7 @@ const weightedOrder = (targets, weights) => {
 // A concrete provider always wins a reference: an id that names a
 // config provider block (or a built-in) is never treated as a group.
 const providerRouteDef = (cfg, id) => {
-  if (cfg.providers[id] || BUILTIN_PROVIDERS[id]) return null;
+  if (Object.hasOwn(cfg.providers, id) || Object.hasOwn(BUILTIN_PROVIDERS, id)) return null;
   const g = cfg.providerRoutes?.[id];
   if (!g || !Array.isArray(g.providers)) return null;
   return g;
@@ -583,7 +744,7 @@ const expandProviderRoute = (cfg, t, variant, out) => {
     (m) =>
       typeof m === "string" &&
       m !== "opencode-route" &&
-      (cfg.providers[m] || BUILTIN_PROVIDERS[m]) &&
+      (Object.hasOwn(cfg.providers, m) || Object.hasOwn(BUILTIN_PROVIDERS, m)) &&
       !cfg.disabled.has(m),
   );
   let leaves = [];
@@ -706,6 +867,247 @@ const classifyHttp = (status, headers, bodyText) => {
   });
 };
 
+const classifyStreamError = (providerError, headers) => {
+  const details =
+    typeof providerError === "object" && providerError !== null
+      ? providerError
+      : { message: String(providerError) };
+  const message =
+    typeof details.message === "string"
+      ? details.message
+      : JSON.stringify(details);
+  const status = Number(details.status ?? details.status_code);
+  const type = typeof details.type === "string" ? details.type : "";
+  const code = typeof details.code === "string" ? details.code : null;
+  const quotaFailure =
+    status === 429 || /rate.?limit|quota|insufficient_quota/i.test(
+      `${type} ${code || ""} ${message}`,
+    );
+  if (quotaFailure) {
+    const err = classifyHttp(429, headers, message);
+    err.status = 429;
+    err.code = code;
+    let quota = {};
+    try {
+      quota = JSON.parse(err.quota || "{}");
+    } catch {}
+    err.quota = JSON.stringify({
+      ...quota,
+      status: 429,
+      ...(type ? { type } : {}),
+      ...(code ? { code } : {}),
+    });
+    return err;
+  }
+  return new LeafError(message, {
+    tag: "ProviderInternal",
+    status: Number.isFinite(status) ? status : null,
+    code,
+  });
+};
+
+const streamPayloadHasContent = (payload) => {
+  if (!Array.isArray(payload?.choices)) return false;
+  return payload.choices.some((choice) => {
+    if (typeof choice?.text === "string" && choice.text.length > 0)
+      return true;
+    const delta = choice?.delta;
+    if (!delta || typeof delta !== "object" || Array.isArray(delta))
+      return false;
+    return Object.entries(delta).some(([key, value]) => {
+      if (key === "role" || value == null || value === "") return false;
+      return !Array.isArray(value) || value.length > 0;
+    });
+  });
+};
+
+const newSseState = (started) => ({
+  decoder: new TextDecoder(),
+  tail: "",
+  contentStarted: false,
+  started,
+  firstTokenMs: null,
+  usage: null,
+  done: false,
+  streamError: null,
+});
+
+const inspectSseEvent = (event, state, headers) => {
+  const data = event
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).replace(/^ /, ""))
+    .join("\n")
+    .trim();
+  if (!data) return;
+  if (data === "[DONE]") {
+    state.done = true;
+    return;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(data);
+  } catch {
+    // Preserve compatibility with providers that send non-JSON data events.
+    if (!state.contentStarted) {
+      state.contentStarted = true;
+      state.firstTokenMs ??= Date.now() - state.started;
+    }
+    return;
+  }
+  if (payload?.usage) state.usage = payload.usage;
+  if (payload?.error) {
+    if (!state.streamError)
+      state.streamError = {
+        error: classifyStreamError(payload.error, headers),
+        beforeContent: !state.contentStarted,
+      };
+    return;
+  }
+  if (streamPayloadHasContent(payload) && !state.contentStarted) {
+    state.contentStarted = true;
+    state.firstTokenMs = Date.now() - state.started;
+  }
+};
+
+const inspectSseBytes = (value, state, headers, flush = false) => {
+  const decoded = flush
+    ? state.decoder.decode()
+    : state.decoder.decode(value, { stream: true });
+  state.tail += decoded;
+  // Parse every complete event BEFORE bounding the buffer: trimming
+  // first would cut the head off an event larger than the preface
+  // window (a large tool-call argument delta is a single event),
+  // removing its data: prefix so it is never recognised as content
+  // (Codex P2 on PR #5558).
+  const separator = /\r?\n\r?\n/g;
+  let match;
+  let start = 0;
+  while ((match = separator.exec(state.tail))) {
+    inspectSseEvent(state.tail.slice(start, match.index), state, headers);
+    start = separator.lastIndex;
+  }
+  state.tail = state.tail.slice(start);
+  if (state.tail.length > STREAM_PREFACE_MAX_BYTES) {
+    // The tail is now a single partial event. Distinguish a large
+    // content event from a non-content preface: everything from the
+    // event's first data: line on is its payload and stays whole,
+    // however large — the preface limits are enforced on raw bytes
+    // by the callers (prepare/relay byte counts), not by mangling
+    // this buffer. With no data: line yet, nothing here can be
+    // recognised as content, so keep only the newest window.
+    const dataStart = state.tail.search(/^data:/m);
+    state.tail =
+      dataStart === -1
+        ? state.tail.slice(-STREAM_PREFACE_MAX_BYTES)
+        : state.tail.slice(dataStart);
+  }
+  if (flush && state.tail.trim()) {
+    inspectSseEvent(state.tail, state, headers);
+    state.tail = "";
+  }
+};
+
+const streamTransportError = (err) =>
+  new LeafError(`leaf stream transport error: ${err?.message || err}`, {
+    tag: "Transport",
+    code: err?.cause?.code || err?.code || null,
+  });
+
+const readWithinWindow = async (pendingRead, ms, signal) => {
+  if (signal.aborted) return { kind: "aborted", error: signal.reason };
+  let timer;
+  let abortHandler;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "timeout" }), ms);
+  });
+  const aborted = new Promise((resolve) => {
+    abortHandler = () => resolve({ kind: "aborted", error: signal.reason });
+    signal.addEventListener("abort", abortHandler, { once: true });
+  });
+  try {
+    return await Promise.race([pendingRead, timeout, aborted]);
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", abortHandler);
+  }
+};
+
+const prepareStream = async (leafRes, signal, started) => {
+  if (!leafRes.body)
+    return {
+      error: new LeafError("leaf stream has no body", { tag: "Transport" }),
+    };
+  const reader = leafRes.body.getReader();
+  const state = newSseState(started);
+  const buffered = [];
+  let bufferedBytes = 0;
+  let pendingRead = null;
+  const deadline = Date.now() + STREAM_FIRST_CONTENT_WINDOW_MS;
+  const cancel = (reason) => {
+    try {
+      void reader.cancel(reason).catch(() => {});
+    } catch {}
+  };
+  const prepared = (ended = false) => ({
+    reader,
+    state,
+    buffered,
+    pendingRead,
+    ended,
+  });
+
+  for (;;) {
+    if (state.streamError?.beforeContent) {
+      cancel(state.streamError.error);
+      return { error: state.streamError.error };
+    }
+    if (state.contentStarted) return prepared();
+    if (state.done)
+      return {
+        error: new LeafError("leaf stream ended before content", {
+          tag: "ProviderInternal",
+        }),
+      };
+    if (bufferedBytes >= STREAM_PREFACE_MAX_BYTES) return prepared();
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return prepared();
+    if (signal.aborted) {
+      cancel(signal.reason);
+      return { error: streamTransportError(signal.reason) };
+    }
+
+    pendingRead = reader.read().then(
+      (result) => ({ kind: "read", result }),
+      (error) => ({ kind: "error", error }),
+    );
+    const result = await readWithinWindow(pendingRead, remaining, signal);
+    if (result.kind === "timeout") return prepared();
+    pendingRead = null;
+    if (result.kind === "aborted") {
+      cancel(result.error);
+      return { error: streamTransportError(result.error) };
+    }
+    if (result.kind === "error") return { error: streamTransportError(result.error) };
+    if (result.result.done) {
+      inspectSseBytes(null, state, leafRes.headers, true);
+      if (state.streamError?.beforeContent)
+        return { error: state.streamError.error };
+      if (!state.contentStarted)
+        return {
+          error: new LeafError("leaf stream ended before content", {
+            tag: "ProviderInternal",
+          }),
+        };
+      return prepared(true);
+    }
+    const value = result.result.value;
+    buffered.push(value);
+    bufferedBytes += value.byteLength;
+    inspectSseBytes(value, state, leafRes.headers);
+  }
+};
+
 // One plain chat-completions call to a leaf provider. Returns the fetch
 // Response (unchecked status handled by the caller for failover).
 const callLeaf = async (cfg, leaf, body, wantStream, signal, sessionLabel) => {
@@ -716,8 +1118,7 @@ const callLeaf = async (cfg, leaf, body, wantStream, signal, sessionLabel) => {
       retryable: 0,
     });
   const def = providerDef(cfg, leaf.providerId);
-  const staticKey = def?.options?.apiKey ? expandEnv(def.options.apiKey) : null;
-  const apiKey = staticKey || credentialKey(leaf.providerId);
+  const apiKey = leafCredential(cfg, leaf.providerId);
   if (!apiKey)
     throw new LeafError(`no credential for provider ${leaf.providerId}`, {
       tag: "Authentication",
@@ -780,10 +1181,10 @@ const usageFields = (usage) => {
 
 // ---------------------------------------------------------------- core
 
-// Run one completion through the route's candidates. Streaming is
-// two-phase: candidates are tried until one returns a 2xx (nothing has
-// been sent to the client yet), then onStream(res) takes over the
-// response and this returns the collected stream stats.
+// Run one completion through the route's candidates. For streaming, a
+// 2xx candidate is inspected through its first content delta (or a
+// bounded preface window); pre-content failures continue the walk, then
+// onStream takes over and returns the collected stream stats.
 const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
   const cfg = loadConfig();
   if (!cfg.routes[routeId])
@@ -794,8 +1195,20 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
   const wantStream = Boolean(body.stream);
   let candidates = resolveRoute(cfg, routeId, hooks.variantIn ?? null);
   candidates = applyDemotion(candidates, demotedPairs());
+  candidates = applyKnownExhaustedGate(cfg, candidates);
   if (!candidates.length)
     throw new LeafError(`route ${routeId} has no available members`, {
+      tag: "UnknownProvider",
+      retryable: 0,
+    });
+  // Credential-less leaves are skipped like disabled providers (#3228):
+  // a walk never spends one of its MAX_ATTEMPTS on a provider whose
+  // credential lookup comes back empty (inactive or missing row), and
+  // such a leaf never surfaces its misleading Authentication error as
+  // the run's terminal failure.
+  candidates = candidates.filter((c) => hasCredential(cfg, c.providerId));
+  if (!candidates.length)
+    throw new LeafError(`route ${routeId} has no credentialed members`, {
       tag: "UnknownProvider",
       retryable: 0,
     });
@@ -817,10 +1230,27 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
       const next = attempts[i + 1];
       const failedOverTo = next ? `${next.providerId}/${next.modelKey}` : null;
       let res;
+      const leafDeadlineCtl = new AbortController();
+      const leafTimer = setTimeout(
+        () =>
+          leafDeadlineCtl.abort(
+            new Error("opencode-route-proxy leaf first-response timeout"),
+          ),
+        LEAF_TIMEOUT_MS,
+      );
+      const leafSignal = AbortSignal.any([signal, leafDeadlineCtl.signal]);
       try {
-        res = await callLeaf(cfg, leaf, body, wantStream, signal, sessionLabel);
+        res = await callLeaf(
+          cfg,
+          leaf,
+          body,
+          wantStream,
+          leafSignal,
+          sessionLabel,
+        );
       } catch (err) {
         const ended = Date.now();
+        const leafTimedOut = !signal.aborted && leafDeadlineCtl.signal.aborted;
         recordAttempt({
           started,
           ended,
@@ -828,7 +1258,7 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
           providerId: leaf.providerId,
           modelId: leaf.modelKey,
           variant: leaf.variant,
-          outcome: signal.aborted ? "timeout" : "failure",
+          outcome: signal.aborted || leafTimedOut ? "timeout" : "failure",
           errorTag: err.tag || "Transport",
           errorCode: err.code ?? null,
           errorMessage: String(err.message || err).slice(0, 500),
@@ -841,6 +1271,8 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
         lastErr = err;
         if (signal.aborted) throw err;
         continue;
+      } finally {
+        clearTimeout(leafTimer);
       }
       if (!res.ok) {
         const ended = Date.now();
@@ -868,8 +1300,60 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
       }
       // Success path.
       if (wantStream) {
-        const stats = await hooks.onStream(res);
+        const prepared = await prepareStream(res, signal, started);
+        if (prepared.error) {
+          const ended = Date.now();
+          const err = prepared.error;
+          recordAttempt({
+            started,
+            ended,
+            routeId,
+            providerId: leaf.providerId,
+            modelId: leaf.modelKey,
+            variant: leaf.variant,
+            outcome: signal.aborted ? "timeout" : "failure",
+            errorTag: err.tag || "ProviderInternal",
+            errorCode: err.code ?? null,
+            errorStatus: err.status,
+            errorMessage: String(err.message || err).slice(0, 500),
+            retryable: err.retryable ?? 1,
+            outputStarted: false,
+            failedOverTo,
+            responseMs: ended - started,
+            quota: err.quota ?? null,
+          });
+          lastErr = err;
+          if (signal.aborted) throw err;
+          continue;
+        }
+        const stats = await hooks.onStream(res, prepared);
+        if (stats?.precommitError) {
+          const ended = Date.now();
+          const err = stats.precommitError;
+          recordAttempt({
+            started,
+            ended,
+            routeId,
+            providerId: leaf.providerId,
+            modelId: leaf.modelKey,
+            variant: leaf.variant,
+            outcome: signal.aborted ? "timeout" : "failure",
+            errorTag: err.tag || "ProviderInternal",
+            errorCode: err.code ?? null,
+            errorStatus: err.status,
+            errorMessage: String(err.message || err).slice(0, 500),
+            retryable: err.retryable ?? 1,
+            outputStarted: false,
+            failedOverTo,
+            responseMs: ended - started,
+            quota: err.quota ?? null,
+          });
+          lastErr = err;
+          if (signal.aborted) throw err;
+          continue;
+        }
         const ended = Date.now();
+        const err = stats?.errorDetails ?? null;
         recordAttempt({
           started,
           ended,
@@ -878,11 +1362,15 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
           modelId: leaf.modelKey,
           variant: leaf.variant,
           outcome: stats?.error ? "failure" : "success",
-          errorTag: stats?.error ? "ProviderInternal" : null,
+          errorTag: err?.tag ?? (stats?.error ? "ProviderInternal" : null),
+          errorCode: err?.code ?? null,
+          errorStatus: err?.status ?? null,
           errorMessage: stats?.error
             ? String(stats.error).slice(0, 500)
             : null,
-          outputStarted: true,
+          retryable: err?.retryable,
+          outputStarted: stats?.contentStarted ?? false,
+          quota: err?.quota ?? null,
           firstTokenMs: stats?.firstTokenMs ?? null,
           responseMs: ended - started,
           ...(stats?.usage ? usageFields(stats.usage) : {}),
@@ -940,39 +1428,112 @@ const parseRouteModel = (raw) => {
     : { routeId: id, variant: null };
 };
 
-// Relay a leaf SSE stream verbatim to the client while collecting the
-// final usage block and timing. Returns { usage, firstTokenMs, error }.
-const relayStream = async (leafRes, res) => {
-  const started = Date.now();
-  let firstTokenMs = null;
-  let usage = null;
-  let error = null;
-  const reader = leafRes.body.getReader();
-  const decoder = new TextDecoder();
-  let tail = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (firstTokenMs === null) firstTokenMs = Date.now() - started;
-      if (!res.destroyed && !res.writableEnded) res.write(value);
-      // Keep only the tail: usage rides in the final chunk(s).
-      tail = (tail + decoder.decode(value, { stream: true })).slice(-8192);
+// Relay the already-inspected preface and the rest of the SSE stream.
+// A failure before a content delta is still a candidate failure; after a
+// content delta has reached the client, retrying would splice responses.
+const relayStream = async (prepared, res, headers) => {
+  const { reader, state, buffered } = prepared;
+  let pendingRead = prepared.pendingRead;
+  let errorDetails = state.streamError?.error ?? null;
+  let preContent = state.contentStarted ? [] : [...buffered];
+  let preContentBytes = preContent.reduce((n, value) => n + value.byteLength, 0);
+  const precommitFailure = (err) => ({
+    usage: state.usage,
+    firstTokenMs: state.firstTokenMs,
+    contentStarted: false,
+    precommitError: err,
+  });
+  const write = (value) => {
+    if (!res.destroyed && !res.writableEnded) res.write(value);
+  };
+
+  if (state.contentStarted)
+    for (const value of buffered) write(value);
+  while (!prepared.ended) {
+    const next = pendingRead
+      ? await pendingRead
+      : await reader.read().then(
+          (result) => ({ kind: "read", result }),
+          (err) => ({ kind: "error", error: err }),
+        );
+    pendingRead = null;
+    if (next.kind === "error") {
+      const err = streamTransportError(next.error);
+      if (!state.contentStarted) {
+        try {
+          void reader.cancel(err).catch(() => {});
+        } catch {}
+        return precommitFailure(err);
+      }
+      errorDetails = err;
+      break;
     }
-  } catch (err) {
-    error = err?.message || String(err);
+    if (next.result.done) {
+      inspectSseBytes(null, state, headers, true);
+      if (state.streamError) errorDetails = state.streamError.error;
+      if (!state.contentStarted)
+        return precommitFailure(
+          errorDetails ||
+            new LeafError("leaf stream ended before content", {
+              tag: "ProviderInternal",
+            }),
+        );
+      break;
+    }
+
+    const value = next.result.value;
+    inspectSseBytes(value, state, headers);
+    if (state.streamError?.beforeContent && !state.contentStarted) {
+      try {
+        void reader.cancel(state.streamError.error).catch(() => {});
+      } catch {}
+      return precommitFailure(state.streamError.error);
+    }
+    if (!state.contentStarted) {
+      preContent.push(value);
+      preContentBytes += value.byteLength;
+      if (preContentBytes > STREAM_PREFACE_MAX_BYTES) {
+        // Distinguish a large content event from a non-content
+        // preface (Codex P2 on PR #5558): while the inspector's
+        // partial event already carries a data: payload, the event
+        // has not been judged yet — defer the limit until it
+        // completes. This matters when the prepare window expired
+        // mid-event, so the relay's byte count restarted part-way
+        // through one valid event. A hard ceiling still bounds a
+        // never-ending event.
+        if (
+          state.tail.includes("data:") &&
+          preContentBytes <= STREAM_EVENT_HARD_MAX_BYTES
+        )
+          continue;
+        const err = new LeafError(
+          "leaf stream preface exceeded the pre-content limit",
+          { tag: "ProviderInternal" },
+        );
+        // Cancel the rejected upstream before failing over (Codex
+        // P2 on PR #5558): without this, a successful replacement
+        // clears the shared deadline timer and the rejected response
+        // is left generating with no cancellation path — the
+        // adjacent pre-content SSE-error path above already cancels.
+        try {
+          void reader.cancel(err).catch(() => {});
+        } catch {}
+        return precommitFailure(err);
+      }
+      continue;
+    }
+    for (const chunk of preContent) write(chunk);
+    preContent = [];
+    write(value);
+    if (state.streamError) errorDetails = state.streamError.error;
   }
-  for (const line of tail.split("\n")) {
-    if (!line.startsWith("data:")) continue;
-    const data = line.slice(5).trim();
-    if (!data || data === "[DONE]") continue;
-    try {
-      const parsed = JSON.parse(data);
-      if (parsed.usage) usage = parsed.usage;
-      if (parsed.error) error = parsed.error.message || JSON.stringify(parsed.error);
-    } catch {}
-  }
-  return { usage, firstTokenMs, error };
+  return {
+    usage: state.usage,
+    firstTokenMs: state.firstTokenMs,
+    contentStarted: state.contentStarted,
+    error: errorDetails?.message ?? null,
+    errorDetails,
+  };
 };
 
 const handleChatCompletions = async (req, res, body) => {
@@ -995,18 +1556,19 @@ const handleChatCompletions = async (req, res, body) => {
     try {
       await runCompletion(routeId, body, clientCtl.signal, {
         variantIn: reqVariant,
-        onStream: async (leafRes) => {
-          res.writeHead(200, {
-            "content-type": "text/event-stream",
-            "cache-control": "no-cache",
-            connection: "keep-alive",
-          });
-          headersSent = true;
-          const stats = await relayStream(leafRes, res);
-          if (!res.destroyed && !res.writableEnded) res.end();
-          return stats;
+        onStream: async (leafRes, prepared) => {
+          if (!headersSent) {
+            res.writeHead(200, {
+              "content-type": "text/event-stream",
+              "cache-control": "no-cache",
+              connection: "keep-alive",
+            });
+            headersSent = true;
+          }
+          return relayStream(prepared, res, leafRes.headers);
         },
       });
+      if (!res.destroyed && !res.writableEnded) res.end();
     } catch (err) {
       if (!headersSent) {
         return sendError(res, 502, String(err?.message || err));
@@ -1055,15 +1617,29 @@ const server = createServer(async (req, res) => {
       });
     }
     if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
-      let raw = "";
-      for await (const part of req) raw += part;
-      let body = {};
-      try {
-        body = JSON.parse(raw || "{}");
-      } catch {
-        return sendError(res, 400, "invalid JSON body");
-      }
-      return await handleChatCompletions(req, res, body);
+      // Collect the body as bytes and decode UTF-8 once, after the full
+      // body arrives (#4335): per-chunk string coercion corrupts multibyte
+      // characters split across TCP chunks. Cap 50 MB like the sibling
+      // proxies (bin/request-body.mjs collector) with a 413 past the cap.
+      const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
+      req.on("data", (chunk) => {
+        if (bodyCollector.tooLarge) return;
+        if (!bodyCollector.push(chunk)) {
+          sendError(res, 413, "request body too large");
+          req.destroy();
+        }
+      });
+      req.on("end", async () => {
+        if (bodyCollector.tooLarge) return;
+        let body = {};
+        try {
+          body = JSON.parse(bodyCollector.text() || "{}");
+        } catch {
+          return sendError(res, 400, "invalid JSON body");
+        }
+        await handleChatCompletions(req, res, body);
+      });
+      return;
     }
     return sendError(res, 404, `no route for ${req.method} ${url.pathname}`);
   } catch (err) {

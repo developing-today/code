@@ -1,0 +1,17 @@
+[
+  {
+    "sessionId": "ses_contract_opencode_01",
+    "source": "opencode-sandbox",
+    "title": "Contract corpus sandbox session for https://github.com/developing-today/code/issues/1176",
+    "createdAt": "2026-10-27T03:00:00Z",
+    "lastActivityAt": "2026-10-27T03:12:00Z",
+    "model": "opencode-example-model"
+  },
+  {
+    "sessionId": "contract-jules-01",
+    "source": "jules",
+    "title": "Contract corpus keeper session for https://github.com/developing-today/code/issues/1110",
+    "createdAt": "2026-10-26T23:03:16Z",
+    "lastActivityAt": "2026-10-27T03:05:00Z"
+  }
+]

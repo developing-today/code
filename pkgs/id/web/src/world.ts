@@ -1,6 +1,7 @@
 /** Browser presentation for the server-authoritative world session. */
 
 import { terminalBytesForKey } from "./world-keyboard";
+import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
 import { parseWorldSeed } from "./world-seed";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 
@@ -85,19 +86,15 @@ function initWorld(): void {
   const recordsRefresh = element<HTMLButtonElement>(root, "[data-world-records-refresh]");
   const copyButton = element<HTMLButtonElement>(root, "[data-world-copy]");
   const inviteOutput = element<HTMLElement>(root, "[data-world-invite-output]");
+  // The host controls (admin token, invite minting, module install,
+  // host view) are optional: the program-only surface (#2146 phase 2)
+  // renders a guest page without them, and their wiring below is
+  // guarded. The guest surface itself stays required.
   if (
     !name ||
-    !admin ||
     !capability ||
     !worldInput ||
-    !inviteButton ||
-    !moduleInput ||
-    !sourceInput ||
-    !moduleSeed ||
-    !installButton ||
-    !compileButton ||
     !joinButton ||
-    !hostViewButton ||
     !chatForm ||
     !chatInput ||
     !inputForm ||
@@ -119,6 +116,9 @@ function initWorld(): void {
   const worldSocketPath = root.dataset.worldSocket ?? "/ws/world";
   // `/world?world=arena` opens the page on that world.
   worldInput.value = new URLSearchParams(window.location.search).get("world") ?? "";
+  // A program-only surface (#2146 phase 2) pins its world server-side:
+  // the rendered data-world-program wins over the ?world= parameter.
+  if (root.dataset.worldProgram) worldInput.value = root.dataset.worldProgram;
   // The world a request is addressed to; `null` means the server's default.
   const selectedWorld = (): string | null => worldInput.value.trim() || null;
 
@@ -149,8 +149,14 @@ function initWorld(): void {
 
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
-  const isFiniteNumber = (value: unknown): value is number =>
-    typeof value === "number" && Number.isFinite(value);
+  // #7928: fields a socket handler renders or acts on must be strings
+  // when present. A present-but-non-string value (object, array,
+  // number, null) makes the frame an invalid response for that
+  // handler — never coerced into the UI ("[object Object]", "a,b")
+  // and never treated as a success.
+  const hasNonStringField = (frame: Record<string, unknown>, fields: string[]): boolean =>
+    fields.some((field) => frame[field] !== undefined && typeof frame[field] !== "string");
+  const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
   const isWorldSnapshot = (value: unknown): value is NonNullable<WorldFrame["snapshot"]> =>
     isRecord(value) &&
     typeof value.world_id === "string" &&
@@ -175,6 +181,16 @@ function initWorld(): void {
     }
     return false;
   };
+  // #7908: the records frame is shape-checked like its snapshot/event
+  // siblings. `records` merges into the rendered set, so a non-object
+  // value (a string merges per-character, an array per-index, a number
+  // silently as an empty page) corrupts the render; `next_after` is
+  // echoed back verbatim as the `after` cursor, so a non-string cursor
+  // poisons the pagination chain. Both must match the declared
+  // WorldFrame contract before anything is merged or adopted.
+  const isWorldRecords = (frame: WorldFrame): boolean =>
+    (frame.records === undefined || isRecord(frame.records)) &&
+    (frame.next_after === undefined || frame.next_after === null || typeof frame.next_after === "string");
   const rejectFrame = () => {
     setStatus("Received an invalid world frame", "error");
     appendLine(log, "error: invalid world frame");
@@ -236,7 +252,20 @@ function initWorld(): void {
         }
         break;
       }
-      case "view":
+      case "view": {
+        // #7924: view frames are shape-checked before any state changes:
+        // data must be a string and a present revision must be a finite
+        // number, mirroring the snapshot/event rejectFrame() discipline.
+        if (
+          (frame.data !== undefined && typeof frame.data !== "string") ||
+          (frame.view_revision !== undefined && frame.view_revision !== null && !isFiniteNumber(frame.view_revision)) ||
+          (frame.base_view_revision !== undefined &&
+            frame.base_view_revision !== null &&
+            !isFiniteNumber(frame.base_view_revision))
+        ) {
+          rejectFrame();
+          return;
+        }
         if (frame.patch) {
           if (
             renderedSurface &&
@@ -266,9 +295,19 @@ function initWorld(): void {
           renderedViewRevision = frame.view_revision ?? null;
         }
         break;
+      }
       case "records": {
         if (!recordsPending) return;
-        Object.assign(records, frame.records ?? {});
+        if (!isWorldRecords(frame)) {
+          rejectFrame();
+          return;
+        }
+        // #2953 (define, don't assign): frame.records is peer-supplied, so
+        // its keys are stored with define semantics — Object.assign would
+        // run a "__proto__" key through the setter instead of storing it.
+        for (const [k, v] of Object.entries(frame.records ?? {})) {
+          Object.defineProperty(records, k, { value: v, writable: true, enumerable: true, configurable: true });
+        }
         recordsAfter = frame.next_after ?? null;
         if (recordsAfter === null) {
           recordsPending = false;
@@ -293,6 +332,16 @@ function initWorld(): void {
       }
       case "invite": {
         const invite = frame.invite ?? frame;
+        // #7924: a present capability must be a string before it can be
+        // persisted; a missing capability stays a no-op (below).
+        if (
+          (frame.invite !== undefined && !isRecord(frame.invite)) ||
+          (invite.capability !== undefined && invite.capability !== null && typeof invite.capability !== "string") ||
+          (invite.display_name !== undefined && invite.display_name !== null && typeof invite.display_name !== "string")
+        ) {
+          rejectFrame();
+          return;
+        }
         if (invite.capability) {
           showCapability(invite.capability);
           appendLine(log, `Invite created for ${invite.display_name ?? (name.value || "guest")}`);
@@ -300,10 +349,17 @@ function initWorld(): void {
         }
         break;
       }
-      case "error":
+      case "error": {
+        // #7924: a present message must be a string; never display a
+        // coerced non-string value.
+        if (frame.message !== undefined && frame.message !== null && typeof frame.message !== "string") {
+          rejectFrame();
+          return;
+        }
         setStatus(frame.message ?? "World request failed", "error");
         appendLine(log, `error: ${frame.message ?? "world request failed"}`);
         break;
+      }
     }
   };
 
@@ -388,6 +444,7 @@ function initWorld(): void {
   recordsRefresh.addEventListener("click", requestRecords);
 
   refreshHostView = async () => {
+    if (!admin || !hostViewButton) return;
     const secret = admin.value.trim();
     if (!secret) {
       setStatus("Enter the world admin token to view as host", "error");
@@ -410,11 +467,13 @@ function initWorld(): void {
     renderedViewRevision = null;
     const world = selectedWorld();
     let after: string | null = null;
+    let pages = 0;
     let recordsSequence: number | null = null;
     const allRecords: Record<string, unknown> = {};
     let firstPage = true;
     try {
       do {
+        pages += 1;
         const params = new URLSearchParams();
         if (world) params.set("world", world);
         if (after) params.set("after", after);
@@ -423,24 +482,21 @@ function initWorld(): void {
           cache: "no-store",
         });
         if (!response.ok) {
-          throw new Error(
-            response.status === 401 ? "Host authorization denied" : "Host view unavailable",
-          );
+          throw new Error(response.status === 401 ? "Host authorization denied" : "Host view unavailable");
         }
         if (generation !== hostViewGeneration || !hostMode) return;
-        const result = (await response.json()) as {
-          snapshot?: NonNullable<WorldFrame["snapshot"]>;
-          view?: string | null;
-          surface?: ScreenSurface | null;
-          records_sequence: number;
-          records: Record<string, unknown>;
-          next_after: string | null;
-        };
+        // Validate the page at the fetch boundary before any state is
+        // touched (#7833): a wrong-shape 200 must fail closed with the
+        // designed "Host view unavailable" error, never a raw TypeError
+        // or bogus per-character records.
+        const result = parseWorldHostViewPage(await response.json());
         if (recordsSequence !== null && recordsSequence !== result.records_sequence) {
           throw new Error("World records changed while paging; refresh the host view");
         }
         recordsSequence = result.records_sequence;
-        Object.assign(allRecords, result.records);
+        for (const [k, v] of Object.entries(result.records)) {
+          Object.defineProperty(allRecords, k, { value: v, writable: true, enumerable: true, configurable: true });
+        }
         if (firstPage) {
           firstPage = false;
           cursor = result.snapshot?.current_sequence ?? 0;
@@ -464,7 +520,7 @@ function initWorld(): void {
           }
           appendLine(log, `Viewing ${result.snapshot?.world_id ?? world ?? "default world"} as host (read-only)`);
         }
-        after = result.next_after;
+        after = advanceHostViewCursor({ previous: after, next: result.next_after, page: pages });
       } while (after !== null);
       recordsView.textContent = JSON.stringify(allRecords, null, 2);
       setStatus("Read-only host view", "good");
@@ -476,7 +532,7 @@ function initWorld(): void {
       hostViewButton.disabled = false;
     }
   };
-  hostViewButton.addEventListener("click", () => void refreshHostView());
+  hostViewButton?.addEventListener("click", () => void refreshHostView());
 
   const connect = () => {
     const token = capability.value.trim();
@@ -539,7 +595,8 @@ function initWorld(): void {
     });
   };
 
-  inviteButton.addEventListener("click", async () => {
+  inviteButton?.addEventListener("click", async () => {
+    if (!admin || !inviteButton) return;
     const secret = admin.value;
     if (!secret) {
       setStatus("Enter the world admin token to create an invite", "error");
@@ -558,11 +615,14 @@ function initWorld(): void {
       if (!response.ok) {
         throw new Error(response.status === 401 ? "Admin token refused" : `Invite failed (${response.status})`);
       }
-      const result = (await response.json()) as { capability: string; display_name: string };
+      // Validate at the fetch boundary (#7833): a malformed 200 must
+      // never reach showCapability, which persists the capability to
+      // sessionStorage.
+      const result = parseWorldInviteResponse(await response.json());
       showCapability(result.capability);
       admin.value = "";
       setStatus("Invite created. Copy it or join this browser.", "good");
-      appendLine(log, `Invite created for ${result.display_name}`);
+      appendLine(log, `Invite created for ${result.display_name ?? (name.value || "guest")}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Invite failed", "error");
     } finally {
@@ -570,7 +630,8 @@ function initWorld(): void {
     }
   });
 
-  installButton.addEventListener("click", () => {
+  installButton?.addEventListener("click", () => {
+    if (!admin || !installButton || !moduleInput || !moduleSeed) return;
     const secret = admin.value;
     const file = moduleInput.files?.[0];
     if (!secret) {
@@ -609,10 +670,24 @@ function initWorld(): void {
       );
     });
     upload.addEventListener("message", async (message) => {
-      let frame: WorldFrame;
+      let parsed: unknown;
       try {
-        frame = JSON.parse(String(message.data)) as typeof frame;
+        parsed = JSON.parse(String(message.data)) as unknown;
       } catch {
+        setStatus("Host returned an invalid upload response", "error");
+        upload.close();
+        return;
+      }
+      if (!isRecord(parsed) || typeof parsed.type !== "string") {
+        setStatus("Host returned an invalid upload response", "error");
+        upload.close();
+        return;
+      }
+      const frame = parsed as WorldFrame;
+      if (
+        (frame.type === "error" && hasNonStringField(parsed, ["message"])) ||
+        (frame.type === "module_installed" && hasNonStringField(parsed, ["module_hash"]))
+      ) {
         setStatus("Host returned an invalid upload response", "error");
         upload.close();
         return;
@@ -625,7 +700,12 @@ function initWorld(): void {
       if (frame.type === "upload_ready" && !uploadStarted) {
         uploadStarted = true;
         const chunkBytes = frame.chunk_bytes;
-        if (!chunkBytes || chunkBytes < 1 || chunkBytes > 6 * 1024) {
+        if (
+          typeof chunkBytes !== "number" ||
+          !Number.isInteger(chunkBytes) ||
+          chunkBytes < 1 ||
+          chunkBytes > 6 * 1024
+        ) {
           setStatus("Host returned an invalid module chunk size", "error");
           upload.close();
           return;
@@ -661,7 +741,8 @@ function initWorld(): void {
     });
   });
 
-  compileButton.addEventListener("click", async () => {
+  compileButton?.addEventListener("click", async () => {
+    if (!admin || !compileButton || !sourceInput || !moduleSeed) return;
     const secret = admin.value;
     const selected = Array.from(sourceInput.files ?? []);
     if (!secret) {
@@ -730,10 +811,24 @@ function initWorld(): void {
       );
     });
     compiler.addEventListener("message", (message) => {
-      let frame: WorldFrame;
+      let parsed: unknown;
       try {
-        frame = JSON.parse(String(message.data)) as WorldFrame;
+        parsed = JSON.parse(String(message.data)) as unknown;
       } catch {
+        setStatus("Host returned an invalid compile response", "error");
+        compiler.close();
+        return;
+      }
+      if (!isRecord(parsed) || typeof parsed.type !== "string") {
+        setStatus("Host returned an invalid compile response", "error");
+        compiler.close();
+        return;
+      }
+      const frame = parsed as WorldFrame;
+      if (
+        (frame.type === "error" && hasNonStringField(parsed, ["message"])) ||
+        (frame.type === "compiled" && hasNonStringField(parsed, ["module_hash", "diagnostics"]))
+      ) {
         setStatus("Host returned an invalid compile response", "error");
         compiler.close();
         return;

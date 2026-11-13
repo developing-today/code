@@ -1,0 +1,69 @@
+name: mcpx-fix-test-guard
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Failing-first enforcement (#1969, option C): a fix PR touching
+# pkgs/mcpx/** must change a *_test.go / *.test.ts file under
+# pkgs/mcpx/, or attest the skip in its body with
+# `No test: <reason>`. Pure bash — no nix, no toolchain — so this
+# stays a seconds-long basic check. The path filter is the scope
+# rule: PRs that touch no mcpx file never fire this workflow, so no
+# new check appears for them.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/mcpx/**"
+      - ".github/scripts/check-mcpx-fix-test.sh"
+      - ".github/scripts/check-mcpx-fix-test.test.sh"
+      - ".github/workflows/mcpx-fix-test-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: mcpx-fix-test-guard-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fix-test-guard:
+    name: "basic: mcpx fix carries a test (#1969)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Guard contract tests (#1969)
+        run: bash .github/scripts/check-mcpx-fix-test.test.sh
+      - name: Fix PR touching pkgs/mcpx carries a test (#1969)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/files" \
+            --paginate --jq '.[].filename' > "$RUNNER_TEMP/pr-files.txt"
+          # Fix rule 2: a Fixes/Closes/Resolves #<n> link whose issue
+          # carries the `bug` or `kind/bug` label makes this a fix PR.
+          linked_bug=false
+          numbers="$(printf '%s' "$PR_BODY" \
+            | grep -oiE '(fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)[[:space:]]+#[0-9]+' \
+            | grep -oE '[0-9]+$' | sort -u || true)"
+          for n in $numbers; do
+            labels="$(gh api "repos/${{ github.repository }}/issues/$n" --jq '[.labels[].name] | join(",")' || true)"
+            case ",$labels," in
+              *,bug,* | *,kind/bug,*) linked_bug=true ;;
+            esac
+          done
+          bash .github/scripts/check-mcpx-fix-test.sh \
+            --title "$PR_TITLE" \
+            --body-file "$RUNNER_TEMP/pr-body.md" \
+            --files-file "$RUNNER_TEMP/pr-files.txt" \
+            --linked-bug "$linked_bug"

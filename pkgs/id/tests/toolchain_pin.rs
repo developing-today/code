@@ -8,6 +8,18 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
+
+const ROC_EXAMPLE_BUILDS: [&str; 8] = [
+    "examples/lounge/build.sh",
+    "examples/roc-chat/build.sh",
+    "examples/roc-counter/build.sh",
+    "examples/roc-grid/build.sh",
+    "examples/roc-screen/build.sh",
+    "examples/roc-text-counter/build.sh",
+    "examples/territory/build.sh",
+    "apps/tic-tac-toe/program/build.sh",
+];
 
 /// The Nix side of the pin: a literal version, or a value read from the file.
 #[derive(Debug, PartialEq, Eq)]
@@ -68,6 +80,78 @@ fn read_pin_files() -> (String, String) {
     let toml = fs::read_to_string(root.join("rust-toolchain.toml")).unwrap();
     let nix = fs::read_to_string(root.join("default.nix")).unwrap();
     (toml, nix)
+}
+
+#[test]
+fn test_roc_examples_and_nix_package_share_the_compiler_pin() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let pin = fs::read_to_string(root.join("nix/roc-version")).unwrap();
+    let pinned_version = pin.trim();
+    assert!(!pinned_version.is_empty(), "nix/roc-version is empty");
+
+    let roc_nix = fs::read_to_string(root.join("nix/roc.nix")).unwrap();
+    assert!(
+        roc_nix.contains("tag = lib.removeSuffix \"\\n\" (builtins.readFile ./roc-version);")
+            && roc_nix.contains("lib.removePrefix \"nightly-\" tag"),
+        "nix/roc.nix must derive its download tag from nix/roc-version"
+    );
+
+    for build_script in ROC_EXAMPLE_BUILDS {
+        let script = fs::read_to_string(root.join(build_script)).unwrap();
+        assert!(
+            script.contains("roc-toolchain.sh"),
+            "{build_script} must check the shared Roc compiler pin"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_example_build_refuses_a_different_roc_before_building() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let temp = tempfile::tempdir().unwrap();
+    let bash = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join("bash"))
+        .find(|candidate| candidate.is_file())
+        .and_then(|candidate| fs::canonicalize(candidate).ok())
+        .expect("bash is available on PATH");
+    let roc_stub = temp.path().join("roc-stub");
+    let build_marker = temp.path().join("build-was-run");
+    fs::write(
+        &roc_stub,
+        format!(
+            "#!{}\nif [[ \"${{1:-}}\" == version ]]; then\n  echo 'Roc compiler version unpinned-test'\nelse\n  : > \"$ROC_BUILD_MARKER\"\nfi\n",
+            bash.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&roc_stub, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new("bash")
+        .arg("examples/territory/build.sh")
+        .current_dir(root)
+        .env("ROC", &roc_stub)
+        .env("ROC_BUILD_MARKER", &build_marker)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "an unpinned Roc compiler was accepted"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let pinned_version = fs::read_to_string(root.join("nix/roc-version")).unwrap();
+    assert!(stderr.contains(pinned_version.trim()), "{stderr}");
+    assert!(
+        stderr.contains("Roc compiler version unpinned-test"),
+        "{stderr}"
+    );
+    assert!(
+        !build_marker.exists(),
+        "the build command ran before refusal"
+    );
 }
 
 #[test]
@@ -171,5 +255,69 @@ fn the_root_docs_name_the_pinned_rust_version() {
         stale.is_empty(),
         "docs name a Rust version other than the pin {pinned}:\n{}",
         stale.join("\n")
+    );
+}
+
+/// The example directories scripts/rebuild-roc-examples.sh rebuilds, read
+/// from its examples=( ...) list. The script is the enumeration the
+/// roc-examples flake check actually runs, so it is the source of truth the
+/// pin list is compared against (#7909).
+fn rebuild_script_examples(script: &str) -> std::collections::BTreeSet<String> {
+    let mut in_list = false;
+    let mut examples = std::collections::BTreeSet::new();
+    for line in script.lines() {
+        let line = line.trim();
+        if line.starts_with("examples=(") {
+            in_list = true;
+            continue;
+        }
+        if in_list {
+            if line == ")" {
+                break;
+            }
+            if !line.is_empty() {
+                examples.insert(line.to_owned());
+            }
+        }
+    }
+    examples
+}
+
+/// Oracle: the rebuild script and ROC_EXAMPLE_BUILDS name the same set of
+/// examples. #7909: roc-text-counter was in the pin list but not the rebuild
+/// list, so CI never rebuilt its checked-in wasm; a future example must not
+/// be able to land in one enumeration only.
+#[test]
+fn rebuild_script_and_pin_list_cover_the_same_roc_examples() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script = fs::read_to_string(root.join("scripts/rebuild-roc-examples.sh")).unwrap();
+    let rebuilt = rebuild_script_examples(&script);
+    let pinned: std::collections::BTreeSet<String> = ROC_EXAMPLE_BUILDS
+        .iter()
+        .map(|build| {
+            build
+                .strip_suffix("/build.sh")
+                .expect("ROC_EXAMPLE_BUILDS entries name a build.sh")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        rebuilt, pinned,
+        "scripts/rebuild-roc-examples.sh and ROC_EXAMPLE_BUILDS disagree on the Roc examples"
+    );
+}
+
+#[test]
+fn rebuild_script_examples_reads_the_bash_list() {
+    let script = "examples=(\n  examples/lounge\n  apps/tic-tac-toe/program\n)\n";
+    let examples = rebuild_script_examples(script);
+    assert_eq!(
+        examples,
+        [
+            "apps/tic-tac-toe/program".to_owned(),
+            "examples/lounge".to_owned()
+        ]
+        .into_iter()
+        .collect()
     );
 }

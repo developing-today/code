@@ -16,8 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
+	"syscall"
 	"unicode"
 )
 
@@ -174,8 +174,10 @@ func readDir(dir string, opt Options, explicit bool) (Resolved, error) {
 				if entryInfo.Mode()&fs.ModeSymlink != 0 {
 					entryInfo, err = os.Stat(entryPath)
 					if err != nil {
-						if errors.Is(err, fs.ErrNotExist) {
-							// A dangling link has no regular target to read.
+						if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ELOOP) {
+							// A dangling link has no regular target to read,
+							// and a link loop can never resolve to one:
+							// neither names a file this walk could read.
 							continue
 						}
 						return fmt.Errorf("reading %s: %w", entryPath, err)
@@ -263,10 +265,8 @@ func naturalLess(a, b string) bool {
 			for bi < len(b) && isDigit(b[bi]) {
 				bi++
 			}
-			an, aerr := strconv.ParseInt(a[as:ai], 10, 64)
-			bn, berr := strconv.ParseInt(b[bs:bi], 10, 64)
-			if aerr == nil && berr == nil && an != bn {
-				return an < bn
+			if c := compareDigitRuns(a[as:ai], b[bs:bi]); c != 0 {
+				return c < 0
 			}
 			continue
 		}
@@ -278,6 +278,23 @@ func naturalLess(a, b string) bool {
 		bi++
 	}
 	return len(a)-ai < len(b)-bi
+}
+
+// compareDigitRuns compares two digit runs numerically at arbitrary
+// precision: strip leading zeros, then a longer run is the larger number,
+// and equal-length runs compare lexically. Parsing into an int64 instead
+// silently gave up on runs longer than 19 digits, so large-numbered
+// fragments ordered arbitrarily (#3775). Returns -1, 0, or +1.
+func compareDigitRuns(a, b string) int {
+	a = strings.TrimLeft(a, "0")
+	b = strings.TrimLeft(b, "0")
+	if len(a) != len(b) {
+		if len(a) < len(b) {
+			return -1
+		}
+		return 1
+	}
+	return strings.Compare(a, b)
 }
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }

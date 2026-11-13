@@ -175,6 +175,40 @@ describe("world page records fetch (#1458)", () => {
     expect(socket.sent("records")).toHaveLength(7);
   });
 
+  it("define semantics (#2953): prototype-spelled record keys from a peer frame are stored, not set", () => {
+    // The frame is built by JSON.parse so "__proto__" is a genuine own
+    // key of the records object, exactly as a peer-supplied frame
+    // delivers it. With assignment semantics (Object.assign) the object
+    // value would move the records object's prototype and the string
+    // value would be silently dropped; neither would render.
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    const objectFrame = JSON.parse(
+      '{"type":"records","records":{"__proto__":{"polluted":"no"},"constructor":"c-value","toString":"t-value","ordinary":1},"next_after":null}',
+    ) as Record<string, unknown>;
+    socket.deliver(objectFrame);
+    const rendered = renderedRecords();
+    expect(Object.hasOwn(rendered, "__proto__")).toBe(true);
+    expect(rendered["__proto__"]).toEqual({ polluted: "no" });
+    expect(rendered["constructor"]).toBe("c-value");
+    expect(rendered["toString"]).toBe("t-value");
+    expect(rendered["ordinary"]).toBe(1);
+    // JSON round-trip preserved every key, and nothing polluted the
+    // shared prototype.
+    expect(JSON.parse(JSON.stringify(rendered))).toEqual(rendered);
+    expect(Object.hasOwn(Object.prototype, "polluted")).toBe(false);
+    expect(({} as Record<string, unknown>)["polluted"]).toBeUndefined();
+
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    const stringFrame = JSON.parse(
+      '{"type":"records","records":{"__proto__":"string-value"},"next_after":null}',
+    ) as Record<string, unknown>;
+    socket.deliver(stringFrame);
+    const renderedString = renderedRecords();
+    expect(Object.hasOwn(renderedString, "__proto__")).toBe(true);
+    expect(renderedString["__proto__"]).toBe("string-value");
+    expect(Object.getPrototypeOf(renderedString)).toBe(Object.prototype);
+  });
+
   it("rejects malformed snapshots without partial state changes and accepts the next valid snapshot", () => {
     const status = q<HTMLOutputElement>("[data-world-status]");
     const participantList = q<HTMLElement>("[data-world-participants]");
@@ -237,7 +271,10 @@ describe("world page records fetch (#1458)", () => {
       },
       { type: "event", event: { sequence: 106, participant_id: "2", kind: { kind: "input", data: [27] } } },
       { type: "event", event: { participant_id: 2, kind: { kind: "chat", data: "bad sequence" } } },
-      { type: "event", event: { sequence: Number.NaN, participant_id: 2, kind: { kind: "chat", data: "bad sequence" } } },
+      {
+        type: "event",
+        event: { sequence: Number.NaN, participant_id: 2, kind: { kind: "chat", data: "bad sequence" } },
+      },
     ];
 
     for (const frame of malformedEvents) {
@@ -256,5 +293,49 @@ describe("world page records fetch (#1458)", () => {
     expect(reconnectedSocket).toBeDefined();
     reconnectedSocket!.open();
     expect(reconnectedSocket!.sent("join")[0]).toHaveProperty("after", 9);
+  });
+
+  it("rejects wrong-shape records frames without changing rendered records or fetch state (#7908)", () => {
+    const status = q<HTMLOutputElement>("[data-world-status]");
+
+    // The events test above ends by reconnecting: the module's live
+    // socket is the newest one, and the describe-scope `socket` is stale.
+    socket = FakeSocket.all.at(-1)!;
+
+    // Establish a known render baseline through one clean fetch.
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    socket.deliver({ type: "records", records: { seed: 1 }, next_after: null });
+    expect(renderedRecords()).toEqual({ seed: 1 });
+
+    // Start a fresh fetch; every frame below arrives mid-fetch.
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    const recordsRequests = socket.sent("records").length;
+
+    const malformedRecords: Array<Record<string, unknown>> = [
+      { type: "records", records: "abc", next_after: null },
+      { type: "records", records: [10, 20], next_after: null },
+      { type: "records", records: 42, next_after: null },
+      { type: "records", records: true, next_after: null },
+      { type: "records", records: null, next_after: null },
+      // A valid records object must not merge when the cursor is wrong:
+      // the frame is validated whole, before any state changes.
+      { type: "records", records: { ok: 1 }, next_after: 42 },
+      { type: "records", records: { ok: 1 }, next_after: { cursor: "x" } },
+    ];
+
+    for (const frame of malformedRecords) {
+      socket.deliver(frame);
+      expect(status.textContent).toBe("Received an invalid world frame");
+      expect(status.dataset.state).toBe("error");
+      // Rendered records untouched, and no bad cursor was echoed back:
+      // the fetch sent nothing new and is still pending.
+      expect(renderedRecords()).toEqual({ seed: 1 });
+      expect(socket.sent("records")).toHaveLength(recordsRequests);
+    }
+
+    // The pending fetch still completes normally on the next valid frame.
+    socket.deliver({ type: "records", records: { final: 2 }, next_after: null });
+    expect(renderedRecords()).toEqual({ final: 2 });
+    expect(socket.sent("records")).toHaveLength(recordsRequests);
   });
 });

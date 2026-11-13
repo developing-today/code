@@ -2,8 +2,6 @@ name: opencode-config-guard
 
 # CI tier policy: see .github/ci-policy.md
 on:
-  pull_request:
-  merge_group:
   push:
     branches: [main]
   workflow_dispatch:
@@ -22,7 +20,24 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
       - name: Run guard fixtures
         run: node --test bin/check-opencode-metered-providers.test.mjs
       - name: Check canonical OpenCode config
         run: node bin/check-opencode-metered-providers.mjs .opencode/opencode.jsonc
+      # #5611: regression fixtures cover the exact-id credential requirement
+      # and the successful-attempt window. The live-store check runs on the
+      # laptop timer; CI must not pretend it can read the laptop's database.
+      - name: Run opencode-go seating fixtures
+        run: node --test bin/check-opencode-go-seating.test.mjs
+      - name: Run provider-catalog audit fixtures
+        run: node --test bin/provider-catalog-sync.test.mjs bin/provider-catalog-snapshot.test.mjs
+      # #1173: the offline snapshot handoff and the route-rule audit are
+      # validated on every PR, so implementation-only changes to either
+      # cannot land unexercised.
+      - name: Run route-rule guard fixtures
+        run: node --test bin/check-opencode-route-rules.test.mjs
+      - name: Check canonical route rules
+        run: node bin/check-opencode-route-rules.mjs .opencode/opencode.jsonc

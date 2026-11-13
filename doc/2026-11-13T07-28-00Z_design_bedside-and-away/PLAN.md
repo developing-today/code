@@ -1,0 +1,15 @@
+# Initial design-mill plan and dependency order
+
+This is a proposed decomposition, not an implementation issue list. A reviewer must check all scope against the requirement ledger and source messages.
+
+| Order | Design packets to produce | Example verification for downstream issues |
+| --- | --- | --- |
+| 0 | Complete source ledger; prototype and schema inventory; policy questions; immutable source references | Every source row has a disposition and a reviewer can trace it in both directions. No requirement disappears into the word “etc.” |
+| 1 | Tenant/store identities and membership; data model and authenticated access; migration, rollback and threat model | A nonmember cannot read private data through direct IDs, search, summaries, evidence, snapshots, history or export. Link accounts only with proof from both sides. |
+| 2 | Stable item and category IDs; variants and association graph; change journal, versioning, undo, merge and permissions across history | Split/regroup is atomic, preserves every existing ID, creates only new group IDs, rejects cycles, and undoes without overwriting concurrent unrelated edits. |
+| 3 | Shopping and evidence intake; CPAP compatibility; photos; market research, refresh policy and rules | Canonical ASIN/title dedupe never conflates variant SKUs. Provenance and capture date survive export. Source text is untrusted. Retailer sessions, keys and personal details never enter records. |
+| 4 | Decision and reports; inventory, consumption, expenses and receipt staging; categorization and defaults | Unknown fields stay unknown. Spending uses explicit allocation. Defaults are preview-only unless scoped policy says otherwise; cancelled proposals cannot be bulk-accepted. |
+| 5 | General/store/category/item steering; versioned request schema; optional Archer delivery, apply and verified receipt | Every allowed target supports steering. Dispatch is authenticated, idempotent, auditable and does not expose unrelated records. An outdated or unauthorized result cannot change data. |
+| 6 | Release/cutover; optional ChatGPT surface; operations, credentials, backups and reporting | Same-data connector uses the same authorization service; account-wide access is never implicit. Verify live read/write, restart, backup restore and rollback before marking production-ready. |
+
+Identity/data modeling gates other stateful designs, but shopping and decision research can run concurrently without touching the prototype. Keep manual editing, automatic research, agent dispatch and external purchases distinct. Draft, review and accept each component before deriving its implementation issues; test changes on a private disposable environment. Report individual requirements explicitly deferred for later (e.g., Atlas/Snowflake integration) and the reason, rather than accepting them as complete.

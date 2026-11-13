@@ -10,6 +10,13 @@
 #   - in the flake but not listed and not excluded -> unlisted check
 #   - listed but no longer defined by the flake    -> stale entry
 #
+# List entries are names, so the listed set is normalised before the
+# comparison (#6881): CR line endings and surrounding whitespace are
+# stripped, and a name listed twice is reported as a duplicate by
+# name — never as a stale entry (the raw comm sets misread the extra
+# copy that way, and a trailing space or CRLF read as simultaneous
+# unlisted+stale errors for one well-formed entry).
+#
 # The exclusion list below is the ONLY place it lives: the `default`
 # aggregate (it re-runs the listed set in one derivation), the heavy
 # checks that run nightly in id-e2e-nightly.yml (which also runs the
@@ -46,8 +53,17 @@ excluded=(
   crash-gate
 )
 
+# normalise_names: read names on stdin, print one clean name per line —
+# CR stripped, surrounding whitespace trimmed, blanks and comments
+# dropped. Used for both the fixture flake set and the listed set so
+# cosmetic file-format differences never read as different checks.
+normalise_names() {
+  sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' |
+    grep -v -e '^#' -e '^$' || true
+}
+
 if [[ -n ${ID_FLAKE_CHECKS_FILE:-} ]]; then
-  flake_checks="$(sort "$ID_FLAKE_CHECKS_FILE")"
+  flake_checks="$(normalise_names <"$ID_FLAKE_CHECKS_FILE" | sort -u)"
 else
   flake_checks="$(
     nix eval --raw "$repo_root/pkgs/id#checks.x86_64-linux" \
@@ -58,12 +74,20 @@ fi
 
 excluded_sorted="$(printf '%s\n' "${excluded[@]}" | sort)"
 expected="$(comm -23 <(printf '%s\n' "$flake_checks") <(printf '%s\n' "$excluded_sorted"))"
-listed="$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$list_file" | sort)"
+listed_raw="$(normalise_names <"$list_file")"
+duplicates="$(printf '%s\n' "$listed_raw" | grep -v '^$' | sort | uniq -d || true)"
+listed="$(printf '%s\n' "$listed_raw" | grep -v '^$' | sort -u || true)"
 
 unlisted="$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed"))"
 stale="$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed"))"
 
 failed=0
+if [[ -n $duplicates ]]; then
+  failed=1
+  while IFS= read -r name; do
+    echo "::error::${list_file#"$repo_root"/} lists '$name' more than once — remove the duplicate entry."
+  done <<<"$duplicates"
+fi
 if [[ -n $unlisted ]]; then
   failed=1
   while IFS= read -r name; do
@@ -80,5 +104,5 @@ if [[ $failed -ne 0 ]]; then
   exit 1
 fi
 
-count="$(printf '%s\n' "$listed" | wc -l)"
+count="$(printf '%s' "$listed" | grep -c '' || true)"
 echo "id PR check list matches pkgs/id/flake.nix: $count checks, ${#excluded[@]} excluded (nightly/aggregate)."

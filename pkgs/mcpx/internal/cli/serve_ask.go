@@ -117,7 +117,7 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 			}
 			body["kind"] = "exec"
 			body["source"] = e.Source
-			body["options"] = mcpBackend{app: d.app}.execOptions(ctx, e.TimeoutSec)
+			body["options"] = mcpBackend(d).execOptions(ctx, e.TimeoutSec)
 			break
 		}
 		if p.Name != "mcpx_call" {
@@ -266,7 +266,16 @@ func (d daemonAsker) Poll(ctx context.Context, callID string, wait time.Duration
 		out.Text, out.IsError = reply.Error, true
 		// The protocol layer relays this as the error itself when the
 		// tool is a pass-through upstream's, and ignores it otherwise.
-		out.Upstream = upstreamError(errors.New(reply.Error))
+		// The structured carriage is the error as it arrived -- code,
+		// message and data. The text heuristic below survives only for
+		// replies without it: it recovers a code and a message from the
+		// rendered string, and data (a -32021's requiredCapabilities,
+		// say) is unrecoverable from text (#2435).
+		if reply.Upstream != nil {
+			out.Upstream = &mcpserver.UpstreamError{Code: reply.Upstream.Code, Message: reply.Upstream.Message, Data: reply.Upstream.Data}
+		} else {
+			out.Upstream = upstreamError(errors.New(reply.Error))
+		}
 		// Classified for the two methods whose failure is a protocol
 		// error; which one applies is the caller's to pick, since the
 		// same upstream -32602 means not-found for a read and a bad
@@ -388,9 +397,9 @@ func (l *lazyMCP) fingerprint() string {
 	for _, key := range []string{"paths.adapters", "paths.apis"} {
 		for _, p := range splitPathList(l.app.Settings().String(key)) {
 			b, err := os.ReadFile(p)
-			fmt.Fprintf(h, "%s\x00", p)
+			_, _ = fmt.Fprintf(h, "%s\x00", p)
 			if err != nil {
-				fmt.Fprintf(h, "err:%v\x00", err)
+				_, _ = fmt.Fprintf(h, "err:%v\x00", err)
 				continue
 			}
 			h.Write(b)
@@ -466,7 +475,7 @@ func (d daemonAsker) passTool(ctx context.Context, name string) string {
 		return ns
 	}
 	for _, ns := range d.app.passNS() {
-		tools, err := mcpBackend{app: d.app}.UpstreamTools(ctx, ns)
+		tools, err := mcpBackend(d).UpstreamTools(ctx, ns)
 		if err != nil {
 			continue
 		}

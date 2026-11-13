@@ -2,8 +2,6 @@ name: nix ci
 
 # CI tier policy: see .github/ci-policy.md
 on:
-  push:
-    branches: [main]
   schedule:
     # Nightly backstop: the full flake check runs on main + nightly, not PRs.
     - cron: "17 8 * * *"
@@ -30,7 +28,17 @@ jobs:
   # .opencode/opencode.jsonc) must match the single definitions in
   # home/common/default.nix, or a non-shell launch silently dials
   # the wrong — or an empty — port (#434, #435). Pure bash/grep: no
-  # Nix needed, runs on every PR. This job used to also run the
+  # Nix needed. This copy runs on main/schedule/manual runs; the
+  # dedicated proxy-port-fallbacks.yml runs it on PR events so the
+  # expensive host/flake jobs retain their own triggers.
+  # The same job runs the openclaw unit Wants guard (#2581):
+  # generated proxy units must not carry a proxy `Wants` that
+  # #2092 deliberately removed, and a clean merge must not be
+  # able to put it back unnoticed. Its self-test pins the failure
+  # mode by driving the real guard against resurrected fixtures.
+  # The guard steps also run in proxy-port-fallbacks.yml, the
+  # dedicated PR-event copy of this job.
+  # This job used to also run the
   # treefmt format check; formatting is no longer a merge gate —
   # it is auto-fixed on main by .github/workflows/auto-format.yml
   # (see .github/ci-policy.md).
@@ -42,6 +50,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Check proxy port fallbacks match their definitions
         run: .github/scripts/check-proxy-port-fallbacks.sh
+      - name: Check generated openclaw units carry no undeclared proxy Wants
+        run: .github/scripts/check-openclaw-unit-wants.sh
+      - name: Self-test the openclaw unit Wants guard
+        run: .github/scripts/check-openclaw-unit-wants.test.sh
 
   # PR tier (#705): evaluate both real NixOS hosts (drvPath only, no
   # build), so a host-breaking change fails on the PR instead of at
@@ -100,7 +112,7 @@ jobs:
   # ci-fix: when any main job above fails, dispatch a pm-dispatch
   # ci-fix task from inside this failing run (via the thin
   # pm-dispatch-ci-fix wrapper over pm-dispatch-task). This replaces
-  # the old workflow_run-triggered ci-failure-fix job in jules.yml.
+  # the old workflow_run-triggered ci-failure-fix job in pm-dispatch.yml.
   # continue-on-error: a dispatch failure must never change this
   # workflow's own result.
   ci-fix:
@@ -111,8 +123,19 @@ jobs:
       issues: read
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: developing-today/code/.github/actions/pm-dispatch-ci-fix@main
+      # pm-dispatch-task (reached via pm-dispatch-ci-fix) loads its
+      # nested starter/queuer from ./.pm-central in this workspace, so
+      # check the dispatch actions out first (issue #4742).
+      - name: Check out the pm-dispatch actions (central)
+        uses: actions/checkout@v7
+        with:
+          repository: developing-today/code
+          ref: main
+          path: .pm-central
+          persist-credentials: false
+      - uses: ./.pm-central/.github/actions/pm-dispatch-ci-fix
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}

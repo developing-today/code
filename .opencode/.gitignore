@@ -13,3 +13,10 @@ antigravity-accounts.json
 antigravity-accounts.json.*.tmp
 antigravity-signature-cache.json
 antigravity-logs/
+
+# OpenCode per-channel service configs (service.json, service-<channel>.json):
+# generated server passwords/endpoints, per-machine, rewritten by the CLI
+# service layer on start. Root .gitignore already covers service-prod.json;
+# the "local" channel's file (written by a source-run dev server whose
+# project was this clone) blocked pm-git-sync the same way (#5389).
+service*.json
