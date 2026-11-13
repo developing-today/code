@@ -8,6 +8,7 @@
 // apply actions; the dashboard only records them.
 import { readFile, stat } from "node:fs/promises";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
+import { buildQuotaAnalytics, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
@@ -2565,6 +2566,20 @@ async function handler(req: Request): Promise<Response> {
     });
   }
 
+  if (path === "/api/quota-analytics.json") {
+    // The analytics & projection model behind /quota's section —
+    // the identical object the page renders from.
+    const [quota, usage] = await Promise.all([
+      source.quota().catch(() => emptyQuotaView()),
+      source.usage().catch(() => emptyUsageView()),
+    ]);
+    try {
+      return json(buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile }));
+    } catch {
+      return json({ error: "analytics unavailable" }, 503);
+    }
+  }
+
   if (path === "/quota") {
     const [quota, usage] = await Promise.all([
       source.quota().catch(() => emptyQuotaView()),
@@ -2573,7 +2588,15 @@ async function handler(req: Request): Promise<Response> {
     // Never block on providers (#1171): decide from the stored measurement,
     // ask the gatherer to run in the background, render what we have.
     const refresh = quotaRefresher.request(quota);
-    return html(renderQuota(quota, prov(), usage, provDetail(), refresh));
+    // Analytics fail-soft: a broken ledger read must never take the
+    // quota page down with it (the builder itself also degrades).
+    let analytics: QuotaAnalytics | null = null;
+    try {
+      analytics = buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile });
+    } catch {
+      analytics = null;
+    }
+    return html(renderQuota(quota, prov(), usage, provDetail(), refresh, analytics));
   }
 
   if (req.method === "POST" && path === "/quota/refresh") {
