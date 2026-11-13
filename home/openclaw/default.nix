@@ -321,7 +321,13 @@ in
       "diffs" # diff rendering for code review in chat
       "tokenjuice" # context compression
       "memory-lancedb" # LanceDB long-term memory; owns plugins.slots.memory (#1300 phase 1)
-      "memory-wiki" # Wiki-backed memory search; favorable evaluation recorded on #6167
+      # NOTE: no "memory-wiki" entry here — like telegram, it is a
+      # bundled core plugin (ships in the gateway package's
+      # dist/extensions), so it is absent from the runtime-plugin
+      # catalog and listing it here fails evaluation ("unsupported
+      # ids: memory-wiki", d42d6cb3c3; broke every amd switch from
+      # 2026-11-12 until this fix). It stays enabled via
+      # plugins.entries."memory-wiki".enabled below (#6167).
     ];
 
     # Instance-local skills that encode how this fleet works.
