@@ -29,9 +29,12 @@ This directory holds source-grounded inventory records. JSONL records use the co
 - `compile_refinements.py` — compiles reviewed gap refinements into the sole canonical file; preserves source parents and nests atomic members instead of minting source IDs per member.
 - `audit_register_anchors.py` — §31 and Appendix A exact ID-to-line audit.
 - `write_inventory_report.py`, `inventory_audit.json`, `inventory_audit.md` — counts and concrete atomicity-gap index.
+- `tests/test_operator_arguments.py` — regressions for unknown/positional arguments and byte-preservation of all inventory files.
 - `input3_statement_inventory.jsonl` — historical third input's semantic records.
 - `input3_coverage_closure.jsonl` — non-normative and formatting spans closing the historical input line map.
 - `validate_inventory.py` — strict duplicate-key/schema/ID/range/excerpt/hash and nonblank-line coverage validator using only the pinned original snapshot; also checks nested member lineage/oracles.
+
+All operator entry points (`validate_inventory.py`, `build_canonical_inventory.py`, `compile_refinements.py`, `write_inventory_report.py`, and `audit_register_anchors.py`) declare a **no-options CLI** with `argparse(allow_abbrev=False)` and reject extra arguments before reading/writing inventory data. Run the focused argument test with `python3 -I doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/inventory/tests/test_operator_arguments.py`.
 
 ## Interpretation and coverage discipline
 
