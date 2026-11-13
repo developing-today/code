@@ -138,6 +138,35 @@ impl WorldHandle {
         Ok(Self::spawn_inner(core, program, None, true, presence, None))
     }
 
+    /// As [`Self::spawn_read_only`], with a policy-B admission gate
+    /// (F12.13 phase 5): the actor checks the gate before admitting a
+    /// spectator who was not present at the verified cursor. A `None`
+    /// gate is exactly [`Self::spawn_read_only`].
+    pub(crate) fn spawn_read_only_with_admission(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        restored_presence: BTreeMap<u64, u64>,
+        admission_gate: Option<ReplicaAdmissionGate>,
+    ) -> Result<Self> {
+        if !core.replica_mode {
+            anyhow::bail!("read-only actors require a replica-restored core");
+        }
+        let presence = restored_presence
+            .into_iter()
+            .map(|(id, count)| (id, usize::try_from(count).map_or(usize::MAX, |count| count)))
+            .collect();
+        Ok(Self::spawn_durable_inner_gated(
+            core,
+            program,
+            None,
+            true,
+            presence,
+            None,
+            false,
+            admission_gate,
+        ))
+    }
+
     /// Whether this handle fronts a read-only replica actor.
     #[must_use]
     pub const fn is_read_only(&self) -> bool {
@@ -184,12 +213,35 @@ impl WorldHandle {
 
     fn spawn_durable_inner(
         core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+        read_only: bool,
+        presence: HashMap<u64, usize>,
+        device_manifest: Option<DeviceManifest>,
+        restored: bool,
+    ) -> Self {
+        Self::spawn_durable_inner_gated(
+            core,
+            program,
+            journal,
+            read_only,
+            presence,
+            device_manifest,
+            restored,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_durable_inner_gated(
+        core: WorldCore,
         mut program: Box<dyn WorldProgram>,
         journal: Option<Box<dyn WorldJournal>>,
         read_only: bool,
         presence: HashMap<u64, usize>,
         device_manifest: Option<DeviceManifest>,
         restored: bool,
+        admission_gate: Option<ReplicaAdmissionGate>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
@@ -258,6 +310,7 @@ impl WorldHandle {
             location_fix_received_at: None,
             loc_watches: BTreeMap::new(),
             auth: crate::directory_auth::DirectoryAuth::default(),
+            admission_gate,
         };
         tokio::spawn(actor.run(receiver, restored));
         Self {
@@ -1182,7 +1235,7 @@ impl WorldHandle {
 
     /// Return the admin-only snapshot and presentation for a read-only host
     /// view. The caller must authenticate the world admin before invoking it.
-    pub(crate) async fn host_view(&self) -> Result<(WorldSnapshot, Option<String>)> {
+    pub async fn host_view(&self) -> Result<(WorldSnapshot, Option<String>)> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::HostView { reply })

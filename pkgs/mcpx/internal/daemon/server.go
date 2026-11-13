@@ -1049,7 +1049,14 @@ func (s *Server) handleClient(w http.ResponseWriter, r *http.Request) {
 	}
 	session := r.URL.Query().Get("session")
 	w.Header().Set("Content-Type", language.ContentType)
-	_, _ = w.Write([]byte(language.EmitModule(nss, s.endpoint, session)))
+	module := language.EmitModule(nss, s.endpoint, session)
+	if language.Name == codegen.TypeScript.Name {
+		// Local mcpx exec/run fetch their client here, so this is
+		// where in-script search gets its saved scripts for ordinary
+		// runs (CODE-36; Codex review, PR #9299).
+		module = codegen.ModuleWithRecipes(nss, s.endpoint, session, s.recipeMetas())
+	}
+	_, _ = w.Write([]byte(module))
 }
 
 func (s *Server) handleGlobals(w http.ResponseWriter, r *http.Request) {

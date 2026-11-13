@@ -61,6 +61,13 @@ pub enum StoreError {
         /// The sequence number that is taken.
         seq: SeqNum,
     },
+    /// The event has no stored body: it is header-only, its body never arrived, or no event
+    /// with this ID is stored. The typed not-found of the event-body retrieval API.
+    #[error("event {id} has no stored body")]
+    MissingBody {
+        /// The ID of the event whose body was asked for.
+        id: Hash,
+    },
     /// A write failed, and the waiting events could not be rebuilt from disk. The store
     /// refuses further calls. Reopening it rebuilds them.
     #[error("event store is unusable after a failed write: reopen it")]

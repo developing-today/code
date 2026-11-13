@@ -65,6 +65,12 @@ export interface Config {
   needsDrewFile: string;
   /** Decision-set store (#8766): batched decisions-page sets. */
   decisionsFile: string;
+  /** Decision-set event log (#9335 v2): append-only JSONL of every
+   * decision-set interaction (submit/defer/request-info/draft/edit). */
+  decisionsEventsFile: string;
+  /** Decision-set event outbox (#9335 v2): the same events wrapped as
+   * pending sync records for the Turso/Cloudflare leg. */
+  decisionsOutboxFile: string;
   /** Stack-health state written by the sentinel intake extension (#8568). */
   stackHealthFile: string;
   /** Versioned item-history JSONL (#3981) the forecast contract
@@ -190,6 +196,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       join(homedir(), ".local", "state", "pm-aggregator", "needs-drew.json"),
     ),
     decisionsFile: s(env.PM_AGG_DECISIONS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "decisions.json")),
+    decisionsEventsFile: s(
+      env.PM_AGG_DECISION_EVENTS_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "decision-events.jsonl"),
+    ),
+    decisionsOutboxFile: s(
+      env.PM_AGG_DECISION_OUTBOX_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "decision-events-outbox.jsonl"),
+    ),
     stackHealthFile: s(
       env.PM_AGG_STACK_HEALTH_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "stack-health.json"),

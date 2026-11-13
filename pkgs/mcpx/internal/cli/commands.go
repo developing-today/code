@@ -1166,7 +1166,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if derr != nil {
 		return derr
 	}
-	svc := a.localService(store, c.Socket())
+	svc := a.localService(store, c.Socket(), cfg)
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,
@@ -1241,7 +1241,9 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 			return err
 		}
 	} else if eo.Output != execsvc.OutputStream {
+		a.reportFinalResult(res)
 		a.reportArtifacts(res)
+		a.reportHooks(res)
 	}
 	if res.ExitCode != 0 {
 		return &exitStatusError{code: res.ExitCode}
@@ -1263,6 +1265,23 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 	if res.TimedOut {
 		env["timedOut"] = true
 	}
+	if res.Error != "" {
+		env["error"] = res.Error
+	}
+	if res.ErrorKind != "" {
+		// The typed failure kind (CODE-30) travels with the error, so
+		// a CLI consumer can branch on it exactly like an HTTP caller
+		// reading the structured Result (Codex review, PR #9205).
+		env["errorKind"] = res.ErrorKind
+	}
+	// Retained hook frames ride in the envelope: a prompt hook's
+	// advice and warnings live only in its frame, and this path
+	// runs with a nil sink, so without this a --json caller paid
+	// for a model call whose entire effect was discarded (Codex
+	// review, PR #9021).
+	if len(res.Hooks) > 0 {
+		env["hooks"] = res.Hooks
+	}
 	if res.StdoutTruncated {
 		env["stdoutTruncated"] = true
 	}
@@ -1273,6 +1292,15 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			env["result"] = parsed
 		}
+	}
+	// The service's result outranks the envelope's own stdout parse:
+	// a final-expression capture (CODE-19) or a hook replacement is
+	// the run's answer even when stdout parses to something else,
+	// and a deliberate null is an answer too.
+	if res.Result != nil {
+		env["result"] = res.Result
+	} else if res.ResultPresent {
+		env["result"] = nil
 	}
 	if len(streamed) > 0 {
 		values := make([]json.RawMessage, 0, len(streamed))

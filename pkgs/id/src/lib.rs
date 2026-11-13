@@ -205,8 +205,6 @@
 
 pub use id_core::abuse;
 pub use id_core::access;
-pub mod aliases;
-pub mod app_manifest;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub use id_events::attestation;
@@ -216,26 +214,23 @@ pub mod blob_gate;
 pub mod boards;
 pub use id_store::chain;
 pub use id_store::chat;
-pub mod chat_presence;
-pub mod cli;
-pub mod commands;
 pub use id_core::connectivity;
 pub mod conversion;
 pub mod currency;
 pub mod currency_poc;
 pub use id_sync::dht;
 #[cfg(feature = "world")]
-pub use id_worlds::directory;
+pub use id_directory::directory;
 #[cfg(feature = "world")]
-pub use id_worlds::directory_auth;
+pub use id_directory::directory_auth;
 #[cfg(feature = "world")]
-pub mod directory_log;
+pub use id_directory::directory_log;
 #[cfg(feature = "world")]
 pub mod keyset;
 #[cfg(feature = "world")]
-pub use id_worlds::directory_mail;
+pub use id_directory::directory_mail;
 #[cfg(feature = "world")]
-pub use id_worlds::directory_view;
+pub use id_directory::directory_view;
 pub use id_core::discovery;
 pub mod didit;
 pub use id_store::documents;
@@ -253,45 +248,34 @@ pub use id_core::frames;
 pub mod grant_service;
 pub mod grants;
 pub mod groups;
-pub mod helpers;
 pub mod hosted_binding;
+pub mod hosted_export;
 pub use id_events::idset;
 pub mod input_framing;
-pub mod invite;
-pub mod invites;
+pub use id_directory::invite;
+pub use id_directory::invites;
 pub use id_store::issuer_rotation;
-pub(crate) mod key_envelope;
-pub(crate) mod seed_phrase;
-pub mod local;
 pub use id_events::local_claims;
 pub use id_events::local_events;
 pub use id_sync::log_sync;
-mod peer_announcement;
 pub mod serve_proxy;
 pub use id_core::membership;
-pub mod match_audit;
-pub mod meta_client;
 pub use id_store::note_links;
 pub use id_store::notes;
 #[cfg(feature = "world")]
 pub use id_core::petname;
-pub mod protocol;
-pub mod publications;
-pub mod publications_runtime;
 pub mod pull_policy;
 pub use id_core::residency;
 pub mod references;
 pub use id_core::rejection;
-pub mod repl;
 #[cfg(feature = "sandbox")]
 pub use id_worlds::sandbox;
 #[cfg(feature = "sandbox")]
 pub use id_worlds::world_dev;
 pub use id_store::search;
 #[cfg(feature = "world")]
-pub mod seitan;
+pub use id_directory::seitan;
 #[cfg(feature = "world")]
-pub mod server_config;
 pub use id_store::session_checkpoint;
 #[cfg(feature = "world")]
 pub use id_worlds::shell_contract;
@@ -348,12 +332,20 @@ pub(crate) use id_worlds::world_terminal;
 
 #[cfg(feature = "web")]
 pub use id_core::qr;
+// Application layer extracted in split step 7b (#4411): the modules
+// below live in the id-cli crate and are re-exported at their
+// historical `id::` paths. `main.rs` consumes them through here.
+pub use id_cli::{
+    aliases, app_manifest, chat_presence, cli, commands, helpers, local, match_audit,
+    meta_client, protocol, publications, publications_runtime, repl, server_config,
+};
+
 #[cfg(feature = "web")]
-pub mod web;
+pub use id_web as web;
 
 // Re-export commonly used types for convenience
-pub use cli::{Cli, Command, KeyCommand, TagCommand};
-pub use commands::{
+pub use id_cli::cli::{Cli, Command, KeyCommand, TagCommand};
+pub use id_cli::commands::{
     PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo,
     ServeOptions, cmd_find, cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one,
     cmd_get_one_remote, cmd_gethash, cmd_id, cmd_list, cmd_list_remote, cmd_migrate_tags, cmd_peek,
@@ -366,13 +358,13 @@ pub use discovery::{
     MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
     STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
 };
-pub use helpers::{
+pub use id_cli::helpers::{
     download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,
     print_matches_cli,
 };
-pub use protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
-pub use protocol::match_kind;
-pub use repl::run_repl;
+pub use id_cli::protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
+pub use id_cli::protocol::match_kind;
+pub use id_cli::repl::run_repl;
 pub use store::{StoreType, load_or_create_keypair, open_store};
 
 use anyhow::Result;
@@ -382,25 +374,12 @@ use std::path::PathBuf;
 // Constants
 // ============================================================================
 
-/// Filename for the server's Ed25519 keypair.
-///
-/// This file is created in the working directory and contains the private key
-/// used to identify this node. The public key derived from this is the node ID.
-pub const KEY_FILE: &str = ".iroh-key";
 
-/// Filename for the client's Ed25519 keypair.
-///
-/// Used when connecting to remote peers. Separate from the server key to allow
-/// different identities for serving vs. connecting.
-pub const CLIENT_KEY_FILE: &str = ".iroh-key-client";
+
+pub use id_core::{CLIENT_KEY_FILE, KEY_FILE, SERVE_LOCK};
 
 pub use id_store::STORE_PATH;
 
-/// Filename for the serve lock file.
-///
-/// Created when `id serve` is running. Contains the node ID and addresses
-/// for local clients to connect. Automatically removed on clean shutdown.
-pub const SERVE_LOCK: &str = ".iroh-serve.lock";
 
 pub use id_sync::protocol::META_ALPN;
 
@@ -408,199 +387,17 @@ pub use id_sync::protocol::META_ALPN;
 // Utility Functions
 // ============================================================================
 
-/// Converts a potentially relative path to an absolute path.
-///
-/// If the path is already absolute, it is returned unchanged. Otherwise,
-/// it is joined with the current working directory.
-///
-/// # Arguments
-///
-/// * `path` - The path to convert
-///
-/// # Returns
-///
-/// The absolute path, or an error if the current directory cannot be determined.
-///
-/// # Example
-///
-/// ```rust
-/// use std::path::PathBuf;
-/// use id::to_absolute;
-///
-/// let abs = to_absolute(&PathBuf::from("/already/absolute")).unwrap();
-/// assert_eq!(abs, PathBuf::from("/already/absolute"));
-///
-/// // Relative paths are joined with the current directory
-/// let rel = to_absolute(&PathBuf::from("relative/path")).unwrap();
-/// assert!(rel.is_absolute());
-/// ```
-pub fn to_absolute(path: &PathBuf) -> Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.clone())
-    } else {
-        Ok(std::env::current_dir()?.join(path))
-    }
-}
+pub use id_cli::to_absolute;
 
 
 
-/// Checks if a string is a valid node ID format.
-///
-/// A valid node ID is exactly 64 hexadecimal characters (representing a
-/// 32-byte Ed25519 public key). This function only validates the format,
-/// not whether the node actually exists.
-///
-/// # Arguments
-///
-/// * `s` - The string to check
-///
-/// # Returns
-///
-/// `true` if the string is exactly 64 hex characters, `false` otherwise.
-///
-/// # Example
-///
-/// ```rust
-/// use id::is_node_id;
-///
-/// // Valid node ID (64 hex chars)
-/// assert!(is_node_id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
-///
-/// // Invalid: too short
-/// assert!(!is_node_id("0123456789abcdef"));
-///
-/// // Invalid: contains non-hex characters
-/// assert!(!is_node_id("ghijklmnopqrstuv0123456789abcdef0123456789abcdef0123456789abcd"));
-/// ```
-pub fn is_node_id(s: &str) -> bool {
-    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
+pub use id_core::is_node_id;
 
-/// Parses items from stdin, splitting on common delimiters.
-///
-/// Reads all content from stdin and splits it on newlines, tabs, or commas.
-/// Empty items and whitespace-only items are filtered out. This is useful
-/// for batch operations where file lists are piped in.
-///
-/// # Returns
-///
-/// A vector of trimmed, non-empty strings.
-///
-/// # Example
-///
-/// ```bash
-/// # From command line:
-/// echo "file1.txt,file2.txt,file3.txt" | id put --stdin
-/// ```
-///
-/// ```rust,no_run
-/// use id::parse_stdin_items;
-///
-/// // If stdin contains "a.txt\nb.txt\tc.txt,d.txt"
-/// let items = parse_stdin_items().unwrap();
-/// // items = ["a.txt", "b.txt", "c.txt", "d.txt"]
-/// ```
-pub fn parse_stdin_items() -> Result<Vec<String>> {
-    use std::io::Read;
-    let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input)?;
-    Ok(input
-        .split(['\n', '\t', ','])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToOwned::to_owned)
-        .collect())
-}
+pub use id_cli::parse_stdin_items;
 
-/// Reads input data from a file path or stdin.
-///
-/// If the input is "-", reads from stdin. Otherwise, reads from the specified
-/// file path. This is a common pattern for CLI tools that accept either a
-/// file or piped input.
-///
-/// # Arguments
-///
-/// * `input` - Either "-" for stdin, or a file path
-///
-/// # Returns
-///
-/// The raw bytes read from the source.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use id::read_input;
-///
-/// # async fn example() -> anyhow::Result<()> {
-/// // Read from file
-/// let data = read_input("myfile.txt").await?;
-///
-/// // Read from stdin (when input is "-")
-/// let stdin_data = read_input("-").await?;
-/// # Ok(())
-/// # }
-/// ```
-pub async fn read_input(input: &str) -> Result<Vec<u8>> {
-    use std::io::Read;
-    use tokio::fs as afs;
+pub use id_cli::read_input;
 
-    if input == "-" {
-        let mut data = Vec::new();
-        std::io::stdin().read_to_end(&mut data)?;
-        Ok(data)
-    } else {
-        Ok(afs::read(input).await?)
-    }
-}
-
-/// Exports a blob to a file or stdout.
-///
-/// Retrieves the blob data by hash from the store and writes it to the
-/// specified output. If output is "-", writes to stdout. Otherwise,
-/// writes to a file at the given path (converting to absolute if needed).
-///
-/// # Arguments
-///
-/// * `store` - The blob store to read from
-/// * `hash` - The hash of the blob to export
-/// * `output` - Either "-" for stdout, or a file path
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use id::{open_store, export_blob};
-/// use iroh_blobs::Hash;
-///
-/// # async fn example() -> anyhow::Result<()> {
-/// let store_type = open_store(false).await?;
-/// let store = store_type.as_store();
-///
-/// // Export to file
-/// let hash: Hash = "abc123...".parse()?;
-/// export_blob(&store, hash, "output.txt").await?;
-///
-/// // Export to stdout
-/// export_blob(&store, hash, "-").await?;
-/// # Ok(())
-/// # }
-/// ```
-pub async fn export_blob(
-    store: &iroh_blobs::api::Store,
-    hash: iroh_blobs::Hash,
-    output: &str,
-) -> Result<()> {
-    use std::io::Write;
-
-    if output == "-" {
-        let data = store.blobs().get_bytes(hash).await?;
-        std::io::stdout().write_all(&data)?;
-    } else {
-        let path = to_absolute(&PathBuf::from(output))?;
-        store.blobs().export(hash, &path).await?;
-        eprintln!("exported: {} -> {}", hash, path.display());
-    }
-    Ok(())
-}
+pub use id_cli::export_blob;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

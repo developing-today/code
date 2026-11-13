@@ -934,7 +934,16 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		if version == "" && c != nil {
 			version = c.Version()
 		}
-		if version != "" {
+		if version != "" && !(capName == "completions" && !Defines(version, FeatCompletions)) {
+			// The completions exemption: 2024-11-05 has no completions
+			// capability to advertise with, but completion/complete
+			// itself is older than the capability (see FeatCompletions),
+			// and capabilities() answers it for every revision. Gating
+			// it on advertisement makes the method unreachable for
+			// exactly the peers that cannot declare it — the
+			// conformance suite's completion-max-100 case at
+			// 2024-11-05 (#2716). The gate applies only where the
+			// capability exists to be advertised.
 			var caps map[string]any
 			if peer.Modern {
 				caps = s.capabilities(ctx, peer.Version, c)

@@ -19,9 +19,14 @@ twice during this pass and was caught both times).
   `epic/atlas-program`, `epic/lab-cluster`, `epic/github-dynamic-compute`,
   `epic/turso-cloudflare`, `epic/saas-service`, `epic/storage`.
 - **Boards.** Org GitHub Project "Developing Today project" (developing-today
-  org Project #4) with Area/Status/Horizon/Type fields; Area is the split
+  org Project #4) with Area/Status/Horizon/Kind fields; Area is the split
   dimension and dedicated boards are filtered views over the one project
-  (pattern from code#910). Lab-cluster boards are the exception and belong to
+  (pattern from code#910). Kind is the canonical epic field: the aggregator
+  reads singleSelect `Kind` (pm-stack/aggregator/src/projects.ts) and
+  recognises epic ancestors only when Kind=Epic, so every epic's Project
+  item must carry Kind=Epic, with the `epic` label set consistently (per
+  pm-stack/README.md); no Type field or label substitutes for it.
+  Lab-cluster boards are the exception and belong to
   the Clustered-Computing org (Drew, 2026-11-12).
 - **Labels.** `epic` + `epic/<name>` (epic), `app/<name>` / `area/<name>`
   (area), `kind/<name>` (type), `design/<name>` (design effort),
@@ -34,7 +39,7 @@ Every Project-board read and write in this pass failed with
 `INSUFFICIENT_SCOPES`: the automation `gh` token carries
 `admin:org, gist, repo, user, workflow` and **no `project` / `read:project`
 scope**. Labels, sub-issues, and epic creation are done; board membership,
-Area/Status/Type field values, and the dedicated ID-program view could not be
+Area/Status/Kind field values, and the dedicated ID-program view could not be
 set or even verified. Remedy (interactive, Drew only):
 
 ```
@@ -42,7 +47,9 @@ gh auth refresh -s read:project,project
 ```
 
 Follow-up pass owed once granted: (1) add the crate-split chain (#2056, #3195,
-#3447, steps) and every epic issue in this manifest to Project #4 with Area set;
+#3447, steps) and every epic issue in this manifest to Project #4 with Area set
+and, for every epic issue, Kind=Epic set on its Project item (canonical per
+pm-stack/README.md — dashboard epic membership comes only from Kind=Epic);
 (2) create/verify the ID-program dedicated view on Project #4; (3) fleet-wide
 board-membership audit against the epic taxonomy below; (4) lab-cluster boards
 in the Clustered-Computing org.

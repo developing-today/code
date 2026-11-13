@@ -29,11 +29,14 @@ pub mod connectivity;
 pub mod discovery;
 pub mod frames;
 pub mod hex;
+pub mod key_envelope;
+pub mod seed_phrase;
 pub mod ip_evidence;
 pub mod json_unique;
 pub mod membership;
 pub mod rejection;
 pub mod residency;
+pub mod residency_inventory;
 pub mod sanctions;
 pub mod sync_method;
 pub mod text;
@@ -74,3 +77,53 @@ pub enum Refusal {
     #[error("{0}")]
     RateLimited(String),
 }
+
+/// Filename for the server's Ed25519 keypair.
+///
+/// The node's long-term identity key, stored in the node's data directory.
+pub const KEY_FILE: &str = ".iroh-key";
+
+/// Filename for the client's Ed25519 keypair.
+///
+/// Used when connecting to remote peers. Separate from the server key to allow
+/// different identities for serving vs. connecting.
+pub const CLIENT_KEY_FILE: &str = ".iroh-key-client";
+
+/// Filename for the serve lock file.
+///
+/// Created when `id serve` is running. Contains the node ID and addresses
+/// for local clients to connect. Automatically removed on clean shutdown.
+pub const SERVE_LOCK: &str = ".iroh-serve.lock";
+
+/// Checks if a string is a valid node ID format.
+///
+/// A valid node ID is exactly 64 hexadecimal characters (representing a
+/// 32-byte Ed25519 public key). This function only validates the format,
+/// not whether the node actually exists.
+///
+/// # Arguments
+///
+/// * `s` - The string to check
+///
+/// # Returns
+///
+/// `true` if the string is exactly 64 hex characters, `false` otherwise.
+///
+/// # Example
+///
+/// ```rust
+/// use id_core::is_node_id;
+///
+/// // Valid node ID (64 hex chars)
+/// assert!(is_node_id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+///
+/// // Invalid: too short
+/// assert!(!is_node_id("0123456789abcdef"));
+///
+/// // Invalid: contains non-hex characters
+/// assert!(!is_node_id("ghijklmnopqrstuv0123456789abcdef0123456789abcdef0123456789abcd"));
+/// ```
+pub fn is_node_id(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+

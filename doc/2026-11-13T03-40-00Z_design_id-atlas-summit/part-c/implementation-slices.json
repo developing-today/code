@@ -1,0 +1,1335 @@
+{
+  "schema_version": 3,
+  "contract": "Canonical Part C delivery rows; test files/commands are proposed future outputs owned by the row. `requires` are hard output dependencies; `after` is soft ordering only. No row implies cloud or measured evidence unless its research_scope says so.",
+  "slices": [
+    {
+      "id": "C9133-01",
+      "parent": 9133,
+      "title": "Benchmark schema and synthetic mapping oracle",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S2.1",
+        "S2.2",
+        "S2.3",
+        "S2.16"
+      ],
+      "goal": "Own the benchmark crate manifest/result schema and the design-only adapter plan, synthetic workload fixture and reference oracle. The fixture verifies operation mappings, computes the exact fixture digest, rejects ordinary put after Tombstoned(g), and allows only explicit resurrection to g+1 with a new non-reused physical key and unchanged canonical ContentId.",
+      "enables": [
+        "all engine adapter slices",
+        "local and cloud evidence follow-ups"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/benchmarks/Cargo.toml",
+          "status": "new",
+          "owner": "C9133-01"
+        },
+        {
+          "path": "pkgs/id/benchmarks/src/lib.rs",
+          "status": "new",
+          "owner": "C9133-01"
+        },
+        {
+          "path": "pkgs/id/benchmarks/result-v1.schema.json",
+          "status": "new",
+          "owner": "C9133-01"
+        },
+        {
+          "path": "pkgs/id/benchmarks/fixtures/synthetic-workload.json",
+          "status": "new",
+          "owner": "C9133-01"
+        },
+        {
+          "path": "pkgs/id/benchmarks/tests/workload_oracle.rs",
+          "status": "new",
+          "owner": "C9133-01"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/benchmark-plan.json",
+          "status": "existing",
+          "owner": "C9133-01"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/synthetic-workload.json",
+          "status": "existing",
+          "owner": "C9133-01"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/benchmark-workload-oracle.py",
+          "status": "existing",
+          "owner": "C9133-01"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/benchmark-workload-oracle-output.txt",
+          "status": "existing",
+          "owner": "C9133-01"
+        }
+      ],
+      "requires": [],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/benchmarks/tests/workload_oracle.rs",
+        "command": "cargo test --manifest-path pkgs/id/benchmarks/Cargo.toml --test workload_oracle",
+        "oracle": {
+          "kind": "reference",
+          "expected": "Finite fixture executes put/get/metadata/ref-intent/tombstone/resurrection and exact-byte digest; replaying the same put is row-preserving and idempotent; ordinary put after Tombstoned(g) cannot silently restore Live, explicit resurrection creates g+1 under a distinct never-reused physical key, and delayed delete of g preserves g+1. Every expected transition and engine capability mapping matches; no timings.",
+          "verifier": "Independent finite refstore/generation-key model compared row-by-row to the owned synthetic fixture; digest recomputed from fixture bytes; stale-deleter/readback and missing-resurrection cases included."
+        }
+      },
+      "rollback": "Remove only the additive benchmark crate/files; no production store or data changes.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9133 benchmark contract (S2.1–S2.3, S2.16)",
+      "owner": "C9133-01"
+    },
+    {
+      "id": "C9133-02-D1",
+      "parent": 9133,
+      "title": "D1 workload adapter and native counters",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "recommended",
+      "statements": [
+        "S2.1",
+        "S2.2",
+        "S2.3",
+        "S2.16"
+      ],
+      "goal": "Implement D1 mapping for supported logical operations and capture rows read/written, duration and DB size.",
+      "enables": [
+        "D1 parity runs",
+        "cloud evidence"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/benchmarks/src/adapters/d1.rs",
+          "status": "new",
+          "owner": "C9133-02-D1"
+        },
+        {
+          "path": "pkgs/id/benchmarks/tests/d1_adapter.rs",
+          "status": "new",
+          "owner": "C9133-02-D1"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9133-01",
+          "description": "benchmark crate manifest, schema, shared workload types and synthetic fixtures"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/benchmarks/tests/d1_adapter.rs",
+        "command": "cargo test --manifest-path pkgs/id/benchmarks/Cargo.toml --test d1_adapter",
+        "oracle": {
+          "kind": "reference",
+          "expected": "Fake D1 fixture returns reference rows and extracts rows_read/rows_written without any network call or latency assertion.",
+          "verifier": "Independent reference rows plus expected counter fixture."
+        }
+      },
+      "rollback": "Remove D1 adapter module; benchmark harness and other adapters remain usable.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9133 benchmark contract (S2.1–S2.3, S2.16)",
+      "owner": "C9133-02-D1"
+    },
+    {
+      "id": "C9133-02-R2",
+      "parent": 9133,
+      "title": "R2 object workload adapter and operation counters",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "recommended",
+      "statements": [
+        "S2.1",
+        "S2.2",
+        "S2.3",
+        "S2.16"
+      ],
+      "goal": "Implement R2 object get/put/checksum and native counters. Parent-verified primary R2 conditional operations cover writes (Put/Multipart/Copy), not DeleteObject. Do not claim conditional delete. GC may plain-delete a captured immutable generation-qualified key only after the #9084 owner fence and non-reuse are proven; otherwise delete is unsupported/disabled.",
+      "enables": [
+        "R2 parity runs",
+        "cloud evidence"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/benchmarks/src/adapters/r2.rs",
+          "status": "new",
+          "owner": "C9133-02-R2"
+        },
+        {
+          "path": "pkgs/id/benchmarks/tests/r2_adapter.rs",
+          "status": "new",
+          "owner": "C9133-02-R2"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9133-01",
+          "description": "benchmark crate manifest, schema, shared workload types and synthetic fixtures"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/benchmarks/tests/r2_adapter.rs",
+        "command": "cargo test --manifest-path pkgs/id/benchmarks/Cargo.toml --test r2_adapter",
+        "oracle": {
+          "kind": "reference",
+          "expected": "Fake R2 capability fixture verifies conditional writes, opaque generation-qualified locator construction and never-reuse; conditional DeleteObject is unsupported. A stale delete targets only its captured old key and cannot alias a new generation.",
+          "verifier": "Independent R2 operation capability table and generation-key model; test has no network/provider calls."
+        }
+      },
+      "rollback": "Remove R2 adapter module; no bucket objects or credentials are touched.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9133 benchmark contract (S2.1–S2.3, S2.16)",
+      "owner": "C9133-02-R2"
+    },
+    {
+      "id": "C9133-02-redb",
+      "parent": 9133,
+      "title": "redb workload adapter and transaction fixture",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "recommended",
+      "statements": [
+        "S2.1",
+        "S2.2",
+        "S2.3",
+        "S2.16"
+      ],
+      "goal": "Implement local redb operations using current pinned crate and report transaction/correctness data.",
+      "enables": [
+        "redb local measurement"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/benchmarks/src/adapters/redb.rs",
+          "status": "new",
+          "owner": "C9133-02-redb"
+        },
+        {
+          "path": "pkgs/id/benchmarks/tests/redb_adapter.rs",
+          "status": "new",
+          "owner": "C9133-02-redb"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9133-01",
+          "description": "benchmark crate manifest, schema, shared workload types and synthetic fixtures"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/benchmarks/tests/redb_adapter.rs",
+        "command": "cargo test --manifest-path pkgs/id/benchmarks/Cargo.toml --test redb_adapter",
+        "oracle": {
+          "kind": "reference",
+          "expected": "redb adapter returns same logical rows and generation transitions as the benchmark reference model.",
+          "verifier": "Independent reference-store fixture; no timing threshold."
+        }
+      },
+      "rollback": "Remove redb benchmark adapter; ID production redb dependency is unchanged.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9133 benchmark contract (S2.1–S2.3, S2.16)",
+      "owner": "C9133-02-redb"
+    },
+    {
+      "id": "C9133-02-turso",
+      "parent": 9133,
+      "title": "Turso workload adapter and sync state capture",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "recommended",
+      "statements": [
+        "S2.1",
+        "S2.2",
+        "S2.3",
+        "S2.16"
+      ],
+      "goal": "Implement local Turso operations and report local revision/push/pull/network state separately from query timing.",
+      "enables": [
+        "Turso local measurement"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/benchmarks/src/adapters/turso.rs",
+          "status": "new",
+          "owner": "C9133-02-turso"
+        },
+        {
+          "path": "pkgs/id/benchmarks/tests/turso_adapter.rs",
+          "status": "new",
+          "owner": "C9133-02-turso"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9133-01",
+          "description": "benchmark crate manifest, schema, shared workload types and synthetic fixtures"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/benchmarks/tests/turso_adapter.rs",
+        "command": "cargo test --manifest-path pkgs/id/benchmarks/Cargo.toml --test turso_adapter",
+        "oracle": {
+          "kind": "reference",
+          "expected": "Local fixture returns same logical rows and exposes sync revision/push/pull separately; test uses no remote credentials.",
+          "verifier": "Independent reference-store fixture and pinned local database state."
+        }
+      },
+      "rollback": "Remove Turso benchmark adapter; no remote database state is changed.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9133 benchmark contract (S2.1–S2.3, S2.16)",
+      "owner": "C9133-02-turso"
+    },
+    {
+      "id": "C9133-LOCAL",
+      "parent": 9133,
+      "title": "Run matched local laptop redb and Turso evidence",
+      "kind": "research",
+      "version": "V2",
+      "tier": "recommended",
+      "statements": [
+        "S2.1",
+        "S2.2",
+        "S2.3",
+        "S2.16"
+      ],
+      "goal": "Run redb/Turso on identical corpus bytes and digest; capture named laptop/runtime/network/cache/storage-shard conditions in validated result-v1 record. Keep local results separate from cloud results.",
+      "enables": [
+        "S2.1 local comparison evidence",
+        "later placement research"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/benchmarks/run_local.py",
+          "status": "new",
+          "owner": "C9133-LOCAL"
+        },
+        {
+          "path": "pkgs/id/benchmarks/tests/test_local_runner.py",
+          "status": "new",
+          "owner": "C9133-LOCAL"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/results/local-run.v1.json",
+          "status": "new",
+          "owner": "C9133-LOCAL"
+        },
+        {
+          "path": "pkgs/id/benchmarks/validate_local_results.py",
+          "status": "new",
+          "owner": "C9133-LOCAL"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9133-01",
+          "description": "result-v1 schema and workload runner interface"
+        },
+        {
+          "ref": "C9133-02-redb",
+          "description": "redb adapter implementing shared operations"
+        },
+        {
+          "ref": "C9133-02-turso",
+          "description": "Turso adapter implementing shared operations"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/benchmarks/validate_local_results.py",
+        "command": "python3 -I pkgs/id/benchmarks/validate_local_results.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/results/local-run.v1.json",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Local result contains redb and Turso runs over the same independently recomputed corpus digest, raw per-operation samples and runner/git/hardware/OS/runtime/cache/storage-shard metadata for both engines; never compares local numbers as cloud performance.",
+          "verifier": "Owned domain validator recomputes corpus bytes digest, validates both engine sample sets and checks required environment fields per engine; fixture tests use no benchmark run."
+        }
+      },
+      "rollback": "Do not use or publish a mismatched result; mark output invalid and retain current per-surface store authority. No data migration occurs.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9133 benchmark contract (S2.1–S2.3, S2.16)",
+      "owner": "C9133-LOCAL",
+      "research_scope": "local-laptop-benchmark",
+      "operator_command": "python3 -I pkgs/id/benchmarks/run_local.py --engines redb,turso --corpus CORPUS_PATH --corpus-digest SHA256 --result doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/results/local-run.v1.json",
+      "research_evidence": [
+        "https://docs.rs/redb/4.3.0/redb/",
+        "https://docs.turso.tech/sync/usage",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/benchmark-plan.json",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/synthetic-workload.json"
+      ],
+      "fixture_preflight_test_command": "python3 -I pkgs/id/benchmarks/tests/test_local_runner.py --fixture-only",
+      "validator_cli_contract": "Only --input PATH; strict parse before file read. Accept one local result-v1 artifact, recompute shared corpus digest from its fixture/declared corpus reference, require redb+turso records and full environment/raw-sample fields; reject unknown/duplicate flags."
+    },
+    {
+      "id": "C9133-CLOUD",
+      "parent": 9133,
+      "title": "Cloud-backed storage evidence run with strict preflight validator",
+      "kind": "research",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S2.1",
+        "S2.2",
+        "S2.3",
+        "S2.16"
+      ],
+      "goal": "Execute approved D1/R2 cloud storage workloads and publish raw measurements, dated price, durability and source metadata. Does not evaluate recall or recommend shards.",
+      "enables": [
+        "evidence inputs to #9134/#9135 placement research"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/benchmarks/run_cloud.py",
+          "status": "new",
+          "owner": "C9133-CLOUD"
+        },
+        {
+          "path": "pkgs/id/benchmarks/validate_results.py",
+          "status": "new",
+          "owner": "C9133-CLOUD"
+        },
+        {
+          "path": "pkgs/id/benchmarks/tests/test_cloud_preflight.py",
+          "status": "new",
+          "owner": "C9133-CLOUD"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/results/cloud-run.v1.json",
+          "status": "new",
+          "owner": "C9133-CLOUD"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/results/cloud-run.v1.md",
+          "status": "new",
+          "owner": "C9133-CLOUD"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9133-01",
+          "description": "result-v1 schema and benchmark crate interface"
+        },
+        {
+          "ref": "C9133-02-D1",
+          "description": "D1 adapter and native counter extraction"
+        },
+        {
+          "ref": "C9133-02-R2",
+          "description": "R2 adapter and native counter extraction"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/benchmarks/validate_results.py",
+        "command": "python3 -I pkgs/id/benchmarks/validate_results.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/results/cloud-run.v1.json",
+        "oracle": {
+          "kind": "research-matrix",
+        "expected": "Cloud result includes provider/region/corpus digest, raw D1/R2 storage samples, provider-native operation units, dated price-source, durability/RPO, replica semantics and errors; no search/shard recommendation. The separate preflight fixture rejects malformed runner arguments before side effects.",
+        "verifier": "Owned provider-results validator checks D1 row billing fields and R2 Class A/B/storage units, dated prices, durability and raw samples; owned fixture preflight test uses a fake side-effect recorder to verify parser rejection before credentials/network/locks/writes/spend, with zero provider calls."
+        }
+      },
+      "rollback": "Stop run and revoke run-scoped credentials if a preflight gate fails; retain any completed billable output with invalid/incomplete status and do not claim a winner. No automatic provider-side rollback is assumed.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9133 benchmark contract (S2.1–S2.3, S2.16)",
+      "owner": "C9133-CLOUD",
+      "trigger": "Only after approved credentials, finite spend cap, named region and representative corpus snapshot/digest are available; this task itself runs fixture-only tests and makes no cloud call.",
+      "research_scope": "cloud-benchmark",
+      "operator_command": "python3 -I pkgs/id/benchmarks/run_cloud.py --providers d1,r2 --corpus CORPUS_PATH --corpus-digest SHA256 --region REGION --max-spend-usd FINITE_DECIMAL --result doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/results/cloud-run.v1.json",
+      "cli_contract": "run_cloud.py requires --providers d1,r2 --corpus PATH --corpus-digest SHA256 --region REGION --max-spend-usd DECIMAL --result PATH; optional --price-sheet-url URL. Reject unknown/duplicate flags, missing values, malformed digest/region/spend/path before credentials, network, locks, writes or spend. Finite spend cap is mandatory. Offline validate_results.py accepts only --input PATH; strict parse before input file I/O. Optional #9092 search artifact is a field in the validated report and its schema/eval/corpus digests are checked; it is not a separate CLI input. #9133 never runs recall or recommends shards.",
+      "research_evidence": [
+        "https://developers.cloudflare.com/d1/platform/limits/",
+        "https://developers.cloudflare.com/d1/platform/pricing/",
+        "https://developers.cloudflare.com/r2/pricing/",
+        "https://developers.cloudflare.com/r2/api/s3/conditional-operations/",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/benchmark-plan.json"
+      ],
+      "fixture_preflight_test_command": "python3 -I pkgs/id/benchmarks/tests/test_cloud_preflight.py --fixture-only",
+      "validator_cli_contract": "Required --input PATH only for offline result validation; strict unknown/duplicate/missing-value rejection before input I/O. The separate run_cloud.py operator command performs a complete strict preflight for --providers,--corpus,--corpus-digest,--region,--max-spend-usd,--result and optional --price-sheet-url before credentials, network, locks, output writes or spend; finite spend cap mandatory."
+    },
+    {
+      "id": "C9134-01",
+      "parent": 9134,
+      "title": "Cache epoch and hot-result contract",
+      "kind": "design",
+      "version": "V3",
+      "tier": "crucial",
+      "statements": [
+        "S2.4",
+        "S2.5",
+        "S2.6",
+        "S2.17"
+      ],
+      "goal": "Specify local watermark/policy epoch, bounded corpus staleness, immediate revocation, realtime/cache-disable flags and fail-closed behavior against current indefinite cache.",
+      "enables": [
+        "safe cache implementation"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/atlas-search/worker/src/cache_contract.ts",
+          "status": "new",
+          "owner": "C9134-01"
+        },
+        {
+          "path": "pkgs/atlas-search/worker/test/cache_contract.test.ts",
+          "status": "new",
+          "owner": "C9134-01"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9083,
+          "description": "tenant authorization and monotonic policy-epoch/revocation interface"
+        },
+        {
+          "issue": 9092,
+          "description": "corpus watermark/invalidation publisher contract and public cache flags"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/atlas-search/worker/test/cache_contract.test.ts",
+        "command": "npm --prefix pkgs/atlas-search/worker exec vitest -- run test/cache_contract.test.ts",
+        "oracle": {
+          "kind": "model",
+          "expected": "Policy epoch stale/unknown never serves; fresh hot result serves without a source/Turso lookup; realtime and disable flags bypass cache.",
+          "verifier": "Independent watermark/policy-epoch state model with event loss, lease expiry, revocation, and lookup counter."
+        }
+      },
+      "rollback": "Keep cache bypass enabled and retain prior cache data only as inaccessible diagnostics; never restore indefinite serving after revocation.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9134 tenant hot cache (S2.4–S2.6, S2.17)",
+      "owner": "C9134-01"
+    },
+    {
+      "id": "C9134-02",
+      "parent": 9134,
+      "title": "Migrate indefinite Worker cache to bounded tenant-safe cache",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S2.4",
+        "S2.5",
+        "S2.6",
+        "S2.17"
+      ],
+      "goal": "Implement tenant/auth/policy-bound key, pushed corpus watermark, explicit cache flags, immediate revocation fail-closed and bounded eviction.",
+      "enables": [
+        "tenant-scoped cached search"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/atlas-search/worker/src/cache_do.ts",
+          "status": "existing",
+          "owner": "C9134-02"
+        },
+        {
+          "path": "pkgs/atlas-search/worker/src/key.ts",
+          "status": "existing",
+          "owner": "C9134-02"
+        },
+        {
+          "path": "pkgs/atlas-search/worker/test/cache_policy.test.ts",
+          "status": "new",
+          "owner": "C9134-02"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9134-01",
+          "description": "cache key, watermark, policy epoch, real-time/bypass and fail-closed contract"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/atlas-search/worker/test/cache_policy.test.ts",
+        "command": "npm --prefix pkgs/atlas-search/worker exec vitest -- run test/cache_policy.test.ts",
+        "oracle": {
+          "kind": "model",
+          "expected": "Stale policy cannot serve; event gap fails closed; tenant/auth/policy keys do not collide; max bytes evicts; hot valid result performs zero Turso reads.",
+          "verifier": "Independent cache policy model and fake Turso-read/event feed counters."
+        }
+      },
+      "rollback": "Disable cache serving via the cache-disable path and route requests to the authorized source; do not re-enable legacy indefinite entries.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9134 tenant hot cache (S2.4–S2.6, S2.17)",
+      "owner": "C9134-02"
+    },
+    {
+      "id": "C9135-01",
+      "parent": 9135,
+      "title": "Document store ownership and identity seams",
+      "kind": "research",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S2.7",
+        "S2.8",
+        "S2.9"
+      ],
+      "goal": "Inventory blob/event/world/sync authorities, redb usage, exact-byte Iroh BLAKE3 IDs, world journal and Atlas content_hash producer gap; avoid generalized store migration claims.",
+      "enables": [
+        "backend placement without identity breakage"
+      ],
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/store-placement-research.md",
+          "status": "new",
+          "owner": "C9135-01"
+        },
+        {
+          "path": "pkgs/id/tests/store_authority_contract.rs",
+          "status": "new",
+          "owner": "C9135-01"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/store-placement-research-report.json",
+          "status": "new",
+          "owner": "C9135-01"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/validate_store_authority.py",
+          "status": "new",
+          "owner": "C9135-01"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "9110-01",
+          "description": "existing store ownership/port map, keeping blob/event/world/sync boundaries distinct"
+        },
+        {
+          "issue": 9082,
+          "description": "store abstraction ownership and per-surface capability contract"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/validate_store_authority.py",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/validate_store_authority.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/store-placement-research-report.json --check-test",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Report maps blob/event/world/sync authority owners to source paths, states exact hash/profile facts without conflation, and records Atlas producer status without inferred interoperability. The owned store_authority_contract.rs test passes when --check-test is selected.",
+          "verifier": "Owned validator checks report plane/source/profile assertions and invokes the owned narrow Cargo integration test through ~/tools/fleet-build-lock; CLI accepts only --input PATH and optional --check-test, parsed before file I/O or test execution."
+        }
+      },
+      "rollback": "Research inventory is append-only; correct by a dated correction row, never rewrite identity history or migrate stores.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9135 store placement adapter (S2.7–S2.9)",
+      "owner": "C9135-01",
+      "research_scope": "store-placement-identity",
+      "research_evidence": [
+        "pkgs/id/ARCHITECTURE.md",
+        "pkgs/id/crates/id-store/src/store.rs",
+        "pkgs/id/crates/id-events/src/event_store/ingest.rs",
+        "pkgs/id/crates/id-worlds/src/world_store.rs",
+        "pkgs/id/crates/id-sync/src/artifact.rs",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/v1-audit.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/seam-map.md",
+        "https://docs.rs/redb/4.3.0/redb/"
+      ],
+      "validator_cli_contract": "Only --input PATH and optional boolean --check-test; strict parse before file I/O. --check-test delegates the owned cargo test --manifest-path pkgs/id/Cargo.toml --test store_authority_contract through ~/tools/fleet-build-lock; no deploy/network action."
+    },
+    {
+      "id": "C9135-02",
+      "parent": 9135,
+      "title": "Preserve signed-artifact bytes while resolving codec mismatch",
+      "kind": "test",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S2.7",
+        "S2.8",
+        "S2.9"
+      ],
+      "goal": "Reconcile documented Ed25519 preimage with code SHA256(serde_json::to_vec(SignedBody)); add compatibility vectors without silently changing legacy signature bytes.",
+      "enables": [
+        "safe store/metadata migration"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/tests/part_c_profile_compat.rs",
+          "status": "new",
+          "owner": "C9135-02"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "9110-11",
+          "description": "legacy/new signed artifact profile table and compatibility vectors, no re-sign/re-hash"
+        },
+        {
+          "issue": 9113,
+          "description": "typed ContentId/PayloadId/EnvelopeId identity profile contract"
+        }
+      ],
+      "after": [
+        "C9135-01"
+      ],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/part_c_profile_compat.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml -p id-sync --test part_c_profile_compat",
+        "oracle": {
+          "kind": "golden",
+          "expected": "ID-sync consumer accepts the exact legacy artifact profile and new versioned profile without changing legacy wire bytes or adding EnvelopeId to signed preimage.",
+          "verifier": "Golden vectors and independent verifier owned by crosscut slice 9110-11; this is a consumer integration assertion, not a second canonical codec design."
+        }
+      },
+      "rollback": "Revert only the consumer test/adapter; preserve all legacy artifacts and signature bytes.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9135 store placement adapter (S2.7–S2.9)",
+      "owner": "C9135-02"
+    },
+    {
+      "id": "C9135-03",
+      "parent": 9135,
+      "title": "Evaluate single-writer SQLite sync and restore alternatives",
+      "kind": "research",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S2.8",
+        "S2.9"
+      ],
+      "goal": "Compare Litestream WAL async DR, Turso Sync last-push-wins, D1 and redb against RPO/RTO/conflict and workload needs; select no backend without evidence.",
+      "enables": [
+        "future store adapter decision"
+      ],
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/sqlite-sync-research.md",
+          "status": "new",
+          "owner": "C9135-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/sqlite-sync-research-report.json",
+          "status": "new",
+          "owner": "C9135-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/validate_sqlite_sync_research.py",
+          "status": "new",
+          "owner": "C9135-03"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9135-01",
+          "description": "per-surface store authority inventory and identity boundaries"
+        },
+        {
+          "ref": "C9133-LOCAL",
+          "description": "matched laptop redb/Turso run result with shared corpus digest and environment metadata"
+        },
+        {
+          "ref": "C9133-CLOUD",
+          "description": "approved D1/R2 cloud evidence result or explicit no-run record; placement recommendations remain prohibited without comparable results"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/validate_sqlite_sync_research.py",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/validate_sqlite_sync_research.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/sqlite-sync-research-report.json",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "redb, D1, Litestream and Turso Sync each have authority, conflict, recovery/restore, limits and evidence-source fields. If comparable measurements are absent, result says not measured and contains no placement winner.",
+          "verifier": "Owned matrix validator checks all four candidates and required fields/source refs; no measurements are generated by validator."
+        }
+      },
+      "rollback": "Do not change placement; retain current store authorities and mark report superseded if source behavior changes.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9135 store placement adapter (S2.7–S2.9)",
+      "owner": "C9135-03",
+      "trigger": "Only if a placement decision is requested after matched local/cloud evidence exists; otherwise keep this V4 comparison parked.",
+      "research_scope": "sqlite-sync-placement",
+      "research_evidence": [
+        "https://litestream.io/how-it-works/",
+        "https://docs.turso.tech/sync/usage",
+        "https://developers.cloudflare.com/d1/platform/limits/",
+        "https://docs.rs/redb/4.3.0/redb/",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/benchmark-plan.json"
+      ],
+      "validator_cli_contract": "Only --input PATH; strict parse before reading. Validate exact four-candidate matrix, source references, authority/conflict/recovery/limit fields and enforce no winner when measurement-status is absent."
+    },
+    {
+      "id": "C9136-01",
+      "parent": 9136,
+      "title": "Separate canonical content ID from encrypted object locator",
+      "kind": "design",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S2.10",
+        "S2.11",
+        "S2.12",
+        "S2.13",
+        "S2.18"
+      ],
+      "goal": "Define trusted/untrusted bucket metadata, opaque locator mapping, broker checks and leakage model without changing global CAS IDs.",
+      "enables": [
+        "encrypted shared-bucket implementation"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/bucket_locator.rs",
+          "status": "new",
+          "owner": "C9136-01"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/bucket_locator.rs",
+          "status": "new",
+          "owner": "C9136-01"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9083,
+          "description": "tenant authorization scope and trust-domain boundary"
+        },
+        {
+          "issue": 9084,
+          "description": "content identity, ciphertext storage and object lifecycle contract"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/bucket_locator.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml -p id-store --test bucket_locator",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Canonical ContentId/PayloadId remains unchanged while physical locator may be tenant-opaque; untrusted co-tenant receives ciphertext only and cannot resolve another tenant locator.",
+          "verifier": "Independent tenant locator/encryption policy model."
+        }
+      },
+      "rollback": "Disable shared-bucket adapter and retain per-tenant physical buckets; never rewrite global IDs.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9136 shared bucket (S2.10–S2.13, S2.18)",
+      "owner": "C9136-01"
+    },
+    {
+      "id": "C9136-02",
+      "parent": 9136,
+      "title": "Implement shared-bucket broker authorization",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S2.10",
+        "S2.11",
+        "S2.12",
+        "S2.13",
+        "S2.18"
+      ],
+      "goal": "Add per-operation tenant/trust-domain authorization before get/list/head/put/delete; encryption remains separate adapter.",
+      "enables": [
+        "brokered multi-tenant bucket"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/bucket_broker.rs",
+          "status": "new",
+          "owner": "C9136-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/bucket_broker.rs",
+          "status": "new",
+          "owner": "C9136-02"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9136-01",
+          "description": "opaque locator and trust-mode contract"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/bucket_broker.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml -p id-store --test bucket_broker",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Unauthorized cross-tenant get/list/head/put/delete and presence probes all deny before storage call.",
+          "verifier": "Generated tenant-principal-operation authorization matrix plus fake storage call counter."
+        }
+      },
+      "rollback": "Disable brokered shared bucket and route to isolated bucket config; do not loosen authorization.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9136 shared bucket (S2.10–S2.13, S2.18)",
+      "owner": "C9136-02"
+    },
+    {
+      "id": "C9137-01",
+      "parent": 9137,
+      "title": "Specify authoritative generation fence with #9084",
+      "kind": "design",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S2.14",
+        "S2.15",
+        "S2.19"
+      ],
+      "goal": "Require #9084 atomic ref-intent/tombstone generation fence plus immutable generation-qualified physical keys that are never reused. Fence g before plain DeleteObject on captured old key; resurrection g+1 receives a new key while canonical ContentId/PayloadId stays unchanged. If fence or non-reuse is unproven, deletion stays disabled.",
+      "enables": [
+        "safe GC implementation"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/reference_generation.rs",
+          "status": "new",
+          "owner": "C9137-01"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/reference_generation.rs",
+          "status": "new",
+          "owner": "C9137-01"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9084,
+          "description": "authoritative transactional ref-intent/tombstone generation fence; if absent, keep deletion disabled"
+        }
+      ],
+      "after": [
+        "9110-02"
+      ],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/reference_generation.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml -p id-store --test reference_generation",
+        "oracle": {
+          "kind": "model",
+          "expected": "Ref commit or tombstone fence wins atomically; ordinary put after tombstone is rejected absent explicit resurrection; g+1 uses new never-reused physical key; delayed plain delete of g leaves g+1 retrievable; absent fence/non-reuse, deletion is disabled.",
+          "verifier": "Independent finite reference-store + physical-generation-key model with injected delayed deleter and readback; does not assume R2 conditional delete."
+        }
+      },
+      "rollback": "Keep collector deletion disabled and preserve candidate records; never bypass generation fence.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9137 GC (S2.14–S2.15, S2.19)",
+      "owner": "C9137-01"
+    },
+    {
+      "id": "C9137-02",
+      "parent": 9137,
+      "title": "Build resumable generation-conditional large-object collector",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S2.14",
+        "S2.15",
+        "S2.19"
+      ],
+      "goal": "Implement resumable collection only behind #9084 fence and non-reused immutable generation-qualified keys. Tombstone first, wait grace, then plain-delete captured old key; do not depend on provider conditional-delete. Prioritize largest reclaimable files and independently reclaim chunks. Without fence/non-reuse proof keep delete disabled.",
+      "enables": [
+        "large-object storage reclamation"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/gc.rs",
+          "status": "new",
+          "owner": "C9137-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/gc.rs",
+          "status": "new",
+          "owner": "C9137-02"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9137-01",
+          "description": "atomic generation fence implementation and passing interleaving model"
+        },
+        {
+          "issue": 9084,
+          "description": "authoritative ref predicate and physical deletion precondition"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/gc.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml -p id-store --test gc",
+        "oracle": {
+          "kind": "model",
+          "expected": "Restart/page races and delayed stale delete leave g+1 intact; referenced generations survive; no-delete mode selected absent fence/non-reuse; largest reclaimable candidate is first.",
+          "verifier": "Reference-generation model plus actual key-resolution fixture and deterministic size-priority fixture."
+        }
+      },
+      "rollback": "Pause sweep and preserve tombstones/candidate manifests; restore from retained generation only after verifying refs.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9137 GC (S2.14–S2.15, S2.19)",
+      "owner": "C9137-02"
+    },
+    {
+      "id": "C9138-01",
+      "parent": 9138,
+      "title": "Evaluate second embedder candidates without selecting for owner",
+      "kind": "research",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S6.1",
+        "S6.2",
+        "S6.3",
+        "S6.13",
+        "S6.14"
+      ],
+      "goal": "Use Snowflake arctic-embed-m-v2.0 as existing model; compare BGE-M3, Voyage, OpenAI text-embedding-3 and Workers AI on cost, self-hostability and mixed corpus; consume only #9092-owned #8627 quality artifacts, do not run/recompute recall.",
+      "enables": [
+        "owner's second-model decision",
+        "vector identity contract"
+      ],
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/embedder-candidates-research.md",
+          "status": "new",
+          "owner": "C9138-01"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/embedder-candidates-research-report.json",
+          "status": "new",
+          "owner": "C9138-01"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/validate_embedder_research.py",
+          "status": "new",
+          "owner": "C9138-01"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9113,
+          "description": "typed content/model identity and mixed-embedder profile contract"
+        },
+        {
+          "issue": 9092,
+          "description": "current model, candidate list, corpus/eval digests and any owner-produced #8627 quality artifact"
+        }
+      ],
+      "after": [
+        "9110-R2"
+      ],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/validate_embedder_research.py",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/validate_embedder_research.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/embedder-candidates-research-report.json",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Matrix covers Snowflake arctic-embed-m-v2.0, BGE-M3, Voyage, OpenAI text-embedding-3 and Workers AI; records owner #9092 decision as undecided or cites its decision ref; quality-artifact corpus/eval digests match if present. No independent recall run and no Cortex default.",
+          "verifier": "Owned matrix validator checks five exact identity candidates, owner-decision reference/undecided status, optional artifact digest links, and rejects unstated quality results or vendor substitution."
+        }
+      },
+      "rollback": "Keep current Snowflake model and do not enable a second vector space; mark candidate table stale rather than select a fallback.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9138 indexing/search (S6.1–S6.3, S6.13–S6.14)",
+      "owner": "C9138-01",
+      "research_scope": "second-embedder-candidates",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/inventory-live/live-issues.json",
+        "https://github.com/developing-today/code/issues/9092",
+        "https://huggingface.co/BAAI/bge-m3",
+        "https://developers.cloudflare.com/workers-ai/models/bge-m3/",
+        "https://docs.voyageai.com/docs/embeddings",
+        "https://docs.voyageai.com/docs/pricing",
+        "https://developers.openai.com/api/docs/guides/embeddings",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/seam-map.md"
+      ],
+      "validator_cli_contract": "Only --input PATH; strict parse before file read. Require exactly the five model identities and current #9092 model; check owner decision ref or undecided status and any supplied quality artifact digests; never invoke an embedder or recall benchmark."
+    },
+    {
+      "id": "C9138-02",
+      "parent": 9138,
+      "title": "Add pipeline-qualified async vectorization contract",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S6.1",
+        "S6.2",
+        "S6.3",
+        "S6.13",
+        "S6.14"
+      ],
+      "goal": "Queue accepted content asynchronously with exact provider/model/revision/preprocess identity and idempotent mixed-embedder storage.",
+      "enables": [
+        "built-in ID search"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/vector_job.rs",
+          "status": "new",
+          "owner": "C9138-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/vector_job.rs",
+          "status": "new",
+          "owner": "C9138-02"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9138-01",
+          "description": "model identity decision/status and candidate record; owner may defer second model"
+        },
+        {
+          "issue": 9084,
+          "description": "content identity, source version and deletion/tombstone interface"
+        },
+        {
+          "issue": 9113,
+          "description": "typed identity-profile interface"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/vector_job.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml -p id-store --test vector_job",
+        "oracle": {
+          "kind": "model",
+          "expected": "Duplicate delivery creates one vector per full pipeline identity; differing model versions remain separate; unsigned/invalid derived artifacts are rejected before indexing.",
+          "verifier": "Independent idempotency/job state model and signature/lineage verifier fixture."
+        }
+      },
+      "rollback": "Disable vector job consumer and rebuild index from signed source; retain prior model rows until verified.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9138 indexing/search (S6.1–S6.3, S6.13–S6.14)",
+      "owner": "C9138-02"
+    },
+    {
+      "id": "C9139-01",
+      "parent": 9139,
+      "title": "Recommendation snapshot paging state machine",
+      "kind": "design",
+      "version": "V3",
+      "tier": "crucial",
+      "statements": [
+        "S6.4",
+        "S6.5",
+        "S6.6",
+        "S6.7",
+        "S6.15"
+      ],
+      "goal": "Specify immutable materialized order score DESC then immutable recommendation ID ASC at pinned cutoff; parent SnapshotId, page position and expiry semantics; each independently retained/transported page has its own signed envelope and EnvelopeId.",
+      "enables": [
+        "DO or durable-store implementation"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/atlas-search/worker/src/recommendation_state.ts",
+          "status": "new",
+          "owner": "C9139-01"
+        },
+        {
+          "path": "pkgs/atlas-search/worker/test/recommendation_state.test.ts",
+          "status": "new",
+          "owner": "C9139-01"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/recommendation-page-fixture.json",
+          "status": "existing",
+          "owner": "C9139-01"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/recommendation-page-oracle.py",
+          "status": "existing",
+          "owner": "C9139-01"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/recommendation-page-oracle-output.txt",
+          "status": "existing",
+          "owner": "C9139-01"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9083,
+          "description": "tenant-scoped subject authorization and policy epoch"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/atlas-search/worker/test/recommendation_state.test.ts",
+        "command": "npm --prefix pkgs/atlas-search/worker exec vitest -- run test/recommendation_state.test.ts",
+        "oracle": {
+          "kind": "model",
+          "expected": "At cutoff materialize total order score DESC then immutable recommendation ID ASC; cursor binds pinned parent SnapshotId plus position; each page gets a separately signed envelope with its own EnvelopeId. Equal-score, post-cutoff arrival, restart, duplicate replay, replay/cursor expiry, terminal and empty-nonterminal cases reproduce exact page bytes/order; wrong-parent cursor rejects.",
+          "verifier": "Independent finite paging/envelope model recomputes ParentSnapshotId from parent envelope and each EnvelopeId from complete page envelope including signature fixture bytes; checks cursor position and wrong-parent rejection. Fixture explicitly makes no cryptographic or production-state claim."
+        }
+      },
+      "rollback": "Stop recommendation paging and serve no partial stale cursor; start a new snapshot after the state schema is corrected.",
+      "reference_vector_command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/recommendation-page-oracle.py",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9139 fanout and DO accumulator (S6.4–S6.7, S6.15)",
+      "owner": "C9139-01"
+    },
+    {
+      "id": "C9139-02",
+      "parent": 9139,
+      "title": "Implement durable incremental recommendation accumulator",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S6.4",
+        "S6.5",
+        "S6.6",
+        "S6.7",
+        "S6.15"
+      ],
+      "goal": "Implement per-tenant/subject DO using materialized score-descending/immutable-ID-ascending order; persist parent SnapshotId and cursor position; sign each independently retained/transported page with its own EnvelopeId.",
+      "enables": [
+        "incremental recommendation consumer"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/atlas-search/worker/src/recommendation_do.ts",
+          "status": "new",
+          "owner": "C9139-02"
+        },
+        {
+          "path": "pkgs/atlas-search/worker/test/recommendation_do.test.ts",
+          "status": "new",
+          "owner": "C9139-02"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9139-01",
+          "description": "snapshot cutoff, stable total order, cursor/replay/expiry and terminal semantics"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/atlas-search/worker/test/recommendation_do.test.ts",
+        "command": "npm --prefix pkgs/atlas-search/worker exec vitest -- run test/recommendation_do.test.ts",
+        "oracle": {
+          "kind": "model",
+          "expected": "Crash/retry at every durable write yields same total order/page position; parent SnapshotId and cursor stay bound; each output page EnvelopeId independently verifies; tenant partitions never mix.",
+          "verifier": "Finite reference state model from C9139-01 plus durable-storage fault injection and per-page signature/ID recomputation."
+        }
+      },
+      "rollback": "Disable accumulator route and create a fresh versioned snapshot; do not reuse partially materialized order.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9139 fanout and DO accumulator (S6.4–S6.7, S6.15)",
+      "owner": "C9139-02"
+    },
+    {
+      "id": "C9140-01",
+      "parent": 9140,
+      "title": "Versioned recommendation object and retention contract",
+      "kind": "design",
+      "version": "V3",
+      "tier": "crucial",
+      "statements": [
+        "S6.8",
+        "S6.9",
+        "S6.10",
+        "S6.11",
+        "S6.12",
+        "S6.16",
+        "S6.17"
+      ],
+      "goal": "Separate recommendation snapshots from search history and apply per-class retention/deletion policy. ParentSnapshotId hashes only the complete signed parent envelope of inputs, ranking configuration and cutoff; it excludes pages. Each page has an independently signed envelope and EnvelopeId; cursor binds parent SnapshotId plus position.",
+      "enables": [
+        "snapshot persistence"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/recommendation_object.rs",
+          "status": "new",
+          "owner": "C9140-01"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/recommendation_object.rs",
+          "status": "new",
+          "owner": "C9140-01"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9139-01",
+          "description": "stable materialized snapshot/page IDs and finite retention semantics"
+        },
+        {
+          "issue": 9084,
+          "description": "reference/deletion authority and retention hooks"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/recommendation_object.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml -p id-store --test recommendation_object",
+        "oracle": {
+          "kind": "model",
+          "expected": "Parent and page envelopes remain distinct and immutable; page EnvelopeId does not replace or enter ParentSnapshotId; cursor binds parent SnapshotId plus position; retention/hold/deletion model preserves required snapshots.",
+          "verifier": "Independent canonical-envelope digest/signature verifier for parent and page envelopes plus finite cursor and retention model."
+        }
+      },
+      "rollback": "Disable new object writer; preserve existing signed snapshots and use prior retention policy until migration resumes.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9140 recommendation objects/history (S6.8–S6.12, S6.16–S6.17)",
+      "owner": "C9140-01"
+    },
+    {
+      "id": "C9140-02",
+      "parent": 9140,
+      "title": "Persist recommendation snapshots and before/after comparison",
+      "kind": "implementation",
+      "version": "V4",
+      "tier": "recommended",
+      "statements": [
+        "S6.8",
+        "S6.9",
+        "S6.10",
+        "S6.11",
+        "S6.12",
+        "S6.16",
+        "S6.17"
+      ],
+      "goal": "Separate recommendation snapshots from search history and apply per-class retention/deletion policy. ParentSnapshotId hashes only the complete signed parent envelope of inputs, ranking configuration and cutoff; it excludes pages. Each page has an independently signed envelope and EnvelopeId; cursor binds parent SnapshotId plus position.",
+      "enables": [
+        "admin before/after views"
+      ],
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/recommendation_store.rs",
+          "status": "new",
+          "owner": "C9140-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/recommendation_store.rs",
+          "status": "new",
+          "owner": "C9140-02"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "C9140-01",
+          "description": "signed snapshot/history schema and per-class retention contract"
+        },
+        {
+          "ref": "C9139-02",
+          "description": "durable ordered page accumulation"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/recommendation_store.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml -p id-store --test recommendation_store",
+        "oracle": {
+          "kind": "model",
+          "expected": "Parent and page envelopes remain distinct and immutable; page EnvelopeId does not replace or enter ParentSnapshotId; cursor binds parent SnapshotId plus position; retention/hold/deletion model preserves required snapshots.",
+          "verifier": "Independent canonical-envelope digest/signature verifier for parent and page envelopes plus finite cursor and retention model."
+        }
+      },
+      "rollback": "Disable comparison UI/writer and retain snapshots under existing policy; do not delete source history.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+      "design_section": "### #9140 recommendation objects/history (S6.8–S6.12, S6.16–S6.17)",
+      "owner": "C9140-02"
+    }
+  ]
+}

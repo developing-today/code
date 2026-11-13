@@ -32,6 +32,7 @@ pub use crate::groups::worlds::Isolation;
 /// lives in [`crate::time`] so the crate builds without this feature.
 pub(crate) use crate::time::unix_ms;
 mod actor;
+mod admission_lease;
 mod clock;
 mod coordinator;
 mod core;
@@ -49,6 +50,10 @@ mod util;
 mod tests;
 
 pub(crate) use actor::{WorldActor, WorldCommand};
+pub use admission_lease::{
+    ADMISSION_LEASE_DOMAIN, ADMISSION_LEASE_VERSION, AdmissionLease, AdmissionLeaseError,
+    MAX_ADMISSION_LEASE_DURATION_MS, ReplicaAdmissionGate, SignedAdmissionLease,
+};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use coordinator::{
     ActiveHandoff, Coordinator, CoordinatorError, EntityInTransit, EntityOwner, ExportReceipt,

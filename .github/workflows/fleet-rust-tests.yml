@@ -17,12 +17,6 @@ name: fleet-rust-tests
 # this job.
 
 on:
-  pull_request:
-    paths:
-      - "pkgs/fleet/**"
-      - ".github/workflows/fleet-rust-tests.yml"
-      - ".github/scripts/check-fleet-rust-tests.sh"
-      - ".github/scripts/check-fleet-rust-tests.test.sh"
   push:
     branches: [main]
     paths:

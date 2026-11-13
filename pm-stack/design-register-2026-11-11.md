@@ -595,8 +595,8 @@ Field key per entry:
 - first_asked: 2026-11-05 01:10 CST — Drew's standing rule: provider browser auth must auto-renew; keepers own renewal so lanes never stall on expired provider logins. (Paired doctrine same morning, 01:13 CST: "direct providers EMULATE, never embed".)
 - tracking: developing-today/code#6120 **[live-checked 2026-11-11: OPEN]** — "Provider browser-auth auto-renewal — standing-rule follow-through (OpenDesign keeper landed; Meta / Mistral / Claude / ClinePass gaps)"
 - design_status: decided (standing rule)
-- implementation_status: partial — OpenDesign keeper landed; Meta / Mistral / Claude / ClinePass gaps open.
-- followups_open: the four named provider gaps in #6120.
+- implementation_status: partial — OpenDesign keeper landed; Meta provider-owned keeper landed 2026-11-13 (decision meta-auth-keeper-6120: the credential lives in ONE provider-owned location, captured and renewed by the provider itself via CDP with validate-before-store, on cadence and on auth failure, with the Muse-visible alert plus a push notification on failure; the #6079 exporter probe-watch / unit re-arm arrangement is superseded — the exporter remains as measurement only); Mistral / Claude / ClinePass gaps open.
+- followups_open: the remaining named provider gaps in #6120 (Mistral credits leg, Claude, ClinePass).
 
 #### F4.17 Agent SDKs + always-on swarms investigation
 

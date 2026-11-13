@@ -3,6 +3,7 @@ name: pm-stack tests
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - "pm-stack/external-comms/**"
       - "pm-stack/opencode-claimant/**"
@@ -15,20 +16,6 @@ on:
       - "pm-stack/grist/**"
       - "pm-stack/scripts/**"
       - ".github/workflows/pm-stack-tests.yml"
-  pull_request:
-    paths:
-      - "pm-stack/external-comms/**"
-      - "pm-stack/opencode-claimant/**"
-      - "pm-stack/opencode-usage-export/**"
-      - "pm-stack/cloudflare-export/**"
-      - "pm-stack/supabase-export/**"
-      - "pm-stack/meta-exporter/**"
-      - "pm-stack/dispatch/**"
-      - "pm-stack/pad/**"
-      - "pm-stack/grist/**"
-      - "pm-stack/scripts/**"
-      - ".github/workflows/pm-stack-tests.yml"
-
 permissions:
   contents: read
 
