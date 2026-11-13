@@ -28,6 +28,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/nearmiss"
 	"github.com/developing-today/code/pkgs/mcpx/internal/policy"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 	"github.com/developing-today/code/pkgs/mcpx/internal/secrets"
@@ -2149,7 +2150,9 @@ func rankOpts(all []ToolInfo, terms []string, requireAll bool, explain bool) []T
 // scoreTool sums termScore over the query terms and reports whether every
 // term matched something. The tiers, highest first: exact name 100, name
 // prefix 60, tag 50, name substring 40, a split/stemmed name word 40,
-// function substring 30, namespace 20, description 10 (#1923).
+// function substring 30, namespace 20, description 10, and — only when a
+// term matched no exact tier — a typo of a name word or the namespace 5
+// (#1923 slice 2).
 func scoreTool(t ToolInfo, terms []string) (int, bool, []TermScore) {
 	name := strings.ToLower(t.Tool)
 	fn := strings.ToLower(t.Function)
@@ -2188,8 +2191,34 @@ func termScore(term, name, fn, desc, ns string, words []string, tags []string) (
 		return "namespace", 20
 	case strings.Contains(desc, term):
 		return "description", 10
+	case typoMatch(term, ns, words):
+		return "name-typo", 5
 	}
 	return "", 0
+}
+
+// typoMatch is the #1923 slice-2 typo tier: the term is a near miss of a
+// tool-name word or of the namespace, measured by the shared nearmiss
+// matcher (Damerau-Levenshtein, so a transposition costs one edit) at
+// distance at most 2 — the reach docs/proposals.md sets for this rung.
+// It runs only after every exact tier above has missed, against names
+// only (never descriptions or tags), and scores below all of them, so an
+// exact query's results and ordering are unchanged. A term shorter than
+// three characters is never a typo candidate: at that length a distance
+// of 2 is noise, not a misspelling.
+func typoMatch(term, ns string, words []string) bool {
+	if len(term) < 3 {
+		return false
+	}
+	if ns != "" && nearmiss.Distance(term, ns) <= 2 {
+		return true
+	}
+	for _, w := range words {
+		if nearmiss.Distance(term, w) <= 2 {
+			return true
+		}
+	}
+	return false
 }
 
 // tagMatch: a term matches a tag when it equals the tag, equals the tag
