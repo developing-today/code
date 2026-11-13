@@ -3882,7 +3882,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "argon2",
- "axum",
  "base64 0.22.1",
  "blake3",
  "cbor-core",
@@ -3897,6 +3896,7 @@ dependencies = [
  "futures-lite",
  "futures-util",
  "id-caps",
+ "id-cli",
  "id-core",
  "id-directory",
  "id-events",
@@ -3960,12 +3960,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "blake3",
+ "clap",
+ "distributed-topic-tracker",
+ "ed25519-dalek 3.0.0",
+ "futures-lite",
+ "id-caps",
+ "id-core",
+ "id-directory",
+ "id-events",
+ "id-groups",
+ "id-store",
+ "id-sync",
+ "id-web",
+ "id-worlds",
+ "iroh",
+ "iroh-base",
+ "iroh-blobs",
+ "iroh-docs",
+ "iroh-gossip",
+ "iroh-mdns-address-lookup",
+ "libc",
+ "p2panda-core",
+ "postcard",
+ "proptest",
+ "rand 0.10.3",
+ "rpassword",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "id-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "blake3",
  "cbor-core",
+ "chacha20poly1305",
  "ed25519-dalek 3.0.0",
  "futures-lite",
  "iroh",
@@ -3976,9 +4021,11 @@ dependencies = [
  "postcard",
  "proptest",
  "qrcode",
+ "rand 0.10.3",
  "rqrr",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -3987,6 +4034,7 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "vt100",
+ "zeroize",
 ]
 
 [[package]]

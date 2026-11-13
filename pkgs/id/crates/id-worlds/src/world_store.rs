@@ -659,7 +659,122 @@ pub async fn open_replica(
     runtime: crate::world_limits::RuntimeLimits,
     service: impl FnOnce(WorldHandle) -> WorldService,
 ) -> Result<(WorldService, OpenReport, crate::world::ReplicaCursor)> {
+    let (service, report, cursor, _status) = open_replica_impl(
+        dir,
+        world_id,
+        pinned_source,
+        limits,
+        runtime,
+        service,
+        None,
+        0,
+    )
+    .await?;
+    Ok((service, report, cursor))
+}
+
+/// Operator-facing status of an opened replica (F12.13 phase 5): the
+/// pinned source it follows, the world it serves, where its verified
+/// cursor stands, and how much of the policy-B admission window
+/// remains — the staleness surface an operator (or a follow CLI)
+/// reports from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplicaStatus {
+    /// The world this replica serves.
+    pub world_id: String,
+    /// The pinned writer source key the journal was verified against.
+    pub source: [u8; 32],
+    /// The verified journal cursor the replica stands at.
+    pub cursor: crate::world::ReplicaCursor,
+    /// When the held admission lease expires, if the replica was
+    /// opened under one.
+    pub lease_expires_at_unix_ms: Option<u64>,
+    /// Admission window left at open time, in milliseconds (zero once
+    /// expired); `None` when the replica was opened ungated.
+    pub lease_remaining_ms: Option<u64>,
+    /// Whether a NEW spectator may be admitted at open time: under a
+    /// gate, only while the held lease verifies; ungated replicas keep
+    /// the journal-only admission of the phase-4 path.
+    pub admits_new_spectators: bool,
+}
+
+/// As [`open_replica`], under the policy-B admission gate (F12.13
+/// phase 5): the replica serves reads exactly as before, but a
+/// spectator who was not present at the verified cursor is admitted
+/// only while `lease` — the writer-signed admission lease for this
+/// world from the pinned source — verifies at admission time
+/// ([`crate::world::SignedAdmissionLease::verify`], enforced by
+/// [`crate::world::ReplicaAdmissionGate`] in the actor). An expired
+/// or not-yet-valid lease does NOT fail the open: serving continues
+/// and new admissions stop until resync, per policy B. A lease that
+/// fails verification for a non-time reason (another source, another
+/// world, a bad signature) is an operator misconfiguration and fails
+/// the open. A `None` lease opens the replica gated with no lease
+/// held: existing participants are served, no new spectator is
+/// admitted. `now_unix_ms` is the open-time clock for the returned
+/// [`ReplicaStatus`]; the gate itself checks the actor's clock at
+/// each admission.
+///
+/// # Errors
+///
+/// As [`open_replica`], and additionally when a supplied lease fails
+/// verification for a non-time reason.
+pub async fn open_replica_with_admission(
+    dir: &Path,
+    world_id: &str,
+    pinned_source: [u8; 32],
+    limits: WorldLimits,
+    runtime: crate::world_limits::RuntimeLimits,
+    service: impl FnOnce(WorldHandle) -> WorldService,
+    lease: Option<crate::world::SignedAdmissionLease>,
+    now_unix_ms: u64,
+) -> Result<(
+    WorldService,
+    OpenReport,
+    crate::world::ReplicaCursor,
+    ReplicaStatus,
+)> {
+    open_replica_impl(
+        dir,
+        world_id,
+        pinned_source,
+        limits,
+        runtime,
+        service,
+        Some(lease),
+        now_unix_ms,
+    )
+    .await
+}
+
+async fn open_replica_impl(
+    dir: &Path,
+    world_id: &str,
+    pinned_source: [u8; 32],
+    limits: WorldLimits,
+    runtime: crate::world_limits::RuntimeLimits,
+    service: impl FnOnce(WorldHandle) -> WorldService,
+    admission: Option<Option<crate::world::SignedAdmissionLease>>,
+    now_unix_ms: u64,
+) -> Result<(
+    WorldService,
+    OpenReport,
+    crate::world::ReplicaCursor,
+    ReplicaStatus,
+)> {
     use crate::world::{DurableReceiver, restore_replica_entries_with_runtime};
+
+    // A lease bound to another source or world, or with a bad
+    // signature, is a misconfiguration: fail before touching the
+    // directory. Time-window failures are not: policy B keeps the
+    // replica serving with new admissions stopped.
+    if let Some(Some(lease)) = &admission {
+        use crate::world::AdmissionLeaseError;
+        match lease.verify(pinned_source, world_id, now_unix_ms) {
+            Ok(()) | Err(AdmissionLeaseError::Expired) | Err(AdmissionLeaseError::NotYetValid) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
 
     let dir_owned = dir.to_owned();
     let id = world_id.to_owned();
@@ -736,7 +851,32 @@ pub async fn open_replica(
     // No journal, no outbox: the replica appends nothing and queues nothing
     // for other servers. Directory writes are refused by the read-only
     // actor, so directory facts stay fixed to the local replica sidecar.
-    let handle = WorldHandle::spawn_read_only(core, program, restored.presence)?;
+    let (lease_expires_at_unix_ms, lease_remaining_ms, admits_new_spectators) = match &admission {
+        None => (None, None, true),
+        Some(None) => (None, None, false),
+        Some(Some(lease)) => (
+            Some(lease.lease.expires_at_unix_ms),
+            Some(lease.remaining_ms(now_unix_ms)),
+            lease.admits_new_spectator(pinned_source, world_id, now_unix_ms),
+        ),
+    };
+    let admission_gate = admission.map(|lease| {
+        crate::world::ReplicaAdmissionGate::new(
+            lease,
+            pinned_source,
+            world_id,
+            restored.presence.keys().copied().collect(),
+        )
+    });
+    let handle = match admission_gate {
+        Some(gate) => WorldHandle::spawn_read_only_with_admission(
+            core,
+            program,
+            restored.presence,
+            Some(gate),
+        )?,
+        None => WorldHandle::spawn_read_only(core, program, restored.presence)?,
+    };
     let mut service = service(handle).with_module_dir(modules);
     // Replica sessions are spectator-only; a configured writer admin token,
     // mail sender, compiler, outbox or blob uploader must not leak into the
@@ -749,7 +889,15 @@ pub async fn open_replica(
     if let Some(wasm) = restored_module {
         service.adopt_module(wasm).await?;
     }
-    Ok((service, report, cursor))
+    let status = ReplicaStatus {
+        world_id: world_id.to_owned(),
+        source: pinned_source,
+        cursor,
+        lease_expires_at_unix_ms,
+        lease_remaining_ms,
+        admits_new_spectators,
+    };
+    Ok((service, report, cursor, status))
 }
 
 /// Every account appearing in a replica journal's capability chains: the
@@ -1444,6 +1592,323 @@ mod tests {
         assert_eq!(
             std::fs::read(replica_dir.path().join("journal.jsonl")).unwrap(),
             journal_bytes
+        );
+    }
+
+    /// Fixture for the gated replica open (F12.13 phase 5): a durable
+    /// replica directory whose journal carries an owner, Bo — present
+    /// at the verified cursor via a journaled join — and Cy, who holds
+    /// a journal-issued JOIN capability but was never present (the NEW
+    /// spectator of the policy-B ruling). The replication source key
+    /// doubles as the admission-lease issuer, as it does for a pinned
+    /// writer.
+    struct GatedReplicaFixture {
+        dir: TempDir,
+        source: [u8; 32],
+        source_key: ed25519_dalek::SigningKey,
+        present_token: crate::world::JoinCapability,
+        present_id: u64,
+        new_token: crate::world::JoinCapability,
+        new_id: u64,
+    }
+
+    fn gated_replica_fixture(world_id: &str) -> GatedReplicaFixture {
+        use ed25519_dalek::SigningKey;
+
+        use crate::directory::Actor;
+        use crate::world::{
+            DurableReceiver, JOURNAL_VERSION, JournalEntry, ReplicationEnvelope,
+            SignedReplicationEnvelope, WorldCore, WorldEvent, WorldEventKind, frame_digest,
+            journal_entry_line,
+        };
+
+        let mut writer_core = WorldCore::new(world_id, WorldLimits::default()).unwrap();
+        let (ann_credential, _) = writer_core.directory_mut().sign_up("Ann").unwrap();
+        let (bo_credential, _) = writer_core.directory_mut().sign_up("Bo").unwrap();
+        let (cy_credential, _) = writer_core.directory_mut().sign_up("Cy").unwrap();
+        let ann = writer_core
+            .directory()
+            .account_for(&ann_credential)
+            .unwrap();
+        let bo = writer_core.directory().account_for(&bo_credential).unwrap();
+        let cy = writer_core.directory().account_for(&cy_credential).unwrap();
+        for account in [&ann, &bo, &cy] {
+            writer_core
+                .directory_mut()
+                .verify_account(Actor::Server, account)
+                .unwrap();
+        }
+        let (owner, _owner_token) = writer_core
+            .issue_for_account(
+                &ann_credential,
+                crate::world::WorldScopes::ALL,
+                CapabilityBounds::default(),
+                "Ann",
+            )
+            .unwrap();
+        let (present, present_token) = writer_core
+            .issue_for_account(
+                &bo_credential,
+                crate::world::WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Bo spectator",
+            )
+            .unwrap();
+        let (newcomer, new_token) = writer_core
+            .issue_for_account(
+                &cy_credential,
+                crate::world::WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Cy spectator",
+            )
+            .unwrap();
+        let subjects = std::collections::BTreeSet::from([ann, bo, cy]);
+        let directory_facts = writer_core
+            .directory()
+            .replica_facts_for(&subjects)
+            .unwrap();
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: world_id.to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            writer_core.issued_entry(owner.id).unwrap(),
+            writer_core.issued_entry(present.id).unwrap(),
+            writer_core.issued_entry(newcomer.id).unwrap(),
+            JournalEntry::System {
+                event: WorldEvent {
+                    sequence: 0,
+                    participant_id: 0,
+                    kind: WorldEventKind::System {
+                        event: serde_json::json!({
+                            "cap": "players",
+                            "event": "joined",
+                            "participant": {"id": present.id, "name": "Bo spectator"}
+                        })
+                        .to_string(),
+                    },
+                },
+            },
+        ];
+        let journal_bytes: Vec<u8> = entries.iter().flat_map(journal_entry_line).collect();
+        drop(writer_core);
+
+        let dir = TempDir::new().unwrap();
+        let mut directory_bytes = Vec::new();
+        for entry in &directory_facts {
+            serde_json::to_writer(&mut directory_bytes, entry).unwrap();
+            directory_bytes.push(b'\n');
+        }
+        std::fs::write(dir.path().join("directory.jsonl"), &directory_bytes).unwrap();
+
+        let source_key = SigningKey::from_bytes(&[82; 32]);
+        let source = *source_key.verifying_key().as_bytes();
+        let nonce = [23; crate::world::SESSION_NONCE_BYTES];
+        let mut receiver = DurableReceiver::open(dir.path(), world_id, source).unwrap();
+        receiver.begin_session(nonce);
+        let snapshot = ReplicationEnvelope::snapshot(
+            world_id,
+            source,
+            JOURNAL_VERSION,
+            nonce,
+            [0; 32],
+            journal_bytes,
+        )
+        .unwrap();
+        let cursor = snapshot.cursor_after;
+        let snapshot_frame = SignedReplicationEnvelope::sign(snapshot, &source_key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        let previous = frame_digest(&snapshot_frame);
+        receiver.accept_frame(&snapshot_frame).unwrap();
+        let terminal = ReplicationEnvelope::terminal(
+            world_id,
+            source,
+            JOURNAL_VERSION,
+            nonce,
+            cursor,
+            previous,
+        );
+        let terminal_frame = SignedReplicationEnvelope::sign(terminal, &source_key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        receiver.accept_frame(&terminal_frame).unwrap();
+        drop(receiver);
+        GatedReplicaFixture {
+            dir,
+            source,
+            source_key,
+            present_token,
+            present_id: present.id,
+            new_token,
+            new_id: newcomer.id,
+        }
+    }
+
+    // Oracle: policy B ruling (#806 comment 6634842315) on the durable
+    // open path — a valid writer-signed lease admits the new spectator,
+    // and the status reports source, world, cursor and the remaining
+    // admission window.
+    #[tokio::test]
+    async fn gated_replica_open_with_a_valid_lease_admits_and_reports() {
+        use crate::world::SignedAdmissionLease;
+
+        let world_id = "replica-gated-valid";
+        let fixture = gated_replica_fixture(world_id);
+        let now = crate::world::unix_ms();
+        let lease =
+            SignedAdmissionLease::issue(world_id, &fixture.source_key, now, 3_600_000).unwrap();
+        let (replica, _report, cursor, status) = open_replica_with_admission(
+            fixture.dir.path(),
+            world_id,
+            fixture.source,
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(Some("writer-admin")),
+            Some(lease),
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.world_id, world_id);
+        assert_eq!(status.source, fixture.source);
+        assert_eq!(status.cursor, cursor);
+        assert_eq!(status.cursor.entries, 5);
+        assert_eq!(status.lease_expires_at_unix_ms, Some(now + 3_600_000));
+        let remaining = status.lease_remaining_ms.unwrap();
+        assert!(remaining > 0 && remaining <= 3_600_000, "{remaining}");
+        assert!(status.admits_new_spectators);
+        assert_eq!(
+            replica
+                .world()
+                .participant_id(fixture.present_token.clone())
+                .await
+                .unwrap(),
+            fixture.present_id
+        );
+        assert_eq!(
+            replica
+                .world()
+                .participant_id(fixture.new_token.clone())
+                .await
+                .unwrap(),
+            fixture.new_id
+        );
+        replica.world().shutdown().await.unwrap();
+    }
+
+    // Oracle: policy B — an expired lease does NOT fail the durable
+    // open: reads keep serving, the participant present at the cursor
+    // is unaffected, and only new admissions stop.
+    #[tokio::test]
+    async fn gated_replica_open_with_an_expired_lease_serves_but_admits_no_one_new() {
+        use crate::world::SignedAdmissionLease;
+
+        let world_id = "replica-gated-expired";
+        let fixture = gated_replica_fixture(world_id);
+        let now = crate::world::unix_ms();
+        let lease =
+            SignedAdmissionLease::issue(world_id, &fixture.source_key, now - 7_200_000, 3_600_000)
+                .unwrap();
+        let (replica, _report, _cursor, status) = open_replica_with_admission(
+            fixture.dir.path(),
+            world_id,
+            fixture.source,
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(Some("writer-admin")),
+            Some(lease),
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.lease_remaining_ms, Some(0));
+        assert!(!status.admits_new_spectators);
+        assert!(
+            replica
+                .world()
+                .snapshot(fixture.present_token.clone())
+                .await
+                .is_ok()
+        );
+        assert!(
+            replica
+                .world()
+                .participant_id(fixture.new_token.clone())
+                .await
+                .is_err(),
+            "expired lease must refuse the new spectator"
+        );
+        replica.world().shutdown().await.unwrap();
+    }
+
+    // Oracle: policy B — gated open holding no lease serves existing
+    // participants and admits no new spectator.
+    #[tokio::test]
+    async fn gated_replica_open_without_a_lease_admits_no_one_new() {
+        let world_id = "replica-gated-no-lease";
+        let fixture = gated_replica_fixture(world_id);
+        let now = crate::world::unix_ms();
+        let (replica, _report, _cursor, status) = open_replica_with_admission(
+            fixture.dir.path(),
+            world_id,
+            fixture.source,
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(Some("writer-admin")),
+            None,
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.lease_expires_at_unix_ms, None);
+        assert_eq!(status.lease_remaining_ms, None);
+        assert!(!status.admits_new_spectators);
+        assert!(
+            replica
+                .world()
+                .snapshot(fixture.present_token.clone())
+                .await
+                .is_ok()
+        );
+        assert!(
+            replica
+                .world()
+                .participant_id(fixture.new_token.clone())
+                .await
+                .is_err()
+        );
+        replica.world().shutdown().await.unwrap();
+    }
+
+    // A lease signed by anyone other than the pinned source is an
+    // operator misconfiguration: the open fails before serving.
+    #[tokio::test]
+    async fn gated_replica_open_refuses_a_lease_from_another_source() {
+        use crate::world::SignedAdmissionLease;
+
+        let world_id = "replica-gated-wrong-source";
+        let fixture = gated_replica_fixture(world_id);
+        let now = crate::world::unix_ms();
+        let foreign_key = ed25519_dalek::SigningKey::from_bytes(&[99; 32]);
+        let lease = SignedAdmissionLease::issue(world_id, &foreign_key, now, 3_600_000).unwrap();
+        let error = open_replica_with_admission(
+            fixture.dir.path(),
+            world_id,
+            fixture.source,
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(Some("writer-admin")),
+            Some(lease),
+            now,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("pinned source"),
+            "unexpected error: {error:#}"
         );
     }
 

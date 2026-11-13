@@ -8,6 +8,7 @@
 // apply actions; the dashboard only records them.
 import { readFile, stat } from "node:fs/promises";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
+import { buildQuotaAnalytics, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
@@ -32,6 +33,7 @@ import { EventsStore, emitEvent, pageEvents } from "./events.ts";
 import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
 import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
+import { fleetFeedRevisionReader, FreshnessReconciler } from "./freshness-reconcile.ts";
 import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
@@ -78,6 +80,7 @@ import {
   listDecisionSets,
   listOpenDecisionSets,
   raiseDecisionSet,
+  refreshDecisionSet,
   recordResolutions,
   requestInfoOpenQuestions,
   upsertDecisionDrafts,
@@ -173,6 +176,7 @@ import {
   renderToday,
   renderTodayBody,
   renderTodayShell,
+  questionsSectionHtml,
   type CommentFormOpts,
   eventTableHtml,
 } from "./render.ts";
@@ -325,6 +329,13 @@ const actionsStore = new ActionsStore(cfg.actionsFile);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
+
+/** #3976: the 5-minute anti-entropy reconciler over the freshness
+ *  journal. Its one wired canonical reader is the fleet feed — the
+ *  aggregator's own canonical source, fingerprinted exactly as the
+ *  collector's notice identity (generatedAt + sha256 of the file).
+ *  Its health view feeds /health + /api/health via healthContext. */
+const freshnessReconciler = new FreshnessReconciler(freshnessStore, [fleetFeedRevisionReader(cfg.feedFile)]);
 const activityStore = new IngestionStore(cfg.activityFile);
 
 /** #1739: the event log's fire-and-forget sink for source-side
@@ -513,6 +524,7 @@ async function healthContext(prime = true): Promise<HealthView> {
     itemsCoverage: lastItemsCoverage,
     comments: await commentsStore.pendingCounts().catch(() => undefined),
     conflicts: await assembleConflicts().catch(() => null),
+    pushHealth: cfg.source === "fixtures" ? null : freshnessReconciler.health(new Date()),
   });
 }
 
@@ -704,6 +716,31 @@ function decisionsPageUrl(set: DecisionSet): string {
   return `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
 }
 
+/**
+ * The live Questions section for Today / Needs-you (#9354): reads the
+ * decision-set store at request time, keeps sets with open questions,
+ * newest first. A store read failure renders the honest unavailable
+ * section (questionsSectionHtml(null, ...)), never a confident zero.
+ * (listDecisionSets itself reads an absent/corrupt store as empty,
+ * following the store's existing contract.)
+ */
+async function questionsHtml(): Promise<string> {
+  try {
+    const sets = await listDecisionSets(cfg.decisionsFile);
+    const byId = new Map(sets.map((s) => [s.setId, s]));
+    const summaries = sets
+      .map((s) => decisionSetSummary(s))
+      .filter((s) => s.openQuestions > 0)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return questionsSectionHtml(summaries, (s) => {
+      const set = byId.get(s.setId);
+      return set ? decisionsPageUrl(set) : `/decisions/${encodeURIComponent(s.setId)}`;
+    });
+  } catch {
+    return questionsSectionHtml(null, () => "/decisions");
+  }
+}
+
 /** Append decision-set events (#9335 v2): best-effort — an event-log
  * failure is logged and never fails the interaction it records. */
 async function logDecisionEvents(inputs: DecisionEventInput[]): Promise<void> {
@@ -810,20 +847,27 @@ const DECISIONS_PAGE_STYLE = `${ANSWER_PAGE_STYLE}<style>
   .reco-note { color: #3fb950; font-size: 0.9rem; }
   label.own { display: block; margin-top: 0.6rem; color: #9da7b1; font-size: 0.92rem; }
   button.defaults { background: #238636; }
+  .submitted-bar { margin: 0.6rem 0; color: #9da7b1; font-size: 0.95rem; }
+  section.item.submitted { display: none; }
+  body.show-submitted section.item.submitted { display: block; opacity: 0.85; }
+  .group.submitted-group { display: none; }
+  body.show-submitted .group.submitted-group { display: block; }
+  button.submit.top { margin: 0.2rem 0 0.4rem; }
 </style>`;
 
 /** Render GET /decisions/<setId>. The caller has already verified the
  * token; the 403 shape renders nothing about the set. Only open
  * questions are interactive; resolved ones show as a compact recorded
- * line, and an item whose questions are all resolved is not rendered
- * at all — it has gone away, per the spec. */
+ * line. An item whose questions are all resolved renders as a
+ * submitted card, hidden by default (Drew, 2026-11-13): the page's
+ * "Show submitted items" toggle brings it back for review, since the
+ * page has no undo. */
 function renderDecisionsPage(set: DecisionSet): string {
   const progress = decisionSetProgress(set);
   const groups: string[] = [];
   for (const item of set.items) if (!groups.includes(item.group)) groups.push(item.group);
   const itemCard = (item: DecisionItem): string => {
     const open = item.questions.filter((q) => !q.resolution);
-    if (open.length === 0) return "";
     const links = item.links
       .filter((l) => /^https?:\/\//.test(l))
       .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
@@ -849,6 +893,14 @@ function renderDecisionsPage(set: DecisionSet): string {
         return `<div class="done">✓ ${esc(q.question)} — ${what}</div>`;
       })
       .join("");
+    if (open.length === 0) {
+      return `<section class="item submitted" data-ledger="${esc(item.ledgerId)}" data-submitted="1">
+<h2>${esc(item.title)}</h2>
+${links ? `<div class="links">${links}</div>` : ""}
+${resolvedLines}
+<div class="done">✓ Submitted — hidden by default. Tick "Show submitted items" at the top of the page to review it.</div>
+</section>`;
+    }
     const sortedOpen = open
       .map((q, i) => ({ q, i }))
       .sort((a, b) => (a.q.order ?? a.i) - (b.q.order ?? b.i))
@@ -890,25 +942,30 @@ ${inputs}
 </div>`;
       })
       .join("");
+    const submitBtn = (cls: string): string =>
+      `<button class="${cls}" type="button" data-submit-item="${esc(item.ledgerId)}">Submit this item</button>`;
     return `<section class="item" data-ledger="${esc(item.ledgerId)}">
 <label class="bulkchk"><input type="checkbox" class="bulk"> select this item for a bulk action below (defer or request info)</label>
 <h2>${esc(item.title)}</h2>
 ${links ? `<div class="links">${links}</div>` : ""}
 ${resolvedLines}
+${open.length > 1 ? submitBtn("submit top") : ""}
 ${questionBlocks}
-<button class="submit" type="button" data-submit-item="${esc(item.ledgerId)}">Submit this item</button>
+${submitBtn("submit")}
 </section>`;
   };
-  const body = groups
+  const isSubmittedItem = (i: DecisionItem): boolean => i.questions.every((q) => q.resolution);
+    const submittedCount = set.items.filter(isSubmittedItem).length;
+    const body = groups
     .map((g) => {
-      const cards = set.items
+      const groupItems = set.items
         .filter((i) => i.group === g)
         .map((item, i) => ({ item, i }))
         .sort((a, b) => (a.item.order ?? a.i) - (b.item.order ?? b.i))
-        .map((x) => x.item)
-        .map(itemCard)
-        .join("");
-      return cards ? `<div class="group">${esc(g)}</div>${cards}` : "";
+        .map((x) => x.item);
+      const cards = groupItems.map(itemCard).join("");
+      const allSubmitted = groupItems.length > 0 && groupItems.every(isSubmittedItem);
+      return cards ? `<div class="group${allSubmitted ? " submitted-group" : ""}">${esc(g)}</div>${cards}` : "";
     })
     .join("");
   const caughtUp = progress.openQuestions === 0;
@@ -916,7 +973,9 @@ ${questionBlocks}
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Decisions — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
 <body><main><h1>${esc(set.title)}</h1>
 <p class="context">${progress.openQuestions} question${progress.openQuestions === 1 ? "" : "s"} open across ${progress.openItems} item${progress.openItems === 1 ? "" : "s"} · ${progress.answered} answered · ${progress.deferred} deferred · ${progress.infoRequested} sent back for more information so far. Fill in what you want — you can submit a partially-filled item; what you filled in is recorded and the rest stays here.</p>
-${caughtUp ? `<div class="confirm"><p>All caught up — every question in this set has been answered or sent back. Nothing left on this page.</p></div>` : body}
+${caughtUp ? `<div class="confirm"><p>All caught up — every question in this set has been answered or sent back. Nothing left on this page.</p></div>` : ""}
+<div class="submitted-bar" id="submittedBar"${submittedCount === 0 ? " hidden" : ""}><label><input type="checkbox" id="showSubmitted"> Show submitted items (<span id="submittedCount">${submittedCount}</span>)</label></div>
+${body}
 <div class="bar">
 <p class="context">Bulk actions</p>
 <button class="submit" type="button" id="submitAll">Submit everything I've filled in</button>
@@ -982,9 +1041,21 @@ function applyOpenState(state) {
     if (open.indexOf(block.getAttribute('data-qid')) === -1) block.remove();
   });
   document.querySelectorAll('section.item').forEach(function (card) {
-    if (!card.querySelector('.q')) card.remove();
+    if (card.classList.contains('submitted')) return;
+    if (!card.querySelector('.q')) {
+      card.classList.add('submitted');
+      card.setAttribute('data-submitted', '1');
+      card.querySelectorAll('button.submit').forEach(function (el) { el.remove(); });
+      var bulk = card.querySelector('.bulkchk');
+      if (bulk) bulk.remove();
+      var note = document.createElement('div');
+      note.className = 'done';
+      note.textContent = '✓ Submitted — hidden by default. Tick "Show submitted items" at the top of the page to review it.';
+      card.appendChild(note);
+    }
   });
-  if (!document.querySelector('section.item')) {
+  refreshSubmitted();
+  if (!document.querySelector('section.item:not(.submitted)')) {
     status('All caught up — every question in this set is recorded. You can close this page.');
   }
 }
@@ -1121,6 +1192,21 @@ async function submitDefaults() {
 }
 var defaultsBtn = document.getElementById('submitDefaults');
 if (defaultsBtn) defaultsBtn.addEventListener('click', submitDefaults);
+// --- Submitted items hide by default (Drew, 2026-11-13): the toggle
+// brings them back for review; the count tracks server-rendered
+// submitted cards and cards submitted during this session alike.
+function refreshSubmitted() {
+  var n = document.querySelectorAll('section.item.submitted').length;
+  var bar = document.getElementById('submittedBar');
+  if (bar) bar.hidden = n === 0;
+  var c = document.getElementById('submittedCount');
+  if (c) c.textContent = String(n);
+}
+var showSubmittedBox = document.getElementById('showSubmitted');
+if (showSubmittedBox) showSubmittedBox.addEventListener('change', function () {
+  document.body.classList.toggle('show-submitted', showSubmittedBox.checked);
+});
+refreshSubmitted();
 // --- Draft event reporting (#9335): typed-but-not-submitted changes are
 // events too. Debounced per question (2.5s of inactivity), never per
 // keystroke; the server drafts push remains the durable state copy.
@@ -1678,6 +1764,21 @@ const overviewContextCache = new TodayCache<Awaited<ReturnType<typeof loadOvervi
 async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverviewContext>>> {
   return overviewContextCache.get(loadOverviewContext);
 }
+
+// #3976 (Codex review on PR #9193): a freshness notice means canonical
+// data changed, but the TTL caches above could still serve an assembly
+// built before the notice for up to 10s — and nothing re-requests when
+// the TTL expires, so an accepted revision could stay invisible until
+// a later notice or a manual refresh. Invalidate the two assemblies
+// the freshness fragments reread (/frag/overview, /frag/today) the
+// moment a notice becomes durable. The store seam covers every
+// acceptance path — in-process recordFreshness, the IPC handler, and
+// the reconciler's synthetic invalidations all publish through the
+// same store.
+freshnessStore.onNotice(() => {
+  overviewContextCache.clear();
+  todayContextCache.clear();
+});
 
 /** The live-source half of the /program assembly (#1046 + #1121): the
  *  items closure for the program refs, the Project pool, the roadmap,
@@ -2326,7 +2427,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/overview") {
     const data = await overviewContext();
-    const wrapped = `<div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on-dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
+    const wrapped = `<div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
     return sseResponse(ssePatch("#overview-main", wrapped));
   }
   if (path === "/board") {
@@ -2357,23 +2458,33 @@ async function handler(req: Request): Promise<Response> {
     const fragUrl = fragBoardUrl(url.searchParams);
     const resolved = await resolveView(url);
     const view = resolved ? filterBoardForView(board, items, act.poolByRef, resolved.filters) : { board, items };
-    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on-dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
+    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on:dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
     return sseResponse(ssePatch("#board-main", wrapped));
   }
 
   if (path === "/today") {
     if (url.searchParams.get("full") !== "1") {
       const signals = await todaySignals();
-      return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
+      // #9354: the Questions section lives in the SHELL, outside the
+      // #today-main fragment div (see the /frag/today note below).
+      return html(
+        renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable, await questionsHtml()),
+      );
     }
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
     return html(
-      renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale),
+      renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale, await questionsHtml()),
     );
   }
   if (path === "/frag/today") {
+    // #9354: questionsHtml is deliberately NOT passed here — the
+    // /today shell already renders the Questions section outside the
+    // #today-main fragment div, so a fragment refresh carrying it too
+    // would show the section twice on the live page. The shell's copy
+    // is from page load, which its footer states. (?full=1 never uses
+    // the shell, so it passes questionsHtml via renderToday instead.)
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
+    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
   }
 
@@ -2397,7 +2508,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/queue") {
     const view = await queueContext();
-    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
+    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
     return sseResponse(ssePatch("#queue-main", wrapped));
   }
 
@@ -2504,6 +2615,20 @@ async function handler(req: Request): Promise<Response> {
     });
   }
 
+  if (path === "/api/quota-analytics.json") {
+    // The analytics & projection model behind /quota's section —
+    // the identical object the page renders from.
+    const [quota, usage] = await Promise.all([
+      source.quota().catch(() => emptyQuotaView()),
+      source.usage().catch(() => emptyUsageView()),
+    ]);
+    try {
+      return json(buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile }));
+    } catch {
+      return json({ error: "analytics unavailable" }, 503);
+    }
+  }
+
   if (path === "/quota") {
     const [quota, usage] = await Promise.all([
       source.quota().catch(() => emptyQuotaView()),
@@ -2512,7 +2637,15 @@ async function handler(req: Request): Promise<Response> {
     // Never block on providers (#1171): decide from the stored measurement,
     // ask the gatherer to run in the background, render what we have.
     const refresh = quotaRefresher.request(quota);
-    return html(renderQuota(quota, prov(), usage, provDetail(), refresh));
+    // Analytics fail-soft: a broken ledger read must never take the
+    // quota page down with it (the builder itself also degrades).
+    let analytics: QuotaAnalytics | null = null;
+    try {
+      analytics = buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile });
+    } catch {
+      analytics = null;
+    }
+    return html(renderQuota(quota, prov(), usage, provDetail(), refresh, analytics));
   }
 
   if (req.method === "POST" && path === "/quota/refresh") {
@@ -2546,7 +2679,9 @@ async function handler(req: Request): Promise<Response> {
           .filter(Boolean)
       : [];
     if (url.searchParams.get("full") !== "1") {
-      return html(renderAttentionShell(prov(), provDetail(), refsParam ?? undefined));
+      // #9354: Questions section in the shell, below the sessions
+      // fragment; the /frag/attention/* fragments do not carry it.
+      return html(renderAttentionShell(prov(), provDetail(), refsParam ?? undefined, await questionsHtml()));
     }
     const rendered = await attentionRender();
     const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
@@ -2560,6 +2695,7 @@ async function handler(req: Request): Promise<Response> {
         rendered.act,
         rendered.briefs,
         rendered.census,
+        await questionsHtml(),
       ),
     );
   }
@@ -3048,6 +3184,13 @@ async function handler(req: Request): Promise<Response> {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
     });
   }
+  if (path === "/assets/freshness-client.js") {
+    const file = Bun.file(new URL("./assets/freshness-client.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
   if (path === "/api/sw-probe") {
     // Design §6 step 2: pages report the registrations they see
     // (counted, no content); GET exposes the running summary.
@@ -3275,15 +3418,41 @@ async function handler(req: Request): Promise<Response> {
     }
     const prepared = withGeneratedSetId(rawBody);
     const ext =
-      prepared && typeof prepared === "object" && !Array.isArray(prepared)
-        ? (prepared as Record<string, unknown>)
-        : {};
+      prepared && typeof prepared === "object" && !Array.isArray(prepared) ? (prepared as Record<string, unknown>) : {};
     const candidate = ext.decisionSet !== undefined ? ext.decisionSet : prepared;
     const v = validateDecisionSet(candidate);
     if (!v.ok) return json({ error: v.error }, 400);
     const source = typeof ext.source === "string" && ext.source ? ext.source : "decisions-ledger";
+    // #9354 refresh mode: a sibling `refresh: true` opts a standing
+    // (ledger-mirror) set into refreshDecisionSet — contents are
+    // replaced, token/createdAt/source and resolutions-by-qid are
+    // preserved. No push and no set.created event on a refresh: the
+    // set is not new, and a standing set refreshed hourly must not
+    // push hourly. Refresh of a not-yet-existing set is a normal
+    // create (201, created: true, push + set.created as usual).
+    const refresh = ext.refresh === true;
     const before = await getDecisionSet(cfg.decisionsFile, v.value.setId).catch(() => null);
     try {
+      if (refresh && before) {
+        const set = await refreshDecisionSet(cfg.decisionsFile, v.value, source);
+        // The event log accepts a set-level "edit" event without a
+        // questionRef (validateDecisionEventInput / the type enum
+        // include "edit"), so a refresh is recorded that way.
+        await logDecisionEvents([
+          {
+            setId: set.setId,
+            type: "edit",
+            payload: {
+              via: "api/decision-sets",
+              refresh: true,
+              items: set.items.length,
+              questions: set.items.reduce((n, i) => n + i.questions.length, 0),
+            },
+          },
+        ]);
+        const pageUrl = decisionsPageUrl(set);
+        return json({ setId: set.setId, pageUrl, url: pageUrl, created: false, refreshed: true }, 200);
+      }
       const set = await raiseDecisionSet(cfg.decisionsFile, v.value, source);
       if (!before) {
         await logDecisionEvents([
@@ -3359,7 +3528,9 @@ async function handler(req: Request): Promise<Response> {
         payload: ve.value.payload,
       });
     }
-    const stored = await appendDecisionEvents(cfg.decisionsEventsFile, cfg.decisionsOutboxFile, inputs).catch(() => null);
+    const stored = await appendDecisionEvents(cfg.decisionsEventsFile, cfg.decisionsOutboxFile, inputs).catch(
+      () => null,
+    );
     if (!stored) return json({ error: "event append failed" }, 500);
     return json({ appended: stored.length, eventIds: stored.map((e) => e.eventId) });
   }
@@ -3487,7 +3658,12 @@ async function handler(req: Request): Promise<Response> {
             {
               setId,
               type: "defer" as const,
-              payload: { bulk: true, deferredCount: result.deferredCount, lean: body.lean as string, scope: all ? "allRemaining" : "checked" },
+              payload: {
+                bulk: true,
+                deferredCount: result.deferredCount,
+                lean: body.lean as string,
+                scope: all ? "allRemaining" : "checked",
+              },
             } satisfies DecisionEventInput,
           ]
         : []),
@@ -3723,6 +3899,9 @@ async function handler(req: Request): Promise<Response> {
     // repository settings, work-item counts and GraphQL errors reach the
     // machine surface too, not only the rendered page.
     body.rfa = view.rfa;
+    // #3976: push health (journal + reconciler state) reaches the
+    // machine surface too, from the same assembly /health renders.
+    body.push = view.push;
     body.degraded = view.degraded;
     return json(body);
   }
@@ -3884,6 +4063,13 @@ const freshnessIpcServer = Bun.serve({
   fetch: createFreshnessIpcHandler(freshnessStore),
 });
 console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
+
+// #3976: start the anti-entropy loop in live mode — one pass now,
+// then the 5-minute cadence. Fixtures mode has no journal to reconcile.
+if (cfg.source === "live") {
+  void freshnessReconciler.reconcile().catch(() => undefined);
+  freshnessReconciler.start();
+}
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their
 // snapshot records from a server-owned writer tick rather than from

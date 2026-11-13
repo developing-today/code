@@ -871,6 +871,13 @@ impl HostedBindingService {
 
     /// The service attestation public key (32 bytes).
     #[must_use]
+    /// Sign bytes with the service key for artefacts the service
+    /// itself must authenticate — the unkeyed-export manifest of
+    /// §6.1, produced when the user's key is unavailable.
+    pub fn sign_service_bytes(&self, bytes: &[u8]) -> [u8; 64] {
+        self.service_key.sign(bytes).to_bytes()
+    }
+
     pub fn service_public_key(&self) -> [u8; 32] {
         self.service_key.verifying_key().to_bytes()
     }

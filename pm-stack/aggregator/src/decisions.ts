@@ -365,7 +365,10 @@ export function validateDecisionSet(
         if (o.tags !== undefined) {
           const parsed = parseTagList(o.tags);
           if (!parsed) {
-            return { ok: false, error: `decisionSet item ${ledgerId} question option ${id} tags must be an array of up to ${TAG_MAX} short strings` };
+            return {
+              ok: false,
+              error: `decisionSet item ${ledgerId} question option ${id} tags must be an array of up to ${TAG_MAX} short strings`,
+            };
           }
           optTags = parsed;
         }
@@ -376,7 +379,10 @@ export function validateDecisionSet(
             o.combinationOf.length < 2 ||
             o.combinationOf.some((c) => typeof c !== "string" || !c.trim())
           ) {
-            return { ok: false, error: `decisionSet item ${ledgerId} question option ${id} combinationOf must be an array of 2+ option ids` };
+            return {
+              ok: false,
+              error: `decisionSet item ${ledgerId} question option ${id} combinationOf must be an array of 2+ option ids`,
+            };
           }
           combinationOf = [...(o.combinationOf as string[])];
         }
@@ -386,7 +392,10 @@ export function validateDecisionSet(
       for (const o of options) {
         for (const cid of o.combinationOf ?? []) {
           if (cid === o.id || !seenOptionIds.has(cid)) {
-            return { ok: false, error: `decisionSet item ${ledgerId} question option ${o.id} combinationOf references unknown option ${cid}` };
+            return {
+              ok: false,
+              error: `decisionSet item ${ledgerId} question option ${o.id} combinationOf references unknown option ${cid}`,
+            };
           }
         }
       }
@@ -413,7 +422,10 @@ export function validateDecisionSet(
       if (q.tags !== undefined) {
         const parsed = parseTagList(q.tags);
         if (!parsed) {
-          return { ok: false, error: `decisionSet item ${ledgerId} question tags must be an array of up to ${TAG_MAX} short strings` };
+          return {
+            ok: false,
+            error: `decisionSet item ${ledgerId} question tags must be an array of up to ${TAG_MAX} short strings`,
+          };
         }
         qTags = parsed;
       }
@@ -423,10 +435,16 @@ export function validateDecisionSet(
           !Array.isArray(q.recommendedOptionIds) ||
           q.recommendedOptionIds.some((r) => typeof r !== "string" || !seenOptionIds.has(r))
         ) {
-          return { ok: false, error: `decisionSet item ${ledgerId} question recommendedOptionIds must be ids of its options` };
+          return {
+            ok: false,
+            error: `decisionSet item ${ledgerId} question recommendedOptionIds must be ids of its options`,
+          };
         }
         if (mode !== "multi" && q.recommendedOptionIds.length > 1) {
-          return { ok: false, error: `decisionSet item ${ledgerId} question recommendedOptionIds allows one id unless mode is multi` };
+          return {
+            ok: false,
+            error: `decisionSet item ${ledgerId} question recommendedOptionIds allows one id unless mode is multi`,
+          };
         }
         recommendedOptionIds = [...(q.recommendedOptionIds as string[])];
       }
@@ -440,7 +458,10 @@ export function validateDecisionSet(
       if (q.versions !== undefined) {
         const parsed = sanitizeQuestionVersions(q.versions);
         if (!parsed) {
-          return { ok: false, error: `decisionSet item ${ledgerId} question versions must be an array of {version, question, editedAt}` };
+          return {
+            ok: false,
+            error: `decisionSet item ${ledgerId} question versions must be an array of {version, question, editedAt}`,
+          };
         }
         versions = parsed;
       }
@@ -585,6 +606,66 @@ async function writeDecisionSets(file: string, sets: DecisionSet[]): Promise<voi
   await writeDecisionsData(file, { sets, drafts });
 }
 
+/** Map validated input items to stored items (#9354 refresh shares
+ * this exact mapping with raise): qid is `<ledgerId>#<1-based index>`,
+ * and every question starts its version history at v1 (or keeps the
+ * history the raiser supplied). When `existingByQid` is given (the
+ * refresh path), a question carries its prior resolution over by qid,
+ * and — when its wording is identical to the prior question with the
+ * same qid — its prior versions/currentVersion too. */
+function mapDecisionItems(
+  input: DecisionSetInput,
+  stamp: string,
+  existingByQid?: Map<string, DecisionQuestion>,
+): DecisionItem[] {
+  return input.items.map((item) => ({
+    ledgerId: item.ledgerId,
+    title: item.title,
+    group: item.group ?? "Decisions",
+    ...(item.order !== undefined ? { order: item.order } : {}),
+    links: item.links,
+    questions: item.questions.map((q, i) => {
+      const qid = `${item.ledgerId}#${i + 1}`;
+      const prior = existingByQid?.get(qid);
+      const carryVersions =
+        prior && prior.question === q.question && prior.versions && prior.versions.length ? prior : undefined;
+      // Versioning backfill (#9335): every raised question starts
+      // its version history at v1 (or keeps the history the raiser
+      // supplied); the current pointer is the newest version.
+      const versions: DecisionQuestionVersion[] = carryVersions
+        ? (carryVersions.versions as DecisionQuestionVersion[])
+        : q.versions && q.versions.length
+          ? q.versions
+          : [
+              {
+                version: 1,
+                question: q.question,
+                ...(q.context !== undefined ? { context: q.context } : {}),
+                ...(q.description !== undefined ? { description: q.description } : {}),
+                editedAt: stamp,
+                note: "initial version",
+              },
+            ];
+      return {
+        qid,
+        question: q.question,
+        ...(q.context !== undefined ? { context: q.context } : {}),
+        ...(q.description !== undefined ? { description: q.description } : {}),
+        ...(q.infoProvided !== undefined ? { infoProvided: q.infoProvided } : {}),
+        ...(q.mode !== undefined ? { mode: q.mode } : {}),
+        ...(q.tags !== undefined ? { tags: q.tags } : {}),
+        ...(q.recommendedOptionIds !== undefined ? { recommendedOptionIds: q.recommendedOptionIds } : {}),
+        ...(q.order !== undefined ? { order: q.order } : {}),
+        ...(q.group !== undefined ? { group: q.group } : {}),
+        options: q.options,
+        versions,
+        currentVersion: carryVersions?.currentVersion ?? Math.max(...versions.map((v) => v.version)),
+        ...(prior?.resolution ? { resolution: prior.resolution } : {}),
+      };
+    }),
+  }));
+}
+
 /** Raise a decision set. Idempotent: an existing setId keeps its token
  * and its original contents (a re-post is a duplicate, not an edit). */
 export async function raiseDecisionSet(
@@ -603,50 +684,65 @@ export async function raiseDecisionSet(
       token: randomUUID(),
       createdAt,
       source,
-      items: input.items.map((item) => ({
-        ledgerId: item.ledgerId,
-        title: item.title,
-        group: item.group ?? "Decisions",
-        ...(item.order !== undefined ? { order: item.order } : {}),
-        links: item.links,
-        questions: item.questions.map((q, i) => {
-          // Versioning backfill (#9335): every raised question starts
-          // its version history at v1 (or keeps the history the raiser
-          // supplied); the current pointer is the newest version.
-          const versions: DecisionQuestionVersion[] =
-            q.versions && q.versions.length
-              ? q.versions
-              : [
-                  {
-                    version: 1,
-                    question: q.question,
-                    ...(q.context !== undefined ? { context: q.context } : {}),
-                    ...(q.description !== undefined ? { description: q.description } : {}),
-                    editedAt: createdAt,
-                    note: "initial version",
-                  },
-                ];
-          return {
-            qid: `${item.ledgerId}#${i + 1}`,
-            question: q.question,
-            ...(q.context !== undefined ? { context: q.context } : {}),
-            ...(q.description !== undefined ? { description: q.description } : {}),
-            ...(q.infoProvided !== undefined ? { infoProvided: q.infoProvided } : {}),
-            ...(q.mode !== undefined ? { mode: q.mode } : {}),
-            ...(q.tags !== undefined ? { tags: q.tags } : {}),
-            ...(q.recommendedOptionIds !== undefined ? { recommendedOptionIds: q.recommendedOptionIds } : {}),
-            ...(q.order !== undefined ? { order: q.order } : {}),
-            ...(q.group !== undefined ? { group: q.group } : {}),
-            options: q.options,
-            versions,
-            currentVersion: Math.max(...versions.map((v) => v.version)),
-          };
-        }),
-      })),
+      items: mapDecisionItems(input, createdAt),
     };
     sets.push(set);
     await writeDecisionSets(file, sets);
     return set;
+  });
+}
+
+/**
+ * Refresh a standing decision set (#9354): the explicit opt-in edit
+ * path for ledger-mirror sets (e.g. the standing open-questions set),
+ * where raiseDecisionSet's create-only rule would freeze the contents
+ * forever. An existing set keeps its setId, token, createdAt and
+ * original source; its title and items are replaced from the input
+ * (mapped exactly as raise maps them). A question's resolution
+ * carries over when the refreshed payload still carries its qid, and
+ * its versions/currentVersion carry over too when the question text
+ * is identical. Questions absent from the new payload are dropped
+ * (with any resolution they carried). With no existing setId this
+ * behaves exactly like raiseDecisionSet.
+ */
+export async function refreshDecisionSet(
+  file: string,
+  input: DecisionSetInput,
+  source = "decisions-ledger",
+): Promise<DecisionSet> {
+  return serializeDecisions(file, async () => {
+    const sets = await readDecisionSets(file);
+    const idx = sets.findIndex((s) => s.setId === input.setId);
+    if (idx < 0) {
+      const createdAt = new Date().toISOString();
+      const set: DecisionSet = {
+        setId: input.setId,
+        title: input.title,
+        token: randomUUID(),
+        createdAt,
+        source,
+        items: mapDecisionItems(input, createdAt),
+      };
+      sets.push(set);
+      await writeDecisionSets(file, sets);
+      return set;
+    }
+    const existing = sets[idx] as DecisionSet;
+    const existingByQid = new Map<string, DecisionQuestion>();
+    for (const item of existing.items) {
+      for (const q of item.questions) existingByQid.set(q.qid, q);
+    }
+    const refreshed: DecisionSet = {
+      setId: existing.setId,
+      title: input.title,
+      token: existing.token,
+      createdAt: existing.createdAt,
+      source: existing.source,
+      items: mapDecisionItems(input, new Date().toISOString(), existingByQid),
+    };
+    sets[idx] = refreshed;
+    await writeDecisionSets(file, sets);
+    return refreshed;
   });
 }
 
@@ -693,7 +789,11 @@ export async function appendQuestionVersion(
     const entry: DecisionQuestionVersion = {
       version: nextVersion,
       question: update.question,
-      ...(update.context !== undefined ? { context: update.context } : q.context !== undefined ? { context: q.context } : {}),
+      ...(update.context !== undefined
+        ? { context: update.context }
+        : q.context !== undefined
+          ? { context: q.context }
+          : {}),
       ...(update.description !== undefined
         ? { description: update.description }
         : q.description !== undefined
@@ -892,7 +992,7 @@ export async function recordResolutions(
         // guidance. They never change the resolution kind.
         const guideIds = [
           ...(sub.optionId ? [sub.optionId] : []),
-          ...((sub.optionIds ?? []).filter((id) => id !== sub.optionId)),
+          ...(sub.optionIds ?? []).filter((id) => id !== sub.optionId),
         ];
         const guides = guideIds.map((id) => q.options.find((o) => o.id === id));
         if (guides.some((g) => !g)) {
@@ -905,9 +1005,7 @@ export async function recordResolutions(
           kind: "deferred",
           lean: sub.lean,
           ...(guide ? { optionId: guide.id, optionLabel: guide.label } : {}),
-          ...(guides.length > 1
-            ? { optionIds: guideIds, optionLabels: guides.map((g) => g!.label) }
-            : {}),
+          ...(guides.length > 1 ? { optionIds: guideIds, optionLabels: guides.map((g) => g!.label) } : {}),
           ...(comment ? { comment } : {}),
           at: now,
           via,
@@ -933,7 +1031,7 @@ export async function recordResolutions(
       // kind === "answered" (#9335 v2: multi-select + custom answer)
       const pickedIds = [
         ...(sub.optionId ? [sub.optionId] : []),
-        ...((sub.optionIds ?? []).filter((id) => id !== sub.optionId)),
+        ...(sub.optionIds ?? []).filter((id) => id !== sub.optionId),
       ];
       const picked = pickedIds.map((id) => q.options.find((o) => o.id === id));
       if (picked.some((o) => !o)) {

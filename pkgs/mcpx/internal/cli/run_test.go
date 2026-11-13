@@ -349,3 +349,22 @@ func TestRunEnvelopePrefersServiceResult(t *testing.T) {
 		t.Errorf("envelope result = %#v, want the stdout parse to rule when the service has none", env["result"])
 	}
 }
+
+// Codex P2 (PR #9021): the --json envelope carries retained hook
+// frames, so a prompt hook's advice reaches a JSON caller instead
+// of being generated and discarded.
+func TestRunEnvelopeCarriesHooks(t *testing.T) {
+	res := &execsvc.Result{Stdout: "hi", Hooks: []execsvc.HookFrame{
+		{On: "script", Phase: "onSuccess", Action: "prompt", Effect: "advise", Advice: "cache it"},
+		{On: "script", Phase: "onError", Action: "prompt", Effect: "advise", Error: "advice unavailable: no model provider is configured"},
+	}}
+	env := runEnvelope(res, res.Stdout, nil, nil)
+	hooks, ok := env["hooks"].([]execsvc.HookFrame)
+	if !ok || len(hooks) != 2 || hooks[0].Advice != "cache it" || hooks[1].Error == "" {
+		t.Fatalf("envelope hooks = %#v", env["hooks"])
+	}
+	bare := runEnvelope(&execsvc.Result{Stdout: "hi"}, "hi", nil, nil)
+	if _, present := bare["hooks"]; present {
+		t.Fatal("a run with no hooks must not gain a hooks key")
+	}
+}

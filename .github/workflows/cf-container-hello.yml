@@ -37,12 +37,6 @@ on:
       - "pkgs/lab-ops-hub/container/app.py"
       - "pkgs/lab-ops-hub/container/requirements.txt"
       - ".github/workflows/cf-container-hello.yml"
-  pull_request:
-    paths:
-      - "pkgs/cf-container-hello/**"
-      - "pkgs/lab-ops-hub/container/app.py"
-      - "pkgs/lab-ops-hub/container/requirements.txt"
-      - ".github/workflows/cf-container-hello.yml"
   workflow_dispatch:
 
 permissions:

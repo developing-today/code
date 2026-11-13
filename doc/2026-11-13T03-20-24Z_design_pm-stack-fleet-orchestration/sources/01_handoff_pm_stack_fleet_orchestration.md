@@ -72,7 +72,6 @@ Treat distribution of priority as its own design question, not just a local sort
 
 Recent repo work is contextual evidence. It may satisfy or constrain specific requirements, but is not the scope of either design and does not replace either original. For the design mill retain unimplemented subcommands and features as traced issues, even if they do not overlap current ID/Atlas work.
 
-
 Original combined PM design, preserved in Drive: https://docs.google.com/document/d/1h8zF-uWTFuXQZ2KFeAPg-aNXR_S3BY9ebKtr3pc6Tg8/edit
 
 PM/Fleet preservation checklist
@@ -126,5 +125,3 @@ Verbatim prompt from the original final reply:
 Read and execute the complete Fleet & PM Stack Execution Charter: https://docs.google.com/document/d/1_DQwNbuRmJnITDKKJJ7A3Q0FJa-q2rkzWlz-4PyA_iw/edit
 
 Inspect the current developing-today/code repository and existing Queue Table Improvements work. Carry out the entire coordinating workflow, create and commit the design artifacts, establish the high-priority GitHub issue and dependencies, and directly dispatch the designated design agent rather than waiting for ordinary queue selection. Follow the existing Fleet, GitHub Project, PM Stack, and outbox conventions. Exercise architectural judgment, resolve implementation details against current code, and delegate substantial work appropriately. Verify the actual agent session, task ownership, issue state, and durable handoff. Continue the specified downstream workflow through its completion mechanisms, preserving checkpoints and reporting verified results, blockers, and remaining work. Do not mistake a queued issue or dispatched request for completed execution.
-
-

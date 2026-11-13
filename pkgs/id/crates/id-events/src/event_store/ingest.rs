@@ -100,6 +100,7 @@ use super::waiting_rows::{Hold, Mirror};
 use super::{
     ACTIONS, APPLIED, CHAINS, Chain, DEVICE_OPS, EVENTS, EventStore, FORKS, ForkProof, HASHES,
     PROOF_HEADERS, PROOF_IDS, StoreError, corrupt, decode_stored, lowest_proof, position_key,
+    store_body,
     store_chain, store_event, store_fork,
 };
 use super::{Ingest, Refusal};
@@ -211,7 +212,7 @@ impl EventStore {
                 Err(refusal) => return Ok(Ingest::Refused(refusal)),
             }
         };
-        let result = self.ingest_event(event, action.as_ref(), now_ms)?;
+        let result = self.ingest_event(event, action.as_ref(), body, now_ms)?;
         if let Some(body) = retain_body
             && !matches!(result, Ingest::Refused(_))
         {
@@ -270,7 +271,7 @@ impl EventStore {
             Ok(event) => event,
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
-        self.ingest_event(event, action, now_ms)
+        self.ingest_event(event, action, None, now_ms)
     }
 
     /// Runs a decoded event through the store's transaction, with its action.
@@ -278,10 +279,12 @@ impl EventStore {
         &mut self,
         event: Event,
         action: Option<&GroupAction<AuthId, ()>>,
+        body: Option<&[u8]>,
         now_ms: u64,
     ) -> Result<Ingest, StoreError> {
         self.transact(now_ms, |mirror| {
-            let (staged, changed) = ingest_in(mirror, event, action, now_ms, Labels::AsStored)?;
+            let (staged, changed) =
+                ingest_in(mirror, event, action, body, now_ms, Labels::AsStored)?;
             Ok((staged.finish(mirror.txn)?, changed))
         })
     }
@@ -301,18 +304,73 @@ impl EventStore {
         events: Vec<Event>,
         now_ms: u64,
     ) -> Result<Vec<Ingest>, StoreError> {
+        let events = events.into_iter().map(|event| (event, None)).collect();
+        self.ingest_events_inner(events, now_ms)
+    }
+
+    /// Decides already verified events with their bodies, in order, in one write transaction,
+    /// as [`EventStore::ingest_events`]. Each body is checked against its event's signed
+    /// header (BLAKE3 hash and size) before anything is stored: a body that is not the
+    /// committed one refuses its event in place and stores nothing. This is the range-sync
+    /// receiver's entry point — sync carries the body of an event whose header commits
+    /// to one.
+    pub(crate) fn ingest_events_with_bodies(
+        &mut self,
+        events: Vec<(Event, Option<Vec<u8>>)>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, StoreError> {
+        let mut refusals: Vec<Option<Ingest>> = Vec::with_capacity(events.len());
+        let mut accepted: Vec<(Event, Option<Vec<u8>>)> = Vec::with_capacity(events.len());
+        for (event, body) in events {
+            match body {
+                Some(body) if committed(&event, &body).is_err() => {
+                    refusals.push(Some(Ingest::Refused(Refusal::Malformed(
+                        "the body is not the one the header commits to, by hash and size"
+                            .to_owned(),
+                    ))));
+                }
+                body => {
+                    refusals.push(None);
+                    accepted.push((event, body));
+                }
+            }
+        }
+        let mut stored = self.ingest_events_inner(accepted, now_ms)?.into_iter();
+        let mut outcomes = Vec::with_capacity(refusals.len());
+        for refusal in refusals {
+            outcomes.push(match refusal {
+                None => stored
+                    .next()
+                    .ok_or_else(|| corrupt("a batch lost an outcome"))?,
+                Some(refused) => refused,
+            });
+        }
+        Ok(outcomes)
+    }
+
+    /// The shared batch path of [`EventStore::ingest_events`] and
+    /// [`EventStore::ingest_events_with_bodies`]: decides the events in one transaction,
+    /// storing each event's verified body with it.
+    fn ingest_events_inner(
+        &mut self,
+        events: Vec<(Event, Option<Vec<u8>>)>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, StoreError> {
+        let fork_check: Vec<Event> = events.iter().map(|(event, _body)| event.clone()).collect();
         self.transact(now_ms, |mirror| {
-            let labels = if batch_may_fork(mirror, &events)? {
+            let labels = if batch_may_fork(mirror, &fork_check)? {
                 Labels::AsStored
             } else {
                 Labels::AtEnd
             };
-            // Batches come from sync, which carries no bodies. A group operation's action is
-            // attached later, when its body arrives (`attach_action`).
+            // Bodies are stored with their events, but a group operation's action is not
+            // derived from a batch body: it is attached later, when the body arrives through
+            // the production path (`attach_action`).
             let mut staged = Vec::with_capacity(events.len());
             let mut changed = false;
-            for event in events {
-                let (outcome, did_change) = ingest_in(mirror, event, None, now_ms, labels)?;
+            for (event, body) in events {
+                let (outcome, did_change) =
+                    ingest_in(mirror, event, None, body.as_deref(), now_ms, labels)?;
                 changed |= did_change;
                 staged.push(outcome);
             }
@@ -563,6 +621,7 @@ fn ingest_in(
     m: &mut Mirror<'_>,
     event: Event,
     action: Option<&GroupAction<AuthId, ()>>,
+    body: Option<&[u8]>,
     now: u64,
     labels: Labels,
 ) -> Result<(Staged, bool), StoreError> {
@@ -570,7 +629,7 @@ fn ingest_in(
     let id = event.id;
     let author = author_of(&event);
     let rivals = held_rivals(m.pool, &event);
-    let settled = settle(m, event, action, &rivals, now, false, labels)?;
+    let settled = settle(m, event, action, body, &rivals, now, false, labels)?;
     let attached = matches!(settled, Settled::Duplicate { attached: true });
     let changed = expired > 0
         || attached
@@ -628,6 +687,7 @@ fn settle(
     m: &mut Mirror<'_>,
     event: Event,
     action: Option<&GroupAction<AuthId, ()>>,
+    body: Option<&[u8]>,
     rivals: &[Event],
     now: u64,
     from_pool: bool,
@@ -638,6 +698,9 @@ fn settle(
         Decision::Accept => {
             if let Some(action) = action {
                 store_action(m.txn, &id, action)?;
+            }
+            if let Some(body) = body {
+                store_body(m.txn, &id, body)?;
             }
             // In a store with no group state every stored event applies, so the label is known
             // now, whatever the batch does later. Otherwise the label waits for the resolution.
@@ -663,8 +726,19 @@ fn settle(
         }
         Decision::Duplicate => {
             drop_released(m, &event, from_pool)?;
+            // A body that arrives after its event was stored header-only is stored now:
+            // the header commits to it by hash and size, so it is the author's body.
+            // Storing it counts as attached, so the call commits: a duplicate that
+            // changed nothing would have its transaction aborted.
+            let mut stored_body = false;
+            if let Some(body) = body {
+                if is_stored(m.txn, &id)? {
+                    store_body(m.txn, &id, body)?;
+                    stored_body = true;
+                }
+            }
             Settled::Duplicate {
-                attached: attach_action(m.txn, &id, action)?,
+                attached: attach_action(m.txn, &id, action)? || stored_body,
             }
         }
         Decision::Fork { seq, proof } => {
@@ -695,6 +769,9 @@ fn settle(
                 if let Some(action) = action {
                     store_action(m.txn, &id, action)?;
                 }
+                if let Some(body) = body {
+                    store_body(m.txn, &id, body)?;
+                }
             }
             held(hold)
         }
@@ -703,6 +780,9 @@ fn settle(
             if hold == Hold::Held {
                 if let Some(action) = action {
                     store_action(m.txn, &id, action)?;
+                }
+                if let Some(body) = body {
+                    store_body(m.txn, &id, body)?;
                 }
             }
             held(hold)
@@ -757,7 +837,7 @@ fn drain(
         let id = event.id;
         let rivals = held_rivals(m.pool, &event);
         let action = stored_action(m.txn, &id)?;
-        match settle(m, event, action.as_ref(), &rivals, now, true, labels)? {
+        match settle(m, event, action.as_ref(), None, &rivals, now, true, labels)? {
             Settled::Stored { applied, released } => {
                 // A label that is not read yet keeps the event as a candidate. Its label decides
                 // whether it stays in the list, once the batch has resolved.
@@ -1204,6 +1284,103 @@ mod tests {
     }
 
     /// Ingests every event in order, and checks each one was accepted.
+    /// A signed event whose header commits to `body`, with the production path's
+    /// extension shape for a plain content event.
+    fn event_with_body(
+        key: &SigningKey,
+        seq: SeqNum,
+        backlink: Option<Hash>,
+        body: &[u8],
+    ) -> Event {
+        let ext = ChainExt {
+            kind: "message".to_owned(),
+            group: None,
+            after: Vec::new(),
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
+        };
+        sign(key, seq, backlink, Some(body), ext).unwrap()
+    }
+
+    #[test]
+    fn test_a_body_is_stored_at_ingest_and_read_back_byte_identically() {
+        let (_dir, mut store) = open();
+        let signer = key(41);
+        let body = b"generic event body bytes";
+        let event = event_with_body(&signer, 0, None, body);
+        let outcome = store.ingest_with_body(&event.bytes, Some(body), 0).unwrap();
+        assert!(matches!(outcome, Ingest::Accepted { .. }), "{outcome:?}");
+        assert_eq!(store.event_body(&event.id).unwrap(), body.as_slice());
+    }
+
+    #[test]
+    fn test_a_missing_body_is_a_typed_not_found() {
+        let (_dir, mut store) = open();
+        let signer = key(42);
+        // A header-only event is stored, but it has no body row.
+        let plain = event(&signer, 0, None, Vec::new(), "message");
+        ingest(&mut store, &plain);
+        assert!(matches!(
+            store.event_body(&plain.id),
+            Err(StoreError::MissingBody { id }) if id == plain.id
+        ));
+        // An event the store has never seen is the same typed not-found.
+        let unseen = event_with_body(&signer, 1, Some(plain.id), b"never arrived");
+        assert!(matches!(
+            store.event_body(&unseen.id),
+            Err(StoreError::MissingBody { .. })
+        ));
+    }
+
+    #[test]
+    fn test_a_body_arriving_after_its_header_is_stored() {
+        let (_dir, mut store) = open();
+        let signer = key(43);
+        let body = b"late body";
+        let event = event_with_body(&signer, 0, None, body);
+        // First stored without its body, then the body arrives with the same header.
+        let outcome = store.ingest_with_body(&event.bytes, None, 0).unwrap();
+        assert!(matches!(outcome, Ingest::Accepted { .. }), "{outcome:?}");
+        assert!(matches!(
+            store.event_body(&event.id),
+            Err(StoreError::MissingBody { .. })
+        ));
+        let outcome = store.ingest_with_body(&event.bytes, Some(body), 0).unwrap();
+        assert!(matches!(outcome, Ingest::Duplicate { .. }), "{outcome:?}");
+        assert_eq!(store.event_body(&event.id).unwrap(), body.as_slice());
+    }
+
+    #[test]
+    fn test_a_batch_body_that_is_not_the_committed_one_refuses_its_event() {
+        let (_dir, mut store) = open();
+        let signer = key(44);
+        let body = b"committed body";
+        let event = event_with_body(&signer, 0, None, body);
+        let outcomes = store
+            .ingest_events_with_bodies(vec![(event.clone(), Some(b"forged body".to_vec()))], 0)
+            .unwrap();
+        assert!(matches!(outcomes[0], Ingest::Refused(_)), "{outcomes:?}");
+        assert!(matches!(
+            store.event_body(&event.id),
+            Err(StoreError::MissingBody { .. })
+        ));
+        // The committed body in a batch is stored.
+        let outcomes = store
+            .ingest_events_with_bodies(vec![(event.clone(), Some(body.to_vec()))], 0)
+            .unwrap();
+        assert!(
+            matches!(outcomes[0], Ingest::Accepted { .. }),
+            "{outcomes:?}"
+        );
+        assert_eq!(store.event_body(&event.id).unwrap(), body.as_slice());
+    }
+
     fn ingest_all(store: &mut EventStore, events: &[Event]) {
         for event in events {
             assert_eq!(

@@ -7,6 +7,7 @@
 ---
 
 # Fleet Work-Item Orchestration
+
 ## Agent Queue Workflows, GitHub Integration, Context Hydration, and Lifecycle Management
 
 **Status:** Initial architecture and implementation proposal  
@@ -544,29 +545,29 @@ The meaning of `external-only` is activity not attributable to the current Fleet
 
 ## 4.8 Common command flags
 
-| Flag | Purpose |
-|---|---|
-| `--work` | Explicit Fleet work item |
-| `--repo` | GitHub repository |
-| `--issue` | GitHub issue reference |
-| `--pr` | GitHub PR reference |
-| `--agent-id` | Stable agent identity |
-| `--session-id` | Execution session identity |
-| `--lease-token` | Active lease authorization |
-| `--since` | Explicit ISO 8601 timestamp |
-| `--since-start` | Activity since session start |
-| `--since-checkpoint` | Activity since saved checkpoint |
-| `--external-only` | Activity not attributed to this session |
-| `--output` | Output path |
-| `--format` | Output format |
-| `--json` | Structured command output |
-| `--dry-run` | Preview mutations |
-| `--explain` | Explain decisions and effects |
-| `--verify` | Verify resulting state |
-| `--wait` | Wait for requested operations to settle |
-| `--expected-version` | Concurrency protection |
-| `--idempotency-key` | Safe operation retry identity |
-| `--timeout` | Command-level timeout |
+| Flag                 | Purpose                                 |
+| -------------------- | --------------------------------------- |
+| `--work`             | Explicit Fleet work item                |
+| `--repo`             | GitHub repository                       |
+| `--issue`            | GitHub issue reference                  |
+| `--pr`               | GitHub PR reference                     |
+| `--agent-id`         | Stable agent identity                   |
+| `--session-id`       | Execution session identity              |
+| `--lease-token`      | Active lease authorization              |
+| `--since`            | Explicit ISO 8601 timestamp             |
+| `--since-start`      | Activity since session start            |
+| `--since-checkpoint` | Activity since saved checkpoint         |
+| `--external-only`    | Activity not attributed to this session |
+| `--output`           | Output path                             |
+| `--format`           | Output format                           |
+| `--json`             | Structured command output               |
+| `--dry-run`          | Preview mutations                       |
+| `--explain`          | Explain decisions and effects           |
+| `--verify`           | Verify resulting state                  |
+| `--wait`             | Wait for requested operations to settle |
+| `--expected-version` | Concurrency protection                  |
+| `--idempotency-key`  | Safe operation retry identity           |
+| `--timeout`          | Command-level timeout                   |
 
 Agent/session configuration should supply safe defaults to avoid passing repetitive arguments.
 
@@ -981,19 +982,19 @@ Fleet should distinguish queue content from GitHub content.
 
 ## 10.1 Recommended field ownership
 
-| Field | Authority |
-|---|---|
-| Queue title | Fleet |
-| Queue summary | Fleet |
-| Numeric priority | Fleet |
-| Derived priority label | Fleet |
-| Work status | Fleet |
-| Lease and assignment | Fleet |
-| Dependencies | Fleet |
-| Issue title/body | GitHub |
-| PR title/body | GitHub |
-| GitHub discussion | GitHub |
-| Agent notes | Fleet journal |
+| Field                  | Authority     |
+| ---------------------- | ------------- |
+| Queue title            | Fleet         |
+| Queue summary          | Fleet         |
+| Numeric priority       | Fleet         |
+| Derived priority label | Fleet         |
+| Work status            | Fleet         |
+| Lease and assignment   | Fleet         |
+| Dependencies           | Fleet         |
+| Issue title/body       | GitHub        |
+| PR title/body          | GitHub        |
+| GitHub discussion      | GitHub        |
+| Agent notes            | Fleet journal |
 
 When a queue item is initially created from an issue or PR, Fleet may initialize its title and summary from that resource.
 
@@ -2131,10 +2132,7 @@ For example, `fleet work next --json` might return:
     "pull_requests": 1
   },
   "warnings": [],
-  "next_actions": [
-    "Read context summary",
-    "Inspect relevant review comments"
-  ]
+  "next_actions": ["Read context summary", "Inspect relevant review comments"]
 }
 ```
 
@@ -2483,4 +2481,3 @@ The implementation should favor a small set of powerful, composable primitives w
 An agent should be able to receive a short instruction, discover Fleet's capabilities, select or open a work item, obtain complete context, perform the work, synchronize its changes, respond to new activity, and finish with verified queue and GitHub state.
 
 Fleet should handle the operational complexity so that agents can concentrate on the work itself.
-

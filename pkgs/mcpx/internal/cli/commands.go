@@ -1166,7 +1166,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if derr != nil {
 		return derr
 	}
-	svc := a.localService(store, c.Socket())
+	svc := a.localService(store, c.Socket(), cfg)
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,
@@ -1243,6 +1243,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	} else if eo.Output != execsvc.OutputStream {
 		a.reportFinalResult(res)
 		a.reportArtifacts(res)
+		a.reportHooks(res)
 	}
 	if res.ExitCode != 0 {
 		return &exitStatusError{code: res.ExitCode}
@@ -1272,6 +1273,14 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 		// a CLI consumer can branch on it exactly like an HTTP caller
 		// reading the structured Result (Codex review, PR #9205).
 		env["errorKind"] = res.ErrorKind
+	}
+	// Retained hook frames ride in the envelope: a prompt hook's
+	// advice and warnings live only in its frame, and this path
+	// runs with a nil sink, so without this a --json caller paid
+	// for a model call whose entire effect was discarded (Codex
+	// review, PR #9021).
+	if len(res.Hooks) > 0 {
+		env["hooks"] = res.Hooks
 	}
 	if res.StdoutTruncated {
 		env["stdoutTruncated"] = true

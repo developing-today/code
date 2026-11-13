@@ -1,12 +1,12 @@
 # Design (proto): ID/Atlas extensible primitives, federation, namespaces
 
 - **Program epic:** #9106 · Parts: A #9107 (ID core), B #9108 (federation & trust), C #9109 (Atlas-facing)
-- **Source:** Drew directive, 2026-11-12 18:29 CST. This note is the design-mill **intake scaffold / proto design**: statement inventory + component map + version plan + open questions with defaults. The queued summit session (design-mill task on #9106) elaborates it into the full design set; per the mill pattern, each pass *adds* designs and never silently replaces this one.
+- **Source:** Drew directive, 2026-11-12 18:29 CST. This note is the design-mill **intake scaffold / proto design**: statement inventory + component map + version plan + open questions with defaults. The queued summit session (design-mill task on #9106) elaborates it into the full design set; per the mill pattern, each pass _adds_ designs and never silently replaces this one.
 - **Feeds / amends:** #9078 (hosted editions), #9082 (store abstraction — see §0 clarification), #9083 (tenancy), #9084 (content plane), #9085 (TS transports), Atlas starter #9091 + VFS #9100, ID epic #2056 (parent).
 
 ## 1. Principles
 
-1. **Extensibility is the architecture.** Primitives/adapters/hooks are designed for the full matrix of stores, buckets, streams, transports. Only *implementing* the long tail is de-prioritized (§0).
+1. **Extensibility is the architecture.** Primitives/adapters/hooks are designed for the full matrix of stores, buckets, streams, transports. Only _implementing_ the long tail is de-prioritized (§0).
 2. **Dual tier-1.** Rust binaries and the Cloudflare/Turso hosted edition are both fully featured primaries; divergence is deliberate and documented, never a reduced port.
 3. **Signed or it didn't happen.** Data is accepted only when signed and validated, regardless of source (§1) — and this gate is a **primitive invariant**: configuration cannot disable it (the §1/§7 tension, ruled here and recorded for the summit).
 4. **Our server is a peer.** No protocol special-casing for our own nodes; every capability we use is a config option anyone could replicate.
@@ -61,7 +61,6 @@ S6.1 Much/all ID-ingested content is auto-queued for vectorization. · S6.2 Vect
 
 S3.1 Multiple ID shapes are supported; no single canonical format. · S3.2 (implied) Consumers dispatch behaviour by ID shape. · S3.3 (implied) New shapes can be added without invalidating existing IDs. · S3.4 The content-addressed hash is one supported shape. · S3.5 A hash ID needs no map (no lookup table/registry/translation layer). · S3.6 Store hash, ship hash — the stored hash is transmitted unchanged. · S3.7 (implied) A hash ID is portable across servers, buckets, transports without re-issuance. · S3.8 (implied) A hash ID is verifiable by recomputation over the content. · S3.9 (implied) Identical content yields the same hash ID (natural dedup). · S3.10 (implied) A hash ID names content independently of where copies live. · S3.11 Metadata lives in a sidecar beside the hash, not inside the hashed content. · S3.12 (implied) Keeping metadata outside keeps the hash stable when metadata changes. · S3.13 The default sidecar form is a file/object named `hash.metadata`. · S3.14 `hash.metadata` contains ALL metadata for that hash (complete, not a subset). · S3.15 Alternative A: one R2 path/filename per metadata version. · S3.16 Alternative B: the sidecar is a pointer to `hash.metadata.<date>`. · S3.17 (implied) S3.13–S3.16 are undecided alternatives, not three simultaneous mandates. · S3.18 (implied) The dated form makes each metadata version an immutable, addressable snapshot. · S3.19 (implied) The pointer form is a mutable "latest" indirection over immutable dated versions. · S3.20 (implied) The R2-path form needs defined escaping/encoding for hashes, versions, dates in paths. · S3.21 The metadata may contain related path links. · S3.22 (implied) Related links are path references, not restricted to hash IDs. · S3.23 A server receiving a hash can acknowledge its existence. · S3.24 (implied) Existence acknowledgement is a distinct operation from returning content or metadata. · S3.25 (implied) Existence ack enables replica/inventory checks without content transfer. · S3.26 A harvesting process collects sidecar metadata and inserts location records into a location index. · S3.27 Harvesting can run as a batch process. · S3.28 Harvesting can run immediately on receipt/ingest — a deployment choice, not a format difference. · S3.29 The harvester inserts ALL location records found, not only a primary one. · S3.30 Location records include an R2 bucket location. · S3.31 Location records include a laptop location as hostname + path. · S3.32 Location records include a Drive location prefixed by account (no cross-account collisions). · S3.33 Location records include a Drive URL. · S3.34 The location-type list is open-ended ("etc.") — new types expected. · S3.35 (implied) One hash has many concurrent location records of different types. · S3.36 (implied) The sidecar is the harvester's source; the location index is derived and rebuildable. · S3.37 The location index ties directly to Atlas VFS #9100. · S3.38 (implied) Deletion/move/stale-location handling for harvested records is unspecified and must be designed.
 
-
 ### §4 — Namespaces (93; child-inventory numbering 39–131, renumbered here S4.1–S4.93 in the same order)
 
 **General model (S4.1–S4.18).** S4.1 A namespace is a named addressing space with its own rules, distinct from its host server. · S4.2 A server hosts multiple namespaces. · S4.3 Each server has a namespace registry. · S4.4 The registry is definable per server. · S4.5 Different servers' registries may diverge — by design. · S4.6 (implied) No global namespace registry and no globally canonical resolution exists. · S4.7 (implied) The same name may resolve differently on different servers without either being in error. · S4.8 Each namespace can have its own URL handler. · S4.9 Each namespace can have its own encoding (e.g. base64). · S4.10 (implied) Encoding is per-namespace, not a global URL property. · S4.11 An `id://` URL design covers these namespaces. · S4.12 It must follow the URI specifications. · S4.13 It must be human-readable. · S4.14 It must be expandable without breaking existing URLs. · S4.15 Drew's `idb64+...` sketch is NOT adopted — it is a sketch to evaluate/replace. · S4.16 (implied) Human-readability rules out a common case that is only an opaque base64 blob. · S4.17 (implied) URI compliance constrains scheme, authority/path, reserved characters, percent-encoding, case/normalisation, length — all to be settled in the design. · S4.18 (implied) A namespace definition declares at least: core type, handler, encoding, resolution/write rules.
@@ -77,7 +76,6 @@ S3.1 Multiple ID shapes are supported; no single canonical format. · S3.2 (impl
 **Streams (S4.74–S4.82).** S4.74 A derived stream namespace family exists. · S4.75 Text streams. · S4.76 Chat-as-typed in multi-user documents (contributions addressable while produced). · S4.77 Voice in progress. · S4.78 Video in progress. · S4.79 (implied) A stream is addressable before it finishes; in-progress state is first-class. · S4.80 A finished stream redirects to the final stored object. · S4.81 (implied) The redirect is namespace semantics: following a completed stream's address yields the stored object. · S4.82 (implied) Stream lifecycle and write-vs-subscribe rights must be designed.
 
 **Signed coordinate worlds (S4.83–S4.93).** S4.83 A namespace definition can be signed by an authority. · S4.84 Drew signing a definition is the canonical example. · S4.85 A signed definition designates the world data its coordinates land in. · S4.86 Coordinates are tuple addresses in the world (e.g. ID 1,3,7). · S4.87 (implied) Coordinate worlds are naturally expressed on the array-address core. · S4.88 Resolving a coordinate lands in the signer-designated world data. · S4.89 World content is presentable/renderable, not only raw fetch. · S4.90 A signed world is read-only for others. · S4.91 Others remain free to serve whatever they want on their servers. · S4.92 (implied) A signature confers canonicity for that signer's world, not a protocol monopoly. · S4.93 (implied) Signature verification, signer key identity, and revocation/re-signing must be designed.
-
 
 ### §5 — Graph + user attributes + social apps (64)
 
@@ -99,46 +97,46 @@ S3.1 Multiple ID shapes are supported; no single canonical format. · S3.2 (impl
 
 ## 3. Statement → issue map
 
-| Statements | Home |
-|---|---|
-| S0.1–S0.17 | **#9110** (boundary + conformance); amendment on #9082 |
-| S1.1–S1.25 | **#9141** (peer classes + signature gate; key lifecycle + replay sub-items filed by the summit) |
-| S1.26–S1.40 | **#9142** (implicit-trust sync + conflict reports) |
-| S1.41–S1.46 | **#9143** (CRDT exploration set) |
-| S1.47–S1.63 | **#9144** (federated fan-out; prioritization scoring + ack primitive as sub-items) |
-| S1.64–S1.72 | **#9145** (duplicate/loop handling) |
-| S1.73–S1.78 | **#9146** (routing state + shape validation) |
-| S1.79–S1.82, S1.88–S1.99 | **#9147** (reputation + public log; abuse-protection research as sub-item) |
-| S1.83–S1.87, S1.100–S1.113 | **#9148** (takeover response + ack-based inconsistency detection + tamper threat model) |
-| S1.114–S1.120 | **#9106** program level (non-specialness audit + interop conformance under **#9110**) |
-| S2.1–S2.3, S2.16 | **#9133** (benchmark harness) |
-| S2.4–S2.6, S2.17 | **#9134** (D1 hot cache) |
-| S2.7–S2.9 | **#9135** (tenant store placement) |
-| S2.10–S2.13, S2.18 | **#9136** (shared-bucket tenancy); feeds #9084 |
-| S2.14–S2.15, S2.19 | **#9137** (GC) |
-| S3.1–S3.10 | **#9113** (ID shapes) |
-| S3.11–S3.22 | **#9114** (sidecar format) |
-| S3.23–S3.38 | **#9115** (ack + harvester + location index); consumer #9100 |
-| S4.1–S4.18 | **#9116** (namespace model/registry), **#9117** (id://) |
-| S4.19–S4.22, S4.20 | **#9120** (core a) |
-| S4.23–S4.40 | **#9118** (array-address core) |
-| S4.29–S4.33, S4.41–S4.44 | **#9119** (shorthand + streaming) |
-| S4.45–S4.63 | **#9121** (string-path + lenses) |
-| S4.64–S4.73 | **#9122** (numeric registries) |
-| S4.74–S4.82 | **#9123** (streams) |
-| S4.83–S4.93 | **#9124** (signed definitions + worlds) |
-| S5.1–S5.12 | **#9125** (triple encoding), **#9126** (graph query + viz) |
-| S5.13–S5.29 | **#9127** (append-list attributes) |
-| S5.30–S5.40 | **#9128** (social app model) |
-| S5.41–S5.45 | **#9129** (succeeds versioning) |
-| S5.46–S5.53 | **#9130** (true-delete/moderation); GC interplay #9137 |
-| S5.54–S5.55, S5.62 | **#9131** (client-bound spaces) |
-| S5.56–S5.61, S5.63–S5.64 | **#9132** (delegation ceremony) |
-| S6.1–S6.3, S6.13–S6.14 | **#9138** (ID search/vectorization); embedder source #9092 |
-| S6.4–S6.7, S6.15 | **#9139** (rec fan-out + DO) |
-| S6.8–S6.12, S6.16–S6.17 | **#9140** (rec objects/retention) |
-| S7.1–S7.16 | **#9111** (modes & configuration; link-kinds taxonomy + tiering layers as sub-items) |
-| Sequencing of all of the above | **#9112** (refine & prioritize) |
+| Statements                     | Home                                                                                            |
+| ------------------------------ | ----------------------------------------------------------------------------------------------- |
+| S0.1–S0.17                     | **#9110** (boundary + conformance); amendment on #9082                                          |
+| S1.1–S1.25                     | **#9141** (peer classes + signature gate; key lifecycle + replay sub-items filed by the summit) |
+| S1.26–S1.40                    | **#9142** (implicit-trust sync + conflict reports)                                              |
+| S1.41–S1.46                    | **#9143** (CRDT exploration set)                                                                |
+| S1.47–S1.63                    | **#9144** (federated fan-out; prioritization scoring + ack primitive as sub-items)              |
+| S1.64–S1.72                    | **#9145** (duplicate/loop handling)                                                             |
+| S1.73–S1.78                    | **#9146** (routing state + shape validation)                                                    |
+| S1.79–S1.82, S1.88–S1.99       | **#9147** (reputation + public log; abuse-protection research as sub-item)                      |
+| S1.83–S1.87, S1.100–S1.113     | **#9148** (takeover response + ack-based inconsistency detection + tamper threat model)         |
+| S1.114–S1.120                  | **#9106** program level (non-specialness audit + interop conformance under **#9110**)           |
+| S2.1–S2.3, S2.16               | **#9133** (benchmark harness)                                                                   |
+| S2.4–S2.6, S2.17               | **#9134** (D1 hot cache)                                                                        |
+| S2.7–S2.9                      | **#9135** (tenant store placement)                                                              |
+| S2.10–S2.13, S2.18             | **#9136** (shared-bucket tenancy); feeds #9084                                                  |
+| S2.14–S2.15, S2.19             | **#9137** (GC)                                                                                  |
+| S3.1–S3.10                     | **#9113** (ID shapes)                                                                           |
+| S3.11–S3.22                    | **#9114** (sidecar format)                                                                      |
+| S3.23–S3.38                    | **#9115** (ack + harvester + location index); consumer #9100                                    |
+| S4.1–S4.18                     | **#9116** (namespace model/registry), **#9117** (id://)                                         |
+| S4.19–S4.22, S4.20             | **#9120** (core a)                                                                              |
+| S4.23–S4.40                    | **#9118** (array-address core)                                                                  |
+| S4.29–S4.33, S4.41–S4.44       | **#9119** (shorthand + streaming)                                                               |
+| S4.45–S4.63                    | **#9121** (string-path + lenses)                                                                |
+| S4.64–S4.73                    | **#9122** (numeric registries)                                                                  |
+| S4.74–S4.82                    | **#9123** (streams)                                                                             |
+| S4.83–S4.93                    | **#9124** (signed definitions + worlds)                                                         |
+| S5.1–S5.12                     | **#9125** (triple encoding), **#9126** (graph query + viz)                                      |
+| S5.13–S5.29                    | **#9127** (append-list attributes)                                                              |
+| S5.30–S5.40                    | **#9128** (social app model)                                                                    |
+| S5.41–S5.45                    | **#9129** (succeeds versioning)                                                                 |
+| S5.46–S5.53                    | **#9130** (true-delete/moderation); GC interplay #9137                                          |
+| S5.54–S5.55, S5.62             | **#9131** (client-bound spaces)                                                                 |
+| S5.56–S5.61, S5.63–S5.64       | **#9132** (delegation ceremony)                                                                 |
+| S6.1–S6.3, S6.13–S6.14         | **#9138** (ID search/vectorization); embedder source #9092                                      |
+| S6.4–S6.7, S6.15               | **#9139** (rec fan-out + DO)                                                                    |
+| S6.8–S6.12, S6.16–S6.17        | **#9140** (rec objects/retention)                                                               |
+| S7.1–S7.16                     | **#9111** (modes & configuration; link-kinds taxonomy + tiering layers as sub-items)            |
+| Sequencing of all of the above | **#9112** (refine & prioritize)                                                                 |
 
 Existing-issue amendments carrying parts of this directive: #9082 (S0), #9083 (S1 peer classes as tenancy config), #9084 (S3 addressing + S2.10–S2.13), #9085 (S0 transports), #9091 (Part C), #9100 (S3.26–S3.38), #2056 (program home).
 

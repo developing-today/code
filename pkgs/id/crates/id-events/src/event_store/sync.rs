@@ -272,8 +272,16 @@ pub trait RangeStore {
     /// The bytes of one event, as [`EventStore::sync_bytes`].
     fn sync_bytes(&self, id: &Id) -> Result<Option<Vec<u8>>>;
 
-    /// Decides one batch in one write transaction, as [`EventStore::ingest_events`].
-    fn ingest_events(&mut self, events: Vec<Event>, now_ms: u64) -> Result<Vec<Ingest>>;
+    /// The stored body of one event, as [`EventStore::stored_body`].
+    fn sync_body(&self, id: &Id) -> Result<Option<Vec<u8>>>;
+
+    /// Decides one batch with bodies in one write transaction, as
+    /// [`EventStore::ingest_events_with_bodies`].
+    fn ingest_with_bodies(
+        &mut self,
+        events: Vec<(Event, Option<Vec<u8>>)>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>>;
 }
 
 impl RangeStore for EventStore {
@@ -285,8 +293,19 @@ impl RangeStore for EventStore {
         Ok(EventStore::sync_bytes(self, id)?)
     }
 
-    fn ingest_events(&mut self, events: Vec<Event>, now_ms: u64) -> Result<Vec<Ingest>> {
-        Ok(EventStore::ingest_events(self, events, now_ms)?)
+    fn sync_body(&self, id: &Id) -> Result<Option<Vec<u8>>> {
+        Ok(EventStore::stored_body(
+            self,
+            &p2panda_core::Hash::from_bytes(*id),
+        )?)
+    }
+
+    fn ingest_with_bodies(
+        &mut self,
+        events: Vec<(Event, Option<Vec<u8>>)>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>> {
+        Ok(EventStore::ingest_events_with_bodies(self, events, now_ms)?)
     }
 }
 
@@ -299,8 +318,16 @@ impl RangeStore for Shared {
         Ok(self.range_bytes(id)?)
     }
 
-    fn ingest_events(&mut self, events: Vec<Event>, now_ms: u64) -> Result<Vec<Ingest>> {
-        Ok(self.range_ingest_events(events, now_ms)?)
+    fn sync_body(&self, id: &Id) -> Result<Option<Vec<u8>>> {
+        Ok(self.range_body(id)?)
+    }
+
+    fn ingest_with_bodies(
+        &mut self,
+        events: Vec<(Event, Option<Vec<u8>>)>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>> {
+        Ok(self.range_ingest_with_bodies(events, now_ms)?)
     }
 }
 
@@ -397,6 +424,43 @@ fn sync_key(position: &[u8], id: &Id) -> Result<Key, StoreError> {
     key[..POSITION_LEN].copy_from_slice(position);
     key[POSITION_LEN..].copy_from_slice(id);
     Ok(key)
+}
+
+/// One data-phase record: the event's bytes, then its body when the sender holds one.
+/// The event length prefixes the record, so the body is the rest; an absent body is an
+/// empty rest. The header commits to the body by hash and size, and the receiver checks
+/// the body against that commitment before storing it, so a body can never be attached
+/// to the wrong event.
+fn encode_record(event: &[u8], body: Option<&[u8]>) -> Result<Vec<u8>> {
+    let mut record = Vec::with_capacity(4 + event.len() + body.map_or(0, <[u8]>::len));
+    record.extend_from_slice(&u32::try_from(event.len())?.to_be_bytes());
+    record.extend_from_slice(event);
+    if let Some(body) = body {
+        record.extend_from_slice(body);
+    }
+    Ok(record)
+}
+
+/// Splits one data-phase record into the event's bytes and the body it carried, if any.
+fn decode_record(record: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+    let len: [u8; 4] = record
+        .get(..4)
+        .context("a record is shorter than its length prefix")?
+        .try_into()?;
+    let len = u32::from_be_bytes(len) as usize;
+    let event = record
+        .get(4..4 + len)
+        .context("a record names more event bytes than it holds")?
+        .to_vec();
+    let body = &record[4 + len..];
+    Ok((
+        event,
+        if body.is_empty() {
+            None
+        } else {
+            Some(body.to_vec())
+        },
+    ))
 }
 
 async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<usize> {
@@ -527,11 +591,11 @@ fn lock<'a, 'b, S: RangeStore>(store: &'a Mutex<&'b mut S>) -> Result<MutexGuard
 /// an error from the store ends the batch, and then nothing in it commits.
 fn apply_batch<S: RangeStore>(
     store: &mut S,
-    events: Vec<Event>,
+    events: Vec<(Event, Option<Vec<u8>>)>,
     now_ms: u64,
     tally: &mut Tally,
 ) -> Result<()> {
-    for outcome in store.ingest_events(events, now_ms)? {
+    for outcome in store.ingest_with_bodies(events, now_ms)? {
         tally.add(&outcome);
     }
     Ok(())
@@ -669,10 +733,15 @@ async fn run_session<S: RangeStore>(
                     bail!("cut before event {}", sent + 1);
                 }
             }
-            let record = lock(&store)?
-                .sync_bytes(id)?
-                .context("an offered event is no longer stored")?;
-            bytes += write_frame(&mut *send, &record).await?;
+            let (record, body) = {
+                let guard = lock(&store)?;
+                let record = guard
+                    .sync_bytes(id)?
+                    .context("an offered event is no longer stored")?;
+                let body = guard.sync_body(id)?;
+                (record, body)
+            };
+            bytes += write_frame(&mut *send, &encode_record(&record, body.as_deref())?).await?;
         }
         applied.notified().await;
         bytes += write_frame(&mut *send, APPLIED_FRAME).await?;
@@ -734,13 +803,21 @@ async fn receive_data<S: RangeStore>(
         "peer offers {count} events, and {} are missing here",
         need.len()
     );
-    let mut pending: Vec<Event> = Vec::with_capacity(BATCH_EVENTS);
+    let mut pending: Vec<(Event, Option<Vec<u8>>)> = Vec::with_capacity(BATCH_EVENTS);
     let mut pending_bytes: usize = 0;
     let mut tally = Tally::default();
     for _ in 0..count {
         let record = read_frame(recv).await?;
         let record_len = record.len();
-        let event = chain::decode(&record)?;
+        let (event_bytes, body) = decode_record(&record)?;
+        let event = chain::decode(&event_bytes)?;
+        if let Some(body) = &body {
+            ensure!(
+                event.header.payload_hash == Some(p2panda_core::Hash::digest(body))
+                    && u32::try_from(body.len()).is_ok_and(|len| len == event.header.payload_size),
+                "a synced body is not the one the header commits to, by hash and size"
+            );
+        }
         ensure!(
             need.remove(event.id.as_bytes()),
             "an event arrived that was not expected, or arrived twice"
@@ -753,7 +830,7 @@ async fn receive_data<S: RangeStore>(
             flush(store, &mut pending, now_ms, &mut tally, commits)?;
             pending_bytes = 0;
         }
-        pending.push(event);
+        pending.push((event, body));
         pending_bytes += record_len;
         if pending.len() == BATCH_EVENTS {
             flush(store, &mut pending, now_ms, &mut tally, commits)?;
@@ -766,7 +843,7 @@ async fn receive_data<S: RangeStore>(
 
 fn flush<S: RangeStore>(
     store: &Mutex<&mut S>,
-    pending: &mut Vec<Event>,
+    pending: &mut Vec<(Event, Option<Vec<u8>>)>,
     now_ms: u64,
     tally: &mut Tally,
     commits: &Option<CommitSignal>,
@@ -1101,6 +1178,36 @@ mod tests {
         assert_eq!(da.received + db.received, 0);
     }
 
+    /// Range sync carries the body of an event whose header commits to one: the
+    /// receiver stores it, verified against the signed header, and reads it back
+    /// byte-identically.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_range_sync_carries_event_bodies() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        let body = b"body carried by sync";
+        let events = chain_of(7, 2, body);
+        for event in &events {
+            let outcome = a.ingest_with_body(&event.bytes, Some(body), NOW).unwrap();
+            assert!(matches!(outcome, Ingest::Accepted { .. }), "{outcome:?}");
+            assert_eq!(a.event_body(&event.id).unwrap(), body.as_slice());
+        }
+        let (da, db) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        da.unwrap();
+        db.unwrap();
+        for event in &events {
+            assert_eq!(b.event_body(&event.id).unwrap(), body.as_slice());
+        }
+    }
+
     #[test]
     fn test_sync_set_holds_stored_events_and_fork_proof_headers_once() {
         let (_d, mut store) = open();
@@ -1179,6 +1286,7 @@ mod tests {
             batch.extend(chain_of(n, 1, b"unrelated"));
         }
         let mut tally = Tally::default();
+        let batch = batch.into_iter().map(|event| (event, None)).collect();
         apply_batch(&mut store, batch, NOW, &mut tally).unwrap();
         assert_eq!(tally.forks, 1);
         assert_eq!(

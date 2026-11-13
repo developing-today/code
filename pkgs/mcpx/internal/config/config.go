@@ -414,10 +414,14 @@ type ScriptConfig struct {
 	Hooks []any `json:"hooks,omitempty"`
 }
 
-// HookConfig is one resolved hook: a phase and the script that runs in it.
+// HookConfig is one resolved hook: a phase and the one action that runs
+// in it — a script, or a prompt with its declared effect and model.
 type HookConfig struct {
 	Phase  string `json:"phase"`
 	Script string `json:"script"`
+	Prompt string `json:"prompt,omitempty"`
+	Effect string `json:"effect,omitempty"`
+	Model  string `json:"model,omitempty"`
 	Name   string `json:"name,omitempty"`
 }
 
@@ -458,13 +462,17 @@ func ResolveHooks(layers [][]any) []HookConfig {
 }
 
 // hookEntry decodes one element of a hooks list. An entry that names no phase
-// or no script is dropped here rather than failing every run of the config: it
-// is the one defect a config can carry that would otherwise break unrelated
-// work.
+// or no action (script or prompt) is dropped here rather than failing every
+// run of the config: it is the one defect a config can carry that would
+// otherwise break unrelated work.
 func hookEntry(el any) (HookConfig, bool) {
+	usable := func(h HookConfig) bool {
+		return h.Phase != "" &&
+			(strings.TrimSpace(h.Script) != "" || strings.TrimSpace(h.Prompt) != "")
+	}
 	switch v := el.(type) {
 	case HookConfig:
-		if v.Phase == "" || strings.TrimSpace(v.Script) == "" {
+		if !usable(v) {
 			return HookConfig{}, false
 		}
 		return v, true
@@ -476,10 +484,19 @@ func hookEntry(el any) (HookConfig, bool) {
 		if s, ok := v["script"].(string); ok {
 			h.Script = s
 		}
+		if s, ok := v["prompt"].(string); ok {
+			h.Prompt = s
+		}
+		if s, ok := v["effect"].(string); ok {
+			h.Effect = s
+		}
+		if s, ok := v["model"].(string); ok {
+			h.Model = s
+		}
 		if s, ok := v["name"].(string); ok {
 			h.Name = s
 		}
-		if h.Phase == "" || strings.TrimSpace(h.Script) == "" {
+		if !usable(h) {
 			return HookConfig{}, false
 		}
 		return h, true

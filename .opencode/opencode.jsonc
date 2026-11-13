@@ -1217,6 +1217,16 @@
           // ~/.commandcode/auth.json; no baseURL/apiKey (the provider owns
           // auth). STILL in disabled_providers: re-enabling stays a separate
           // deliberate step.
+          // 2026-11-13 (code#9397): every _commandcode door was REMOVED from
+          // the plan pools (sol-plan, beam-plan, deepseek-flash-plan,
+          // deepseek-pro-plan, mimo-flash-plan, spark-plan) in one pass:
+          // Sol lost plan coverage 2026-11-09 (403 MODEL_NOT_IN_PLAN — now
+          // Max plan or on-demand only), the free Beam 1.0 tier ended
+          // 2026-11-13 (403 on every call), and the monthly credit balance
+          // is exhausted ($9.95 of $10; "insufficient credits" on the rest).
+          // The definition stays for the catalog; re-seat doors per pool
+          // only on verified restoration (plan coverage or credits back,
+          // proven by a live completion).
           "npm": "@opencode/ai/providers/commandcode",
           "name": "Command Code (native wire emulation)",
           "models": {
@@ -1717,6 +1727,32 @@
         }
       ]
     },
+    "explore": {
+      // 2026-11-13 (Drew, direct order): subsession routing.
+      // Child sessions inherit the parent session's model/route
+      // unless the agent definition configures its own (fork
+      // subagent tool: explicit model > agent's configured model
+      // > inherited). Explore children had no configured model,
+      // so search/fetch/summarize work ran on the parent's full
+      // workhorse chain: session_v2 shows 716 of 747 explore
+      // children in the 7 days to 2026-11-13 recorded on the
+      // workhorse route, ~405M input + ~570M cache-read tokens.
+      // Explore is read-only (its permission set denies edit,
+      // shell and subagent), so the scout route - free Beam
+      // first, then DeepSeek Flash #low, then Haiku #low - is
+      // sufficient for it and returns workhorse quota to
+      // implementation work. Only the model is set here;
+      // explore's permissions keep coming from
+      // .opencode/agents/explore.md and the built-in definition
+      // (the config agent plugin applies a model-only entry
+      // without touching permissions). general/build children
+      // are unchanged: implementation work keeps the inherited
+      // route. MEASUREMENT: session_v2 child sessions by agent
+      // - explore model distribution and tokens per session,
+      // 7 days before vs after; route_attempt on the scout and
+      // beam-plan legs for success/latency.
+      "model": "opencode-route/scout"
+    },
     "classifier": {
       "model": "opencode-route/scout",
       "temperature": 0,
@@ -2128,6 +2164,12 @@
 
       "deepseek-flash-plan": {
         "name": "DeepSeek Flash 1017 - plan stack + mistral-plan",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED from this pool —
+        // the Command Code account's monthly credit balance is exhausted
+        // ($9.95 of $10 used, no reset in the quota record; every call answers
+        // "insufficient credits"; last success on the provider 2026-11-10).
+        // Re-seat only after credits are verified back with a live completion.
+        
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
         // developing-today/opencode#541). ClinePass has no medium/xhigh; OpenDesign tops at
         // high. Remaps keep every leaf in the dispatch at its nearest wired rung.
@@ -2250,7 +2292,6 @@
             "model": "opendesign/deepseek-v4.1-flash",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "_commandcode/deepseek/deepseek-v4.1-flash",
           {
             "model": "mistral-plan/deepseek-v4-1-flash-1017",
             // Variant remap: the pool's effort rungs map onto the two
@@ -2273,7 +2314,6 @@
           "opencode-go-plans/deepseek-v4.1-flash": 2,
           "cline-pass/deepseek-v4.1-flash": 1,
           "opendesign/deepseek-v4.1-flash": 1,
-          "_commandcode/deepseek/deepseek-v4.1-flash": 1,
           "mistral-plan/deepseek-v4-1-flash-1017": 1
         },
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
@@ -2307,6 +2347,12 @@
       },
       "deepseek-pro-plan": {
         "name": "DeepSeek V4 Pro - plan providers",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED from this pool —
+        // the Command Code account's monthly credit balance is exhausted
+        // ($9.95 of $10 used, no reset in the quota record; every call answers
+        // "insufficient credits"; last success on the provider 2026-11-10).
+        // Re-seat only after credits are verified back with a live completion.
+        
         // 2026-10-27 pool redesign: Go x3 + Command Code (minor) join, per
         // the same all-workspaces rule as deepseek-flash-plan. This pool
         // seats no tier (specialist's Pro relief tail was removed in the
@@ -2324,14 +2370,12 @@
           {
             "model": "opendesign/deepseek-v4-pro",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          "_commandcode/deepseek/deepseek-v4-pro"
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/deepseek-v4-pro": 3,
-          "_commandcode/deepseek/deepseek-v4-pro": 0.5
+          "opencode-go-plans/deepseek-v4-pro": 3
         }
       },
       "fable-plan": {
@@ -2557,6 +2601,12 @@
       },
       "spark-plan": {
         "name": "Muse Spark 1.3 Contributor - plan providers",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED from this pool —
+        // the Command Code account's monthly credit balance is exhausted
+        // ($9.95 of $10 used, no reset in the quota record; every call answers
+        // "insufficient credits"; last success on the provider 2026-11-10).
+        // Re-seat only after credits are verified back with a live completion.
+        
         // 2026-10-30: the reserve leaf reached the Meta plan through
         // muse-proxy (provider "muse") — the direct meta door is dead
         // (attestation; see the "muse" provider note).
@@ -2588,7 +2638,6 @@
         // leaf in this pool.
         "targets": [
           "opencode-go-plans/muse-spark-1.3-contributor",
-          "_commandcode/meta/muse-spark-1.3-contributor",
           "cline-pass/muse-spark-1.3-contributor",
           "_muse/muse-spark-1.3-contributor"
         ],
@@ -2597,6 +2646,14 @@
       },
       "sol-plan": {
         "name": "GPT Sol - plan providers",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED — 403
+        // MODEL_NOT_IN_PLAN on every call since 2026-11-09 (GPT-6.1 Sol is
+        // now Max plan or extra on-demand usage only on Command Code; the
+        // fleet plan does not include it). 328 dead attempts before removal.
+        // The seat stays on its two quota doors (openai-plan, OpenDesign),
+        // which the router skips while walled and which revive at their
+        // resets. Re-seat the door only if plan coverage returns, proven
+        // by a live completion.
         // 2026-10-27 pool-coverage audit: the two opencode-go leaves are
         // REMOVED. They pointed at gpt-5.6-sol, which OpenCode Go does not
         // list — verified in the #1249 recheck (models.dev's opencode-go
@@ -2624,8 +2681,7 @@
           {
             "model": "opendesign/gpt-6.1-sol",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          "_commandcode/gpt-6.1-sol"
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2712,6 +2768,12 @@
       },
       "beam-plan": {
         "name": "Reflection Beam - plan providers",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED —
+        // Command Code ended the free Beam 1.0 tier today (403 "The free
+        // Beam 1.0 tier has ended" on all 511 calls from 08:42Z). The Go
+        // beam-free door stays: it is a different provider's offering,
+        // quota-walled until the Sun 2026-11-15 Go reset, and its own
+        // status gets verified from route_attempt after that reset.
         // NEW 2026-10-27 (pool redesign): Beam 1.0 gets its own plan pool
         // (was a raw Command Code leaf inside scout). AA v5: II 18,
         // TTFT 0.59s, ~385 t/s decode — the fleet's fastest starter.
@@ -2719,7 +2781,6 @@
         // on all three workspaces. Leaves are seated unconditionally: the
         // router skips disabled or quota-empty leaves at runtime.
         "targets": [
-          "_commandcode/reflection/beam:free",
           "opencode-go-plans/beam-free"
         ],
         "selection": "round-robin",
@@ -2730,6 +2791,12 @@
       },
       "mimo-flash-plan": {
         "name": "MiMo Flash - plan providers",
+        // 2026-11-13 (code#9397): the _commandcode door is REMOVED from this pool —
+        // the Command Code account's monthly credit balance is exhausted
+        // ($9.95 of $10 used, no reset in the quota record; every call answers
+        // "insufficient credits"; last success on the provider 2026-11-10).
+        // Re-seat only after credits are verified back with a live completion.
+        
         // NEW 2026-10-27 (pool redesign): MiMo-V2.6-Flash (AA v5:
         // II 27 at ~$0.13/task — the cheapest workhorse-adjacent
         // seat; slow per task at ~1,253s, so it leads the patient
@@ -2741,14 +2808,12 @@
         "targets": [
           "opencode-go-plans/mimo-v2.6-flash",
           "cline-pass/mimo-v2.6-flash",
-          "opendesign/mimo-v2.6-flash",
-          "_commandcode/xiaomi/mimo-v2.6-flash"
+          "opendesign/mimo-v2.6-flash"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/mimo-v2.6-flash": 3,
-          "_commandcode/xiaomi/mimo-v2.6-flash": 0.5
+          "opencode-go-plans/mimo-v2.6-flash": 3
         }
       },
       "glm-5-3-plan": {
@@ -2793,6 +2858,18 @@
       },
       "scout": {
         "name": "Scout - routine work: cheapest, fastest, smart enough",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Scout's own edge (workhorse) is a PROPOSAL (Drew has not
+        // ruled on scout yet, 2026-11-13): routine work that
+        // exhausts the free/cheap seats escalates to the standard
+        // tier rather than erroring.
         // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
         // 2026-11-11 (Drew): scout order — Beam ahead of DeepSeek Flash.
         // 2026-10-26 (pool remap review): all three routes addressed at #low — the rung every
@@ -2812,13 +2889,26 @@
         "targets": [
           "opencode-route/beam-plan",
           "opencode-route/deepseek-flash-plan#low",
-          "opencode-route/haiku-plan#low"
+          "opencode-route/haiku-plan#low",
+          "opencode-route/workhorse"
         ],
         "selection": "ordered",
         "autonomy": "rules"
       },
       "background": {
         "name": "Background - patient queue work: best value first, no latency contract",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Background's own edge (workhorse) is a PROPOSAL (Drew
+        // has not ruled on background yet, 2026-11-13): patient
+        // queue work that exhausts the value seats escalates to
+        // the standard tier rather than erroring.
         // NEW 2026-10-27 (pool redesign): the tier for machinery-dispatched
         // work no human watches — repo sweeps, issue-queue workers,
         // stewardship cycles, batch classification. Ordered chain in value
@@ -2871,9 +2961,47 @@
             "model": "opencode-route/deepseek-flash-plan#high",
             "window": "deepseek-peak-early"
           },
-          "opencode-route/mimo-flash-plan"
+          "opencode-route/mimo-flash-plan",
+          "opencode-route/workhorse"
         ],
         "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "deepseek-effort-rr": {
+        "name": "DeepSeek Flash - workhorse effort trial: high/low weighted 3:1 data gathering (Drew 2026-11-13)",
+        // 2026-11-13 (Drew, direct order): can workhorse's average
+        // effort be lowered? route_attempt for the 14 days to
+        // 2026-11-13 shows deepseek-v4.1-flash serving almost
+        // exclusively at #high (66,113 attempts on the dotted leaf
+        // id, 86.2% success, ~276 reasoning tokens/call) - the
+        // reasoning burn is the price of the rung. #medium is NOT
+        // a real lower rung on the metered leaves:
+        // deepseek-flash-plan remaps medium->high on its Go and
+        // ClinePass leaves (the model natively offers low/high/max
+        // there), so a medium seat would silently gather #high
+        // data. #low passes through as low on every leaf (Go,
+        // ClinePass, OpenDesign, CommandCode, Mistral), so low is
+        // the only honest lower rung. Fleet data at #low is
+        // effectively zero: 36 wall-era attempts (0 success, no
+        // token data) plus 72 tiny scout/background-shaped
+        // successes. This weighted seat (3 high : 1 low) is the
+        // data-gathering trial, mirroring luna-effort-rr
+        // (PR #9018); only the workhorse-ordered stage rides it -
+        // speed, background, scout and the specialist seats keep
+        // their own effort choices.
+        // MEASUREMENT (named before landing): route_attempt
+        // variant=low vs high on deepseek-v4.1-flash models -
+        // success rate, first-token latency, reasoning tokens per
+        // call, and the workhorse stage fall-through rate; review
+        // after 5,000 low draws or 7 days live, whichever first.
+        // REVERT if low success falls below 90% of high success
+        // or fall-through rises materially. Adds no new pool
+        // load: same plan, same doors, different effort split.
+        "targets": [
+          { "model": "opencode-route/deepseek-flash-plan#high", "weight": 3 },
+          { "model": "opencode-route/deepseek-flash-plan#low", "weight": 1 }
+        ],
+        "selection": "weighted",
         "autonomy": "rules"
       },
       "workhorse-ordered": {
@@ -2886,7 +3014,11 @@
         // workhorse-primary unchanged. deepseek-flash-plan KEEPS its
         // workhorse-primary seat (weight 2) in the same edit - this is
         // an addition, not a move.
-        "targets": ["opencode-route/deepseek-flash-plan#high"],
+        // 2026-11-13 (Drew, direct order): the seat now rides
+        // deepseek-effort-rr (defined just above) - the high/low
+        // effort trial - instead of addressing
+        // deepseek-flash-plan#high directly.
+        "targets": ["opencode-route/deepseek-effort-rr"],
         "selection": "ordered",
         "autonomy": "rules",
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
@@ -3043,6 +3175,21 @@
       },
       "workhorse": {
         "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it, Fable #low last resort if all else is down",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Workhorse's chain: scout FIRST (its failure mode is
+        // quota exhaustion; scout diversifies onto different
+        // doors - free Beam via CommandCode, DeepSeek #low,
+        // Haiku #low), then specialist (the sink). Reached FROM
+        // speed or scout, the visited-set pruning skips the
+        // scout edge's re-entry and the call lands on
+        // specialist.
         // 2026-10-27 pool redesign (Drew's structure): incremental —
         // DeepSeek Flash #high is the primary every session tries first;
         // the weighted relief pool (workhorse-weighted) absorbs failover
@@ -3078,7 +3225,9 @@
           "opencode-route/workhorse-ordered",
           "opencode-route/workhorse-primary",
           "opencode-route/workhorse-weighted",
-          "opencode-route/workhorse-last-resort"
+          "opencode-route/workhorse-last-resort",
+          "opencode-route/scout",
+          "opencode-route/specialist"
         ],
         "selection": "ordered",
         "autonomy": "rules",
@@ -3249,7 +3398,7 @@
         "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse-last-resort": {
-        "name": "Workhorse last resort - Sonnet #medium from Claude first, then Fable #low, only if all else is down",
+        "name": "Workhorse last resort - Haiku #high from Claude first, then Fable #low, only if all else is down",
         // NEW 2026-11-10 (Drew, direct order): the fourth and final
         // stage of the workhorse chain, reached only when
         // workhorse-ordered, workhorse-primary, and
@@ -3271,8 +3420,19 @@
         // case is the point: when every other pool is walled at
         // once (the 2026-11-09/10 pattern, code#8086), workhorse
         // sessions land here instead of dying on no-candidates.
+        // 2026-11-12 (Drew, direct order): the head leaf SWAPS
+        // from Sonnet #medium to Haiku #high. Why: this leg
+        // drained Claude's 5h window 39%->100% in one hour
+        // (2026-11-12) at ~180k input tokens per call. AA v5:
+        // Haiku #high II 30 vs Sonnet #medium II 30.8 - a wash -
+        // and Haiku costs ~1/3 per token against the shared
+        // Claude Max allowance, so the same traffic drains the
+        // window ~3x slower. Fable #low behind it is unchanged.
+        // This edit lived uncommitted in the laptop primary
+        // checkout from 2026-11-12 until the 2026-11-13
+        // primary-checkout reconcile (Drew's order) landed it.
         "targets": [
-          "_claude/claude-sonnet-5-5#medium",
+          "_claude/claude-haiku-5-5#high",
           "opencode-route/fable-plan#low"
         ],
         "selection": "ordered",
@@ -3284,6 +3444,10 @@
       },
       "specialist": {
         "name": "Specialist - hard work: quality first, Fable #low head, then Claude Sonnet, Argon, Meta Spark, OpenAI",
+        // Class fallback (Drew 2026-11-13): specialist is the
+        // SINK - no class fallback out of specialist. If every
+        // specialist leg is down, the call errors; there is no
+        // cheaper class to fall back to and nothing above it.
         // 2026-11-10 (Drew, direct order): Fable #low (fable-plan,
         // _claude door) takes the HEAD of this chain. AA v5 #low
         // II 53.9 tops every member it now leads (the former head,
@@ -3325,6 +3489,15 @@
       },
       "summit": {
         "name": "Summit - very complex design only, deliberate use: Fable #low head, then Opus, Argon, Hydrogen, Wonder, Sol",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Summit's only edge: specialist (the sink).
         // 2026-11-11 (Drew, direct order): fable-plan leg low -> medium.
         // 2026-11-10 (Drew, direct order): Fable #low (fable-plan,
         // _claude door) takes the HEAD of this chain. AA v5 #low
@@ -3362,13 +3535,24 @@
           "opencode-route/argon-plan#high",
           "_antigravity/gemini-4-hydrogen#high",
           "_muse/muse-wonder-1.0-contributor#xhigh",
-          "opencode-route/sol-plan#xhigh"
+          "opencode-route/sol-plan#xhigh",
+          "opencode-route/specialist"
         ],
         "selection": "ordered",
         "autonomy": "rules"
       },
       "speed": {
         "name": "Speed - fastest seats at or above the Haiku bar, for latency-bound work",
+        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // escalates to the route(s) appended at the END of its targets.
+        // Per-call visited-set semantics: the route expander prunes
+        // re-entry into a route already on the expansion path, so
+        // escalation never re-enters a tried class and always
+        // terminates at specialist, the sink. Full layout:
+        // .opencode/route-fallbacks.md; guard:
+        // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
+        // Speed's chain: workhorse first (cheaper, more
+        // available), then summit, then specialist (the sink).
         // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
         // 2026-10-26 pass 3 (AA figures re-baselined to v5 2026-10-31, #1673): a latency pool is judged on
         // time-to-first-token as much as decode — Spark contributor #xhigh / TTFT 19.1s /
@@ -3402,52 +3586,105 @@
           "_muse/muse-spark-1.3-contributor#xhigh",
           "opencode-route/deepseek-flash-plan#high",
           "opencode-route/gemini-hydrogen-plan#high",
-          "opencode-route/haiku-plan#high"
+          "opencode-route/haiku-plan#high",
+          "opencode-route/workhorse",
+          "opencode-route/summit",
+          "opencode-route/specialist"
         ],
         "selection": "ordered",
         "autonomy": "rules"
       },
-      "small-100k": {
-        "name": "Small 100k - Haiku + Luna below the 100k context cliff",
-        // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
-        // 2026-10-26 (as luna-haiku-100k): both members price much cheaper below 100k
-        // context. The route's context cap (developing-today/opencode#554) presents a
-        // 100k limit, so sessions pinned here compact before crossing the cliff. On fork
-        // builds predating #554 the decoder strips the unknown limit key and the pool
-        // simply runs uncapped.
-        // AA v5: Haiku #high II 30, Luna #xhigh II 23 (TTFT 24.2s; #max would be 93.8s).
-        // 2026-10-27 pool redesign: this is now the <=100k element of the
-        // renamed `small` pool (below).
+      "limited": {
+        "name": "Limited - light-work pool: every member seated at its own plan's real limits (model @ context # effort)",
+        // 2026-11-13 (Drew, direct order): replaces small-100k. A
+        // route name must not bake in one member's context limit
+        // when members differ, so the pool is ONE route whose
+        // targets each carry their own per-target context cap
+        // (the route schema's target limit; the old small
+        // comment claiming the schema has no per-target limit
+        // predates the fork feature). A request that does not
+        // fit a member's cap skips it like any other ineligible
+        // target, so small requests land on the small members
+        // and larger ones spill to the larger members. Members,
+        // each seated at its own plan's real limits:
+        // - Luna @ 100k #medium: Luna's ChatGPT-plan cheap tier
+        //   ends at 100k context (recorded at the old
+        //   small-100k). Native catalog context is 1.05M; the
+        //   plan's real pricing limit is the 100k cliff.
+        //   luna-plan's legs present different contexts
+        //   (opendesign leg 200k, OpenAI/Go legs 1.05M native);
+        //   the 100k cap is the binding limit across the legs.
+        //   Effort drops from the old seat's #xhigh (II 23,
+        //   TTFT 24.2s) to #medium (II 18): light work does
+        //   not need the top rung; claim-stamped task outcomes
+        //   will show if that judgement is wrong.
+        // - Terra @ 388k #low: seated at the plan-effective
+        //   388k (Drew 2026-11-13); native catalog context is
+        //   1.05M, so 388k is a plan/policy ceiling, not the
+        //   model limit. AA v5: Terra #low II 29 at $0.07/task.
+        //   This is terra-plan's first consumer (it was an
+        //   orphan pool: no route targeted it).
+        // - DeepSeek small variant #low, peak-aware: DeepSeek's
+        //   metered price doubles inside the deepseek-peak
+        //   windows, so during a peak window the MiMo Flash
+        //   plan serves first and DeepSeek #low serves
+        //   off-peak first (the background route's seat
+        //   pattern). Time-of-day routing: code#9378. The
+        //   plan's doors present different contexts (Go,
+        //   ClinePass and Mistral spellings 1M; OpenDesign and
+        //   CommandCode spellings 200k) - the member cap is
+        //   the model's 1M catalog context and each leaf's own
+        //   ceiling still applies, so no door is over-asked.
+        //   MiMo v2.6 Flash catalog context 1048576, same
+        //   per-door note.
+        // - Haiku @ 388k #medium, LAST (fleet rule: the
+        //   haiku-plan leg is last in the light tiers). Seated
+        //   at the plan-effective 388k (Drew 2026-11-13);
+        //   Haiku 5.5 native catalog context is 1M - 388k is a
+        //   plan/policy ceiling, not the model limit. Effort
+        //   #medium, down from the old seat's #high (II 30):
+        //   this is the light tier; harder work belongs to
+        //   speed/workhorse.
+        // MEASUREMENT: route_attempt per member (success,
+        // latency, tokens) plus claim-stamped outcomes for
+        // sessions pinned to small/limited, reviewed with the
+        // deepseek-effort-rr trial after 7 days live.
         "targets": [
-          "opencode-route/luna-plan#xhigh",
-          "opencode-route/haiku-plan#high"
+          { "model": "opencode-route/luna-plan#medium", "limit": { "context": 100000 } },
+          { "model": "opencode-route/terra-plan#low", "limit": { "context": 388000 } },
+          { "model": "opencode-route/mimo-flash-plan", "window": "deepseek-peak-early", "limit": { "context": 1048576 } },
+          { "model": "opencode-route/mimo-flash-plan", "window": "deepseek-peak-late", "limit": { "context": 1048576 } },
+          {
+            "model": "opencode-route/deepseek-flash-plan#low",
+            "window": { "name": "deepseek-peak-early", "invert": true },
+            "limit": { "context": 1000000 }
+          },
+          {
+            "model": "opencode-route/deepseek-flash-plan#low",
+            "window": "deepseek-peak-early",
+            "limit": { "context": 1000000 }
+          },
+          { "model": "opencode-route/haiku-plan#medium", "limit": { "context": 388000 } }
         ],
         "selection": "ordered",
-        "autonomy": "rules",
-        "limit": { "context": 100000 }
+        "autonomy": "rules"
       },
       "small": {
-        "name": "Small - light work in small contexts, Haiku + Luna value seats",
-        // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
-        // RENAMED 2026-10-27 (pool redesign) from luna-haiku-100k. Sessions
-        // pinned to the old id need re-pinning. The pool is the fleet's
-        // light/small tier: Haiku and Luna are much cheaper in small
-        // contexts, so membership is organized by context ceiling —
-        //   - the <=100k element (small-100k): Haiku #high + Luna #xhigh
-        //   - the <=200k element: Haiku #high alone (Luna's cheap tier
-        //     ends at 100k)
-        // The route schema has no per-target context limit, so the
-        // elements are expressed as a nested route (small-100k, capped at
-        // 100k) beside the direct Haiku target, under this route's 200k
-        // cap. Haiku 5.5 is 1M native — the 200k element is a cost-policy
-        // ceiling, not a model limit: bigger jobs belong to bigger pools.
-        "targets": [
-          "opencode-route/small-100k",
-          "opencode-route/haiku-plan#high"
-        ],
+        "name": "Small - light work: draws from the limited pool (per-member plan limits)",
+        // 2026-11-13 (Drew, direct order): rebuilt on the
+        // limited pool above. The route-level 200k cap is gone
+        // - members carry their own plan limits now - and the
+        // <=100k / <=200k element structure (and the small-100k
+        // route) is deleted. Sessions pinned to small-100k need
+        // re-pinning to small or limited. History: renamed
+        // 2026-10-27 from luna-haiku-100k; the pre-2026-11-13
+        // shape seated luna-plan#xhigh + haiku-plan#high under
+        // a 200k route cap.
+        // Class fallback (Drew 2026-11-13): small -> speed (see
+        // the scout route's note + route-fallbacks.md).
+        "targets": ["opencode-route/limited", "opencode-route/speed"],
         "selection": "ordered",
-        "autonomy": "rules",
-        "limit": { "context": 200000 }
+        "autonomy": "rules"
       }
     },
     "model_route_windows": {

@@ -13,6 +13,7 @@ A row here records intent. It does not settle a product question and it is not a
 | The NixOS flake and infra manifests            | [nixos-and-infra](planning/roadmaps/nixos-and-infra.md)   | Inputs kept current by a daily job. No open work items of its own                                                                                                                                         |
 | Repo-wide CI and automation                    | [repo-and-ci](planning/roadmaps/repo-and-ci.md)           | The dispatch workflows, the Go build cache, stale PR triage — and the queue fleet program: lanes for every queue, OpenChamber session dispatch (#1233, #1234), pool & routing intelligence (#1343, #1340) |
 | The basement home cluster (Talos, Cozystack)   | [basement-cluster](planning/roadmaps/basement-cluster.md) | Nothing built yet; research and planning done, hardware inventory and power come first                                                                                                                    |
+| The PM stack (Kaneo, Pad, Grist, the aggregator, the queue fleet) | [pm-stack](planning/roadmaps/pm-stack.md) | Coherence epic #1184 in progress: one URL, fresh data, triage-able issues across the four repos |
 
 ## Now, across the repo
 

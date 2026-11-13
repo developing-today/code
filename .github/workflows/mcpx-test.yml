@@ -44,7 +44,6 @@ name: mcpx test
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:

@@ -293,6 +293,23 @@ func (b mcpBackend) execOptions(ctx context.Context, timeoutSec int) execsvc.Opt
 	return opts
 }
 
+// hookAdviceText renders the retained hook frames a prompt hook left
+// on the result — its advice, or the warning that no provider could
+// answer — one line per frame, the same selection reportHooks makes
+// for the CLI text path. Script hooks carry neither field and render
+// nothing.
+func hookAdviceText(res execsvc.Result) string {
+	var lines []string
+	for _, f := range res.Hooks {
+		if f.Advice != "" {
+			lines = append(lines, "hook advice ("+f.Phase+"): "+f.Advice)
+		} else if f.Error != "" {
+			lines = append(lines, "hook warning ("+f.Phase+"): "+f.Error)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // renderExec turns a script's result into mcpx_exec's tool result. Shared by
 // the direct path and the interruptible one (serve_ask.go), so a script
 // answered inline renders exactly like one that was never asked anything.
@@ -305,11 +322,20 @@ func renderExec(res execsvc.Result) (string, error) {
 	}
 	sb.WriteString(res.Stdout)
 	text := strings.TrimRight(sb.String(), "\n")
+	// Prompt-hook advice is the hook's sole output, and an MCP caller
+	// has no stderr for it to ride on (reportHooks' channel): without
+	// this the model runs and its answer silently disappears on both
+	// the direct and the interruptible path (Codex review, PR #9021).
+	hooks := hookAdviceText(res)
 	if res.Error != "" {
+		parts := []string{res.Error}
 		if text != "" {
-			return "", fmt.Errorf("%s\n\n%s", res.Error, text)
+			parts = append(parts, text)
 		}
-		return "", errors.New(res.Error)
+		if hooks != "" {
+			parts = append(parts, hooks)
+		}
+		return "", errors.New(strings.Join(parts, "\n\n"))
 	}
 	// A hook may have replaced the result after the script ran -- an
 	// onSuccess transform, or an onError recovery for a script that
@@ -334,6 +360,13 @@ func renderExec(res execsvc.Result) (string, error) {
 					text = string(b)
 				}
 			}
+		}
+	}
+	if hooks != "" {
+		if text != "" {
+			text += "\n\n" + hooks
+		} else {
+			text = hooks
 		}
 	}
 	if text == "" && len(res.Artifacts) == 0 {

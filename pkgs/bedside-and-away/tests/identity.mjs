@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import {newGuestClaim,verifyGuestClaim,installationId} from '../worker/identity.mjs';
+assert.match(installationId(),/^[a-f\d-]{36}$/);
+const c=await newGuestClaim({guestId:'g1',storeId:'s1',at:1000,ttlMs:60000});
+assert.equal(c.record.token,undefined);assert.equal(c.record.tokenHash.length,64);
+const args={record:c.record,token:c.token,guestId:'g1',storeId:'s1',accountId:'trusted-account',at:2000};
+assert.deepEqual(await verifyGuestClaim(args),{guestId:'g1',storeId:'s1',accountId:'trusted-account',claimId:c.record.id});
+for(const change of [{token:'bad'},{guestId:'g2'},{storeId:'s2'},{accountId:''},{at:61000},{record:{...c.record,consumedAt:2000}}])await assert.rejects(()=>verifyGuestClaim({...args,...change}));
+assert.notEqual((await newGuestClaim({guestId:'g1',storeId:'s1'})).token,c.token);
+console.log('PASS guest proof token hashing, expiry, binding, consumed claims and account presence');

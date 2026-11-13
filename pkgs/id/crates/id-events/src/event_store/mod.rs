@@ -7,6 +7,8 @@
 //!   accepted event is here, including events past a fork point, which are kept
 //!   but not applied.
 //! - `hashes`: an event's ID to its position.
+//! - `bodies`: an event's ID to its body bytes, for the events whose headers commit to a
+//!   body (see [`EventStore::event_body`]). A header-only event has no row.
 //! - `chains`: an author to the applied prefix of their chain: the next sequence
 //!   number, the hash of the last applied event, and the frozen flag.
 //! - `forks`: a fork proof, keyed by its fork point's position: the two headers that conflict at
@@ -180,7 +182,7 @@ use id_store::event_types::{be_u64, corrupt, hash_of, seq_num};
 pub const TEMP_NAME: &str = "events.redb.tmp";
 
 /// The format row in `meta`. A store with another format is refused.
-const FORMAT: &[u8] = b"id.events.store.v8";
+const FORMAT: &[u8] = b"id.events.store.v9";
 const FORMAT_KEY: &[u8] = b"format";
 
 const EVENTS: TableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -228,6 +230,12 @@ const DEVICE_OPS: TableDefinition<'static, &'static [u8], &'static [u8]> =
 /// The IDs of the applied events, with an empty value. Written by the resolution.
 const APPLIED: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("applied");
+/// The body of each event whose header commits to one, by event ID. Written at ingest,
+/// when the body is present and verified against the header; read back by
+/// [`EventStore::event_body`] and carried by range sync. A header-only event, and an
+/// event whose body never arrived, has no row.
+const BODIES: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("bodies");
 
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
@@ -556,6 +564,33 @@ impl EventStore {
         };
         let stored = events.get(position.value())?;
         stored.map(|bytes| decode_stored(bytes.value())).transpose()
+    }
+
+    /// The stored body of the event with this ID, byte-identical to the body the author's
+    /// header commits to. Bodies are stored at ingest when present (see
+    /// [`EventStore::ingest_with_body`]) and carried by range sync.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::MissingBody`] when the event is header-only, its body never
+    /// arrived, or no event with this ID is stored; a redb error if the read fails.
+    pub fn event_body(&self, id: &Hash) -> Result<Vec<u8>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let bodies = txn.open_table(BODIES)?;
+        match bodies.get(id.as_bytes().as_slice())? {
+            Some(body) => Ok(body.value().to_vec()),
+            None => Err(StoreError::MissingBody { id: *id }),
+        }
+    }
+
+    /// The stored body of the event with this ID, or `None` when there is none. The range
+    /// sync sender's view of [`EventStore::event_body`]: a missing body is not an error
+    /// there, the event simply travels without one, as it did before bodies were carried.
+    pub(crate) fn stored_body(&self, id: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let bodies = txn.open_table(BODIES)?;
+        let stored = bodies.get(id.as_bytes().as_slice())?;
+        Ok(stored.map(|body| body.value().to_vec()))
     }
 
     /// The fork proof that freezes `author`'s chain: the one at the author's lowest fork point, if
@@ -1201,6 +1236,7 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     txn.open_multimap_table(WAITING_BY_DEP)?;
     txn.open_table(ACTIONS)?;
     txn.open_table(APPLIED)?;
+    txn.open_table(BODIES)?;
     txn.open_table(BLOCKS)?;
     let mut meta = txn.open_table(META)?;
     meta.insert(FORMAT_KEY, FORMAT)?;
@@ -1224,6 +1260,7 @@ fn verify_schema(db: &Database) -> Result<(), StoreError> {
     txn.open_multimap_table(WAITING_BY_DEP).map_err(missing)?;
     txn.open_table(ACTIONS).map_err(missing)?;
     txn.open_table(APPLIED).map_err(missing)?;
+    txn.open_table(BODIES).map_err(missing)?;
     let meta = txn.open_table(META).map_err(missing)?;
     match meta.get(FORMAT_KEY)? {
         Some(found) if found.value() == FORMAT => Ok(()),
@@ -1343,6 +1380,15 @@ pub(crate) fn store_event(txn: &WriteTransaction, event: &Event) -> Result<(), S
         let mut groups = txn.open_multimap_table(GROUPS)?;
         groups.insert(group.as_bytes().as_slice(), key.as_slice())?;
     }
+    Ok(())
+}
+
+/// Stores the verified body of an event, by event ID. The caller has checked the body
+/// against the header's commitment (hash and size); a body already stored is replaced by
+/// the same bytes, because only the committed body ever passes that check.
+pub(crate) fn store_body(txn: &WriteTransaction, id: &Hash, body: &[u8]) -> Result<(), StoreError> {
+    let mut bodies = txn.open_table(BODIES)?;
+    bodies.insert(id.as_bytes().as_slice(), body)?;
     Ok(())
 }
 
@@ -1965,6 +2011,18 @@ impl id_store::store_traits::EventStoreBackend for EventStore {
         now_ms: u64,
     ) -> Result<Vec<Ingest>, StoreError> {
         self.ingest_events(events, now_ms)
+    }
+
+    fn ingest_events_with_bodies(
+        &mut self,
+        events: Vec<(Event, Option<Vec<u8>>)>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, StoreError> {
+        self.ingest_events_with_bodies(events, now_ms)
+    }
+
+    fn stored_body(&self, id: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
+        self.stored_body(id)
     }
 
     fn sync_entries(&self) -> Result<Vec<(id_store::range::Key, id_store::range::Id)>, StoreError> {
