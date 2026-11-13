@@ -1484,8 +1484,8 @@ impl WorldActor {
             .core
             .schedules
             .iter()
-            .filter(|(_, at_ms)| **at_ms <= now)
-            .map(|(id, at_ms)| (*at_ms, id.clone()))
+            .filter(|(_, schedule)| schedule.at_ms <= now)
+            .map(|(id, schedule)| (schedule.at_ms, id.clone()))
             .collect();
         due.sort_unstable();
         due.truncate(crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP);
@@ -1500,7 +1500,10 @@ impl WorldActor {
             {
                 break;
             }
-            self.core.schedules.remove(&id);
+            // One journaled transition, shared with replay: a recurring
+            // schedule re-arms in place (fixed-rate, one slot), a one-shot
+            // is consumed.
+            self.core.apply_schedule_fired(&id);
             self.overdue_at_open.remove(&id);
         }
     }
@@ -2019,9 +2022,11 @@ impl WorldActor {
         }
     }
 
-    /// `schedule.at`: pend one fire of `id` at `at` (unix ms). The schedule is
-    /// journaled before the result is delivered. A refused request changes
-    /// nothing but the usage count.
+    /// `schedule.at`: pend a fire of `id` at `at` (unix ms). With
+    /// `interval_ms` and `count` the schedule is recurring (#1355): it
+    /// re-arms fixed-rate after each fire until `count` total fires have
+    /// happened. The schedule is journaled before the result is delivered.
+    /// A refused request changes nothing but the usage count.
     fn execute_schedule_at(
         &mut self,
         args: &serde_json::Value,
@@ -2034,10 +2039,26 @@ impl WorldActor {
             .get("at")
             .and_then(serde_json::Value::as_u64)
             .ok_or(CapError::bad_args())?;
-        if let Err(error) = self
-            .core
-            .check_schedule(id, at_ms, self.core.clock().now_ms())
-        {
+        let interval_ms = args.get("interval_ms").and_then(serde_json::Value::as_u64);
+        let count = match args.get("count") {
+            None => None,
+            Some(value) => Some(
+                value
+                    .as_u64()
+                    .and_then(|count| u32::try_from(count).ok())
+                    .ok_or(CapError::bad_args())?,
+            ),
+        };
+        if args.get("interval_ms").is_some() && interval_ms.is_none() {
+            return Err(CapError::bad_args());
+        }
+        if let Err(error) = self.core.check_schedule_recurring(
+            id,
+            at_ms,
+            interval_ms,
+            count,
+            self.core.clock().now_ms(),
+        ) {
             tracing::debug!("world {}: schedule refused: {error:#}", self.core.world_id);
             return Err(CapError::bad_args_with(format!("{error:#}")));
         }
@@ -2045,13 +2066,27 @@ impl WorldActor {
             .persist(JournalEntry::ScheduleSet {
                 id: id.to_owned(),
                 at_ms,
+                interval_ms,
+                remaining: count.filter(|_| interval_ms.is_some()),
             })
             .is_err()
         {
             return Err(CapError::failed());
         }
-        self.core.schedules.insert(id.to_owned(), at_ms);
-        Ok(serde_json::json!({"id": id, "fires_at": at_ms}))
+        self.core.schedules.insert(
+            id.to_owned(),
+            PendingSchedule {
+                at_ms,
+                interval_ms,
+                remaining: count.unwrap_or(1),
+            },
+        );
+        let mut result = serde_json::json!({"id": id, "fires_at": at_ms});
+        if let (Some(interval), Some(count)) = (interval_ms, count) {
+            result["interval_ms"] = serde_json::json!(interval);
+            result["count"] = serde_json::json!(count);
+        }
+        Ok(result)
     }
 
     /// `schedule.cancel`: drop a pending schedule before it fires. `cancelled`
@@ -3160,7 +3195,7 @@ impl WorldActor {
                 let _ = reply.send(profile);
             }
             WorldCommand::ManifestState { reply } => {
-                let state = (self.core.active_seed, self.core.schedules.clone());
+                let state = (self.core.active_seed, self.core.schedule_times());
                 // No audit record, for the same reason as Metrics below:
                 // the session layer's WorldState frame accepts a
                 // participant capability (only the seed is withheld from
@@ -3172,8 +3207,8 @@ impl WorldActor {
                 let audit_id = id.clone();
                 let result = (|| -> Result<BTreeMap<String, u64>> {
                     self.check_writable()?;
-                    if self.core.schedules.get(&id) == Some(&at_ms) {
-                        return Ok(self.core.schedules.clone());
+                    if self.core.schedules.get(&id) == Some(&PendingSchedule::one_shot(at_ms)) {
+                        return Ok(self.core.schedule_times());
                     }
                     // Validate the replacement before anything is persisted:
                     // a refusal (say, past the horizon) must leave the
@@ -3192,9 +3227,13 @@ impl WorldActor {
                     self.persist(JournalEntry::ScheduleSet {
                         id: id.clone(),
                         at_ms,
+                        interval_ms: None,
+                        remaining: None,
                     })?;
-                    self.core.schedules.insert(id, at_ms);
-                    Ok(self.core.schedules.clone())
+                    self.core
+                        .schedules
+                        .insert(id, PendingSchedule::one_shot(at_ms));
+                    Ok(self.core.schedule_times())
                 })();
                 self.audit_admin_result(
                     "admin",
@@ -3213,7 +3252,7 @@ impl WorldActor {
                         self.core.schedules.remove(&id);
                         self.overdue_at_open.remove(&id);
                     }
-                    Ok(self.core.schedules.clone())
+                    Ok(self.core.schedule_times())
                 })();
                 self.audit_admin_result(
                     "admin",
@@ -5112,7 +5151,7 @@ impl WorldActor {
         let overdue_at_open: BTreeSet<String> = core
             .schedules
             .iter()
-            .filter(|(_, at_ms)| **at_ms <= core.clock().now_ms())
+            .filter(|(_, schedule)| schedule.at_ms <= core.clock().now_ms())
             .map(|(id, _)| id.clone())
             .collect();
         Self {

@@ -213,7 +213,7 @@ impl WorldHandle {
         let overdue_at_open: BTreeSet<String> = core
             .schedules
             .iter()
-            .filter(|(_, at_ms)| **at_ms <= now)
+            .filter(|(_, schedule)| schedule.at_ms <= now)
             .map(|(id, _)| id.clone())
             .collect();
         let metrics = WorldMetrics::default();

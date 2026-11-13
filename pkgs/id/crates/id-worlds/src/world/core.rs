@@ -175,8 +175,11 @@ pub struct WorldCore {
     /// This world's own capability ceiling. The ledger allows the intersection
     /// of this and the server's `limits.server_caps`.
     pub(crate) caps_ceiling: BTreeSet<String>,
-    /// Pending `schedule.at` fires: id to due time, in unix milliseconds.
-    pub(crate) schedules: BTreeMap<String, u64>,
+    /// Pending `schedule.at` fires by id (#1355): each record carries its
+    /// next due time and, for a recurring schedule, its interval and the
+    /// fires remaining. A schedule occupies one slot however many fires
+    /// remain.
+    pub(crate) schedules: BTreeMap<String, PendingSchedule>,
     pub(crate) isolation: Isolation,
     pub(crate) cross_world_write: bool,
     pub(crate) cross_world_forced: bool,
@@ -855,7 +858,12 @@ impl WorldCore {
                 }
                 JournalEntry::FileScope { scope } => core.file_scope = scope,
                 JournalEntry::FileWriteOverride { enabled } => core.file_write_override = enabled,
-                JournalEntry::ScheduleSet { id, at_ms } => {
+                JournalEntry::ScheduleSet {
+                    id,
+                    at_ms,
+                    interval_ms,
+                    remaining,
+                } => {
                     crate::world_caps::validate_schedule_id(&id)
                         .context("invalid schedule id in journal")?;
                     ensure!(
@@ -867,9 +875,33 @@ impl WorldCore {
                         "journal holds more than {} pending schedules",
                         crate::world_caps::MAX_PENDING_SCHEDULES
                     );
+                    // Recurrence invariants the writer holds: at least one
+                    // fire remaining, a positive interval when one is named,
+                    // and an interval whenever more than one fire remains
+                    // (a mid-series record legitimately pairs an interval
+                    // with a single remaining fire).
+                    let remaining = remaining.unwrap_or(1);
+                    ensure!(
+                        remaining >= 1,
+                        "journal schedule {id:?} has no fires remaining"
+                    );
+                    if let Some(interval) = interval_ms {
+                        ensure!(interval >= 1, "journal schedule {id:?} has a zero interval");
+                    }
+                    ensure!(
+                        remaining == 1 || interval_ms.is_some(),
+                        "journal schedule {id:?} has {remaining} fires but no interval"
+                    );
                     // No clock here: the due time is what the request set, and
                     // a restore never judges it against now.
-                    core.schedules.insert(id, at_ms);
+                    core.schedules.insert(
+                        id,
+                        PendingSchedule {
+                            at_ms,
+                            interval_ms,
+                            remaining,
+                        },
+                    );
                 }
                 JournalEntry::ScheduleCancelled { id } => {
                     ensure!(
@@ -879,7 +911,7 @@ impl WorldCore {
                 }
                 JournalEntry::ScheduleFired { id } => {
                     ensure!(
-                        core.schedules.remove(&id).is_some(),
+                        core.apply_schedule_fired(&id),
                         "journal fires schedule {id:?}, which is not pending"
                     );
                 }
@@ -1347,7 +1379,19 @@ impl WorldCore {
                     // The writer emits one `ScheduleSet` per pending schedule
                     // before the checkpoint, so the two must agree exactly.
                     let listed = schedules.unwrap_or_default();
-                    let declared: BTreeMap<String, u64> = listed.iter().cloned().collect();
+                    let declared: BTreeMap<String, PendingSchedule> = listed
+                        .iter()
+                        .map(|schedule| {
+                            (
+                                schedule.id.clone(),
+                                PendingSchedule {
+                                    at_ms: schedule.at_ms,
+                                    interval_ms: schedule.interval_ms,
+                                    remaining: schedule.remaining,
+                                },
+                            )
+                        })
+                        .collect();
                     ensure!(
                         declared.len() == listed.len() && declared == core.schedules,
                         "journal checkpoint's pending schedules disagree with its schedule entries"
@@ -1551,16 +1595,23 @@ impl WorldCore {
         // One entry per pending schedule, before the checkpoint, mirroring the
         // ceiling: an older binary cannot read `ScheduleSet` and refuses the
         // journal, instead of restoring without the schedules.
-        for (id, at_ms) in &self.schedules {
+        for (id, schedule) in &self.schedules {
             entries.push(JournalEntry::ScheduleSet {
                 id: id.clone(),
-                at_ms: *at_ms,
+                at_ms: schedule.at_ms,
+                interval_ms: schedule.interval_ms,
+                remaining: (schedule.remaining != 1).then_some(schedule.remaining),
             });
         }
-        let schedules: Option<Vec<(String, u64)>> = (!self.schedules.is_empty()).then(|| {
+        let schedules: Option<Vec<CheckpointSchedule>> = (!self.schedules.is_empty()).then(|| {
             self.schedules
                 .iter()
-                .map(|(id, at_ms)| (id.clone(), *at_ms))
+                .map(|(id, schedule)| CheckpointSchedule {
+                    id: id.clone(),
+                    at_ms: schedule.at_ms,
+                    interval_ms: schedule.interval_ms,
+                    remaining: schedule.remaining,
+                })
                 .collect()
         });
         // Active handoffs ride on the checkpoint, mirroring the ceiling and
@@ -1703,7 +1754,51 @@ impl WorldCore {
     /// A malformed id, a duplicate pending id, a full schedule, or a time past
     /// the horizon.
     pub(crate) fn check_schedule(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
-        self.check_schedule_inner(id, at_ms, now_ms, false)
+        self.check_schedule_inner(id, at_ms, None, None, now_ms, false)
+    }
+
+    /// Whether a recurring `schedule.at` (#1355) may be pended: the one-shot
+    /// checks, the recurrence pair's own bounds, and the whole series —
+    /// first fire plus `interval * (count - 1)` — inside the horizon.
+    pub(crate) fn check_schedule_recurring(
+        &self,
+        id: &str,
+        at_ms: u64,
+        interval_ms: Option<u64>,
+        count: Option<u32>,
+        now_ms: u64,
+    ) -> Result<()> {
+        self.check_schedule_inner(id, at_ms, interval_ms, count, now_ms, false)
+    }
+
+    /// Apply one fire of a pending schedule: re-arm it in place while
+    /// fires remain (fixed-rate: the next due time advances by the
+    /// interval from the planned time, never from now), or consume it.
+    /// Returns false when no schedule by that id is pending. Shared by
+    /// journal replay and the actor's fire path, so both derive the same
+    /// next state from the same journaled state.
+    pub(crate) fn apply_schedule_fired(&mut self, id: &str) -> bool {
+        let Some(schedule) = self.schedules.get(id).copied() else {
+            return false;
+        };
+        match schedule.after_fire() {
+            Some(rearmed) => {
+                self.schedules.insert(id.to_owned(), rearmed);
+            }
+            None => {
+                self.schedules.remove(id);
+            }
+        }
+        true
+    }
+
+    /// The pending schedules as id to next due time: the projection the
+    /// admin layer has always returned, whatever a schedule's recurrence.
+    pub(crate) fn schedule_times(&self) -> BTreeMap<String, u64> {
+        self.schedules
+            .iter()
+            .map(|(id, schedule)| (id.clone(), schedule.at_ms))
+            .collect()
     }
 
     /// Like [`Self::check_schedule`], but for a set that replaces the pending
@@ -1715,17 +1810,20 @@ impl WorldCore {
     /// the existing schedule standing (#807).
     pub(crate) fn check_schedule_replacing(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
         let replacing = self.schedules.contains_key(id);
-        self.check_schedule_inner(id, at_ms, now_ms, replacing)
+        self.check_schedule_inner(id, at_ms, None, None, now_ms, replacing)
     }
 
     fn check_schedule_inner(
         &self,
         id: &str,
         at_ms: u64,
+        interval_ms: Option<u64>,
+        count: Option<u32>,
         now_ms: u64,
         replacing: bool,
     ) -> Result<()> {
         crate::world_caps::validate_schedule_id(id)?;
+        crate::world_caps::validate_schedule_recurrence(interval_ms, count)?;
         ensure!(
             replacing || !self.schedules.contains_key(id),
             "schedule {id:?} is already pending; cancel it before scheduling it again"
@@ -1742,6 +1840,18 @@ impl WorldCore {
             "schedule {id:?} is more than {} days past the host clock",
             crate::world_caps::MAX_SCHEDULE_HORIZON_DAYS
         );
+        if let (Some(interval), Some(count)) = (interval_ms, count) {
+            // The series' last fire is as much a schedule time as its
+            // first: it must land inside the same horizon.
+            let last_fire = interval
+                .checked_mul(u64::from(count - 1))
+                .and_then(|span| at_ms.checked_add(span));
+            ensure!(
+                last_fire.is_some_and(|last| last <= horizon),
+                "schedule {id:?} series ends more than {} days past the host clock",
+                crate::world_caps::MAX_SCHEDULE_HORIZON_DAYS
+            );
+        }
         Ok(())
     }
 
