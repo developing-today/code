@@ -172,3 +172,32 @@ func TestRewriteFinalExpressionControlCases(t *testing.T) {
 		}
 	}
 }
+
+// Review cases, round 4 (PR #9344): a statement may end with a
+// regex literal or a postfix assertion, an object literal inside
+// an unbraced body is not a block boundary, and a regex may open
+// an unbraced body.
+func TestRewriteFinalExpressionReview4Cases(t *testing.T) {
+	transform := []struct{ name, src, want string }{
+		{"regex statement then expression", "/a/\n42", "/a/\n__mcpxFinal(await (42));"},
+		{"postfix assertion then expression", "const obj = { answer: 42 };\nobj.answer!\n42", "const obj = { answer: 42 };\nobj.answer!\n__mcpxFinal(await (42));"},
+		{"regex final statement", "foo();\n/a/.test('a')", "foo();\n__mcpxFinal(await (/a/.test('a')));"},
+	}
+	for _, tc := range transform {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := rewriteFinalExpression(tc.src)
+			if !ok || got != tc.want {
+				t.Errorf("got %q, %v\nwant %q", got, ok, tc.want)
+			}
+		})
+	}
+	untouched := []string{
+		"let x; if (true) x = {} || 42",
+		"if (true) /a;b/.test('a;b')",
+	}
+	for _, src := range untouched {
+		if got, ok := rewriteFinalExpression(src); ok || got != src {
+			t.Errorf("rewriteFinalExpression(%q) = %q, %v; want untouched", src, got, ok)
+		}
+	}
+}

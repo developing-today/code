@@ -155,6 +155,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 	head := ""     // first word of the current statement
 	stmtTokens := 0
 	condGroup := false // the statement so far is a control head + its condition group
+	lastOperand := false // the last significant token can end an expression
 	prevOperand := false
 
 	i := 0
@@ -175,6 +176,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 		}
 		start, lastEnd, head = -1, -1, ""
 		stmtTokens, condGroup = 0, false
+		lastOperand = false
 		// A completed statement resets the operand context: a /
 		// that opens the next statement is a regex, not division.
 		prevOperand = false
@@ -230,6 +232,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 				mode = code
 				lastEnd = i + 1
 				prevOperand = true
+				lastOperand = true
 				i++
 				continue
 			}
@@ -248,6 +251,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 				mode = code
 				lastEnd = i + 1
 				prevOperand = true
+				lastOperand = true
 				i++
 				continue
 			}
@@ -274,6 +278,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 				mode = code
 				lastEnd = i + 1
 				prevOperand = true
+				lastOperand = true
 				i++
 				continue
 			}
@@ -330,6 +335,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			continue
 		case c == '(':
 			markToken(i, i+1)
+			lastOperand = false
 			if paren == 0 && stmtTokens == 2 && controlHeads[head] {
 				condGroup = true
 			}
@@ -341,10 +347,19 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			markToken(i, i+1)
 			paren--
 			prevOperand = true
+			lastOperand = true
+			if paren == 0 && condGroup {
+				// The condition group of a control head is
+				// closed; what follows is a body in statement
+				// position, so a / there opens a regex, not a
+				// division.
+				prevOperand = false
+			}
 			i++
 			continue
 		case c == '[':
 			markToken(i, i+1)
+			lastOperand = false
 			bracket++
 			prevOperand = false
 			i++
@@ -353,16 +368,32 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			markToken(i, i+1)
 			bracket--
 			prevOperand = true
+			lastOperand = true
 			i++
 			continue
 		case c == '{':
+			// Captured before markToken: a { that is the body of
+			// a control head is its block, and the body token
+			// itself clears condGroup.
+			wasCond := condGroup
 			markToken(i, i+1)
-			braces = append(braces, '{')
+			lastOperand = false
+			if prevOperand || wasCond {
+				// After a value or a condition group, { opens a
+				// block.
+				braces = append(braces, '{')
+			} else {
+				// In expression position (after =, (, ,, :, an
+				// operator, a keyword), { opens an object
+				// literal: its close is not a statement boundary.
+				braces = append(braces, 'o')
+			}
 			prevOperand = false
 			i++
 			continue
 		case c == '}':
 			markToken(i, i+1)
+			lastOperand = true
 			if len(braces) > 0 && braces[len(braces)-1] == '$' {
 				braces = braces[:len(braces)-1]
 				templates--
@@ -370,12 +401,14 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 				i++
 				continue
 			}
+			kind := byte('{')
 			if len(braces) > 0 {
+				kind = braces[len(braces)-1]
 				braces = braces[:len(braces)-1]
 			}
 			prevOperand = true
 			i++
-			if depth0() && blockHeads[head] {
+			if kind == '{' && depth0() && blockHeads[head] {
 				boundary()
 			}
 			continue
@@ -389,7 +422,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			// can end one and what follows plainly does not continue
 			// it (a chained call, a binary operator, an else/catch
 			// belonging to the statement above).
-			if canEndAtNewline(src, lastEnd) && !condGroup && !operandKeywords[lastWordOf(src, lastEnd)] && !continuesOnNextLine(src, i+1) {
+			if (canEndAtNewline(src, lastEnd) || lastOperand) && !condGroup && !operandKeywords[lastWordOf(src, lastEnd)] && !continuesOnNextLine(src, i+1) {
 				boundary()
 			}
 			i++
@@ -426,6 +459,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 				hasDefault = true
 			}
 			prevOperand = true
+			lastOperand = true
 			switch word {
 			case "return", "typeof", "case", "delete", "void", "in", "of",
 				"instanceof", "await", "yield", "new", "else", "do":
@@ -436,6 +470,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 		}
 		markToken(i, i+1)
 		prevOperand = false
+		lastOperand = false
 		i++
 	}
 	if mode != code && mode != lineComment {
@@ -471,6 +506,15 @@ func canEndAtNewline(src string, end int) bool {
 	// though its last character is an operator).
 	if end >= 2 && (src[end-2:end] == "++" || src[end-2:end] == "--") {
 		return true
+	}
+	// A TypeScript postfix assertion: obj.answer! is a complete
+	// expression even though its last character is an operator.
+	if src[end-1] == '!' && end >= 2 {
+		c := src[end-2]
+		if c == '_' || c == '$' || c == ')' || c == ']' ||
+			('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9') {
+			return true
+		}
 	}
 	switch src[end-1] {
 	case ';', '{', '}', '(', ')', '[', ']':
