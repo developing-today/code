@@ -902,6 +902,289 @@ mod tests {
         assert_eq!(state.head_hash, enrolled.hash);
     }
 
+
+    /// One step the generated-history property test can append. Indices
+    /// pick from a small key universe so collisions (re-enrol, double
+    /// revoke, rotate-to-self, unbind-before-bind) actually occur; the
+    /// model oracle below decides what the fold must do with each.
+    #[derive(Clone, Debug)]
+    enum HistoryOp {
+        Enroll(u8),
+        Revoke(u8),
+        Rotate(u8),
+        Bind(u8),
+        Unbind(u8),
+        Checkpoint { max_lamport: bool },
+        UnauthorizedEntry,
+        FormerAdminEntry,
+        CompetingGenesis(u8),
+    }
+
+    fn history_op() -> impl Strategy<Value = HistoryOp> {
+        prop_oneof![
+            3 => (2..=6u8).prop_map(HistoryOp::Enroll),
+            2 => (2..=6u8).prop_map(HistoryOp::Revoke),
+            2 => (2..=6u8).prop_map(HistoryOp::Rotate),
+            2 => (0..=2u8).prop_map(HistoryOp::Bind),
+            1 => (0..=2u8).prop_map(HistoryOp::Unbind),
+            1 => any::<bool>().prop_map(|max_lamport| HistoryOp::Checkpoint { max_lamport }),
+            1 => Just(HistoryOp::UnauthorizedEntry),
+            1 => Just(HistoryOp::FormerAdminEntry),
+            1 => (7..=9u8).prop_map(HistoryOp::CompetingGenesis),
+        ]
+    }
+
+    /// Spec-level replay of a generated history: the oracle the fold is
+    /// checked against. Valid operations extend the chain head and are
+    /// applied to the model state exactly as apply_entry applies them;
+    /// records that can never fold (unauthorised author, failed
+    /// precondition, checkpoint, competing genesis) are emitted as noise
+    /// extending the current head and change nothing.
+    struct HistoryModel {
+        admin_seed: u8,
+        former_admin_seed: Option<u8>,
+        lamport: u64,
+        head: KeysetRecord,
+        state: KeysetState,
+        records: Vec<KeysetRecord>,
+    }
+
+    impl HistoryModel {
+        fn new() -> Self {
+            let first = genesis();
+            let state = KeysetState {
+                identity_id: public(1),
+                admin_keys: BTreeMap::from([(public(1), AdminKeyState::Active)]),
+                devices: BTreeMap::from([(
+                    public(1),
+                    DeviceState {
+                        label: "first device".to_owned(),
+                        enrolled_at: 1,
+                        revoked: false,
+                    },
+                )]),
+                idp_bindings: BTreeMap::new(),
+                guardian_set: None,
+                head_hash: first.hash.clone(),
+                records_folded: 1,
+            };
+            Self {
+                admin_seed: 1,
+                former_admin_seed: None,
+                lamport: 1,
+                head: first.clone(),
+                state,
+                records: vec![first],
+            }
+        }
+
+        fn next_lamport(&mut self) -> u64 {
+            self.lamport += 1;
+            self.lamport
+        }
+
+        fn emit(&mut self, record: KeysetRecord, advance: bool) {
+            if advance {
+                self.state.head_hash = record.hash.clone();
+                self.state.records_folded += 1;
+                self.head = record.clone();
+            }
+            self.records.push(record);
+        }
+
+        fn apply(&mut self, op: &HistoryOp) {
+            let admin = key(self.admin_seed);
+            match op {
+                HistoryOp::Enroll(seed) => {
+                    let lamport = self.next_lamport();
+                    let record = KeysetRecord::sign(
+                        &admin,
+                        lamport,
+                        self.head.hash.clone(),
+                        KeysetEntry::DeviceEnrolled {
+                            device_key: public(*seed),
+                            label: format!("device-{seed}"),
+                        },
+                        Some(&key(*seed)),
+                    )
+                    .unwrap();
+                    self.state.devices.insert(
+                        public(*seed),
+                        DeviceState {
+                            label: format!("device-{seed}"),
+                            enrolled_at: lamport,
+                            revoked: false,
+                        },
+                    );
+                    self.emit(record, true);
+                }
+                HistoryOp::Revoke(seed) => {
+                    let lamport = self.next_lamport();
+                    let record = KeysetRecord::sign(
+                        &admin,
+                        lamport,
+                        self.head.hash.clone(),
+                        KeysetEntry::DeviceRevoked {
+                            device_key: public(*seed),
+                            reason: "test".to_owned(),
+                        },
+                        None,
+                    )
+                    .unwrap();
+                    let valid = self
+                        .state
+                        .devices
+                        .get(&public(*seed))
+                        .is_some_and(|device| !device.revoked);
+                    if valid {
+                        self.state
+                            .devices
+                            .get_mut(&public(*seed))
+                            .unwrap()
+                            .revoked = true;
+                    }
+                    self.emit(record, valid);
+                }
+                HistoryOp::Rotate(seed) => {
+                    let lamport = self.next_lamport();
+                    let record = KeysetRecord::sign(
+                        &admin,
+                        lamport,
+                        self.head.hash.clone(),
+                        KeysetEntry::AdminKeyRotated {
+                            new_admin_key: public(*seed),
+                        },
+                        Some(&key(*seed)),
+                    )
+                    .unwrap();
+                    if *seed == self.admin_seed {
+                        self.emit(record, false);
+                    } else {
+                        self.state
+                            .admin_keys
+                            .insert(public(self.admin_seed), AdminKeyState::Rotated);
+                        self.state
+                            .admin_keys
+                            .insert(public(*seed), AdminKeyState::Active);
+                        self.former_admin_seed = Some(self.admin_seed);
+                        self.admin_seed = *seed;
+                        self.emit(record, true);
+                    }
+                }
+                HistoryOp::Bind(id) => {
+                    let lamport = self.next_lamport();
+                    let binding_id = format!("binding-{id}");
+                    let record = KeysetRecord::sign(
+                        &admin,
+                        lamport,
+                        self.head.hash.clone(),
+                        KeysetEntry::IdpBindingBound {
+                            binding_id: binding_id.clone(),
+                        },
+                        None,
+                    )
+                    .unwrap();
+                    self.state
+                        .idp_bindings
+                        .insert(binding_id, BindingState::Bound);
+                    self.emit(record, true);
+                }
+                HistoryOp::Unbind(id) => {
+                    let lamport = self.next_lamport();
+                    let binding_id = format!("binding-{id}");
+                    let record = KeysetRecord::sign(
+                        &admin,
+                        lamport,
+                        self.head.hash.clone(),
+                        KeysetEntry::IdpBindingRevoked {
+                            binding_id: binding_id.clone(),
+                        },
+                        None,
+                    )
+                    .unwrap();
+                    let valid =
+                        self.state.idp_bindings.get(&binding_id) == Some(&BindingState::Bound);
+                    if valid {
+                        self.state
+                            .idp_bindings
+                            .insert(binding_id, BindingState::Revoked);
+                    }
+                    self.emit(record, valid);
+                }
+                HistoryOp::Checkpoint { max_lamport } => {
+                    let lamport = if *max_lamport {
+                        u64::MAX
+                    } else {
+                        self.next_lamport()
+                    };
+                    let record = KeysetRecord::sign(
+                        &key(1),
+                        lamport,
+                        self.head.hash.clone(),
+                        KeysetEntry::Checkpoint {
+                            state_hash: self.state.state_hash().unwrap(),
+                            record_count: self.state.records_folded,
+                        },
+                        None,
+                    )
+                    .unwrap();
+                    self.emit(record, false);
+                }
+                HistoryOp::UnauthorizedEntry => {
+                    let lamport = self.next_lamport();
+                    let record = KeysetRecord::sign(
+                        &key(42),
+                        lamport,
+                        self.head.hash.clone(),
+                        KeysetEntry::DeviceEnrolled {
+                            device_key: public(43),
+                            label: "rogue".to_owned(),
+                        },
+                        Some(&key(43)),
+                    )
+                    .unwrap();
+                    self.emit(record, false);
+                }
+                HistoryOp::FormerAdminEntry => {
+                    if let Some(former) = self.former_admin_seed {
+                        if self.state.admin_keys.get(&public(former))
+                            != Some(&AdminKeyState::Active)
+                        {
+                            let lamport = self.next_lamport();
+                            let record = KeysetRecord::sign(
+                                &key(former),
+                                lamport,
+                                self.head.hash.clone(),
+                                KeysetEntry::IdpBindingBound {
+                                    binding_id: "former-admin".to_owned(),
+                                },
+                                None,
+                            )
+                            .unwrap();
+                            self.emit(record, false);
+                        }
+                    }
+                }
+                HistoryOp::CompetingGenesis(seed) => {
+                    let lamport = self.next_lamport();
+                    let record = KeysetRecord::sign(
+                        &key(*seed),
+                        lamport,
+                        "",
+                        KeysetEntry::Genesis {
+                            admin_key: public(*seed),
+                            device_key: public(*seed),
+                            label: "competing".to_owned(),
+                        },
+                        None,
+                    )
+                    .unwrap();
+                    self.emit(record, false);
+                }
+            }
+        }
+    }
+
     proptest! {
         #[test]
         fn deterministic_fork_resolution_is_invariant_under_insertion_order(reverse in any::<bool>()) {
@@ -917,6 +1200,46 @@ mod tests {
             let winner = if left.key() < right.key() { "left" } else { "right" };
             prop_assert!(state.idp_bindings.contains_key(winner));
             prop_assert_eq!(state.idp_bindings.len(), 1);
+        }
+    }
+
+    proptest! {
+        // 64 cases keeps the generated-history oracle near a minute of
+        // test time; each case still replays up to 40 operations.
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn generated_histories_fold_to_the_model_state(
+            ops in prop::collection::vec(history_op(), 0..40),
+        ) {
+            let mut model = HistoryModel::new();
+            for op in &ops {
+                model.apply(op);
+            }
+            let genesis_hash = model.records[0].hash.clone();
+
+            let mut forward = Log::default();
+            for record in &model.records {
+                prop_assert!(forward.insert(record.clone()).is_ok());
+            }
+            let mut reverse = Log::default();
+            for record in model.records.iter().rev() {
+                prop_assert!(reverse.insert(record.clone()).is_ok());
+            }
+            let split = model.records.len() / 2;
+            let mut left = Log::default();
+            let mut right = Log::default();
+            for record in &model.records[..split] {
+                left.insert(record.clone()).unwrap();
+            }
+            for record in &model.records[split..] {
+                right.insert(record.clone()).unwrap();
+            }
+            let merged = merge(&left, &right);
+
+            let expected = model.state.clone();
+            for log in [&forward, &reverse, &merged] {
+                prop_assert_eq!(fold(log, &genesis_hash).unwrap(), expected.clone());
+            }
         }
     }
 }
