@@ -79,6 +79,7 @@ import {
   listDecisionSets,
   listOpenDecisionSets,
   raiseDecisionSet,
+  refreshDecisionSet,
   recordResolutions,
   requestInfoOpenQuestions,
   upsertDecisionDrafts,
@@ -174,6 +175,7 @@ import {
   renderToday,
   renderTodayBody,
   renderTodayShell,
+  questionsSectionHtml,
   type CommentFormOpts,
   eventTableHtml,
 } from "./render.ts";
@@ -711,6 +713,31 @@ function renderAnswerForbidden(): string {
 /** The token-carrying decisions-page URL for a raised set. */
 function decisionsPageUrl(set: DecisionSet): string {
   return `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
+}
+
+/**
+ * The live Questions section for Today / Needs-you (#9354): reads the
+ * decision-set store at request time, keeps sets with open questions,
+ * newest first. A store read failure renders the honest unavailable
+ * section (questionsSectionHtml(null, ...)), never a confident zero.
+ * (listDecisionSets itself reads an absent/corrupt store as empty,
+ * following the store's existing contract.)
+ */
+async function questionsHtml(): Promise<string> {
+  try {
+    const sets = await listDecisionSets(cfg.decisionsFile);
+    const byId = new Map(sets.map((s) => [s.setId, s]));
+    const summaries = sets
+      .map((s) => decisionSetSummary(s))
+      .filter((s) => s.openQuestions > 0)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return questionsSectionHtml(summaries, (s) => {
+      const set = byId.get(s.setId);
+      return set ? decisionsPageUrl(set) : `/decisions/${encodeURIComponent(s.setId)}`;
+    });
+  } catch {
+    return questionsSectionHtml(null, () => "/decisions");
+  }
 }
 
 /** Append decision-set events (#9335 v2): best-effort — an event-log
@@ -2388,14 +2415,24 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/today") {
     if (url.searchParams.get("full") !== "1") {
       const signals = await todaySignals();
-      return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
+      // #9354: the Questions section lives in the SHELL, outside the
+      // #today-main fragment div (see the /frag/today note below).
+      return html(
+        renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable, await questionsHtml()),
+      );
     }
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
     return html(
-      renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale),
+      renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale, await questionsHtml()),
     );
   }
   if (path === "/frag/today") {
+    // #9354: questionsHtml is deliberately NOT passed here — the
+    // /today shell already renders the Questions section outside the
+    // #today-main fragment div, so a fragment refresh carrying it too
+    // would show the section twice on the live page. The shell's copy
+    // is from page load, which its footer states. (?full=1 never uses
+    // the shell, so it passes questionsHtml via renderToday instead.)
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
     const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
@@ -2570,7 +2607,9 @@ async function handler(req: Request): Promise<Response> {
           .filter(Boolean)
       : [];
     if (url.searchParams.get("full") !== "1") {
-      return html(renderAttentionShell(prov(), provDetail(), refsParam ?? undefined));
+      // #9354: Questions section in the shell, below the sessions
+      // fragment; the /frag/attention/* fragments do not carry it.
+      return html(renderAttentionShell(prov(), provDetail(), refsParam ?? undefined, await questionsHtml()));
     }
     const rendered = await attentionRender();
     const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
@@ -2584,6 +2623,7 @@ async function handler(req: Request): Promise<Response> {
         rendered.act,
         rendered.briefs,
         rendered.census,
+        await questionsHtml(),
       ),
     );
   }
@@ -3311,8 +3351,36 @@ async function handler(req: Request): Promise<Response> {
     const v = validateDecisionSet(candidate);
     if (!v.ok) return json({ error: v.error }, 400);
     const source = typeof ext.source === "string" && ext.source ? ext.source : "decisions-ledger";
+    // #9354 refresh mode: a sibling `refresh: true` opts a standing
+    // (ledger-mirror) set into refreshDecisionSet — contents are
+    // replaced, token/createdAt/source and resolutions-by-qid are
+    // preserved. No push and no set.created event on a refresh: the
+    // set is not new, and a standing set refreshed hourly must not
+    // push hourly. Refresh of a not-yet-existing set is a normal
+    // create (201, created: true, push + set.created as usual).
+    const refresh = ext.refresh === true;
     const before = await getDecisionSet(cfg.decisionsFile, v.value.setId).catch(() => null);
     try {
+      if (refresh && before) {
+        const set = await refreshDecisionSet(cfg.decisionsFile, v.value, source);
+        // The event log accepts a set-level "edit" event without a
+        // questionRef (validateDecisionEventInput / the type enum
+        // include "edit"), so a refresh is recorded that way.
+        await logDecisionEvents([
+          {
+            setId: set.setId,
+            type: "edit",
+            payload: {
+              via: "api/decision-sets",
+              refresh: true,
+              items: set.items.length,
+              questions: set.items.reduce((n, i) => n + i.questions.length, 0),
+            },
+          },
+        ]);
+        const pageUrl = decisionsPageUrl(set);
+        return json({ setId: set.setId, pageUrl, url: pageUrl, created: false, refreshed: true }, 200);
+      }
       const set = await raiseDecisionSet(cfg.decisionsFile, v.value, source);
       if (!before) {
         await logDecisionEvents([

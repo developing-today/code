@@ -131,6 +131,7 @@ import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
 import type { SearchResult } from "./search-view.ts";
+import type { DecisionSetSummary } from "./decisions.ts";
 import { dnsAnchor } from "./search-view.ts";
 
 export function esc(s: unknown): string {
@@ -3141,6 +3142,54 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
 })();
 </script>`;
 
+/**
+ * The live "Questions" section (#9354): the open decision sets from
+ * the decision-set store, newest first, each linking to its own
+ * token page via `pageUrlFor`. Pure HTML from already-computed
+ * summaries — no I/O here, so tests render it directly.
+ * summaries === null means the store could not be read: the section
+ * says "unavailable" rather than rendering a confident zero (the
+ * needsDrewCensusHtml pattern). summaries === undefined means the
+ * caller predates the section and it is omitted entirely.
+ * Fully-resolved sets are excluded here as well as by callers, so
+ * the counts can never include a settled set.
+ */
+const QUESTIONS_STAMP = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+export function questionsSectionHtml(
+  summaries: DecisionSetSummary[] | null | undefined,
+  pageUrlFor: (summary: DecisionSetSummary) => string,
+): string {
+  if (summaries === undefined) return "";
+  const allSetsLink = `<p><a href="/decisions">All decision sets</a></p>`;
+  const footer = `<p class="muted">Live from the decision-set store at page load.</p>`;
+  if (summaries === null) {
+    return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">Unavailable — the decision-set store could not be read, so open questions cannot be reported here.</p>${allSetsLink}${footer}</section>`;
+  }
+  const open = summaries
+    .filter((s) => s.openQuestions > 0)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (!open.length) {
+    return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">No open questions right now — the stack is clear.</p>${allSetsLink}${footer}</section>`;
+  }
+  const totalOpen = open.reduce((n, s) => n + s.openQuestions, 0);
+  const rows = open
+    .map((s) => {
+      const stamp = Number.isFinite(Date.parse(s.createdAt)) ? QUESTIONS_STAMP.format(new Date(s.createdAt)) : s.createdAt;
+      return `<div class="card"><a href="${esc(pageUrlFor(s))}"><strong>${esc(s.title)}</strong></a><br><span class="muted">${s.openQuestions} open question${s.openQuestions === 1 ? "" : "s"} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · Raised ${esc(stamp)}</span></div>`;
+    })
+    .join("");
+  return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">${open.length} open set${open.length === 1 ? "" : "s"} · ${totalOpen} open question${totalOpen === 1 ? "" : "s"}</p>${rows}${allSetsLink}${footer}</section>`;
+}
+
 export function renderAttention(
   view: AttentionView,
   coverage: SourceCoverage[],
@@ -3150,12 +3199,13 @@ export function renderAttention(
   act?: AttentionAct,
   briefs?: Map<RefKey, ItemBrief>,
   census?: NeedsDrewCensus | null,
+  questionsHtml = "",
 ): string {
   const sections = attentionSections(view, coverage, counts, act, briefs, census);
   return layout(
     "Needs you",
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
-${sections.header}${sections.queues}${sections.sessions}`,
+${sections.header}${sections.queues}${sections.sessions}${questionsHtml}`,
     provenance,
     "/attention",
     act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT : "",
@@ -3428,13 +3478,13 @@ export function attentionFragment(section: "header" | "queues" | "sessions", inn
  * immediately; the three heavy sections stream in as fragments.
  * Without JS, a meta refresh lands on the full server render.
  */
-export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail, refs?: string): string {
+export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail, refs?: string, questionsHtml = ""): string {
   const refsQuery = refs ? `refs=${encodeURIComponent(refs)}` : "";
   const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
   const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>
 ${attentionFragment("header", skel("queue status"), refsQuery)}
 ${attentionFragment("queues", skel("the queues"), refsQuery)}
-${attentionFragment("sessions", skel("sessions"), refsQuery)}`;
+${attentionFragment("sessions", skel("sessions"), refsQuery)}${questionsHtml}`;
   return layout(
     "Needs you",
     body,
@@ -3534,6 +3584,7 @@ export function renderTodayBody(
   quotaUnavailable = false,
   queue?: QueueView,
   queueStale = false,
+  questionsHtml = "",
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
   const quotaActions = buildQuotaActions(quota, AA_PLAN_FACTS);
@@ -3636,7 +3687,7 @@ export function renderTodayBody(
   return `${todayHealthStrip(health, quota, quotaUnavailable)}${provenanceLine}${alerts.join("")}
 <h2>Top objectives</h2>${objectives}
 <h2>Project momentum</h2>${momentum}
-${nextUp}${actions}${coverageHtml(coverage)}`;
+${nextUp}${questionsHtml}${actions}${coverageHtml(coverage)}`;
 }
 
 /** The today page (#1444): full server render. */
@@ -3651,10 +3702,11 @@ export function renderToday(
   quotaUnavailable = false,
   queue?: QueueView,
   queueStale = false,
+  questionsHtml = "",
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage, health, quotaUnavailable, queue, queueStale)}`,
+    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage, health, quotaUnavailable, queue, queueStale, questionsHtml)}`,
     provenance,
     "/today",
     "",
@@ -3669,10 +3721,11 @@ export function renderTodayShell(
   health: HealthView | null,
   quota: QuotaView,
   quotaUnavailable = false,
+  questionsHtml = "",
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>`,
+    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>${questionsHtml}`,
     provenance,
     "/today",
     "",
