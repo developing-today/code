@@ -417,6 +417,10 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 			_, _ = fmt.Fprint(os.Stdout, res.Stdout)
 		}
 		a.reportArtifacts(res)
+		// The remote text path renders hooks too: this renderer is
+		// shared by every remote caller, and a prompt hook's advice
+		// lives only in its retained frame (Codex review, PR #9021).
+		a.reportHooks(res)
 	}
 	if res.Error != "" && res.ExitCode == 0 {
 		return errors.New(res.Error)
