@@ -28,15 +28,18 @@
 //      a quota source. Fail-soft: a keeper error never fails the tick.
 //      (Its credential-store accessors live in the OpenChamber lib
 //      the store was born in — store plumbing, not a reading path.)
-//   1b. The Meta session keeper (src/meta-renewal.ts, same rule):
-//      Meta's quota functions ride the laptop Helium profile's
-//      dev.meta.ai session — no stored credential exists to
-//      maintain — so the keeper watches the meta-quota-export probe
-//      document each tick, re-arms the exporter units if they were
-//      renamed away (the 2026-11-01 failure), takes a fresh probe,
-//      and records the verdict in meta-renewal.json with an alert
-//      from the first bad tick when the session is truly logged
-//      out. Fail-soft like the OpenDesign keeper.
+//   1b. The Meta session keeper (src/meta-renewal.ts, same rule,
+//      Drew's Meta answer meta-auth-keeper-6120): the provider owns
+//      the credential — the keeper captures the dev.meta.ai session
+//      from the laptop Helium profile over CDP, validates it against
+//      the portal API before storing it in the ONE provider-owned
+//      location (meta-credential.json beside the state file), and
+//      renews it on cadence and on auth failure. A renewal failure
+//      records the alert in meta-renewal.json from the first bad
+//      tick AND dispatches a Web Push. The meta-quota-export probe
+//      document is read only for last-good continuity; the keeper
+//      no longer arms or manages the exporter units. Fail-soft like
+//      the OpenDesign keeper.
 //   2. The subcommand, twice: the configured listing
 //      (`opencode quota --json`) and the explicit ask
 //      (`opencode quota --json meta command-code`) — providers whose
@@ -128,6 +131,8 @@ import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/op
 import { ensureLibDependencies } from "../src/lib-deps.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
+import { classEnabled, getAlertsStore } from "../src/alerts.ts";
+import { sendPush, type PushTarget } from "../src/push.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
@@ -347,22 +352,59 @@ async function runOpenDesignRenewal(tickAt: string): Promise<void> {
 
 /**
  * The Meta session keeper run (src/meta-renewal.ts, Drew's
- * 2026-11-05 auto-renewal rule). Meta's quota functions ride the
- * laptop Helium profile's dev.meta.ai session — no stored credential
- * exists for a keeper to maintain, so this keeper watches the
- * meta-quota-export probe document instead: fresh + ok = session
- * valid; expired or silent = re-arm the exporter units if they were
- * renamed away, take a fresh probe, and if the session is truly
- * logged out raise an alert in meta-renewal.json from the first bad
- * tick (re-login is a human step — Meta emails a code). Fail-soft,
- * same contract as the OpenDesign keeper.
+ * 2026-11-05 auto-renewal rule + his 2026-11-13 Meta answer,
+ * meta-auth-keeper-6120). The keeper owns the Meta credential: CDP
+ * capture from the laptop Helium profile, validate-before-store into
+ * meta-credential.json, renewal on cadence and on auth failure. On a
+ * new alert episode it also dispatches a push (notifyMetaAuthPush).
+ * Fail-soft, same contract as the OpenDesign keeper.
  */
+
+/**
+ * The push half of Drew's Meta auth answer (#6120): a NEW meta-renewal
+ * alert episode dispatches a Web Push (class "incident", the
+ * breakthrough class) to every stored subscription, with the same
+ * sends-ledger bookkeeping the digest delivery uses. No alerts store
+ * (Supabase unavailable) = no delivery surface; the state-file alert
+ * still stands and the outcome string records the skip.
+ */
+async function notifyMetaAuthPush(notice: { title: string; body: string }): Promise<string> {
+  const store = await getAlertsStore();
+  if (!store) return "no-store";
+  const subs = await store.listSubscriptions();
+  const payload = {
+    class: "incident",
+    objectRef: "provider-auth/meta",
+    url: "/quota",
+    title: notice.title,
+    body: notice.body,
+  };
+  let sent = 0;
+  for (const sub of subs) {
+    if (!classEnabled(sub, "incident")) continue;
+    const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
+    const outcome = await sendPush(target, payload);
+    if (outcome.ok) {
+      sent += 1;
+      await store.logSend({ class: "incident", objectRef: payload.objectRef, outcome: "sent" });
+      await store.noteSubscriptionAlive(sub.endpoint);
+    } else if (outcome.gone) {
+      await store.logSend({ class: "incident", objectRef: payload.objectRef, outcome: "gone" });
+      await store.noteSubscriptionGone(sub.endpoint);
+    } else {
+      await store.logSend({ class: "incident", objectRef: payload.objectRef, outcome: "error" });
+    }
+  }
+  return `sent:${sent}/${subs.length}`;
+}
 async function runMetaRenewal(tickAt: string): Promise<void> {
   if (process.env.META_RENEWAL_DISABLED === "1") return;
   try {
     const state = await renewMetaSession({
       statePath: process.env.META_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "meta-renewal.json"),
       ...(process.env.META_EXPORTER_LATEST_PATH ? { latestPath: process.env.META_EXPORTER_LATEST_PATH } : {}),
+      ...(process.env.META_CREDENTIAL_PATH ? { credentialPath: process.env.META_CREDENTIAL_PATH } : {}),
+      notifyPush: notifyMetaAuthPush,
       now: () => new Date(tickAt),
       log: (line) => console.log(`quota-gatherer: ${line}`),
     });

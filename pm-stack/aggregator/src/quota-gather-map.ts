@@ -463,8 +463,8 @@ export const META_SESSION_LAPSE_REMEDY =
 
 /**
  * A configured Meta result that failed because the dev.meta.ai portal
- * session lapsed (#8294). The Meta read rides a live browser session
- * on the hub (there is no stored credential — see meta-renewal.ts);
+ * session lapsed (#8294). The Meta read rides the provider-owned
+ * credential the Meta keeper captures and renews (see meta-renewal.ts);
  * when that session expires, the provider leg fails session-class
  * ("unauthorized", or the exporter's "session-expired" shape) rather
  * than with a provider error. A lapsed session has a known remedy
