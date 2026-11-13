@@ -43,6 +43,7 @@ use tokio::sync::Mutex;
 use crate::event_store::sync::{ALPN, Outcome};
 use crate::local_events::LocalEvents;
 use crate::pull_policy::{PullGate, PullPolicy};
+use crate::residency_sync::SyncResidency;
 use crate::world_access::WorldAccess;
 
 /// How long one sync session may run before it is abandoned. Both sides use it, so a
@@ -103,6 +104,9 @@ pub fn open_gate() -> PullGate {
 pub struct EventSyncProtocol {
     events: Arc<Mutex<LocalEvents>>,
     gate: PullGate,
+    /// Residency gate (#5529 step 3): when present, a session is
+    /// refused before the range flight unless the gate admits it.
+    residency: Option<Arc<SyncResidency>>,
 }
 
 impl std::fmt::Debug for EventSyncProtocol {
@@ -120,6 +124,7 @@ impl EventSyncProtocol {
         Self {
             events,
             gate: open_gate(),
+            residency: None,
         }
     }
 
@@ -127,13 +132,52 @@ impl EventSyncProtocol {
     /// applied to accepted sessions as well as dialled ones (#5119).
     #[must_use]
     pub fn with_gate(events: Arc<Mutex<LocalEvents>>, gate: PullGate) -> Self {
-        Self { events, gate }
+        Self {
+            events,
+            gate,
+            residency: None,
+        }
+    }
+
+    /// Serves `events` under `gate`, with the residency gate of
+    /// #5529 step 3 applied before every accepted session: a scoped
+    /// session whose store/transport evidence is missing, expired,
+    /// revoked, or out of policy is refused before any event bytes
+    /// are ingested, whatever the pull gate or the peer's join
+    /// capability would have said.
+    #[must_use]
+    pub fn with_residency(
+        events: Arc<Mutex<LocalEvents>>,
+        gate: PullGate,
+        residency: Arc<SyncResidency>,
+    ) -> Self {
+        Self {
+            events,
+            gate,
+            residency: Some(residency),
+        }
     }
 }
 
 impl ProtocolHandler for EventSyncProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let peer = conn.remote_id();
+        // Residency (#5529 step 3): refuse before the range flight,
+        // so a denied session ingests nothing. The check runs before
+        // the store lock is taken; a refusal holds nothing.
+        if let Some(residency) = &self.residency {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let decision = residency.admit_session(now);
+            if !decision.is_allow() {
+                tracing::debug!(
+                    "event sync: session with {peer} refused by residency gate: {decision:?}"
+                );
+                return Ok(());
+            }
+        }
         // The lock is held for the whole session: the store takes `&mut`, and the web
         // layer's saves queue behind a session the way they queue behind each other.
         // Sessions are bounded by SESSION_DEADLINE, so the wait is bounded too.
@@ -185,6 +229,36 @@ pub async fn sync_with_peer(
     events: &Arc<Mutex<LocalEvents>>,
     gate: &PullGate,
 ) -> Result<Outcome> {
+    sync_with_peer_checked(endpoint, peer, events, gate, None).await
+}
+
+/// Dials `peer` and runs one range-sync session, applying the
+/// residency gate of #5529 step 3 first when one is configured: the
+/// send-side preflight runs before the connection is opened, so a
+/// denial sends zero protected events (the connection is never made).
+///
+/// # Errors
+///
+/// Returns an error if the residency gate denies the session, the
+/// peer cannot be reached, breaks the protocol, or the session does
+/// not finish within [`SESSION_DEADLINE`].
+pub async fn sync_with_peer_checked(
+    endpoint: &Endpoint,
+    peer: impl Into<EndpointAddr>,
+    events: &Arc<Mutex<LocalEvents>>,
+    gate: &PullGate,
+    residency: Option<&SyncResidency>,
+) -> Result<Outcome> {
+    if let Some(residency) = residency {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let decision = residency.admit_session(now);
+        if !decision.is_allow() {
+            anyhow::bail!("residency gate refused sync session: {decision:?}");
+        }
+    }
     let conn = id_core::connectivity::connect(endpoint, peer, ALPN).await?;
     let outcome = {
         let mut events = events.lock().await;
