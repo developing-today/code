@@ -43,7 +43,11 @@ async function makeStores() {
 function runInstaller(home, args) {
   return spawnSync(process.execPath, [installer, ...args], {
     encoding: "utf8",
-    env: { ...process.env, HOME: home },
+    env: {
+      ...process.env,
+      HOME: home,
+      BUN_INSTALL: join(tmpdir(), "opencode-claimant-bun-install"),
+    },
   });
 }
 
