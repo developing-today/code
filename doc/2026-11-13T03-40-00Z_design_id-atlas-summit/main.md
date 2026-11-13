@@ -5,7 +5,9 @@ Program [#9106](https://github.com/developing-today/code/issues/9106), queue tas
 `opencode-route/summit`. Workhorse workers produce bounded inventories, evidence,
 drafts and verification; the summit owns cross-part decisions and final language.
 
-**Status: elaboration in progress, not acceptance.** This is additive to the
+**Status: integrated design review set, not final program acceptance.**
+[PR #9238](https://github.com/developing-today/code/pull/9238) is the concrete
+review deliverable. This is additive to the
 [intake proto](../2026-11-13T00-41-00Z_design_id-atlas-primitives-federation-namespaces/note.md),
 not a replacement for its 384 statements. A closed intake issue does not establish
 completion. The launching lane's parked queue state is a handoff, not a stop order;
@@ -15,14 +17,16 @@ stage records are committed here and posted as `agent-note` comments on #9106.
 
 | Record | Purpose | Acceptance state |
 |---|---|---|
-| [Baseline](baseline/v1-audit.md), [seams](baseline/seam-map.md) | Source-audited V1 and existing owner boundaries | Initial audit; exact hash/overlap reconciliation in progress |
-| `inventory/` | Deterministic statement extraction and expanded issue map | Worker verification in progress |
-| `inventory-live/` | Live issue homes, hierarchy, Part B candidate provenance | Worker verification in progress |
-| `crosscut/` | Extensibility, modes, sequencing: #9110–#9112 | Research/draft in progress |
-| `part-a-addressing/` | ID shapes and namespace families: #9113–#9124 | Research/draft in progress |
-| `part-a-graph/` | Triples, attributes, social substrate: #9125–#9132 | Research/draft in progress |
-| `part-b/` | Federation and trust: #9141–#9148 | Research/draft in progress |
-| `part-c/` | Storage economics, search, recommendations: #9133–#9140 | Research/draft in progress |
+| [Baseline](baseline/v1-audit.md), [seams](baseline/seam-map.md) | Source-audited V1 and existing owner boundaries | Source profiles pinned; external Atlas snapshot checked, producer-source gap retained |
+| [Inventory](inventory/audit.md) | Deterministic statement extraction and expanded issue map | Independent judge agrees: 384 IDs, zero unmapped homes; 11 regression cases pass |
+| [Live homes](inventory-live/semantic-audit.md) | Live issue homes, hierarchy, Part B candidate provenance | 52 issue snapshots; 42 program hierarchy edges; original-30 gap explicitly documented |
+| [Crosscut](crosscut/versioned-design.md), [sequence](crosscut/sequencing-draft.md) | Extensibility, modes, sequencing: #9110–#9112 | Frozen draft; verifier passes 39 slots and DAG/config/file oracles |
+| [Addressing](part-a-addressing/versioned-design.md) | ID shapes and namespace families: #9113–#9124 | Frozen 35-slice draft; readable URI reference passes 10,000 round trips |
+| [Graph](part-a-graph/versioned-design.md) | Triples, attributes, social substrate: #9125–#9132 | Frozen 16-slice draft; fresh worker review passed; toy evidence reproduced |
+| [Federation](part-b/versioned-design.md) | Federation and trust: #9141–#9148 | Returned judge findings in bounded repair; no final acceptance claimed |
+| [Atlas](part-c/versioned-design.md) | Storage economics, search, recommendations: #9133–#9140 | Returned judge findings in bounded repair; empirical runs remain explicit follow-ups |
+| [Answers](answers.md), [integration check](review/integration-check.md) | Summit rulings, conservative defaults, readiness boundaries | Concrete checkpoint; no repeated reviewer-wait loop |
+| [Delivery preparation](delivery/delivery-plan.md) | Individually workable issue drafts and native/queue readback gate | Offline-only until final validation; no issue publication is implied |
 
 Before final acceptance: a fresh judge independently verifies inventory coverage;
 research exists per component; versioned designs are reviewed and merged to main;
@@ -160,3 +164,11 @@ until the corresponding evidence-backed component selection is reviewed.
   candidates. The question and default are recorded on #9106 comment 6843258938:
   continue a transparently statement-derived replacement covering all S1 and the
   seven named categories; retain the provenance gap, never claim recovered text.
+- 2026-11-13: owner directed bounded integration rather than repeated waits. One
+  status pass consumed actual returned B/C reviews; nine shared contract checks
+  were recorded, exact slice gaps assigned, and the parked-task checkpoint verdict
+  was recorded on #9106 comment 6843573492 without a duplicate fallback claim.
+- 2026-11-13: final-language pass corrected A's mistaken B11 receipt dependency to
+  B19 (B11 is Diamond Types research), made normal URI byte slots human-readable,
+  and removed ambiguous self-ID/profile-prefix wording. URI checks now pass six
+  required vectors, 14 malformed cases and 10,000 deterministic round trips.

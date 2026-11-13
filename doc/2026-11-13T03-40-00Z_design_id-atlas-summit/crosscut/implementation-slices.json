@@ -1,0 +1,768 @@
+{
+  "schema_version": 1,
+  "source": "crosscut/versioned-design.md",
+  "slices": [
+    {
+      "id": "9110-01",
+      "parent": 9110,
+      "title": "Map existing ID stores to explicit port boundaries",
+      "kind": "design",
+      "tier": "crucial",
+      "versions": [
+        "V2"
+      ],
+      "statements": [
+        "S0.1",
+        "S0.2",
+        "S0.7",
+        "S0.14"
+      ],
+      "enables": "Document and type the existing blob, event, world, and sync store seams without merging their authority; identify consumer-owned files and compatibility adapters.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/ARCHITECTURE.md",
+          "status": "existing"
+        },
+        {
+          "path": "pkgs/id/tests/store_port_boundary.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [],
+      "after": [],
+      "tests": {
+        "file": "pkgs/id/tests/store_port_boundary.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test store_port_boundary",
+        "oracle": "A new architecture/contract test fails when an existing subsystem is assigned to a single generic store; oracle is the audited seam map plus compile-time port ownership checks.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9110-02",
+      "parent": 9110,
+      "title": "Define versioned capability-oriented port contracts",
+      "kind": "implementation",
+      "tier": "crucial",
+      "versions": [
+        "V2"
+      ],
+      "statements": [
+        "S0.2",
+        "S0.7",
+        "S0.13",
+        "S0.14",
+        "S0.15",
+        "S0.16"
+      ],
+      "enables": "Introduce separate store, blob, event-log, world, object-bucket, stream, and request-transport contract types with capability declarations, semantic guarantees, limits, and typed unsupported errors. This is the sole owner of common crate root exports/Cargo manifests and the shared test-vector schema; consumers add distinct module files and do not edit those roots.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/lib.rs",
+          "status": "existing"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/Cargo.toml",
+          "status": "existing"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/src/port.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/src/lib.rs",
+          "status": "existing"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/Cargo.toml",
+          "status": "existing"
+        },
+        {
+          "path": "pkgs/id/test-vectors/schema.json",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/port_contract.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/crates/id-events/src/lib.rs",
+          "status": "existing"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/src/lib.rs",
+          "status": "existing"
+        }
+      ],
+      "requires": [],
+      "after": [
+        "9110-01"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/port_contract.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test port_contract",
+        "oracle": "Capability mismatch currently reaches an adapter side effect; reference negotiation model requires rejection before side effects.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9110-03",
+      "parent": 9110,
+      "title": "Specify redb and Turso/SQLite capability profiles",
+      "kind": "implementation",
+      "tier": "crucial",
+      "versions": [
+        "V2"
+      ],
+      "statements": [
+        "S0.5",
+        "S0.6",
+        "S0.16"
+      ],
+      "enables": "Implement required port profiles for redb and Turso/libSQL; state transaction, durability, scan, retry, and timeout ambiguity semantics without claiming identical atomicity.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/port_adapter.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/store_adapter_profiles.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9082,
+          "condition": "consume owned contract only; do not wait for full sibling program"
+        }
+      ],
+      "after": [
+        "9110-02"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/store_adapter_profiles.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test store_adapter_profiles",
+        "oracle": "Shared state-machine fixture diverges or a remote timeout is reported as definite rollback; oracle is abstract store model plus injected-fault expected outcomes.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9110-04",
+      "parent": 9110,
+      "title": "Build shared store conformance fixtures and capability reports",
+      "kind": "test",
+      "tier": "crucial",
+      "versions": [
+        "V2"
+      ],
+      "statements": [
+        "S0.5",
+        "S0.6",
+        "S0.16"
+      ],
+      "enables": "Create portable conformance vectors and machine-readable required/optional capability reports; run the suite against redb and Turso/SQLite, with IndexedDB profile reserved for its verdict.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/tests/conformance.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/fixtures/port-v1.json",
+          "status": "new"
+        }
+      ],
+      "requires": [],
+      "after": [
+        "9110-02",
+        "9110-03"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/conformance.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test conformance",
+        "oracle": "An adapter can pass while violating abstract reference-state transitions; oracle is deterministic model plus emitted capability report.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9110-05",
+      "parent": 9110,
+      "title": "Add IndexedDB evaluation adapter and conformance verdict",
+      "kind": "research-and-test",
+      "tier": "recommended",
+      "versions": [
+        "V2",
+        "V4 if adopted"
+      ],
+      "statements": [
+        "S0.6",
+        "S0.7",
+        "S0.16"
+      ],
+      "enables": "Evaluate browser transaction lifetime, quota/eviction, upgrades, and restart behavior against the declared port contract; adopt, defer, or reject with measured gaps.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/browser/src/indexeddb_store.ts",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/browser/test/indexeddb_conformance.test.ts",
+          "status": "new"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9082,
+          "condition": "consume owned contract only; do not wait for full sibling program"
+        }
+      ],
+      "after": [
+        "9110-02",
+        "9110-04"
+      ],
+      "tests": {
+        "file": "pkgs/id/browser/test/indexeddb_conformance.test.ts",
+        "command": "pnpm --dir pkgs/id/browser test -- indexeddb_conformance.test.ts",
+        "oracle": "Browser adapter violates a required state-machine property or cannot meet declared guarantees; oracle is shared fixtures run in supported browsers and explicit capability matrix.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9110-06",
+      "parent": 9110,
+      "title": "Implement ordered lifecycle hooks and fixed acceptance gate",
+      "kind": "implementation",
+      "tier": "crucial",
+      "versions": [
+        "V2",
+        "V3"
+      ],
+      "statements": [
+        "S0.12",
+        "S0.17",
+        "S1.114",
+        "S1.115",
+        "S1.118"
+      ],
+      "enables": "Add typed prepare/commit/outbox lifecycle hooks with deterministic order, bounded context, reentrancy policy, typed errors, and an unbypassable signature/validation/replay/tenant authorization gate; local producers sign before admission. Enumerate all normal paths before claiming completeness; see 9110-13.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/admission.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/crates/id-events/src/admission.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/src/admission.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/admission_hooks.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9141,
+          "condition": "consume signature/acceptance contract only"
+        },
+        {
+          "issue": 9083,
+          "condition": "consume tenant scope contract only"
+        }
+      ],
+      "after": [
+        "9110-02",
+        "9110-13"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/admission_hooks.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test admission_hooks",
+        "oracle": "Malicious hook/local path accepts unsigned, invalid, replayed, or cross-tenant data; oracle is generated gate invariant matrix and hook state-machine model.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9110-07",
+      "parent": 9110,
+      "title": "Add durable outbox recovery and at-least-once hook delivery",
+      "kind": "implementation",
+      "tier": "recommended",
+      "versions": [
+        "V2",
+        "V4 operations"
+      ],
+      "statements": [
+        "S0.12",
+        "S0.17",
+        "S0.15"
+      ],
+      "enables": "Persist post-commit events within advertised transaction scope, replay by stable ID after restart, and expose quarantine/reconciliation when store and stream cannot commit atomically.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/outbox.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/outbox_recovery.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [],
+      "after": [
+        "9110-03",
+        "9110-06"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/outbox_recovery.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test outbox_recovery",
+        "oracle": "Crash between commit and callback loses or falsely rolls back an event; oracle is model-based crash injection with durable event-ID accounting.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9110-08",
+      "parent": 9110,
+      "title": "Prototype additive NATS stream adapter",
+      "kind": "prototype",
+      "tier": "contingent",
+      "versions": [
+        "V2 proof",
+        "V4 production consideration"
+      ],
+      "statements": [
+        "S0.2",
+        "S0.9",
+        "S0.13",
+        "S0.15"
+      ],
+      "enables": "Demonstrate a second stream/transport adapter using existing stable contracts and document ack, ordering, redelivery, replay, retention, and limits; do not promise exactly-once.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-transport-nats/src/lib.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/nats_stream_contract.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [],
+      "after": [
+        "9110-02",
+        "9110-04"
+      ],
+      "trigger": "Only when a named product consumer or owning deployment selects this capability; review on 2027-02-12.",
+      "tests": {
+        "file": "pkgs/id/tests/nats_stream_contract.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test nats_stream_contract",
+        "oracle": "Adapter requires a core special case or violates declared stream model; oracle is contract-only integration test with duplicate delivery/restart injection.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9110-09",
+      "parent": 9110,
+      "title": "Verify Rust and TypeScript protocol conformance",
+      "kind": "test",
+      "tier": "crucial",
+      "versions": [
+        "V2 foundation",
+        "V3 interop"
+      ],
+      "statements": [
+        "S0.5",
+        "S1.114",
+        "S1.115",
+        "S1.118",
+        "S1.119"
+      ],
+      "enables": "Run common signed-envelope, config, operation, and failure fixtures in native Rust and hosted TypeScript implementations; compare behavior without requiring identical internals.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/test-vectors/cross-runtime.json",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/cross_runtime_conformance.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9085,
+          "condition": "consume owned contract only; do not wait for full sibling program"
+        }
+      ],
+      "after": [
+        "9110-04",
+        "9110-06"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/cross_runtime_conformance.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test cross_runtime_conformance",
+        "oracle": "Cross-runtime observable traces differ for same fixture/config; oracle is shared golden vectors verified by independent implementation.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9110-10",
+      "parent": 9110,
+      "title": "Add Postgres capability profile without core changes",
+      "kind": "implementation",
+      "tier": "contingent",
+      "versions": [
+        "V4"
+      ],
+      "statements": [
+        "S0.7",
+        "S0.8",
+        "S0.13",
+        "S0.15"
+      ],
+      "enables": "Implement an optional Postgres adapter against stable ports and publish its capability/conformance report; only proceed when an owning deployment chooses it.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store-postgres/src/lib.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/postgres_conformance.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [],
+      "after": [],
+      "trigger": "Only when an owning deployment selects Postgres; until then keep the adapter as a V4 parked horizon item.",
+      "tests": {
+        "file": "pkgs/id/tests/postgres_conformance.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test postgres_conformance",
+        "oracle": "Adding backend requires changing core port types or fails required fixtures; oracle is port API compatibility and shared reference-state suite.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9111-01",
+      "parent": 9111,
+      "title": "Define versioned configuration schema and hard invariants",
+      "kind": "schema-and-test",
+      "tier": "crucial",
+      "versions": [
+        "V2"
+      ],
+      "statements": [
+        "S7.1",
+        "S7.10",
+        "S7.11",
+        "S7.12",
+        "S7.13"
+      ],
+      "enables": "Specify canonical versioned ConfigDocument, hard non-overridable ceilings, config validation errors, mechanism-versus-behavior classification, and secure unknown-field policy. This minimal schema is a V2 prerequisite for core gates.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/config/id-config-v1.schema.json",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/crates/id-config/src/lib.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/crates/id-config/Cargo.toml",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/config_invariants.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9141,
+          "condition": "consume owned contract only; do not wait for full sibling program"
+        }
+      ],
+      "after": [
+        "9110-02"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/config_invariants.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test config_invariants",
+        "oracle": "Invalid config weakens an invariant or resolves nondeterministically; oracle is independent canonical resolver and invariant properties.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9111-02",
+      "parent": 9111,
+      "title": "Implement mode bundles and safe override precedence",
+      "kind": "implementation",
+      "tier": "recommended",
+      "versions": [
+        "V3"
+      ],
+      "statements": [
+        "S7.1",
+        "S7.4",
+        "S7.14",
+        "S7.15",
+        "S7.16"
+      ],
+      "enables": "Resolve deployment mode defaults with documented precedence through tenant, peer/link/storage scopes and permitted operation overrides; ensure scopes remain distinct and non-special.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-config/src/resolve.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/config_precedence.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9083,
+          "condition": "consume owned contract only; do not wait for full sibling program"
+        }
+      ],
+      "after": [
+        "9111-01"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/config_precedence.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test config_precedence",
+        "oracle": "Equivalent config documents resolve differently or lower scope widens a hard bound; oracle is reference resolver and generated precedence lattice.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9111-03",
+      "parent": 9111,
+      "title": "Model peer, link, storage, tier, and namespace planes independently",
+      "kind": "implementation",
+      "tier": "recommended",
+      "versions": [
+        "V3"
+      ],
+      "statements": [
+        "S7.2",
+        "S7.3",
+        "S7.5",
+        "S7.6",
+        "S7.8",
+        "S7.9",
+        "S7.15"
+      ],
+      "enables": "Define typed references and validation rules so peer class, link kind, storage capability/durability, data tier, and namespace registry can compose without implying one another.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-config/src/planes.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/config_planes.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9141,
+          "condition": "consume owned contract only; do not wait for full sibling program"
+        },
+        {
+          "issue": 9116,
+          "condition": "consume owned contract only; do not wait for full sibling program"
+        },
+        {
+          "issue": 9084,
+          "condition": "consume owned contract only; do not wait for full sibling program"
+        }
+      ],
+      "after": [
+        "9111-01"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/config_planes.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test config_planes",
+        "oracle": "Config infers trust from transport or authorization from shared bucket; oracle is type-level model and invalid-combination matrix.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9111-04",
+      "parent": 9111,
+      "title": "Add capability negotiation and downgrade rejection",
+      "kind": "implementation",
+      "tier": "recommended",
+      "versions": [
+        "V3"
+      ],
+      "statements": [
+        "S7.10",
+        "S7.11",
+        "S7.13",
+        "S7.16",
+        "S1.118"
+      ],
+      "enables": "Negotiate highest mutually allowed version and required capabilities, bind negotiation to authenticated identities, and reject downgrade that removes mandatory security/correctness semantics.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-config/src/negotiation.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/config_downgrade.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9141,
+          "condition": "consume owned contract only; do not wait for full sibling program"
+        }
+      ],
+      "after": [
+        "9110-02",
+        "9111-01"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/config_downgrade.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test config_downgrade",
+        "oracle": "Peer can force a weaker or unauthenticated fallback; oracle is negotiation state machine with adversarial version offers.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9111-05",
+      "parent": 9111,
+      "title": "Stage config activation and rollback by revision",
+      "kind": "implementation",
+      "tier": "recommended",
+      "versions": [
+        "V3",
+        "V4 operational hardening"
+      ],
+      "statements": [
+        "S7.1",
+        "S7.10",
+        "S7.14"
+      ],
+      "enables": "Validate new config against all selected adapter capabilities before activation, expose resolved digest/provenance, retain prior revision for rollback, and document non-rollbackable external effects.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-config/src/rollout.rs",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/config_rollout.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [],
+      "after": [
+        "9110-02",
+        "9111-01",
+        "9111-02"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/config_rollout.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test config_rollout",
+        "oracle": "Invalid revision becomes active or rollback claims to undo completed remote effects; oracle is rollout state machine with adapter rejection injection.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9110-11",
+      "parent": 9110,
+      "title": "Preserve legacy artifact preimages and define new canonical profile",
+      "kind": "test-and-compatibility",
+      "tier": "crucial",
+      "versions": [
+        "V2"
+      ],
+      "statements": [
+        "S0.7",
+        "S0.13",
+        "S0.15"
+      ],
+      "enables": "Test exact existing serde JSON bytes against compatibility vectors; define deterministic-CBOR profile as a separate new format; do not silently re-sign or change legacy bytes.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/artifact.rs",
+          "status": "existing"
+        },
+        {
+          "path": "pkgs/id/test-vectors/legacy-artifact-signatures.json",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/artifact_profile_compat.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [
+        {
+          "issue": 9113,
+          "condition": "consume its typed identity-profile contract; not a blocker on its unrelated implementation"
+        }
+      ],
+      "after": [
+        "9110-02",
+        "9110-R1"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/artifact_profile_compat.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test artifact_profile_compat",
+        "oracle": "New vectors fail to match checked-in legacy signature verification or a new-profile record includes its own EnvelopeId in the signed preimage.",
+        "new_before_code": true
+      }
+    },
+    {
+      "id": "9110-13",
+      "parent": 9110,
+      "title": "Inventory every normal path through admission and hooks",
+      "kind": "test-and-compatibility",
+      "tier": "crucial",
+      "versions": [
+        "V2"
+      ],
+      "statements": [
+        "S0.12",
+        "S0.17",
+        "S1.114",
+        "S1.118"
+      ],
+      "enables": "Track every ingress/read/write/sync/query/stream/bucket path, gate/hooks, bypass test and recovery semantics; leave explicit unmigrated entries and block completeness claim until covered.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/docs/operation-path-inventory.md",
+          "status": "new"
+        },
+        {
+          "path": "pkgs/id/tests/admission_path_coverage.rs",
+          "status": "new"
+        }
+      ],
+      "requires": [],
+      "after": [
+        "9110-02"
+      ],
+      "tests": {
+        "file": "pkgs/id/tests/admission_path_coverage.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test admission_path_coverage",
+        "oracle": "Path inventory contains a normal retained-data path with no verified fixed-gate edge; oracle is path-to-test coverage matrix.",
+        "new_before_code": true
+      }
+    }
+  ],
+  "file_collisions": [
+    {
+      "path": "pkgs/id/tests/artifact_profile_compat.rs",
+      "slices": [
+        "9110-R1",
+        "9110-11"
+      ],
+      "reason": "The research slice creates the failing legacy/new-profile compatibility test first; the follow-on implementation slice owns filling and preserving that same test. Hard after edge requires research completion before implementation."
+    }
+  ]
+}

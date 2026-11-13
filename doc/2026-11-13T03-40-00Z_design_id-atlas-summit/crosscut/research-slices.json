@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "research_slices": [
+    {
+      "id": "9110-R1",
+      "parent": 9110,
+      "title": "Reconcile signed-artifact legacy preimage and new canonical profile",
+      "kind": "research",
+      "tier": "crucial",
+      "statements": [
+        "S0.7",
+        "S0.13",
+        "S0.15"
+      ],
+      "problem": "Current artifact documentation describes a domain-separated/length-prefixed preimage, but audited implementation hashes serialized SignedBody bytes directly. New profile design must not silently change existing signatures.",
+      "scope": [
+        "Compare audited docs and implementation byte-for-byte",
+        "Record serde serialization profile/version and actual legacy verification vectors",
+        "Specify separate deterministic-CBOR Body/signature/envelope-ID profile and dual-reader transition",
+        "Do not re-sign or rewrite old history"
+      ],
+      "evidence": [
+        "../baseline/v1-audit.md#L12-L13",
+        "../answers.md#L11-L13",
+        "../../../pkgs/id/crates/id-sync/src/artifact.rs#L107-L159",
+        "../../../pkgs/id/crates/id-sync/src/artifact.rs#L416-L432"
+      ],
+      "test_oracle": "Independent Ed25519 verifier checks golden legacy bytes and new CBOR vectors; existing signed fixtures continue verifying unchanged; neither profile hashes its own identifier into its signed preimage.",
+      "done_criteria": [
+        "Legacy source-level mismatch is resolved or explicitly documented with exact byte behavior",
+        "Versioned profile table and compatibility vectors are reviewed",
+        "Migration/downgrade behavior is explicit and forbids silent re-sign/rehash"
+      ],
+      "test_first_file": "pkgs/id/tests/artifact_profile_compat.rs",
+      "test_first_command": "cargo test --manifest-path pkgs/id/Cargo.toml --test artifact_profile_compat",
+      "test_first_required": true
+    },
+    {
+      "id": "9110-R2",
+      "parent": 9110,
+      "title": "Trace Atlas content_hash production and define exact producer contract",
+      "kind": "research",
+      "tier": "contingent",
+      "trigger": "Before any Atlas content_hash interoperability claim, or when the external production pipeline is located.",
+      "statements": [
+        "S0.7",
+        "S0.13",
+        "S1.118"
+      ],
+      "problem": "Checked-in Atlas schema and search consumers use content_hash but the audited checkout has no production producer; fixtures do not establish exact source bytes or a profile.",
+      "scope": [
+        "Locate and pin actual producer pipeline, if any",
+        "Specify exact source bytes, normalization, algorithm/profile/version and file/chunk semantics",
+        "Record a known-answer vector and independent recomputation oracle",
+        "If producer is external/unavailable, state that explicitly and block interop claims"
+      ],
+      "evidence": [
+        "../baseline/v1-audit.md#L18-L20",
+        "../baseline/v1-audit.md#L30-L34",
+        "../../../pkgs/atlas-search/schema/atlas_stage_v1.sql#L52-L67",
+        "../../../pkgs/atlas-search/crates/atlas-core/src/local.rs#L457-L478"
+      ],
+      "test_oracle": "Independent bytes-to-ContentId implementation matches a producer-generated known-answer vector; consumer join resolves the expected chunk. If no producer can be reached, the decisive oracle is a documented no-interoperability status and absence of inferred hash claims.",
+      "done_criteria": [
+        "Producer provenance and pinned revision recorded or confirmed absent",
+        "Exact bytes/profile and test vector defined or explicitly left unknown",
+        "Cross-system use blocked until this contract passes"
+      ],
+      "test_first_file": "pkgs/atlas-search/tests/content_hash_producer_contract.rs",
+      "test_first_command": "cargo test --manifest-path pkgs/atlas-search/Cargo.toml --test content_hash_producer_contract",
+      "test_first_required": true
+    }
+  ]
+}
