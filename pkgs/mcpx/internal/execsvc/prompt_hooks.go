@@ -22,6 +22,7 @@ package execsvc
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -106,8 +107,17 @@ func promptValues(hctx hookContext, ropts runner.Options, res *Result) map[strin
 	}
 	put("artifacts", artifacts)
 	source := ropts.Source
-	if source == "" {
-		source = ropts.File
+	if source == "" && ropts.File != "" {
+		// A file-backed run leaves Source empty; substituting the
+		// path would hand the model a filename where an inline run
+		// hands it the code @source promises (Codex review,
+		// PR #9021). Resolve the contents; an unreadable file
+		// keeps the path, which at least names what ran.
+		if b, err := os.ReadFile(ropts.File); err == nil {
+			source = string(b)
+		} else {
+			source = ropts.File
+		}
 	}
 	put("source", source)
 	return values

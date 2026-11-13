@@ -3,6 +3,8 @@ package execsvc
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +95,34 @@ func TestRenderPromptTemplateDelimitsData(t *testing.T) {
 	}
 	if !strings.Contains(got, "@nope") {
 		t.Fatalf("unknown placeholder should be left visible:\n%s", got)
+	}
+}
+
+// Oracle: @source names the script's code (0001's placeholder
+// contract), so a file-backed run must hand the provider the file's
+// contents exactly as an inline run hands it its source — never the
+// path alone. An unreadable file keeps the path as the fallback.
+func TestPromptValuesSourceFromFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "script.ts")
+	if err := os.WriteFile(file, []byte("export default 41 + 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := &Result{}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+
+	got := renderPromptTemplate("@source", promptValues(hctx, runner.Options{File: file}, res))
+	if !strings.Contains(got, `export default 41 + 1\n`) {
+		t.Fatalf("@source for a file-backed run = %s, want the file contents JSON-encoded", got)
+	}
+	if strings.Contains(got, file) {
+		t.Fatalf("@source leaked the file path instead of its contents: %s", got)
+	}
+
+	missing := filepath.Join(dir, "gone.ts")
+	got = renderPromptTemplate("@source", promptValues(hctx, runner.Options{File: missing}, res))
+	if !strings.Contains(got, missing) {
+		t.Fatalf("@source for an unreadable file = %s, want the path fallback", got)
 	}
 }
 
