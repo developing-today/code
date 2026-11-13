@@ -12,6 +12,10 @@ The existing component issues #9110–#9148 remain the component homes. Every sl
 - Task dependency handling is supported separately from enqueue: `repo-queue block <task> --worker <worker> --reason-class blocked --blocker <text> --blocked-by-issue owner/repo#N --blocked-by-task <id>`; comma-separated refs per type are accepted. `repo-queue dep-recheck --task <id>` exists. Enqueue has no atomic dependency field, so a future publisher must disclose/handle the enqueue-then-block window; do not assert atomic gating. Here the conservative publication precondition is a merged design commit proven on `main`, not a new queue dependency on parent task 15354.
 - `repo-queue --help` / `repo-queue enqueue --help` are not valid help invocations in this build; the Rust client parser and existing reconciler call are the verified sources. No queue command was run.
 
+## Aggregated gate accepted
+
+The parent aggregated the frozen worktree: the gate passes 126 rows, 38 component homes and 384 statements with no exemptions. All three issue readers completed their body reviews and bounded repairs; the final design judge agrees. The former heading-parser and generic-research-oracle restrictions are corrected: an issue can create its exact owned domain validator with an explicitly structured golden/reference/model/matrix oracle. Future validators are not claimed to exist already or to have been executed. Publication is still a separate merged-tree/digest-bound step. Earlier failure snapshots below are retained as history, not current blockers.
+
 ## Offline gate / report interface
 
 Command:

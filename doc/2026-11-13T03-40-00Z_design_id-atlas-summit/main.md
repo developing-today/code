@@ -5,7 +5,7 @@ Program [#9106](https://github.com/developing-today/code/issues/9106), queue tas
 `opencode-route/summit`. Workhorse workers produce bounded inventories, evidence,
 drafts and verification; the summit owns cross-part decisions and final language.
 
-**Status: integrated design review set, not final program acceptance.**
+**Status: design and handoff reviews agreed; merged-design/publication gates next.**
 [PR #9238](https://github.com/developing-today/code/pull/9238) is the concrete
 review deliverable. This is additive to the
 [intake proto](../2026-11-13T00-41-00Z_design_id-atlas-primitives-federation-namespaces/note.md),
@@ -18,16 +18,18 @@ stage records are committed here and posted as `agent-note` comments on #9106.
 | Record | Purpose | Acceptance state |
 |---|---|---|
 | [Baseline](baseline/v1-audit.md), [seams](baseline/seam-map.md) | Source-audited V1 and existing owner boundaries | Source profiles pinned; external Atlas snapshot checked, producer-source gap retained |
-| [Inventory](inventory/audit.md) | Deterministic statement extraction and expanded issue map | Independent judge agrees: 384 IDs, zero unmapped homes; 11 regression cases pass |
+| [Inventory](inventory/audit.md) | Deterministic statement extraction and expanded issue map | Independent judge agrees: 384 IDs, zero unmapped homes; 14 regression cases pass |
 | [Live homes](inventory-live/semantic-audit.md) | Live issue homes, hierarchy, Part B candidate provenance | 52 issue snapshots; 42 program hierarchy edges; original-30 gap explicitly documented |
 | [Crosscut](crosscut/versioned-design.md), [sequence](crosscut/sequencing-draft.md) | Extensibility, modes, sequencing: #9110–#9112 | Frozen draft; verifier passes 39 slots and DAG/config/file oracles |
-| [Addressing](part-a-addressing/versioned-design.md) | ID shapes and namespace families: #9113–#9124 | Frozen 35-slice draft; readable URI reference passes 10,000 round trips |
-| [Graph](part-a-graph/versioned-design.md) | Triples, attributes, social substrate: #9125–#9132 | Frozen 16-slice draft; fresh worker review passed; toy evidence reproduced |
+| [Addressing](part-a-addressing/versioned-design.md) | ID shapes and namespace families: #9113–#9124 | Frozen 35-slice draft; URI reference passes 10,000 array and 10,000 content round trips |
+| [Graph](part-a-graph/versioned-design.md) | Triples, attributes, social substrate: #9125–#9132 | Frozen 17-slice set; feed-cursor and typed-byte evidence reproduced |
 | [Federation](part-b/versioned-design.md), [repairs](part-b/repair-disposition.md) | Federation and trust: #9141–#9148 | Frozen 32-slice set; bounded findings applied; allocation model passes 2,000 traces |
-| [Atlas](part-c/versioned-design.md), [repairs](part-c/repair-disposition.md) | Storage economics, search, recommendations: #9133–#9140 | Frozen 22-slice set; executable 11-transition reference fixture; empirical runs are explicit follow-ups |
+| [Atlas](part-c/versioned-design.md), [repairs](part-c/repair-disposition.md) | Storage economics, search, recommendations: #9133–#9140 | Frozen 22-slice set; executable 16-transition reference fixture; empirical runs are explicit follow-ups |
 | [Answers](answers.md), [integration check](review/integration-check.md) | Summit rulings, conservative defaults, readiness boundaries | Concrete checkpoint; no repeated reviewer-wait loop |
 | [Verification](verification.md) | Copyable narrow commands, observed results and evidence limits | Runtime/production claims explicitly excluded |
-| [Delivery preparation](delivery/delivery-plan.md) | Individually workable issue drafts and native/queue readback gate | Offline-only until final validation; no issue publication is implied |
+| [Delivery preparation](delivery/delivery-plan.md) | Individually workable issue drafts and native/queue readback gate | 126-row gate passes all 384 statements; guarded publisher requires merged-tree and exact report approval |
+
+[Final design judge](review/final-design-judge.md) agrees. The three issue readers cover all 126 rows; their bounded repairs are recorded under `review/issue-reader-*.md`. This does not substitute for remote publication readback.
 
 Before final acceptance: a fresh judge independently verifies inventory coverage;
 research exists per component; versioned designs are reviewed and merged to main;

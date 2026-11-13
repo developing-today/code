@@ -22,7 +22,7 @@ def timestamp(value):
 
 
 def strings(value):
-    return isinstance(value, list) and all(isinstance(x, str) and x.strip() for x in value)
+    return isinstance(value, list) and bool(value) and all(isinstance(x, str) and x.strip() for x in value)
 
 
 def validate_original30(report):

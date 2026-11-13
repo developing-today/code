@@ -218,6 +218,17 @@ class DeliveryPreparationTests(unittest.TestCase):
         self.assertFalse(prep.research_command_has_artifact_validator(
             f"python3 -I {missing} --input future-result.json", "future-result.json", "crdt-automerge", []))
 
+    def test_research_traceability_lists_cannot_be_empty(self):
+        report = matrix_report()
+        for item in report["assessments"]:
+            item["status"] = "supported"
+            item["evidence_refs"] = []
+        self.assertTrue(any("nonempty evidence_refs" in e for e in research_report.validate_report(report)))
+        report = matrix_report()
+        report["limitations"] = []
+        self.assertTrue(any("limitations" in e for e in research_report.validate_report(report)))
+        self.assertFalse(research_report.strings([]))
+
     def test_strict_cli_rejects_unknown_and_abbreviated_options_before_writes(self):
         destination = HERE / "must-not-exist-from-cli-test"
         for argv in (["--out", str(destination), "--typo"], ["--app"]):

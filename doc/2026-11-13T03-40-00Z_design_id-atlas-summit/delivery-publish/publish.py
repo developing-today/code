@@ -390,7 +390,7 @@ def queue_packet(entry, issue, digest, timestamp, blockers):
     sid = entry["id"]
     blocker_text = ", ".join(f"#{n}" for n in blockers) or "none"
     trigger = entry.get("trigger") or "none"
-    self_block = (f"Run `repo-queue block <your-task-id> --worker <your-worker-id> --reason-class blocked --blocker 'waiting on native issue blockers' --blocked-by-issue {REPO}#{','.join(str(n) for n in blockers)}`. "
+    self_block = (f"Run `repo-queue block <your-task-id> --worker <your-worker-id> --reason-class blocked --blocker 'waiting on native issue blockers' --blocked-by-issue {','.join(f'{REPO}#{n}' for n in blockers)}`. "
                   if blockers else "No hard native blockers are listed. ")
     preflight = (f"MANDATORY TRIAGE/PREFLIGHT ONLY for approved slice {sid}. Before implementation, inspect the linked GitHub issue's native blockers: {blocker_text}. "
         f"If any blocker remains open, do not implement; self-block your own claimed task. {self_block}Leave work paused until every native blocker is closed. "
@@ -611,6 +611,7 @@ def publish(args, entries, digest, report_digest, orchestration):
             item.update({"phase":"covered","queue_id":row.get("id"),"queue_status":row.get("status"),"queue_readback_at":time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
             atomic_save(journal,state)
             outputs.append({"id":sid,"issue":item["issue_url"],"queue_id":item["queue_id"],"status":item["queue_status"]})
+            print(json.dumps({"event":"covered","sequence":len(outputs),"id":sid,"issue":item["issue_url"],"title":e["title"],"queue_id":item["queue_id"],"status":item["queue_status"]}, ensure_ascii=False), flush=True)
         return outputs
 
 

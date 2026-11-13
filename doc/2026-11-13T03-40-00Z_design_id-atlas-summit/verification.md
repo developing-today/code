@@ -21,12 +21,12 @@ git diff --check
 
 | Check | Result | What it establishes |
 |---|---|---|
-| Numbered inventory + negative cases | 11 cases pass; 384 unique IDs, zero unmapped homes | Declared/fixed inventory and strict map/CLI rejection, not adequacy of a design |
-| URI reference | 6 vectors, 14 malformed cases, 10,000 deterministic round trips pass | Typed slot/encoding/null/empty/context behavior of the reference, not production parsers |
+| Numbered inventory + negative cases | 14 cases pass; 384 unique IDs, zero unmapped homes | Declared/fixed inventory and strict map/CLI rejection, not adequacy of a design |
+| URI reference | 6 array vectors + 1 content golden, 17 malformed cases, 10,000 array + 10,000 content round trips pass | Typed slot/encoding/null/empty/context behavior of the reference, not production parsers |
 | Toy triple encodings | Fixed hashes/round trips and arbitrary non-UTF-8 bytes pass | This finite corpus/codec behavior; SQLite JSONB bytes are specific to local SQLite 3.53.3 |
 | Crosscut | 39 issue slots, 2 research slices, 17 implementation slices; DAG/file/config oracles pass | The crosscut model and its own manifest, not every cross-part dependency |
 | B accounting model | Fixed checks and 2,000 seeded traces pass | Scoped reservation/retry/expiry abstraction, not cryptography, fairness or global Byzantine enforcement |
-| C reference store | 11 executed transitions, computed SHA-256 fixture digest and 44 capability labels pass | Finite model/plan consistency, not provider or concurrent production GC correctness |
+| C reference store | 16 executed transitions, computed SHA-256 fixture digest and 64 capability labels pass | Finite model/plan consistency, not provider or concurrent production GC correctness |
 | C cost arithmetic | Synthetic totals reproduce; `winner: null` | Arithmetic only; no measured costs or procurement recommendation |
 | B/C strict CLI | Three undeclared-argument cases exit 2, no normal output | Extra flags are not silently ignored before checks/fixture reads |
 | Repository workflow check | `ok: true` | Existing workflow-package validation; this design-mill folder is not an S0–S8 research package |
@@ -47,3 +47,7 @@ bodies. Native parents/blockers and **live** queue coverage require remote
 readback after actual issue creation; no such readback is inferred from JSON
 drafts. Task 15354 remains parked under its bound-owner handoff until its full
 acceptance evidence exists and the launching lane reconciles it.
+
+## Final delivery checkpoint
+
+The canonical delivery gate passes 126 rows, all 38 component homes and all 384 statements with zero exemptions. Delivery regressions: 28; publisher regressions: 14. A research issue may create its exact owned domain validator; golden/reference oracles are valid, not forced into a generic matrix schema. Domain research acceptance is not established by generic structural validation. GitHub Actions remain queued under the existing runner-capacity issue #2605; the exact three proxy/basic workflow scripts were also executed locally and passed. No queued check is described as green.

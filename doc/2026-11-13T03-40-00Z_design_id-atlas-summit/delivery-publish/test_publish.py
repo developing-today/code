@@ -21,6 +21,11 @@ class PublisherTests(unittest.TestCase):
         def __enter__(self): return self
         def __exit__(self, *exc): return None
 
+    def test_self_block_qualifies_every_native_issue_reference(self):
+        packet = publisher.queue_packet({"id":"fixture", "title":"Fixture"}, 1, "a" * 64, "2026-11-13T00:00:00Z", [7,8])
+        self.assertIn("developing-today/code#7,developing-today/code#8", packet["payload"]["problem"])
+        self.assertNotIn("developing-today/code#7,8", packet["payload"]["problem"])
+
     def test_digest_is_stable_and_matches_contract(self):
         obj = [{"z": "é", "a": 1}]
         self.assertEqual(publisher.canonical(obj), b'[{"a":1,"z":"\xc3\xa9"}]')
