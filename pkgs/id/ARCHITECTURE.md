@@ -211,6 +211,68 @@ Deleted and renamed files are archived rather than destroyed:
 
 Archive tags include metadata recording the operation type (`archive.rename`, `archive.replace`).
 
+## Store Port Boundaries
+
+Slice 9110-01 (ID/Atlas V2 port contract) seam map. Per the settled
+design (`doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md`,
+**Port contract**), port types are separate — record store, blob store,
+event log, world store, object bucket, message stream, and transport are
+distinct ports — and a single "store abstraction" does not merge them:
+existing blob, event, world, and sync authorities remain separately
+owned until a mapping is reviewed. An adapter either satisfies a port's
+declared capabilities or returns a structured unsupported result; it
+must not silently emulate weaker semantics, and an adapter-specific API
+stays behind its own port boundary.
+
+### Seam-map classification
+
+| Port | Owning crate / seam (consumer-owned files) | Concrete types | Backing storage | Authority |
+| ---- | ------------------------------------------ | -------------- | --------------- | --------- |
+| blob | `id-store` — `crates/id-store/src/store.rs` | `StoreType` (`Persistent(FsStore)` / `Ephemeral(MemStore)`), `StoreType::as_store()` | iroh-blobs file store: redb metadata plus blob data files under `.iroh-store/` (`STORE_PATH`); `MemStore` in memory | content-addressed blob bytes and name-to-hash tags |
+| event | `id-events` — `crates/id-events/src/event_store/mod.rs` | `EventStore`, behind the `Storage` / `FileStorage` file seam | one separate redb file per store directory | signed event log: chains, heads, fork proofs, waiting pool |
+| world | `id-worlds` — `crates/id-worlds/src/world_store.rs` | `FileJournal`, `ModuleDir` | fsynced `journal.jsonl` plus content-addressed `modules/<blake3>.wasm` | durable world state: journal replay and installed modules |
+| sync | `id-sync` — `crates/id-sync/src/envelope_outbox.rs`, `crates/id-sync/src/log_sync.rs` | `Outbox`, `SyncProtocol` | append-only outbox journal file, replayed on open | pending envelope delivery only; no stored-data authority |
+
+Non-authority is part of the boundary: the event store decides nothing
+about blob bytes, the world journal decides nothing about event-log
+heads, and sync owns no stored data at all — it moves envelopes and log
+entries between the other ports and records only what is still pending
+delivery. Treating any row's backing storage (redb, journal files) as
+the identity of the port is the flattening error this map exists to
+prevent: the blob and event ports both use redb today and remain
+different ports with different authorities.
+
+### Consumer-owned files and compatibility adapters
+
+Consumer-owned files for this seam map (owner: 9110-01):
+`pkgs/id/ARCHITECTURE.md` (this section) and
+`pkgs/id/tests/store_port_boundary.rs` (the boundary fixture/test). The
+consuming facade is the root `id` package: its `Cargo.toml` depends on
+`id-store`, `id-events`, `id-worlds`, and `id-sync` as four separate
+path dependencies, and no crate in that list re-exports another port's
+store type as its own.
+
+Compatibility adapters that exist today, each confined to one port:
+
+- **Blob:** `StoreType::as_store()` is the compatibility adapter over
+  iroh-blobs `FsStore`/`MemStore`, yielding one iroh-blobs `Store`
+  handle. It unifies two backends of the *same* blob port only.
+- **Event:** `id-store::store_traits::EventStoreBackend`, implemented
+  by `SharedEventStore<S>`, adapts the event store for in-fleet
+  consumers. Event authority stays in `id-events`; the trait is a
+  consumer seam, not a transfer of ownership.
+- **Event (file seam):** the `Storage` trait in
+  `id-events::event_store` adapts real directories (`FileStorage`) and
+  the crash model's simulated directory behind one file interface.
+- **Sync:** `Outbox::open` replays its journal to rebuild pending
+  delivery state, adapting an append-only file to the delivery queue
+  other sync code consumes.
+
+A new adapter must declare the single port it serves. A trait or type
+that claims two rows of the classification table — one kind owning two
+authorities, or one authority answering for two kinds — is a
+flattening, and `tests/store_port_boundary.rs` rejects it.
+
 ## Build System
 
 ### Nix Integration
