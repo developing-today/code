@@ -13,13 +13,13 @@ This is two coordinated designs and potentially two implementation tracks: (A) u
 2. Work for the coordinating agent — execute, do not merely propose
 
 1. Inspect the current developing-today/code repository, especially pkgs/fleet/, pkgs/fleet/crates/fleet-queue/, pm-stack/, pm-stack/opencode-claimant/, pm-stack/dispatch/, pm-stack/aggregator/, pm-stack/projector/, repository AGENTS.md, queue schemas/migrations, source-of-truth conventions, and the Queue Table Improvements issue/design. Pin the inspected commit.
-2. Produce and commit two repository-grounded design documents (use established paths if different): docs/design/fleet-priority-urgency-pm-stack.md and docs/design/fleet-work-item-orchestration.md. Treat this charter as the requirements and the existing full Work-Item Orchestration draft as supporting detail. Preserve all user outcomes; replace weak mechanisms with documented better alternatives and reasons.
-3. Reuse existing queue brokers, source-of-truth APIs, GitHub Project mappings, dispatch/claimant paths and outbox. Do not introduce a parallel queue, scheduler, secret resolver, or PM database.
-4. Locate and update an existing matching design issue, or create one central actionable design issue “Fleet: urgency, triage, PM visibility, and agent workflow design”. Link both documents, the Queue Table Improvements design, relevant PRs, and supporting architectural records; ensure project membership and native relationships are correct.
-5. Set intrinsic urgency 450 (High) and Do Now as a *separate one-shot dispatch directive*. This design is high because it unblocks multiple interfaces; it is not an emergency. Do not inflate numeric urgency merely to bypass scheduling.
-6. Immediately dispatch a design/architecture agent through the currently supported authorized execution mechanism. Bind the issue/work item to the task and OpenCode session where applicable. Confirm a real dispatch receipt and, if possible, a live/accepted session—not just priority, a label, or a queue position. Avoid double-claiming with ordinary workers.
-7. Record in the issue the source links, dispatch method, lane/route, task/session identifiers, accepted/started status, and next steps. If dispatch cannot be verified, report precisely which step failed; do not claim success.
-8. Return concise evidence: commit/PR, document URLs, issue ID, numeric urgency, dependency links, task/session IDs, and any blockers. The handoff is not complete without verified artifacts.
+1. Produce and commit two repository-grounded design documents (use established paths if different): docs/design/fleet-priority-urgency-pm-stack.md and docs/design/fleet-work-item-orchestration.md. Treat this charter as the requirements and the existing full Work-Item Orchestration draft as supporting detail. Preserve all user outcomes; replace weak mechanisms with documented better alternatives and reasons.
+1. Reuse existing queue brokers, source-of-truth APIs, GitHub Project mappings, dispatch/claimant paths and outbox. Do not introduce a parallel queue, scheduler, secret resolver, or PM database.
+1. Locate and update an existing matching design issue, or create one central actionable design issue “Fleet: urgency, triage, PM visibility, and agent workflow design”. Link both documents, the Queue Table Improvements design, relevant PRs, and supporting architectural records; ensure project membership and native relationships are correct.
+1. Set intrinsic urgency 450 (High) and Do Now as a _separate one-shot dispatch directive_. This design is high because it unblocks multiple interfaces; it is not an emergency. Do not inflate numeric urgency merely to bypass scheduling.
+1. Immediately dispatch a design/architecture agent through the currently supported authorized execution mechanism. Bind the issue/work item to the task and OpenCode session where applicable. Confirm a real dispatch receipt and, if possible, a live/accepted session—not just priority, a label, or a queue position. Avoid double-claiming with ordinary workers.
+1. Record in the issue the source links, dispatch method, lane/route, task/session identifiers, accepted/started status, and next steps. If dispatch cannot be verified, report precisely which step failed; do not claim success.
+1. Return concise evidence: commit/PR, document URLs, issue ID, numeric urgency, dependency links, task/session IDs, and any blockers. The handoff is not complete without verified artifacts.
 
 Source-of-truth observation: Current repository documentation describes GitHub Project Developing Today #4 as a portfolio map: Project Kind=Epic is canonical, the epic label is a maintained mirror/gate, native sub-issue parent links are hierarchy, and native blocking links are dependencies. The orchestrator is the Project's single writer; dashboard and agents should not bypass it. Confirm this remains accurate at execution time.
 
@@ -34,16 +34,16 @@ A separate dispatch directive such as normal, expedite, do-now, direct-session, 
 
 4. Initial urgency bands and stable total order
 
-| Intrinsic score | Band | Typical meaning |
-|---|---|---|
-| 0–99 | Emergency | Severe active incident or extraordinary immediate need |
-| 100–199 | Supercritical | Severe critical-path or near-immediate operational work |
-| 200–399 | Critical | Major blockers, near-term required work or hard deadlines |
-| 400–799 | High | Ahead of normal actionable work |
-| 800–1199 | Standard | Ordinary actionable work; new-item default 1000 |
-| 1200–1599 | Low | Useful but not time-sensitive |
-| 1600–1999 | Someday | Speculative or deferred |
-| 2000+ | Cold backlog | Retained, searchable, scheduled for occasional reconsideration |
+| Intrinsic score | Band          | Typical meaning                                                |
+| --------------- | ------------- | -------------------------------------------------------------- |
+| 0–99            | Emergency     | Severe active incident or extraordinary immediate need         |
+| 100–199         | Supercritical | Severe critical-path or near-immediate operational work        |
+| 200–399         | Critical      | Major blockers, near-term required work or hard deadlines      |
+| 400–799         | High          | Ahead of normal actionable work                                |
+| 800–1199        | Standard      | Ordinary actionable work; new-item default 1000                |
+| 1200–1599       | Low           | Useful but not time-sensitive                                  |
+| 1600–1999       | Someday       | Speculative or deferred                                        |
+| 2000+           | Cold backlog  | Retained, searchable, scheduled for occasional reconsideration |
 
 Validate migration against existing queue values; do not reinterpret them silently. Preserve authorized exact-score edits, band-default moves, move before/after, and additive adjustments (e.g. ±10, ±25). Equal scores are legitimate. Maintain a deterministic secondary rank and then oldest-first and stable-ID tie breaking; do not force unique scores for every ticket. The cold backlog must remain searchable and eligible for review rather than becoming a 9999-point purgatory.
 
@@ -193,4 +193,3 @@ Final principle: preserve clear source-of-truth boundaries, visible execution st
 
 Companion Google Doc — Fleet v0.3 Summit design and issue-decomposition handoff:
 https://docs.google.com/document/d/1AKDACXObRcUwmJIeCfLaGv6bxcWC00e3rYjOztk4qiY/edit
-

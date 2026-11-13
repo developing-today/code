@@ -73,13 +73,13 @@ in comments on #3447 (issuecomment-6832720755) and #2056
 
 ### developing-today/code — 1,070 → 1,073 open (concurrent fleet activity during the run)
 
-| Coverage | Before | After |
-|---|---|---|
-| ≥1 `epic/*` label | 873 (81.6%) | 929 (86.6%) |
+| Coverage            | Before      | After       |
+| ------------------- | ----------- | ----------- |
+| ≥1 `epic/*` label   | 873 (81.6%) | 929 (86.6%) |
 | `app/*` or `area/*` | 629 (58.8%) | 628 (58.5%) |
-| `kind/*` | 666 (62.2%) | 732 (68.2%) |
-| All three | 436 (40.7%) | 439 (40.9%) |
-| Epic-marker issues | 42 | 46 |
+| `kind/*`            | 666 (62.2%) | 732 (68.2%) |
+| All three           | 436 (40.7%) | 439 (40.9%) |
+| Epic-marker issues  | 42          | 46          |
 
 Writes (all read back): 67 mechanical `kind/*` labels (legacy `bug`/
 `enhancement`/`design`/`documentation` → prefixed forms); 2 native links
@@ -88,12 +88,12 @@ parented — notably 30 id-platform children sit under closed epic #6312);
 4 new epics for coherent unplaced clusters ≥8, children labeled + natively
 linked (54 total, 0 failures):
 
-| Epic | Label | Children |
-|---|---|---|
-| #8976 main-broken CI reports | `epic/main-broken` | 20 |
-| #8977 crate splits (other pkgs) | `epic/crate-splits` | 16 |
-| #8978 daily maintenance | `epic/daily-maintenance` | 10 |
-| #8979 scheduled tasks | `epic/scheduled-tasks` | 8 |
+| Epic                            | Label                    | Children |
+| ------------------------------- | ------------------------ | -------- |
+| #8976 main-broken CI reports    | `epic/main-broken`       | 20       |
+| #8977 crate splits (other pkgs) | `epic/crate-splits`      | 16       |
+| #8978 daily maintenance         | `epic/daily-maintenance` | 10       |
+| #8979 scheduled tasks           | `epic/scheduled-tasks`   | 8        |
 
 **Ambiguous epic labels in code** (native linking not possible without Drew's
 pick of a single home epic): multiple epic-marker carriers — `epic/lab-cluster`
@@ -395,18 +395,18 @@ have epic issues in developing-today/code, members natively linked and
 verified from both the epics' sub-issue lists (per_page=100) and sampled
 children's parent pointers:
 
-| Epic | Label | Members | Natively linked |
-|---|---|---|---|
-| #8983 Atlas program | `epic/atlas-program` | 68 | 68 |
-| #8985 GitHub and dynamic compute | `epic/github-dynamic-compute` | 28 | 24 |
-| #8986 design register | `epic/design-register` | 27 | 26 |
-| #8987 Turso + Cloudflare integration | `epic/turso-cloudflare` | 16 | 11 |
-| #8988 storage program | `epic/storage` | 11 | 10 |
-| #8989 SaaS service | `epic/saas-service` | 6 | 3 |
-| #8990 fleet tool | `epic/fleet-tool` | 6 | 6 |
-| #8991 pool routing | `epic/pool-routing` | 5 | 1 (+4 nested under member #1334) |
-| #8992 fleet apps | `epic/fleet-apps` | 2 | 2 |
-| #8993 mcpx | `epic/mcpx` | 2 | 0 (see below) |
+| Epic                                 | Label                         | Members | Natively linked                  |
+| ------------------------------------ | ----------------------------- | ------- | -------------------------------- |
+| #8983 Atlas program                  | `epic/atlas-program`          | 68      | 68                               |
+| #8985 GitHub and dynamic compute     | `epic/github-dynamic-compute` | 28      | 24                               |
+| #8986 design register                | `epic/design-register`        | 27      | 26                               |
+| #8987 Turso + Cloudflare integration | `epic/turso-cloudflare`       | 16      | 11                               |
+| #8988 storage program                | `epic/storage`                | 11      | 10                               |
+| #8989 SaaS service                   | `epic/saas-service`           | 6       | 3                                |
+| #8990 fleet tool                     | `epic/fleet-tool`             | 6       | 6                                |
+| #8991 pool routing                   | `epic/pool-routing`           | 5       | 1 (+4 nested under member #1334) |
+| #8992 fleet apps                     | `epic/fleet-apps`             | 2       | 2                                |
+| #8993 mcpx                           | `epic/mcpx`                   | 2       | 0 (see below)                    |
 
 - `epic/atlas` (8) is a strict subset of `epic/atlas-program` (68) — folded,
   no separate epic; both carrier labels sit on #8983 (label redundancy noted

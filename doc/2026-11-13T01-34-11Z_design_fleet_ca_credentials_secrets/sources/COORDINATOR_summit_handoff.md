@@ -44,12 +44,12 @@ Source precedence: Current authorized user instructions and the dated v0.3 adden
 2. Coordinator preflight — observe, don't improvise
 
 1. Read the source package README, all main source documents and addendum, at least enough to establish the scope and create safe high-level issue titles. Pin the live repository commit and read relevant AGENTS.md instructions.
-2. Inspect pkgs/fleet/ (workspace, crates, registry, config, secrets, CLI, Nix feature/build profiles, resolver/broker/tests), pm-stack/, pm-stack/opencode-claimant/, pm-stack/dispatch/, the queue broker, related migrations and GitHub App/feedback/outbox integration. Verify actual tool names and deployment state; documentation describing a component as deployed is not proof it is live.
-3. Search for existing Fleet v0.3 or overlapping secrets/PKI design epics and issues. Reuse/update matching issues rather than duplicating. Native parent/sub-issue relations, blockedBy links and GitHub Project #4 Kind=Epic must follow current conventions.
-4. Determine the current official queue/outbox writer, the GitHub App issue-creation capability, allowed bulk issue creation pattern, idempotency/safe retry, queue materialization, and Summit route before writing anything. Do not bypass rate-limit protections or assume a raw gh issue create loop is safe.
-5. Record a brief intake manifest: source links, hashes, repository commit, responsible agent, stage directory, source limitations and dispatch plan. Avoid copying private data into public issues.
+1. Inspect pkgs/fleet/ (workspace, crates, registry, config, secrets, CLI, Nix feature/build profiles, resolver/broker/tests), pm-stack/, pm-stack/opencode-claimant/, pm-stack/dispatch/, the queue broker, related migrations and GitHub App/feedback/outbox integration. Verify actual tool names and deployment state; documentation describing a component as deployed is not proof it is live.
+1. Search for existing Fleet v0.3 or overlapping secrets/PKI design epics and issues. Reuse/update matching issues rather than duplicating. Native parent/sub-issue relations, blockedBy links and GitHub Project #4 Kind=Epic must follow current conventions.
+1. Determine the current official queue/outbox writer, the GitHub App issue-creation capability, allowed bulk issue creation pattern, idempotency/safe retry, queue materialization, and Summit route before writing anything. Do not bypass rate-limit protections or assume a raw gh issue create loop is safe.
+1. Record a brief intake manifest: source links, hashes, repository commit, responsible agent, stage directory, source limitations and dispatch plan. Avoid copying private data into public issues.
 
-3. Secure staging: put the ZIP on the laptop
+1. Secure staging: put the ZIP on the laptop
 
 The desired execution host is the existing laptop (amd / amd-6 in checked-in documentation), not the sandbox. The ZIP is supplied through a Google Drive link, not a durable path in a future agent's container.
 
@@ -217,7 +217,7 @@ Design declarative generation of root/issuer/leaf bundles, CSR, PEM, DER (.crt/.
 
 7.7 Documentation, operational automation and real proof
 
-Future implementation must provide CLI help, manpages/completions, agent skills/AGENTS.md updates, examples, batch YAML/JSON, policy/manifest schemas, readable packaging, source-linked operational instructions, synthetic test fixtures, unit/property/fuzz/integration tests, independent OpenSSL/Rust/client checks, crash/reconciliation tests and rollback. The *eventual implementing* agent should use the finished Fleet binary itself to produce reference artifacts and independently verify them. Summit should create precise issues and tests for those obligations; it must not claim a prototype or mock proves production readiness.
+Future implementation must provide CLI help, manpages/completions, agent skills/AGENTS.md updates, examples, batch YAML/JSON, policy/manifest schemas, readable packaging, source-linked operational instructions, synthetic test fixtures, unit/property/fuzz/integration tests, independent OpenSSL/Rust/client checks, crash/reconciliation tests and rollback. The _eventual implementing_ agent should use the finished Fleet binary itself to produce reference artifacts and independently verify them. Summit should create precise issues and tests for those obligations; it must not claim a prototype or mock proves production readiness.
 
 7.8 Future infrastructure research — explicit, nonblocking program
 
@@ -334,7 +334,7 @@ Summit is done when all of the following are verified:
 - [ ] Final issue comment and committed design artifacts contain an actionable roadmap and evidence status.
 - [ ] The coordinator received a verified terminal result and performed a final issue/coverage audit.
 
-Do not close the full implementation epic just because the design planning mission finished. Complete the *Summit design task/issue* according to its own verified definition of done while keeping implementation children in the appropriate queue states.
+Do not close the full implementation epic just because the design planning mission finished. Complete the _Summit design task/issue_ according to its own verified definition of done while keeping implementation children in the appropriate queue states.
 
 15. Final reports
 
@@ -386,4 +386,3 @@ Never equate a queued task with a started session, a posted message with an ackn
 
 Companion Google Doc — Fleet / PM Stack priority and work-item orchestration execution charter:
 https://docs.google.com/document/d/1_DQwNbuRmJnITDKKJJ7A3Q0FJa-q2rkzWlz-4PyA_iw/edit
-

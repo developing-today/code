@@ -52,13 +52,13 @@ Boards are **data, not constants**. New module
 
 ```ts
 interface BoardDef {
-  id: string;              // stable local id, e.g. "devtoday-main"
-  org: string;             // "developing-today"
-  number: number;          // 4
-  nodeId: string;          // PVT_…
+  id: string; // stable local id, e.g. "devtoday-main"
+  org: string; // "developing-today"
+  number: number; // 4
+  nodeId: string; // PVT_…
   url: string;
   role: "overall" | "project" | "wip" | "register" | "ideas";
-  parentBoardId?: string;  // board hierarchy lives here (GitHub has none)
+  parentBoardId?: string; // board hierarchy lives here (GitHub has none)
   siblingOrder: number;
   title: string;
 }
@@ -92,7 +92,7 @@ three Apps hold `organization_projects: write` on all admin orgs incl.
 developing-today-forks and Clustered-Computing) — i.e. the collector calls
 the same tier machinery `fleet gh` merged today (PR #9054), per-org.
 
-**WIP board**: the granular current-implementation board is a *role*, not a
+**WIP board**: the granular current-implementation board is a _role_, not a
 new project: a dedicated view on #4 (Status ∈ {In Progress, In Review},
 all Areas) + the dashboard `/board` surface, which already curates WIP
 across sources, extended to all registry boards.
@@ -101,13 +101,13 @@ across sources, extended to all registry boards.
 
 Levels, top to bottom, and the edge that links each pair:
 
-| Level | Entity | Edge to level below | Edge lives in |
-|---|---|---|---|
-| Overall roadmap priority | **Roadmap-item issue** with `kind/roadmap-item`, Horizon set, on board #4 | native parent of roadmap items (or label relay, below) | GitHub native sub-issue |
-| Project roadmap item | Roadmap-item issue (same kind, per project) | native parent of its epics where the slot is free; else the epic carries `epic/<name>` + `primary-parent/<roadmap-slug>` (§3) | GitHub native / labels |
-| Design | Design tracking issue (`design` label + `design/<name>`) | **spawned-by**: the epic's native parent is the design tracking issue where free; else epic carries `design/<name>` and the design's tracking issue lists it (collector derives `spawnedByRef` from the label→tracking-issue map in the design register manifest) | GitHub native / register manifest |
-| Epic | Issue, Kind=Epic, `epic` + `epic/<name>` | native parent of its tasks (the standing two-sided membership) | GitHub native + labels |
-| Task / bugfix | Issue or PR | — | — |
+| Level                    | Entity                                                                    | Edge to level below                                                                                                                                                                                                                                               | Edge lives in                     |
+| ------------------------ | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| Overall roadmap priority | **Roadmap-item issue** with `kind/roadmap-item`, Horizon set, on board #4 | native parent of roadmap items (or label relay, below)                                                                                                                                                                                                            | GitHub native sub-issue           |
+| Project roadmap item     | Roadmap-item issue (same kind, per project)                               | native parent of its epics where the slot is free; else the epic carries `epic/<name>` + `primary-parent/<roadmap-slug>` (§3)                                                                                                                                     | GitHub native / labels            |
+| Design                   | Design tracking issue (`design` label + `design/<name>`)                  | **spawned-by**: the epic's native parent is the design tracking issue where free; else epic carries `design/<name>` and the design's tracking issue lists it (collector derives `spawnedByRef` from the label→tracking-issue map in the design register manifest) | GitHub native / register manifest |
+| Epic                     | Issue, Kind=Epic, `epic` + `epic/<name>`                                  | native parent of its tasks (the standing two-sided membership)                                                                                                                                                                                                    | GitHub native + labels            |
+| Task / bugfix            | Issue or PR                                                               | —                                                                                                                                                                                                                                                                 | —                                 |
 
 Cross edges: **blocked-by** = native `blockedBy` (#1122 semantics: an open
 blocker blocks; the `status/blocked` label never creates edges).
@@ -134,7 +134,7 @@ parent** — the one the genealogy sentence follows.
 **Canonical form (GitHub): the native sub-issue parent, when one exists, IS
 the primary parent.** When the native slot is unavailable or deliberately
 points elsewhere (multi-carrier epics, an item whose working parent is a
-design but whose *program* parent is an epic), the primary parent is marked
+design but whose _program_ parent is an epic), the primary parent is marked
 with a label:
 
 ```
@@ -189,14 +189,14 @@ New: **release milestones** — bounded containers that close with a release.
   milestone description (GitHub-visible) and served by the API (§6) —
   Drew's example shape: "closed with the release covering 123 issues,
   23 designs, 4 epics."
-- Retroactive pass: accounting is *computed* for the existing program
+- Retroactive pass: accounting is _computed_ for the existing program
   milestones too (they get counts, not closures).
 
 **Carryover (D5, S6) — pinned meaning:** an epic **spans** release
 milestones. It stays open; at a release close, its milestone assignment
 moves to the next release milestone (or is unset until one exists) and the
-closing milestone's snapshot lists it under *carried over*. A carryover
-epic is normally a *parent* epic: its child epics may close with the
+closing milestone's snapshot lists it under _carried over_. A carryover
+epic is normally a _parent_ epic: its child epics may close with the
 milestone while it continues — holding fixes from already-merged work
 (already-closed children) plus later design phases (open children). No
 re-issue, no duplication: one epic, moving assignment, snapshot history.
@@ -278,6 +278,7 @@ until Grist grows the columns.
 ## 7. Closure gates + re-parenting (D4/D5, S8/S9)
 
 **Gate** — an epic or roadmap item may close only when ALL hold:
+
 1. Every design in its subtree is done (design tracking issues closed, or
    explicitly Drew-gated — the #8805 exception precedent).
 2. No open descendant is a qualifying bug/follow-up: `kind/bug` with
@@ -287,13 +288,14 @@ until Grist grows the columns.
 
 **Re-parenting** (on close): each unfinished child moves to the
 **most-related** open epic — relatedness, in order: shared `design/<name>`
+
 > shared primary-parent chain > shared `epic/<name>` > shared board Area —
-else to the project's **maintenance epic**. Native parent is re-pointed
-(`replace_parent`), `primary-parent/*` label updated, all other labels
-kept (additive-retention rule), and the move is commented on both the
-child and the closing epic. This overrides the lineage pass's
-never-re-parent precedent **for closes only** — ordinary re-parenting
-outside a close still does not happen silently.
+> else to the project's **maintenance epic**. Native parent is re-pointed
+> (`replace_parent`), `primary-parent/*` label updated, all other labels
+> kept (additive-retention rule), and the move is commented on both the
+> child and the closing epic. This overrides the lineage pass's
+> never-re-parent precedent **for closes only** — ordinary re-parenting
+> outside a close still does not happen silently.
 
 **Maintenance epics**: none exist per project today (only repo-wide
 #8978 daily-maintenance). A slice creates one per project — ID, Atlas,
@@ -304,7 +306,7 @@ and boarded on the project's board.
 
 **Enforcement**: a close-check in the weekly monitor family (precedent:
 `design-register-weekly-monitor`) + a reconcile report section listing
-epics that *look* closable-but-gated and closes that skipped re-parenting.
+epics that _look_ closable-but-gated and closes that skipped re-parenting.
 GitHub cannot hard-block a close; the monitor is the enforcement surface,
 which matches how #8805's accidental auto-close was caught.
 
@@ -350,7 +352,6 @@ roadmap-item issue — so the sentence completes to the top on real data.
 - Grist remains the roadmap mirror until the row→issue migration slice
   completes; drift is reported, never silently resolved.
 
-
 ## 11. Link semantics (amendment, Drew 2026-11-12 16:45 CST)
 
 An item has **exactly one direct parent at a time**, but it keeps
@@ -370,7 +371,7 @@ Every link is therefore a record, not a bare pointer, carrying a
   with `until` + `reason` (e.g. `split`, `carryover`, `reparent-on-close`).
 - `status: removed` — a wrong link, deleted from GitHub (native parent
   re-pointed / label removed) and recorded in Metadata with
-  `reason: misclassification`, so the *removal* is auditable without the
+  `reason: misclassification`, so the _removal_ is auditable without the
   link itself surviving. Historical-retention and wrong-link removal are
   distinct operations and the data must never blur them (§7's
   re-parent-on-close produces `historical`, never `removed`).
@@ -390,7 +391,7 @@ Every issue and PR body carries a **Metadata section**, delimited by
 HTML-comment markers so it is invisible in rendered views but trivially
 locatable in the raw body:
 
-```
+````
 <!-- pm-metadata:start -->
 ```json
 {
@@ -407,8 +408,10 @@ locatable in the raw body:
                  "work_started_at": null, "created_at": null,
                  "model": null, "lane_start_issues": []}
 }
-```
+````
+
 <!-- pm-metadata:end -->
+
 ```
 
 Format decision: **JSON**, not YAML or a bespoke dictionary syntax.
@@ -510,3 +513,4 @@ New implementation slices under #9060 (in addition to §9):
 And §9 slice 3 (primary parent) now also carries §11's historical-link
 semantics in the collector (link records with status, historical chain
 rendering, removed-link audit).
+```

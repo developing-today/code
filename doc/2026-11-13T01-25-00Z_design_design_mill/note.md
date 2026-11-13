@@ -25,7 +25,7 @@ against. Worse, the failure mode is silent: a requirement nobody wrote
 down is a requirement nobody builds, and nothing reports the loss.
 
 The design mill is the technique we use instead. It treats a large
-directive as raw material to be *milled* — ground down, recursively, until
+directive as raw material to be _milled_ — ground down, recursively, until
 every piece is small enough to build:
 
 ```
@@ -44,7 +44,7 @@ directive
 The shape is recursive by design: a child design inside one program can
 itself be milled (its own inventory, its own slices), and designs of
 designs are the normal case, not the exception. The 2026-10-28 ID program
-ran investigations whose *synthesis* issues merged them into designs,
+ran investigations whose _synthesis_ issues merged them into designs,
 which then spawned their own follow-ups — three levels deep before any
 code was written.
 
@@ -66,7 +66,7 @@ code was written.
    directions. A later pass adds designs and next steps; it never
    silently rewrites the earlier ones away.
 5. **Research is its own issue class.** State-of-the-art expansion
-   (competitors, prior art, best-in-class) happens *before* design, as
+   (competitors, prior art, best-in-class) happens _before_ design, as
    filed, evidence-backed items that sibling designs build on. "Needs
    research" is a filing, not a blocker and not a gap papered over
    inside a design.
@@ -134,10 +134,10 @@ became epic [#2056](https://github.com/developing-today/code/issues/2056)
 (ID platform expansion — apps, comms, currency, hosting, boards),
 filed 2026-10-29 with **29 children (#2026–#2054)**: 19 parallel
 investigations and 10 named syntheses. Every child carried the same
-working pattern verbatim: *"parallel investigations, then the named
+working pattern verbatim: _"parallel investigations, then the named
 synthesis issue merges them into a full design… Deliverables: a markdown
 design/investigation doc … plus follow-up issues for anything
-buildable."* A second wave of ramification issues (#2057–#2066 — world
+buildable."_ A second wave of ramification issues (#2057–#2066 — world
 VMs, currency control planes, key recovery) was filed the same morning.
 
 **The interfaces layer** — many interfaces and app shapes over one ID
@@ -160,8 +160,8 @@ designs" is most visible:
   [#3910](https://github.com/developing-today/code/pull/3910).
 - **IRC:** investigation
   [#2049](https://github.com/developing-today/code/issues/2049)
-  ("IRC-first chat on ID"; its doc quotes the ask: *"I mostly just want
-  IRC", with room to grow toward Discord/Slack/Teams*) → synthesis
+  ("IRC-first chat on ID"; its doc quotes the ask: _"I mostly just want
+  IRC", with room to grow toward Discord/Slack/Teams_) → synthesis
   [#2051](https://github.com/developing-today/code/issues/2051) (ID chat
   v1 — "the smallest IRC-shaped channel layer"), PR
   [#3866](https://github.com/developing-today/code/pull/3866), with PoC
@@ -176,12 +176,12 @@ designs" is most visible:
   boards v1), PR [#3832](https://github.com/developing-today/code/pull/3832).
 - **Real-time games, ticks, agreed winners:** investigation
   [#2037](https://github.com/developing-today/code/issues/2037)
-  (match-result attestation — *"A result counts when both agree who won
+  (match-result attestation — _"A result counts when both agree who won
   (chess-style: the loser says the other won), OR both players send
-  their data to a user acting as WITNESS who … decides a winner"*) +
+  their data to a user acting as WITNESS who … decides a winner"_) +
   investigation [#2038](https://github.com/developing-today/code/issues/2038)
   (match audit — replay validation; provable results require a world
-  program *"deterministic under replay (fixed tick, seeded RNG…)"*) →
+  program _"deterministic under replay (fixed tick, seeded RNG…)"_) →
   synthesis [#2039](https://github.com/developing-today/code/issues/2039)
   (match attestation + audit v1), PR
   [#3807](https://github.com/developing-today/code/pull/3807). The
@@ -194,7 +194,7 @@ ID) → 29 children + 10 same-morning ramifications → investigations
 landed Oct 29–30 → syntheses landed as designs on 2026-11-01/02 → PoC
 and slice children filed throughout.
 
-**Honest edges:** feeds were *not* part of the October directive —
+**Honest edges:** feeds were _not_ part of the October directive —
 board feeds arrive 2026-11-04/05 via
 [#5680](https://github.com/developing-today/code/issues/5680) →
 [#5862](https://github.com/developing-today/code/issues/5862). The
@@ -231,9 +231,9 @@ step one PR with `main` green and a byte-identical canary. Steps 1–5
 landed and closed on 2026-11-11; steps 6–7 remain open and are being
 worked under the same design.
 
-**Classification, honestly:** this is the mill *pattern* (one design,
+**Classification, honestly:** this is the mill _pattern_ (one design,
 ground into individually workable steps under a single umbrella) but
-not a formal mill *run* — no summit session, no queue item; the design
+not a formal mill _run_ — no summit session, no queue item; the design
 came out of the ID program's investigation→synthesis machinery. It is
 included because Drew counts it in the family, and because it shows
 the pattern operating inside a program the mill later formalized.
@@ -251,7 +251,7 @@ results and system-prompt suggestions", 2026-11-06). Its findings
 became granular children within the hour — including
 [opencode#1883](https://github.com/developing-today-forks/opencode/issues/1883),
 the `question`-tool stall bug (a detached subsession's question
-silently stalls the child *and* its foreground parent, and the retry
+silently stalls the child _and_ its foreground parent, and the retry
 machinery re-asks in a loop), which is the empirical origin of the
 mill's detached-operation rule. The working pattern was also written
 into the repos' agent docs the same day (PR
@@ -292,7 +292,7 @@ explicit v1/v2/v3/v4 layer issues (#6287–#6290) on 2026-11-05.
 
 **Directive:** Drew's 2026-11-11 order — review every design and larger
 task asked for in the past 60 days, make a comprehensive list, load it
-into the PM stack, and *stop dropping asked-for work*.
+into the PM stack, and _stop dropping asked-for work_.
 
 Epic [#8805](https://github.com/developing-today/code/issues/8805).
 The register itself merged via PR
@@ -332,7 +332,7 @@ times in a single day:
    (`doc/2026-11-12T22-50-00Z_design_pm-board-hierarchy-genealogy/`,
    16 sections); **12 implementation slices** filed as native
    sub-issues (#9062, #9065–#9071, #9073–#9076).
-   *Lesson:* the PM-stack coherence epic #1184 was already at GitHub's
+   _Lesson:_ the PM-stack coherence epic #1184 was already at GitHub's
    **100-sub-issue-per-parent cap**, so #9060 could not be natively
    parented under it — the design added the rule that grouping epics
    near the cap get an intermediate grouping epic.
@@ -347,7 +347,7 @@ times in a single day:
    elaboration queued as task 15339. A same-day amendment (dual
    tier-1 platforms; the self-hosted tier) was folded in as a tenth
    component (#9087) before the intake even closed.
-   *Lesson from the sibling wiring check:* a *stale sandbox binary*
+   _Lesson from the sibling wiring check:_ a _stale sandbox binary_
    had made `fleet gh` look like it couldn't rotate tokens — an
    instrument fault nearly recorded as a design flaw (filed and
    closed as [#9057](https://github.com/developing-today/code/issues/9057)).
@@ -363,7 +363,7 @@ times in a single day:
    (`doc/2026-11-12T23-59-00Z_design_atlas_v1_proto/`) whose §J maps
    **every statement of the directive to its issue**; **10 workstream
    issues #9092–#9101**; elaboration queued as task 15341. The intake
-   also *amended* two existing designs' slices (#9073/#9074, binding
+   also _amended_ two existing designs' slices (#9073/#9074, binding
    them to the shared schema-version doctrine) and recorded Atlas's
    storage questions as inputs — explicitly not decisions — to the
    hosted-editions content-plane design (#9084): the amend-don't-fork
@@ -387,7 +387,7 @@ times in a single day:
 
 ## 4. When NOT to use the mill
 
-The mill is for directives whose decomposition *is* the work. It is
+The mill is for directives whose decomposition _is_ the work. It is
 the wrong tool when:
 
 - **The design fits in one doc a competent reader can hold whole.** A

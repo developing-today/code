@@ -6630,7 +6630,6 @@ esac
         let _ = std::fs::remove_dir_all(bin.parent().unwrap());
     }
 
-
     // ---- #8363: comment-kind marker resolution ----
     // Oracle: for issue_comment / pr_comment entries the search hit's
     // number is the ISSUE number, a different id namespace from

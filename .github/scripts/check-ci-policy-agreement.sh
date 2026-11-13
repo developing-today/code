@@ -791,8 +791,8 @@ for row in "${REGISTRY[@]}"; do
       # (#7950): a mis-filtered push keeps the leg in disagreement,
       # so a waiver for it is recorded, never stale.
       case "$(push_targets_main "$wf")" in
-        yes) agrees=1 ;;
-        no) mistargeted=1 ;;
+      yes) agrees=1 ;;
+      no) mistargeted=1 ;;
       esac
     elif printf '%s\n' "$triggers" | grep -qx "$req"; then
       agrees=1

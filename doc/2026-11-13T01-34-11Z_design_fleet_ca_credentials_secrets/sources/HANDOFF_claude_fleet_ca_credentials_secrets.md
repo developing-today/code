@@ -63,9 +63,7 @@ Cloudflare MTC performance/rollout: https://blog.cloudflare.com/pq-ca-with-mtcs/
 Cloudflare controlled-origin ML-DSA: https://blog.cloudflare.com/post-quantum-authentication-to-origins/
 Open components: https://github.com/cloudflare/azul and https://github.com/bwesterb/mtc
 
-
 Original v0.3 delivery and short implementation prompt: https://chatgpt.com/c/6aed4e36-8454-83ea-88c6-d42b54fdbbad?messageId=7b458918-f70f-4e1e-850d-ff7f4b7c6f6a
 Recovered Muse transition notes: https://docs.google.com/document/d/1zKK_gHj0iN9FIk1qS2v5L2mvVlGriXCVrzAv4L1lxj0/edit
 Raw CA/secrets precursor (historical only): https://docs.google.com/document/d/1IYGT8XSAWrgaMxTLjivw_kQOtjePjg0G2rpORp94Eu8/edit
 Older PKI matrix (historical only): https://docs.google.com/document/d/1em30lY72gnM6MqJ-8bQ0d8E3M-RXterqu25HvY1kL8s/edit
-

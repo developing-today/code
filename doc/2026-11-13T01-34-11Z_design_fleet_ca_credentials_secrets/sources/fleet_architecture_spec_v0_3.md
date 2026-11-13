@@ -48,7 +48,7 @@ This draft expands the provided requirements for: root and intermediate architec
 - **Issuer set:** one logical named bundle for one purpose (e.g. `Base`, `Internal Web`, `Public Web`), with a configurable set of per-algorithm intermediate keys and certificates; policy, metadata and published artifacts belong to the set.
 - **Algorithm:** canonical registry ID such as `rsa-4096`, `p256`, `ed25519`, `ml-dsa-44`, with aliases and explicitly versioned implementations.
 - **Cross-certificate:** a second certificate for an existing CA subject public key, signed by a different CA. It does not share a private key across algorithms.
-- **Trust anchor:** a key/certificate intentionally trusted by a verifier. A cross-certificate or an intermediate is normally an *untrusted path-building candidate*, never automatically a new trust anchor.
+- **Trust anchor:** a key/certificate intentionally trusted by a verifier. A cross-certificate or an intermediate is normally an _untrusted path-building candidate_, never automatically a new trust anchor.
 - **Credential family:** X.509/PKIX, SSH certificates/keys, OpenPGP, JWK/JWKS/JWT, and other systems with distinct semantics. Formats are **not** interchangeable.
 - **Generation:** a sequence of replacement identities or certificate epochs (`g1`, `g2`, ...); **partition:** parallel shard/instance (`a`, `b`, ...). Thus `g4b` means generation 4, partition b. Bundle GUID and certificate fingerprints remain the canonical machine identifiers.
 - **Private material:** private keys, seed values, HSM credentials, exportable encrypted PKCS#12, access tokens, and other information that requires secret handling.
@@ -64,9 +64,9 @@ The public repository `developing-today/code` exists. As inspected on 2026-11-05
 - `fleet-secrets` enforces name-only resolution, hides secret values in errors/debug output, avoids storing secret values, and treats unexpectedly empty resolved values as failure. Preserve or strengthen these invariants. See [secrets platform](https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fleet-secrets/src/lib.rs).
 - An existing [fleet multicall design record](https://github.com/developing-today/code/blob/main/doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/2026-11-04T11-45-48Z_design_fleet_multicall_binary.md) documents the motivations, profiles, proxy contracts, migration approach, and design constraints. Read the full record before expanding its domain registry or binary variants.
 
-**Integration requirements:** Add `cert`/`pki`, `generate`, extended `secrets`, `skills`, and related capabilities to the *existing* registry, feature matrix, help, config, crates, packaging and smoke tests. Do not break `fleet-connect`'s size budget or change unrelated RPC/wire protocols. The cryptographic generation engine is permitted in the full build and/or an explicitly named featureful variant; avoid dragging OpenSSL or PQ providers into the tiny proxy binary. Preserve the current small-build contract and version/capability introspection. Do not conflate `fleet`'s existing `secrets-broker` network service with a new certificate authority server without explicit design.
+**Integration requirements:** Add `cert`/`pki`, `generate`, extended `secrets`, `skills`, and related capabilities to the _existing_ registry, feature matrix, help, config, crates, packaging and smoke tests. Do not break `fleet-connect`'s size budget or change unrelated RPC/wire protocols. The cryptographic generation engine is permitted in the full build and/or an explicitly named featureful variant; avoid dragging OpenSSL or PQ providers into the tiny proxy binary. Preserve the current small-build contract and version/capability introspection. Do not conflate `fleet`'s existing `secrets-broker` network service with a new certificate authority server without explicit design.
 
-**Follow-up repository census (required):** enumerate every pre-existing CLI, domain, alias, feature flag, secret namespace, config key, docs entry, planned-but-unimplemented feature, HSM/storage adapter and automation caller. Confirm Nix packaging, pinned toolchain, concurrency and deployments. Verify source against a pinned commit before implementation. This draft is *not* evidence that all future subsystems exist.
+**Follow-up repository census (required):** enumerate every pre-existing CLI, domain, alias, feature flag, secret namespace, config key, docs entry, planned-but-unimplemented feature, HSM/storage adapter and automation caller. Confirm Nix packaging, pinned toolchain, concurrency and deployments. Verify source against a pinned commit before implementation. This draft is _not_ evidence that all future subsystems exist.
 
 ## 2. Product vision and operating modes
 
@@ -102,12 +102,12 @@ Profiles inherit defaults **organization → root set → issuer set → leaf**,
 
 ### 3.1 Root set: four independent key identities
 
-| ID | Default key | Private key | Self-signed cert | Role |
-|---|---|---:|---:|---|
-| `rsa-4096` | RSA 4096, RSA/SHA-256 or stronger validated compatible scheme | 1 | 1 | Classical compatibility |
-| `p256` | ECDSA P-256 | 1 | 1 | Classical compatibility |
-| `ed25519` | Ed25519 | 1 | 1 | Preferred classical performance |
-| `ml-dsa-44` | FIPS 204 ML-DSA-44 | 1 | 1 | Post-quantum signature hierarchy |
+| ID          | Default key                                                   | Private key | Self-signed cert | Role                             |
+| ----------- | ------------------------------------------------------------- | ----------: | ---------------: | -------------------------------- |
+| `rsa-4096`  | RSA 4096, RSA/SHA-256 or stronger validated compatible scheme |           1 |                1 | Classical compatibility          |
+| `p256`      | ECDSA P-256                                                   |           1 |                1 | Classical compatibility          |
+| `ed25519`   | Ed25519                                                       |           1 |                1 | Preferred classical performance  |
+| `ml-dsa-44` | FIPS 204 ML-DSA-44                                            |           1 |                1 | Post-quantum signature hierarchy |
 
 Do not confuse ML-DSA-44 with the non-byte-compatible pre-standard Dilithium2 scheme. ML-DSA-44 is NIST security category 2, not an RSA or Ed25519 variant. Use the standardized X.509 algorithm identifiers and key encodings in RFC 9881.
 
@@ -115,16 +115,16 @@ Do not confuse ML-DSA-44 with the non-byte-compatible pre-standard Dilithium2 sc
 
 **Rows are signing roots; columns are root CA public keys being certified.**
 
-| Signing root ↓ / certified root key → | RSA | P-256 | Ed25519 | ML-DSA-44 |
-|---|---|---|---|---|
-| RSA | Self | Cross | Cross | Cross |
-| P-256 | Cross | Self | Cross | Cross |
-| Ed25519 | Cross | Cross | Self | Cross |
-| ML-DSA-44 | **No** | **No** | **No** | Self |
+| Signing root ↓ / certified root key → | RSA    | P-256  | Ed25519 | ML-DSA-44 |
+| ------------------------------------- | ------ | ------ | ------- | --------- |
+| RSA                                   | Self   | Cross  | Cross   | Cross     |
+| P-256                                 | Cross  | Self   | Cross   | Cross     |
+| Ed25519                               | Cross  | Cross  | Self    | Cross     |
+| ML-DSA-44                             | **No** | **No** | **No**  | Self      |
 
 Inventory: 4 distinct root private keys, 4 self-signed certificates, 6 classical↔classical cross-certificates, 3 classical→ML-DSA cross-certificates = **13 root-level certificates**. Create all root cross-certs with appropriately selected CA certificate extensions and private key protection. No ML-DSA root certificate shall certify a classical root key by default. The cross certificates are alternative chain objects, not trusted roots by themselves.
 
-**Graph rationale:** Any classical root can potentially anchor chains to another classical root, and a classical root can potentially anchor an ML-DSA CA chain for a client that supports its signatures. A PQ-enforced verifier trusts *only* the ML-DSA root and requires ML-DSA signatures throughout the certification path; therefore the classical cross certificates cannot authorize classical roots to that verifier. This separation is a **verifier policy**, not a property of certificate issuance alone. A device that trusts all four unrestricted roots has compatibility, not guaranteed PQ authentication assurance. No cross-sign pattern can grant an unimplemented signature algorithm to a client.
+**Graph rationale:** Any classical root can potentially anchor chains to another classical root, and a classical root can potentially anchor an ML-DSA CA chain for a client that supports its signatures. A PQ-enforced verifier trusts _only_ the ML-DSA root and requires ML-DSA signatures throughout the certification path; therefore the classical cross certificates cannot authorize classical roots to that verifier. This separation is a **verifier policy**, not a property of certificate issuance alone. A device that trusts all four unrestricted roots has compatibility, not guaranteed PQ authentication assurance. No cross-sign pattern can grant an unimplemented signature algorithm to a client.
 
 **Compromise model:** A quantum-capable attacker breaking RSA/P-256/Ed25519 could forge paths anchored to affected classical trust anchors; they do not recover the real ML-DSA intermediate key merely because its root key has a classical cross-certificate. The all-ML-DSA path remains distinct on clients with an ML-DSA-only trust policy. Classical↔classical cross-signing deliberately couples their effective trust scope; call this out in threat modeling. Do not misrepresent short-lived Ed25519 certs as post-quantum secure.
 
@@ -137,10 +137,10 @@ Each intermediate CA certificate should have `basicConstraints: CA=true`, `keyUs
 ### 3.4 Leaf identity and protocol interoperability
 
 - Generate an independently keyed leaf for each **selected key algorithm**. One X.509 certificate has one subject public key and one issuer signature; bundling three PEMs is not one multi-signed certificate.
-- A server may present RSA, P-256 and Ed25519 certificate identities for the *same* SANs, selecting according to client/implementation capability. ML-DSA TLS leaf support requires an explicitly tested provider/stack and is not universal.
+- A server may present RSA, P-256 and Ed25519 certificate identities for the _same_ SANs, selecting according to client/implementation capability. ML-DSA TLS leaf support requires an explicitly tested provider/stack and is not universal.
 - Cross-root trust and TLS signature negotiation are distinct concerns. If two peers truly lack each other's signature implementation, only providing a different chain does not establish a connection.
 - Issue purpose-appropriate EKU/keyUsage/SAN, key strength and validity. CN is not a substitute for DNS SAN. No wildcard on a bare registrable suffix; verify IDNA/public suffix and DNS wildcard constraints.
-- **Cryptographic separation:** the classical and PQ signing keys are never the same private key. Classical→PQ *root cross-certificate* shares the **same ML-DSA root public key** as the self-signed PQ root; that is intentional and does not expose the PQ private key.
+- **Cryptographic separation:** the classical and PQ signing keys are never the same private key. Classical→PQ _root cross-certificate_ shares the **same ML-DSA root public key** as the self-signed PQ root; that is intentional and does not expose the PQ private key.
 - For SSH, OpenPGP, JWT, etc., create their genuinely native credential objects rather than claiming X.509 conversion; profile eligibility and trust distribution are separate.
 
 ### 3.5 Trust-store install bundles
@@ -199,7 +199,7 @@ Use RFC 5280 HTTP MIME: `application/pkix-cert` for DER X.509, `application/pkcs
 
 ### 4.4 DNS/publication manifest
 
-Each root/issuer/leaf delivery should include `publish-plan.yaml` (canonical normalized schema), `dns.zone` (BIND RFC 1035-format fragment when DNS changes are needed), optional `dns.nsupdate` (when configured), and `PUBLISH.md` containing exact *relative local source paths* and *target HTTP URLs*, deployment order, cache/revocation caveats, validation commands, rollback guidance, and the fact that publishing is not automatically equivalent to DNS changes.
+Each root/issuer/leaf delivery should include `publish-plan.yaml` (canonical normalized schema), `dns.zone` (BIND RFC 1035-format fragment when DNS changes are needed), optional `dns.nsupdate` (when configured), and `PUBLISH.md` containing exact _relative local source paths_ and _target HTTP URLs_, deployment order, cache/revocation caveats, validation commands, rollback guidance, and the fact that publishing is not automatically equivalent to DNS changes.
 
 Example illustrative plan:
 
@@ -221,7 +221,7 @@ prerequisites:
   - "Replace placeholder DNS target; never publish a literal placeholder"
 ```
 
-Require a configured target IP/CNAME to generate executable DNS records. If DNS is already correct, report `no changes`, not fabricated changes. CAA is a *public CA authorization* DNS concept and does not automatically authorize private-CA issuance. A wildcard DNS name in SAN does not require a literal wildcard DNS record. Generate per-provider DNS adapters in future rather than hand-editing undocumented formats.
+Require a configured target IP/CNAME to generate executable DNS records. If DNS is already correct, report `no changes`, not fabricated changes. CAA is a _public CA authorization_ DNS concept and does not automatically authorize private-CA issuance. A wildcard DNS name in SAN does not require a literal wildcard DNS record. Generate per-provider DNS adapters in future rather than hand-editing undocumented formats.
 
 ## 5. Naming, stable identifiers, serial numbers, generations
 
@@ -254,7 +254,7 @@ op://<vault>/<item>/<field>          # provider-native reference where valid
 bws://<project>/<key-or-id>         # provider-native reference where valid
 ```
 
-Proposed canonical *logical* secret hierarchy (final punctuation/length/provider mapping decided after connector tests):
+Proposed canonical _logical_ secret hierarchy (final punctuation/length/provider mapping decided after connector tests):
 
 ```
 pki/developing-today/root-set/default/g1a/<algo>/<artifact>
@@ -263,7 +263,7 @@ pki/developing-today/issuer-set/internal-web/g1a/<algo>/<artifact>
 pki/developing-today/leaf/<profile>/<identity-slug>/g1a/<algo>/<artifact>
 ```
 
-Include org, optional OU/namespace, key type, role, purpose, generation, partition and artifact identity. Bitwarden's `bws` secret key and 1Password's vault/item/field addressing are *not identical path models*; provider adapters must map a stable logical key to provider-native objects, maintain inverse lookups, and document provider limits. Canonical display paths may be dotted (`pki.developing-today...`) but provider-specific byte encodings and escaping must be tested. `secret://` is a **fleet-level reference**, not a claim that vendor CLIs accept it directly. An offline root may have a public manifest in the inventory and a private key handle that is intentionally **not present** in either online secret store.
+Include org, optional OU/namespace, key type, role, purpose, generation, partition and artifact identity. Bitwarden's `bws` secret key and 1Password's vault/item/field addressing are _not identical path models_; provider adapters must map a stable logical key to provider-native objects, maintain inverse lookups, and document provider limits. Canonical display paths may be dotted (`pki.developing-today...`) but provider-specific byte encodings and escaping must be tested. `secret://` is a **fleet-level reference**, not a claim that vendor CLIs accept it directly. An offline root may have a public manifest in the inventory and a private key handle that is intentionally **not present** in either online secret store.
 
 ### 5.4 Expiration and time grammar
 
@@ -377,7 +377,7 @@ fleet cert leaf issue --issuer ./bundles/issuers/base/<resolved> \
   --output ./deliveries/base-test-identity
 ```
 
-An unnamed non-web Base leaf may be generated with an explicit auto-generated identity, annotated `not suitable for hostname verification without SAN`. Issuance from Base should require an explicit intended purpose for production, but its *demonstration* must work with only the issuer reference and `1y`, producing a testing/profile-safe leaf. In particular, `fleet cert leaf issue --issuer <base-bundle> --valid-for 1y` must work without `--name`, using a distinctly marked generated identity. Provide a human and machine warning rather than inventing a privileged use.
+An unnamed non-web Base leaf may be generated with an explicit auto-generated identity, annotated `not suitable for hostname verification without SAN`. Issuance from Base should require an explicit intended purpose for production, but its _demonstration_ must work with only the issuer reference and `1y`, producing a testing/profile-safe leaf. In particular, `fleet cert leaf issue --issuer <base-bundle> --valid-for 1y` must work without `--name`, using a distinctly marked generated identity. Provide a human and machine warning rather than inventing a privileged use.
 
 **5 — Issue a default Web leaf kit for two domains and wildcards:**
 
@@ -421,9 +421,9 @@ Ensure `--force` only means overwrite behavior. It MUST NOT imply approval to re
 
 #### Format and protocol flag parsing
 
-Support canonical `--formats pem,der,p7c` and friendly `--pem --der --p7c` aliases, with a central format registry; per-command help states available/unsupported combinations. `--ssh`, `--pgp`, `--openpgp`, `--jwk`, `--jwt`, `--x5c`, `--sec1`, `--did`, `--jsonld`, `--multikey`, `--ipfs`, `--w3c` must **not** be treated as equivalent conversion flags: some select new credential issuance, some key representations, some signed-token generation, some publication identifiers/metadata. Use a semantic taxonomy and meaningful affordances, e.g. `fleet generate ssh cert`, `fleet generate jwk`, `fleet generate jwt`, `fleet cert format export --format pkcs12`, plus easy aliases that **dispatch to these engines**. A tool should say *unsupported for this algorithm/profile* with an actionable alternative rather than emit misleading fake files.
+Support canonical `--formats pem,der,p7c` and friendly `--pem --der --p7c` aliases, with a central format registry; per-command help states available/unsupported combinations. `--ssh`, `--pgp`, `--openpgp`, `--jwk`, `--jwt`, `--x5c`, `--sec1`, `--did`, `--jsonld`, `--multikey`, `--ipfs`, `--w3c` must **not** be treated as equivalent conversion flags: some select new credential issuance, some key representations, some signed-token generation, some publication identifiers/metadata. Use a semantic taxonomy and meaningful affordances, e.g. `fleet generate ssh cert`, `fleet generate jwk`, `fleet generate jwt`, `fleet cert format export --format pkcs12`, plus easy aliases that **dispatch to these engines**. A tool should say _unsupported for this algorithm/profile_ with an actionable alternative rather than emit misleading fake files.
 
-Prefer explicit `--algorithms` replacement semantics plus `--add-algorithm` union semantics. A single undocumented mix of `--crypto` and booleans MUST NOT silently change which keys are generated. Every alias needs equivalence tests. `--all-formats` means all *supported safe exportable representations for this credential*, not every conceivable unrelated credential family.
+Prefer explicit `--algorithms` replacement semantics plus `--add-algorithm` union semantics. A single undocumented mix of `--crypto` and booleans MUST NOT silently change which keys are generated. Every alias needs equivalence tests. `--all-formats` means all _supported safe exportable representations for this credential_, not every conceivable unrelated credential family.
 
 ### 6.4 Library API parity with CLI
 
@@ -482,13 +482,11 @@ jobs:
   - id: base
     depends_on: [roots]
     action: cert.issuer.create
-    args: { root: "${jobs.roots.bundle_ref}", name: Base,
-            not_after: "2032-07-07T12:00:00Z" }
+    args: { root: "${jobs.roots.bundle_ref}", name: Base, not_after: "2032-07-07T12:00:00Z" }
   - id: test
     depends_on: [base]
     action: cert.leaf.issue
-    args: { issuer: "${jobs.base.bundle_ref}", valid_for: "1y",
-            name: "base-test-identity" }
+    args: { issuer: "${jobs.base.bundle_ref}", valid_for: "1y", name: "base-test-identity" }
 ```
 
 Interpolation MUST support a constrained typed-reference syntax, not arbitrary code execution. Machine output is always a typed envelope including `schema_version`, `request_id`, `bundle_ref`, status, generated artifact descriptors, secret-store receipts, warnings and policy decisions, with stdout reserved for structured results and stderr for nonsecret diagnostics. For `--output-mode none`, return typed in-memory objects / structured public metadata; if private data is requested, require a secure explicit destination or an acknowledgement. Avoid writing private keys to world-readable logs, processes' command lines or ambient temp directories. If an implementation must use temporary files, use protected directories/permissions, immediate deletion attempts, loudly report cleanup failure, and **never claim secure erase guarantees on SSD, CoW, snapshot or journaled filesystems**.
@@ -563,7 +561,7 @@ Provide `README.md` with commands for each expected publish step (`cp <generated
 - public leaf `.crt` DER and `.pem`, public key SPKI, selected JWK/JWKS, chain PEMs per appropriate trust anchor, server/fullchain PEMs, PKCS#7/P7C (certificates only), PKCS#12/PFX if requested and safely encrypted, fingerprints and manifest; `.cer` aliases only where needed;
 - private keys **only in protected/encrypted output when explicitly authorized**; default handoff may instead contain private-key store references and a secure import guide;
 - `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary;
-- `install/linux.md`, `install/windows.md`, `install/macos.md`, `install/java.md`, `install/firefox.md`, `install/chrome.md`, `install/nginx.md`, `install/apache.md`, `install/caddy.md`, `install/ssh.md`, `install/email.md`, `install/kubernetes.md`, and other relevant guides selected by credential family; examples must distinguish *trust-store CA import* from *server identity/key deployment*;
+- `install/linux.md`, `install/windows.md`, `install/macos.md`, `install/java.md`, `install/firefox.md`, `install/chrome.md`, `install/nginx.md`, `install/apache.md`, `install/caddy.md`, `install/ssh.md`, `install/email.md`, `install/kubernetes.md`, and other relevant guides selected by credential family; examples must distinguish _trust-store CA import_ from _server identity/key deployment_;
 - `PUBLISH.md` and `dns.zone` if public artifacts or DNS changes are required, `verify.sh` and `verify.ps1` containing safe reproducible checks, and `NEXT-STEPS.md` for revocation/renewal;
 - a public-only distribution variant and an explicitly encrypted credential package; avoid a default unencrypted archive that is safe to email only by accident.
 
@@ -573,19 +571,19 @@ Provide `README.md` with commands for each expected publish step (`cp <generated
 
 ### 7.5 Formats and adapters
 
-| Class | Examples | Intended capability |
-|---|---|---|
-| X.509 objects | DER `.crt`/`.cer`, PEM, CMS certs-only `.p7c`/`.p7b` | Baseline, tested |
-| Bundled identity | PKCS#12 `.p12`/`.pfx` | Opt-in encrypted import/export with private key |
-| Public key | SPKI DER/PEM, JWK/JWKS, SSH public key when algorithm supported | Encoding/representation; public only |
-| Private key | PKCS#8 encrypted PEM/DER, supported native SEC1, OpenSSH private key | Explicit policy/protected destination; no default plaintext |
-| TLS deployment | Fullchain PEM, Nginx/Apache/Caddy configs, kube secret templates | Profiles; actual private secret deployment guarded |
-| SSH | OpenSSH host/user CA certs, public-key formats, known_hosts/ssh config | **Separate** native SSH CA/signing workflow |
-| OpenPGP | OpenPGP certificate/key/subkeys and public export | **Separate** PGP semantics and expiration/trust |
-| JWT/JWS/JWK/x5c | Claims/signing, JWK metadata, certificate chain embedding | JWT is a signed assertion, not a cert format |
-| DID/W3C/JSON-LD/Multikey/IPFS | Exportable descriptors or publication resolvers | Optional adapters requiring concrete trust/resolver profile |
-| Archives/objects | zip, tar, tar.gz, tar.zst, zstd, JSON, YAML, JSONC output | Artifact packaging and structured exchange |
-| Future | KDL, CBOR, JOSE/COSE, CSV metadata, OCI artifact, S3/NATS | Registry-driven extension |
+| Class                         | Examples                                                               | Intended capability                                         |
+| ----------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- |
+| X.509 objects                 | DER `.crt`/`.cer`, PEM, CMS certs-only `.p7c`/`.p7b`                   | Baseline, tested                                            |
+| Bundled identity              | PKCS#12 `.p12`/`.pfx`                                                  | Opt-in encrypted import/export with private key             |
+| Public key                    | SPKI DER/PEM, JWK/JWKS, SSH public key when algorithm supported        | Encoding/representation; public only                        |
+| Private key                   | PKCS#8 encrypted PEM/DER, supported native SEC1, OpenSSH private key   | Explicit policy/protected destination; no default plaintext |
+| TLS deployment                | Fullchain PEM, Nginx/Apache/Caddy configs, kube secret templates       | Profiles; actual private secret deployment guarded          |
+| SSH                           | OpenSSH host/user CA certs, public-key formats, known_hosts/ssh config | **Separate** native SSH CA/signing workflow                 |
+| OpenPGP                       | OpenPGP certificate/key/subkeys and public export                      | **Separate** PGP semantics and expiration/trust             |
+| JWT/JWS/JWK/x5c               | Claims/signing, JWK metadata, certificate chain embedding              | JWT is a signed assertion, not a cert format                |
+| DID/W3C/JSON-LD/Multikey/IPFS | Exportable descriptors or publication resolvers                        | Optional adapters requiring concrete trust/resolver profile |
+| Archives/objects              | zip, tar, tar.gz, tar.zst, zstd, JSON, YAML, JSONC output              | Artifact packaging and structured exchange                  |
+| Future                        | KDL, CBOR, JOSE/COSE, CSV metadata, OCI artifact, S3/NATS              | Registry-driven extension                                   |
 
 A new algorithm or format should require **one adapter + registration metadata + profile compatibility declarations + fixture tests**; no global enum explosion or duplicated implementations for each CLI command. Format registry must distinguish `can_export_public`, `can_export_private`, `supports_chain`, `supports_algorithm`, `credential_family`, `mime`, file extension, security/policy requirements and streaming support.
 
@@ -704,12 +702,12 @@ The implementer must generate an isolated deterministic-profile **test** root se
 
 Construct paths for every selected issuer set, leaf signature/key algorithm and trusted root:
 
-| Leaf signed by | Trust RSA root | Trust P-256 root | Trust Ed25519 root | Trust ML-DSA root |
-|---|---|---|---|---|
-| RSA issuer | PASS with suitable root bridge | PASS if RSA+P-256 supported | PASS if RSA+Ed supported | **FAIL** (PQ-only) |
-| P-256 issuer | PASS if ECDSA+RSA supported | PASS | PASS if ECDSA+Ed supported | **FAIL** (PQ-only) |
-| Ed25519 issuer | PASS if Ed+RSA supported | PASS if Ed+P256 supported | PASS | **FAIL** (PQ-only) |
-| ML-DSA issuer | PASS if ML-DSA+RSA supported | PASS if ML-DSA+P256 supported | PASS if ML-DSA+Ed supported | PASS with **all ML-DSA** signatures |
+| Leaf signed by | Trust RSA root                 | Trust P-256 root              | Trust Ed25519 root          | Trust ML-DSA root                   |
+| -------------- | ------------------------------ | ----------------------------- | --------------------------- | ----------------------------------- |
+| RSA issuer     | PASS with suitable root bridge | PASS if RSA+P-256 supported   | PASS if RSA+Ed supported    | **FAIL** (PQ-only)                  |
+| P-256 issuer   | PASS if ECDSA+RSA supported    | PASS                          | PASS if ECDSA+Ed supported  | **FAIL** (PQ-only)                  |
+| Ed25519 issuer | PASS if Ed+RSA supported       | PASS if Ed+P256 supported     | PASS                        | **FAIL** (PQ-only)                  |
+| ML-DSA issuer  | PASS if ML-DSA+RSA supported   | PASS if ML-DSA+P256 supported | PASS if ML-DSA+Ed supported | PASS with **all ML-DSA** signatures |
 
 Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.
 
@@ -771,7 +769,7 @@ pkgs/fleet/AGENTS.md                       repo-local agent instructions
 pkgs/fleet/skills/                        packaged versioned skill templates
 ```
 
-The maintainer must inventory and consolidate **all existing fleet docs** without erasing historical rationale, current or planned domains. Provide a story of *why fleet was made*, existing capabilities, current in-progress work, future plans, ecosystem boundaries, authentication and operational assumptions; update the document as components arrive. The current public repo contains a previous design record and README that should be cross-linked, not contradicted without an ADR.
+The maintainer must inventory and consolidate **all existing fleet docs** without erasing historical rationale, current or planned domains. Provide a story of _why fleet was made_, existing capabilities, current in-progress work, future plans, ecosystem boundaries, authentication and operational assumptions; update the document as components arrive. The current public repo contains a previous design record and README that should be cross-linked, not contradicted without an ADR.
 
 ### 12.1 CLI help as an API
 
@@ -844,30 +842,30 @@ Every milestone should leave: `CHANGELOG`/ADR entry; test output summary; refere
 
 **The historical v0.2 decisions are consolidated in §30; the reconciled v0.3 architecture decisions are in §33.** Where the original risk list assumes missing input 2 or a one-partition issuer default, use that revised ledger.
 
-| Topic | Current proposal | Why not final / what evidence needed |
-|---|---|---|
-| Root set key custody | Offline/nonexportable preference, policy-based sync | User wants default OP+BWS sync; resolve escrow/HSM approval and root recovery policy without leaking root secrets |
-| Exact secret-store naming | Logical slash hierarchy; provider adapters | Inspect actual 1Password vaults/fields and BWS naming/project/permission semantics, confirm secret-size limits and existing fleet names |
-| Web issuer expiry | Explicit override or documented default (e.g. 5y) | Special override mentioned without specific timestamp |
-| Web issuer scope | EKU serverAuth, optional DNS name constraints | Confirm “Internal Web” name scope vs globally public DNS SANs; test application recognition of CA-level restrictions |
-| Leaf default algorithms | All permitted by profile; warn unsupported consumers | Determine which actual TLS/SSH/client stacks can use ML-DSA X.509 and how to select multiple identities |
-| Root AIA preference | Candidate `.p7c` plus DER alternatives | Test clients that stop at first retrieval; design proactive distribution as guaranteed path for controlled clients |
-| Root-level cross-signing | 6 classical bridges + 3 classical→ML-DSA | Test actual chain builders, pathLen, SKI/AKI, root-subject handling, revocation; root cross-certificates may be handled inconsistently |
-| PQ-only policy | ML-DSA root only; require all-ML-DSA signature path | Determine how enforced per application; a global all-roots trust store does not enforce it |
-| OCSP | Omit until implemented | Need multi-issuer status DB/responder, signer authorization, caching and live availability |
-| CA algorithm variants | RSA4096/P256/Ed25519/MLDSA44 | Verify chosen provider versions, SHA schemes, OIDs, FIPS or compliance needs and library maturity |
-| Root renewal after 20 years | `rotate` new keys, staged migration; `renew` reissue semantics | User wants familiar one-command future replacement; explicit trust-store rollout policy needed |
-| Short-lived Web | 90-day proposed default | Must align with deployment/renewal tooling and actual client constraints |
-| Alias meanings | Registries + deprecation warnings | Avoid `dsa` ambiguity and private-key disclosure across shortcut flags |
-| Standalone credentials | Separate SSH/PGP/JWT subsystem | Second input likely defines more; format conversion is not sufficient |
-| Secrets and generation domains | Stubs below | **SECOND INPUT NOT YET RECEIVED** |
-| On-disk default | Protected local output + store sync where authorized | Decide whether default should be `--output-mode store` vs `mixed`, secret delivery expectations |
-| Vault root offline | Manifest-first, key-handle ceremony | Need confirm signing workflow/agent privileges and whether root is actually online at initial creation |
-| DNS host/IP | `pki.developing.today` proposed | Must confirm intended hostname, address, hosting, CDN/HTTP and record-management provider before executable DNS changes |
-| CLI naming | `fleet cert`, alias `fleet pki` | Confirm conflict-free existing commands and help grammar after repo census |
-| Root path selection | Canonical default from inventory/stores | Must detect multiple organizations/roots, stale generations or missing permissions; never silently choose wrong CA |
-| BWS/OP conflict | Conditional dual writes with receipts | Confirm credentials and provider operational model; no true distributed atomicity |
-| Security/compliance | Modern baseline and isolated PQ policy | Evaluate sector-specific rules, public WebPKI vs private PKI and actual device trust model |
+| Topic                          | Current proposal                                               | Why not final / what evidence needed                                                                                                    |
+| ------------------------------ | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Root set key custody           | Offline/nonexportable preference, policy-based sync            | User wants default OP+BWS sync; resolve escrow/HSM approval and root recovery policy without leaking root secrets                       |
+| Exact secret-store naming      | Logical slash hierarchy; provider adapters                     | Inspect actual 1Password vaults/fields and BWS naming/project/permission semantics, confirm secret-size limits and existing fleet names |
+| Web issuer expiry              | Explicit override or documented default (e.g. 5y)              | Special override mentioned without specific timestamp                                                                                   |
+| Web issuer scope               | EKU serverAuth, optional DNS name constraints                  | Confirm “Internal Web” name scope vs globally public DNS SANs; test application recognition of CA-level restrictions                    |
+| Leaf default algorithms        | All permitted by profile; warn unsupported consumers           | Determine which actual TLS/SSH/client stacks can use ML-DSA X.509 and how to select multiple identities                                 |
+| Root AIA preference            | Candidate `.p7c` plus DER alternatives                         | Test clients that stop at first retrieval; design proactive distribution as guaranteed path for controlled clients                      |
+| Root-level cross-signing       | 6 classical bridges + 3 classical→ML-DSA                       | Test actual chain builders, pathLen, SKI/AKI, root-subject handling, revocation; root cross-certificates may be handled inconsistently  |
+| PQ-only policy                 | ML-DSA root only; require all-ML-DSA signature path            | Determine how enforced per application; a global all-roots trust store does not enforce it                                              |
+| OCSP                           | Omit until implemented                                         | Need multi-issuer status DB/responder, signer authorization, caching and live availability                                              |
+| CA algorithm variants          | RSA4096/P256/Ed25519/MLDSA44                                   | Verify chosen provider versions, SHA schemes, OIDs, FIPS or compliance needs and library maturity                                       |
+| Root renewal after 20 years    | `rotate` new keys, staged migration; `renew` reissue semantics | User wants familiar one-command future replacement; explicit trust-store rollout policy needed                                          |
+| Short-lived Web                | 90-day proposed default                                        | Must align with deployment/renewal tooling and actual client constraints                                                                |
+| Alias meanings                 | Registries + deprecation warnings                              | Avoid `dsa` ambiguity and private-key disclosure across shortcut flags                                                                  |
+| Standalone credentials         | Separate SSH/PGP/JWT subsystem                                 | Second input likely defines more; format conversion is not sufficient                                                                   |
+| Secrets and generation domains | Stubs below                                                    | **SECOND INPUT NOT YET RECEIVED**                                                                                                       |
+| On-disk default                | Protected local output + store sync where authorized           | Decide whether default should be `--output-mode store` vs `mixed`, secret delivery expectations                                         |
+| Vault root offline             | Manifest-first, key-handle ceremony                            | Need confirm signing workflow/agent privileges and whether root is actually online at initial creation                                  |
+| DNS host/IP                    | `pki.developing.today` proposed                                | Must confirm intended hostname, address, hosting, CDN/HTTP and record-management provider before executable DNS changes                 |
+| CLI naming                     | `fleet cert`, alias `fleet pki`                                | Confirm conflict-free existing commands and help grammar after repo census                                                              |
+| Root path selection            | Canonical default from inventory/stores                        | Must detect multiple organizations/roots, stale generations or missing permissions; never silently choose wrong CA                      |
+| BWS/OP conflict                | Conditional dual writes with receipts                          | Confirm credentials and provider operational model; no true distributed atomicity                                                       |
+| Security/compliance            | Modern baseline and isolated PQ policy                         | Evaluate sector-specific rules, public WebPKI vs private PKI and actual device trust model                                              |
 
 **No need to ask the user to resolve all decisions immediately.** First inspect the next input, research implementation details, surface a prioritized decision checklist and choose safe explicit defaults for non-critical items. Security-critical choices must never be silently filled with assumptions.
 
@@ -879,74 +877,74 @@ This section deliberately includes easy follow-ups and much harder research or p
 
 ### 15.1 Immediate follow-ups / fitting extensions
 
-| Idea | Complexity | Dependency / acceptance direction |
-|---|---|---|
-| Config and profile inspector (`explain`, `diff`, `validate`) | S–M | Typed config system; show defaults and override source without secrets |
-| Complete shell completions including PowerShell | S–M | Registry; dynamically suggest actual profile/algorithm names; test safety |
-| Structured secret and bundle search/filter | M | Canonical inventory; never search private values as public metadata |
-| Build, inspect, compare, and extract arbitrary bundle artifacts | M | Manifest and format registry; supports byte-level and logical `diff` |
-| Quick install/export of trust anchors by OS/browser/app | M | Platform permission model; default to **plan**, not silent install |
-| Installation lint and security doctor | M | Detect world-readable keys, expired CRLs, unavailable AIA, wrong MIME |
-| Export everything as single audited public kit | M | Export policy excludes private by default; ZIP/TAR reproducibility tests |
-| Render docs as static website/manpage | M | Single source of truth for reference/help/examples |
-| CSR acceptance and CA signing flow | M | Key-handle/signer API; validates requested SANs and extension policy |
-| Mixed profile certificate selection examples | M | Nginx/Caddy/HAProxy/Rustls supported configuration tests |
-| Publication artifact checksum index and archival snapshots | M | Immutable object store and reproducible release metadata |
-| Default certificate renewal alerts | M | Inventory validity/CRL freshness metrics, automation integration |
-| Key rotation visualizer and root-trust graph | M | Cross-certificate graph model; output DOT/Mermaid/SVG/static Markdown |
-| Versioned schema migration and import from OpenSSL/step-ca | M–L | Manifest introspection and trust/provenance validation |
-| Batch reconciliation and interrupted job replay | M–L | Durable receipts, transactional state machine, idempotency |
-| 1Password/BWS migration and mirrored vault audit | M–L | Provider adapters, per-object revisions, value hashing in protected process |
+| Idea                                                            | Complexity | Dependency / acceptance direction                                           |
+| --------------------------------------------------------------- | ---------- | --------------------------------------------------------------------------- |
+| Config and profile inspector (`explain`, `diff`, `validate`)    | S–M        | Typed config system; show defaults and override source without secrets      |
+| Complete shell completions including PowerShell                 | S–M        | Registry; dynamically suggest actual profile/algorithm names; test safety   |
+| Structured secret and bundle search/filter                      | M          | Canonical inventory; never search private values as public metadata         |
+| Build, inspect, compare, and extract arbitrary bundle artifacts | M          | Manifest and format registry; supports byte-level and logical `diff`        |
+| Quick install/export of trust anchors by OS/browser/app         | M          | Platform permission model; default to **plan**, not silent install          |
+| Installation lint and security doctor                           | M          | Detect world-readable keys, expired CRLs, unavailable AIA, wrong MIME       |
+| Export everything as single audited public kit                  | M          | Export policy excludes private by default; ZIP/TAR reproducibility tests    |
+| Render docs as static website/manpage                           | M          | Single source of truth for reference/help/examples                          |
+| CSR acceptance and CA signing flow                              | M          | Key-handle/signer API; validates requested SANs and extension policy        |
+| Mixed profile certificate selection examples                    | M          | Nginx/Caddy/HAProxy/Rustls supported configuration tests                    |
+| Publication artifact checksum index and archival snapshots      | M          | Immutable object store and reproducible release metadata                    |
+| Default certificate renewal alerts                              | M          | Inventory validity/CRL freshness metrics, automation integration            |
+| Key rotation visualizer and root-trust graph                    | M          | Cross-certificate graph model; output DOT/Mermaid/SVG/static Markdown       |
+| Versioned schema migration and import from OpenSSL/step-ca      | M–L        | Manifest introspection and trust/provenance validation                      |
+| Batch reconciliation and interrupted job replay                 | M–L        | Durable receipts, transactional state machine, idempotency                  |
+| 1Password/BWS migration and mirrored vault audit                | M–L        | Provider adapters, per-object revisions, value hashing in protected process |
 
 ### 15.2 Additional credential, trust and workflow functionality
 
-| Idea | Complexity | Dependency / acceptance direction |
-|---|---|---|
-| Native OpenSSH CA for user and host certs | M–L | Separate SSH issuer keys/trust, principal policy, expiry and known_hosts templates |
-| SSH host key discovery and known_hosts rollout | M–L | Native SSH identity; trust-on-first-use vs controlled CA deployment |
-| OpenPGP certificate/subkey issuance and lifecycle | L | Separate Web-of-Trust/trust model; format and key expiry/revocation |
-| JWK/JWKS/JWS/JWT signing, rotation and publishing | M–L | Explicit claims schema, audience/scope and key ID; JWT is not cert issuance |
-| JOSE/COSE, CWT, CBOR, DID document/Multikey | L–XL | Credential-specific standards and independent validators; no fake mappings |
-| SPIFFE/SPIRE identity or workload X.509 SVID adapters | L–XL | Workload ID issuance, short lifetimes, policy enforcement, live control plane |
-| ACME-like automatic certificate enrollment (private PKI) | L | Identity proof, enrollment security, order state, challenge and revocation flow |
-| EST/SCEP/CMP enrollment for devices | L–XL | Protocol-specific security, authenticators, interoperability test rigs |
-| SSH, WireGuard, mTLS, Tailscale, service-mesh deploy adapters | L | Different key/certificate models and host permissions; adopt safe defaults |
-| Kubernetes cert-manager issuer and operator | L | API/CRDs, reconciliation, secrets, owner refs, revocation automation |
-| Cloudflare, Route53 and other DNS API providers | M–L | Publish plan, credentials and reversible DNS changes |
-| S3/R2/OCI/IPFS distribution for public certificate objects | M–L | Publication adapters, integrity pinning, HTTP compatibility URLs |
-| Keyless signing (Sigstore, Fulcio/Rekor, attestations) | L–XL | Identity federation, transparency model and verification policies |
-| Artifact/code signing certificate policies and timestamps | L | Timestamp authority, long-term validity evidence, signed artifacts tests |
-| Trust transparency or append-only CA issuance ledger | L–XL | Signed append-only log, consistency proofs, privacy and audit governance |
-| Root/intermediate HSM and PKCS#11 workflow | L | Nonexportable key handles, signing ceremony, multi-party authorization |
-| Cloud KMS/TPM/YubiKey/secure enclave adapters | L–XL | Hardware-specific algorithms, attestation, approval and portability |
-| Multi-region/high-availability signing service | XL | Authorization server, queue, shared serial ledger, failover consistency |
-| Real multi-issuer OCSP service with caching/stapling | L–XL | Revocation DB, delegated signer, operational SLO and compliance |
-| Automated managed trust rollouts for enterprise endpoints | XL | OS/browser enrollment APIs, approvals, policy and emergency rollback |
-| Post-quantum/hybrid TLS deployment matrix and policy enforcement | XL | Real client/server support, profile negotiation and PQ validation profile |
-| Quantum-safe confidentiality/KEM and end-to-end transport posture | XL | Separate from ML-DSA; ML-KEM/hybrid protocol support and threat model |
+| Idea                                                              | Complexity | Dependency / acceptance direction                                                  |
+| ----------------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------- |
+| Native OpenSSH CA for user and host certs                         | M–L        | Separate SSH issuer keys/trust, principal policy, expiry and known_hosts templates |
+| SSH host key discovery and known_hosts rollout                    | M–L        | Native SSH identity; trust-on-first-use vs controlled CA deployment                |
+| OpenPGP certificate/subkey issuance and lifecycle                 | L          | Separate Web-of-Trust/trust model; format and key expiry/revocation                |
+| JWK/JWKS/JWS/JWT signing, rotation and publishing                 | M–L        | Explicit claims schema, audience/scope and key ID; JWT is not cert issuance        |
+| JOSE/COSE, CWT, CBOR, DID document/Multikey                       | L–XL       | Credential-specific standards and independent validators; no fake mappings         |
+| SPIFFE/SPIRE identity or workload X.509 SVID adapters             | L–XL       | Workload ID issuance, short lifetimes, policy enforcement, live control plane      |
+| ACME-like automatic certificate enrollment (private PKI)          | L          | Identity proof, enrollment security, order state, challenge and revocation flow    |
+| EST/SCEP/CMP enrollment for devices                               | L–XL       | Protocol-specific security, authenticators, interoperability test rigs             |
+| SSH, WireGuard, mTLS, Tailscale, service-mesh deploy adapters     | L          | Different key/certificate models and host permissions; adopt safe defaults         |
+| Kubernetes cert-manager issuer and operator                       | L          | API/CRDs, reconciliation, secrets, owner refs, revocation automation               |
+| Cloudflare, Route53 and other DNS API providers                   | M–L        | Publish plan, credentials and reversible DNS changes                               |
+| S3/R2/OCI/IPFS distribution for public certificate objects        | M–L        | Publication adapters, integrity pinning, HTTP compatibility URLs                   |
+| Keyless signing (Sigstore, Fulcio/Rekor, attestations)            | L–XL       | Identity federation, transparency model and verification policies                  |
+| Artifact/code signing certificate policies and timestamps         | L          | Timestamp authority, long-term validity evidence, signed artifacts tests           |
+| Trust transparency or append-only CA issuance ledger              | L–XL       | Signed append-only log, consistency proofs, privacy and audit governance           |
+| Root/intermediate HSM and PKCS#11 workflow                        | L          | Nonexportable key handles, signing ceremony, multi-party authorization             |
+| Cloud KMS/TPM/YubiKey/secure enclave adapters                     | L–XL       | Hardware-specific algorithms, attestation, approval and portability                |
+| Multi-region/high-availability signing service                    | XL         | Authorization server, queue, shared serial ledger, failover consistency            |
+| Real multi-issuer OCSP service with caching/stapling              | L–XL       | Revocation DB, delegated signer, operational SLO and compliance                    |
+| Automated managed trust rollouts for enterprise endpoints         | XL         | OS/browser enrollment APIs, approvals, policy and emergency rollback               |
+| Post-quantum/hybrid TLS deployment matrix and policy enforcement  | XL         | Real client/server support, profile negotiation and PQ validation profile          |
+| Quantum-safe confidentiality/KEM and end-to-end transport posture | XL         | Separate from ML-DSA; ML-KEM/hybrid protocol support and threat model              |
 
 ### 15.3 General fleet/secrets/generation ecosystem
 
-| Idea | Complexity | Dependency / acceptance direction |
-|---|---|---|
-| Reusable deterministic config/file/ID/password generators | S–M | Second input; strong randomness, security classification and output policy |
-| Common output adapters for JSON/YAML/JSONC/TOML/KDL/CSV metadata | M | Typed schema and secret redaction; never print credentials as CSV inadvertently |
-| NATS event/command bus and server-side fleet job orchestration | L | Protocol authentication, idempotency, receipts, retry/dead-letter queues |
-| Redis/Postgres/Supabase/S3 read/write stream connectors | M–L | Secure library sinks, schema ownership and transaction consistency |
-| Remote HTTP/gRPC service exposing authorized fleet operations | XL | Strong auth, RBAC, rate limits, CA signing authority separation |
-| Policy-as-code for issuance, store ACL and deployment | L–XL | Typed policy engine, negative tests and transparent decisions |
-| Multi-tenant `fleet` organization/OU namespaces | L | Store isolation, quotas, audit and independent root ownership |
-| Live reconciliation/monitoring and scheduled root/CRL checks | L | Inventory/events + alerting; safe automatic mitigation |
-| Web or TUI fleet explorer and operational dashboard | L | Read-only viewer first, do not introduce independent signing path |
-| Reproducible/attested Rust builds and supply-chain checks | M–L | SBOM, signed releases, dependency policy and Nix variants |
-| Automatic benchmark and compatibility lab | L–XL | Matrix of OpenSSL, Rust, Java, browsers, SSH and PQ providers |
-| Algorithm-policy updater with long-term cryptographic migration | XL | Registry/policies, rollout, backwards compat, no accidental downgrade |
-| Encrypted backup, secret sharing, two-person root recovery | L–XL | Physical/offline custody, Shamir/threshold assumptions reviewed |
-| Hierarchical/offline signing workflow with air-gapped request packages | L–XL | CSR bundle signing, media hygiene, signature and replay guards |
-| External plugin SDK for algorithms, publishers and formats | L–XL | Stable ABI/versioning, sandboxing and trust for downloaded code |
-| Automatic skills ecosystem installers for many agents | M–L | Platform detection/validation, source provenance and safe upgrades |
-| Documentation-as-tested examples and scenario simulators | M–L | Runner fixtures, snapshot regeneration and drift gates |
-| Long-term successor binary/format compatibility 20+ years ahead | XL | Open schemas, reproducible migration, archive tests and key rollover |
+| Idea                                                                   | Complexity | Dependency / acceptance direction                                               |
+| ---------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------- |
+| Reusable deterministic config/file/ID/password generators              | S–M        | Second input; strong randomness, security classification and output policy      |
+| Common output adapters for JSON/YAML/JSONC/TOML/KDL/CSV metadata       | M          | Typed schema and secret redaction; never print credentials as CSV inadvertently |
+| NATS event/command bus and server-side fleet job orchestration         | L          | Protocol authentication, idempotency, receipts, retry/dead-letter queues        |
+| Redis/Postgres/Supabase/S3 read/write stream connectors                | M–L        | Secure library sinks, schema ownership and transaction consistency              |
+| Remote HTTP/gRPC service exposing authorized fleet operations          | XL         | Strong auth, RBAC, rate limits, CA signing authority separation                 |
+| Policy-as-code for issuance, store ACL and deployment                  | L–XL       | Typed policy engine, negative tests and transparent decisions                   |
+| Multi-tenant `fleet` organization/OU namespaces                        | L          | Store isolation, quotas, audit and independent root ownership                   |
+| Live reconciliation/monitoring and scheduled root/CRL checks           | L          | Inventory/events + alerting; safe automatic mitigation                          |
+| Web or TUI fleet explorer and operational dashboard                    | L          | Read-only viewer first, do not introduce independent signing path               |
+| Reproducible/attested Rust builds and supply-chain checks              | M–L        | SBOM, signed releases, dependency policy and Nix variants                       |
+| Automatic benchmark and compatibility lab                              | L–XL       | Matrix of OpenSSL, Rust, Java, browsers, SSH and PQ providers                   |
+| Algorithm-policy updater with long-term cryptographic migration        | XL         | Registry/policies, rollout, backwards compat, no accidental downgrade           |
+| Encrypted backup, secret sharing, two-person root recovery             | L–XL       | Physical/offline custody, Shamir/threshold assumptions reviewed                 |
+| Hierarchical/offline signing workflow with air-gapped request packages | L–XL       | CSR bundle signing, media hygiene, signature and replay guards                  |
+| External plugin SDK for algorithms, publishers and formats             | L–XL       | Stable ABI/versioning, sandboxing and trust for downloaded code                 |
+| Automatic skills ecosystem installers for many agents                  | M–L        | Platform detection/validation, source provenance and safe upgrades              |
+| Documentation-as-tested examples and scenario simulators               | M–L        | Runner fixtures, snapshot regeneration and drift gates                          |
+| Long-term successor binary/format compatibility 20+ years ahead        | XL         | Open schemas, reproducible migration, archive tests and key rollover            |
 
 ### 15.4 Idea-to-issue protocol
 
@@ -1017,7 +1015,6 @@ The implementer has latitude to improve design, even substantially, but must dem
 
 **Next revision trigger:** implementation census and ADR review against pinned repo revision, measured provider trials, or new user decisions. The third architectural input has been integrated. Do not confuse this expanded design with completed software.
 
-
 ---
 
 # Integrated second-input design: Secrets, synchronization, generators and operations
@@ -1030,12 +1027,12 @@ The following sections are **normative first-class requirements**, not an option
 
 **Do not conflate Bitwarden Password Manager (`bw`) with Bitwarden Secrets Manager (`bws`).** They are related products with different capabilities:
 
-| Provider | API / CLI | Typical object and functionality | Required treatment |
-|---|---|---|---|
-| 1Password | `op` CLI / current SDK | Rich login, password, secure note, SSH-key and other item categories, sections, typed fields, URLs, tags, attachments | Preserve native item IDs, structure, auto-fill associations and references; manage through 1Password-approved APIs |
-| Bitwarden Password Manager | `bw` CLI / vault APIs | Login items, URI matches, custom fields, folders, collections, 2FA fields and item IDs | **Separate optional adapter** required for lossless login/auto-fill mirroring; discover which vaults are explicitly in scope |
-| Bitwarden Secrets Manager | `bws` CLI / SDK | Key, value, note, one project, creation/revision dates, machine-account access | Preserve ordinary `bws secret get` value semantics; use sidecar records for rich fields; cannot claim native login parity |
-| Fleet canonical registry | `fleet-secrets-model` / metadata index | Store-neutral typed identity, credentials, fields, attachments, relationships, history, provenance, policy | Source of *semantic identity and conflict history*; **not** automatically a new plaintext secrets database |
+| Provider                   | API / CLI                              | Typical object and functionality                                                                                      | Required treatment                                                                                                           |
+| -------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 1Password                  | `op` CLI / current SDK                 | Rich login, password, secure note, SSH-key and other item categories, sections, typed fields, URLs, tags, attachments | Preserve native item IDs, structure, auto-fill associations and references; manage through 1Password-approved APIs           |
+| Bitwarden Password Manager | `bw` CLI / vault APIs                  | Login items, URI matches, custom fields, folders, collections, 2FA fields and item IDs                                | **Separate optional adapter** required for lossless login/auto-fill mirroring; discover which vaults are explicitly in scope |
+| Bitwarden Secrets Manager  | `bws` CLI / SDK                        | Key, value, note, one project, creation/revision dates, machine-account access                                        | Preserve ordinary `bws secret get` value semantics; use sidecar records for rich fields; cannot claim native login parity    |
+| Fleet canonical registry   | `fleet-secrets-model` / metadata index | Store-neutral typed identity, credentials, fields, attachments, relationships, history, provenance, policy            | Source of _semantic identity and conflict history_; **not** automatically a new plaintext secrets database                   |
 
 As verified in Bitwarden's CLI documentation, `bws secret create` primarily takes `KEY`, `VALUE`, `PROJECT_ID`, optional `--note`; its `edit` interface supports key/value/note/project. 1Password supports additional structured fields/tags and file attachments. Thus “copy all attributes” means **lossless canonical retention**, with native fields when representable and encrypted/secret sidecars when they are not. Full login autofill on the Bitwarden side requires `bw`, not `bws`. No provider's API should be silently approximated as another. Sources: https://bitwarden.com/help/secrets-manager-cli/ ; https://bitwarden.com/help/cli/ ; https://support.1password.com/custom-fields/ ; https://support.1password.com/files/ .
 
@@ -1080,7 +1077,7 @@ One note field cannot hold unlimited event history. Keep the complete event stre
 
 ### 19.6 BWS lossless sidecar strategy
 
-`bws` is not a typed login manager. Store the *primary* machine-consumable secret in the normal `bws` value, keeping backward-compatible access (`fleet secrets get` and existing BWS callers must still return the actual value). Preserve additional canonical fields and relationships in a separate metadata sidecar secret (or approved encrypted attachment store) with a stable global ID, schema version, checksum and reference; compact note points to sidecar. Keep sidecar scoped to a protected dedicated project as required by permissions; document what value is or is not natively searchable. For rich 1Password password/login objects, synchronize to `bw` if configured for native vault fidelity, and optionally to `bws` as an encrypted structured backup/export with an explicit warning that `bws` cannot provide browser autofill.
+`bws` is not a typed login manager. Store the _primary_ machine-consumable secret in the normal `bws` value, keeping backward-compatible access (`fleet secrets get` and existing BWS callers must still return the actual value). Preserve additional canonical fields and relationships in a separate metadata sidecar secret (or approved encrypted attachment store) with a stable global ID, schema version, checksum and reference; compact note points to sidecar. Keep sidecar scoped to a protected dedicated project as required by permissions; document what value is or is not natively searchable. For rich 1Password password/login objects, synchronize to `bw` if configured for native vault fidelity, and optionally to `bws` as an encrypted structured backup/export with an explicit warning that `bws` cannot provide browser autofill.
 
 Test that secrets with two or more confidential fields survive OP→BWS→OP without losing access key, password, OTP seed, URI match rules, attachments or semantics. If the provider cannot represent/retrieve something, fail that item with a `lossless_projection_unavailable` conflict and preserve source data. Never report the item “fully synced” merely because its `password` field matches. No silent forwarding of all personal credentials to machine-account projects; scope selection and per-item policy govern inclusion. User-requested breadth is the target **within authorized, declared provider scopes**.
 
@@ -1109,7 +1106,6 @@ flowchart LR
     EVENT --> CHECKPOINT[Verified last-common state checkpoint]
 ```
 
-
 1. Enumerate exact authenticated accounts, accessible vaults/projects, item categories, native permissions and rate limits. Report inventory counts and excluded/inaccessible scopes; fetch every field, tag, URL, attachment descriptor and relevant history, not only usernames/passwords.
 2. Take verified protected snapshots/exports using approved encrypted storage, record checksums and restore evidence; never copy plaintext credential dumps to normal backups or Git. Create explicit reversible migration run ID and initial reconciliation state.
 3. Normalize each item; establish stable pair mappings by provider-native IDs, existing references, unique semantic identity and verified field correspondence. **Title alone is insufficient** to auto-merge or overwrite. Report matches, likely duplicates, collisions, same-name/different-value, missing attributes, inaccessible attachment or OTP and provider-native behaviors.
@@ -1124,7 +1120,7 @@ The requirement “initial cleanup now” is an implementation-stage operational
 
 Each run MUST compare **current OP state + current BW/BWS state + previously verified last-common state**. Do not simply select whichever native `modifiedAt` is newer. Use native revisions/ETags where provided; timestamp clocks may differ, and a normalization update can make the “stale” item look newer.
 
-- Use a lookback beginning 1–2 hours before the last *successfully completed, verified* sync as a performance hint, not sole deletion/change evidence. Reconcile changed objects by full field inventory; run an explicit periodic full scan (e.g., weekly, plus when a cursor is invalidated or scope changes).
+- Use a lookback beginning 1–2 hours before the last _successfully completed, verified_ sync as a performance hint, not sole deletion/change evidence. Reconcile changed objects by full field inventory; run an explicit periodic full scan (e.g., weekly, plus when a cursor is invalidated or scope changes).
 - Source discovery errors, missing permissions, pagination truncation, rate limiting, unavailable attachments, or expired tokens mean **unknown**, not deleted. A complete authoritative snapshot and prior sighting are prerequisites to classifying a missing item as deleted or moved.
 - Preserve concurrent updates via per-field change sets. If OP password changed and BWS notes changed, merge safely; if both passwords changed independently, preserve both and flag ambiguity (do not assume newest is correct).
 - Distinguish an item moved between vaults/projects or renamed from an item deleted; do not turn a permission-scope change into a tombstone.
@@ -1135,21 +1131,21 @@ Each run MUST compare **current OP state + current BW/BWS state + previously ver
 
 ### 20.4 State transition matrix
 
-| Observed condition | Default action | Required protections |
-|---|---|---|
-| New on OP, missing on BW/BWS | Create equivalent in authorized target + link | Verify all fields/sidecars, native semantics, target scope |
-| New on BW/BWS, missing on OP | Create equivalent on OP + link | Preserve value, notes, mappings, restrictions |
-| Same logical item, equal fields | No-op; optionally backfill missing metadata | Verify canonical semantic hash; no needless revision churn |
-| One-sided metadata edit | Merge typed nonconflicting fields to other side | Change history, unknown-field preservation |
-| One-sided password/value rotation | Snapshot prior value to `zz.delete` **in both stores**, then edit stale item **in place** | Keep same native login ID, URLs/autofill, verify encrypted history and new value |
-| Both sides changed same protected field | Conflict; preserve both current values in linked records; report | No automatic last-writer-wins for password, keys, OTP |
-| Same name, different identity | Preserve both under `.op`/`.bws` disambiguation | Don't overwrite by name alone |
-| Deletion verified in one complete source | Create matching `zz.delete` history on both; retire mirrored active record under policy | No physical removal; ensure no loss of usable credential before retirement |
-| Existing `zz.delete` on one side | Backfill matching history item to other side | Never delete any `zz.delete` entries automatically |
-| Reappearance after deletion | Treat as resurrection/new generation requiring history-aware conflict resolution | Do not silently undo a deliberate retirement |
-| Renamed/moved item | Update mapping; rename corresponding native item where safe | Preserve native item IDs and references |
-| Provider access degraded | Stop destructive/retirement branches; continue independent safe work only if configured | Mark run incomplete and alert; no fabricated deletion |
-| 2FA/passkey inaccessible via API | Preserve untouched, mark unsupported/unverified | Never regenerate or overwrite to fabricate parity |
+| Observed condition                       | Default action                                                                            | Required protections                                                             |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| New on OP, missing on BW/BWS             | Create equivalent in authorized target + link                                             | Verify all fields/sidecars, native semantics, target scope                       |
+| New on BW/BWS, missing on OP             | Create equivalent on OP + link                                                            | Preserve value, notes, mappings, restrictions                                    |
+| Same logical item, equal fields          | No-op; optionally backfill missing metadata                                               | Verify canonical semantic hash; no needless revision churn                       |
+| One-sided metadata edit                  | Merge typed nonconflicting fields to other side                                           | Change history, unknown-field preservation                                       |
+| One-sided password/value rotation        | Snapshot prior value to `zz.delete` **in both stores**, then edit stale item **in place** | Keep same native login ID, URLs/autofill, verify encrypted history and new value |
+| Both sides changed same protected field  | Conflict; preserve both current values in linked records; report                          | No automatic last-writer-wins for password, keys, OTP                            |
+| Same name, different identity            | Preserve both under `.op`/`.bws` disambiguation                                           | Don't overwrite by name alone                                                    |
+| Deletion verified in one complete source | Create matching `zz.delete` history on both; retire mirrored active record under policy   | No physical removal; ensure no loss of usable credential before retirement       |
+| Existing `zz.delete` on one side         | Backfill matching history item to other side                                              | Never delete any `zz.delete` entries automatically                               |
+| Reappearance after deletion              | Treat as resurrection/new generation requiring history-aware conflict resolution          | Do not silently undo a deliberate retirement                                     |
+| Renamed/moved item                       | Update mapping; rename corresponding native item where safe                               | Preserve native item IDs and references                                          |
+| Provider access degraded                 | Stop destructive/retirement branches; continue independent safe work only if configured   | Mark run incomplete and alert; no fabricated deletion                            |
+| 2FA/passkey inaccessible via API         | Preserve untouched, mark unsupported/unverified                                           | Never regenerate or overwrite to fabricate parity                                |
 
 ### 20.5 Stale password update procedure (mandatory)
 
@@ -1179,21 +1175,21 @@ Example **nonsecret** event payload (names illustrative, to be finalized in sche
   "event_id": "019a5eb0-3276-76d0-b43d-3d56c8cce002",
   "run_id": "019a5eb0-3210-72b1-9f11-33449dd24d51",
   "occurred_at": "2026-11-05T23:06:00Z",
-  "actor": {"kind": "systemd-user-unit", "name": "fleet-secrets-reconcile", "host_id": "laptop"},
+  "actor": { "kind": "systemd-user-unit", "name": "fleet-secrets-reconcile", "host_id": "laptop" },
   "action": "password_rotated",
   "direction": "op_to_bws",
   "outcome": "verified",
   "global_item_id": "019a5ead-9829-7f10-b042-6ba48391aabe",
   "canonical_path": "secrets.developing-today.prod.example.login.g1a",
   "pair_group_id": "019a5eba-99d4-7010-b120-1d41e2bf43ba",
-  "source": {"provider": "op", "native_ref": "vault/item", "observed_revision": "example-rev"},
-  "target": {"provider": "bws", "native_ref": "project/secret", "observed_revision": "example-rev"},
+  "source": { "provider": "op", "native_ref": "vault/item", "observed_revision": "example-rev" },
+  "target": { "provider": "bws", "native_ref": "project/secret", "observed_revision": "example-rev" },
   "changed_fields": ["login.password", "notes", "tags"],
-  "before": {"observed_at": "2026-11-05T22:00:00Z", "field_digest_refs": ["hmac-key-v2:ref-1"]},
-  "after": {"readback_verified": true},
+  "before": { "observed_at": "2026-11-05T22:00:00Z", "field_digest_refs": ["hmac-key-v2:ref-1"] },
+  "after": { "readback_verified": true },
   "history_item_refs": ["zz.delete.2026-11-05T23-06-00Z.example.x1"],
   "recent_related_event_ids": ["019a5ea0-3049-79ff-8ea0-6627e852efa4"],
-  "metadata": {"environment": "prod", "credential_type": "login"},
+  "metadata": { "environment": "prod", "credential_type": "login" },
   "sensitivity": "restricted-metadata"
 }
 ```
@@ -1204,28 +1200,28 @@ The illustrative IDs are fake, never keys. Permit item collections, e.g. `affect
 
 `SyncRun` records: `run_id`, initiator, host, start/end UTC, trigger (daily/manual/replay/initial), input scopes and access visibility, full vs incremental, previous verified watermark, current proposed watermark, provider capacities, source snapshots, attempted/verified/failed counts, action summaries, quarantines, provider error classification, hash of plan, commit receipts and next actions. Emit concise human output such as `OP→BWS 5 added; BWS→OP 2 added; 1 password updated in place; 2 protected history snapshots; 3 metadata backfills; 1 unresolved conflict; no deletions` (numbers from actual results only). All summary counters must agree with event rows.
 
-Every item note MAY show the 3–5 most recent events plus *all within 35 days* **up to provider-specific size budget**, with a permanent `ledger://` reference for older/full history; do not duplicate thousands of events inside the credential. For human review, additionally create one compact `fleet.sync.run.<UTC-date>.<run-id>` **run-summary credential item mirrored to both authorized stores** (or configurable consolidated daily summaries), referencing the authoritative ledger records and counts; these summaries must be exempt from recursive sync-event generation and follow provider size constraints. Every such summary item is also indexed in the structured local and SQL event stores. Preserve global readable notes across providers. If note capacity is exceeded, spill to verified sidecars with indexes, not uncontrolled `.1`, `.2` truncation. Provide `fleet secrets history <ref>`, `fleet secrets audit <ref>`, `fleet secrets runs list|show`, `fleet secrets diff --run A --run B`, `fleet secrets report --since 35d`.
+Every item note MAY show the 3–5 most recent events plus _all within 35 days_ **up to provider-specific size budget**, with a permanent `ledger://` reference for older/full history; do not duplicate thousands of events inside the credential. For human review, additionally create one compact `fleet.sync.run.<UTC-date>.<run-id>` **run-summary credential item mirrored to both authorized stores** (or configurable consolidated daily summaries), referencing the authoritative ledger records and counts; these summaries must be exempt from recursive sync-event generation and follow provider size constraints. Every such summary item is also indexed in the structured local and SQL event stores. Preserve global readable notes across providers. If note capacity is exceeded, spill to verified sidecars with indexes, not uncontrolled `.1`, `.2` truncation. Provide `fleet secrets history <ref>`, `fleet secrets audit <ref>`, `fleet secrets runs list|show`, `fleet secrets diff --run A --run B`, `fleet secrets report --since 35d`.
 
 ### 21.3 Recommended database model (Supabase/PostgreSQL)
 
-Use relational tables for identities, references, relationships, run lifecycle and indexed events; JSONB for heterogeneous *nonsecret* field descriptors, provider metadata and structured event diff. Design migrations, RLS, service role boundaries, backups and retention before deploying. Proposed logical schema:
+Use relational tables for identities, references, relationships, run lifecycle and indexed events; JSONB for heterogeneous _nonsecret_ field descriptors, provider metadata and structured event diff. Design migrations, RLS, service role boundaries, backups and retention before deploying. Proposed logical schema:
 
-| Table | Primary/important columns | Main purpose |
-|---|---|---|
-| `fleet_secret_items` | `global_item_id`, `canonical_path`, `item_type`, `state`, `classification`, `schema_version`, `policy_id`, `created_at`, `updated_at` | One logical credential per identity |
-| `fleet_secret_store_refs` | `ref_id`, `global_item_id`, `provider`, `account`, `vault_or_project`, `native_id`, `native_revision`, `last_seen_at`, `last_verified_at`, `read_scope` | Many native provider identities per logical item, stable mapping |
-| `fleet_secret_field_catalog` | `field_key`, `semantic_role`, `data_type`, `sensitivity`, `definition`, `standard_status` | Standard and evolving metadata taxonomy |
-| `fleet_secret_field_maps` | `map_id`, `provider`, `category`, `native_field`, `canonical_field`, `encoding`, `reversible`, `mapping_version`, `last_verified_at` | Validated provider field correspondence |
-| `fleet_secret_item_metadata` | `global_item_id`, `attributes_jsonb`, `tags_jsonb`, `related_urls_jsonb`, `public_fingerprints_jsonb`, `updated_at` | Queryable nonsecret metadata and field descriptors |
-| `fleet_secret_relations` | `edge_id`, `source_item_id`, `target_item_id`, `relationship`, `created_at`, `event_id` | Old/new key, host, file, signer, pairing, etc. |
-| `fleet_secret_sync_runs` | `run_id`, `started_at`, `finished_at`, `trigger`, `host_id`, `scope_digest`, `status`, `cursor_before`, `cursor_after`, `counts_jsonb` | Run control, reconciliation history |
-| `fleet_secret_events` | `event_id`, `run_id`, `global_item_id`, `occurred_at`, `actor`, `action`, `direction`, `outcome`, `source_ref_id`, `target_ref_id`, `changed_field_ids_jsonb`, `public_details_jsonb`, `redaction_version` | Immutable event ledger |
-| `fleet_secret_conflicts` | `conflict_id`, `global_item_id`, `run_id`, `conflict_type`, `field_ids`, `provider_revision_refs`, `status`, `resolution_event_id` | Explicit unresolved/review cases |
-| `fleet_secret_tombstones` | `tombstone_id`, `global_item_id`, `history_item_ids`, `original_refs`, `observed_at`, `reason`, `status`, `event_id` | Protected retirements and deleted-side detection |
-| `fleet_secret_sync_checkpoints` | `checkpoint_id`, `scope_id`, `last_complete_run_id`, `watermark`, `snapshot_manifest_ref`, `updated_at` | Recoverable cursors and last verified common state |
-| `fleet_secret_operations` | `operation_id`, `run_id`, `global_item_id`, `stage`, `expected_native_revisions`, `provider_receipts`, `idempotency_key`, `retry_after`, `status` | Cross-provider saga WAL and replay |
-| `fleet_secret_policies` | `policy_id`, `version`, `scope`, `conflict_strategy`, `retention`, `authorization`, `effective_at` | Reviewable rule versions |
-| `fleet_secret_provider_capabilities` | `provider`, `adapter_version`, `tested_at`, `capabilities_jsonb`, `limits_jsonb` | Compatibility and capacity evidence |
+| Table                                | Primary/important columns                                                                                                                                                                                  | Main purpose                                                     |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `fleet_secret_items`                 | `global_item_id`, `canonical_path`, `item_type`, `state`, `classification`, `schema_version`, `policy_id`, `created_at`, `updated_at`                                                                      | One logical credential per identity                              |
+| `fleet_secret_store_refs`            | `ref_id`, `global_item_id`, `provider`, `account`, `vault_or_project`, `native_id`, `native_revision`, `last_seen_at`, `last_verified_at`, `read_scope`                                                    | Many native provider identities per logical item, stable mapping |
+| `fleet_secret_field_catalog`         | `field_key`, `semantic_role`, `data_type`, `sensitivity`, `definition`, `standard_status`                                                                                                                  | Standard and evolving metadata taxonomy                          |
+| `fleet_secret_field_maps`            | `map_id`, `provider`, `category`, `native_field`, `canonical_field`, `encoding`, `reversible`, `mapping_version`, `last_verified_at`                                                                       | Validated provider field correspondence                          |
+| `fleet_secret_item_metadata`         | `global_item_id`, `attributes_jsonb`, `tags_jsonb`, `related_urls_jsonb`, `public_fingerprints_jsonb`, `updated_at`                                                                                        | Queryable nonsecret metadata and field descriptors               |
+| `fleet_secret_relations`             | `edge_id`, `source_item_id`, `target_item_id`, `relationship`, `created_at`, `event_id`                                                                                                                    | Old/new key, host, file, signer, pairing, etc.                   |
+| `fleet_secret_sync_runs`             | `run_id`, `started_at`, `finished_at`, `trigger`, `host_id`, `scope_digest`, `status`, `cursor_before`, `cursor_after`, `counts_jsonb`                                                                     | Run control, reconciliation history                              |
+| `fleet_secret_events`                | `event_id`, `run_id`, `global_item_id`, `occurred_at`, `actor`, `action`, `direction`, `outcome`, `source_ref_id`, `target_ref_id`, `changed_field_ids_jsonb`, `public_details_jsonb`, `redaction_version` | Immutable event ledger                                           |
+| `fleet_secret_conflicts`             | `conflict_id`, `global_item_id`, `run_id`, `conflict_type`, `field_ids`, `provider_revision_refs`, `status`, `resolution_event_id`                                                                         | Explicit unresolved/review cases                                 |
+| `fleet_secret_tombstones`            | `tombstone_id`, `global_item_id`, `history_item_ids`, `original_refs`, `observed_at`, `reason`, `status`, `event_id`                                                                                       | Protected retirements and deleted-side detection                 |
+| `fleet_secret_sync_checkpoints`      | `checkpoint_id`, `scope_id`, `last_complete_run_id`, `watermark`, `snapshot_manifest_ref`, `updated_at`                                                                                                    | Recoverable cursors and last verified common state               |
+| `fleet_secret_operations`            | `operation_id`, `run_id`, `global_item_id`, `stage`, `expected_native_revisions`, `provider_receipts`, `idempotency_key`, `retry_after`, `status`                                                          | Cross-provider saga WAL and replay                               |
+| `fleet_secret_policies`              | `policy_id`, `version`, `scope`, `conflict_strategy`, `retention`, `authorization`, `effective_at`                                                                                                         | Reviewable rule versions                                         |
+| `fleet_secret_provider_capabilities` | `provider`, `adapter_version`, `tested_at`, `capabilities_jsonb`, `limits_jsonb`                                                                                                                           | Compatibility and capacity evidence                              |
 
 Recommended indexes: `(provider, account, native_id)` unique under scope, unique `canonical_path` for active unambiguous items (exceptions explicitly linked), `(global_item_id, occurred_at DESC)` on events, `(run_id, action, outcome)` on events, `(occurred_at DESC)` for monitoring, `(status, detected_at)` conflicts, GIN indexes on selected JSONB attributes/tags, partial unique indexes for active `global_item_id` mappings. FKs and RLS protect isolation; separate read-only report role from admin mutation role. Do not put even encrypted secret values in generic JSONB unless a separate encrypted repository and explicit recovery design approves it.
 
@@ -1233,7 +1229,7 @@ Recommended indexes: `(provider, account, native_id)` unique under scope, unique
 
 Persist append-only JSON Lines journal under an XDG state path on the laptop (example `~/.local/state/fleet/secrets/events/YYYY/MM/DD/<run-id>.jsonl`, mode 0600 with parent directories 0700); log rotation/compaction must not discard canonical history. Each item includes run ID, event ID, timestamps, checksum-chain/reference to tamper-evident sequence, schema version and redaction classification. Mirror to PostgreSQL via an outbox with monotonic checkpoints, retry/backpressure and deduplication; never claim both durable sinks committed until verified. If Supabase is unreachable, run policy determines whether safe provider sync may continue with a verified durable local journal; never make unjournaled writes.
 
-Backups must cover: journal, schema migration, item/ref mapping, sealed last-common snapshots, operational policy, private encryption/HMAC keys *through separate encrypted backup channels*, and reference exports. Test full restoration, rollback/reconciliation, and source provider outage. Not all backups are Git-tracked; commit only docs/schemas/policies/examples, not live state containing secrets or restricted inventory metadata.
+Backups must cover: journal, schema migration, item/ref mapping, sealed last-common snapshots, operational policy, private encryption/HMAC keys _through separate encrypted backup channels_, and reference exports. Test full restoration, rollback/reconciliation, and source provider outage. Not all backups are Git-tracked; commit only docs/schemas/policies/examples, not live state containing secrets or restricted inventory metadata.
 
 ### 21.5 Metrics and observability
 
@@ -1301,21 +1297,22 @@ Source entropy from a vetted operating-system CSPRNG; expose an injectable `Secu
 
 Provide understandable presets rather than a single poorly chosen length. Proposed defaults and overrides:
 
-| Preset | Example command | Suggested size and intended use |
-|---|---|---|
-| `short` | `fleet generate password --preset short` | 16 random characters for unusual restrictive applications; warn if constrained alphabet |
-| `standard` | `fleet generate password` | 32 random characters, with defined strong entropy floor; override policy per application |
-| `long` | `fleet generate password --preset long` | 64 random characters for service tokens where accepted |
-| `website` | `fleet generate password --preset website` | ASCII US-keyboard-compatible punctuation, letters and digits, configurable exclusions |
-| `unrestricted` | `fleet generate password --preset unrestricted` | Expanded Unicode including optional CJK/emoji; warn that websites and CLIs may reject or normalize it |
-| `passphrase` | `fleet generate passphrase --words 6` | Curated wordlist with independent uniform choices and optional separator |
-| `url-safe` | `fleet generate token --encoding base64url --bytes 32` | Encoded cryptographically random bytes, useful for machine tokens |
+| Preset         | Example command                                        | Suggested size and intended use                                                                       |
+| -------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `short`        | `fleet generate password --preset short`               | 16 random characters for unusual restrictive applications; warn if constrained alphabet               |
+| `standard`     | `fleet generate password`                              | 32 random characters, with defined strong entropy floor; override policy per application              |
+| `long`         | `fleet generate password --preset long`                | 64 random characters for service tokens where accepted                                                |
+| `website`      | `fleet generate password --preset website`             | ASCII US-keyboard-compatible punctuation, letters and digits, configurable exclusions                 |
+| `unrestricted` | `fleet generate password --preset unrestricted`        | Expanded Unicode including optional CJK/emoji; warn that websites and CLIs may reject or normalize it |
+| `passphrase`   | `fleet generate passphrase --words 6`                  | Curated wordlist with independent uniform choices and optional separator                              |
+| `url-safe`     | `fleet generate token --encoding base64url --bytes 32` | Encoded cryptographically random bytes, useful for machine tokens                                     |
 
 User's desired broad default includes printable ASCII symbols and emoji; **preserve that as an explicit supported `unrestricted` / `all-characters` profile**, while recommending `standard`/`website` as a safer universal default for real sites. Unicode grapheme units, normalization, visual ambiguity, and website acceptance require explicit policy. There is no promise that arbitrary emoji is typeable on a standard US keyboard; `--keyboard-safe` excludes it. The implementer may propose a different default after usability/compatibility testing but may not silently omit the requested rich alphabet.
 
 Expose independent inputs:
+
 - **Alphabet / candidate-set selectors**: `--charset alpha`, `alphanumeric`, `digits`, `symbols`, `lower`, `upper`, `ascii-printable`, `website-basic`, `website-super-basic`, `url-safe`, `base16`, `base32`, `base36`, `base58-btc`, `base62`, `base64`, `base64url`, `base85`, `base91`, `base122`, `base32768`, `cjk`, `chinese`, `japanese`, `korean`, `emoji`, `custom`, and combinations (union/intersection/removal). Explicit alphabet-version registry; do not claim arbitrary `baseNN` variants are interoperable standards. `base32768` needs a defined/versioned code-point alphabet; Unicode variants need normalization/mutability testing.
-- **Required character-class constraints**: `--require lower`, `upper`, `digit`, `symbol`, `mixed-case`, Unicode class, minimum distinct classes, no repeats, no adjacent repeats, etc. Requirements differ from candidate sets and can be combined. Enforce satisfiability before generation; sample uniformly from the *valid* output space (rejection sampling or a proven unbiased algorithm), never just prefixing a required character predictably.
+- **Required character-class constraints**: `--require lower`, `upper`, `digit`, `symbol`, `mixed-case`, Unicode class, minimum distinct classes, no repeats, no adjacent repeats, etc. Requirements differ from candidate sets and can be combined. Enforce satisfiability before generation; sample uniformly from the _valid_ output space (rejection sampling or a proven unbiased algorithm), never just prefixing a required character predictably.
 - **Exclusions and customizations**: `--exclude '0OIl...'`, `--exclude-ambiguous`, `--exclude-chars`, `--include-chars`, `--charset-file`, `--length N`, `--min-entropy-bits`, `--normalize unicode-nfc|none`, `--output-units bytes|scalars|graphemes`, `--separator`, `--no-whitespace`, `--no-emoji`, `--site-compatible`, `--print-entropy`, `--validate-policy`.
 - **Output**: private stdout only with explicit `--reveal` or `--output secret-stdout`; machine stdout `--format json|yaml|raw|env` must have explicit sensitivity policy. Default store + short redacted receipt; `--show-public`, `--show-secret`, `--copy`, `--out`, `--private-out`, `--public-out`, `--bundle`, `--archive`, `--store`, `--no-store`, `--dry-run`. Never mix human progress with a parseable stdout response. No secret values in shell command arguments if a private stdin/FIFO/FD alternative exists.
 
@@ -1357,7 +1354,7 @@ All commands above are proposed. Validation must include why/when to use `--reve
 
 Default user SSH signing/authentication key is **Ed25519** for performance and broad support. Offer RSA-3072/4096 for compatibility, ECDSA P-256 where needed, and supported hardware-backed `ed25519-sk` / `ecdsa-sk` modes. Disallow obsolete DSA and short RSA by default with clear errors and explicitly audited legacy opt-in if supported. Document that an SSH key pair is not an X.509 certificate; `ssh-keygen`-compatible OpenSSH private/public format is the default. Support PEM/PKCS#8/other conversions only where valid and verified, not by forcibly serializing unsupported key kinds.
 
-Current OpenSSH enables hybrid post-quantum **key exchange**, but standardized deployment of post-quantum SSH *authentication signatures* is not yet universal. Do not describe an Ed25519 SSH key as quantum-safe because the transport uses ML-KEM. Investigate ML-DSA/composite SSH signature standards and implementations as future adapters; implement only actual interoperable features when available. OpenSSH guidance: https://www.openssh.org/pq.html ; research draft on composite signatures: https://datatracker.ietf.org/doc/html/draft-miller-sshm-composite-sigs-01 .
+Current OpenSSH enables hybrid post-quantum **key exchange**, but standardized deployment of post-quantum SSH _authentication signatures_ is not yet universal. Do not describe an Ed25519 SSH key as quantum-safe because the transport uses ML-KEM. Investigate ML-DSA/composite SSH signature standards and implementations as future adapters; implement only actual interoperable features when available. OpenSSH guidance: https://www.openssh.org/pq.html ; research draft on composite signatures: https://datatracker.ietf.org/doc/html/draft-miller-sshm-composite-sigs-01 .
 
 ### 23.2 SSH generation, export, install and metadata
 
@@ -1413,8 +1410,8 @@ Support seed/private-key generation, official serialization and parsing, public 
 The latest input changes or sharpens the earlier PKI plan. The **design record must not silently keep the earlier numbers**. Changes include:
 
 1. Default algorithm order now requested: `ed25519,p256,rsa-2048,ml-dsa-44` (previously `rsa-4096,p256,ed25519,ml-dsa-44`). For compatibility, output order can follow user input but canonical identities are algorithm IDs. **Security review:** RSA-2048 supplies only roughly 112-bit classical security and is questionable as a **new 20+ year root**. Retain requested RSA-2048 as an explicitly supported compatibility algorithm and flag/legacy profile; proposed safer production default is RSA-4096 (or at least RSA-3072) with a warning/explicit override for 2048-long-lived CA. The agent must surface this precise conflict, not silently substitute or silently downgrade. Leaf/compatibility RSA-2048 may remain a different allowed policy.
-2. Root *reference issuance* expiration: **2050-07-07T12:00:00Z** (special explicit override), not simply 20 years from 2026. Default general root lifetime remains 20 calendar years unless changed in config. For intermediates: **2032-07-07T12:00:00Z** for the reference sets, default elsewhere 5 calendar years. Default ordinary leaf 90 days; short-lived identities may be 15 minutes/1 day when purpose policy permits.
-3. Each issuer set supports *multiple independent key partitions per algorithm*, **A and B by default** in the reference Base and Internal Web sets. For an algorithm repeated in an explicit list, create distinct keys, not duplicate certificates. Preserve unique keys, canonical names, AKI/SKI and manifest IDs.
+2. Root _reference issuance_ expiration: **2050-07-07T12:00:00Z** (special explicit override), not simply 20 years from 2026. Default general root lifetime remains 20 calendar years unless changed in config. For intermediates: **2032-07-07T12:00:00Z** for the reference sets, default elsewhere 5 calendar years. Default ordinary leaf 90 days; short-lived identities may be 15 minutes/1 day when purpose policy permits.
+3. Each issuer set supports _multiple independent key partitions per algorithm_, **A and B by default** in the reference Base and Internal Web sets. For an algorithm repeated in an explicit list, create distinct keys, not duplicate certificates. Preserve unique keys, canonical names, AKI/SKI and manifest IDs.
 4. The user now asks to cross-sign intermediate keys under eligible root keys **as a default**, despite the earlier “cross-sign only at root level” optimization. Implement both strategies through a policy-controlled graph; **the reference generation run must generate direct intermediate variants as requested**. Preserve post-quantum trust asymmetry: the ML-DSA root never signs classical intermediate keys by default.
 5. Require triple URL mirrors (two public, one internal) as an explicit supported deployment profile. All actual embedded URIs must be complete resource paths, not bare hosts; use HTTP for AIA/CDP. Don't assume all clients follow mirrors/fallbacks.
 6. Root and intermediate identity names end in `G1`, `G2`, etc.; partition labels `A`, `B`, etc. distinguish parallel keys. `g4b` implies replacement generation 4, partition B for automation. Leaf naming separate, service-oriented and SAN-based.
@@ -1424,16 +1421,16 @@ The latest input changes or sharpens the earlier PKI plan. The **design record m
 
 Root graph remains exactly as in §3.2: 4 self-signed root certificates + 9 classical-controlled root cross-certificates; no ML-DSA-root-to-classical cross signatures. For each named issuer set, create four algorithm slots × two **independent keys** each = **8 intermediate key pairs**. **Direct cross-sign** under every allowed signer according to this per-partition matrix:
 
-| Signing root ↓ / subject intermediate algorithm → | RSA | P-256 | Ed25519 | ML-DSA-44 |
-|---|---:|---:|---:|---:|
-| RSA root | Yes | Yes | Yes | Yes |
-| P-256 root | Yes | Yes | Yes | Yes |
-| Ed25519 root | Yes | Yes | Yes | Yes |
-| ML-DSA root | **No** | **No** | **No** | Yes |
+| Signing root ↓ / subject intermediate algorithm → |    RSA |  P-256 | Ed25519 | ML-DSA-44 |
+| ------------------------------------------------- | -----: | -----: | ------: | --------: |
+| RSA root                                          |    Yes |    Yes |     Yes |       Yes |
+| P-256 root                                        |    Yes |    Yes |     Yes |       Yes |
+| Ed25519 root                                      |    Yes |    Yes |     Yes |       Yes |
+| ML-DSA root                                       | **No** | **No** |  **No** |       Yes |
 
 Per partition: `(3 classical intermediates × 3 classical signatures) + (1 ML-DSA intermediate × 4 signatures) = 13` intermediate certificates. Two partitions = **26** certificates per issuer set. For `Base` + `Internal Web`: **16 intermediate keys and 52 issuer certificates**. With the four root keys and 13 root-level certificate variants: **20 CA private keys and 65 CA certificates** (all before leaves). Each same-key cross-signed variant shares the subject public key and SKI but has its own issuer, signature, AKI, serial/issuer identity, validity/revocation path, fingerprint and chain metadata. Distinct **A/B** intermediate keys have different SKIs; never reuse or duplicate the same private key merely to satisfy A/B.
 
-**This is deliberately redundant** with root-level cross-signing, but it implements the requested maximum opportunistic path options and tests them independently. Expose a `--cross-signing roots-only|issuers-direct|both|none` policy; `both` for the reference generation, `roots-only` recommended for issuer sets where reducing certificate graph complexity matters. The graph is policy-driven and versioned; custom purposes may disable unsupported edges. Never require an actual device to accept all variants; offer deterministic client-specific chains and proactive provision. AIA (especially `.p7c`) is *opportunistic*, not the only way to distribute variants.
+**This is deliberately redundant** with root-level cross-signing, but it implements the requested maximum opportunistic path options and tests them independently. Expose a `--cross-signing roots-only|issuers-direct|both|none` policy; `both` for the reference generation, `roots-only` recommended for issuer sets where reducing certificate graph complexity matters. The graph is policy-driven and versioned; custom purposes may disable unsupported edges. Never require an actual device to accept all variants; offer deterministic client-specific chains and proactive provision. AIA (especially `.p7c`) is _opportunistic_, not the only way to distribute variants.
 
 ```mermaid
 flowchart TB
@@ -1454,7 +1451,7 @@ flowchart TB
     I --> L[Leaf identities: selected algorithms and chains]
 ```
 
-This graph is schematic: the real per-algorithm intermediate signer matrix, *including forbidden ML-DSA→classical edges*, is the authoritative table above. Root-to-root cross-signing is encoded as separate certificates, not by merging root keys.
+This graph is schematic: the real per-algorithm intermediate signer matrix, _including forbidden ML-DSA→classical edges_, is the authoritative table above. Root-to-root cross-signing is encoded as separate certificates, not by merging root keys.
 
 ### 24.3 Root custody, signing flow and generation command
 
@@ -1494,8 +1491,7 @@ Support `--partitions A,B`, `--shards 2` (canonicalized), explicit per-algorithm
 
 ### 24.5 Issuer set reference commands (A/B, direct cross-signs)
 
-**One-command root-plus-base bundle generation is also mandatory:** `fleet cert bundle create --profile root-plus-base --name "developing.today LLC" --root-not-after 2050-07-07T12:00:00Z --issuer-not-after 2032-07-07T12:00:00Z --partitions A,B --cross-signing both --private-store <approved-root-store> --out <bundle>` must build an *atomic, resumable dependency plan* for the four roots, root cross-certificates, Base issuers, CRLs and manifests, execute with approved signer transactions, and return both root/issuer bundle references. Provide equivalent Rust `create_root_and_base` helper. An ordinary `root create` followed by `issuer create` remains the precise, inspectable sequence for the reference run. The compound command may stage and require approvals rather than silently access offline root keys; idempotency/resume and audit are required. CLI flags may be refined but the single-command user outcome is required.
-
+**One-command root-plus-base bundle generation is also mandatory:** `fleet cert bundle create --profile root-plus-base --name "developing.today LLC" --root-not-after 2050-07-07T12:00:00Z --issuer-not-after 2032-07-07T12:00:00Z --partitions A,B --cross-signing both --private-store <approved-root-store> --out <bundle>` must build an _atomic, resumable dependency plan_ for the four roots, root cross-certificates, Base issuers, CRLs and manifests, execute with approved signer transactions, and return both root/issuer bundle references. Provide equivalent Rust `create_root_and_base` helper. An ordinary `root create` followed by `issuer create` remains the precise, inspectable sequence for the reference run. The compound command may stage and require approvals rather than silently access offline root keys; idempotency/resume and audit are required. CLI flags may be refined but the single-command user outcome is required.
 
 ```bash
 # Create Base from explicit root signing source.
@@ -1661,34 +1657,34 @@ operations:
       organization: developing.today LLC
       country: US
       algorithms: [ed25519, p256, rsa-4096, ml-dsa-44]
-      not_after: '2050-07-07T12:00:00Z'
-      root_key_store: '<authorized-offline-store>'
-    outputs: {manifest_ref: '@root.manifest'}
+      not_after: "2050-07-07T12:00:00Z"
+      root_key_store: "<authorized-offline-store>"
+    outputs: { manifest_ref: "@root.manifest" }
   - id: base
     after: [root]
     command: cert.issuer.create
     with:
-      root: '@root.manifest'
+      root: "@root.manifest"
       name: Base
       purpose: general
       partitions: [A, B]
       cross_signing: both
-      not_after: '2032-07-07T12:00:00Z'
+      not_after: "2032-07-07T12:00:00Z"
   - id: web
     after: [root]
     command: cert.issuer.create
     with:
-      root: '@root.manifest'
+      root: "@root.manifest"
       name: Internal Web
       purpose: web-server
       partitions: [A, B]
       cross_signing: both
-      not_after: '2032-07-07T12:00:00Z'
+      not_after: "2032-07-07T12:00:00Z"
   - id: web-leaf
     after: [web]
     command: cert.leaf.issue
     with:
-      issuer: '@web.manifest'
+      issuer: "@web.manifest"
       dns: [developing.today, developing-today.com]
       wildcard: true
       valid_for: 90d
@@ -1703,20 +1699,20 @@ This describes dependency DAG execution, typed references, idempotency, validati
 
 Recommended additive crates (names adjustable to fit existing repo conventions; **do not replace** current fleet crates):
 
-| Crate/module | Responsibility | Public contracts |
-|---|---|---|
-| `fleet-secrets-model` | Canonical typed items/fields, mapping, relation, sensitivity, namespace | `Credential`, `SecretField`, `FieldMap`, `GlobalItemId`, `SecretReference` |
-| `fleet-secrets-sync` | Bi-directional three-way merge, policies, operation saga, cursors, audit | `ReconcileEngine`, `SyncPlan`, `SyncRun`, `Conflict`, `HistorySnapshot` |
-| `fleet-secrets-providers` | OP, BW, BWS, mock provider adapters; capability negotiation | `SecretStore` read/list/create/edit/archive, `ProviderCapabilities`, typed pagination |
-| `fleet-audit` | Protected event stream, local journal, SQL outbox, reporting | `EventSink`, `SecretEvent`, `RunLedger`, `CheckpointStore` |
-| `fleet-crypto` | Algorithm/signing primitives, CSPRNG, key handles, registry | `Signer`, `AlgorithmRegistry`, `SecureRng`, `KeyHandle`, `KeyPair` |
-| `fleet-generate` | Password/ID/token/passphrase/keypair policies, high-level generate | `GenerateRequest`, `GenerationService`, `GeneratedArtifact` |
-| `fleet-pki` | X.509 roots, issuers, leaves, signers, CRLs, OCSP, chain/CSR verification | `RootBundle`, `IssuerSet`, `CertificateProfile`, `PkixIssuer` |
-| `fleet-ssh` | OpenSSH key/CA, config/known_hosts/authorized_keys parsers, remote ops | `SshKey`, `SshConfigPatch`, `SshRotationPlan`, `SshCa` |
-| `fleet-iroh` | Native EndpointId and SecretKey identity/serialization/adoption | `IrohIdentity`, `EndpointId`, `IrohSigner` |
-| `fleet-io` | Typed source resolver, sinks, manifests, archive, formats and safe file writes | `InputRef`, `ArtifactWriter`, `OutputPlan`, `ArchiveAdapter` |
-| `fleet-publish` | HTTP, DNS, store, S3/NATS/SQL future sinks; CT/ACME later | `PublicationPlan`, `Publisher`, `DnsChangeSet` |
-| `fleet-docs` / `fleet-skills` | Help schema, generated runbooks, agent skill installers | `DocGenerator`, `SkillManifest`, `Installer` |
+| Crate/module                  | Responsibility                                                                 | Public contracts                                                                      |
+| ----------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `fleet-secrets-model`         | Canonical typed items/fields, mapping, relation, sensitivity, namespace        | `Credential`, `SecretField`, `FieldMap`, `GlobalItemId`, `SecretReference`            |
+| `fleet-secrets-sync`          | Bi-directional three-way merge, policies, operation saga, cursors, audit       | `ReconcileEngine`, `SyncPlan`, `SyncRun`, `Conflict`, `HistorySnapshot`               |
+| `fleet-secrets-providers`     | OP, BW, BWS, mock provider adapters; capability negotiation                    | `SecretStore` read/list/create/edit/archive, `ProviderCapabilities`, typed pagination |
+| `fleet-audit`                 | Protected event stream, local journal, SQL outbox, reporting                   | `EventSink`, `SecretEvent`, `RunLedger`, `CheckpointStore`                            |
+| `fleet-crypto`                | Algorithm/signing primitives, CSPRNG, key handles, registry                    | `Signer`, `AlgorithmRegistry`, `SecureRng`, `KeyHandle`, `KeyPair`                    |
+| `fleet-generate`              | Password/ID/token/passphrase/keypair policies, high-level generate             | `GenerateRequest`, `GenerationService`, `GeneratedArtifact`                           |
+| `fleet-pki`                   | X.509 roots, issuers, leaves, signers, CRLs, OCSP, chain/CSR verification      | `RootBundle`, `IssuerSet`, `CertificateProfile`, `PkixIssuer`                         |
+| `fleet-ssh`                   | OpenSSH key/CA, config/known_hosts/authorized_keys parsers, remote ops         | `SshKey`, `SshConfigPatch`, `SshRotationPlan`, `SshCa`                                |
+| `fleet-iroh`                  | Native EndpointId and SecretKey identity/serialization/adoption                | `IrohIdentity`, `EndpointId`, `IrohSigner`                                            |
+| `fleet-io`                    | Typed source resolver, sinks, manifests, archive, formats and safe file writes | `InputRef`, `ArtifactWriter`, `OutputPlan`, `ArchiveAdapter`                          |
+| `fleet-publish`               | HTTP, DNS, store, S3/NATS/SQL future sinks; CT/ACME later                      | `PublicationPlan`, `Publisher`, `DnsChangeSet`                                        |
+| `fleet-docs` / `fleet-skills` | Help schema, generated runbooks, agent skill installers                        | `DocGenerator`, `SkillManifest`, `Installer`                                          |
 
 Do not make a deeply granular crate per trivial helper if build overhead outweighs boundaries. The code owner must benchmark compile size/time, binary size/profile compatibility, dependency upkeep, unsafe-code surface, supply chain licensing and Rustls/OpenSSL PQ feature gates. Reserve one source of truth for field aliases, algorithm OIDs, key serialization, error codes, secret classification and input schemas. Existing `fleet-secrets` must remain the authoritative secret-by-name **read resolver**, and can be expanded into typed provider orchestration without violating its current redaction properties or breaking `fleet secrets get` callers.
 
@@ -1764,16 +1760,16 @@ The user explicitly requests not just a list of ideas but **researchable designs
 
 ### 27.1 Immediate foundation: after current mandatory features
 
-| Investigation | Complexity | Definition and next research step |
-|---|---|---|
-| Provider mapping capability probes | Moderate | Test current `op`, `bw` and `bws` APIs with fixtures for typed fields, attachments, login ID stability, notes, TOTP/passkeys, limits and scope; publish precise compatibility matrix |
-| Secrets maintenance tool | Moderate | Build `fleet secrets doctor`, pair resolver, read-only inventory, audit, full initial plan, WAL replay and protected backup restoration; prove no data loss before applying mutations |
-| One-command keys and secrets | Moderate | Implement standard tokens/password/SSH/iroh generator with atomic two-store write and typed outputs; add entropy and field-mapping proofs |
-| Root/issuer X.509 lab | Large | Implement four algorithm root graph plus A/B issuer partitions, direct and root cross-signs, PQ enforcement and multi-client verification; no live root until offline custody ready |
-| Systemd daily sync rollout | Moderate | Install controlled laptop timer, least-privilege auth, journal+DB mirror, health/alerts, initial reconciliation, complete-run watermark, fault injection |
-| Trusted deployment kit | Moderate | Generate independently verified trust store instructions and client-specific chain bundles; test Linux/Windows/Java/Firefox/browser/embedded versions |
-| Structured documentation registry | Moderate | One command-description/help schema, manpages, runnable examples, skill installer and docs generated from live capabilities/tests |
-| PKI publish auditor | Moderate | Verify mirrors, `.crt/.crl/.p7c` content-types, DNS drift, OCSP health, certificate expiry and immutable archives against manifests |
+| Investigation                      | Complexity | Definition and next research step                                                                                                                                                     |
+| ---------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider mapping capability probes | Moderate   | Test current `op`, `bw` and `bws` APIs with fixtures for typed fields, attachments, login ID stability, notes, TOTP/passkeys, limits and scope; publish precise compatibility matrix  |
+| Secrets maintenance tool           | Moderate   | Build `fleet secrets doctor`, pair resolver, read-only inventory, audit, full initial plan, WAL replay and protected backup restoration; prove no data loss before applying mutations |
+| One-command keys and secrets       | Moderate   | Implement standard tokens/password/SSH/iroh generator with atomic two-store write and typed outputs; add entropy and field-mapping proofs                                             |
+| Root/issuer X.509 lab              | Large      | Implement four algorithm root graph plus A/B issuer partitions, direct and root cross-signs, PQ enforcement and multi-client verification; no live root until offline custody ready   |
+| Systemd daily sync rollout         | Moderate   | Install controlled laptop timer, least-privilege auth, journal+DB mirror, health/alerts, initial reconciliation, complete-run watermark, fault injection                              |
+| Trusted deployment kit             | Moderate   | Generate independently verified trust store instructions and client-specific chain bundles; test Linux/Windows/Java/Firefox/browser/embedded versions                                 |
+| Structured documentation registry  | Moderate   | One command-description/help schema, manpages, runnable examples, skill installer and docs generated from live capabilities/tests                                                     |
+| PKI publish auditor                | Moderate   | Verify mirrors, `.crt/.crl/.p7c` content-types, DNS drift, OCSP health, certificate expiry and immutable archives against manifests                                                   |
 
 ### 27.2 Identity and authorization fabric (V2)
 
@@ -1949,27 +1945,27 @@ Agent docs must stress: inspect before modifying; use dry-run and capability mat
 
 ## 30. v0.2 decision ledger, contradictions and exclusions (historical, supplemented by §33)
 
-| Decision / tension | v0.2 working resolution | What remains to verify |
-|---|---|---|
-| `bw` vs `bws` identity | **Two separate Bitwarden providers**; BWS machine secrets via sidecars, BW rich personal vault optional/scoped | Exact connected accounts, permissions, versioned API support and intended scope |
-| Daily sync vs secret leak | Preserve both-way scope but never blindly expose personal/full root material to broad machine projects; least-privilege scope policy | Authorized vault/project inventory and approval rules |
-| `zz.delete` retention | No automated physical deletion, historical value mirrored both sides with immutable event lineage | Operational storage/permission costs and risk acceptance |
-| Live item relinking | Edit existing native item ID for password changes; snapshot prior value first | Per-provider edit behavior, 1PW/BW autofill preservation, concurrency semantics |
-| New root default RSA-2048 vs previous RSA-4096 | Support both; recommend 3072/4096 for new long-lived roots, RSA-2048 via explicit legacy guard | Final policy decision, compatibility targets and cryptographic risk |
-| `2050-07-07T12:00Z` vs 20-year root | Special reference override, general default 20 calendar years | Operational lifetime and root rollover plan |
-| Cross-sign roots only vs cross-sign every intermediate | Keep root graph; provide configurable direct issuer variants and generate them for reference A/B sets | Client chain construction, CRL complexity, whether direct default should remain for all new sets |
-| PQ root trust direction | Classical→ML-DSA cross-signs allowed, ML-DSA root→classical denied by default; PQ-only verifier explicitly requires ML-DSA root/path | Concrete validator policy implementations per platform |
-| A/B meaning | Two independent issuer keys per algorithm, not two certificates sharing one key | Active/standby vs parallel issuance rotation policies |
-| All-CN/SAN defaults | Leaf DNS identities SAN+CN as convenience; root/intermediate no fabricated DNS SAN | Per-purpose profile rules and validators |
-| “SHA-256 always” | RSA/ECDSA signatures where valid; Ed25519 and ML-DSA have their own exact mandated algorithms; SHA-256 fingerprint supported | Provider implementation matrix |
-| “All characters incl emoji” | Explicit unrestricted profile, with conservative website default for compatibility | Whether Unicode-rich output should be unqualified default |
-| Private root sync to both | Never automatic; explicit root-custody policy and approval | HSM/offline policy, escrow/backups |
-| Append every event to notes | Bounded recent summary + durable full journal/DB and references; split sidecars as needed | Provider size limits and human usability |
-| “Change password in stores” vs service rotation | Separate `stored_only` from externally activated credential; origin service adapters later | Actual service APIs and permission scopes |
-| SSH post-quantum “fast option” | Ed25519 auth default; hybrid PQ KEX is available; PQ SSH signatures require explicit tested algorithm/protocol support | OpenSSH/other client interoperability and standards maturity |
-| CT/CAA for private CA | Publish CAA for public ACME; CT for public WebPKI; private issuance gets its own log | Public ACME provider and DNS control plan |
-| Three URL mirrors | Support primary/secondary/public + internal LAN; real full HTTP resource URLs, correct MIME/URI type | Live DNS, reachability from target client classes, client AIA behaviors |
-| Initial cleanup now | Implement and verify first, then run full authorized alignment in controlled stages; no unbacked blind live mutations | Access, provider inventory and rollback ability |
+| Decision / tension                                     | v0.2 working resolution                                                                                                              | What remains to verify                                                                           |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `bw` vs `bws` identity                                 | **Two separate Bitwarden providers**; BWS machine secrets via sidecars, BW rich personal vault optional/scoped                       | Exact connected accounts, permissions, versioned API support and intended scope                  |
+| Daily sync vs secret leak                              | Preserve both-way scope but never blindly expose personal/full root material to broad machine projects; least-privilege scope policy | Authorized vault/project inventory and approval rules                                            |
+| `zz.delete` retention                                  | No automated physical deletion, historical value mirrored both sides with immutable event lineage                                    | Operational storage/permission costs and risk acceptance                                         |
+| Live item relinking                                    | Edit existing native item ID for password changes; snapshot prior value first                                                        | Per-provider edit behavior, 1PW/BW autofill preservation, concurrency semantics                  |
+| New root default RSA-2048 vs previous RSA-4096         | Support both; recommend 3072/4096 for new long-lived roots, RSA-2048 via explicit legacy guard                                       | Final policy decision, compatibility targets and cryptographic risk                              |
+| `2050-07-07T12:00Z` vs 20-year root                    | Special reference override, general default 20 calendar years                                                                        | Operational lifetime and root rollover plan                                                      |
+| Cross-sign roots only vs cross-sign every intermediate | Keep root graph; provide configurable direct issuer variants and generate them for reference A/B sets                                | Client chain construction, CRL complexity, whether direct default should remain for all new sets |
+| PQ root trust direction                                | Classical→ML-DSA cross-signs allowed, ML-DSA root→classical denied by default; PQ-only verifier explicitly requires ML-DSA root/path | Concrete validator policy implementations per platform                                           |
+| A/B meaning                                            | Two independent issuer keys per algorithm, not two certificates sharing one key                                                      | Active/standby vs parallel issuance rotation policies                                            |
+| All-CN/SAN defaults                                    | Leaf DNS identities SAN+CN as convenience; root/intermediate no fabricated DNS SAN                                                   | Per-purpose profile rules and validators                                                         |
+| “SHA-256 always”                                       | RSA/ECDSA signatures where valid; Ed25519 and ML-DSA have their own exact mandated algorithms; SHA-256 fingerprint supported         | Provider implementation matrix                                                                   |
+| “All characters incl emoji”                            | Explicit unrestricted profile, with conservative website default for compatibility                                                   | Whether Unicode-rich output should be unqualified default                                        |
+| Private root sync to both                              | Never automatic; explicit root-custody policy and approval                                                                           | HSM/offline policy, escrow/backups                                                               |
+| Append every event to notes                            | Bounded recent summary + durable full journal/DB and references; split sidecars as needed                                            | Provider size limits and human usability                                                         |
+| “Change password in stores” vs service rotation        | Separate `stored_only` from externally activated credential; origin service adapters later                                           | Actual service APIs and permission scopes                                                        |
+| SSH post-quantum “fast option”                         | Ed25519 auth default; hybrid PQ KEX is available; PQ SSH signatures require explicit tested algorithm/protocol support               | OpenSSH/other client interoperability and standards maturity                                     |
+| CT/CAA for private CA                                  | Publish CAA for public ACME; CT for public WebPKI; private issuance gets its own log                                                 | Public ACME provider and DNS control plan                                                        |
+| Three URL mirrors                                      | Support primary/secondary/public + internal LAN; real full HTTP resource URLs, correct MIME/URI type                                 | Live DNS, reachability from target client classes, client AIA behaviors                          |
+| Initial cleanup now                                    | Implement and verify first, then run full authorized alignment in controlled stages; no unbacked blind live mutations                | Access, provider inventory and rollback ability                                                  |
 
 ### 30.1 Third-input perspective reconciled in §§33–49
 
@@ -1983,88 +1979,88 @@ Not in this document's completed software: live production CA keys, actual vault
 
 Each row below is an independent baseline, not a substitute for full sections. `M` mandatory in described scope, `P` proposed/safety refinement, `F` future design with issue and acceptance outline. The implementer must merge these with Appendix A into a single machine-queryable requirements table keyed by ID, source sentence(s), code ownership, test and evidence status.
 
-| ID | Level | Atomic outcome | Spec / primary verification |
-|---|---|---|---|
-| SEC-001 | M | Once-daily laptop bidirectional OP/BWS sync of all authorized machine secrets | §20, timer+mock/provider integration |
-| SEC-002 | M | Distinguish BW Password Manager from BWS Secrets Manager | §19, adapter capability proof |
-| SEC-003 | M | Initial full-inventory and carefully reviewed reconciliation | §20.2, dry-run/replay/readback |
-| SEC-004 | M | Incremental since-success lookback with full periodic census | §20.3, cursor/scope tests |
-| SEC-005 | M | Compare every field, tag, URL, attachment and access key | §19, lossless fixture suite |
-| SEC-006 | M | Canonical global ID independent of path/native ID | §19.2, rename/relocation |
-| SEC-007 | M | Persistent provider-ID pair mapping and typed field equivalence | §19.6, mapping roundtrip |
-| SEC-008 | M | Preserve unmatched new items from either side | §20.4, additive-copy scenarios |
-| SEC-009 | M | Conflict `.op`/`.bws` naming without clobbering | §20.3, collisions |
-| SEC-010 | M | No last-modified-only automatic password choice | §20.3, two-sided edits |
-| SEC-011 | M | History copy of stale password to both stores | §20.5, recoverability proof |
-| SEC-012 | M | Update stale native login item **in place** | §20.5, native ID unchanged |
-| SEC-013 | M | `zz.delete` dated immutable naming and linkage | §19.3, history name codec |
-| SEC-014 | M | Never auto-delete `zz.delete` items | §20.6, negative deletion tests |
-| SEC-015 | M | Detect genuine deletions from prior confirmed complete scans | §20.6, incomplete scopes fail safe |
-| SEC-016 | M | Mirror verified tombstones to previously missing side | §20.6, retry/idempotency |
-| SEC-017 | M | Preserve metadata and old values on provider failure | §20.3, journal saga fault injection |
-| SEC-018 | M | Store-neutral item notes plus concise recent history | §19.5, OP↔BWS mapping |
-| SEC-019 | M | Lossless field sidecars when target cannot represent native field | §19.6, 1PW→BWS→1PW proof |
-| SEC-020 | M | Stable map for mismatched field names/types | §20.7, mapping registry tests |
-| SEC-021 | M | All store writes journaled, read back, and idempotent | §20.3, partial failure scenarios |
-| SEC-022 | M | Each changed item writes an append-only structured event | §21, event schema+storage |
-| SEC-023 | M | Run summaries and per-event references with timestamps/reasons | §21.1–2, reconciled counters |
-| SEC-024 | M | Durable local log + Supabase/Postgres mirror or documented durable recovery | §21.3–4, outbox fault injection |
-| SEC-025 | M | Query/report metrics on adds/edits/rotations/conflicts | §21.5, reporting tests |
-| SEC-026 | M | Restrict secrets from SQL logs/events/telemetry | §19, security redaction tests |
-| SEC-027 | M | Record user/host/IP/MAC when known and appropriate | §19.4, SSH adoption/privacy |
-| SEC-028 | M | Custom attribute registry and promotion process | §19.4, schema migration tests |
-| SEC-029 | M | Notes/sidecars handle provider character/size limits | §19.5, boundary tests |
-| SEC-030 | M | `fleet secrets put` creates/updates both authorized stores | §22.5, sync and failures |
-| SEC-031 | M | `fleet secrets rotate` preserves history and reports activation state | §22.5, origin-service distinction |
-| GEN-001 | M | Unified CSPRNG for passwords/tokens/keys/IDs | §22.1, randomness/provider tests |
-| GEN-002 | M | Password profiles short/standard/long and unrestricted | §22.2, policy tests |
-| GEN-003 | M | Arbitrary length, alphabet and exclusion flags | §22.2, property tests |
-| GEN-004 | M | Separate required character classes from candidate sets | §22.2, satisfiability tests |
-| GEN-005 | M | ASCII/web/Unicode/emoji/CJK candidate groups and aliases | §22.2, Unicode tests |
-| GEN-006 | M | Base-N encoding registry and documented nonstandard cases | §22.2, roundtrip tests |
-| GEN-007 | M | UUIDv4 generation alias and expandible ID family | §22.3, format/entropy tests |
-| GEN-008 | M | Batch counts and multiple named output targets | §22.1, atomic name collision tests |
-| GEN-009 | M | Private/public stdout/file/store/archive outputs with guards | §25, redaction/output tests |
-| GEN-010 | M | Generate/inspect/sign/verify using typed key adapter | §22.4, independent verify |
-| SSH-001 | M | Generate strong Ed25519 default SSH keys, RSA and P-256 options | §23.1, OpenSSH client tests |
-| SSH-002 | M | Write public/private to independent approved paths or no disk | §23.2, file ownership tests |
-| SSH-003 | M | Correct dotssh user when sudo and preflight permissions | §23.2, sudo fixture tests |
-| SSH-004 | M | SSH key get/adopt/import/export/inspect/rotate | §23.2, roundtrip |
-| SSH-005 | M | In-place merge of known_hosts/authorized_keys/ssh_config | §23.2, preserve user bytes |
-| SSH-006 | M | Adopt and link SSH config/key/host items and metadata | §23.5, identity relation tests |
-| SSH-007 | M | Rotate remote keys without lockout, rollback on failure | §23.3, isolated SSH lab |
-| SSH-008 | M | SSH CA principals and KRL planned or implemented by stated scope | §23.3, format/validator |
-| IROH-001 | M | Native iroh SecretKey and EndpointId generation | §23.4, native crate tests |
-| IROH-002 | M | Iroh key import/export/get/derive-public/rotate and relationship tracking | §23.4, roundtrip |
-| PKI2-001 | M | Support requested RSA-2048 as configured algorithm and safe root policy guard | §24.1, negative unsafe default |
-| PKI2-002 | M | Root reference expiry exactly 2050-07-07T12:00:00Z | §24.3, ASN.1 inspection |
-| PKI2-003 | M | Base/Web reference expiry exactly 2032-07-07T12:00:00Z | §24.5, ASN.1 inspection |
-| PKI2-004 | M | A/B independent partitioned keypairs per algorithm | §24.2, fingerprint uniqueness |
-| PKI2-005 | M | Duplicate algorithm entries create additional independent keys | §24.4, RSA×3 fixture |
-| PKI2-006 | M | Direct intermediate cross-signing under eligible roots | §24.2, 13×2 matrix |
-| PKI2-007 | M | PQ root does not certify classical intermediate by default | §24.2, negative path tests |
-| PKI2-008 | M | Require explicit authorized root signer source for signing | §24.3, no ambient default test |
-| PKI2-009 | M | CA subject naming end with generation token | §24.4, CN tests |
-| PKI2-010 | M | Three complete HTTP AIA/CDP distribution mirrors | §24.7, URI/MIME tests |
-| PKI2-011 | M | Publish `.crt` DER and `.p7c` certs-only bundles plus PEM chains | §24.7–9, format tests |
-| PKI2-012 | M | Web SAN wildcard convenience with apex names | §24.6, host matching tests |
-| PKI2-013 | M | Algorithm-correct digest and key usages; no forced SHA256 for Ed/ML | §24.6, RFC 9881 tests |
-| PKI2-014 | M | Crt/CSR import/adopt/validate and profile inheritance | §24, command tests |
-| PKI2-015 | M | DNS/CAA/CT plan and public ACME future workflow | §24.8, artifact/research review |
-| OPS-001 | M | Laptop systemd timer, persistent catch-up, lock and audit | §21.7, systemd integration |
-| OPS-002 | M | Test store outage/missing scope must not cause deletion | §20, fault injection |
-| OPS-003 | M | Stable structured metrics/event identity and privacy | §21, readback report |
-| OPS-004 | M | User-facing CLI help/completions and skills docs for all new domains | §§25,29, snapshots |
-| OPS-005 | M | Preserve all preexisting Fleet commands/variants/contracts | §1, smoke matrix |
-| OPS-006 | M | Use Fleet itself for reference demos and verify independently | §28.3, command evidence |
-| FUT-001 | F | OIDC public/private SSO with MFA roles/group/capabilities | §27.4 issue design |
-| FUT-002 | F | Passkeys/WebAuthn and TOTP/HOTP life cycle | §27.2 issue design |
-| FUT-003 | F | SPIFFE/SPIRE workload ID and K8s/Talos trust | §27.2–3 issue design |
-| FUT-004 | F | OCapN and iroh capability-transport experiment | §27.4 issue design |
-| FUT-005 | F | Native ACME/EST/SCEP remote issuance and independent public CA backup | §27.3 issue design |
-| FUT-006 | F | Identity graph integration with Fleet `id`, Tailscale and Cozy stack | §27.3 issue design |
-| FUT-007 | F | Hardware/threshold root custody, distributed recovery | §27.4 issue design |
-| FUT-008 | F | Automated true remote account password rotation | §27.2 issue design |
+| ID       | Level | Atomic outcome                                                                | Spec / primary verification          |
+| -------- | ----- | ----------------------------------------------------------------------------- | ------------------------------------ |
+| SEC-001  | M     | Once-daily laptop bidirectional OP/BWS sync of all authorized machine secrets | §20, timer+mock/provider integration |
+| SEC-002  | M     | Distinguish BW Password Manager from BWS Secrets Manager                      | §19, adapter capability proof        |
+| SEC-003  | M     | Initial full-inventory and carefully reviewed reconciliation                  | §20.2, dry-run/replay/readback       |
+| SEC-004  | M     | Incremental since-success lookback with full periodic census                  | §20.3, cursor/scope tests            |
+| SEC-005  | M     | Compare every field, tag, URL, attachment and access key                      | §19, lossless fixture suite          |
+| SEC-006  | M     | Canonical global ID independent of path/native ID                             | §19.2, rename/relocation             |
+| SEC-007  | M     | Persistent provider-ID pair mapping and typed field equivalence               | §19.6, mapping roundtrip             |
+| SEC-008  | M     | Preserve unmatched new items from either side                                 | §20.4, additive-copy scenarios       |
+| SEC-009  | M     | Conflict `.op`/`.bws` naming without clobbering                               | §20.3, collisions                    |
+| SEC-010  | M     | No last-modified-only automatic password choice                               | §20.3, two-sided edits               |
+| SEC-011  | M     | History copy of stale password to both stores                                 | §20.5, recoverability proof          |
+| SEC-012  | M     | Update stale native login item **in place**                                   | §20.5, native ID unchanged           |
+| SEC-013  | M     | `zz.delete` dated immutable naming and linkage                                | §19.3, history name codec            |
+| SEC-014  | M     | Never auto-delete `zz.delete` items                                           | §20.6, negative deletion tests       |
+| SEC-015  | M     | Detect genuine deletions from prior confirmed complete scans                  | §20.6, incomplete scopes fail safe   |
+| SEC-016  | M     | Mirror verified tombstones to previously missing side                         | §20.6, retry/idempotency             |
+| SEC-017  | M     | Preserve metadata and old values on provider failure                          | §20.3, journal saga fault injection  |
+| SEC-018  | M     | Store-neutral item notes plus concise recent history                          | §19.5, OP↔BWS mapping                |
+| SEC-019  | M     | Lossless field sidecars when target cannot represent native field             | §19.6, 1PW→BWS→1PW proof             |
+| SEC-020  | M     | Stable map for mismatched field names/types                                   | §20.7, mapping registry tests        |
+| SEC-021  | M     | All store writes journaled, read back, and idempotent                         | §20.3, partial failure scenarios     |
+| SEC-022  | M     | Each changed item writes an append-only structured event                      | §21, event schema+storage            |
+| SEC-023  | M     | Run summaries and per-event references with timestamps/reasons                | §21.1–2, reconciled counters         |
+| SEC-024  | M     | Durable local log + Supabase/Postgres mirror or documented durable recovery   | §21.3–4, outbox fault injection      |
+| SEC-025  | M     | Query/report metrics on adds/edits/rotations/conflicts                        | §21.5, reporting tests               |
+| SEC-026  | M     | Restrict secrets from SQL logs/events/telemetry                               | §19, security redaction tests        |
+| SEC-027  | M     | Record user/host/IP/MAC when known and appropriate                            | §19.4, SSH adoption/privacy          |
+| SEC-028  | M     | Custom attribute registry and promotion process                               | §19.4, schema migration tests        |
+| SEC-029  | M     | Notes/sidecars handle provider character/size limits                          | §19.5, boundary tests                |
+| SEC-030  | M     | `fleet secrets put` creates/updates both authorized stores                    | §22.5, sync and failures             |
+| SEC-031  | M     | `fleet secrets rotate` preserves history and reports activation state         | §22.5, origin-service distinction    |
+| GEN-001  | M     | Unified CSPRNG for passwords/tokens/keys/IDs                                  | §22.1, randomness/provider tests     |
+| GEN-002  | M     | Password profiles short/standard/long and unrestricted                        | §22.2, policy tests                  |
+| GEN-003  | M     | Arbitrary length, alphabet and exclusion flags                                | §22.2, property tests                |
+| GEN-004  | M     | Separate required character classes from candidate sets                       | §22.2, satisfiability tests          |
+| GEN-005  | M     | ASCII/web/Unicode/emoji/CJK candidate groups and aliases                      | §22.2, Unicode tests                 |
+| GEN-006  | M     | Base-N encoding registry and documented nonstandard cases                     | §22.2, roundtrip tests               |
+| GEN-007  | M     | UUIDv4 generation alias and expandible ID family                              | §22.3, format/entropy tests          |
+| GEN-008  | M     | Batch counts and multiple named output targets                                | §22.1, atomic name collision tests   |
+| GEN-009  | M     | Private/public stdout/file/store/archive outputs with guards                  | §25, redaction/output tests          |
+| GEN-010  | M     | Generate/inspect/sign/verify using typed key adapter                          | §22.4, independent verify            |
+| SSH-001  | M     | Generate strong Ed25519 default SSH keys, RSA and P-256 options               | §23.1, OpenSSH client tests          |
+| SSH-002  | M     | Write public/private to independent approved paths or no disk                 | §23.2, file ownership tests          |
+| SSH-003  | M     | Correct dotssh user when sudo and preflight permissions                       | §23.2, sudo fixture tests            |
+| SSH-004  | M     | SSH key get/adopt/import/export/inspect/rotate                                | §23.2, roundtrip                     |
+| SSH-005  | M     | In-place merge of known_hosts/authorized_keys/ssh_config                      | §23.2, preserve user bytes           |
+| SSH-006  | M     | Adopt and link SSH config/key/host items and metadata                         | §23.5, identity relation tests       |
+| SSH-007  | M     | Rotate remote keys without lockout, rollback on failure                       | §23.3, isolated SSH lab              |
+| SSH-008  | M     | SSH CA principals and KRL planned or implemented by stated scope              | §23.3, format/validator              |
+| IROH-001 | M     | Native iroh SecretKey and EndpointId generation                               | §23.4, native crate tests            |
+| IROH-002 | M     | Iroh key import/export/get/derive-public/rotate and relationship tracking     | §23.4, roundtrip                     |
+| PKI2-001 | M     | Support requested RSA-2048 as configured algorithm and safe root policy guard | §24.1, negative unsafe default       |
+| PKI2-002 | M     | Root reference expiry exactly 2050-07-07T12:00:00Z                            | §24.3, ASN.1 inspection              |
+| PKI2-003 | M     | Base/Web reference expiry exactly 2032-07-07T12:00:00Z                        | §24.5, ASN.1 inspection              |
+| PKI2-004 | M     | A/B independent partitioned keypairs per algorithm                            | §24.2, fingerprint uniqueness        |
+| PKI2-005 | M     | Duplicate algorithm entries create additional independent keys                | §24.4, RSA×3 fixture                 |
+| PKI2-006 | M     | Direct intermediate cross-signing under eligible roots                        | §24.2, 13×2 matrix                   |
+| PKI2-007 | M     | PQ root does not certify classical intermediate by default                    | §24.2, negative path tests           |
+| PKI2-008 | M     | Require explicit authorized root signer source for signing                    | §24.3, no ambient default test       |
+| PKI2-009 | M     | CA subject naming end with generation token                                   | §24.4, CN tests                      |
+| PKI2-010 | M     | Three complete HTTP AIA/CDP distribution mirrors                              | §24.7, URI/MIME tests                |
+| PKI2-011 | M     | Publish `.crt` DER and `.p7c` certs-only bundles plus PEM chains              | §24.7–9, format tests                |
+| PKI2-012 | M     | Web SAN wildcard convenience with apex names                                  | §24.6, host matching tests           |
+| PKI2-013 | M     | Algorithm-correct digest and key usages; no forced SHA256 for Ed/ML           | §24.6, RFC 9881 tests                |
+| PKI2-014 | M     | Crt/CSR import/adopt/validate and profile inheritance                         | §24, command tests                   |
+| PKI2-015 | M     | DNS/CAA/CT plan and public ACME future workflow                               | §24.8, artifact/research review      |
+| OPS-001  | M     | Laptop systemd timer, persistent catch-up, lock and audit                     | §21.7, systemd integration           |
+| OPS-002  | M     | Test store outage/missing scope must not cause deletion                       | §20, fault injection                 |
+| OPS-003  | M     | Stable structured metrics/event identity and privacy                          | §21, readback report                 |
+| OPS-004  | M     | User-facing CLI help/completions and skills docs for all new domains          | §§25,29, snapshots                   |
+| OPS-005  | M     | Preserve all preexisting Fleet commands/variants/contracts                    | §1, smoke matrix                     |
+| OPS-006  | M     | Use Fleet itself for reference demos and verify independently                 | §28.3, command evidence              |
+| FUT-001  | F     | OIDC public/private SSO with MFA roles/group/capabilities                     | §27.4 issue design                   |
+| FUT-002  | F     | Passkeys/WebAuthn and TOTP/HOTP life cycle                                    | §27.2 issue design                   |
+| FUT-003  | F     | SPIFFE/SPIRE workload ID and K8s/Talos trust                                  | §27.2–3 issue design                 |
+| FUT-004  | F     | OCapN and iroh capability-transport experiment                                | §27.4 issue design                   |
+| FUT-005  | F     | Native ACME/EST/SCEP remote issuance and independent public CA backup         | §27.3 issue design                   |
+| FUT-006  | F     | Identity graph integration with Fleet `id`, Tailscale and Cozy stack          | §27.3 issue design                   |
+| FUT-007  | F     | Hardware/threshold root custody, distributed recovery                         | §27.4 issue design                   |
+| FUT-008  | F     | Automated true remote account password rotation                               | §27.2 issue design                   |
 
 **Acceptance trace format:** retain each source input snippet hash, requirement ID, design section, code path/function, unit/integration/property/interop tests, fixture, status and evidence link. False-positive “passed” labels for unsupported providers or unexecuted commands are release blockers.
 
@@ -2102,24 +2098,24 @@ Each row below is an independent baseline, not a substitute for full sections. `
 
 ### 33.2 Specific conflicts and resolution (no silent dropping)
 
-| Topic | Different proposals | Governing v0.3 decision |
-|---|---|---|
-| RSA length | Earlier user example `rsa2048`; attached perspective `RSA-4096`; previous v0.2 recommends 4096 root | **RSA-4096 root**, allow explicitly authorized RSA-2048 legacy leaf/profile where appropriate; independent `rsa3072`/`rsa8192` adapters optional. Do not silently downgrade long-lived root strength. |
-| Default root cross graph | Earlier four-by-four discussion, then asymmetric 13-certificate graph | Four independent roots; six classical reciprocal root cross-certs; three classical→ML-DSA root cross-certs; **no ML-DSA→classical by default**. |
-| Intermediate signing | Attached perspective proposes roots-only by default; subsequent critical user input wants direct signing by all roots in A/B sets | Keep **`roots-only` as scalable ordinary profile**; the required reference Base + Internal Web run uses **`both`** (root cross plus direct eligible intermediate cross-certs), reproducing the 20-key / 65-cert reference inventory. Document effect on CRL issuer and revocation. |
-| PQ direction | Various statements about trust and cross-signing | Fully PQ clients must explicitly trust ML-DSA root only and reject classical signature paths. Classical→ML-DSA cross-certs aid anchor compatibility, not clients that lack ML-DSA implementation; sharing a cross-certificate never shares private keys. |
-| Root-key and CA validity | `20y` default, exceptional `2050-07-07T12:00:00Z`; intermediate `5y`, exceptional `2032-07-07T12:00:00Z` | Default root 20 calendar years; reference root exact **2050-07-07T12:00:00Z**; default intermediate five calendar years; reference Base exact **2032-07-07T12:00:00Z**. The reference run now specifies the **same explicit 2032-07-07T12:00:00Z** expiry for Internal Web; newer purpose-specific issuer sets use the general 5y policy unless independently overridden. Never invent further special dates. |
-| SAN, CN and hashing | "Always set CN and SAN" and "SHA256 for all" vs algorithm-specific X.509 standards | SAN required for DNS/IP TLS leaves; CA certificates ordinarily **do not need DNS SAN** and identity is DN/keys. Ed25519 and ML-DSA are not configured as `sign with SHA-256` in the same way as RSA/ECDSA. Encode proper algorithm/OID/profile. |
-| AIA | Earlier assumption only one URL; later RFC-compliant multiple AIA / PKCS#7 | Multiple `caIssuers` AccessDescriptions are allowed; `.p7c` certs-only collections are allowed; real clients often don't search all. Publish immutable DER singles and optional collections, plus proactively controlled chains. Correct issuer references every time. |
-| CRL/OCSP | Advertise all three regardless of hosting | Do not publish unusable OCSP URLs; initial signed CRLs and scheduled refresh mandatory if CDP embedded; OpenBao 2.7 ML-DSA Go OCSP unsupported. |
-| Public Web issuer | Name may imply publicly trusted HTTPS | A private `Public Web` issuer remains **private trust**. Public-facing browser-trusted sites ordinarily use ACME/Let's Encrypt or another WebPKI CA, managed through a separate certificate source. Private CA can coexist for mTLS and internal endpoints. |
-| Broad mirroring vs isolation | Previous request to copy all OP/BWS both ways, current desire to limit blast radius | Run **full discovery and field-accurate reconciliation within explicitly authorized overlapping scopes**, but separate private high-risk classes and vaults by policy. Do not silently duplicate root keys or the personal vault. The later second sweep of BW Password Manager/other vaults is authorization-gated. |
-| Secrets backend | Dual OP/BWS, possible OP only, OpenBao, Cloudflare, SecureStore | Keep OP+BWS now and introduce provider-neutral capabilities. SOPS/age for declarative copies and offline continuity. Benchmark and pilot OpenBao/fnox; do not rewrite a crypto/security server in Workers as an immediate prerequisite. |
-| Deployment | NixOS, Cozystack/Talos/K8s, Lima, mise | Nix remains source of truth for managed hosts; Flux/Helm for Cozystack research baseline; mise optional project tools/tasks; Lima optional dev VMs; KubeVirt for in-cluster VMs; investigate Argo/Tekton/mesh separately. |
+| Topic                        | Different proposals                                                                                                               | Governing v0.3 decision                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RSA length                   | Earlier user example `rsa2048`; attached perspective `RSA-4096`; previous v0.2 recommends 4096 root                               | **RSA-4096 root**, allow explicitly authorized RSA-2048 legacy leaf/profile where appropriate; independent `rsa3072`/`rsa8192` adapters optional. Do not silently downgrade long-lived root strength.                                                                                                                                                                                                         |
+| Default root cross graph     | Earlier four-by-four discussion, then asymmetric 13-certificate graph                                                             | Four independent roots; six classical reciprocal root cross-certs; three classical→ML-DSA root cross-certs; **no ML-DSA→classical by default**.                                                                                                                                                                                                                                                               |
+| Intermediate signing         | Attached perspective proposes roots-only by default; subsequent critical user input wants direct signing by all roots in A/B sets | Keep **`roots-only` as scalable ordinary profile**; the required reference Base + Internal Web run uses **`both`** (root cross plus direct eligible intermediate cross-certs), reproducing the 20-key / 65-cert reference inventory. Document effect on CRL issuer and revocation.                                                                                                                            |
+| PQ direction                 | Various statements about trust and cross-signing                                                                                  | Fully PQ clients must explicitly trust ML-DSA root only and reject classical signature paths. Classical→ML-DSA cross-certs aid anchor compatibility, not clients that lack ML-DSA implementation; sharing a cross-certificate never shares private keys.                                                                                                                                                      |
+| Root-key and CA validity     | `20y` default, exceptional `2050-07-07T12:00:00Z`; intermediate `5y`, exceptional `2032-07-07T12:00:00Z`                          | Default root 20 calendar years; reference root exact **2050-07-07T12:00:00Z**; default intermediate five calendar years; reference Base exact **2032-07-07T12:00:00Z**. The reference run now specifies the **same explicit 2032-07-07T12:00:00Z** expiry for Internal Web; newer purpose-specific issuer sets use the general 5y policy unless independently overridden. Never invent further special dates. |
+| SAN, CN and hashing          | "Always set CN and SAN" and "SHA256 for all" vs algorithm-specific X.509 standards                                                | SAN required for DNS/IP TLS leaves; CA certificates ordinarily **do not need DNS SAN** and identity is DN/keys. Ed25519 and ML-DSA are not configured as `sign with SHA-256` in the same way as RSA/ECDSA. Encode proper algorithm/OID/profile.                                                                                                                                                               |
+| AIA                          | Earlier assumption only one URL; later RFC-compliant multiple AIA / PKCS#7                                                        | Multiple `caIssuers` AccessDescriptions are allowed; `.p7c` certs-only collections are allowed; real clients often don't search all. Publish immutable DER singles and optional collections, plus proactively controlled chains. Correct issuer references every time.                                                                                                                                        |
+| CRL/OCSP                     | Advertise all three regardless of hosting                                                                                         | Do not publish unusable OCSP URLs; initial signed CRLs and scheduled refresh mandatory if CDP embedded; OpenBao 2.7 ML-DSA Go OCSP unsupported.                                                                                                                                                                                                                                                               |
+| Public Web issuer            | Name may imply publicly trusted HTTPS                                                                                             | A private `Public Web` issuer remains **private trust**. Public-facing browser-trusted sites ordinarily use ACME/Let's Encrypt or another WebPKI CA, managed through a separate certificate source. Private CA can coexist for mTLS and internal endpoints.                                                                                                                                                   |
+| Broad mirroring vs isolation | Previous request to copy all OP/BWS both ways, current desire to limit blast radius                                               | Run **full discovery and field-accurate reconciliation within explicitly authorized overlapping scopes**, but separate private high-risk classes and vaults by policy. Do not silently duplicate root keys or the personal vault. The later second sweep of BW Password Manager/other vaults is authorization-gated.                                                                                          |
+| Secrets backend              | Dual OP/BWS, possible OP only, OpenBao, Cloudflare, SecureStore                                                                   | Keep OP+BWS now and introduce provider-neutral capabilities. SOPS/age for declarative copies and offline continuity. Benchmark and pilot OpenBao/fnox; do not rewrite a crypto/security server in Workers as an immediate prerequisite.                                                                                                                                                                       |
+| Deployment                   | NixOS, Cozystack/Talos/K8s, Lima, mise                                                                                            | Nix remains source of truth for managed hosts; Flux/Helm for Cozystack research baseline; mise optional project tools/tasks; Lima optional dev VMs; KubeVirt for in-cluster VMs; investigate Argo/Tekton/mesh separately.                                                                                                                                                                                     |
 
 ### 33.3 No false notion of universal compatibility
 
-Certificate support depends on *leaf key*, *all signature algorithms in the path*, *target trusted anchor*, *purpose restrictions*, *AIA/chain availability*, *TLS/other protocol negotiation*, *revocation policy*, and *actual client implementation*. The manifest must record a verified compatibility matrix by library/version and distinct profiles. A client trusting all four roots is a compatibility client, **not** a post-quantum-assurance client unless it explicitly selects a PQ-only verifier. For signers that are offline or nonexportable, a `bundle` may contain **references/attestations** rather than exportable secrets.
+Certificate support depends on _leaf key_, _all signature algorithms in the path_, _target trusted anchor_, _purpose restrictions_, _AIA/chain availability_, _TLS/other protocol negotiation_, _revocation policy_, and _actual client implementation_. The manifest must record a verified compatibility matrix by library/version and distinct profiles. A client trusting all four roots is a compatibility client, **not** a post-quantum-assurance client unless it explicitly selects a PQ-only verifier. For signers that are offline or nonexportable, a `bundle` may contain **references/attestations** rather than exportable secrets.
 
 ## 34. Secrets topology: keep providers independent but present one API
 
@@ -2152,23 +2148,23 @@ The top arrow represents **only approved fields and items** that exist in author
 
 ### 34.2 Data security classes and default replication policy
 
-| Class | Examples | Default storage / sync |
-|---|---|---|
-| `human-login` | Username/password/URI/autofill, attached TOTP, passkeys | Remain in assigned OP vault; BWS replica only with specific mapping and authorization. Later BW sweep separately approved. |
-| `machine-static` | Bot/API token/CI credential | Existing BWS or scoped OP vault; dual-store replication only where policy explicitly lists both and metadata mapping is lossless. |
-| `deployment` | NixOS/Flux service credentials | SOPS/age in Git (ciphertext); optionally derive from canonical provider with explicit versions. No plaintext in nix store, repo or logs. |
-| `transient` | Short-lived STS/OAuth token/lease | Source-issued, memory only, expire; do not replicate a spent lease to permanent password stores. |
-| `ca-root` | Root CA private key / HSM signing identity | Offline/hardware/manual authorized custody. **Never general two-store auto-mirror or worker cache.** Manifest references/ceremony instructions only. |
-| `ca-issuer` | Intermediate CA key | Controlled signer store, optional encrypted backup; role-scoped only; store audit and public certificate metadata separately. |
-| `leaf-key` | Service SSH/TLS/device key | Scope to identity/host; rotate with service deployment and rollback; avoid copying all private leaf keys indiscriminately. |
-| `recovery` | Backup decryption keys, emergency tokens | Independent, documented break-glass custody, tested restore; narrow access, not general daemon cache. |
-| `public-artifact` | Root cert, intermediate cert, JWKS, CRL, public key | May be published widely with integrity/provenance; **do not mark them trusted merely by fetching them**. |
+| Class             | Examples                                                | Default storage / sync                                                                                                                               |
+| ----------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `human-login`     | Username/password/URI/autofill, attached TOTP, passkeys | Remain in assigned OP vault; BWS replica only with specific mapping and authorization. Later BW sweep separately approved.                           |
+| `machine-static`  | Bot/API token/CI credential                             | Existing BWS or scoped OP vault; dual-store replication only where policy explicitly lists both and metadata mapping is lossless.                    |
+| `deployment`      | NixOS/Flux service credentials                          | SOPS/age in Git (ciphertext); optionally derive from canonical provider with explicit versions. No plaintext in nix store, repo or logs.             |
+| `transient`       | Short-lived STS/OAuth token/lease                       | Source-issued, memory only, expire; do not replicate a spent lease to permanent password stores.                                                     |
+| `ca-root`         | Root CA private key / HSM signing identity              | Offline/hardware/manual authorized custody. **Never general two-store auto-mirror or worker cache.** Manifest references/ceremony instructions only. |
+| `ca-issuer`       | Intermediate CA key                                     | Controlled signer store, optional encrypted backup; role-scoped only; store audit and public certificate metadata separately.                        |
+| `leaf-key`        | Service SSH/TLS/device key                              | Scope to identity/host; rotate with service deployment and rollback; avoid copying all private leaf keys indiscriminately.                           |
+| `recovery`        | Backup decryption keys, emergency tokens                | Independent, documented break-glass custody, tested restore; narrow access, not general daemon cache.                                                |
+| `public-artifact` | Root cert, intermediate cert, JWKS, CRL, public key     | May be published widely with integrity/provenance; **do not mark them trusted merely by fetching them**.                                             |
 
 Make these **policy-driven classifications**, not inflexible tag heuristics. On first discovery, unknown items are `unclassified` and should not automatically cross to a new provider. Existing authorized overlaps may be reconciled after safe mapping; record intentional exclusions. The user's long-term preservation preference applies to managed credential records, subject to deliberate security policy for private keys and forbidden data.
 
 ### 34.3 Native provider IDs remain stable
 
-An OP Login's item UUID, vault identity, URLs and password field are part of useful operational behavior. A BWS machine secret has different native semantics. Preserve `origin.id`, `origin.vault_or_project_id`, native `created_at`, native `updated_at`, and opaque backend references. The normalized model has a separate stable `logical_item_id` and a versioned `replica_binding` table. A rename changes *display/canonical path*, not identity. Record mapping provenance and confidence. Disallow dedupe on title alone. `zz.delete` retention records must not overwrite the active primary item's ID or become normal auto-filled credentials by accident.
+An OP Login's item UUID, vault identity, URLs and password field are part of useful operational behavior. A BWS machine secret has different native semantics. Preserve `origin.id`, `origin.vault_or_project_id`, native `created_at`, native `updated_at`, and opaque backend references. The normalized model has a separate stable `logical_item_id` and a versioned `replica_binding` table. A rename changes _display/canonical path_, not identity. Record mapping provenance and confidence. Disallow dedupe on title alone. `zz.delete` retention records must not overwrite the active primary item's ID or become normal auto-filled credentials by accident.
 
 ## 35. Backend capabilities and library-first contract
 
@@ -2277,7 +2273,6 @@ Inventory what fails together: Internet outage, BWS vendor, OP vendor, Cloudflar
 - Keep admin-level key material and provider root tokens separate from ordinary synchronization credentials. Use least-privileged machine tokens; separate human approvals and service reconciliation identities.
 - Promote tag conventions based on observation, not speculation. `tags.aws_region=us-east-1` is fine as a typed custom attribute; start with extensible namespaced attributes, adopt canonical fields when repeated patterns justify it and migrate without loss.
 
-
 ## 39. Declarative secrets for NixOS and Kubernetes (SOPS/age)
 
 ### 39.1 Why add SOPS/age immediately
@@ -2325,7 +2320,7 @@ Sources: https://openbao.org/community/release-notes/2-7-0/ ; https://openbao.or
 2. Test token-based and workload-based auth: AppRole, Kubernetes service accounts, OIDC/JWT, cert auth, Tailscale-reachable endpoint; use short TTL and demonstrated revoke/renew semantics.
 3. Test KV v2 history, metadata, exact reads, pagination/list limitations, writes, version CAS, audit redaction and the Fleet adapter contract.
 4. Test Transit sign/verify and encryption on supported algorithms, including whether proposed Rust signing-provider adapters work **without exporting CA private keys**.
-5. Test PKI issuance under a *synthetic* test root and intermediate; issue X.509 and CRL, test expiration and revocation. For ML-DSA, separately test what the backend supports and document OCSP gap.
+5. Test PKI issuance under a _synthetic_ test root and intermediate; issue X.509 and CRL, test expiration and revocation. For ML-DSA, separately test what the backend supports and document OCSP gap.
 6. Measure cold/warm p50/p95 and host failure; restart, seal/unseal, rotate tokens, revoke clients, restore backup and test stolen-token scenarios.
 7. Document exact move path to dedicated multi-node Raft / PostgreSQL HA deployment on Cozystack or elsewhere, including failure domains, offsite encrypted snapshots and recovery key custody.
 
@@ -2362,7 +2357,7 @@ As of research date Cloudflare's Secrets Store beta documents **100 secrets maxi
           independent encrypted archives + recoverability proof
 ```
 
-- Use **application-level authenticated encryption** (e.g., independently reviewed AEAD design) with a per-record/per-version data key wrapped for explicit recipients or a narrowly controlled KMS. Avoid inventing crypto protocols; libraries and threat model must be reviewed. A Worker-bound single master secret that decrypts *all* stored records recreates a large blast radius.
+- Use **application-level authenticated encryption** (e.g., independently reviewed AEAD design) with a per-record/per-version data key wrapped for explicit recipients or a narrowly controlled KMS. Avoid inventing crypto protocols; libraries and threat model must be reviewed. A Worker-bound single master secret that decrypts _all_ stored records recreates a large blast radius.
 - Policy should bind identity to `(principal, object, field, action, purpose, host, scope, expiry)`. A hostname in HTTP input is not host attestation. If integrating Tailscale, verify identity at a trusted Tailscale-side endpoint/gateway or through a properly authenticated connector; don't trust arbitrary forwarded `X-Host` headers.
 - Support scoped tokens, time-bound capability grants, optionally mTLS client certificates, replay nonces, object version preconditions, idempotency keys, blind read denial, access logs, key rotation, per-user and per-service quotas, authorized migration and enforced no-export secret classes.
 - Use D1 primary or session consistency for write-after-read; Cloudflare D1 replicas may lag. KV is eventual and can serve stale values even for recently deleted or newly created keys. Do not use KV to decide whether a password changed/deleted.
@@ -2381,7 +2376,7 @@ Threat model, isolated synthetic data, benchmark versus BWS/OP/OpenBao, encrypte
 
 ### 42.1 `fnox` is a strong secondary integration candidate
 
-`fnox` is a Rust/MIT provider resolver that already supports 1Password, BWS, Bitwarden Password Manager, age-encrypted config, OpenBao-compatible Vault, other cloud services and local keychain. Its **1Password and Bitwarden human-vault provider adapters are read-only**. It supports `fnox sync` encrypted local cache, a memory-only per-user daemon, and scoped process/agent injection. This could satisfy much of the user's desired fast read/use behavior and limit the need to build a second cache framework; it cannot replace Fleet's *write/reconcile* source-of-truth engine. Compare importing a small `fnox-client` protocol adapter, `fnox exec`, and native Fleet provider resolution on reliability, compatibility, redaction, and security. **Do not make Fleet's entire secrets API depend on an undocumented daemon wire format or experimental mise feature.** Sources: https://fnox.jdx.dev/providers/overview ; https://fnox.jdx.dev/guide/sync ; https://fnox.jdx.dev/guide/daemon ; https://mise.jdx.dev/environments/secrets/fnox.html .
+`fnox` is a Rust/MIT provider resolver that already supports 1Password, BWS, Bitwarden Password Manager, age-encrypted config, OpenBao-compatible Vault, other cloud services and local keychain. Its **1Password and Bitwarden human-vault provider adapters are read-only**. It supports `fnox sync` encrypted local cache, a memory-only per-user daemon, and scoped process/agent injection. This could satisfy much of the user's desired fast read/use behavior and limit the need to build a second cache framework; it cannot replace Fleet's _write/reconcile_ source-of-truth engine. Compare importing a small `fnox-client` protocol adapter, `fnox exec`, and native Fleet provider resolution on reliability, compatibility, redaction, and security. **Do not make Fleet's entire secrets API depend on an undocumented daemon wire format or experimental mise feature.** Sources: https://fnox.jdx.dev/providers/overview ; https://fnox.jdx.dev/guide/sync ; https://fnox.jdx.dev/guide/daemon ; https://mise.jdx.dev/environments/secrets/fnox.html .
 
 ### 42.2 NeoSmart SecureStore warrants an explicit cryptography review
 
@@ -2441,12 +2436,12 @@ organization: developing.today-llc
 providers:
   op-engineering:
     type: 1password
-    auth: {kind: service_account, token_ref: env:OP_SERVICE_ACCOUNT_TOKEN}
+    auth: { kind: service_account, token_ref: env:OP_SERVICE_ACCOUNT_TOKEN }
     allowed_vaults: ["Engineering"]
     default_roles: [read, create, update]
   bw-machine:
     type: bitwarden-secrets-manager
-    auth: {kind: machine_token, token_ref: env:BWS_ACCESS_TOKEN}
+    auth: { kind: machine_token, token_ref: env:BWS_ACCESS_TOKEN }
     allowed_projects: ["<configured-project-id>"]
   local-deploy:
     type: sops-age
@@ -2482,29 +2477,28 @@ logging:
 
 A configuration may refer to an env var for the bootstrap token, but the value must never be committed. The implementation must support secure token files/FDs/keychains/managed identity as appropriate; avoid persisting bootstrap values in config or logs. Host- and user-specific secrets must not be implicitly available to all projects.
 
-
 ## 44. Trust installation and certificate consumer interoperability
 
 The attached perspective explicitly requests **all root trust locations**. Existing §3.5 and §13 cover this in principle; v0.3 makes it an acceptance matrix. Public root trust bundles are **distinct from** canonical root-authority objects, cross-sign collections, intermediate stores, and deployed leaf private keys. Full-compatibility clients should be offered all four self-signed root certificates **only if supported by the client**, while PQ-enforced clients install the ML-DSA trust anchor alone and enforce all-ML-DSA path signatures where the application library permits. Installing four anchors is not itself proof that a specific application trusts or understands all four algorithms.
 
-| Consumer / OS | Required generated documentation or tested adapter | Particular caveat |
-|---|---|---|
-| Debian/Ubuntu Linux | CA bundle update approach (`/usr/local/share/ca-certificates` + `update-ca-certificates` where applicable), PEM/DER conversion and removal | Some distro trust updates expect `.crt` files with particular PEM contents, and apps may use bundled stores. |
-| RHEL/Fedora Linux | `update-ca-trust`/anchors path and appropriate system formats | System NSS/OpenSSL and application trust may differ. |
-| Alpine/minimal containers | `ca-certificates`, image build/runtime injection, immutable image/test procedures | Do not assume CA path exists in scratch/distroless; avoid baking private leaf keys into images. |
-| Windows | LocalMachine vs CurrentUser, enterprise/GPO/MDM install, certutil/PowerShell procedure | Trust placement requires authorization; Windows chain engine and revocation policies vary. |
-| macOS | Keychain import and explicit trust policy, managed certificate profile | Import alone may not set intended trust behavior. |
-| Java/JVM | `keytool` JKS/PKCS12 truststore example; JVM-specific CA bundles and password handling | Java runtime might not support ML-DSA; classpath/restarts and custom stores matter. |
-| Firefox/NSS | `certutil -A`/NSS database, Firefox certificate store/enterprise roots variations | Browser profile and OS integration vary by version. |
-| Chrome/Chromium | OS trust versus platform/browser root-store behavior by OS; enterprise policy | Avoid asserting Chrome uses the same store everywhere. |
-| Node/Electron/Python | `NODE_EXTRA_CA_CERTS`, OpenSSL/certifi/request contexts; language-specific trust | Added system roots may not affect bundled or pinned CAs. |
-| Go/Rust TLS consumers | Rustls/webpki/OpenSSL/native-tls and Go system verification with capability matrix | Algorithms and X.509 extensions differ by library/release; record tested versions. |
-| Android/iOS | User vs managed root profiles, app-specific network security configuration, MDM | Some apps do not trust user-installed roots; PQ support may be absent. |
-| Kubernetes | `trust-manager` public-root ConfigMaps/Secrets, per-pod mounts, cert-manager private CAs | Do not distribute root private keys using trust-manager. |
-| SSH | `@cert-authority` lines, `TrustedUserCAKeys`, host/user principal rules | **Native OpenSSH certs are not X.509**, root X.509 PEMs cannot substitute for SSH trusted CA keys. |
-| Firmware/ESP32/embedded | DER-only single cert/chain profiles; root sizing; flash/RAM requirements | Verify each implemented crypto algorithm in target firmware; ML-DSA cert and signatures are substantially larger than Ed25519. |
+| Consumer / OS             | Required generated documentation or tested adapter                                                                                         | Particular caveat                                                                                                              |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Debian/Ubuntu Linux       | CA bundle update approach (`/usr/local/share/ca-certificates` + `update-ca-certificates` where applicable), PEM/DER conversion and removal | Some distro trust updates expect `.crt` files with particular PEM contents, and apps may use bundled stores.                   |
+| RHEL/Fedora Linux         | `update-ca-trust`/anchors path and appropriate system formats                                                                              | System NSS/OpenSSL and application trust may differ.                                                                           |
+| Alpine/minimal containers | `ca-certificates`, image build/runtime injection, immutable image/test procedures                                                          | Do not assume CA path exists in scratch/distroless; avoid baking private leaf keys into images.                                |
+| Windows                   | LocalMachine vs CurrentUser, enterprise/GPO/MDM install, certutil/PowerShell procedure                                                     | Trust placement requires authorization; Windows chain engine and revocation policies vary.                                     |
+| macOS                     | Keychain import and explicit trust policy, managed certificate profile                                                                     | Import alone may not set intended trust behavior.                                                                              |
+| Java/JVM                  | `keytool` JKS/PKCS12 truststore example; JVM-specific CA bundles and password handling                                                     | Java runtime might not support ML-DSA; classpath/restarts and custom stores matter.                                            |
+| Firefox/NSS               | `certutil -A`/NSS database, Firefox certificate store/enterprise roots variations                                                          | Browser profile and OS integration vary by version.                                                                            |
+| Chrome/Chromium           | OS trust versus platform/browser root-store behavior by OS; enterprise policy                                                              | Avoid asserting Chrome uses the same store everywhere.                                                                         |
+| Node/Electron/Python      | `NODE_EXTRA_CA_CERTS`, OpenSSL/certifi/request contexts; language-specific trust                                                           | Added system roots may not affect bundled or pinned CAs.                                                                       |
+| Go/Rust TLS consumers     | Rustls/webpki/OpenSSL/native-tls and Go system verification with capability matrix                                                         | Algorithms and X.509 extensions differ by library/release; record tested versions.                                             |
+| Android/iOS               | User vs managed root profiles, app-specific network security configuration, MDM                                                            | Some apps do not trust user-installed roots; PQ support may be absent.                                                         |
+| Kubernetes                | `trust-manager` public-root ConfigMaps/Secrets, per-pod mounts, cert-manager private CAs                                                   | Do not distribute root private keys using trust-manager.                                                                       |
+| SSH                       | `@cert-authority` lines, `TrustedUserCAKeys`, host/user principal rules                                                                    | **Native OpenSSH certs are not X.509**, root X.509 PEMs cannot substitute for SSH trusted CA keys.                             |
+| Firmware/ESP32/embedded   | DER-only single cert/chain profiles; root sizing; flash/RAM requirements                                                                   | Verify each implemented crypto algorithm in target firmware; ML-DSA cert and signatures are substantially larger than Ed25519. |
 
-Generated docs must contain **install, verify, rotate/overlap and remove** commands per consumer, with `--dry-run` and explicit privilege constraints. A full-trust package must not automatically import certs into global OS stores; prefer `fleet cert trust export --target ...` and separate `install` requiring privileged approval. Pair test scripts with expected root fingerprints, `openssl verify` or platform-specific equivalent, and negative trust tests. Provide clean `roots.pem`, per-root files, `roots.der` only when compatible, Java PKCS#12 trust store, and published cross-certificate collections as *untrusted candidates*.
+Generated docs must contain **install, verify, rotate/overlap and remove** commands per consumer, with `--dry-run` and explicit privilege constraints. A full-trust package must not automatically import certs into global OS stores; prefer `fleet cert trust export --target ...` and separate `install` requiring privileged approval. Pair test scripts with expected root fingerprints, `openssl verify` or platform-specific equivalent, and negative trust tests. Provide clean `roots.pem`, per-root files, `roots.der` only when compatible, Java PKCS#12 trust store, and published cross-certificate collections as _untrusted candidates_.
 
 ### 44.1 AIA/CRL reference discipline
 
@@ -2608,31 +2602,31 @@ No artificial time estimates. The following are independent deliverables, not pr
 
 ## 47. Input-three attachment crosswalk (20 sections and concluding refinements)
 
-This is an explicit **coverage index**, preventing the architectural perspective from being silently dropped. It is a *user-provided proposal*, not research evidence about implemented software.
+This is an explicit **coverage index**, preventing the architectural perspective from being silently dropped. It is a _user-provided proposal_, not research evidence about implemented software.
 
-| Attachment section | Incorporation and evaluation |
-|---|---|
-| §1 Mission / authority | Earlier §§0,2,17; current §33. Preserve minimum requirements, implementation autonomy and 20-year operability; never equate autonomy with access to live root keys. |
-| §2 Architectural principles | Earlier §§2,7,9,10,26; current §§34–38. Includes library-first, declarative state, planning, high-risk gate, fast path and strict key-class boundaries. |
-| §3 Algorithms/adapters | Earlier §§3,9,26 and previous user sample; current §§33,44 and R-SEC-17. Require explicit support/unsupported operations, OIDs, nonexportable signer capabilities, alternate key lengths. |
-| §4 Root cross signing | Earlier §3.1–3.3 and §24; current §33 conflicts resolved. Exactly asymmetric classical mutual and classical→ML-DSA root graph. |
-| §5 Root expiry/renewal/generation | Earlier §§5,24; current §33. Distinguish key generation, cert revision, partition and chain variant, human durations vs exact RFC3339 UTC. |
-| §6 Issuer sets/profiles | Earlier §§3.3,6,24,25; current §33: Base/Internal Web and independent A/B partitions, purpose-aware EKU/issuance policy. |
-| §7 Leaf generation | Earlier §§4,6,7,22,24; current §33 and §44 client behavior. Ensure wildcard apex/SAN and safe complete vs minimal handoff. |
-| §8 AIA, CDP, OCSP, DNS | Earlier §4 and §24; current §§40,44. Fix any claims about fallback/one URL; no dead OCSP; ML-DSA Go responder caveat. |
-| §9 Portable bundle/manifest and stores | Earlier §§5,7,8; current §§34–35,43. Manifest is durable source of lifecycle; stores may contain references, encrypted records and public artifacts. |
-| §10 Organization/naming | Earlier §5,§10/§24; current §33. Defaults `developing.today LLC`, US, generational CA names; not a security control. |
-| §11 CLI design | Earlier §§6,25; current §43. Explicit flag semantics, aliases, human help, stdio, output, batches, safety gates. |
-| §12 Rust library/fast path | Earlier §§9,26; current §35 and R-SEC-17; no heavyweight PKI in tiny Fleet proxy binary. |
-| §13 SSH and other credentials | Earlier §23; current §35 typed objects and §44. Native OpenSSH certificates are not X.509; do not fake file conversion. |
-| §14 Documentation and installation | Earlier §12; current §44 and R-SEC-18 with OS/browser/language/firmware matrix. |
-| §15 Tests | Earlier §§11,28; current §48 test gates. Require negative paths, provider version matrix and independent cryptographic verification. |
-| §16 Workflow/phases | Earlier §13,§28; current §48: repo census, design, tested implementations, synthetic artifacts, production only when authorized. |
-| §17 Operational correctness | Earlier §§10,20,21,28; current §§36–38. Atomic writes, typed reconciliation, immutable audit, offline signing, bounded concurrency, serial allocation. |
-| §18 Minimum acceptance criteria | Earlier §11/§28; current §48 tracked gates. |
-| §19 Implementation discretion | Earlier §17; current §33 and §48. Improve architecture, justify deviations, preserve intent. |
-| §20 Final instruction | Earlier §17/§28; current §48. Agent must test tool-generated artifacts, not stop at design or compile. |
-| Concluding four refinements | Earlier §§3,5,7,24; current §§33–35,44. Avoid universal base issuer, PQ trust policy enforced by verifier, manifest is canonical, distinguish root bundle and public trust bundle. |
+| Attachment section                     | Incorporation and evaluation                                                                                                                                                              |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| §1 Mission / authority                 | Earlier §§0,2,17; current §33. Preserve minimum requirements, implementation autonomy and 20-year operability; never equate autonomy with access to live root keys.                       |
+| §2 Architectural principles            | Earlier §§2,7,9,10,26; current §§34–38. Includes library-first, declarative state, planning, high-risk gate, fast path and strict key-class boundaries.                                   |
+| §3 Algorithms/adapters                 | Earlier §§3,9,26 and previous user sample; current §§33,44 and R-SEC-17. Require explicit support/unsupported operations, OIDs, nonexportable signer capabilities, alternate key lengths. |
+| §4 Root cross signing                  | Earlier §3.1–3.3 and §24; current §33 conflicts resolved. Exactly asymmetric classical mutual and classical→ML-DSA root graph.                                                            |
+| §5 Root expiry/renewal/generation      | Earlier §§5,24; current §33. Distinguish key generation, cert revision, partition and chain variant, human durations vs exact RFC3339 UTC.                                                |
+| §6 Issuer sets/profiles                | Earlier §§3.3,6,24,25; current §33: Base/Internal Web and independent A/B partitions, purpose-aware EKU/issuance policy.                                                                  |
+| §7 Leaf generation                     | Earlier §§4,6,7,22,24; current §33 and §44 client behavior. Ensure wildcard apex/SAN and safe complete vs minimal handoff.                                                                |
+| §8 AIA, CDP, OCSP, DNS                 | Earlier §4 and §24; current §§40,44. Fix any claims about fallback/one URL; no dead OCSP; ML-DSA Go responder caveat.                                                                     |
+| §9 Portable bundle/manifest and stores | Earlier §§5,7,8; current §§34–35,43. Manifest is durable source of lifecycle; stores may contain references, encrypted records and public artifacts.                                      |
+| §10 Organization/naming                | Earlier §5,§10/§24; current §33. Defaults `developing.today LLC`, US, generational CA names; not a security control.                                                                      |
+| §11 CLI design                         | Earlier §§6,25; current §43. Explicit flag semantics, aliases, human help, stdio, output, batches, safety gates.                                                                          |
+| §12 Rust library/fast path             | Earlier §§9,26; current §35 and R-SEC-17; no heavyweight PKI in tiny Fleet proxy binary.                                                                                                  |
+| §13 SSH and other credentials          | Earlier §23; current §35 typed objects and §44. Native OpenSSH certificates are not X.509; do not fake file conversion.                                                                   |
+| §14 Documentation and installation     | Earlier §12; current §44 and R-SEC-18 with OS/browser/language/firmware matrix.                                                                                                           |
+| §15 Tests                              | Earlier §§11,28; current §48 test gates. Require negative paths, provider version matrix and independent cryptographic verification.                                                      |
+| §16 Workflow/phases                    | Earlier §13,§28; current §48: repo census, design, tested implementations, synthetic artifacts, production only when authorized.                                                          |
+| §17 Operational correctness            | Earlier §§10,20,21,28; current §§36–38. Atomic writes, typed reconciliation, immutable audit, offline signing, bounded concurrency, serial allocation.                                    |
+| §18 Minimum acceptance criteria        | Earlier §11/§28; current §48 tracked gates.                                                                                                                                               |
+| §19 Implementation discretion          | Earlier §17; current §33 and §48. Improve architecture, justify deviations, preserve intent.                                                                                              |
+| §20 Final instruction                  | Earlier §17/§28; current §48. Agent must test tool-generated artifacts, not stop at design or compile.                                                                                    |
+| Concluding four refinements            | Earlier §§3,5,7,24; current §§33–35,44. Avoid universal base issuer, PQ trust policy enforced by verifier, manifest is canonical, distinguish root bundle and public trust bundle.        |
 
 ## 48. Implementation plan and acceptance gates — v0.3 additive requirements
 
@@ -2650,37 +2644,37 @@ This is an explicit **coverage index**, preventing the architectural perspective
 
 ### 48.2 Minimum additional acceptance tests (v0.3, beyond §§11/28)
 
-| Gate ID | Must be demonstrated |
-|---|---|
-| V3-S01 | `bws` discovery never presents itself as permission to access `bw` personal vault; both have separate distinct adapter/auth controls. |
-| V3-S02 | `fleet secrets providers capabilities` reports exact version/permissions/limits, including provider that cannot write or list a given vault; unsupported never silently treated as success. |
-| V3-S03 | Canonical object round-trips all available fields, tags, attachments and unknown types without lossy discard. |
-| V3-S04 | A stale password update makes a verified protected `zz.delete` copy then updates the **native original** item ID in place, preserving login/autofill metadata. |
-| V3-S05 | If both peers change same field, reconcile flags a conflict and preserves both; timestamps never silently choose winner. |
-| V3-S06 | Simulated provider outage/403/partial pagination cannot be treated as delete; last-success watermark does not advance incorrectly. |
-| V3-S07 | A divergent or deliberately revoked credential is never served from fallback without explicit policy, version proof and allowed freshness window. |
-| V3-S08 | Root private key/seed is rejected by general mirroring/Cloudflare/OP+BWS auto-write without explicit high-assurance custody policy. |
-| V3-S09 | Offline encrypted snapshot can restore authorized subset after two providers are down; recovery secret is outside repo and snapshot. |
-| V3-S10 | Supabase metadata-only event index and local journal contain no secret plaintext, raw token, low-entropy unkeyed comparisons or sensitive private-key bytes. |
-| V3-S11 | Synthetic benchmark measures separate cold/warm OP/BWS/SDK/broker/file paths, reports latency quantiles and actual limitations (no unsupported equivalence claims). |
-| V3-S12 | SOPS/age ciphertext and NixOS/Flux deployment snippets are reproducible; no secret plaintext in Nix store, Git, CI logs or image layers. |
-| V3-S13 | API returns typed errors for absent provider, insufficient scope, unsupported write, conflict, corrupt vault, age key unavailable, and backend rate limit. |
-| V3-S14 | OpenBao/Cloudflare/fnox/SecureStore proposals are isolated behind optional provider capabilities; baseline build does not require those services. |
-| V3-S15 | Direct cross and roots-only chain tests pass at eligible algorithms; PQ-only rejects classical-root and classical-leaf paths per verifier. |
-| V3-S16 | Explicit negative test for a client whose crypto provider lacks ML-DSA: cross-signing cannot fake that capability. |
-| V3-S17 | Trust installation matrix includes Linux variants, Windows, macOS, Java, NSS/Firefox/Chrome, Android/iOS, containers, Rust/Go/Node/Python and embedded DER, with actual platform tests where feasible. |
-| V3-S18 | Root bundle manifest includes key identity/generation/revision/partition/cross signer, public hashes, secret references, validity, policies and an explicit archive version. |
-| V3-S19 | Renewing same key cert does not rotate key or overwrite unrelated generation; key rotation yields new identity and explicit migration path. |
-| V3-S20 | Long-lived RSA root is not silently generated at RSA-2048 when policy demands RSA-4096; aliases/key lengths validate and report security status. |
-| V3-S21 | Mixed output formats are genuinely compatible with target protocol, e.g. SSH host cert is not mislabeled X.509 and arbitrary certificate cannot be emitted as an unsupported JWT/PGP identity. |
-| V3-S22 | Missing OCSP endpoint never embedded; OpenBao ML-DSA OCSP limitation explicitly detected and either disabled or served by verified compatible responder. |
-| V3-S23 | CF beta Secrets Store 100-item limit cannot be advertised as unbounded general vault; custom D1/R2 mode if ever implemented has encrypted data, consistency and recovery tests. |
-| V3-S24 | Planned `fleet skills install` writes only agreed project/user scope, validates version and manifest, supports removal/upgrade and doesn't alter unrelated agent config. |
-| V3-S25 | With first-run sweep not authorized, all secret modification commands remain dry-run-only/fixtures and the final report says so clearly. |
+| Gate ID | Must be demonstrated                                                                                                                                                                                   |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| V3-S01  | `bws` discovery never presents itself as permission to access `bw` personal vault; both have separate distinct adapter/auth controls.                                                                  |
+| V3-S02  | `fleet secrets providers capabilities` reports exact version/permissions/limits, including provider that cannot write or list a given vault; unsupported never silently treated as success.            |
+| V3-S03  | Canonical object round-trips all available fields, tags, attachments and unknown types without lossy discard.                                                                                          |
+| V3-S04  | A stale password update makes a verified protected `zz.delete` copy then updates the **native original** item ID in place, preserving login/autofill metadata.                                         |
+| V3-S05  | If both peers change same field, reconcile flags a conflict and preserves both; timestamps never silently choose winner.                                                                               |
+| V3-S06  | Simulated provider outage/403/partial pagination cannot be treated as delete; last-success watermark does not advance incorrectly.                                                                     |
+| V3-S07  | A divergent or deliberately revoked credential is never served from fallback without explicit policy, version proof and allowed freshness window.                                                      |
+| V3-S08  | Root private key/seed is rejected by general mirroring/Cloudflare/OP+BWS auto-write without explicit high-assurance custody policy.                                                                    |
+| V3-S09  | Offline encrypted snapshot can restore authorized subset after two providers are down; recovery secret is outside repo and snapshot.                                                                   |
+| V3-S10  | Supabase metadata-only event index and local journal contain no secret plaintext, raw token, low-entropy unkeyed comparisons or sensitive private-key bytes.                                           |
+| V3-S11  | Synthetic benchmark measures separate cold/warm OP/BWS/SDK/broker/file paths, reports latency quantiles and actual limitations (no unsupported equivalence claims).                                    |
+| V3-S12  | SOPS/age ciphertext and NixOS/Flux deployment snippets are reproducible; no secret plaintext in Nix store, Git, CI logs or image layers.                                                               |
+| V3-S13  | API returns typed errors for absent provider, insufficient scope, unsupported write, conflict, corrupt vault, age key unavailable, and backend rate limit.                                             |
+| V3-S14  | OpenBao/Cloudflare/fnox/SecureStore proposals are isolated behind optional provider capabilities; baseline build does not require those services.                                                      |
+| V3-S15  | Direct cross and roots-only chain tests pass at eligible algorithms; PQ-only rejects classical-root and classical-leaf paths per verifier.                                                             |
+| V3-S16  | Explicit negative test for a client whose crypto provider lacks ML-DSA: cross-signing cannot fake that capability.                                                                                     |
+| V3-S17  | Trust installation matrix includes Linux variants, Windows, macOS, Java, NSS/Firefox/Chrome, Android/iOS, containers, Rust/Go/Node/Python and embedded DER, with actual platform tests where feasible. |
+| V3-S18  | Root bundle manifest includes key identity/generation/revision/partition/cross signer, public hashes, secret references, validity, policies and an explicit archive version.                           |
+| V3-S19  | Renewing same key cert does not rotate key or overwrite unrelated generation; key rotation yields new identity and explicit migration path.                                                            |
+| V3-S20  | Long-lived RSA root is not silently generated at RSA-2048 when policy demands RSA-4096; aliases/key lengths validate and report security status.                                                       |
+| V3-S21  | Mixed output formats are genuinely compatible with target protocol, e.g. SSH host cert is not mislabeled X.509 and arbitrary certificate cannot be emitted as an unsupported JWT/PGP identity.         |
+| V3-S22  | Missing OCSP endpoint never embedded; OpenBao ML-DSA OCSP limitation explicitly detected and either disabled or served by verified compatible responder.                                               |
+| V3-S23  | CF beta Secrets Store 100-item limit cannot be advertised as unbounded general vault; custom D1/R2 mode if ever implemented has encrypted data, consistency and recovery tests.                        |
+| V3-S24  | Planned `fleet skills install` writes only agreed project/user scope, validates version and manifest, supports removal/upgrade and doesn't alter unrelated agent config.                               |
+| V3-S25  | With first-run sweep not authorized, all secret modification commands remain dry-run-only/fixtures and the final report says so clearly.                                                               |
 
 ### 48.3 Evidence deliverables
 
-An implementing agent must attach: pinned source revision; requirements-to-test map; `cargo test`/Nix build and smoke results; provider inventory and permission report (redacted); security threat model; benchmark report; synthetic sync fixture before/after states; backup/restore proof; cross-cert chain matrix and independently verified fingerprints; AIA/CDP/CRL publication checks; recipient/VM/K8s deployment tests; generated docs/skills; and a structured remaining-work register. Each operation has a concrete status: *implemented, verified, partial, unavailable, blocked, deferred*, not an unqualified success claim.
+An implementing agent must attach: pinned source revision; requirements-to-test map; `cargo test`/Nix build and smoke results; provider inventory and permission report (redacted); security threat model; benchmark report; synthetic sync fixture before/after states; backup/restore proof; cross-cert chain matrix and independently verified fingerprints; AIA/CDP/CRL publication checks; recipient/VM/K8s deployment tests; generated docs/skills; and a structured remaining-work register. Each operation has a concrete status: _implemented, verified, partial, unavailable, blocked, deferred_, not an unqualified success claim.
 
 ### 48.4 Go/no-go questions that require deliberate review before live change
 
@@ -2704,85 +2698,85 @@ An implementing agent must attach: pinned source revision; requirements-to-test 
 
 This register deliberately makes implicit work visible and is a starting point for the implementing agent's source-to-test matrix. `M` = required outcome, `P` = proposed design choice, `F` = future/follow-on. Full verification must cite concrete tests/commits after implementation; a row here alone proves nothing.
 
-| ID | Class | Atomic user outcome / acceptance requirement | Main sections |
-|---|---|---|---|
-| PKI-001 | M | Build one logical root set, four independent algorithms/keys | 0, 3 |
-| PKI-002 | M | Sign each root's own cert, generate all nine asymmetric root cross-certs | 3 |
-| PKI-003 | M | Classical roots mutually bridge each other's trust paths | 3, 11 |
-| PKI-004 | M | Classical roots can bridge into ML-DSA root when cryptographically supported | 3, 11 |
-| PKI-005 | M | ML-DSA root never signs classical roots by default | 3, 10, 11 |
-| PKI-006 | M | PQ-only clients reject classical roots and classical-signed paths | 3, 11 |
-| PKI-007 | M | Full-trust clients can install four self-signed roots only | 3, 7 |
-| PKI-008 | M | Root-private-key safety not bypassed by default sync | 8, 10 |
-| PKI-009 | M | Generate independent Base and Internal Web intermediate sets | 3, 6 |
-| PKI-010 | M | Each set can generate each enabled algorithm's issuer from the matching root | 3, 6 |
-| PKI-011 | M | Issuers inherit organization, naming, algorithm/default policy from parent | 2, 5, 6 |
-| PKI-012 | historical / amended | Original roots-only optimization: intermediate cross-signing not intrinsically needed, but v0.2 reference requires direct issuer variants (PKI2-006) | 3, 24 |
-| PKI-013 | M | Add arbitrary new purpose-specific issuer sets with one command | 2, 6 |
-| PKI-014 | M | Infer full CN/OU from simple labels such as `Public Web` | 2, 5, 6 |
-| PKI-015 | M | Restrict Web issuer purpose and leaf EKU; report limits of enforcement | 3, 6 |
-| PKI-016 | M | Explicit name/subject/OU/country overrides remain available | 5, 6 |
-| PKI-017 | M | Generate root without name, with safe unique unscoped identity | 5, 6 |
-| PKI-018 | M | Default organization `developing.today LLC`, country US | 2, 5 |
-| PKI-019 | M | Root default validity 20 calendar years | 5, 6 |
-| PKI-020 | M | Parse human durations and exact RFC3339/UTC notAfter | 5, 6 |
-| PKI-021 | M | Use `2032-07-07T12:00:00Z` for reference Base issuer | 5, 6 |
-| PKI-022 | M | Explicit Web issuer expiry override, no fabricated user date | 5, 6, 14 |
-| PKI-023 | M | One-year Base leaf; default Web leaf from an issuer with leaf template | 5, 6 |
-| PKI-024 | M | Web SAN supports both developing.today and developing-today.com | 6 |
-| PKI-025 | M | Wildcard shorthand generates apex and wildcard SANs by default | 6 |
-| PKI-026 | M | Explicit SAN and wildcard override, dedupe, validation and safety | 6, 10 |
-| PKI-027 | M | Generate multiple selectable leaf algorithms, each with its own key | 3, 6 |
-| PKI-028 | M | Generate all relevant import-ready artifacts for selected credential | 7 |
-| PKI-029 | M | Full handoff package and minimal package modes | 7 |
-| PKI-030 | M | `--public-only`, `--key-only`, `--no-chains`, `--no-docs` variants | 6, 7 |
-| PKI-031 | M | PEM, DER `.crt`, CMS/P7C, chains and safe private import formats | 4, 7 |
-| PKI-032 | M | Do not treat SSH/OpenPGP/JWT as mere X.509 encodings | 6, 7 |
-| PKI-033 | M | Correct AIA CA Issuers/CRL per issuer; independent OCSP if operational | 4 |
-| PKI-034 | M | Publish single DER and multi-cert CMS where supported | 4 |
-| PKI-035 | M | Proactively generated specific chains and untrusted cross-certs | 3, 4, 7 |
-| PKI-036 | M | Public signed empty CRLs exist before embedding CDP references | 4, 11 |
-| PKI-037 | M | Publication plan with real relative file paths and served URLs | 4, 7 |
-| PKI-038 | M | Standard BIND zone fragment and structured DNS change manifest | 4 |
-| PKI-039 | M | Generated README explains DNS, copy/serve, validation and revocation | 4, 7, 12 |
-| PKI-040 | M | Configurable stable HTTP `/certs`, `/crl`, optional `/ocsp` | 4 |
-| PKI-041 | M | Stable logical secret paths and safe lowercased hyphenated slugs | 5, 8 |
-| PKI-042 | M | Versioned generation/partition (`g1a`, `g4b`) and renewal semantics | 5, 9 |
-| PKI-043 | M | Reissue existing cert/key vs rotate new keys distinguished | 5, 9 |
-| PKI-044 | M | Long-term root/issuer replacement and trust migration support | 5, 9, 13 |
-| PKI-045 | M | `--root`/`--issuer` accepts cert/path/dir/archive/store ref where valid | 5, 8 |
-| PKI-046 | M | Can auto-locate one approved canonical parent if path omitted | 6, 8 |
-| PKI-047 | M | Ambiguous/missing parent fails, does not silently choose | 8, 10 |
-| PKI-048 | M | Support zip, tar, tar.gz, tar.zst and in-memory bundle APIs | 6, 7 |
-| PKI-049 | M | Unattended scripts, JSON/YAML stdin/stdout and structured status | 6 |
-| PKI-050 | M | Batch multi-step plans with dependencies and resumability | 6 |
-| PKI-051 | M | Fast leaf path independent of documentation/network packaging | 2, 6, 9 |
-| PKI-052 | M | Composable Rust library for high-level issuance and low-level streams | 6, 9 |
-| PKI-053 | M | Selectable store sync (OP, BWS, both, none) using shared interface | 8 |
-| PKI-054 | M | Automatic permitted sync with redacted receipts and recovery | 8 |
-| PKI-055 | M | Explicit output mode and private/public material policy | 6, 7, 8 |
-| PKI-056 | M | Flag aliases through canonical normalization and collision detection | 6, 11 |
-| PKI-057 | M | Explainable defaults, dry run, guardrails and separate hazard approvals | 6, 10 |
-| PKI-058 | M | Comprehensive help, completers, developer docs and how-tos | 12 |
-| PKI-059 | M | Generated Linux/Java/Firefox/Chrome/web server install guides | 7, 12 |
-| PKI-060 | M | Integrate with current fleet registry, config, Nix and existing domains | 1, 13 |
-| PKI-061 | M | Validate all PKI outputs with OpenSSL and one Rust chain validator | 9, 11 |
-| PKI-062 | M | Matrix tests for all conditional positive and strict negative trust paths | 3, 11 |
-| PKI-063 | M | Tests of all flags/formats/archives/store failures and script APIs | 11 |
-| PKI-064 | M | Generate demonstration bundles using the implemented fleet binary | 6, 11, 13 |
-| PKI-065 | M | Maintain roadmap, future ideas, dependency and complexity register | 15 |
-| PKI-066 | P | Short-lived 90-day Web leaf default | 2, 5, 14 |
-| PKI-067 | P | `fleet cert` canonical, `fleet pki` alias | 6 |
-| PKI-068 | M | Four-algorithm Base/Web issuer sets with A/B partitions in reference run | 3, 24 |
-| PKI-069 | P | Immutable structured `manifest.json` and JSON/YAML renderers | 7 |
-| PKI-070 | P | All-rust thin path plus independent cryptographic provider adapters | 9 |
-| PKI-071 | P | Formal secure offline-root ceremony and HSM key handles | 8, 9 |
-| PKI-072 | P | Versioned agent skills and `AGENTS.md` installer/templates | 12 |
-| PKI-073 | amended | Native SSH and iroh now current requirements (§23); OpenPGP/JOSE/DID/COSE extended adapters remain staged | 7, 22, 23, 27 |
-| PKI-074 | F | Cloud KMS/PKCS#11/HSM and externally managed signers | 9, 15 |
-| PKI-075 | F | ACME/EST/SCEP/remote signing/transparent issuance systems | 15 |
-| PKI-076 | F | NATS, SQL, Redis, S3 and cloud publication adapters | 6, 9, 15 |
-| PKI-077 | F | Web/TUI dashboard, monitoring and managed trust deployments | 15 |
-| PKI-078 | F | Research and deploy true PQ/hybrid transport and signatures where supported | 3, 9, 15 |
+| ID      | Class                | Atomic user outcome / acceptance requirement                                                                                                         | Main sections |
+| ------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| PKI-001 | M                    | Build one logical root set, four independent algorithms/keys                                                                                         | 0, 3          |
+| PKI-002 | M                    | Sign each root's own cert, generate all nine asymmetric root cross-certs                                                                             | 3             |
+| PKI-003 | M                    | Classical roots mutually bridge each other's trust paths                                                                                             | 3, 11         |
+| PKI-004 | M                    | Classical roots can bridge into ML-DSA root when cryptographically supported                                                                         | 3, 11         |
+| PKI-005 | M                    | ML-DSA root never signs classical roots by default                                                                                                   | 3, 10, 11     |
+| PKI-006 | M                    | PQ-only clients reject classical roots and classical-signed paths                                                                                    | 3, 11         |
+| PKI-007 | M                    | Full-trust clients can install four self-signed roots only                                                                                           | 3, 7          |
+| PKI-008 | M                    | Root-private-key safety not bypassed by default sync                                                                                                 | 8, 10         |
+| PKI-009 | M                    | Generate independent Base and Internal Web intermediate sets                                                                                         | 3, 6          |
+| PKI-010 | M                    | Each set can generate each enabled algorithm's issuer from the matching root                                                                         | 3, 6          |
+| PKI-011 | M                    | Issuers inherit organization, naming, algorithm/default policy from parent                                                                           | 2, 5, 6       |
+| PKI-012 | historical / amended | Original roots-only optimization: intermediate cross-signing not intrinsically needed, but v0.2 reference requires direct issuer variants (PKI2-006) | 3, 24         |
+| PKI-013 | M                    | Add arbitrary new purpose-specific issuer sets with one command                                                                                      | 2, 6          |
+| PKI-014 | M                    | Infer full CN/OU from simple labels such as `Public Web`                                                                                             | 2, 5, 6       |
+| PKI-015 | M                    | Restrict Web issuer purpose and leaf EKU; report limits of enforcement                                                                               | 3, 6          |
+| PKI-016 | M                    | Explicit name/subject/OU/country overrides remain available                                                                                          | 5, 6          |
+| PKI-017 | M                    | Generate root without name, with safe unique unscoped identity                                                                                       | 5, 6          |
+| PKI-018 | M                    | Default organization `developing.today LLC`, country US                                                                                              | 2, 5          |
+| PKI-019 | M                    | Root default validity 20 calendar years                                                                                                              | 5, 6          |
+| PKI-020 | M                    | Parse human durations and exact RFC3339/UTC notAfter                                                                                                 | 5, 6          |
+| PKI-021 | M                    | Use `2032-07-07T12:00:00Z` for reference Base issuer                                                                                                 | 5, 6          |
+| PKI-022 | M                    | Explicit Web issuer expiry override, no fabricated user date                                                                                         | 5, 6, 14      |
+| PKI-023 | M                    | One-year Base leaf; default Web leaf from an issuer with leaf template                                                                               | 5, 6          |
+| PKI-024 | M                    | Web SAN supports both developing.today and developing-today.com                                                                                      | 6             |
+| PKI-025 | M                    | Wildcard shorthand generates apex and wildcard SANs by default                                                                                       | 6             |
+| PKI-026 | M                    | Explicit SAN and wildcard override, dedupe, validation and safety                                                                                    | 6, 10         |
+| PKI-027 | M                    | Generate multiple selectable leaf algorithms, each with its own key                                                                                  | 3, 6          |
+| PKI-028 | M                    | Generate all relevant import-ready artifacts for selected credential                                                                                 | 7             |
+| PKI-029 | M                    | Full handoff package and minimal package modes                                                                                                       | 7             |
+| PKI-030 | M                    | `--public-only`, `--key-only`, `--no-chains`, `--no-docs` variants                                                                                   | 6, 7          |
+| PKI-031 | M                    | PEM, DER `.crt`, CMS/P7C, chains and safe private import formats                                                                                     | 4, 7          |
+| PKI-032 | M                    | Do not treat SSH/OpenPGP/JWT as mere X.509 encodings                                                                                                 | 6, 7          |
+| PKI-033 | M                    | Correct AIA CA Issuers/CRL per issuer; independent OCSP if operational                                                                               | 4             |
+| PKI-034 | M                    | Publish single DER and multi-cert CMS where supported                                                                                                | 4             |
+| PKI-035 | M                    | Proactively generated specific chains and untrusted cross-certs                                                                                      | 3, 4, 7       |
+| PKI-036 | M                    | Public signed empty CRLs exist before embedding CDP references                                                                                       | 4, 11         |
+| PKI-037 | M                    | Publication plan with real relative file paths and served URLs                                                                                       | 4, 7          |
+| PKI-038 | M                    | Standard BIND zone fragment and structured DNS change manifest                                                                                       | 4             |
+| PKI-039 | M                    | Generated README explains DNS, copy/serve, validation and revocation                                                                                 | 4, 7, 12      |
+| PKI-040 | M                    | Configurable stable HTTP `/certs`, `/crl`, optional `/ocsp`                                                                                          | 4             |
+| PKI-041 | M                    | Stable logical secret paths and safe lowercased hyphenated slugs                                                                                     | 5, 8          |
+| PKI-042 | M                    | Versioned generation/partition (`g1a`, `g4b`) and renewal semantics                                                                                  | 5, 9          |
+| PKI-043 | M                    | Reissue existing cert/key vs rotate new keys distinguished                                                                                           | 5, 9          |
+| PKI-044 | M                    | Long-term root/issuer replacement and trust migration support                                                                                        | 5, 9, 13      |
+| PKI-045 | M                    | `--root`/`--issuer` accepts cert/path/dir/archive/store ref where valid                                                                              | 5, 8          |
+| PKI-046 | M                    | Can auto-locate one approved canonical parent if path omitted                                                                                        | 6, 8          |
+| PKI-047 | M                    | Ambiguous/missing parent fails, does not silently choose                                                                                             | 8, 10         |
+| PKI-048 | M                    | Support zip, tar, tar.gz, tar.zst and in-memory bundle APIs                                                                                          | 6, 7          |
+| PKI-049 | M                    | Unattended scripts, JSON/YAML stdin/stdout and structured status                                                                                     | 6             |
+| PKI-050 | M                    | Batch multi-step plans with dependencies and resumability                                                                                            | 6             |
+| PKI-051 | M                    | Fast leaf path independent of documentation/network packaging                                                                                        | 2, 6, 9       |
+| PKI-052 | M                    | Composable Rust library for high-level issuance and low-level streams                                                                                | 6, 9          |
+| PKI-053 | M                    | Selectable store sync (OP, BWS, both, none) using shared interface                                                                                   | 8             |
+| PKI-054 | M                    | Automatic permitted sync with redacted receipts and recovery                                                                                         | 8             |
+| PKI-055 | M                    | Explicit output mode and private/public material policy                                                                                              | 6, 7, 8       |
+| PKI-056 | M                    | Flag aliases through canonical normalization and collision detection                                                                                 | 6, 11         |
+| PKI-057 | M                    | Explainable defaults, dry run, guardrails and separate hazard approvals                                                                              | 6, 10         |
+| PKI-058 | M                    | Comprehensive help, completers, developer docs and how-tos                                                                                           | 12            |
+| PKI-059 | M                    | Generated Linux/Java/Firefox/Chrome/web server install guides                                                                                        | 7, 12         |
+| PKI-060 | M                    | Integrate with current fleet registry, config, Nix and existing domains                                                                              | 1, 13         |
+| PKI-061 | M                    | Validate all PKI outputs with OpenSSL and one Rust chain validator                                                                                   | 9, 11         |
+| PKI-062 | M                    | Matrix tests for all conditional positive and strict negative trust paths                                                                            | 3, 11         |
+| PKI-063 | M                    | Tests of all flags/formats/archives/store failures and script APIs                                                                                   | 11            |
+| PKI-064 | M                    | Generate demonstration bundles using the implemented fleet binary                                                                                    | 6, 11, 13     |
+| PKI-065 | M                    | Maintain roadmap, future ideas, dependency and complexity register                                                                                   | 15            |
+| PKI-066 | P                    | Short-lived 90-day Web leaf default                                                                                                                  | 2, 5, 14      |
+| PKI-067 | P                    | `fleet cert` canonical, `fleet pki` alias                                                                                                            | 6             |
+| PKI-068 | M                    | Four-algorithm Base/Web issuer sets with A/B partitions in reference run                                                                             | 3, 24         |
+| PKI-069 | P                    | Immutable structured `manifest.json` and JSON/YAML renderers                                                                                         | 7             |
+| PKI-070 | P                    | All-rust thin path plus independent cryptographic provider adapters                                                                                  | 9             |
+| PKI-071 | P                    | Formal secure offline-root ceremony and HSM key handles                                                                                              | 8, 9          |
+| PKI-072 | P                    | Versioned agent skills and `AGENTS.md` installer/templates                                                                                           | 12            |
+| PKI-073 | amended              | Native SSH and iroh now current requirements (§23); OpenPGP/JOSE/DID/COSE extended adapters remain staged                                            | 7, 22, 23, 27 |
+| PKI-074 | F                    | Cloud KMS/PKCS#11/HSM and externally managed signers                                                                                                 | 9, 15         |
+| PKI-075 | F                    | ACME/EST/SCEP/remote signing/transparent issuance systems                                                                                            | 15            |
+| PKI-076 | F                    | NATS, SQL, Redis, S3 and cloud publication adapters                                                                                                  | 6, 9, 15      |
+| PKI-077 | F                    | Web/TUI dashboard, monitoring and managed trust deployments                                                                                          | 15            |
+| PKI-078 | F                    | Research and deploy true PQ/hybrid transport and signatures where supported                                                                          | 3, 9, 15      |
 
 **Integrated:** The additional secrets and generation atomic requirement register is now in §31, ready for source-tagged deduplication with Appendix A into one implementation/test matrix.

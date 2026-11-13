@@ -20,7 +20,6 @@ import type {
   PaygLine,
   SaasGroup,
   SaasService,
-
   UninstrumentedSaasService,
   UsageMetric,
 } from "./model.ts";
@@ -488,7 +487,6 @@ const modalMetrics: MetricExtractor = (section) => {
   // deliberately NOT numbers: no fallback below matches a bare number,
   // so they stay null instead of masquerading as dollars (Codex P2).
   const usedMatch =
-
     /\$([\d,]+(?:\.\d+)?)\s*(?:monthly\s*)?compute\s+credits?\s*used/i.exec(usage) ??
     /([\d,]+(?:\.\d+)?)\s*credits?\s*used/i.exec(usage) ??
     /used[:\s]+\$([\d,]+(?:\.\d+)?)/i.exec(usage) ??
@@ -768,9 +766,10 @@ export function extractSaasServices(doc: string): SaasService[] {
     if (!section) {
       services.push({
         ...shell,
-        extractionHealth: spec.instrumented === false
-          ? intentional
-          : { status: "gap", matched: false, reason: "section-missing", count: 0 },
+        extractionHealth:
+          spec.instrumented === false
+            ? intentional
+            : { status: "gap", matched: false, reason: "section-missing", count: 0 },
       });
       continue;
     }

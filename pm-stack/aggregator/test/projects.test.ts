@@ -113,9 +113,7 @@ describe("fetchProjectPool pagination", () => {
     const fetchFn: typeof fetch = Object.assign(
       async () => {
         calls++;
-        return new Response(
-          JSON.stringify(projectPage(calls < 13, calls < 13 ? `cursor-${calls}` : null, 26)),
-        );
+        return new Response(JSON.stringify(projectPage(calls < 13, calls < 13 ? `cursor-${calls}` : null, 26)));
       },
       { preconnect: () => {} },
     );

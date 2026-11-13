@@ -60,30 +60,30 @@ Which revision defines which feature, generated from the same
 
 <!-- BEGIN GENERATED: protocol-features -->
 
-| feature | `2026-07-28` | `2025-11-25` | `2025-06-18` | `2025-03-26` | `2024-11-05` |
-| --- | --- | --- | --- | --- | --- |
-| `initialize` | — | ✓ | ✓ | ✓ | ✓ |
-| `discover` | ✓ | — | — | — | — |
-| `resultType` | ✓ | — | — | — | — |
-| `inputRequired` | ✓ | — | — | — | — |
-| `structuredContent` | ✓ | ✓ | ✓ | — | — |
-| `resource_link` | ✓ | ✓ | ✓ | — | — |
-| `audio` | ✓ | ✓ | ✓ | ✓ | — |
-| `toolAnnotations` | ✓ | ✓ | ✓ | ✓ | — |
-| `completions` | ✓ | ✓ | ✓ | ✓ | — |
-| `title` | ✓ | ✓ | ✓ | — | — |
-| `icons` | ✓ | ✓ | — | — | — |
-| `elicitation` | ✓ | ✓ | ✓ | — | — |
-| `elicitationURL` | ✓ | ✓ | — | — | — |
-| `elicitationComplete` | — | ✓ | — | — | — |
-| `tasks` | — | ✓ | — | — | — |
-| `tasksExtension` | ✓ | — | — | — | — |
-| `extensions` | ✓ | — | — | — | — |
-| `cacheable` | ✓ | — | — | — | — |
-| `resourceSubscribe` | — | ✓ | ✓ | ✓ | ✓ |
-| `subscriptionsListen` | ✓ | — | — | — | — |
-| `loggingSetLevel` | — | ✓ | ✓ | ✓ | ✓ |
-| `batch` | — | — | — | ✓ | — |
+| feature               | `2026-07-28` | `2025-11-25` | `2025-06-18` | `2025-03-26` | `2024-11-05` |
+| --------------------- | ------------ | ------------ | ------------ | ------------ | ------------ |
+| `initialize`          | —            | ✓            | ✓            | ✓            | ✓            |
+| `discover`            | ✓            | —            | —            | —            | —            |
+| `resultType`          | ✓            | —            | —            | —            | —            |
+| `inputRequired`       | ✓            | —            | —            | —            | —            |
+| `structuredContent`   | ✓            | ✓            | ✓            | —            | —            |
+| `resource_link`       | ✓            | ✓            | ✓            | —            | —            |
+| `audio`               | ✓            | ✓            | ✓            | ✓            | —            |
+| `toolAnnotations`     | ✓            | ✓            | ✓            | ✓            | —            |
+| `completions`         | ✓            | ✓            | ✓            | ✓            | —            |
+| `title`               | ✓            | ✓            | ✓            | —            | —            |
+| `icons`               | ✓            | ✓            | —            | —            | —            |
+| `elicitation`         | ✓            | ✓            | ✓            | —            | —            |
+| `elicitationURL`      | ✓            | ✓            | —            | —            | —            |
+| `elicitationComplete` | —            | ✓            | —            | —            | —            |
+| `tasks`               | —            | ✓            | —            | —            | —            |
+| `tasksExtension`      | ✓            | —            | —            | —            | —            |
+| `extensions`          | ✓            | —            | —            | —            | —            |
+| `cacheable`           | ✓            | —            | —            | —            | —            |
+| `resourceSubscribe`   | —            | ✓            | ✓            | ✓            | ✓            |
+| `subscriptionsListen` | ✓            | —            | —            | —            | —            |
+| `loggingSetLevel`     | —            | ✓            | ✓            | ✓            | ✓            |
+| `batch`               | —            | —            | —            | ✓            | —            |
 
 <!-- END GENERATED: protocol-features -->
 
@@ -247,17 +247,17 @@ that could never work (#284).
 
 <!-- BEGIN GENERATED: protocol-capabilities -->
 
-| capability | `2026-07-28` | `2025-11-25` | `2025-06-18` | `2025-03-26` | `2024-11-05` |
-| --- | --- | --- | --- | --- | --- |
-| `tools.listChanged` | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push |
-| `resources.subscribe` | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push |
-| `resources.listChanged` | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push |
-| `prompts.listChanged` | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push |
-| `completions` | ✓ | ✓ | ✓ | ✓ | — (the revision has no such capability; the method is answered anyway) |
-| `logging` | — (the level travels in each request's `_meta`) | ✓ | ✓ | ✓ | ✓ |
-| `tasks` (core) | — | ✓ | — | — | — |
-| `extensions["io.modelcontextprotocol/tasks"]` | ✓ | — | — | — | — |
-| `extensions["io.modelcontextprotocol/skills"]` | `{"directoryRead": true}`, where skills are served | — (declared where skills are served) | — (declared where skills are served) | — (declared where skills are served) | — (declared where skills are served) |
+| capability                                     | `2026-07-28`                                                                                                       | `2025-11-25`                                                                                                       | `2025-06-18`                                                                                                       | `2025-03-26`                                                                                                       | `2024-11-05`                                                                                                       |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `tools.listChanged`                            | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push |
+| `resources.subscribe`                          | true when the connection can push                                                                                  | true when the connection can push                                                                                  | true when the connection can push                                                                                  | true when the connection can push                                                                                  | true when the connection can push                                                                                  |
+| `resources.listChanged`                        | true when the connection can push                                                                                  | true when the connection can push                                                                                  | true when the connection can push                                                                                  | true when the connection can push                                                                                  | true when the connection can push                                                                                  |
+| `prompts.listChanged`                          | true when the connection can push                                                                                  | true when the connection can push                                                                                  | true when the connection can push                                                                                  | true when the connection can push                                                                                  | true when the connection can push                                                                                  |
+| `completions`                                  | ✓                                                                                                                  | ✓                                                                                                                  | ✓                                                                                                                  | ✓                                                                                                                  | — (the revision has no such capability; the method is answered anyway)                                             |
+| `logging`                                      | — (the level travels in each request's `_meta`)                                                                    | ✓                                                                                                                  | ✓                                                                                                                  | ✓                                                                                                                  | ✓                                                                                                                  |
+| `tasks` (core)                                 | —                                                                                                                  | ✓                                                                                                                  | —                                                                                                                  | —                                                                                                                  | —                                                                                                                  |
+| `extensions["io.modelcontextprotocol/tasks"]`  | ✓                                                                                                                  | —                                                                                                                  | —                                                                                                                  | —                                                                                                                  | —                                                                                                                  |
+| `extensions["io.modelcontextprotocol/skills"]` | `{"directoryRead": true}`, where skills are served                                                                 | — (declared where skills are served)                                                                               | — (declared where skills are served)                                                                               | — (declared where skills are served)                                                                               | — (declared where skills are served)                                                                               |
 
 <!-- END GENERATED: protocol-capabilities -->
 
