@@ -1,0 +1,477 @@
+[
+  {
+    "id": "D5-S01",
+    "repo": "developing-today-forks/opencode",
+    "title": "decision: config keys experimental.decision.* with config-check",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nAdd the `experimental.decision` config object (default, cloudflare, lean, fallback_pool, max_tries, max_repairs_per_answer, default_answers) and the config-check rules that make invalid settings fail loudly.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §2.4 (default key) and §6.2 (ε ≤ δ). Config today has no decision key (baseline/v1-decisions-auto.md, 'Config surface').\n\n## Exact files to change\n- `packages/core/src/config (new decision schema beside model-routes.ts)`\n- `packages/core/src/config/plugin/model-routes.ts (reference for keyed pool validation)`\n\n## Approach\nSchema with Effect Schema types. Config-check rules: `default` must name an existing route id; `lean.step <= lean.delta`; `max_tries` in {1,2}; `max_repairs_per_answer` in {0,1}; `fallback_pool` values must exist; `cloudflare.enabled` defaults false. A violated rule is a config error at load, never a silent default.\n\n## Acceptance (each is a runnable check)\n- [ ] Loading a config with `experimental.decision.default` set to an unknown route fails with a message naming the key.\n- [ ] `lean.step` greater than `lean.delta` fails the config check.\n- [ ] A config with no `experimental.decision` block loads and behaves exactly as V1 (no decision default, no lean).\n- [ ] `bun test packages/core/test/config` passes.\n\n## Test oracle\nReference: the config checks in model-routes.ts. Oracle: property test over random (delta, step) pairs — the config accepts iff step <= delta and both are in (0, 1].\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [],
+    "statements": [
+      "supp §2.2",
+      "supp §3.2",
+      "AD5"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S02",
+    "repo": "developing-today-forks/opencode",
+    "title": "decision: visited-set traversal over pools and leaves, cycle-skipped outcome, PBT",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "guard",
+    "body": "## Goal\nWalk decision pools with ONE visited set per call (AD6), covering leaves as well as pools, with the distinct outcomes cycle-skipped, already-processed, walled-skipped, budget-skipped and skipped-empty. Port the prototype's oracle to the fork as a property test.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §8.1 (algorithm and outcome vocabulary), §8.2 (prototype and oracle). AD6 needs the leaf sentence (challenge C7): the prototype found a leaf reached through two pools attempted twice.\n\n## Exact files to change\n- `packages/core/src/config/plugin/model-routes.ts or the route expansion module that walks targets (locate the existing visited-set walk for fallbacks, brief §9 PR #9385)`\n- `packages/core/test/route-traversal.property.test.ts (new)`\n- `doc/2026-11-13T09-26-00Z_design_pool_effort_system/research/prototypes/traversal.py (oracle reference, read-only)`\n\n## Approach\nReuse the existing fallback walk's visited set; extend it so leaves are added to the same set. Outcomes: pool already visited → `cycle-skipped` (not failed); leaf already visited → `already-processed`; walled leaf → `walled-skipped` (never attempted); budget-closed leaf → `budget-skipped`; empty tier part → `skipped-empty`. Success ends the walk.\n\n## Acceptance (each is a runnable check)\n- [ ] Property test over >= 500 random graphs (seeded): no leaf attempted twice; no pool expanded twice; termination within pools+edges+1 visits.\n- [ ] Property test: when no success occurs, attempted ∪ walled-skipped equals the brute-force reachable leaf set.\n- [ ] No walled leaf appears in attempted, in any graph.\n- [ ] A cycle never yields `failed`; a unit test with a two-pool cycle asserts `cycle-skipped` on the back edge.\n- [ ] `bun test packages/core/test/route-traversal.property.test.ts` passes.\n\n## Test oracle\nReference implementation: research/prototypes/traversal.py (already passing, 600 graphs). Oracle: brute-force BFS reachable set (no visited set) — equivalence, plus the invariant checks listed.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S01"
+    ],
+    "statements": [
+      "supp §10",
+      "AD6"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S03",
+    "repo": "developing-today-forks/opencode",
+    "title": "systemone façade: accept the standard body for routes and native providers; decision headers",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nMake `POST /v1/systemone` accept the standard body `{model, state, questions}` for decision routes (`opencode-route/decision*`) and native systemone provider models, pass native calls through, keep Clef behaviour unchanged, and return decision identity in headers only.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §3.1 (accept and pass-through/adapt table), §3.2 (x- rules 1–5), §3.4 (failure modes), §3.5 challenges C2–C4. Today the door refuses everything but Clef (packages/core/src/systemone.ts:102) and forwards only {state, questions} (systemone.ts:240).\n\n## Exact files to change\n- `packages/core/src/systemone.ts (parseSystemOneRequest: widen the model grammar behind routing; keep the Clef grammar test)`\n- `packages/server/src/handlers/completions.ts (the /v1/systemone handler; add response headers x-opencode-decision-id, -leg, -pool)`\n- `packages/protocol/openapi.json (the systemone entry, around line 5704)`\n- `packages/server/test/facade-parity.test.ts (pin the widened refusals as a documented change)`\n\n## Approach\nParse: body must be an object (unchanged). Resolve model: a `opencode-route/*` decision route goes to the decision executor (D5-S05); a native systemone provider model goes to pass-through; a `@cf/cloudflare/clef*` model stays on the Clef path; anything else is 400 with the list of accepted models. Strip every `x-` key before any upstream call; ignore unknown `x-` keys (never 400). Response body stays the standard `{model, answers, usage?}`; identity in headers. Body x- keys only when the request sent `x-envelope: full`.\n\n## Acceptance (each is a runnable check)\n- [ ] A request with no x- keys reaches the native upstream with a body equal to `{state, questions}` plus the upstream model (check via the stub upstream).\n- [ ] A request with unknown `x-foo` keys returns 200, not 400.\n- [ ] A non-Clef, non-route, non-systemone model returns 400 with an accepted-models list.\n- [ ] The Clef path returns the same bodies as V1 (facade-parity suite green except the pinned refusal change).\n- [ ] Responses for decision routes carry `x-opencode-decision-id` in headers and no new body keys.\n- [ ] `bun test packages/server/test/facade-parity.test.ts packages/core/test/systemone` passes.\n\n## Test oracle\nParity oracle: the recorded pairs in packages/core/test/facade-parity.test.ts (the V1 contract). For the new routes: the standard response schema from packages/ai/src/experimental/system-one.ts (Response).\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S01"
+    ],
+    "statements": [
+      "supp §0",
+      "supp §1",
+      "AD5",
+      "T9"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D5-S04",
+    "repo": "developing-today-forks/opencode",
+    "title": "guard: the x- envelope never changes the standard request (PBT)",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "guard",
+    "body": "## Goal\nGuard that stripping the `x-` envelope gives exactly the standard request, for any random request, so the envelope is a superset that never bends the standard.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §3.2 rule 3: `strip(x_envelope(req)) == standard(req)`. Design §7.5: the standard request is unchanged by clauses.\n\n## Exact files to change\n- `packages/core/test/systemone-envelope.property.test.ts (new)`\n- `packages/core/src/systemone.ts (strip function, one place)`\n\n## Approach\nExtract the strip step into a pure function; the property test generates standard bodies and adds random `x-*` keys (including nested values and x-clauses shapes), then asserts the stripped body equals the standard body and that unknown x- keys never produce 400.\n\n## Acceptance (each is a runnable check)\n- [ ] Property test over >= 500 random standard bodies with random x- keys: strip(with_x) deep-equals standard.\n- [ ] A standard body with no x- keys is byte-identical after the strip (JSON canonical form).\n- [ ] `bun test packages/core/test/systemone-envelope.property.test.ts` passes.\n\n## Test oracle\nOracle: the standard body itself (identity). Invariant: strip is idempotent and only removes keys whose name starts with `x-`.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S03"
+    ],
+    "statements": [
+      "supp §1 bullet 1",
+      "AD5"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D5-S05",
+    "repo": "developing-today-forks/opencode",
+    "title": "decision executor core: three input formats, output validator, ULID decision id, append-only gauges",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nImplement the executor core that every decision entry point uses: normalise the three input formats (F1 native systemone, F2 x-extended envelope, F3 compact question list) to one internal form; validate input; call the pool; re-validate the output; mint a `dec_` ULID; store the decision; accept append-only feedback gauges.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §10.1 (formats F1–F3 and the F3 expansion rules), §10.2 (validator, ID, gauges). AD7: decisions and attempts are addressable events; feedback rows reference the ID and never rewrite.\n\n## Exact files to change\n- `packages/core/src/decision/ (new: normalise.ts, validate.ts, executor.ts, ids.ts, gauges.ts)`\n- `packages/core/src/db/ migration: decision_record (id, created_at, pool, final_leg, default_used, tries, repairs, usage, ttft_ms, total_ms, prompt_id, prompt_version, prompt_date, x_tags, x_session, state_hash) and decision_feedback (append-only: decision_id, who, correct, wrong, created_at)`\n\n## Approach\nnormalise(input): if `questions` is an object → F1/F2; if `ask` is an array → F3 expanded (choice array → criteria keyed by string, score array → criteria list, yn → noul, id → question id, q → instructions). Any other shape → `invalid-input` listing the three formats. validate(input): <=255 choice criteria; 2..10 score levels; unique question ids. Output validator re-checks the answer shape per packages/ai/src/experimental/evaluation-client.ts:46-83 and rounds probabilities to 2 decimals. ID: ULID with `dec_` prefix minted before the first call. `x-decision-id` reuse returns the stored decision.\n\n## Acceptance (each is a runnable check)\n- [ ] F1, F2 and F3 inputs for the same question set normalise to deep-equal internal forms.\n- [ ] An input with `ask` as a non-array returns `invalid-input` and names all three formats.\n- [ ] Re-submitting the same `x-decision-id` returns the stored decision and makes no upstream call.\n- [ ] A feedback row inserted twice with the same (decision_id, who) is kept as two rows; no UPDATE statement exists for decision_feedback (grep check).\n- [ ] `bun test packages/core/test/decision` passes.\n\n## Test oracle\nOracle: a round-trip property test — for random question sets, F3 → internal → F1 reproduces the F1 input; the output validator accepts exactly the answer shapes in packages/ai/src/experimental/system-one.ts.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S01",
+      "D5-S03"
+    ],
+    "statements": [
+      "supp §3 bullet 1",
+      "supp §3 bullet 3",
+      "supp §5",
+      "supp §9",
+      "AD7"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D5-S06",
+    "repo": "developing-today/code",
+    "title": "decision executor surfaces: mcpx namespace, decision-run skill, runbook",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "## Goal\nExpose the executor (D5-S05) as an mcpx namespace `decision` with `run`, `get` and `feedback`, plus a `decision-run` skill and a runbook. Three artefacts, one contract.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §10.3 (mcpx tool, skill, runbook) and §10.4 (option X-c chosen). Namespaces are listed in .opencode/instructions/mcpx.md.\n\n## Exact files to change\n- `.mcpx.json (register the decision namespace)`\n- `skills/decision-run/SKILL.md (new; the repo's skill directory)`\n- `doc/runbooks/decision-run.md (new)`\n- `.opencode/instructions/mcpx.md (add the namespace row)`\n\n## Approach\n`decision.run({input})` accepts F1/F2/F3, calls the executor, returns the standard answers plus decision_id, leg, pool, default_used, confidence. `decision.get({id})`. `decision.feedback({id, who, correct, wrong})` with each of correct/wrong in 0..5. The skill documents the three formats with one example each, the default-answer rule, and 'a decision is an event: never edit a stored decision, append feedback'. The runbook: check the Cloudflare counter, check the Zen promo flag, read the last ten decision_record rows, what to do on default_used spikes.\n\n## Acceptance (each is a runnable check)\n- [ ] `mcpx exec 'console.log(await tools.decision.run({input: {ask:[{id:\"yn\",yn:true,q:\"ok?\"}],state:\"x\"}}))'` returns a decision_id.\n- [ ] `decision.feedback` with correct=6 is rejected (0..5 bound).\n- [ ] The skill file has exactly three format examples.\n- [ ] The runbook lists each decision_record field it reads.\n\n## Test oracle\nOracle: the executor's own output contract from D5-S05 (the same validator). Doc check: a reviewer can run every example in the skill unchanged.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S05"
+    ],
+    "statements": [
+      "supp §3 bullet 1",
+      "brief §2"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S07",
+    "repo": "developing-today/code",
+    "title": "decision pools: native/LLM sub-pools, tier pools, default key in .opencode/opencode.jsonc",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nAdd the decision pool tree from design §2.2 to `.opencode/opencode.jsonc`: six leaf sub-pools (native/LLM × free/plan/payg), three tier pools, the `decision` default pool with Luna @100k #medium pinned last, and the `experimental.decision.default` key.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §2.2 (JSONC, existing route syntax), §2.3 (leg list with evidence and status), §2.4 (default key). Verify every model spelling against the live catalog before commit (challenges and open items: Q-a..Q-c).\n\n## Exact files to change\n- `.opencode/opencode.jsonc (model_routes: new decision-* pools; experimental.decision block)`\n\n## Approach\nUse only the route syntax already in the file (targets as strings or {model, window, limit}, selection ordered, autonomy rules). Empty tier parts are allowed (skipped-empty). The Cloudflare leg is NOT in the list while `cloudflare.enabled` is false. Luna is `{ \"model\": \"opencode-route/luna-plan#medium\", \"limit\": { \"context\": 100000 } }`. Model spellings for opencode-zen, typesafe-ai, openrouter and vercel-ai-gateway are checked against the catalog (`mcpx exec` catalog check) and corrected in this file, not guessed.\n\n## Acceptance (each is a runnable check)\n- [ ] The JSONC parses and the route config check (D5-S01) passes.\n- [ ] `opencode-route/decision` resolves and lists targets in the order: decision-free, decision-plan, decision-payg, luna-plan#medium.\n- [ ] Every target spelling resolves in the catalog, or the leg is commented out with the reason (no unresolved leg is left live).\n- [ ] No leg in the tree is 100%-walled per the route_usage record at merge time (standing rule).\n\n## Test oracle\nOracle: the traversal invariants (D5-S02) run over the real graph: every leaf reachable from `decision` is either attempted, walled-skipped, budget-skipped or skipped-empty; luna is the last attempted leaf when all others fail.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S03"
+    ],
+    "statements": [
+      "supp §2 bullets 1–3",
+      "supp §4 bullet 1",
+      "brief §1 bullet 2",
+      "brief §8",
+      "T10"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S08",
+    "repo": "developing-today-forks/opencode",
+    "title": "LLM decider: adapter, schema validation, failure taxonomy, two-try repair loop",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nAdd the LLM-leg adapter: call a chat model with decision-llm v1 (D5-S16), validate the reply against the answer schema, classify failures (refusal, truncation, schema, business, provider), run the feedback retry (max total calls from config, default 2), renormalise sum-only business errors, then move to the next leg.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §4.2 (prompt), §4.3 (schema), §4.4 (taxonomy and loop), §4.5 (options). R2 §3.3 for the feedback content.\n\n## Exact files to change\n- `packages/core/src/decision/llm-leg.ts (new)`\n- `packages/core/src/decision/classify.ts (new: failure classes)`\n- `packages/core/src/decision/feedback-prompt.ts (new: invalid output + compact schema + JSON-pointer errors + one hint)`\n\n## Approach\nPer leg: call; classify; if ok return. Business error that is only probability sum ≠ 1 with all values in [0,1] → renormalise, record `repairs += 1`, return. Refusal, truncation, provider → next leg. Schema or other business error → one retry with feedback prompt, while total calls < max_tries. Feedback prompt carries the invalid output verbatim, the compact schema, each validator error with its JSON pointer, one hint from a fixed table. Structured output (strict JSON schema) is used where the leg supports it (parameter, not policy).\n\n## Acceptance (each is a runnable check)\n- [ ] A reply with `confidence: 1.4` is classed `business`, gets exactly one retry, and the retry's valid reply is returned with tries=2.\n- [ ] A reply that is valid JSON but sums to 0.97 is renormalised, counted in repairs, and makes no retry.\n- [ ] A refusal makes no retry and moves to the next leg (asserted by call count).\n- [ ] With max_tries=2, a leg never receives more than 2 model calls.\n- [ ] `bun test packages/core/test/decision/llm-leg` passes.\n\n## Test oracle\nOracle: a scripted fake model (golden replies: valid, invalid-schema, sum-only, refusal, truncated) with the expected classes and call counts; the schema checker is the reference validator from D5-S05.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S03",
+      "D5-S05"
+    ],
+    "statements": [
+      "supp §4 bullets 2–3",
+      "T12"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D5-S09",
+    "repo": "developing-today-forks/opencode",
+    "title": "default answers when every leg fails; fallback pool by effort",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nWhen the whole decision pool is exhausted, return the request's default answers (or config defaults, or the type default), with `default_used=true` and confidence 0; select the fallback pool from `x-effort` through `experimental.decision.fallback_pool`.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §4.6 (default resolution order and type defaults), §6.3 (fallback pool), §3.4 (200 with default_used; not a 500).\n\n## Exact files to change\n- `packages/core/src/decision/defaults.ts (new)`\n- `packages/core/src/decision/executor.ts (call site)`\n\n## Approach\nResolution: per-question `x-default`, else `experimental.decision.default_answers[qid]`, else type default (noul → 0; choice → first criteria key with probability 1; score → lowest level), confidence 0. A question with no resolvable default is an error (500 with {error}); the config check requires a default for each type used.\n\n## Acceptance (each is a runnable check)\n- [ ] With every leg failing, the response is 200, every answer has confidence 0, and the record has default_used=true.\n- [ ] `x-default` overrides the config default for the same question.\n- [ ] With x-effort=high and every leg failing, fallback_pool_used is `opencode-route/summit`.\n\n## Test oracle\nOracle: a table of (question set, x-default, config defaults) → expected answers, checked against the design's resolution order.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S08"
+    ],
+    "statements": [
+      "supp §4 bullet 3 (default)",
+      "supp §6 bullet 2"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D5-S10",
+    "repo": "developing-today-forks/opencode",
+    "title": "Cloudflare included-usage counter: UTC-day neurons, disengage before the call, pivot",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "## Goal\nAdd `decision_budget(utc_day, provider, neurons)` and the budget-closed check that disengages the Cloudflare leg before the call when the UTC-day allowance (or the optional paid cap) would be exceeded, recording `budget-skipped` and pivoting to the next leg. Ship behind `experimental.decision.cloudflare.enabled` (default false).\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §5 (counter, algorithm, options B-a..B-d, the $10 wording §5.5), Q3 default. R2 §1.2 for rates (clef-flash 3,455 neurons per Mtok input; 10,000/day; reset 00:00 UTC; paid plan has no hard stop).\n\n## Exact files to change\n- `packages/core/src/decision/budget.ts (new)`\n- `packages/core/src/db/ migration: decision_budget`\n\n## Approach\nestimated neurons = ceil(in_tokens × rate_per_Mtok / 1e6), in_tokens from chars ÷ 3.5 (ceiling) pre-call; row marked estimated=1. cf_leg_open(now): flag off → CLOSED (leg absent); used + est > cap → CLOSED; paid_cap set and used + est > paid_cap → CLOSED; else OPEN. A 429 or overage response never sets the cap; it is recorded as provider failure.\n\n## Acceptance (each is a runnable check)\n- [ ] With the flag off, the Cloudflare leg is absent from the walk (no budget-skipped row).\n- [ ] With the flag on and used = cap - 1, a request estimated above 1 neuron is budget-skipped and the walk continues to the next leg.\n- [ ] The counter resets at 00:00 UTC (test with an injected clock at 23:59:59 and 00:00:00).\n- [ ] A 429 from Cloudflare does not change decision_budget.neurons except the estimated charge for the request.\n\n## Test oracle\nOracle: a model-based test: a random sequence of (time, estimate) events against a reference counter in plain arithmetic; the leg is open exactly when the reference says so.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S01"
+    ],
+    "statements": [
+      "supp §2 bullet 4",
+      "Q3",
+      "T10"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S11",
+    "repo": "developing-today-forks/opencode",
+    "title": "decision effort: x-effort, bounded additive tie-break lean, dependent-question sequencing",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "## Goal\nImplement the tie-break lean of design §6.2 (additive ε toward the lean target, only inside the δ band among the top two) and wire `x-effort` and `x-lean-order` through the executor. Absent `x-effort` has no effect.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §6.1–§6.4. Options L-a..L-e (L-c chosen). Effort aliases xhigh/max/ultra/fast → high are applied in the resolver (brief §4, Q6).\n\n## Exact files to change\n- `packages/core/src/decision/lean.ts (new)`\n- `packages/core/src/decision/executor.ts (call site, after validation, before return)`\n\n## Approach\nPseudocode of design §6.2 verbatim: ranked by probability with ties kept in lean order; gap > δ → no-op; target index per tier (low 0, medium (n-1)//2, high n-1); pick the top-two member nearer the target (tie → the top one); add ε to that member; winner = argmax with the same tie rule. Record lean_applied and winner_before/after.\n\n## Acceptance (each is a runnable check)\n- [ ] With x-effort absent, the output equals the input probabilities bit-for-bit (no lean).\n- [ ] With gap > δ, the output equals the input.\n- [ ] xhigh, max, ultra and fast resolve to high before lean is applied (resolver test).\n- [ ] `bun test packages/core/test/decision/lean` passes.\n\n## Test oracle\nOracle: the guard in D5-S12 (property test). Reference implementation: the pseudocode in design §6.2, transcribed as a plain function in the test.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S05"
+    ],
+    "statements": [
+      "supp §6 bullet 1",
+      "supp §3 bullet 4",
+      "brief §4 (alias)",
+      "T14"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S12",
+    "repo": "developing-today-forks/opencode",
+    "title": "guard: lean changes the winner only inside ε, never moves a probability by more than ε (PBT)",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "guard",
+    "body": "## Goal\nProperty test the invariants of the lean: winner changes only if the gap is at most ε; no probability moves by more than ε; no change without a tier; the result is independent of how equal-probability criteria are listed, within the tie rule.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §6.2 'Properties'. A failure here means lean has stopped being a tie-break.\n\n## Exact files to change\n- `packages/core/test/decision/lean.property.test.ts (new)`\n\n## Approach\nGenerate random probability vectors (sum 1, length 2..10) and random tiers and orders; compare the lean output to the invariants.\n\n## Acceptance (each is a runnable check)\n- [ ] Over >= 1000 random vectors: if winner changed then gap <= ε.\n- [ ] Over >= 1000 random vectors: max |p' - p| <= ε for every criterion.\n- [ ] tier absent → output equals input.\n- [ ] `bun test packages/core/test/decision/lean.property.test.ts` passes.\n\n## Test oracle\nOracle: the invariants themselves (an invariant-check oracle, per the testing doctrine in AGENTS.md: state invariants, let a generator hammer them).\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S11"
+    ],
+    "statements": [
+      "supp §6 bullet 1",
+      "AD9"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D5-S13",
+    "repo": "developing-today/code",
+    "title": "OpenAI decision leg admission: quota-% dollar conversion (formula, measured input)",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "## Goal\nImplement the admission check of design §6.5: usd_per_pct(window) = F × (W/P) / 100 from `plan_info` quotas, pct_per_decision measured from route_usage, admit the OpenAI leg only if its usd_per_decision is at most the DeepSeek off-peak figure. Until measured, the leg is deferred.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §6.5 and Q-f. The plan_info quotas and route_usage history are the inputs; no price is assumed.\n\n## Exact files to change\n- `scripts/decision-admission.py (new, read-only report)`\n- `doc/2026-11-13T09-26-00Z_design_pool_effort_system/research/ (output, dated)`\n\n## Approach\nRead the plan's fee F, window W and period P, and the route_usage quota percent for the candidate leg over >= 14 days; print usd_per_pct, pct_per_decision (Δquota / N decisions) and usd_per_decision for each candidate, and the admit/defer verdict. Pure report: no config write.\n\n## Acceptance (each is a runnable check)\n- [ ] The script runs with `python3 -I` and prints a verdict per candidate.\n- [ ] With no measured data, every candidate is `defer`, never `admit`.\n- [ ] The formula matches the worked numbers in design §6.5 (F=200, W=5, P=720 → usd_per_pct 0.01389).\n\n## Test oracle\nOracle: the design formula with the worked example as a unit check (usd_per_pct = 0.013889 ± 1e-6).\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S07"
+    ],
+    "statements": [
+      "supp §2 bullet 5",
+      "Q-f"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D5-S14",
+    "repo": "developing-today/code",
+    "title": "research: live probes of each decision door and M5 JSON validity for free fast LLMs",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "research",
+    "body": "## Goal\nProbe each decision door once and record status, typed-answer validity and latency: Zen jev-1.13-free (promo), TypeSafe jev-latest (only if a key exists by name), DeepSeek Flash off-peak, and the free fast LLMs (Groq, Cerebras) for JSON validity (M5). Record results with dates. No secret values in the record.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §2.3 (evidence per leg), §9 (M5), §14 Q-l. R2 §1.8 marks Groq/Cerebras prices as third-party only.\n\n## Exact files to change\n- `research/decision-door-probes-2026-11-13.md (new, in the design folder)`\n\n## Approach\nOne probe per door, using the probe body from baseline/v1-decisions-auto.md (the blue/table choice question). For LLM legs, ask the decider prompt v1 (D5-S16) for the same question and validate the reply against the answer schema. Never attempt a 100%-walled leg (standing rule): check route_usage first and record 'walled, not attempted'.\n\n## Acceptance (each is a runnable check)\n- [ ] Each door has one row: status, valid (y/n), latency_ms, date, key name used (name only).\n- [ ] No walled door is probed; each skip is recorded with its route_usage reason.\n- [ ] The file contains no key values (grep for `sk-` and `Bearer ` returns nothing).\n\n## Test oracle\nOracle: the systemone answer schema (packages/ai/src/experimental/system-one.ts) — valid = the reply passes the same checks as D5-S05's validator.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [],
+    "statements": [
+      "supp §2 bullet 6",
+      "supp §4 bullet 1",
+      "R2 §1.8",
+      "Q-l"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S15",
+    "repo": "developing-today/code",
+    "title": "trial: native vs cheap LLM per provider, 300–500 labelled decisions, cost per correct",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "trial",
+    "body": "## Goal\nRun the pre-registered measurement of design §9: replay 300–500 labelled historical decisions to each arm (Zen Jev free, TypeSafe Jev if keyed, DeepSeek Flash off-peak, gpt-5-nano if admitted, Luna 100k #medium as reference), 3× choice-order permutations, 10 repeats on a 20-item subset; decide by the pre-registered rule.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §9.1 (method, metrics, decision rule, sample size) and §9.2. AD9: named trial, hypothesis, margin, review date, revert condition. Label source: D6 outcome schema.\n\n## Exact files to change\n- `research/trials/decision-native-vs-llm/PREREG.md (write before scoring)`\n- `research/trials/decision-native-vs-llm/RESULTS.md (after)`\n\n## Approach\nPre-register first: hypothesis, margin (5 accuracy points), n target, review date, revert condition, the correct-decision rule (not reverted and no rework label in 14 days). Then score. Cost per correct = Σcost ÷ Σcorrect with a Wilson 95 % interval on accuracy. Report n with every figure. Decision only if the interval does not span the threshold; otherwise record 'no decision, more labels'.\n\n## Acceptance (each is a runnable check)\n- [ ] PREREG.md is committed before any scoring commit (git log order check).\n- [ ] RESULTS.md reports n, accuracy with Wilson CI, ECE after Platt fit (cross-validated), order flip rate, invalid rate, cost per correct, for every arm.\n- [ ] The chosen order (native first or LLM first, per tier) is recorded with the rule that chose it.\n\n## Test oracle\nOracle: the labels (D6 outcome rule) plus the pre-registered rule itself; calibration check ECE <= 0.05 as the native-acceptance threshold (R2 §7.1).\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S07",
+      "D5-S08",
+      "D5-S14"
+    ],
+    "statements": [
+      "supp §2 bullet 6",
+      "supp §2 bullet 3",
+      "AD9"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D5-S16",
+    "repo": "developing-today/code",
+    "title": "decision-llm prompt v1 as a versioned, dated file, with the versioning rule",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "docs",
+    "body": "## Goal\nWrite the decision-llm prompt v1 (design Appendix A) as `.opencode/prompts/decision-llm.v1.md`, with a header carrying id, version and date, and document the rule: a change means a new version file, never an edit.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §4.2 and Appendix A (the text). Every decision records prompt id, version and date (supp §9).\n\n## Exact files to change\n- `.opencode/prompts/decision-llm.v1.md (new)`\n- `.opencode/prompts/README.md (new, versioning rule)`\n\n## Approach\nCopy Appendix A verbatim. Add the header block. The loader in D5-S08 reads the version from the header and writes it to decision_record.\n\n## Acceptance (each is a runnable check)\n- [ ] The file header states id `decision-llm`, version `v1`, date `2026-11-13`.\n- [ ] The loader returns the same prompt_id/version/date the decision record stores (unit test).\n- [ ] `grep -c 'decision-llm v1' .opencode/prompts/decision-llm.v1.md` is 1.\n\n## Test oracle\nOracle: byte comparison with Appendix A's body (ignoring the header).\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S08"
+    ],
+    "statements": [
+      "supp §4 bullet 2",
+      "supp §9 bullet 1"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D5-S17",
+    "repo": "developing-today-forks/opencode",
+    "title": "x-clauses: store the field, evaluate JsonLogic predicates over answers, effects in closed set",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "## Goal\nAccept `x-clauses` in the envelope (store it with the decision), evaluate the JsonLogic predicates against the answers so far using `json-logic-js` (or an equivalent JSON-logic evaluator, decided in the PR), and expose the effects as a list for V3 to apply. V2 applies no effects to the wire body.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §7.1 (K-b chosen; K-a is the V3 gate), §7.3 (clause shape and effect set), §7.5 (superset rule, C5, C6).\n\n## Exact files to change\n- `packages/core/src/decision/clauses.ts (new: parse, evaluate predicates, list effects)`\n- `packages/core/src/systemone.ts or the executor's envelope reader (store x-clauses)`\n\n## Approach\nClause = {id, when (JsonLogic), then: [effect]}. Evaluate `when` with `var` over answers (answers.<qid>.choice, .probability, .noul, .score). Effects are parsed into a closed set (set, default, narrow, boost, rank, add_option) and rejected if outside it. Clauses are topologically ordered by the variables they read and written; a cycle is a compile error (cycle-error), never a silent drop.\n\n## Acceptance (each is a runnable check)\n- [ ] A clause with an unknown effect name is rejected at parse time.\n- [ ] A clause cycle (A writes what B reads and B writes what A reads) returns cycle-error.\n- [ ] Evaluating `when` with a missing answer does not throw; `missing` predicates behave as in §7.4.\n- [ ] `bun test packages/core/test/decision/clauses` passes.\n\n## Test oracle\nOracle: the eight vectors of D5-S19, plus a PBT over random JsonLogic trees checking that evaluation terminates (no loops in the language).\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S03"
+    ],
+    "statements": [
+      "supp §7",
+      "supp §7 example set",
+      "T15"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S18",
+    "repo": "developing-today-forks/opencode",
+    "title": "V3 clause compiler: apply effects to second-call state and bounded log-odds; CEL gate",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "implement",
+    "body": "## Goal\nCompile the V2 effect list into the second call's state (set/default), into candidate narrowing, and into bounded log-odds boosts (soft +0.2 nats, strong +1.5 nats, per-option cap ±3 nats). Gate: evaluate a CEL runtime for TypeScript (K-a) and record the decision.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §7.1 (K-a as V3 gate), §7.3 (effects and bounds), R2 §4.3 (log-odds combination; design guesses to tune on labels).\n\n## Exact files to change\n- `packages/core/src/decision/compile.ts (new)`\n- `packages/core/src/decision/clauses.ts (use)`\n\n## Approach\nPure compile step: state' = state + answers of set/default; narrowed candidate set; boost vector b with |b_i| <= 3; probabilities p' ∝ p·exp(b) renormalised. Recorded as clause effects in the decision record.\n\n## Acceptance (each is a runnable check)\n- [ ] Each §7.4 example's effect matches its expected outcome (D5-S19).\n- [ ] The cap ±3 nats is never exceeded (PBT over random clause stacks).\n- [ ] With no clauses, the output equals the input.\n\n## Test oracle\nOracle: D5-S19 vectors and the bound invariant; a CEL decision memo as the gate artefact.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S17",
+      "D5-S15"
+    ],
+    "statements": [
+      "supp §7",
+      "supp §6 dependent probabilities",
+      "T15"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D5-S19",
+    "repo": "developing-today-forks/opencode",
+    "title": "guard: every supplement §7 example as a test vector (literal encoding)",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "guard",
+    "body": "## Goal\nEncode the eight supplement §7 examples and the ranking clause exactly as design §7.4 and assert the predicate results and effect lists for representative answer sets, including the blank, deferred and >100 cases.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §7.4 table. The encodings are literal; a change to one is a change to the brief and needs a note.\n\n## Exact files to change\n- `packages/core/test/decision/clauses.supp7.test.ts (new)`\n\n## Approach\nFor each example: a when/then JSON, answer vectors (yes/no/yes etc.), and the expected effect list. Example 4 (blank) uses the missing predicate; example 7 uses or(==deferred, missing); example 8 uses or(==no, >100).\n\n## Acceptance (each is a runnable check)\n- [ ] All nine vectors pass.\n- [ ] Example 1 with answers yes/no/yes yields set q4 = noul 0; with yes/no/no it does not fire.\n- [ ] Example 8 with answer 101 fires; with answer 100 it does not.\n\n## Test oracle\nOracle: the brief's own wording (supp §7), transcribed as expected outcomes, checked against the evaluator.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S17"
+    ],
+    "statements": [
+      "supp §7 examples 1–8",
+      "supp §7 rankings"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D5-S20",
+    "repo": "developing-today/code",
+    "title": "V3 calibration: Platt or temperature per decision type and leg, versioned, raw and calibrated stored together",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "research",
+    "body": "## Goal\nAfter >= 300 labels exist, fit Platt (binary) or temperature (multi-class) calibration per decision type and per leg, store raw and calibrated values with the calibrator version, and use the calibrated values for the lean and the thresholds.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nR2 §2.3 (methods), §2.5 (recommendation), design §12 V3.\n\n## Exact files to change\n- `research/calibration/ (new, fit scripts and reports)`\n\n## Approach\nCross-validated fit; report ECE (10 bins), Brier, reliability diagram, selective risk. Version the calibrator; never overwrite a stored raw value.\n\n## Acceptance (each is a runnable check)\n- [ ] ECE after calibration <= 0.05 on held-out labels, or the calibrator is not used.\n- [ ] Every decision record keeps raw and calibrated values and the calibrator version.\n\n## Test oracle\nOracle: held-out labels; ECE and Brier as defined in R2 §2.3.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S15"
+    ],
+    "statements": [
+      "R2 §2.3",
+      "supp §9"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S21",
+    "repo": "developing-today-forks/opencode",
+    "title": "V3 dependent questions: CPT for <=3-parent groups; conversation continuation by x-session",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "implement",
+    "body": "## Goal\nAdd conditional probability tables for groups of at most three parent questions (design O15), and continuation of a conversation by `x-session`: prior answers carried into state as soft evidence (probabilities, not argmax).\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §6.4 (V2 sequencing), §3.3 (continuation scope), R2 §2.4 (chain rule; soft evidence).\n\n## Exact files to change\n- `packages/core/src/decision/cpt.ts (new)`\n- `packages/core/src/decision/continuation.ts (new)`\n\n## Approach\nCPT over <=3 binary or ternary parents: table keyed by parent answers, learned or hand-set with a version. Continuation: the prior answers are rendered into state with their probabilities, never argmax alone.\n\n## Acceptance (each is a runnable check)\n- [ ] A CPT lookup returns the stored row for every parent combination; an unknown combination is an error.\n- [ ] Continuation state carries probabilities (a test asserts the probability text is present).\n\n## Test oracle\nOracle: the chain rule identity on a three-question toy distribution (joint = product of conditionals).\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S08"
+    ],
+    "statements": [
+      "supp §6 dependent probabilities",
+      "supp §1 bullet 2 (continuation)"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D5-S22",
+    "repo": "developing-today-forks/opencode",
+    "title": "V3 opt-in content-addressed decision cache with TTL",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "implement",
+    "body": "## Goal\nAdd an opt-in cache (`x-cache: allow`) keyed on canonical {state, questions, prompt_version}, with a TTL. Off by default.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §3.3 (caching scope, V3 gate: >= 14 days of events and a measured repeat rate).\n\n## Exact files to change\n- `packages/core/src/decision/cache.ts (new)`\n\n## Approach\nCanonical JSON key (sorted keys); TTL from config; a cache hit records a decision with leg 'cache' and the original decision id.\n\n## Acceptance (each is a runnable check)\n- [ ] Two identical requests with x-cache allow make one upstream call.\n- [ ] With x-cache absent, two identical requests make two upstream calls.\n\n## Test oracle\nOracle: a call-count test against a stub upstream.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S27"
+    ],
+    "statements": [
+      "supp §1 bullet 2 (caching)"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S23",
+    "repo": "developing-today/code",
+    "title": "V3 local decision model: evaluate an ONNX / embeddings + logistic model on the labels",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "research",
+    "body": "## Goal\nIf local decision models exist and are used (supp §2 bullet 7), train and evaluate one on the labelled decisions with the §9 metrics; record zero-marginal-cost and latency against the cheapest paid leg.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nR2 §1.9 and O22; design §12 V3.\n\n## Exact files to change\n- `research/local-decision/ (new)`\n\n## Approach\nSame labels, same split, same metrics as D5-S15. Report n.\n\n## Acceptance (each is a runnable check)\n- [ ] Metrics reported with n and CI, in the same format as RESULTS.md of D5-S15.\n\n## Test oracle\nOracle: the D5-S15 labelled set and metrics.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S15"
+    ],
+    "statements": [
+      "supp §2 bullet 7 (local decision models)",
+      "R2 O22"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S24",
+    "repo": "developing-today/code",
+    "title": "V4 research: mutual references between pools via a fixpoint (T-d, T-e)",
+    "version": "V4",
+    "tier": "contingent",
+    "kind": "research",
+    "body": "## Goal\nOnly if a real case needs values computed across a pool cycle, evaluate the Datalog least-fixpoint and the Nix-style lazy fixpoint against the visited-set walk, with a case where the walk gives the wrong answer.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §8.3 (T-d, T-e), R2 §6. Default: no fixpoint; the visited-set walk stays.\n\n## Exact files to change\n- `research/fixpoint/ (new)`\n\n## Approach\nWrite the case that breaks the visited-set walk (if none exists, record that and close the slice). Compare termination and results.\n\n## Acceptance (each is a runnable check)\n- [ ] A written case or a recorded 'none found' with the graphs searched.\n- [ ] Recommendation with the trade-off.\n\n## Test oracle\nOracle: the brute-force reachable-set oracle of D5-S02.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S20"
+    ],
+    "statements": [
+      "supp §10 later mutual references",
+      "AD6 (V4)"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D5-S25",
+    "repo": "developing-today/code",
+    "title": "V4 bandit allocation of decision traffic inside the trial's safe set, with propensities",
+    "version": "V4",
+    "tier": "contingent",
+    "kind": "research",
+    "body": "## Goal\nDesign a bandit over the decision legs inside the pre-registered safe set of D5-S15, logging propensities so inverse-propensity scoring is possible.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §12 V4; AD9 (bandit only inside the safe set); R2 §5.1 (propensities, IPS).\n\n## Exact files to change\n- `research/bandit/ (new)`\n\n## Approach\nSpecify the safe set, the exploration rate, the propensity log, and the stop rule. Simulate on the D5-S15 labels before any live use.\n\n## Acceptance (each is a runnable check)\n- [ ] Simulation shows no leg outside the safe set is drawn.\n- [ ] Propensities are logged for every draw in the simulation.\n\n## Test oracle\nOracle: the safe-set membership check and the propensity sum identity (sum to 1 per decision).\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S15",
+      "D5-S20"
+    ],
+    "statements": [
+      "AD9 (bandit inside the safe set)",
+      "R2 §5.1"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D5-S26",
+    "repo": "developing-today/code",
+    "title": "docs: amend AD6 (leaves on the visited set) and AD5 (accepted models, x- ignored); note the Jev premise",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "docs",
+    "body": "## Goal\nAmend the program map so AD6 covers leaves (`already-processed`) and AD5 states that the accepted model set widens and unknown `x-` keys are ignored. Record that the Jev premise (supp §0) is not supported by code and the design does not depend on it.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §3.5 (C2–C4), §8.1 (C7), §1 (Jev), §14 Q-a. These are challenges to main.md: the amendment needs Drew's approval if it changes a binding decision.\n\n## Exact files to change\n- `doc/2026-11-13T09-26-00Z_design_pool_effort_system/main.md`\n\n## Approach\nAdd the changes as a dated amendment block under AD5 and AD6; do not silently edit the decision text.\n\n## Acceptance (each is a runnable check)\n- [ ] main.md has a dated amendment note for AD5 and AD6.\n- [ ] The amendment references designs/D5-decision-system.md §3.5 and §8.1.\n\n## Test oracle\nOracle: a reviewer compares main.md against the design challenges list; no statement lost.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [],
+    "statements": [
+      "AD6 (challenge C7)",
+      "AD5 (challenge C2, C3)",
+      "supp §0"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D5-S27",
+    "repo": "developing-today-forks/opencode",
+    "title": "decision lookup by id; search by tag and session",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "## Goal\nAdd `GET /v1/systemone/decisions/{id}` (returns the stored decision) and a search over x-tags and x-session (exact match). Date and full-text search are V3.\n\n## Context\nDesign (on main once merged): `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D5-decision-system.md` — read the section named below before starting.\nDesign §3.3 (V2 scope table).\n\n## Exact files to change\n- `packages/server/src/handlers/completions.ts (route)`\n- `packages/core/src/decision/store.ts (new: get, search)`\n- `packages/protocol/openapi.json (document the two routes)`\n\n## Approach\nRead only. Search by tag and session uses indexes on the decision_record columns.\n\n## Acceptance (each is a runnable check)\n- [ ] GET of a stored id returns it; an unknown id returns 404 with {error}.\n- [ ] Search by tag returns only decisions carrying that tag (test with two tags).\n- [ ] The routes appear in openapi.json.\n\n## Test oracle\nOracle: the stored record (D5-S05) as the reference for the returned body.\n\nRules: gh CLI only; merge commits only, never force-push main; CI on main only; secrets by name only; a 100%-walled leg is never attempted; code#9399 is an EPIC GUARD epic.\n",
+    "blocked_by": [
+      "D5-S05"
+    ],
+    "statements": [
+      "supp §1 bullet 2 (continue by id; search by tags, session)"
+    ],
+    "estimate": "S"
+  }
+]

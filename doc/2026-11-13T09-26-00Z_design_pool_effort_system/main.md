@@ -108,12 +108,21 @@ Leg order is **free → plan → PAYG** with a burn-first budget leg for any
 included allowance (Cloudflare neurons), and **Luna @100k #medium pinned
 directly as the last resort** (never `small`). If every leg fails, the
 request's (or config's) **default answer** is returned and recorded as such.
+*Amended after the D5 draft:* "byte-compatible" means the standard request
+and response **shapes** are unchanged; the set of accepted model ids widens
+to decision pools. Unknown `x-` keys are **ignored** on the way in (never a
+400), and the façade reply always carries `model` (the SDK client requires
+it). Clause logic is JsonLogic in V2 (CEL is a V3 gate); templates render
+text only.
 
 **AD6 — Traversal is visited-set, uniformly.** Every expansion — chat pools,
 tier overlays, decision pools — carries one per-call visited set. A pool
 already on it counts as fully processed (all weighted, round-robin, and
 ordered options checked) and is skipped with outcome `cycle-skipped`, distinct
-from `failed`. A 100 %-walled leg is never attempted (standing rule): it is
+from `failed`. *Amended after D5 (the traversal prototype caught a leaf
+attempted twice via two pools):* **leaves join the visited set too**, keyed
+by `(door, model, native variant)`; a leaf already attempted in this call is
+`cycle-skipped`. A 100 %-walled leg is never attempted (standing rule): it is
 `walled-skipped`. Fixpoint-style mutual references are V4 research.
 
 **AD7 — Every decision and every attempt is an addressable event.** Decision

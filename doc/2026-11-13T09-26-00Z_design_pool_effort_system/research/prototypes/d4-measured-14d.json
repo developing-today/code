@@ -1,0 +1,2306 @@
+[
+ {
+  "provider": "openai.main",
+  "model": "gpt-6-luna",
+  "variant": "xhigh",
+  "n": 171238,
+  "ok": 150363,
+  "walled": 18645,
+  "cond_rate": 0.9854,
+  "ft_med": 1352.7,
+  "tps_med": 36.5,
+  "tags": {
+   "Authentication": 18560,
+   "Transport": 2203,
+   "QuotaExceeded": 85,
+   "InvalidRequest": 10,
+   "null": 9
+  }
+ },
+ {
+  "provider": "_openai.main",
+  "model": "gpt-6-luna",
+  "variant": "high",
+  "n": 71476,
+  "ok": 71371,
+  "walled": 14,
+  "cond_rate": 0.9987,
+  "ft_med": 1396.7,
+  "tps_med": 29.4,
+  "tags": {
+   "Transport": 79,
+   "QuotaExceeded": 14,
+   "ContextOverflow": 5,
+   "InvalidRequest": 3,
+   "ProviderInternal": 2
+  }
+ },
+ {
+  "provider": "openai",
+  "model": "gpt-6-luna",
+  "variant": "xhigh",
+  "n": 71456,
+  "ok": 69720,
+  "walled": 149,
+  "cond_rate": 0.9777,
+  "ft_med": 1193.0,
+  "tps_med": 69.3,
+  "tags": {
+   "Transport": 1579,
+   "Authentication": 99,
+   "QuotaExceeded": 27,
+   "UnknownProvider": 23,
+   "RateLimit": 6
+  }
+ },
+ {
+  "provider": "openai.alternate",
+  "model": "gpt-6-luna",
+  "variant": "xhigh",
+  "n": 31616,
+  "ok": 29918,
+  "walled": 434,
+  "cond_rate": 0.9595,
+  "ft_med": 1470.5,
+  "tps_med": 52.6,
+  "tags": {
+   "Transport": 1255,
+   "QuotaExceeded": 333,
+   "Authentication": 78,
+   "UnknownProvider": 23,
+   "RateLimit": 7
+  }
+ },
+ {
+  "provider": "muse-direct",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "xhigh",
+  "n": 28326,
+  "ok": 25739,
+  "walled": 1,
+  "cond_rate": 0.9087,
+  "ft_med": 2672.9,
+  "tps_med": 170.1,
+  "tags": {
+   "RateLimit": 1499,
+   "Transport": 596,
+   "ProviderInternal": 491,
+   "Authentication": 1
+  }
+ },
+ {
+  "provider": "_vibe",
+  "model": "deepseek-v4-1-flash-1017",
+  "variant": "high",
+  "n": 22615,
+  "ok": 10951,
+  "walled": 11217,
+  "cond_rate": 0.9608,
+  "ft_med": 2835.5,
+  "tps_med": 393.5,
+  "tags": {
+   "QuotaExceeded": 11217,
+   "Transport": 442,
+   "RateLimit": 5
+  }
+ },
+ {
+  "provider": "opendesign",
+  "model": "deepseek-v4.1-flash",
+  "variant": "high",
+  "n": 21801,
+  "ok": 18826,
+  "walled": 160,
+  "cond_rate": 0.8699,
+  "ft_med": 2962.0,
+  "tps_med": 172.0,
+  "tags": {
+   "InvalidRequest": 2500,
+   "Transport": 299,
+   "Authentication": 97,
+   "QuotaExceeded": 63,
+   "ProviderInternal": 8
+  }
+ },
+ {
+  "provider": "opencode-go.personal",
+  "model": "deepseek-v4.1-flash",
+  "variant": "high",
+  "n": 18249,
+  "ok": 17747,
+  "walled": 86,
+  "cond_rate": 0.9771,
+  "ft_med": 2218.1,
+  "tps_med": 162.8,
+  "tags": {
+   "Transport": 398,
+   "QuotaExceeded": 86,
+   "RateLimit": 17,
+   "ProviderInternal": 1
+  }
+ },
+ {
+  "provider": "_openai",
+  "model": "gpt-6.1-terra",
+  "variant": "low",
+  "n": 17858,
+  "ok": 17221,
+  "walled": 77,
+  "cond_rate": 0.9685,
+  "ft_med": 7305.6,
+  "tps_med": 62.5,
+  "tags": {
+   "ProviderInternal": 427,
+   "Transport": 131,
+   "QuotaExceeded": 77,
+   "InvalidRequest": 2
+  }
+ },
+ {
+  "provider": "vibe-direct",
+  "model": "mistral-small-latest",
+  "variant": "high",
+  "n": 17241,
+  "ok": 14697,
+  "walled": 27,
+  "cond_rate": 0.8538,
+  "ft_med": 1220.2,
+  "tps_med": 176.7,
+  "tags": {
+   "RateLimit": 2284,
+   "Transport": 222,
+   "QuotaExceeded": 20,
+   "UnknownProvider": 7,
+   "InvalidRequest": 5
+  }
+ },
+ {
+  "provider": "_claude",
+  "model": "claude-sonnet-5-5",
+  "variant": "medium",
+  "n": 17180,
+  "ok": 3023,
+  "walled": 1373,
+  "cond_rate": 0.1912,
+  "ft_med": 4897.7,
+  "tps_med": 162.6,
+  "tags": {
+   "RateLimit": 12071,
+   "Authentication": 1373,
+   "Transport": 710,
+   "ContentPolicy": 2,
+   "ContextOverflow": 1
+  }
+ },
+ {
+  "provider": "_muse",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "high",
+  "n": 12419,
+  "ok": 9243,
+  "walled": 6,
+  "cond_rate": 0.7446,
+  "ft_med": 2938.2,
+  "tps_med": 207.8,
+  "tags": {
+   "RateLimit": 2943,
+   "Transport": 211,
+   "ProviderInternal": 16,
+   "Authentication": 6
+  }
+ },
+ {
+  "provider": "_claude",
+  "model": "claude-haiku-5-5",
+  "variant": "high",
+  "n": 9403,
+  "ok": 3679,
+  "walled": 848,
+  "cond_rate": 0.43,
+  "ft_med": 2193.3,
+  "tps_med": 186.3,
+  "tags": {
+   "RateLimit": 4678,
+   "Authentication": 848,
+   "null": 136,
+   "Transport": 42,
+   "ProviderInternal": 20
+  }
+ },
+ {
+  "provider": "openai",
+  "model": "gpt-6.1-terra",
+  "variant": "medium",
+  "n": 8782,
+  "ok": 7441,
+  "walled": 1312,
+  "cond_rate": 0.9961,
+  "ft_med": 1186.9,
+  "tps_med": 96.8,
+  "tags": {
+   "Authentication": 1249,
+   "UnknownProvider": 44,
+   "Transport": 29,
+   "QuotaExceeded": 19
+  }
+ },
+ {
+  "provider": "opencode-go.popesdrew",
+  "model": "deepseek-v4.1-flash",
+  "variant": "high",
+  "n": 8625,
+  "ok": 7129,
+  "walled": 606,
+  "cond_rate": 0.889,
+  "ft_med": 3274.0,
+  "tps_med": 169.3,
+  "tags": {
+   "Transport": 878,
+   "QuotaExceeded": 583,
+   "Authentication": 23,
+   "RateLimit": 11,
+   "InvalidProviderOutput": 1
+  }
+ },
+ {
+  "provider": "_antigravity",
+  "model": "gemini-3.8-flash",
+  "variant": "high",
+  "n": 8251,
+  "ok": 6695,
+  "walled": 620,
+  "cond_rate": 0.8773,
+  "ft_med": 3402.2,
+  "tps_med": 2015.7,
+  "tags": {
+   "RateLimit": 734,
+   "Authentication": 620,
+   "Transport": 196,
+   "InvalidRequest": 6
+  }
+ },
+ {
+  "provider": "antigravity-direct",
+  "model": "gemini-3.8-flash",
+  "variant": "high",
+  "n": 6724,
+  "ok": 6272,
+  "walled": 102,
+  "cond_rate": 0.9471,
+  "ft_med": 3643.0,
+  "tps_med": 1401.0,
+  "tags": {
+   "Transport": 234,
+   "Authentication": 102,
+   "InvalidRequest": 92,
+   "RateLimit": 19,
+   "null": 4
+  }
+ },
+ {
+  "provider": "opencode-go.developing-today-0",
+  "model": "deepseek-v4.1-flash",
+  "variant": "high",
+  "n": 6699,
+  "ok": 5609,
+  "walled": 272,
+  "cond_rate": 0.8727,
+  "ft_med": 3459.4,
+  "tps_med": 185.7,
+  "tags": {
+   "Transport": 813,
+   "QuotaExceeded": 272,
+   "RateLimit": 5
+  }
+ },
+ {
+  "provider": "opencode-go.drewrypope",
+  "model": "deepseek-v4.1-flash",
+  "variant": "high",
+  "n": 5329,
+  "ok": 4163,
+  "walled": 728,
+  "cond_rate": 0.9048,
+  "ft_med": 3136.5,
+  "tps_med": 167.5,
+  "tags": {
+   "QuotaExceeded": 728,
+   "Transport": 426,
+   "RateLimit": 10,
+   "InvalidProviderOutput": 2
+  }
+ },
+ {
+  "provider": "antigravity-direct",
+  "model": "claude-sonnet-5-5",
+  "variant": "medium",
+  "n": 5122,
+  "ok": 72,
+  "walled": 52,
+  "cond_rate": 0.0142,
+  "ft_med": 2374.3,
+  "tps_med": 895.0,
+  "tags": {
+   "RateLimit": 4881,
+   "Transport": 83,
+   "Authentication": 52,
+   "InvalidRequest": 28,
+   "ProviderInternal": 5
+  }
+ },
+ {
+  "provider": "cline-pass",
+  "model": "deepseek-v4.1-flash",
+  "variant": "high",
+  "n": 4606,
+  "ok": 3507,
+  "walled": 0,
+  "cond_rate": 0.7614,
+  "ft_med": 1485.1,
+  "tps_med": 248.2,
+  "tags": {
+   "RateLimit": 1061,
+   "Transport": 38
+  }
+ },
+ {
+  "provider": "_openai.main",
+  "model": "gpt-6-luna",
+  "variant": "medium",
+  "n": 4583,
+  "ok": 4572,
+  "walled": 1,
+  "cond_rate": 0.9978,
+  "ft_med": 1445.6,
+  "tps_med": 50.7,
+  "tags": {
+   "Transport": 10,
+   "QuotaExceeded": 1
+  }
+ },
+ {
+  "provider": "muse-direct",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "-",
+  "n": 4407,
+  "ok": 4366,
+  "walled": 2,
+  "cond_rate": 0.9911,
+  "ft_med": 2652.5,
+  "tps_med": 171.7,
+  "tags": {
+   "ProviderInternal": 19,
+   "Transport": 17,
+   "RateLimit": 3,
+   "Authentication": 2
+  }
+ },
+ {
+  "provider": "_openai.alt",
+  "model": "gpt-6.1-terra",
+  "variant": "low",
+  "n": 3404,
+  "ok": 621,
+  "walled": 2770,
+  "cond_rate": 0.9795,
+  "ft_med": 1397.8,
+  "tps_med": 60.6,
+  "tags": {
+   "Authentication": 2760,
+   "Transport": 13,
+   "QuotaExceeded": 10
+  }
+ },
+ {
+  "provider": "claude-code",
+  "model": "claude-sonnet-5-5",
+  "variant": "medium",
+  "n": 3364,
+  "ok": 2199,
+  "walled": 980,
+  "cond_rate": 0.9224,
+  "ft_med": 1673.2,
+  "tps_med": 138.5,
+  "tags": {
+   "Authentication": 980,
+   "InvalidRequest": 145,
+   "RateLimit": 26,
+   "Transport": 14
+  }
+ },
+ {
+  "provider": "_vibe",
+  "model": "mistral-small-latest",
+  "variant": "high",
+  "n": 3230,
+  "ok": 3131,
+  "walled": 3,
+  "cond_rate": 0.9703,
+  "ft_med": 1168.7,
+  "tps_med": 177.8,
+  "tags": {
+   "RateLimit": 80,
+   "Transport": 14,
+   "UnknownProvider": 3,
+   "ProviderInternal": 2
+  }
+ },
+ {
+  "provider": "_openai.main",
+  "model": "gpt-6.1-terra",
+  "variant": "low",
+  "n": 2881,
+  "ok": 56,
+  "walled": 2815,
+  "cond_rate": 0.8485,
+  "ft_med": 1268.3,
+  "tps_med": 69.9,
+  "tags": {
+   "Authentication": 2811,
+   "Transport": 10,
+   "QuotaExceeded": 4
+  }
+ },
+ {
+  "provider": "_claude",
+  "model": "claude-fable-5-2",
+  "variant": "low",
+  "n": 2697,
+  "ok": 251,
+  "walled": 105,
+  "cond_rate": 0.0968,
+  "ft_med": 1558.1,
+  "tps_med": 122.0,
+  "tags": {
+   "RateLimit": 1614,
+   "Transport": 725,
+   "Authentication": 105,
+   "ProviderInternal": 2
+  }
+ },
+ {
+  "provider": "openai.alternate",
+  "model": "gpt-6.1-terra",
+  "variant": "medium",
+  "n": 2466,
+  "ok": 2380,
+  "walled": 81,
+  "cond_rate": 0.9979,
+  "ft_med": 1278.6,
+  "tps_med": 100.0,
+  "tags": {
+   "UnknownProvider": 44,
+   "QuotaExceeded": 37,
+   "Transport": 5
+  }
+ },
+ {
+  "provider": "opendesign",
+  "model": "deepseek-v4-flash",
+  "variant": "high",
+  "n": 1733,
+  "ok": 1645,
+  "walled": 65,
+  "cond_rate": 0.9862,
+  "ft_med": 1933.8,
+  "tps_med": 204.5,
+  "tags": {
+   "Authentication": 47,
+   "Transport": 23,
+   "QuotaExceeded": 18
+  }
+ },
+ {
+  "provider": "opencode-go.drewrypope",
+  "model": "claude-haiku-5-5",
+  "variant": "high",
+  "n": 1657,
+  "ok": 398,
+  "walled": 833,
+  "cond_rate": 0.483,
+  "ft_med": 1699.3,
+  "tps_med": 226.1,
+  "tags": {
+   "QuotaExceeded": 833,
+   "InvalidRequest": 400,
+   "Transport": 25,
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "opencode-go.drewrypope",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "xhigh",
+  "n": 1151,
+  "ok": 237,
+  "walled": 871,
+  "cond_rate": 0.8464,
+  "ft_med": 2640.5,
+  "tps_med": 430.2,
+  "tags": {
+   "QuotaExceeded": 871,
+   "Transport": 42,
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "opencode-go.popesdrew",
+  "model": "claude-haiku-5-5",
+  "variant": "high",
+  "n": 1002,
+  "ok": 168,
+  "walled": 584,
+  "cond_rate": 0.4019,
+  "ft_med": 3465.6,
+  "tps_med": 221.8,
+  "tags": {
+   "QuotaExceeded": 584,
+   "InvalidRequest": 225,
+   "Transport": 20,
+   "RateLimit": 5
+  }
+ },
+ {
+  "provider": "mistral",
+  "model": "mistral-small-latest",
+  "variant": "high",
+  "n": 937,
+  "ok": 705,
+  "walled": 78,
+  "cond_rate": 0.8207,
+  "ft_med": 1498.1,
+  "tps_med": 149.8,
+  "tags": {
+   "Transport": 96,
+   "QuotaExceeded": 77,
+   "RateLimit": 57,
+   "InvalidRequest": 1,
+   "UnknownProvider": 1
+  }
+ },
+ {
+  "provider": "_openai.main",
+  "model": "gpt-6.1-sol",
+  "variant": "xhigh",
+  "n": 914,
+  "ok": 849,
+  "walled": 0,
+  "cond_rate": 0.9289,
+  "ft_med": 3020.0,
+  "tps_med": 27.5,
+  "tags": {
+   "Transport": 65
+  }
+ },
+ {
+  "provider": "_claude",
+  "model": "claude-sonnet-5-5",
+  "variant": "high",
+  "n": 840,
+  "ok": 9,
+  "walled": 124,
+  "cond_rate": 0.0126,
+  "ft_med": 2411.0,
+  "tps_med": 2.0,
+  "tags": {
+   "RateLimit": 686,
+   "Authentication": 124,
+   "Transport": 17,
+   "ProviderInternal": 4
+  }
+ },
+ {
+  "provider": "opencode-go.developing-today-0",
+  "model": "claude-haiku-5-5",
+  "variant": "high",
+  "n": 750,
+  "ok": 204,
+  "walled": 544,
+  "cond_rate": 0.9903,
+  "ft_med": 856.0,
+  "tps_med": 167.1,
+  "tags": {
+   "QuotaExceeded": 544,
+   "Transport": 1,
+   "null": 1
+  }
+ },
+ {
+  "provider": "_antigravity",
+  "model": "claude-sonnet-5-5",
+  "variant": "high",
+  "n": 715,
+  "ok": 94,
+  "walled": 588,
+  "cond_rate": 0.7402,
+  "ft_med": 2586.4,
+  "tps_med": 1675.6,
+  "tags": {
+   "Authentication": 588,
+   "RateLimit": 25,
+   "InvalidRequest": 7,
+   "Transport": 1
+  }
+ },
+ {
+  "provider": "_claude",
+  "model": "claude-haiku-5-5",
+  "variant": "low",
+  "n": 709,
+  "ok": 16,
+  "walled": 0,
+  "cond_rate": 0.0226,
+  "ft_med": 2021.8,
+  "tps_med": 2.9,
+  "tags": {
+   "RateLimit": 672,
+   "Transport": 17,
+   "ProviderInternal": 4
+  }
+ },
+ {
+  "provider": "opencode-go.popesdrew",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "xhigh",
+  "n": 640,
+  "ok": 52,
+  "walled": 549,
+  "cond_rate": 0.5714,
+  "ft_med": 3192.4,
+  "tps_med": 138.1,
+  "tags": {
+   "QuotaExceeded": 549,
+   "Transport": 31,
+   "RateLimit": 6,
+   "null": 2
+  }
+ },
+ {
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "variant": "high",
+  "n": 601,
+  "ok": 23,
+  "walled": 99,
+  "cond_rate": 0.0458,
+  "ft_med": 1972.6,
+  "tps_med": 101.0,
+  "tags": {
+   "InvalidRequest": 479,
+   "Authentication": 62,
+   "QuotaExceeded": 37
+  }
+ },
+ {
+  "provider": "cline-pass",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "xhigh",
+  "n": 482,
+  "ok": 282,
+  "walled": 0,
+  "cond_rate": 0.5851,
+  "ft_med": 4127.9,
+  "tps_med": 193.0,
+  "tags": {
+   "RateLimit": 192,
+   "Transport": 8
+  }
+ },
+ {
+  "provider": "claude-code",
+  "model": "claude-haiku-5-5",
+  "variant": "default",
+  "n": 467,
+  "ok": 168,
+  "walled": 97,
+  "cond_rate": 0.4541,
+  "ft_med": 1166.5,
+  "tps_med": 3.6,
+  "tags": {
+   "RateLimit": 202,
+   "Authentication": 97
+  }
+ },
+ {
+  "provider": "_antigravity",
+  "model": "gemini-4-argon",
+  "variant": "high",
+  "n": 416,
+  "ok": 307,
+  "walled": 0,
+  "cond_rate": 0.738,
+  "ft_med": 12610.6,
+  "tps_med": 285.6,
+  "tags": {
+   "Transport": 103,
+   "RateLimit": 6
+  }
+ },
+ {
+  "provider": "_muse",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "xhigh",
+  "n": 345,
+  "ok": 86,
+  "walled": 1,
+  "cond_rate": 0.25,
+  "ft_med": 1.0,
+  "tps_med": 167.2,
+  "tags": {
+   "RateLimit": 258,
+   "Authentication": 1
+  }
+ },
+ {
+  "provider": "_openai.alt",
+  "model": "gpt-6-luna",
+  "variant": "high",
+  "n": 338,
+  "ok": 313,
+  "walled": 25,
+  "cond_rate": 1.0,
+  "ft_med": 1332.6,
+  "tps_med": 29.5,
+  "tags": {
+   "QuotaExceeded": 25
+  }
+ },
+ {
+  "provider": "_commandcode",
+  "model": "gpt-6.1-sol",
+  "variant": "medium",
+  "n": 330,
+  "ok": 0,
+  "walled": 330,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 330
+  }
+ },
+ {
+  "provider": "_claude",
+  "model": "claude-fable-5-2",
+  "variant": "medium",
+  "n": 296,
+  "ok": 115,
+  "walled": 0,
+  "cond_rate": 0.3885,
+  "ft_med": 2261.6,
+  "tps_med": 111.4,
+  "tags": {
+   "RateLimit": 153,
+   "Transport": 28
+  }
+ },
+ {
+  "provider": "claude-code",
+  "model": "claude-haiku-5-5",
+  "variant": "high",
+  "n": 239,
+  "ok": 125,
+  "walled": 113,
+  "cond_rate": 0.9921,
+  "ft_med": 1063.2,
+  "tps_med": 165.5,
+  "tags": {
+   "Authentication": 113,
+   "InvalidRequest": 1
+  }
+ },
+ {
+  "provider": "opencode-go.personal",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "xhigh",
+  "n": 206,
+  "ok": 140,
+  "walled": 39,
+  "cond_rate": 0.8383,
+  "ft_med": 3194.4,
+  "tps_med": 312.9,
+  "tags": {
+   "QuotaExceeded": 39,
+   "RateLimit": 17,
+   "Transport": 10
+  }
+ },
+ {
+  "provider": "mistral",
+  "model": "deepseek-v4-1-flash-1017",
+  "variant": "high",
+  "n": 203,
+  "ok": 0,
+  "walled": 203,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 203
+  }
+ },
+ {
+  "provider": "opencode-go",
+  "model": "gpt-6-luna",
+  "variant": "xhigh",
+  "n": 171,
+  "ok": 10,
+  "walled": 161,
+  "cond_rate": 1.0,
+  "ft_med": null,
+  "tps_med": 6.9,
+  "tags": {
+   "Authentication": 158,
+   "QuotaExceeded": 3
+  }
+ },
+ {
+  "provider": "opendesign",
+  "model": "gpt-6-luna",
+  "variant": "high",
+  "n": 168,
+  "ok": 0,
+  "walled": 168,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 158,
+   "QuotaExceeded": 10
+  }
+ },
+ {
+  "provider": "openai.main",
+  "model": "gpt-6.1-sol",
+  "variant": "medium",
+  "n": 163,
+  "ok": 106,
+  "walled": 56,
+  "cond_rate": 0.9907,
+  "ft_med": 1831.9,
+  "tps_med": 30.8,
+  "tags": {
+   "Authentication": 47,
+   "QuotaExceeded": 9,
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "openai.alternate",
+  "model": "gpt-6.1-sol",
+  "variant": "medium",
+  "n": 158,
+  "ok": 80,
+  "walled": 78,
+  "cond_rate": 1.0,
+  "ft_med": 2067.6,
+  "tps_med": 59.4,
+  "tags": {
+   "QuotaExceeded": 44,
+   "Authentication": 34
+  }
+ },
+ {
+  "provider": "claude-code",
+  "model": "claude-haiku-5-5",
+  "variant": "low",
+  "n": 157,
+  "ok": 64,
+  "walled": 26,
+  "cond_rate": 0.4885,
+  "ft_med": 1311.5,
+  "tps_med": 2.9,
+  "tags": {
+   "InvalidRequest": 37,
+   "RateLimit": 30,
+   "Authentication": 26
+  }
+ },
+ {
+  "provider": "claude-code",
+  "model": "claude-sonnet-5-5",
+  "variant": "high",
+  "n": 147,
+  "ok": 147,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 1107.1,
+  "tps_med": 198.1,
+  "tags": {}
+ },
+ {
+  "provider": "openai-plan",
+  "model": "gpt-6-luna",
+  "variant": "xhigh",
+  "n": 138,
+  "ok": 0,
+  "walled": 138,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "UnknownProvider": 138
+  }
+ },
+ {
+  "provider": "_claude",
+  "model": "claude-opus-5-5",
+  "variant": "high",
+  "n": 127,
+  "ok": 20,
+  "walled": 0,
+  "cond_rate": 0.1575,
+  "ft_med": 1390.8,
+  "tps_med": 123.2,
+  "tags": {
+   "RateLimit": 79,
+   "Transport": 28
+  }
+ },
+ {
+  "provider": "_antigravity",
+  "model": "gemini-4-hydrogen",
+  "variant": "high",
+  "n": 125,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 125
+  }
+ },
+ {
+  "provider": "opencode-go.personal",
+  "model": "claude-haiku-5-5",
+  "variant": "high",
+  "n": 116,
+  "ok": 18,
+  "walled": 87,
+  "cond_rate": 0.6207,
+  "ft_med": 1109.6,
+  "tps_med": 178.1,
+  "tags": {
+   "QuotaExceeded": 87,
+   "RateLimit": 11
+  }
+ },
+ {
+  "provider": "opencode-go",
+  "model": "claude-haiku-5-5",
+  "variant": "high",
+  "n": 110,
+  "ok": 0,
+  "walled": 110,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 102,
+   "QuotaExceeded": 8
+  }
+ },
+ {
+  "provider": "openai",
+  "model": "gpt-6.1-sol",
+  "variant": "medium",
+  "n": 110,
+  "ok": 107,
+  "walled": 0,
+  "cond_rate": 0.9727,
+  "ft_med": 2583.2,
+  "tps_med": 54.8,
+  "tags": {
+   "Transport": 3
+  }
+ },
+ {
+  "provider": "antigravity-ls",
+  "model": "gemini-3.8-flash",
+  "variant": "high",
+  "n": 106,
+  "ok": 98,
+  "walled": 0,
+  "cond_rate": 0.9245,
+  "ft_med": 5905.7,
+  "tps_med": 0.3,
+  "tags": {
+   "Transport": 8
+  }
+ },
+ {
+  "provider": "opencode-go",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "xhigh",
+  "n": 99,
+  "ok": 0,
+  "walled": 99,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 87,
+   "QuotaExceeded": 12
+  }
+ },
+ {
+  "provider": "openai.alternate",
+  "model": "gpt-6.1-sol",
+  "variant": "xhigh",
+  "n": 95,
+  "ok": 92,
+  "walled": 2,
+  "cond_rate": 0.9892,
+  "ft_med": 2673.7,
+  "tps_med": 39.8,
+  "tags": {
+   "Authentication": 1,
+   "Transport": 1,
+   "QuotaExceeded": 1
+  }
+ },
+ {
+  "provider": "muse-direct",
+  "model": "muse-wonder-1.0-contributor",
+  "variant": "xhigh",
+  "n": 94,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 93,
+   "Transport": 1
+  }
+ },
+ {
+  "provider": "opencode-go.lab",
+  "model": "deepseek-v4.1-flash",
+  "variant": "high",
+  "n": 91,
+  "ok": 0,
+  "walled": 80,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 80,
+   "RateLimit": 9,
+   "Transport": 2
+  }
+ },
+ {
+  "provider": "_antigravity",
+  "model": "claude-sonnet-5-5",
+  "variant": "medium",
+  "n": 82,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 82
+  }
+ },
+ {
+  "provider": "antigravity-direct",
+  "model": "gemini-4-argon",
+  "variant": "high",
+  "n": 81,
+  "ok": 40,
+  "walled": 2,
+  "cond_rate": 0.5063,
+  "ft_med": 7084.4,
+  "tps_med": 192.7,
+  "tags": {
+   "RateLimit": 21,
+   "Transport": 18,
+   "Authentication": 2
+  }
+ },
+ {
+  "provider": "opencode-go.lab",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "xhigh",
+  "n": 63,
+  "ok": 0,
+  "walled": 55,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 55,
+   "RateLimit": 7,
+   "Transport": 1
+  }
+ },
+ {
+  "provider": "openai",
+  "model": "gpt-6.1-terra",
+  "variant": "default",
+  "n": 63,
+  "ok": 63,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 1384.3,
+  "tps_med": 156.0,
+  "tags": {}
+ },
+ {
+  "provider": "opencode-go.personal",
+  "model": "gpt-6-luna",
+  "variant": "xhigh",
+  "n": 60,
+  "ok": 0,
+  "walled": 51,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 51,
+   "RateLimit": 9
+  }
+ },
+ {
+  "provider": "_openai",
+  "model": "gpt-6.1-sol",
+  "variant": "xhigh",
+  "n": 53,
+  "ok": 52,
+  "walled": 0,
+  "cond_rate": 0.9811,
+  "ft_med": 4082.4,
+  "tps_med": 37.7,
+  "tags": {
+   "Transport": 1
+  }
+ },
+ {
+  "provider": "opencode-go.lab",
+  "model": "claude-haiku-5-5",
+  "variant": "high",
+  "n": 49,
+  "ok": 0,
+  "walled": 30,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 30,
+   "RateLimit": 19
+  }
+ },
+ {
+  "provider": "opencode-go.lab",
+  "model": "gpt-6-luna",
+  "variant": "xhigh",
+  "n": 47,
+  "ok": 0,
+  "walled": 30,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 30,
+   "RateLimit": 17
+  }
+ },
+ {
+  "provider": "_antigravity",
+  "model": "claude-sonnet-5-5",
+  "variant": "default",
+  "n": 47,
+  "ok": 10,
+  "walled": 0,
+  "cond_rate": 0.2128,
+  "ft_med": 2089.0,
+  "tps_med": 2.6,
+  "tags": {
+   "RateLimit": 37
+  }
+ },
+ {
+  "provider": "openai.main",
+  "model": "gpt-6-luna",
+  "variant": "default",
+  "n": 46,
+  "ok": 28,
+  "walled": 18,
+  "cond_rate": 1.0,
+  "ft_med": 953.0,
+  "tps_med": 80.3,
+  "tags": {
+   "QuotaExceeded": 18
+  }
+ },
+ {
+  "provider": "_claude",
+  "model": "claude-sonnet-5-5",
+  "variant": "-",
+  "n": 45,
+  "ok": 16,
+  "walled": 0,
+  "cond_rate": 0.3556,
+  "ft_med": 1448.5,
+  "tps_med": 3.0,
+  "tags": {
+   "RateLimit": 26,
+   "Transport": 3
+  }
+ },
+ {
+  "provider": "antigravity-agy",
+  "model": "gemini-4-argon",
+  "variant": "high",
+  "n": 39,
+  "ok": 19,
+  "walled": 0,
+  "cond_rate": 0.4872,
+  "ft_med": 8222.7,
+  "tps_med": 5.5,
+  "tags": {
+   "Transport": 20
+  }
+ },
+ {
+  "provider": "opendesign",
+  "model": "gpt-6.1-sol",
+  "variant": "high",
+  "n": 38,
+  "ok": 0,
+  "walled": 21,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 21,
+   "Transport": 17
+  }
+ },
+ {
+  "provider": "antigravity-direct",
+  "model": "claude-sonnet-5-5",
+  "variant": "high",
+  "n": 33,
+  "ok": 3,
+  "walled": 0,
+  "cond_rate": 0.0909,
+  "ft_med": 1.0,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 29,
+   "InvalidRequest": 1
+  }
+ },
+ {
+  "provider": "_antigravity",
+  "model": "gemini-3.8-flash",
+  "variant": "medium",
+  "n": 32,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 30,
+   "Transport": 2
+  }
+ },
+ {
+  "provider": "openai.alternate",
+  "model": "gpt-6.1-sol",
+  "variant": "-",
+  "n": 25,
+  "ok": 24,
+  "walled": 1,
+  "cond_rate": 1.0,
+  "ft_med": 2839.6,
+  "tps_med": 1.5,
+  "tags": {
+   "QuotaExceeded": 1
+  }
+ },
+ {
+  "provider": "openai.main",
+  "model": "gpt-6.1-terra",
+  "variant": "low",
+  "n": 25,
+  "ok": 0,
+  "walled": 25,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 25
+  }
+ },
+ {
+  "provider": "antigravity-ls",
+  "model": "claude-sonnet-5-5",
+  "variant": "high",
+  "n": 22,
+  "ok": 9,
+  "walled": 11,
+  "cond_rate": 0.8182,
+  "ft_med": 3822.6,
+  "tps_med": 5222.6,
+  "tags": {
+   "QuotaExceeded": 11,
+   "Transport": 2
+  }
+ },
+ {
+  "provider": "opencode-go.drewrypope",
+  "model": "gemini-4-argon",
+  "variant": "high",
+  "n": 19,
+  "ok": 0,
+  "walled": 17,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 17,
+   "RateLimit": 2
+  }
+ },
+ {
+  "provider": "vibe-direct",
+  "model": "mistral-small-latest",
+  "variant": "default",
+  "n": 19,
+  "ok": 17,
+  "walled": 2,
+  "cond_rate": 1.0,
+  "ft_med": 927.6,
+  "tps_med": 2.3,
+  "tags": {
+   "QuotaExceeded": 2
+  }
+ },
+ {
+  "provider": "openai.alternate",
+  "model": "gpt-6.1-terra",
+  "variant": "low",
+  "n": 19,
+  "ok": 0,
+  "walled": 19,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 19
+  }
+ },
+ {
+  "provider": "_openai",
+  "model": "gpt-6-luna",
+  "variant": "-",
+  "n": 19,
+  "ok": 0,
+  "walled": 19,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 19
+  }
+ },
+ {
+  "provider": "antigravity-direct",
+  "model": "gemini-3.8-flash",
+  "variant": "default",
+  "n": 18,
+  "ok": 16,
+  "walled": 2,
+  "cond_rate": 1.0,
+  "ft_med": 4247.8,
+  "tps_med": 0.3,
+  "tags": {
+   "Authentication": 2
+  }
+ },
+ {
+  "provider": "muse-direct",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "default",
+  "n": 18,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 18
+  }
+ },
+ {
+  "provider": "cline-pass",
+  "model": "deepseek-v4.1-flash",
+  "variant": "default",
+  "n": 18,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 18
+  }
+ },
+ {
+  "provider": "cline-pass",
+  "model": "deepseek-v4.1-flash",
+  "variant": "low",
+  "n": 18,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 18
+  }
+ },
+ {
+  "provider": "opendesign",
+  "model": "deepseek-v4.1-flash",
+  "variant": "low",
+  "n": 18,
+  "ok": 0,
+  "walled": 18,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 18
+  }
+ },
+ {
+  "provider": "_openai.main",
+  "model": "gpt-6.1-sol",
+  "variant": "-",
+  "n": 16,
+  "ok": 16,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 1891.9,
+  "tps_med": 2.6,
+  "tags": {}
+ },
+ {
+  "provider": "opencode-go.popesdrew",
+  "model": "gemini-4-argon",
+  "variant": "high",
+  "n": 14,
+  "ok": 0,
+  "walled": 13,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 13,
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "vibe-direct",
+  "model": "mistral-small-latest",
+  "variant": "none",
+  "n": 12,
+  "ok": 12,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 1230.3,
+  "tps_med": 15.8,
+  "tags": {}
+ },
+ {
+  "provider": "opencode-go.developing-today-0",
+  "model": "gemini-4-argon",
+  "variant": "high",
+  "n": 12,
+  "ok": 1,
+  "walled": 11,
+  "cond_rate": 1.0,
+  "ft_med": 4485.0,
+  "tps_med": 65.2,
+  "tags": {
+   "QuotaExceeded": 11
+  }
+ },
+ {
+  "provider": "openai.main",
+  "model": "gpt-6.1-terra",
+  "variant": "-",
+  "n": 11,
+  "ok": 11,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 3769.8,
+  "tps_med": 3.4,
+  "tags": {}
+ },
+ {
+  "provider": "_antigravity",
+  "model": "gemini-4-argon",
+  "variant": "default",
+  "n": 11,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 11
+  }
+ },
+ {
+  "provider": "openai.alternate",
+  "model": "gpt-6-luna",
+  "variant": "-",
+  "n": 10,
+  "ok": 9,
+  "walled": 1,
+  "cond_rate": 1.0,
+  "ft_med": 1863.1,
+  "tps_med": 1.4,
+  "tags": {
+   "Authentication": 1
+  }
+ },
+ {
+  "provider": "opencode-go.developing-today-0",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "xhigh",
+  "n": 10,
+  "ok": 0,
+  "walled": 10,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 10
+  }
+ },
+ {
+  "provider": "opendesign",
+  "model": "deepseek-v4.1-flash",
+  "variant": "default",
+  "n": 9,
+  "ok": 0,
+  "walled": 9,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 9
+  }
+ },
+ {
+  "provider": "opencode-go.popesdrew",
+  "model": "deepseek-v4.1-flash",
+  "variant": "default",
+  "n": 9,
+  "ok": 0,
+  "walled": 9,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 9
+  }
+ },
+ {
+  "provider": "cline-pass",
+  "model": "deepseek-v4.1-flash",
+  "variant": "-",
+  "n": 9,
+  "ok": 9,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 1260.4,
+  "tps_med": 3.1,
+  "tags": {}
+ },
+ {
+  "provider": "_vibe",
+  "model": "deepseek-v4-1-flash-1017",
+  "variant": "default",
+  "n": 9,
+  "ok": 9,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 3197.3,
+  "tps_med": 1.8,
+  "tags": {}
+ },
+ {
+  "provider": "_antigravity",
+  "model": "claude-sonnet-5-5",
+  "variant": "-",
+  "n": 9,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 9
+  }
+ },
+ {
+  "provider": "opendesign",
+  "model": "gpt-6.1-sol",
+  "variant": "medium",
+  "n": 9,
+  "ok": 0,
+  "walled": 9,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 9
+  }
+ },
+ {
+  "provider": "_openai",
+  "model": "gpt-6-luna",
+  "variant": "default",
+  "n": 9,
+  "ok": 0,
+  "walled": 9,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 9
+  }
+ },
+ {
+  "provider": "_openai.alt",
+  "model": "gpt-6.1-sol",
+  "variant": "-",
+  "n": 9,
+  "ok": 9,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 3348.6,
+  "tps_med": 2.1,
+  "tags": {}
+ },
+ {
+  "provider": "antigravity-ls",
+  "model": "claude-sonnet-5-5",
+  "variant": "-",
+  "n": 8,
+  "ok": 8,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 1445.2,
+  "tps_med": 0.9,
+  "tags": {}
+ },
+ {
+  "provider": "opencode-go.drewrypope",
+  "model": "beam-free",
+  "variant": "-",
+  "n": 8,
+  "ok": 8,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 1515.0,
+  "tps_med": 34.1,
+  "tags": {}
+ },
+ {
+  "provider": "opendesign",
+  "model": "deepseek-v4-flash",
+  "variant": "default",
+  "n": 8,
+  "ok": 0,
+  "walled": 8,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 8
+  }
+ },
+ {
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "variant": "default",
+  "n": 8,
+  "ok": 0,
+  "walled": 8,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 8
+  }
+ },
+ {
+  "provider": "_antigravity",
+  "model": "gemini-3.8-flash",
+  "variant": "-",
+  "n": 8,
+  "ok": 8,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 3632.2,
+  "tps_med": 0.5,
+  "tags": {}
+ },
+ {
+  "provider": "openai.main",
+  "model": "gpt-6.1-sol",
+  "variant": "-",
+  "n": 8,
+  "ok": 8,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 1697.7,
+  "tps_med": 3.0,
+  "tags": {}
+ },
+ {
+  "provider": "opencode-go.developing-today-0",
+  "model": "deepseek-v4.1-flash",
+  "variant": "default",
+  "n": 8,
+  "ok": 8,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 2467.9,
+  "tps_med": 1.2,
+  "tags": {}
+ },
+ {
+  "provider": "_openai",
+  "model": "gpt-6.1-sol",
+  "variant": "-",
+  "n": 8,
+  "ok": 8,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 6041.3,
+  "tps_med": 1.3,
+  "tags": {}
+ },
+ {
+  "provider": "_claude",
+  "model": "claude-haiku-5-5",
+  "variant": "default",
+  "n": 8,
+  "ok": 8,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 1885.7,
+  "tps_med": 3.9,
+  "tags": {}
+ },
+ {
+  "provider": "_openai.main",
+  "model": "gpt-6.1-sol",
+  "variant": "medium",
+  "n": 6,
+  "ok": 0,
+  "walled": 6,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 4,
+   "Authentication": 2
+  }
+ },
+ {
+  "provider": "_openai.alt",
+  "model": "gpt-6.1-sol",
+  "variant": "xhigh",
+  "n": 6,
+  "ok": 0,
+  "walled": 4,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 4,
+   "Transport": 2
+  }
+ },
+ {
+  "provider": "opencode-go.drewrypope",
+  "model": "gpt-6-luna",
+  "variant": "-",
+  "n": 5,
+  "ok": 5,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 1777.0,
+  "tps_med": 4.0,
+  "tags": {}
+ },
+ {
+  "provider": "muse-direct",
+  "model": "muse-spark-1.3-contributor",
+  "variant": "low",
+  "n": 4,
+  "ok": 3,
+  "walled": 1,
+  "cond_rate": 1.0,
+  "ft_med": 1918.5,
+  "tps_med": 107.4,
+  "tags": {
+   "Authentication": 1
+  }
+ },
+ {
+  "provider": "openai.alternate",
+  "model": "gpt-6.1-terra",
+  "variant": "-",
+  "n": 4,
+  "ok": 2,
+  "walled": 1,
+  "cond_rate": 0.6667,
+  "ft_med": 1823.3,
+  "tps_med": 25.3,
+  "tags": {
+   "Authentication": 1,
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "antigravity-direct",
+  "model": "gemini-3.8-flash",
+  "variant": "-",
+  "n": 3,
+  "ok": 1,
+  "walled": 0,
+  "cond_rate": 0.3333,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "InvalidRequest": 2
+  }
+ },
+ {
+  "provider": "antigravity-direct",
+  "model": "claude-opus-5-5",
+  "variant": "high",
+  "n": 3,
+  "ok": 2,
+  "walled": 1,
+  "cond_rate": 1.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 1
+  }
+ },
+ {
+  "provider": "_openai.alt",
+  "model": "gpt-6.1-sol",
+  "variant": "medium",
+  "n": 3,
+  "ok": 1,
+  "walled": 2,
+  "cond_rate": 1.0,
+  "ft_med": 2360.8,
+  "tps_med": 303.1,
+  "tags": {
+   "Authentication": 2
+  }
+ },
+ {
+  "provider": "opencode-go",
+  "model": "gemini-4-argon",
+  "variant": "high",
+  "n": 2,
+  "ok": 0,
+  "walled": 2,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 2
+  }
+ },
+ {
+  "provider": "openai",
+  "model": "gpt-6.1-terra",
+  "variant": "-",
+  "n": 2,
+  "ok": 0,
+  "walled": 1,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 1,
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "openai.main",
+  "model": "gpt-6.1-sol",
+  "variant": "xhigh",
+  "n": 2,
+  "ok": 1,
+  "walled": 1,
+  "cond_rate": 1.0,
+  "ft_med": 2063.0,
+  "tps_med": 74.4,
+  "tags": {
+   "Authentication": 1
+  }
+ },
+ {
+  "provider": "claude-code",
+  "model": "claude-sonnet-5-5",
+  "variant": "low",
+  "n": 2,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "InvalidRequest": 2
+  }
+ },
+ {
+  "provider": "_vibe",
+  "model": "zai-glm-5-3",
+  "variant": "default",
+  "n": 2,
+  "ok": 2,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 3884.4,
+  "tps_med": 568.8,
+  "tags": {}
+ },
+ {
+  "provider": "_openai",
+  "model": "gpt-6.1-sol",
+  "variant": "medium",
+  "n": 2,
+  "ok": 0,
+  "walled": 2,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 2
+  }
+ },
+ {
+  "provider": "opendesign",
+  "model": "mimo-v2.6-flash",
+  "variant": "-",
+  "n": 2,
+  "ok": 0,
+  "walled": 2,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 2
+  }
+ },
+ {
+  "provider": "_claude",
+  "model": "claude-haiku-5-5",
+  "variant": "medium",
+  "n": 2,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 2
+  }
+ },
+ {
+  "provider": "opencode-go.personal",
+  "model": "gemini-4-argon",
+  "variant": "-",
+  "n": 1,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "opencode-go.lab",
+  "model": "gemini-4-argon",
+  "variant": "-",
+  "n": 1,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "opencode-go",
+  "model": "gemini-4-argon",
+  "variant": "-",
+  "n": 1,
+  "ok": 0,
+  "walled": 1,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 1
+  }
+ },
+ {
+  "provider": "antigravity-direct",
+  "model": "gemini-4-argon",
+  "variant": "-",
+  "n": 1,
+  "ok": 1,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {}
+ },
+ {
+  "provider": "antigravity-direct",
+  "model": "claude-sonnet-5-5",
+  "variant": "-",
+  "n": 1,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "opencode-go.lab",
+  "model": "gemini-4-argon",
+  "variant": "high",
+  "n": 1,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "openai",
+  "model": "gpt-6-luna",
+  "variant": "-",
+  "n": 1,
+  "ok": 0,
+  "walled": 1,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 1
+  }
+ },
+ {
+  "provider": "opendesign",
+  "model": "gpt-6-luna",
+  "variant": "-",
+  "n": 1,
+  "ok": 0,
+  "walled": 1,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 1
+  }
+ },
+ {
+  "provider": "opencode-go",
+  "model": "gpt-6-luna",
+  "variant": "-",
+  "n": 1,
+  "ok": 0,
+  "walled": 1,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "Authentication": 1
+  }
+ },
+ {
+  "provider": "opencode-go.lab",
+  "model": "gpt-6-luna",
+  "variant": "-",
+  "n": 1,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "opencode-go.personal",
+  "model": "gpt-6-luna",
+  "variant": "-",
+  "n": 1,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "openai-plan",
+  "model": "gpt-6.1-terra",
+  "variant": "-",
+  "n": 1,
+  "ok": 0,
+  "walled": 1,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "UnknownProvider": 1
+  }
+ },
+ {
+  "provider": "opencode-go.popesdrew",
+  "model": "beam-free",
+  "variant": "-",
+  "n": 1,
+  "ok": 1,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {}
+ },
+ {
+  "provider": "opencode-go.drewrypope",
+  "model": "claude-haiku-5-5",
+  "variant": "low",
+  "n": 1,
+  "ok": 0,
+  "walled": 1,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 1
+  }
+ },
+ {
+  "provider": "mistral",
+  "model": "mistral-small-latest",
+  "variant": "default",
+  "n": 1,
+  "ok": 0,
+  "walled": 1,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 1
+  }
+ },
+ {
+  "provider": "mistral",
+  "model": "mistral-small-latest",
+  "variant": "-",
+  "n": 1,
+  "ok": 0,
+  "walled": 1,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 1
+  }
+ },
+ {
+  "provider": "_vibe",
+  "model": "zai-glm-5-3-flash",
+  "variant": "default",
+  "n": 1,
+  "ok": 1,
+  "walled": 0,
+  "cond_rate": 1.0,
+  "ft_med": 3882.6,
+  "tps_med": 584.9,
+  "tags": {}
+ },
+ {
+  "provider": "_antigravity",
+  "model": "claude-opus-5-5",
+  "variant": "high",
+  "n": 1,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "_muse",
+  "model": "muse-wonder-1.0-contributor",
+  "variant": "xhigh",
+  "n": 1,
+  "ok": 0,
+  "walled": 0,
+  "cond_rate": 0.0,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "RateLimit": 1
+  }
+ },
+ {
+  "provider": "_openai.alt",
+  "model": "gpt-6-luna",
+  "variant": "medium",
+  "n": 1,
+  "ok": 0,
+  "walled": 1,
+  "cond_rate": null,
+  "ft_med": null,
+  "tps_med": null,
+  "tags": {
+   "QuotaExceeded": 1
+  }
+ }
+]
