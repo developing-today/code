@@ -24,3 +24,5 @@ run('job=steeringJob(r);job.request.targets[0].before.name="modified"');
 assert.equal(run('r.targets[0].before.name'),'A');
 console.log('PASS steering: stable targets, dedupe, strict patches, stale/revision guards, terminal lifecycle, general-request isolation, portable manual export.');
 ctx.uid=()=> 'command-id';ctx.steeringCommand=c=>{ctx.sent=c};run("steeringSubmit({action:'create',requestId:'new',text:'hello'})");assert.equal(ctx.sent.commandId,'command-id');assert.equal(ctx.sent.action,'create');
+
+let reportSubmit;ctx.editable=()=>true;ctx.active={id:'store'};ctx.e=x=>String(x);ctx.area=()=>'';ctx.prose=x=>String(x??'');ctx.dlg=(title,body,fn)=>{reportSubmit=fn};run("steeringEditor(['spend'],'report')");reportSubmit({request:'Explain this report'});assert.equal(ctx.sent.targets[0].kind,'report');assert.equal(ctx.sent.targets[0].id,'spend');

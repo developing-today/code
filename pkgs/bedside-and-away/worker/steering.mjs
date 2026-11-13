@@ -6,7 +6,9 @@ const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(x);
 const prose=(s,max=12000)=>typeof s==='string'?s.normalize('NFC').replace(/[\p{Cc}\p{Cf}]/gu,' ').trim().slice(0,max):'';
 const collection=(s,kind)=>kind==='item'?s.items:kind==='category'?s.tags:null;
 const key=t=>t.kind+':'+t.id;
-const find=(s,t)=>collection(s,t.kind)?.find(x=>x.id===t.id);
+export const STEERING_REPORTS=Object.freeze({spend:'Spending',inventory:'Inventory',activity:'Activity',defaults:'Defaults', 'buying-guide':'Buying guide'});
+const find=(s,t)=>t.kind==='report'?(Object.hasOwn(STEERING_REPORTS,t.id)?{id:t.id,name:STEERING_REPORTS[t.id]}:null):collection(s,t.kind)?.find(x=>x.id===t.id);
+const mode=t=>t.kind==='report'?'read':'edit';
 const terminal=new Set(['applied','cancelled','completed']);
 export function assertSteeringUnchanged(before,after){
  for(const field of ['steering','steeringReceipts','steeringAudit'])if(stable(before[field]??[])!==stable(after[field]??[]))error(400,'Use the dedicated steering route to change requests');
@@ -26,14 +28,15 @@ export function transitionSteering({state,storeId,storeVersion,actor,role,comman
  if(!Number.isInteger(storeVersion)||storeVersion<0)error(400,'Store version required');
  const signature=stable({actorId:actor.id,command});
  const prior=(state.steeringReceipts??[]).find(x=>x.commandId===command.commandId);
- if(prior){if(prior.signature!==signature)error(409,'Command ID collision');const request=(state.steering??[]).find(x=>x.id===prior.requestId);for(const t of request?.targets??[]){const current=find(state,t);if(!current||!canAccessTarget(t,current,'edit'))error(404,'Target not available');}return {state,request:clone(request),audit:clone(prior.audit),duplicate:true};}
+ if(prior){if(prior.signature!==signature)error(409,'Command ID collision');const request=(state.steering??[]).find(x=>x.id===prior.requestId);for(const t of request?.targets??[]){const current=find(state,t);if(!current||!canAccessTarget(t,current,mode(t)))error(404,'Target not available');}return {state,request:clone(request),audit:clone(prior.audit),duplicate:true};}
  const next=clone(state);next.steering??=[];next.steeringReceipts??=[];next.steeringAudit??=[];
  let r=next.steering.find(x=>x.id===command.requestId);
  const capture=targets=>{
   if(!Array.isArray(targets)||targets.length>100)error(400,'At most 100 targets');
+  if(targets.some(t=>t?.kind==='report')&&targets.some(t=>t?.kind!=='report'))error(400,'Report and object targets cannot be mixed');
   const seen=new Set();return targets.map(t=>{
-   if(!t||!id(t.id)||!['item','category'].includes(t.kind)||seen.has(key(t)))error(400,'Invalid or duplicate target');seen.add(key(t));
-   const current=find(next,t);if(!current||!canAccessTarget(t,current,'edit'))error(404,'Target not available');return {kind:t.kind,id:t.id,before:clone(current)};
+   if(!t||!id(t.id)||!['item','category','report'].includes(t.kind)||seen.has(key(t)))error(400,'Invalid or duplicate target');seen.add(key(t));
+   const current=find(next,t);if(!current||!canAccessTarget(t,current,mode(t)))error(404,'Target not available');return {kind:t.kind,id:t.id,before:clone(current)};
   });
  };
  if(command.action==='create'){
@@ -43,8 +46,9 @@ export function transitionSteering({state,storeId,storeVersion,actor,role,comman
  }else{
   if(!r)error(404,'Request not found');if(r.schemaVersion!==2)error(409,'Legacy request is read-only; create a new request');
   if(r.revision!==command.expectedRevision)error(409,'Request revision changed');if(terminal.has(r.status))error(409,'Request already resolved');
-  for(const t of r.targets){const current=find(next,t);if(!current||!canAccessTarget(t,current,'edit'))error(404,'Target not available');}
+  for(const t of r.targets){const current=find(next,t);if(!current||!canAccessTarget(t,current,mode(t)))error(404,'Target not available');}
   const fresh=()=>{for(const t of r.targets)if(stable(find(next,t))!==stable(t.before))error(409,'Target changed; refresh baseline and propose again');};
+  if(r.targets.some(t=>t.kind==='report')&&['propose','apply'].includes(command.action))error(400,'Report requests are review-only; complete or cancel manually');
   if(command.action==='propose'){
    fresh();if(!Array.isArray(command.patches)||!command.patches.length||command.patches.length>100)error(400,'Proposal patches required');const seen=new Set();
    r.proposal={patches:command.patches.map(p=>{if(!p||!r.targets.some(t=>key(t)===key(p))||seen.has(key(p)))error(400,'Patch is outside request target scope');seen.add(key(p));return {kind:p.kind,id:p.id,changes:changes(p.changes,p.kind)};}),by:actor.id,at:now};r.status='proposed';

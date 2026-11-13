@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {evaluateAccess,projectSnapshot,projectEvents,assertSnapshotMutation,validateAccessConfig} from '../worker/access.mjs';
+import {evaluateAccess,compileAccess,projectSnapshot,projectEvents,assertSnapshotMutation,validateAccessConfig} from '../worker/access.mjs';
 const ctx={principal:{id:'alice'},role:'editor'};
 const deny={schemaVersion:1,groups:{team:['alice']},policies:{'item:secret':{rules:[{effect:'deny',subject:{type:'everyone'},actions:['read','write'],priority:100}]}}};
 assert.equal(evaluateAccess({...ctx,entityId:'item:a'}).allowed,true);
@@ -29,3 +29,5 @@ assert.doesNotThrow(()=>assertSnapshotMutation(state,state,{...ctx,role:'admin'}
 assert.equal(projectSnapshot({...state,access:undefined},{...ctx,role:null}).items.length,0);
 assert.equal(projectSnapshot(state,{...ctx,openVisitor:true}).notes.length,0);
 console.log('PASS access policy, inherited deny, priority override, cycles, role ceilings, projections, mutation guard');
+
+const compiled=compileAccess({...ctx,access:deny});assert.equal(compiled("item:secret").allowed,false);assert.equal(compiled("item:a").allowed,true);

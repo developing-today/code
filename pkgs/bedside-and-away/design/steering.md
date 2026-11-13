@@ -30,3 +30,9 @@ makeSteeringEnvelope produces a signed, five-minute, exact-request envelope only
 ## Tests and limits
 
 Tests cover editor enforcement, scoped targets, duplicate command collisions, expected revisions, stale targets, terminal lifecycle, general-request isolation, direct snapshot edit rejection, stable sorting, disabled configuration and signed envelope tampering/expiry. Browser UI is not E2E verified by these tests. Persistence race and object ACL integration tests belong to the API integration owner. Audit/receipt arrays currently inherit the 1.5 MB snapshot ceiling; before large-scale use move immutable records into dedicated tables with retention/export. No real Archer webhook, queue worker, delivery receipt, or autonomous application is activated.
+
+## Report-only request extension
+
+Schema v2 now accepts report metadata targets with exactly these IDs: `spend`, `inventory`, `activity`, `defaults`, `buying-guide`. Existing item/category/general commands are unchanged. The server supplies a fixed `{id,name}` baseline, never report contents or calculation results. Report targets cannot mix with object targets. The authorization callback receives `read` for a report, `edit` for objects; creating/resolving any request still requires store editor/admin. The host must enforce store and relevant report visibility, including when listing historical requests and exporting jobs.
+
+Report requests are manual review only: refresh metadata, complete with a resolution, or cancel. No patch proposal or automatic apply is accepted. The UI hook is `button('steering-report', 'Request changes / review', reportId)`; it calls the same dedicated server route and records the authenticated actor. Callback transport may return a summary with no patches, but rejects every report patch. A future report-editing design must define contracts/ACLs before widening these capabilities.

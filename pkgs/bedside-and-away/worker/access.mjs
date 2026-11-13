@@ -20,10 +20,10 @@ export function validateAccessConfig(access){
  function visit(k,depth){if(depth>64||active.has(k))throw problem('Cyclic or deep policy inheritance');if(done.has(k))return;active.add(k);for(const p of access.policies[k].inherit||[])visit(p,depth+1);active.delete(k);done.add(k)}
  for(const [k]of entries)visit(k,0);
 }
-export function evaluateAccess({principal,role,entityId='*',access,action='read'}){
+function decision({principal,role,entityId='*',access,action='read'},validated=false){
  const no=reason=>({allowed:false,reason});
  if(!principal?.id||!Object.hasOwn(actions,action)||!Object.hasOwn(levels,role)||levels[role]<actions[action])return no('store-role');
- try{validateAccessConfig(access)}catch{return no('invalid-policy')}
+ if(!validated)try{validateAccessConfig(access)}catch{return no('invalid-policy')}
  if(!access)return {allowed:true,reason:'store-role'};
  const selected=new Set();function collect(k){if(selected.has(k)||!Object.hasOwn(access.policies,k))return;selected.add(k);for(const p of access.policies[k].inherit||[])collect(p)}
  collect('*');collect(entityId);
@@ -35,13 +35,19 @@ export function evaluateAccess({principal,role,entityId='*',access,action='read'
  if(defaultDeny&&!allows.length)return no('default-deny');
  return {allowed:true,reason:allows.length?'explicit-allow':'inherited-store-role'};
 }
+export function evaluateAccess(context){return decision(context)}
+/** Validate once per immutable request snapshot, not once per record in a large store. */
+export function compileAccess(context){
+ const snapshot=copy(context);try{validateAccessConfig(snapshot.access)}catch{return ()=>({allowed:false,reason:'invalid-policy'})}
+ const cache=new Map();return (entityId='*',action='read')=>{const key=JSON.stringify([entityId,action]);if(!cache.has(key))cache.set(key,decision({...snapshot,entityId,action},true));return {...cache.get(key)}};
+}
 const empty=()=>({items:[],tags:[],notes:[],inventory:[],people:[],prefs:{},rules:{},overrides:{},recs:{},research:[],budget:0,nickname:''});
 function policyFor(state,context){return {...context,access:state.access}}
 export function hasScopedAccess(state){return !!state.access&&Object.keys(state.access.policies||{}).length>0}
 /** Fail closed for unknown aggregate fields in a scoped view: derive summaries after this projection. */
 export function projectSnapshot(state,context){
- const ctx=policyFor(state,context),can=(type,id)=>evaluateAccess({...ctx,entityId:`${type}:${id}`}).allowed;
- if(!evaluateAccess({...ctx,entityId:'*'}).allowed)return empty();
+ const ctx=policyFor(state,context),decide=compileAccess(ctx),can=(type,id)=>decide(`${type}:${id}`).allowed;
+ if(!decide('*').allowed)return empty();
  const scoped=hasScopedAccess(state)||context.openVisitor;
  if(!scoped){const all=copy(state);if(context.role!=='admin')delete all.access;return all}
  const tags=(state.tags||[]).filter(t=>can('tag',t.id)&&(!context.openVisitor||!t.hidden&&!t.archived));

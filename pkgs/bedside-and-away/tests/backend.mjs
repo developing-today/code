@@ -128,3 +128,19 @@ const invalidReceipt={...newRecord[1].event.after,inventory:[...newRecord[1].eve
 assert.equal((await call('stores/'+personal+'/events',{data:{expectedVersion:1,event:{id:'invalid_receipt_event',after:invalidReceipt}}}))[0],400);
 assert.equal((await call('stores/'+personal+'/events',{data:{expectedVersion:1,event:{id:'policy_bypass',after:{...newRecord[1].event.after,access:denyOwner}}}}))[0],403);
 console.log('PASS: inventory validation, authoritative authorship and generic policy bypass rejected.');
+// Server reads authoritative target snapshots and persists compensating events.
+const undoBody={expectedVersion:1,commandId:'undo_receipt',action:'undo',targetEventId:'receipt_event'};
+[code,r]=await call('stores/'+personal+'/history',{data:undoBody});assert.equal(code,200);assert.equal(r.version,2);assert.equal(r.event,undefined);
+assert.equal((await call('stores/'+personal))[1].state.inventory.length,0);
+assert.equal((await call('stores/'+personal+'/history',{data:undoBody}))[1].duplicate,true);
+assert.equal((await call('stores/'+personal+'/history',{data:{...undoBody,expectedVersion:2,commandId:'undo_again'}}))[0],409);
+[code,r]=await call('stores/'+personal+'/history',{data:{expectedVersion:2,commandId:'redo_receipt',action:'redo',targetEventId:'receipt_event'}});assert.equal(code,200);
+assert.equal((await call('stores/'+personal))[1].state.inventory[0].id,'receipt_r');
+assert.equal((await call('stores/'+personal+'/history',{data:{expectedVersion:3,commandId:'cross_store_undo',action:'undo',targetEventId:'variant_group'}}))[0],404);
+console.log('PASS: authoritative history endpoint, retained IDs, single undo/redo and cross-store denial.');
+const inventoryBase=(await call('stores/'+personal))[1];
+const withNullableAllocations=structuredClone(inventoryBase.state);withNullableAllocations.inventory.push({id:'receipt_null',mode:'Bought',qty:1,total:1,totalMinor:100,allocations:null});
+assert.equal((await call('stores/'+personal+'/events',{data:{expectedVersion:inventoryBase.version,event:{id:'null_allocations_ok',after:withNullableAllocations}}}))[0],200);
+const brokenAllocations=structuredClone(withNullableAllocations);brokenAllocations.inventory.push({id:'receipt_broken',mode:'Bought',qty:1,totalMinor:100,allocations:[null]});
+assert.equal((await call('stores/'+personal+'/events',{data:{expectedVersion:inventoryBase.version+1,event:{id:'null_allocation_element',after:brokenAllocations}}}))[0],400);
+console.log('PASS: nullable allocation collection accepted; malformed elements rejected with 400.');

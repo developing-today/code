@@ -1,3 +1,4 @@
+import {historyTransition} from './history.mjs';
 import {evaluateAccess,projectSnapshot,projectEvents,assertSnapshotMutation,validateAccessConfig,hasScopedAccess} from './access.mjs';
 import {transitionSteering,assertSteeringUnchanged} from './steering.mjs';
 import {validateVariantGraph,assertVariantMetadataUnchanged} from './variant-graph.mjs';
@@ -172,11 +173,11 @@ export async function api(request,env){
    const members=await db.prepare('SELECT user_id AS userId,email,role FROM memberships WHERE store_id=?').bind(sid).all();
    return json({access:parse(s.state_json).access??{schemaVersion:1,groups:{},policies:{}},version:s.version,members:members.results});
   }
-  if(['events','steering','variants','policy'].includes(sub)&&method==='POST'){
+  if(['events','steering','variants','policy','history'].includes(sub)&&method==='POST'){
    const s=await access(db,sid,user,'editor',false),b=await body(request),source=parse(s.state_json),context={principal:user,role:s.role};
    let event=b.event,requestResult;
    const dedicated=sub!=='events';
-   const command=sub==='policy'?{commandId:b.commandId,access:b.access}:sub==='variants'?{commandId:b.commandId,ids:b.ids,options:b.options}:b.command;
+   const command=sub==='history'?{commandId:b.commandId,action:b.action,targetEventId:b.targetEventId}:sub==='policy'?{commandId:b.commandId,access:b.access}:sub==='variants'?{commandId:b.commandId,ids:b.ids,options:b.options}:b.command;
    const commandId=command?.commandId;
    const intentDedicated={kind:sub,expectedVersion:b.expectedVersion,command};
    if(dedicated){
@@ -195,6 +196,15 @@ export async function api(request,env){
      requestResult=result.request;
      if(result.duplicate)return json({version:s.version,duplicate:true});
      event={id:commandId,after:result.state,label:'Request '+command.action,operation:'steering',target:command.requestId};
+    }else if(sub==='history'){
+     if(hasScopedAccess(source))fail(403,'Scoped history edits are unavailable');
+     assertSnapshotMutation(source,source,context);
+     if(!ident(b.targetEventId)||!['undo','redo'].includes(b.action))fail(400,'History action and targetEventId required');
+     const original=await db.prepare('SELECT payload_json FROM events WHERE id=? AND store_id=?').bind(b.targetEventId,sid).first();
+     if(!original)fail(404,'Historical event not found');
+     const last=await db.prepare("SELECT payload_json FROM events WHERE store_id=? AND json_extract(payload_json,'$.target')=? AND json_extract(payload_json,'$.operation') IN ('history.undo','history.redo') ORDER BY version DESC LIMIT 1").bind(sid,b.targetEventId).first();
+     const next=historyTransition({current:source,event:parse(original.payload_json),action:b.action,latest:last?parse(last.payload_json):null});
+     event={id:commandId,after:next,label:(b.action==='undo'?'Undo: ':'Redo: ')+parse(original.payload_json).label,operation:'history.'+b.action,target:b.targetEventId};
     }else{
      assertSnapshotMutation(source,source,context);
      const next=structuredClone(source);
@@ -207,9 +217,9 @@ export async function api(request,env){
    const intent=dedicated?intentDedicated:eventIntent(event,b.expectedVersion);
    if(prior){const replay=retryResult(prior,sid,user,intent);return json({version:replay.version,duplicate:true,...(!hasScopedAccess(source)&&!hasScopedAccess(replay.event.before)&&!hasScopedAccess(replay.event.after)?{event:publicEvent(replay.event)}:{})});}
    if(s.version!==b.expectedVersion)return json({error:'Store changed on another device. Reload and merge your edit.',version:s.version},409);
-   if(!dedicated){if(canonical(source.access??null)!==canonical(event.after?.access??null))fail(403,'Use the administrator policy endpoint');if(hasScopedAccess(source))fail(403,'Scoped stores require per-entity commands; snapshot editing is read-only');assertSnapshotMutation(source,event.after,context);assertSteeringUnchanged(source,event.after);try{assertVariantMetadataUnchanged(source.items,event.after.items)}catch(e){fail(400,e.message)}}
+   if(!dedicated){if(source.access&&!hasScopedAccess(source)&&!Object.hasOwn(event.after??{},'access'))event.after={...event.after,access:source.access};if(event.operation&&event.operation!=='change')fail(400,'Use the dedicated command endpoint');if(canonical(source.access??null)!==canonical(event.after?.access??null))fail(403,'Use the administrator policy endpoint');if(hasScopedAccess(source))fail(403,'Scoped stores require per-entity commands; snapshot editing is read-only');assertSnapshotMutation(source,event.after,context);assertSteeringUnchanged(source,event.after);try{assertVariantMetadataUnchanged(source.items,event.after.items)}catch(e){fail(400,e.message)}}
    const after=validateState(structuredClone(event.after)),settings=await getSettings(db,user),version=s.version+1;
-   validateNewRecords(source,after,user,settings.nickname||email||'Signed-in user');
+   if(sub!=='history')validateNewRecords(source,after,user,settings.nickname||email||'Signed-in user');
    const accepted={intent,...(requestResult?{requestResult}:{}),id:event.id,at:now(),actor:settings.nickname||email||'Signed-in user',actorId:id,device:clean(event.device,100),label:clean(event.label,300)||'Edited tracker',operation:clean(event.operation,32)||'change',target:clean(event.target,100),before:parse(s.state_json),after,version};
    const encoded=JSON.stringify(accepted);
    const results=await db.batch([
