@@ -665,3 +665,29 @@ func TestFailureKindsAreTyped(t *testing.T) {
 		t.Errorf("clean run: kind = %q, error = %q", res.ErrorKind, res.Error)
 	}
 }
+
+// CODE-30 (#1937; Codex review, PR #9205): a bound that expires during
+// runner preflight -- here a frozen install whose npm never finishes --
+// is a timeout even though the script never started.
+func TestFailureKindPreflightTimeout(t *testing.T) {
+	needRuntime(t)
+	binDir := t.TempDir()
+	stub := "#!/bin/sh\nexec sleep 30\n"
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	svc := service(t, store(t))
+	res, _ := svc.RunWith(context.Background(), runner.Options{
+		Source: "export default () => 1", Runtime: "node",
+		ClientSource: minimalClient, Permissions: "all", Timeout: time.Second,
+		Deps: &runner.Deps{Lockfile: []byte("locked"), LockfileName: "package-lock.json"},
+	}, execsvc.Options{Output: execsvc.OutputStructured},
+		func(execsvc.Frame) error { return nil })
+	if res == nil {
+		t.Fatal("no result")
+	}
+	if !res.TimedOut || res.ErrorKind != execsvc.FailureTimeout {
+		t.Errorf("preflight timeout: timedOut = %v, kind = %q, error = %q", res.TimedOut, res.ErrorKind, res.Error)
+	}
+}

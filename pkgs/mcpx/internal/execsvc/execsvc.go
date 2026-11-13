@@ -1135,6 +1135,16 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		}
 		res.Error = msg
 		res.ErrorKind = FailureNotStarted
+		if errors.Is(rerr, context.DeadlineExceeded) {
+			// The run's bound expired before the script started -- a
+			// dependency install or a directory-lock wait in runner
+			// preflight: a timeout, not a startup failure, so a caller
+			// deciding whether to retry sees the true kind (Codex
+			// review, PR #9205). The runner preserves the deadline
+			// signal on those preflight errors for exactly this check.
+			res.ErrorKind = FailureTimeout
+			res.TimedOut = true
+		}
 		res.ExitCode = 1
 		emitFrame(Frame{Type: FrameError, Error: msg})
 		// Suffix is documented as running on both paths: a `before` hook

@@ -1263,6 +1263,15 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 	if res.TimedOut {
 		env["timedOut"] = true
 	}
+	if res.Error != "" {
+		env["error"] = res.Error
+	}
+	if res.ErrorKind != "" {
+		// The typed failure kind (CODE-30) travels with the error, so
+		// a CLI consumer can branch on it exactly like an HTTP caller
+		// reading the structured Result (Codex review, PR #9205).
+		env["errorKind"] = res.ErrorKind
+	}
 	if res.StdoutTruncated {
 		env["stdoutTruncated"] = true
 	}
