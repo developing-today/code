@@ -21,6 +21,15 @@ class PublisherTests(unittest.TestCase):
         def __enter__(self): return self
         def __exit__(self, *exc): return None
 
+    def test_unresolved_enqueue_intent_refuses_blind_replay(self):
+        for phase in ("queue-intent", "queue-unverified"):
+            with self.assertRaises(publisher.Refusal):
+                publisher.raise_if_unresolved_enqueue({"phase": phase}, "fixture", "dedupe:key")
+        # A recorded queue_id or a pre-intent phase is not unresolved.
+        publisher.raise_if_unresolved_enqueue({"phase": "queue-intent", "queue_id": 42}, "fixture", "dedupe:key")
+        publisher.raise_if_unresolved_enqueue({"phase": "issue-created"}, "fixture", "dedupe:key")
+        publisher.raise_if_unresolved_enqueue({}, "fixture", "dedupe:key")
+
     def test_self_block_qualifies_every_native_issue_reference(self):
         packet = publisher.queue_packet({"id":"fixture", "title":"Fixture"}, 1, "a" * 64, "2026-11-13T00:00:00Z", [7,8])
         self.assertIn("developing-today/code#7,developing-today/code#8", packet["payload"]["problem"])

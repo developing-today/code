@@ -153,6 +153,12 @@ class DeliveryPreparationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             prep.safe_output_path(prep.MAP, [prep.MAP])
 
+    def test_live_snapshot_is_a_protected_input(self):
+        inputs = prep.protected_inputs([], [])
+        self.assertIn(prep.LIVE_SNAPSHOT, inputs)
+        with self.assertRaises(ValueError):
+            prep.safe_output_path(prep.LIVE_SNAPSHOT, inputs)
+
     def test_existing_hardlink_to_input_is_refused_before_report_write(self):
         with tempfile.TemporaryDirectory(dir=HERE) as temp:
             source = Path(temp) / "authored.json"

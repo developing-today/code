@@ -457,6 +457,25 @@ def queue_readback(args, task_id, expected_dedupe):
     return rows[0]
 
 
+def raise_if_unresolved_enqueue(item, sid, dedupe):
+    """Refuse to replay an enqueue whose outcome was never recorded.
+
+    The journal saves phase "queue-intent" before enqueueing and
+    "queue-unverified" when the readback fails; either phase with no
+    queue_id means a previous enqueue may have committed while its
+    response was lost. The queue creates a fresh task when the dedupe
+    predecessor is terminal, so a blind replay can duplicate
+    already-completed work. Stop: the existing row must be reconciled
+    by dedupe key, including terminal outcomes, and the disposition
+    recorded in the journal before any retry."""
+    if item.get("phase") in ("queue-intent", "queue-unverified") and not item.get("queue_id"):
+        raise Refusal(
+            f"unresolved enqueue intent for {sid} (dedupe {dedupe}): a previous enqueue may have "
+            "committed without its response being recorded; reconcile the existing queue row by "
+            "dedupe key, including terminal outcomes, and record the disposition in the journal "
+            "before retrying — refusing to replay the enqueue blindly")
+
+
 def configure_broker(args):
     url = args.broker_url or os.environ.get("REPO_QUEUE_BROKER_URL")
     if not url:
@@ -593,6 +612,7 @@ def publish(args, entries, digest, report_digest, orchestration):
                 item["phase"] = "covered"; atomic_save(journal,state)
                 outputs.append({"id":sid,"issue":item["issue_url"],"queue_id":item["queue_id"],"status":item["queue_status"]})
                 continue
+            raise_if_unresolved_enqueue(item, sid, dedupe)
             item["phase"] = "queue-intent"; atomic_save(journal,state)
             packet = queue_packet(e, item["issue_number"], digest, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), item["native_blocker_issue_numbers"])
             try:

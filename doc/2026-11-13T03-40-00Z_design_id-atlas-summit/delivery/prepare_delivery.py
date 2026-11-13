@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = ROOT.parents[1]
 MAP = ROOT / "inventory" / "statement-map.json"
+LIVE_SNAPSHOT = ROOT / "inventory-live" / "live-issues.json"
 FIXED_COUNTS = {"S0": 17, "S1": 120, "S2": 19, "S3": 38, "S4": 93, "S5": 64, "S6": 17, "S7": 16}
 REQUIRED_COMPONENTS = {9110, 9111, *range(9113, 9149)}
 TIERS = {"crucial", "recommended", "contingent", "horizon"}
@@ -452,7 +453,7 @@ def validate(manifest_paths):
         errors.append("duplicate slice IDs across included manifests")
     hard_graph = {sid: set() for sid in idmap}
     try:
-        live = json.loads((ROOT / "inventory-live" / "live-issues.json").read_text())
+        live = json.loads(LIVE_SNAPSHOT.read_text())
         known_issues = set(live.get("requested_numbers", []))
     except (OSError, json.JSONDecodeError):
         known_issues = set()
@@ -680,6 +681,15 @@ def normalized_entry(row):
     }
 
 
+def protected_inputs(paths, entries):
+    """Every file validate()/draft generation reads that an output path
+    must never alias — including the live issue snapshot, whose
+    requested_numbers resolve external issue dependencies."""
+    inputs = [*paths, MAP, LIVE_SNAPSHOT, ROOT / "delivery" / "statement-exemptions.json", ROOT / "delivery" / "orchestration.json"]
+    inputs.extend(REPO_ROOT / row["design_source"] for row in entries if row.get("design_source"))
+    return inputs
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--manifest", action="append", type=Path, help="override default set; repeatable")
@@ -695,8 +705,7 @@ def main(argv=None):
     summary = {k: v for k, v in result.items() if k not in {"errors", "entries", "orchestration"}}
     print(json.dumps(summary, sort_keys=True))
 
-    inputs = [*paths, MAP, ROOT / "delivery" / "statement-exemptions.json", ROOT / "delivery" / "orchestration.json"]
-    inputs.extend(REPO_ROOT / row["design_source"] for row in entries if row.get("design_source"))
+    inputs = protected_inputs(paths, entries)
     try:
         meta_source = json.loads((ROOT / "delivery" / "orchestration.json").read_text()).get("design_source")
         meta_file, _ = design_file(meta_source)
