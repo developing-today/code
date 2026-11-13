@@ -4,8 +4,8 @@
 # The contract: the fleet.rust row of .github/test-suite-registry.json
 # counts as covered only while all of these agree —
 #   1. .github/workflows/fleet-rust-tests.yml exists, is basic-tier,
-#      and runs on pull_request (pkgs/fleet/** paths), push to main,
-#      and workflow_dispatch;
+#      runs on push to main (pkgs/fleet/** paths) and workflow_dispatch,
+#      and declares no pull_request trigger (ci-policy.md, 2026-11-13);
 #   2. its test step runs the locked workspace test command with the
 #      toolchain channel pinned in pkgs/fleet/rust-toolchain.toml;
 #   3. the registry row fleet.rust is status "mapped" and names this
@@ -38,12 +38,15 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-# 1. Triggers and tier shape.
-for trigger in pull_request push workflow_dispatch; do
+# 1. Triggers and tier shape (ci-policy.md 2026-11-13: no PR triggers).
+for trigger in push workflow_dispatch; do
   if ! grep -qE "^  ${trigger}:" "$WF"; then
     err "workflow does not declare the ${trigger} trigger"
   fi
 done
+if grep -qE "^  pull_request(_target)?:" "$WF"; then
+  err "workflow declares a pull_request trigger; ci-policy.md forbids PR triggers"
+fi
 if ! grep -qF '"pkgs/fleet/**"' "$WF"; then
   err "workflow path filter does not cover pkgs/fleet/** — a Fleet change could silently skip the suite"
 fi

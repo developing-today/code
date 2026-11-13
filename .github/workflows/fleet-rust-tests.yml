@@ -51,7 +51,7 @@ jobs:
           bash .github/scripts/check-fleet-rust-tests.test.sh
 
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.99.0 --profile minimal
+        run: rustup toolchain install 1.99.1 --profile minimal
 
       - name: Test the fleet Rust workspace
-        run: cargo +1.99.0 test --manifest-path pkgs/fleet/Cargo.toml --workspace --all-targets --locked
+        run: cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml --workspace --all-targets --locked

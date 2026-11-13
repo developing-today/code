@@ -52,6 +52,7 @@ also scans the full workflow directory. Main and manual venues are explicit:
 | identity build | main push, path gated | yes |
 | map build | main push, path gated | yes |
 | mcpx nix build | main push, path gated | yes |
+| fleet-rust-tests | main push, path gated | yes |
 
 Other former PR venues retain their existing main/manual/nightly venues;
 `deploy-flake-checks` remains manually runnable. Historical `basic:` job

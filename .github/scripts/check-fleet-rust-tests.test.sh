@@ -58,6 +58,11 @@ make_fixture "$MUT"
 sed -i '/pkgs\/fleet\/\*\*/d' "$MUT/.github/workflows/fleet-rust-tests.yml"
 expect_fail "$MUT" "workflow without the pkgs/fleet path filter"
 
+MUT="$TMP/pr-trigger"
+make_fixture "$MUT"
+sed -i 's/^  workflow_dispatch:/  pull_request:\n  workflow_dispatch:/' "$MUT/.github/workflows/fleet-rust-tests.yml"
+expect_fail "$MUT" "workflow with a pull_request trigger"
+
 MUT="$TMP/registry-uncovered"
 make_fixture "$MUT"
 python3 - "$MUT/.github/test-suite-registry.json" <<'PYEOF'
