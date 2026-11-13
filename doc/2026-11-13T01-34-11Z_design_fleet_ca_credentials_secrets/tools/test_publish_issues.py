@@ -559,15 +559,16 @@ class PublishIssuesTests(unittest.TestCase):
     def test_currently_open_reused_child_with_close_reopen_history_is_conflict(self):
         item = publisher.validate_manifest([proposal()])[0]
         issue = gh_issue(item)
-        with patch.object(publisher, "issue_by_marker", return_value=issue):
-            with patch.object(publisher, "require_epic_open"):
-                with patch.object(publisher, "require_fresh_issue_history", side_effect=publisher.PublishError(
-                        "issue #12345 was previously closed then reopened; refusing to reuse its marker")):
-                    with patch.object(publisher, "checked", side_effect=AssertionError("must not mutate")):
-                        with self.assertRaisesRegex(publisher.PublishError, "previously closed then reopened"):
-                            publisher.publish_one(item, publisher.FLEET, publisher.REPO_QUEUE,
-                                                  publisher.QUEUE, Path("unused"),
-                                                  empty_receipt_state(), {})
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(publisher, "issue_by_marker", return_value=issue):
+                with patch.object(publisher, "require_epic_open"):
+                    with patch.object(publisher, "require_fresh_issue_history", side_effect=publisher.PublishError(
+                            "issue #12345 was previously closed then reopened; refusing to reuse its marker")):
+                        with patch.object(publisher, "checked", side_effect=AssertionError("must not mutate")):
+                            with self.assertRaisesRegex(publisher.PublishError, "previously closed then reopened"):
+                                publisher.publish_one(item, publisher.FLEET, publisher.REPO_QUEUE,
+                                                      publisher.QUEUE, Path(tmp) / "receipt.jsonl",
+                                                      empty_receipt_state(), {})
 
     def test_marker_body_mismatch_is_conflict_without_write(self):
         item = publisher.validate_manifest([proposal()])[0]
@@ -745,12 +746,13 @@ class PublishIssuesTests(unittest.TestCase):
 
     def test_create_rechecks_epic_and_stops_if_closed(self):
         item = publisher.validate_manifest([proposal()])[0]
-        with patch.object(publisher, "issue_by_marker", return_value=None):
-            with patch.object(publisher, "require_epic_open", side_effect=publisher.PublishError("closed")):
-                with patch.object(publisher, "checked", side_effect=AssertionError("issue create attempted")):
-                    with self.assertRaisesRegex(publisher.PublishError, "closed"):
-                        publisher.publish_one(item, "fleet", "repo-queue", "pilot", Path("unused"),
-                                              empty_receipt_state(), {})
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(publisher, "issue_by_marker", return_value=None):
+                with patch.object(publisher, "require_epic_open", side_effect=publisher.PublishError("closed")):
+                    with patch.object(publisher, "checked", side_effect=AssertionError("issue create attempted")):
+                        with self.assertRaisesRegex(publisher.PublishError, "closed"):
+                            publisher.publish_one(item, "fleet", "repo-queue", "pilot",
+                                                  Path(tmp) / "receipt.jsonl", empty_receipt_state(), {})
 
     def test_open_program_epic_is_not_subject_to_child_marker_reuse_history_gate(self):
         with patch.object(publisher, "json_output", return_value={"number": 9155, "state": "OPEN"}):
@@ -808,13 +810,14 @@ class PublishIssuesTests(unittest.TestCase):
 
     def test_full_parent_stops_before_create_without_rehoming(self):
         item = publisher.validate_manifest([proposal()])[0]
-        with patch.object(publisher, "issue_by_marker", return_value=None):
-            with patch.object(publisher, "require_epic_open"):
-                with patch.object(publisher, "api_json", return_value=[{"number": n} for n in range(1, 101)]):
-                    with patch.object(publisher, "checked", side_effect=AssertionError("issue create attempted")):
-                        with self.assertRaisesRegex(publisher.PublishError, "100 direct sub-issue cap"):
-                            publisher.publish_one(item, "fleet", "repo-queue", "pilot", Path("unused"),
-                                                  empty_receipt_state(), {})
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(publisher, "issue_by_marker", return_value=None):
+                with patch.object(publisher, "require_epic_open"):
+                    with patch.object(publisher, "api_json", return_value=[{"number": n} for n in range(1, 101)]):
+                        with patch.object(publisher, "checked", side_effect=AssertionError("issue create attempted")):
+                            with self.assertRaisesRegex(publisher.PublishError, "100 direct sub-issue cap"):
+                                publisher.publish_one(item, "fleet", "repo-queue", "pilot",
+                                                      Path(tmp) / "receipt.jsonl", empty_receipt_state(), {})
 
     def test_native_parent_uses_database_id_and_live_queue_readback(self):
         item = publisher.validate_manifest([proposal()])[0]

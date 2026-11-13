@@ -1,0 +1,523 @@
+[
+  {
+    "source_or_member_id": "SPEC-R-26crates",
+    "primary_proposal_id": "ARCH-10",
+    "supporting_proposal_ids": [
+      "ARCH-01",
+      "ARCH-06",
+      "ARCH-07"
+    ],
+    "design_section": "proposals/architecture.json#ARCH-10; designs/architecture.md §Module/seam comparison",
+    "test_oracle": "For each candidate boundary, build the real consumer feature closure and show that a separate consumer or dependency graph justifies extraction; otherwise one cohesive crate/module remains.",
+    "coverage_rationale": "PLANNED/PARTIAL: ARCH-10 owns profile/dependency closure; ARCH-01/06/07 own only their named APIs. Source explicitly says additive candidate crates and do not replace current Fleet crates.",
+    "acceptance_enrichment": [
+      "Compare cohesive existing modules against a crate split by consumers, dependencies, independent replacement and public semver cost; do not create a crate merely because §26 lists a name."
+    ]
+  },
+  {
+    "source_or_member_id": "SPEC-R-26bench",
+    "primary_proposal_id": "ARCH-10",
+    "supporting_proposal_ids": [
+      "PERF-01"
+    ],
+    "design_section": "proposals/architecture.json#ARCH-10 budgets; proposals/performance.json#PERF-01 baseline",
+    "test_oracle": "Pinned build matrix records compile time, feature/dependency tree, stripped bytes, startup samples, licensing and unsafe-code surface per profile; provider latency remains separately measured by PERF-01.",
+    "coverage_rationale": "PLANNED/PARTIAL: ARCH-10 owns profile build/size/startup, PERF-01 owns runtime/provider benchmarks. No measurement is asserted yet.",
+    "acceptance_enrichment": [
+      "Extend ARCH-10 acceptance to include compile-time, dependency maintenance, license, unsafe surface and crypto feature-gate evidence before ratifying budgets or a crate split."
+    ]
+  },
+  {
+    "source_or_member_id": "SPEC-R-26granularity",
+    "primary_proposal_id": "ARCH-10",
+    "supporting_proposal_ids": [
+      "ARCH-01",
+      "ARCH-06",
+      "ARCH-07"
+    ],
+    "design_section": "proposals/architecture.json#ARCH-10; designs/architecture.md §Module/seam comparison",
+    "test_oracle": "A boundary candidate is extracted only if its test/build graph demonstrates separate consumers or dependency closure; a cohesive/no-split design passes when evidence shows no independent seam.",
+    "coverage_rationale": "PLANNED: This is a crate-granularity/design decision, not a mandate to implement every §26 candidate crate. ARCH-10 owns measured closure and ARCH-01/06/07 the corresponding narrow seams.",
+    "acceptance_enrichment": [
+      "Record the chosen seam and a no-split alternative; use consumer count, dependencies, build time/size and independent change cadence as decision evidence."
+    ]
+  },
+  {
+    "source_or_member_id": "SPEC-R-26resolver",
+    "primary_proposal_id": "ARCH-01",
+    "supporting_proposal_ids": [
+      "TRACE-02",
+      "PERF-02"
+    ],
+    "design_section": "proposals/architecture.json#ARCH-01 typed resolver; proposals/census.json#TRACE-02 V1 corpus; proposals/performance.json#PERF-02",
+    "test_oracle": "Scoped opaque reference resolves through the single Fleet read facade; pinned V1 get/list goldens remain exact; freshness decision is checked against PERF-02's semantic model.",
+    "coverage_rationale": "PLANNED/PARTIAL: ARCH-01 owns the runtime reference/read interface, TRACE-02 owns the CLI compatibility fixture, PERF-02 owns freshness semantics. No second resolver is introduced.",
+    "acceptance_enrichment": [
+      "State that `fleet-secrets` remains the only public secret-read facade and that domain adapters do not independently shell out to BWS/op."
+    ]
+  },
+  {
+    "source_or_member_id": "SPEC-R-26singletruth",
+    "primary_proposal_id": "ARCH-07",
+    "supporting_proposal_ids": [
+      "ARCH-01",
+      "ARCH-06",
+      "SEC-02",
+      "GEN-10",
+      "ROOT-01"
+    ],
+    "design_section": "proposals/architecture.json#ARCH-07 registry; designs/architecture.md §Proposed library interfaces",
+    "test_oracle": "Fixtures prove each vocabulary (CLI alias/capability, credential family/class, signer type, algorithm/OID, schema/input) has one owning registry and consumers import or derive it without conflicting duplicates.",
+    "coverage_rationale": "PLANNED/PARTIAL: The source bundles multiple registries. ARCH-07 owns command/capability descriptors; ARCH-01 runtime identity; ARCH-06 signer/artifact authority; SEC-02 credential schema; ROOT-01/GEN-10 algorithm/format IDs. No single one of these owns every vocabulary.",
+    "acceptance_enrichment": [
+      "Add an owner table mapping aliases, OIDs, key serialization, errors, classification and input schemas to their authoritative registry; add a duplicate-definition/drift oracle across consumers."
+    ]
+  },
+  {
+    "source_or_member_id": "SPEC-C-0001",
+    "primary_proposal_id": "TRACE-01",
+    "supporting_proposal_ids": [],
+    "design_section": "proposals/census.json#TRACE-01 §Acceptance; source snapshot spec §27.0",
+    "test_oracle": "Research-kind packet fixture requires prior art/primary standards, alternatives, threat model, ownership/dependencies, safe defaults, API example, interoperability plan, rollback, measurable go/no-go and qualitative complexity.",
+    "coverage_rationale": "RESEARCH-CONTRACT / PLANNED: TRACE-01 validates packet evidence/structure; no research finding is asserted complete.",
+    "acceptance_enrichment": [
+      "Add a research-specific packet validator for §27.0 fields; presence checks must not be reported as substantive research completion."
+    ]
+  },
+  {
+    "source_or_member_id": "SPEC-0001-assumptions-evidence",
+    "primary_proposal_id": "TRACE-01",
+    "supporting_proposal_ids": [],
+    "design_section": "proposals/census.json#TRACE-01 evidence mapping",
+    "test_oracle": "Every material security/compatibility assumption in the decision record links to a dated primary source or executable test result; a link to an unrun proposal is not proof.",
+    "coverage_rationale": "PLANNED/PARTIAL: TRACE-01 can validate evidence references and status, but does not perform the underlying research/tests or close every assumption.",
+    "acceptance_enrichment": [
+      "Distinguish evidence-present from evidence-verified/executed in the row status and fail final coverage when a material assumption has no evidence oracle."
+    ],
+    "parent_source_id": "SPEC-0001"
+  },
+  {
+    "source_or_member_id": "SPEC-0001-integrated-scope",
+    "primary_proposal_id": "TRACE-01",
+    "supporting_proposal_ids": [
+      "TRACE-02",
+      "ARCH-07",
+      "ARCH-10"
+    ],
+    "design_section": "proposals/census.json#TRACE-01; proposals/census.json#TRACE-02",
+    "test_oracle": "Every numbered source outcome maps to an owning proposal/test or a justified existing/research/future/blocked disposition; a V1 compatibility snapshot is not evidence of full integrated feature implementation.",
+    "coverage_rationale": "PLANNED/PARTIAL: TRACE-01 owns the no-silent-omission audit; TRACE-02 covers only current CLI/profile facts. This is governance/trace coverage, not a claim that the full Fleet program is implemented.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0001"
+  },
+  {
+    "source_or_member_id": "SPEC-0001-library-before-cli",
+    "primary_proposal_id": "ARCH-07",
+    "supporting_proposal_ids": [
+      "ARCH-01",
+      "ARCH-06",
+      "ARCH-10",
+      "GEN-01",
+      "CERT-01"
+    ],
+    "design_section": "proposals/architecture.json#ARCH-07 dependency wiring; #ARCH-10 feature graph",
+    "test_oracle": "Dependency graph proves CLI adapters depend on the corresponding library seams; profile build test uses libraries without spawning Fleet as a subprocess.",
+    "coverage_rationale": "PLANNED/PARTIAL: ARCH-07/10 own wiring and profile closure; domain libraries are owned by ARCH-01/06 and GEN/CERT. No claim is made that the full staged implementation already exists.",
+    "acceptance_enrichment": [
+      "Add a DAG assertion that rejects a frontend/adapter depending on a CLI executable or preceding its reusable library interface."
+    ]
+  },
+  {
+    "source_or_member_id": "SPEC-0002-member-001",
+    "primary_proposal_id": "ROOT-02",
+    "supporting_proposal_ids": [
+      "ROOT-03",
+      "ROOT-04"
+    ],
+    "design_section": "proposals/pki.json#ROOT-02 opaque PKI identity/manifest",
+    "test_oracle": "Synthetic root-set manifest contains one opaque bundle ID and four distinct root-key identities/certificate refs; rename/path changes do not change the PKI object ID.",
+    "coverage_rationale": "PLANNED: Root set/root bundle is a PKI aggregate owned by ROOT-02 manifest identity, with key graph in ROOT-03/04. This member is explicitly not ARCH-01's runtime secret identity.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0002"
+  },
+  {
+    "source_or_member_id": "SPEC-0002-member-002",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [
+      "ROOT-02"
+    ],
+    "design_section": "proposals/pki.json#CERT-01 issuer-set types; #ROOT-02 manifest",
+    "test_oracle": "Typed issuer-set fixture stores purpose, key/certificate refs, policy, metadata and artifacts under stable PKI identity independent of its display name.",
+    "coverage_rationale": "PLANNED: Issuer set is a PKI aggregate/profile, not a SecretRef. CERT-01 owns PKI profile/API and ROOT-02 its manifest identity.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0002"
+  },
+  {
+    "source_or_member_id": "SPEC-0002-member-003",
+    "primary_proposal_id": "ROOT-01",
+    "supporting_proposal_ids": [
+      "GEN-10"
+    ],
+    "design_section": "proposals/pki.json#ROOT-01; proposals/generators-ops.json#GEN-10",
+    "test_oracle": "Canonical algorithm IDs/aliases/versioned implementation IDs round-trip; unknown and duplicate alias cases fail.",
+    "coverage_rationale": "PLANNED: PKI algorithm identity/capability is ROOT-01; generic algorithm/format registries are GEN-10, not ARCH-01.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0002"
+  },
+  {
+    "source_or_member_id": "SPEC-0002-member-004",
+    "primary_proposal_id": "ROOT-04",
+    "supporting_proposal_ids": [],
+    "design_section": "proposals/pki.json#ROOT-04 asymmetric root graph",
+    "test_oracle": "Cross-certificate fixture retains subject SPKI, verifies under the distinct issuer and never shares private keys across algorithm families.",
+    "coverage_rationale": "PLANNED: Cross-certificate is a PKI graph object owned by ROOT-04; it is not a generic runtime identity.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0002"
+  },
+  {
+    "source_or_member_id": "SPEC-0002-member-005",
+    "primary_proposal_id": "ROOT-07",
+    "supporting_proposal_ids": [
+      "CERT-17"
+    ],
+    "design_section": "proposals/pki.json#ROOT-07 trust profiles; #CERT-17 verifier evidence",
+    "test_oracle": "Isolated trust-store fixture installs only selected self-signed roots and rejects a cross-certificate/intermediate used as an anchor.",
+    "coverage_rationale": "PLANNED: Trust-anchor semantics belong ROOT-07 with verifier evidence in CERT-17; not ARCH-01.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0002"
+  },
+  {
+    "source_or_member_id": "SPEC-0002-member-006",
+    "primary_proposal_id": "SEC-02",
+    "supporting_proposal_ids": [
+      "GEN-10",
+      "CERT-01"
+    ],
+    "design_section": "proposals/secrets-reconciliation.json#SEC-02 typed family; GEN-10 formats; CERT-01 PKI",
+    "test_oracle": "Typed fixture distinguishes X.509, SSH, OpenPGP, JWK/JWKS/JWT and opaque data; cross-family parse/conversion fails or is an explicitly separate operation.",
+    "coverage_rationale": "PLANNED: Canonical credential family belongs SEC-02; protocol/format-specific types remain with GEN-10/CERT-01. ARCH-01 does not own format semantics.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0002"
+  },
+  {
+    "source_or_member_id": "SPEC-0002-member-007",
+    "primary_proposal_id": "ROOT-02",
+    "supporting_proposal_ids": [
+      "ROOT-11"
+    ],
+    "design_section": "proposals/pki.json#ROOT-02 manifest; #ROOT-11 lifecycle",
+    "test_oracle": "Generation/replacement epochs are structured PKI fields; a human label such as g4b is not parsed as the canonical machine ID.",
+    "coverage_rationale": "PLANNED: PKI generation identity is ROOT-02/ROOT-11, not runtime CredentialId.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0002"
+  },
+  {
+    "source_or_member_id": "SPEC-0002-member-008",
+    "primary_proposal_id": "ROOT-02",
+    "supporting_proposal_ids": [
+      "ROOT-06"
+    ],
+    "design_section": "proposals/pki.json#ROOT-02 manifest; #ROOT-06 issuer partitions",
+    "test_oracle": "Generation and partition are distinct manifest fields; A/B issuer keys are independently identified.",
+    "coverage_rationale": "PLANNED: PKI partition identity belongs ROOT-02/ROOT-06; not ARCH-01.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0002"
+  },
+  {
+    "source_or_member_id": "SPEC-0002-member-009",
+    "primary_proposal_id": "SEC-02",
+    "supporting_proposal_ids": [
+      "ROOT-09"
+    ],
+    "design_section": "proposals/secrets-reconciliation.json#SEC-02 classification; proposals/pki.json#ROOT-09 custody",
+    "test_oracle": "Classifier fixture distinguishes private keys/seeds/HSM credentials/tokens from public cert metadata; root assets use only closed root-escrow policy.",
+    "coverage_rationale": "PLANNED: General secret classification belongs SEC-02; root custody/exclusion belongs ROOT-09. ARCH-01's deny behavior is not the sole classification authority.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0002"
+  },
+  {
+    "source_or_member_id": "SPEC-0005-split-01",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [
+      "ROOT-03",
+      "ROOT-05"
+    ],
+    "design_section": "proposals/pki.json#CERT-01 §2.2 Org/root defaults profile",
+    "test_oracle": "Synthetic profile resolves organization/country, four root algorithms/reference expiry and explicit signer request.",
+    "coverage_rationale": "PLANNED: Org/root defaults is a PKI profile/delivery contract. It was assigned to ARCH-01 only because it contains identity/config vocabulary; ARCH-01's runtime secret resolver does not own this PKI profile.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0005"
+  },
+  {
+    "source_or_member_id": "SPEC-0005-split-02",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [
+      "ROOT-06",
+      "CERT-05"
+    ],
+    "design_section": "proposals/pki.json#CERT-01 §2.2 Base profile",
+    "test_oracle": "Base profile resolves broad internal purpose, A/B independent issuer keys, risk warning and narrower leaf constraints.",
+    "coverage_rationale": "PLANNED: Base is a PKI profile/delivery contract. It was assigned to ARCH-01 only because it contains identity/config vocabulary; ARCH-01's runtime secret resolver does not own this PKI profile.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0005"
+  },
+  {
+    "source_or_member_id": "SPEC-0005-split-03",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [
+      "ROOT-06",
+      "CERT-05"
+    ],
+    "design_section": "proposals/pki.json#CERT-01 §2.2 Internal Web profile",
+    "test_oracle": "Profile test proves serverAuth, A/B key separation, name constraints and explicit validity overrides.",
+    "coverage_rationale": "PLANNED: Internal Web is a PKI profile/delivery contract. It was assigned to ARCH-01 only because it contains identity/config vocabulary; ARCH-01's runtime secret resolver does not own this PKI profile.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0005"
+  },
+  {
+    "source_or_member_id": "SPEC-0005-split-04",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [
+      "CERT-10",
+      "CERT-15"
+    ],
+    "design_section": "proposals/pki.json#CERT-01 §2.2 Public Web profile",
+    "test_oracle": "Plan distinguishes public names/publication from WebPKI trust; public DNS alone never marks a private root public.",
+    "coverage_rationale": "PLANNED: Public Web is a PKI profile/delivery contract. It was assigned to ARCH-01 only because it contains identity/config vocabulary; ARCH-01's runtime secret resolver does not own this PKI profile.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0005"
+  },
+  {
+    "source_or_member_id": "SPEC-0005-split-05",
+    "primary_proposal_id": "ROOT-07",
+    "supporting_proposal_ids": [
+      "CERT-17"
+    ],
+    "design_section": "proposals/pki.json#ROOT-07 §2.2 PQ-enforced profile",
+    "test_oracle": "Verifier accepts only an ML-DSA trust anchor and all-ML-DSA signature path; unsupported client reports unsupported.",
+    "coverage_rationale": "PLANNED: PQ-enforced is a PKI profile/delivery contract. It was assigned to ARCH-01 only because it contains identity/config vocabulary; ARCH-01's runtime secret resolver does not own this PKI profile.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0005"
+  },
+  {
+    "source_or_member_id": "SPEC-0005-split-06",
+    "primary_proposal_id": "ROOT-07",
+    "supporting_proposal_ids": [
+      "CERT-17"
+    ],
+    "design_section": "proposals/pki.json#ROOT-07 §2.2 Compatibility profile",
+    "test_oracle": "Client capability fixture allows only implemented classical/optional ML-DSA paths and rejects substitution.",
+    "coverage_rationale": "PLANNED: Compatibility is a PKI profile/delivery contract. It was assigned to ARCH-01 only because it contains identity/config vocabulary; ARCH-01's runtime secret resolver does not own this PKI profile.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0005"
+  },
+  {
+    "source_or_member_id": "SPEC-0005-split-07",
+    "primary_proposal_id": "CERT-12",
+    "supporting_proposal_ids": [],
+    "design_section": "proposals/pki.json#CERT-12 §2.2 Minimal delivery profile",
+    "test_oracle": "Artifact fixture contains only requested files/metadata and omits documentation kits; this is not an ARCH-10 binary profile.",
+    "coverage_rationale": "PLANNED: Minimal delivery is a PKI profile/delivery contract. It was assigned to ARCH-01 only because it contains identity/config vocabulary; ARCH-01's runtime secret resolver does not own this PKI profile.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0005"
+  },
+  {
+    "source_or_member_id": "SPEC-0005-split-08",
+    "primary_proposal_id": "CERT-12",
+    "supporting_proposal_ids": [
+      "OPS-07"
+    ],
+    "design_section": "proposals/pki.json#CERT-12 §2.2 Handoff delivery profile",
+    "test_oracle": "Package contains validated manifest, import/verification guides and selected compatible chain; private output is absent unless authorized.",
+    "coverage_rationale": "PLANNED: Handoff delivery is a PKI profile/delivery contract. It was assigned to ARCH-01 only because it contains identity/config vocabulary; ARCH-01's runtime secret resolver does not own this PKI profile.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0005"
+  },
+  {
+    "source_or_member_id": "SPEC-0005-split-09",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [
+      "OPS-05",
+      "ARCH-07"
+    ],
+    "design_section": "proposals/pki.json#CERT-01 §2.2 Effective-config explanation profile",
+    "test_oracle": "Layered profile fixture reports resolved values/provenance without secrets; CLI/help descriptor is generated from its owning registry.",
+    "coverage_rationale": "PLANNED: Effective-config explanation is a PKI profile/delivery contract. It was assigned to ARCH-01 only because it contains identity/config vocabulary; ARCH-01's runtime secret resolver does not own this PKI profile.",
+    "acceptance_enrichment": [],
+    "parent_source_id": "SPEC-0005"
+  },
+  {
+    "source_or_member_id": "ADD-A-009",
+    "primary_proposal_id": "PERF-01",
+    "supporting_proposal_ids": [
+      "PERF-03",
+      "ARCH-01"
+    ],
+    "design_section": "proposals/performance.json#PERF-01/03 synthetic provider benchmark and fnox prototype",
+    "test_oracle": "Version-pinned, synthetic comparison of broker/provider/fnox paths reports p50/p95/p99, limits and selected reuse path.",
+    "coverage_rationale": "RESEARCH/PLANNED: ARCH-01 defines the stable resolver seam but is not the fnox performance evaluation; PERF owns evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "ADD-A-010",
+    "primary_proposal_id": "PERF-03",
+    "supporting_proposal_ids": [
+      "ARCH-01"
+    ],
+    "design_section": "proposals/performance.json#PERF-03 fnox adapter decision",
+    "test_oracle": "Compare public Rust API embedding, executable adapter and no integration; test MSRV, maintenance, adapters/cache/injection and reject private-wire dependence.",
+    "coverage_rationale": "RESEARCH/PLANNED: PERF-03 owns embed-vs-executable decision. ARCH-01 is the stable Fleet interface, not the integration evaluator.",
+    "acceptance_enrichment": [
+      "State explicitly which public API/versions are suitable and whether provider write capabilities are present; no second resolver or command is adopted."
+    ]
+  },
+  {
+    "source_or_member_id": "ADD-A-012",
+    "primary_proposal_id": "ARCH-01",
+    "supporting_proposal_ids": [
+      "SEC-03",
+      "TRACE-02"
+    ],
+    "design_section": "proposals/architecture.json#ARCH-01 runtime resolver; SEC-03 provider descriptor; TRACE-02 V1 compatibility",
+    "test_oracle": "Injected caller resolves through the one Fleet resolver; fake domain contains no direct BWS/op subprocess path; current CLI behavior remains TRACE-02's oracle.",
+    "coverage_rationale": "PLANNED/PARTIAL: ARCH-01 owns the read-seam identity/compatibility contract; SEC owns provider and V1 security behavior.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "ADD-A-024",
+    "primary_proposal_id": "ROOT-11",
+    "supporting_proposal_ids": [
+      "ARCH-06",
+      "ROOT-09"
+    ],
+    "design_section": "proposals/pki.json#ROOT-11 offline/hardware root migration; ARCH-06 signer seam",
+    "test_oracle": "Synthetic recovery sequence migrates active signing from initial escrow to isolated signer without circular bootstrap; no live key operations.",
+    "coverage_rationale": "FUTURE/PLANNED: ARCH-06 is a signer authority seam, not root migration; ROOT-11 owns lifecycle, ROOT-09 escrow.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "ADD-A-026",
+    "primary_proposal_id": "PERF-05",
+    "supporting_proposal_ids": [],
+    "design_section": "proposals/performance.json#PERF-05 SecureStore comparison",
+    "test_oracle": "Versioned security/maintenance/interoperability review compares SecureStore with age/SOPS and records go/no-go; no production cache/store.",
+    "coverage_rationale": "RESEARCH/PLANNED: SecureStore evaluation is PERF-05, not ARCH-01 resolver identity.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "ADD-A-028",
+    "primary_proposal_id": "FUT-01",
+    "supporting_proposal_ids": [
+      "ARCH-07"
+    ],
+    "design_section": "proposals/future-infrastructure.json#FUT-01/02; ARCH-07 sole Fleet CLI",
+    "test_oracle": "Pinned synthetic OpenBao lab proves only isolated function/recovery behavior and no OpenBao dependency in baseline Fleet binary.",
+    "coverage_rationale": "FUTURE/NONBLOCKING: ARCH-07 prevents a competing CLI but does not research or adopt OpenBao; FUT owns infrastructure research.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "ADD-A-031",
+    "primary_proposal_id": "FUT-06",
+    "supporting_proposal_ids": [
+      "ARCH-10"
+    ],
+    "design_section": "proposals/future-infrastructure.json#FUT-06; ARCH-10 build profile closure",
+    "test_oracle": "Disposable synthetic Kubernetes test proves chosen single controller and no baseline cluster dependency.",
+    "coverage_rationale": "FUTURE/NONBLOCKING: ARCH-10 tests local profile closure, not Kubernetes/cluster roadmap.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "ADD-A-035",
+    "primary_proposal_id": "ARCH-10",
+    "supporting_proposal_ids": [
+      "ARCH-01",
+      "ARCH-06",
+      "ARCH-07"
+    ],
+    "design_section": "proposals/architecture.json#ARCH-10 profiles and module/seam comparison",
+    "test_oracle": "Measured dependency/build matrix plus consumer/seam table; no crate split without a distinct consumer/closure.",
+    "coverage_rationale": "PLANNED/PARTIAL: ARCH-10 covers feature/profile closure; the architecture discourages crate-per-noun but does not fully specify all provider/algorithm adapters.",
+    "acceptance_enrichment": [
+      "Extend ARCH-10 to compare module/crate options by consumer, dependency closure, compile time/size, maintenance, license and unsafe surface."
+    ]
+  },
+  {
+    "source_or_member_id": "ADD-A-036",
+    "primary_proposal_id": "ARCH-10",
+    "supporting_proposal_ids": [],
+    "design_section": "proposals/architecture.json#ARCH-10 consumer-min/agent/admin profiles",
+    "test_oracle": "Build matrix proves runtime-only consumer and agent exclude admin/write/PQ dependencies unless explicitly enabled; report measured target sizes/startup.",
+    "coverage_rationale": "PLANNED/COVERED WITH LIMITS: This is ARCH-10 scope; stated size/startup values remain provisional until baseline/approval.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "ADD-A-037",
+    "primary_proposal_id": "PERF-02",
+    "supporting_proposal_ids": [
+      "PERF-01",
+      "ARCH-10"
+    ],
+    "design_section": "proposals/performance.json#PERF-02 freshness and PERF-01 benchmark; ARCH-10 profile startup",
+    "test_oracle": "Fake clock tests rotation/revoke/offline/stale policy; benchmark splits process/cache/provider costs.",
+    "coverage_rationale": "PLANNED/PARTIAL: PERF owns cache/freshness and runtime performance; ARCH-10 owns only profile closure/startup. No substitute freshness owner in architecture.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "ADD-A-038",
+    "primary_proposal_id": "ARCH-07",
+    "supporting_proposal_ids": [
+      "ARCH-01",
+      "OPS-01",
+      "OPS-03",
+      "OPS-05"
+    ],
+    "design_section": "proposals/architecture.json#ARCH-07 command registry; ARCH-01 runtime seam; OPS receipts/docs",
+    "test_oracle": "One descriptor drives CLI/help/capability and typed request shape; redacted receipt parity is checked through owning operation schema.",
+    "coverage_rationale": "PLANNED/PARTIAL: Registry/help belongs ARCH-07; runtime resolver ARCH-01; plan/receipt and apply OPS-01/03; docs OPS-05 is soft coordination.",
+    "acceptance_enrichment": [
+      "Add explicit descriptor parity for supported flags/errors/capability and keep output receipt/redaction contract owned by OPS-01/03 rather than duplicating it."
+    ]
+  },
+  {
+    "source_or_member_id": "ADD-0009",
+    "primary_proposal_id": "ARCH-10",
+    "supporting_proposal_ids": [
+      "PERF-01"
+    ],
+    "design_section": "proposals/architecture.json#ARCH-10 profiles; proposals/performance.json#PERF-01 measurements",
+    "test_oracle": "Each measured profile documents dependency tree, compile/size/startup and platform/version metadata.",
+    "coverage_rationale": "PLANNED/PARTIAL: ARCH-10 owns profile size/closure; PERF-01 owns runtime/provider benchmarking. No unmeasured fast-path claim.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "COORD7-0001",
+    "primary_proposal_id": "ARCH-07",
+    "supporting_proposal_ids": [
+      "ARCH-01",
+      "ARCH-06",
+      "ARCH-10",
+      "SEC-02",
+      "SEC-03",
+      "REC-07",
+      "ROOT-02",
+      "CERT-01",
+      "GEN-01",
+      "OPS-03"
+    ],
+    "design_section": "COORDINATOR §7.1 lines 192-194; architecture interface/owner map",
+    "test_oracle": "One owner/dependency table maps each requested interface to a domain issue; profile and compile fixtures prove no cycles and current variant compatibility.",
+    "coverage_rationale": "PLANNED/PARTIAL: This mandatory area is split across architecture-owned registry/read/signing/profile seams and domain-owned secrets, reconciliation, PKI, generator and ops proposals. No one ARCH packet claims all crate/API domains.",
+    "acceptance_enrichment": [
+      "Maintain a compact owner/dependency map for every requested seam and show libraries precede CLI adapters; explicitly mark any requested seam with no reviewed owner."
+    ]
+  },
+  {
+    "source_or_member_id": "COORD8-0001",
+    "primary_proposal_id": "TRACE-01",
+    "supporting_proposal_ids": [],
+    "design_section": "COORDINATOR §8 lines 226-249; proposals/census.json#TRACE-01",
+    "test_oracle": "Reviewed source ID to canonical requirement to proposal/design/test/permission/rollback mapping; final run fails on unresolved normative IDs.",
+    "coverage_rationale": "PLANNED: TRACE-01 owns CI regression checks over the existing canonical inventory and reviewed mapping; does not claim the full 1496 source rows/1825 members are all reviewed already.",
+    "acceptance_enrichment": []
+  }
+]

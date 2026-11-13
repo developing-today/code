@@ -24,6 +24,6 @@ usage: test_publish_issues.py [-h] --manifest MANIFEST --queue QUEUE
 test_publish_issues.py: error: --manifest must be strictly UTF-8 encodable
 ........
 ----------------------------------------------------------------------
-Ran 48 tests in 1.307s
+Ran 48 tests in 0.409s
 
 OK
