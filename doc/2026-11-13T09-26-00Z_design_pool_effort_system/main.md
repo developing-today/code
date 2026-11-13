@@ -68,7 +68,10 @@ expansion time from a single rung table. A tier a leaf cannot honour is an
 expansion-time **error recorded as `unsupported-tier`** (the leaf is skipped,
 counted, never silently remapped). Remaps become explicit rung-table rows
 (`deepseek-flash@go: medium → high, declared=true, reason=...`) so the record
-always says what actually ran.
+always says what actually ran. *Amended after D2:* callers (OpenChamber
+categories today) already put efforts in the `variant` field of a pool
+ref, so the resolver accepts both a canonical tier and a native variant
+string there; native strings are normalised through the alias table first.
 
 **AD2 — Medium is the pool as written; low and high are overlays.** Every
 pool's current members are its `medium` tier (brief §4, "align current seats
@@ -141,10 +144,16 @@ draws inside the trial's safe set.
 **AD10 — Self-switching is bounded and recorded.** A session may suggest or
 switch its own model only to an `opencode-route/*` pool or an OpenChamber
 category pool, through one tool whose calls are recorded as decisions (AD7).
-A session cannot switch its own model in place today (verified); V2 delivers
-switching as "launch the subsession on the chosen pool" plus guidance, V3
-adds an in-place switch only where the fork supports it without breaking
-prompt cache.
+*Amended 2026-11-13 after the D2 draft:* the fork already ships an
+in-place switch, `opencode.session_switch_model`
+(`packages/core/src/tool/plugin/opencode.ts:168`; takes effect next turn,
+prompt cache does not carry over), gated only by subtree model governance —
+it has **no pool allow-list** and is not exposed in every session's catalog.
+V2 therefore (a) adds the category/route-pool allow-list and decision
+recording to that tool rather than inventing a new one, and (b) keeps
+"launch a subsession on the chosen pool" as the preferred, cache-safe path
+in guidance. V3 adds cache-aware switch timing (OpenChamber's
+preserve-cache rule is the prior art).
 
 ## 3. Component designs (children of this program)
 
