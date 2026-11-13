@@ -31,6 +31,7 @@ import math
 import os
 import subprocess
 import sys
+import threading
 import time
 
 SYSFS = os.environ.get("POWER_GUARD_SYSFS", "/sys/class/power_supply")
@@ -92,6 +93,10 @@ CONFIRM = timing_from_env("POWER_GUARD_CONFIRM", "300")
 EDGE_CONFIRM = timing_from_env("POWER_GUARD_EDGE_CONFIRM", "60")
 NO_INHIBIT = os.environ.get("POWER_GUARD_NO_INHIBIT") == "1"
 SLEEP_CMD = os.environ.get("POWER_GUARD_SLEEP_CMD", "systemctl hybrid-sleep")
+# #8183: how long release() may wait inline for a terminated child
+# before the reap moves to a background thread. The full reap used
+# to block the sampling loop for up to ~10s (wait 5s, kill, wait 5s).
+REAP_GRACE = 0.5
 
 
 def log(msg):
@@ -148,10 +153,66 @@ def sample():
 class Inhibitor:
     def __init__(self):
         self.proc = None
+        # #8183: in-flight background reap, {"proc", "event", "rc"}.
+        self._pending = None
+
+    def _reap(self, proc, timeout=5):
+        """Wait for a child to exit so it does not remain a zombie.
+
+        The child is already dead or has just been terminated; wait()
+        returns immediately in the common case. On timeout, escalate
+        to kill() so a wedged child cannot accumulate.
+        """
+        try:
+            return proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                return proc.wait(timeout=timeout)
+            except Exception:
+                return proc.poll()
+        except Exception:
+            try:
+                return proc.poll()
+            except Exception:
+                return None
+
+    def _dead_exit_code(self):
+        """Return the exit code if the real child is dead, else None.
+
+        Never raises: a poll failure is treated as unknown, not alive,
+        so the caller reaps and re-engages loudly rather than
+        believing a lock it cannot verify.
+        """
+        proc = self.proc
+        if proc is None or proc == "stub":
+            return None
+        try:
+            return proc.poll()
+        except Exception as exc:
+            log(f"INHIBIT child poll failed ({exc!r}); treating as dead")
+            return -1
 
     def engage(self):
+        if self._pending is not None:
+            if not self._pending["event"].is_set():
+                # A previous release is still reaping; the old child
+                # may still hold the lock, so do not stack a second
+                # inhibitor on top of it (#8183).
+                return
+            self._pending = None
         if self.proc is not None:
-            return
+            if self.proc == "stub":
+                return
+            rc = self._dead_exit_code()
+            if rc is None:
+                return
+            log(f"INHIBIT child died (exit={rc}); re-engaging")
+            self._reap(self.proc)
+            self.proc = None
         if NO_INHIBIT:
             log("INHIBIT(block sleep) [stubbed]")
             self.proc = "stub"
@@ -167,27 +228,128 @@ class Inhibitor:
                 "infinity",
             ],
             stdout=subprocess.DEVNULL,
+            # stderr is deliberately discarded (the child is `sleep
+            # infinity`, which is silent on success); the exit status
+            # is logged loudly on death in engage()/release() so the
+            # failure stays diagnosable from the journal.
             stderr=subprocess.DEVNULL,
         )
         log("INHIBIT(block sleep) engaged")
 
     def release(self):
+        """Begin releasing the inhibitor; return True once settled.
+
+        #8183: reaping a stalled child used to block the caller for
+        the full wait/kill/wait sequence (~10s) inside the sampling
+        loop. A live child now gets a short grace wait (REAP_GRACE)
+        inline; if it has not exited by then, the kill-escalation
+        reap finishes on a background thread while sampling
+        continues. "Settled" means the child was reaped, or the
+        escalation was exhausted and logged loudly as UNCONFIRMED --
+        the release is never silently believed. The confirmed-sleep
+        path in main() waits for settled before issuing sleep.
+        """
         if self.proc is None:
-            return
-        if self.proc != "stub":
-            self.proc.terminate()
+            return self.reap_settled()
+        if self.proc == "stub":
+            self.proc = None
+            log("INHIBIT released")
+            return True
+        proc = self.proc
         self.proc = None
-        log("INHIBIT released")
+        rc = None
+        try:
+            rc = proc.poll()
+        except Exception:
+            rc = None
+        if rc is not None:
+            self._reap(proc)
+            log(f"INHIBIT child already dead (exit={rc}); reaped")
+            log("INHIBIT released")
+            return True
+        try:
+            proc.terminate()
+        except Exception as exc:
+            log(f"INHIBIT terminate failed ({exc!r}); killing")
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            rc = proc.wait(timeout=REAP_GRACE)
+            log(f"INHIBIT released (child exit={rc})")
+            return True
+        except Exception:
+            pass
+        pending = {"proc": proc, "event": threading.Event(), "rc": None}
+        self._pending = pending
+        threading.Thread(
+            target=self._finish_reap, args=(pending,), daemon=True
+        ).start()
+        log(
+            "INHIBIT release pending: stalled child reap moved off "
+            "the sampling loop (#8183)"
+        )
+        return False
+
+    def _finish_reap(self, pending):
+        """Background reap: preserve the kill escalation + bounded wait."""
+        proc = pending["proc"]
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        rc = None
+        try:
+            rc = proc.wait(timeout=5)
+        except Exception:
+            try:
+                rc = proc.poll()
+            except Exception:
+                rc = None
+        pending["rc"] = rc
+        if rc is None:
+            log(
+                "INHIBIT release UNCONFIRMED: child still running "
+                "after kill escalation; not believed released (#8183)"
+            )
+        else:
+            log(f"INHIBIT released (child exit={rc}, reaped in background)")
+        pending["event"].set()
+
+    def reap_settled(self):
+        """True when no background reap is still in flight."""
+        return self._pending is None or self._pending["event"].is_set()
+
+    def poll_reap(self):
+        """Clear a finished background reap; called once per sample."""
+        if self._pending is not None and self._pending["event"].is_set():
+            self._pending = None
 
     @property
     def held(self):
-        return self.proc is not None
+        if self._pending is not None and not self._pending["event"].is_set():
+            # Reap in flight: the child may still hold the lock.
+            try:
+                if self._pending["proc"].poll() is None:
+                    return True
+            except Exception:
+                return True
+        if self.proc is None:
+            return False
+        if self.proc == "stub":
+            return True
+        try:
+            return self.proc.poll() is None
+        except Exception:
+            return False
 
 
 def main():
     inh = Inhibitor()
     critical_since = None
     edge_since = None
+    sleep_pending = None
     log(
         f"started: poll={POLL}s low={LOW_PCT}% crit={CRITICAL_PCT}% "
         f"edge={EDGE_PCT}% confirm={CONFIRM}s edge_confirm={EDGE_CONFIRM}s "
@@ -195,6 +357,7 @@ def main():
     )
     while True:
         on_ac, cap, status, tte = sample()
+        inh.poll_reap()
         now = time.monotonic()
         discharging = (not on_ac) and status == "Discharging" and cap is not None
         low = discharging and (cap <= LOW_PCT or (tte is not None and tte <= 900))
@@ -210,6 +373,7 @@ def main():
                 )
             inh.release()
             critical_since = edge_since = None
+            sleep_pending = None
         else:
             inh.engage()
             critical_since = critical_since if critical else None
@@ -225,12 +389,20 @@ def main():
                 fire = f"edge sustained {now - edge_since:.0f}s at cap={cap}"
             elif critical_since is not None and now - critical_since >= CONFIRM:
                 fire = f"critical sustained {now - critical_since:.0f}s at cap={cap} tte={tte}"
-            if fire:
-                log(f"CONFIRMED: {fire}; releasing inhibitor and sleeping")
+            if fire and sleep_pending is None:
+                # #8183: start the release, but do not issue the
+                # sleep command until the release has settled -- a
+                # stalled reap no longer blocks this loop, and the
+                # samples above keep running while it drains.
+                log(f"CONFIRMED: {fire}; releasing inhibitor before sleep")
+                sleep_pending = fire
                 inh.release()
+            if sleep_pending is not None and inh.reap_settled():
+                log(f"CONFIRMED: {sleep_pending}; inhibitor release settled; sleeping")
                 subprocess.run(SLEEP_CMD, shell=True)
                 log("sleep command issued; cooling down")
                 critical_since = edge_since = None
+                sleep_pending = None
                 time.sleep(120)
         time.sleep(POLL)
 
