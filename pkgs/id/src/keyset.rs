@@ -180,6 +180,10 @@ impl KeysetRecord {
 
 fn verify_signature(key: &VerifyingKey, body: &[u8], encoded: &str) -> Result<()> {
     let bytes = hex_to_array::<64>(encoded).context("malformed signature")?;
+    ensure!(
+        hex_encode(&bytes) == encoded,
+        "signature is not canonically encoded"
+    );
     key.verify_strict(body, &Signature::from_bytes(&bytes))
         .context("signature does not verify")
 }
@@ -382,6 +386,10 @@ impl KeysetState {
 /// mergeable log (for example, alongside the identity's initial keyset).
 /// Invalid/unauthorized continuations and their descendants are excluded; the
 /// smallest valid `(lamport, author, hash)` continuation wins each fork.
+/// `Checkpoint` records are snapshot attestations (ADR Decision 4 rule 6):
+/// they never authorise anything and never advance the chain head, so a
+/// device checkpoint can neither displace an admin record at a fork nor
+/// wedge the head with an unbounded lamport value.
 pub fn fold(log: &Log, trusted_genesis_hash: &str) -> Result<KeysetState> {
     validate_hash_or_empty(trusted_genesis_hash, false, "trusted_genesis_hash")?;
     let roots = log
@@ -442,12 +450,12 @@ pub fn fold(log: &Log, trusted_genesis_hash: &str) -> Result<KeysetState> {
             .filter(|record| {
                 record.prev_hash == state.head_hash
                     && record.lamport > head_lamport
-                    && !matches!(&record.entry, KeysetEntry::Genesis { .. })
+                    && !matches!(
+                        &record.entry,
+                        KeysetEntry::Genesis { .. } | KeysetEntry::Checkpoint { .. }
+                    )
             })
-            .filter(|record| {
-                state.is_admin(&record.author)
-                    || is_checkpoint(&record.entry, &state, &record.author)
-            })
+            .filter(|record| state.is_admin(&record.author))
             .filter_map(|record| {
                 let mut candidate = state.clone();
                 apply_entry(&mut candidate, record)
@@ -467,10 +475,6 @@ pub fn fold(log: &Log, trusted_genesis_hash: &str) -> Result<KeysetState> {
         state = next_state;
     }
     Ok(state)
-}
-
-fn is_checkpoint(entry: &KeysetEntry, state: &KeysetState, author: &str) -> bool {
-    matches!(entry, KeysetEntry::Checkpoint { .. }) && state.is_device(author)
 }
 
 fn apply_entry(state: &mut KeysetState, record: &KeysetRecord) -> Result<()> {
@@ -763,6 +767,127 @@ mod tests {
         let state = fold(&trusted_only, &trusted.hash).unwrap();
         assert!(!state.is_admin(&public(1)));
         assert!(state.is_admin(&public(4)));
+    }
+
+    #[test]
+    fn noncanonical_signature_encoding_is_rejected() {
+        // hex_to_array accepts both hex cases, but keys and hashes are held
+        // to the canonical lowercase encoding; signatures must be too, or
+        // two encodings of one envelope share a merge key yet compare
+        // unequal and merge stops being order-independent.
+        let mut record = genesis();
+        record.signature = record.signature.to_uppercase();
+        assert!(record.verify().is_err());
+        let mut log = Log::default();
+        assert!(log.insert(record).is_err());
+
+        let first = genesis();
+        let enrolled = append(
+            &first,
+            &key(1),
+            2,
+            KeysetEntry::DeviceEnrolled {
+                device_key: public(2),
+                label: "tablet".to_owned(),
+            },
+            Some(&key(2)),
+        );
+        let mut forged = enrolled.clone();
+        forged.countersignature = forged
+            .countersignature
+            .map(|signature| signature.to_uppercase());
+        assert_ne!(forged, enrolled);
+        assert!(forged.verify().is_err());
+    }
+
+    #[test]
+    fn device_checkpoint_cannot_displace_admin_revocation() {
+        // Genesis enrols key(2) as the device; the admin revokes it at
+        // lamport 3 while the device posts a checkpoint of the
+        // genesis-only prefix at lamport 2. A checkpoint never authorises
+        // anything (ADR Decision 4 rule 6), so it must not win the fork
+        // and resurrect the revoked device.
+        let admin = key(1);
+        let device = key(2);
+        let first = KeysetRecord::sign(
+            &admin,
+            1,
+            "",
+            KeysetEntry::Genesis {
+                admin_key: public(1),
+                device_key: public(2),
+                label: "phone".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+        let mut prefix_log = Log::default();
+        prefix_log.insert(first.clone()).unwrap();
+        let prefix = fold(&prefix_log, &first.hash).unwrap();
+        let checkpoint = append(
+            &first,
+            &device,
+            2,
+            KeysetEntry::Checkpoint {
+                state_hash: prefix.state_hash().unwrap(),
+                record_count: prefix.records_folded,
+            },
+            None,
+        );
+        let revoked = append(
+            &first,
+            &admin,
+            3,
+            KeysetEntry::DeviceRevoked {
+                device_key: public(2),
+                reason: "lost".to_owned(),
+            },
+            None,
+        );
+        let mut log = Log::default();
+        for record in [&first, &checkpoint, &revoked] {
+            log.insert(record.clone()).unwrap();
+        }
+        let state = fold(&log, &first.hash).unwrap();
+        assert!(!state.is_device(&public(2)));
+        assert_eq!(state.head_hash, revoked.hash);
+    }
+
+    #[test]
+    fn checkpoint_cannot_wedge_the_fold_head() {
+        // A checkpoint carrying an unbounded lamport must not become the
+        // head: no later record could extend it, wedging the log.
+        let first = genesis();
+        let mut prefix_log = Log::default();
+        prefix_log.insert(first.clone()).unwrap();
+        let prefix = fold(&prefix_log, &first.hash).unwrap();
+        let checkpoint = append(
+            &first,
+            &key(1),
+            u64::MAX,
+            KeysetEntry::Checkpoint {
+                state_hash: prefix.state_hash().unwrap(),
+                record_count: prefix.records_folded,
+            },
+            None,
+        );
+        let enrolled = append(
+            &first,
+            &key(1),
+            2,
+            KeysetEntry::DeviceEnrolled {
+                device_key: public(3),
+                label: "desktop".to_owned(),
+            },
+            Some(&key(3)),
+        );
+        let mut log = Log::default();
+        for record in [&first, &checkpoint, &enrolled] {
+            log.insert(record.clone()).unwrap();
+        }
+        let state = fold(&log, &first.hash).unwrap();
+        assert!(state.is_device(&public(3)));
+        assert_eq!(state.head_hash, enrolled.hash);
     }
 
     proptest! {
