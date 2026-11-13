@@ -6298,10 +6298,18 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
           else if (s.status === "error") status = '<span class="badge stale">error</span>';
           else if (s.status === "skipped") status = '<span class="muted">skipped</span>';
           else status = s.present ? "present · ok" : "empty · ok";
-          return `<tr><td><code>${esc(s.key)}</code></td><td>${status}</td><td>${s.ageMs !== undefined ? esc(ageMsText(s.ageMs)) : "—"}</td><td>${s.note ? esc(s.note) : ""}</td></tr>`;
+          return `<tr><td><code>${esc(s.key)}</code></td><td>${status}</td><td>${s.ageMs !== undefined ? esc(ageMsText(s.ageMs)) : "—"}</td><td>${s.behindBy === null ? "unknown" : s.behindBy}</td><td>${s.lastSyncAt ? esc(s.lastSyncAt) : "—"}</td><td>${s.lagNote ? esc(s.lagNote) : ""}</td><td>${s.note ? esc(s.note) : ""}</td></tr>`;
         })
         .join("")
-    : `<tr><td colspan="4" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
+    : `<tr><td colspan="7" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
+  const gathererRows = view.quotaGatherer?.providers.length
+    ? view.quotaGatherer.providers
+        .map(
+          (p) =>
+            `<tr><td><code>${esc(p.providerId)}</code>${p.credentialLabel ? ` · ${esc(p.credentialLabel)}` : ""}</td><td>${esc(p.serviceId)}</td><td>${esc(p.state)}</td><td>unknown</td><td>${p.lastSyncAt ? esc(p.lastSyncAt) : "—"}</td><td>${esc(p.lagNote)}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="6" class="muted">No quota-gatherer provider rows are available.</td></tr>`;
   const orch = view.jobs.orchestration;
   const orchLine = orch.generatedAt
     ? `last run <code>${esc(orch.runId ?? "unknown")}</code> · ${esc(ageMsText(orch.ageMs ?? 0))} · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""} · next expected ~${esc(orch.nextExpectedAt ?? "")} (hourly cadence — an expectation, not a promise)`
@@ -6399,7 +6407,9 @@ ${degraded}${modeNote}
 ${rfaSection}
 ${pushSection}
 <h2>Feed sections</h2>
-<div class="tblwrap"><table class="table table-zebra"><caption>Feed sections — presence and age</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
+<div class="tblwrap"><table><caption>Feed sections — presence, age, lag, and last sync</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
+<h2>Quota gatherer sources</h2>
+<div class="tblwrap"><table><caption>Quota-gatherer provider freshness and lag</caption><tr><th scope="col">Provider</th><th scope="col">Service</th><th scope="col">State</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th></tr>${gathererRows}</table></div>
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>

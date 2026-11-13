@@ -508,17 +508,19 @@ async function healthContext(prime = true): Promise<HealthView> {
   // on PR #2431). The registry age the watchdog reads comes from the
   // live source's lastFeed, which attention's own reads already load.
   if (prime) await ensureProvenancePrimed();
-  const [feed, feedFileMtimeMs] = await Promise.all([
+  const [feed, feedFileMtimeMs, quota] = await Promise.all([
     loadFeed(cfg.feedFile).catch(() => null),
     stat(cfg.feedFile)
       .then((s) => s.mtimeMs)
       .catch(() => null),
+    source.quota().catch(() => emptyQuotaView()),
   ]);
   return buildHealth({
     mode: cfg.source,
     cfg,
     feed,
     feedFileMtimeMs,
+    quota,
     diagnosis: source.diagnostics?.().orchestration,
     detail: source.provenanceDetail?.(),
     itemsCoverage: lastItemsCoverage,
@@ -3891,6 +3893,7 @@ async function handler(req: Request): Promise<Response> {
       fileMtime: view.feed.fileMtime,
       sections: view.feed.sections,
     };
+    body.quotaGatherer = view.quotaGatherer;
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
     body.comments = view.comments;

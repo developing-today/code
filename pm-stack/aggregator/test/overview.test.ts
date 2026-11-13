@@ -24,6 +24,7 @@ const health: HealthView = {
     checkout: { state: "unknown", reason: "test fixture" },
     sections: [],
   },
+  quotaGatherer: null,
   jobs: {
     orchestration: { state: "unknown" },
     collector: { generatedAt: null, fileMtime: null, ageMs: null },

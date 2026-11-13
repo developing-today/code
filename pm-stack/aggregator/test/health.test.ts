@@ -14,7 +14,7 @@ import {
   type ProbeFetch,
 } from "../src/health.ts";
 import { pendingCommentCounts } from "../src/comments.ts";
-import type { DashComment } from "../src/model.ts";
+import type { DashComment, QuotaView } from "../src/model.ts";
 import { renderHealth } from "../src/render.ts";
 import type { RfaState } from "../src/sources/ready-for-agent.ts";
 
@@ -108,6 +108,92 @@ function service(view: Awaited<ReturnType<typeof buildHealth>>, id: string) {
 }
 
 describe("buildHealth probes", () => {
+  test("health reports provider-comparable lag and honest unknowns for feed and quota sources", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const syncedAt = new Date(NOW - 30_000).toISOString();
+    const feed = feedAt(60_000);
+    feed.meta = {
+      sections: {
+        projects: { status: "ok", at: syncedAt, reportedTotal: 8, emittedEntries: 5 },
+        quota: { status: "ok", at: syncedAt },
+      },
+    };
+    const quota: QuotaView = {
+      pools: [],
+      burn: [],
+      choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] },
+      gatherer: {
+        generatedAt: syncedAt,
+        source: "openchamber-quota",
+        tickAt: syncedAt,
+        ok: true,
+        providers: [
+          {
+            providerId: "codex",
+            serviceId: "openai.main",
+            state: "ok",
+            measuredAt: syncedAt,
+            source: "openchamber-quota",
+          },
+        ],
+      },
+    };
+    const view = await buildHealth(inputs({ feed, quota }), { fetcher, cache: createProbeCache(), now: NOW });
+    const projects = view.feed.sections.find((section) => section.key === "projects");
+    const quotaSection = view.feed.sections.find((section) => section.key === "quota");
+    expect(projects).toMatchObject({ behindBy: 3, lastSyncAt: syncedAt, lagNote: null });
+    expect(quotaSection).toMatchObject({ behindBy: null, lastSyncAt: syncedAt });
+    expect(quotaSection?.lagNote).toContain("does not report a comparable expected entry total");
+    expect(view.quotaGatherer?.providers[0]).toMatchObject({
+      providerId: "codex",
+      behindBy: null,
+      lastSyncAt: syncedAt,
+    });
+    const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
+    expect(html).toContain("Quota gatherer sources");
+    expect(html).toContain("provider does not report a comparable expected entry total");
+    expect(html).toContain(syncedAt);
+  });
+
+  test("an errored quota provider reports an unknown last-sync, a retained one keeps its last success", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const syncedAt = new Date(NOW - 30_000).toISOString();
+    const attemptedAt = new Date(NOW - 5_000).toISOString();
+    const quota: QuotaView = {
+      pools: [],
+      burn: [],
+      choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] },
+      gatherer: {
+        generatedAt: attemptedAt,
+        source: "openchamber-quota",
+        tickAt: attemptedAt,
+        ok: false,
+        providers: [
+          {
+            providerId: "codex",
+            serviceId: "openai.main",
+            state: "error",
+            measuredAt: attemptedAt,
+            source: "openchamber-quota",
+          },
+          {
+            providerId: "claude",
+            serviceId: "anthropic.main",
+            state: "stale",
+            measuredAt: syncedAt,
+            source: "openchamber-quota",
+          },
+        ],
+      },
+    };
+    const view = await buildHealth(inputs({ quota }), { fetcher, cache: createProbeCache(), now: NOW });
+    // The errored provider's measuredAt is the failed attempt's time, not
+    // a sync: lastSyncAt is unknown. The stale provider's measuredAt is
+    // its retained last success and stays the last-sync time.
+    expect(view.quotaGatherer?.providers[0]).toMatchObject({ providerId: "codex", state: "error", lastSyncAt: null });
+    expect(view.quotaGatherer?.providers[1]).toMatchObject({ providerId: "claude", state: "stale", lastSyncAt: syncedAt });
+  });
+
   test("a stopped collector is visible on the health page by the next five-minute interval", async () => {
     // An isolated stand-in collector writes only a temporary feed. Freeze the
     // observation clock immediately after its last write and advance it to the
@@ -535,6 +621,7 @@ describe("health page + extended /api/health (fixtures boot)", () => {
       source: { board: string };
       services: { id: string; state: string }[];
       feed: { generatedAt: unknown; sections: unknown[] };
+      quotaGatherer: unknown;
       pages: { route: string; lastRenderedAt: unknown }[];
       jobs: { orchestration: { state: string } };
       rfa: { state: string; detail: string; repositories: unknown[]; backends: unknown[] };
@@ -545,6 +632,7 @@ describe("health page + extended /api/health (fixtures boot)", () => {
     expect(body.services.find((s) => s.id === "projector")?.state).toBe("fixtures");
     expect("generatedAt" in body.feed).toBe(true);
     expect(Array.isArray(body.feed.sections)).toBe(true);
+    expect(body.quotaGatherer).toBeNull();
     expect(body.pages.some((p) => p.route === "/health")).toBe(true);
     expect(body.jobs.orchestration.state).toBeDefined();
     // #1203: the harness facet reaches the machine surface, not only

@@ -328,6 +328,14 @@ export function isProjectAudit(value: unknown): value is ProjectAudit {
 export interface ProjectSnapshot {
   items: ProjectPoolItem[];
   audit: ProjectAudit;
+  /** Section counts for feed health (#5180): the provider total made
+   * comparable to the emitted count. totalCount counts every board
+   * item, while `items` excludes drafts and unlinked items, so the
+   * exclusions (raw nodes minus emitted items) come off the total —
+   * comparing the raw total against the emitted count reported
+   * positive lag on a complete collection whenever the board held a
+   * draft (Codex P2 on PR #5180). */
+  counts: { reportedTotal: number; emittedEntries: number };
 }
 
 /** Fetch the whole pool, board schema, views, and distributions (paginated). */
@@ -391,6 +399,10 @@ export async function fetchProjectSnapshot(
       return {
         items: resolveEpicRefs(parsedItems),
         audit: parseProjectAudit(firstPage, auditItems, generatedAt),
+        counts: {
+          reportedTotal: info.totalCount - (auditItems.length - parsedItems.length),
+          emittedEntries: parsedItems.length,
+        },
       };
     }
     if (!info.endCursor || info.endCursor === cursor)

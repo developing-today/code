@@ -152,6 +152,9 @@ describe("fetchProjectPool pagination", () => {
     expect(items).toHaveLength(6);
   });
 
+
+
+
   test("returns a single-page pool unchanged", async () => {
     let calls = 0;
     const fetchFn: typeof fetch = Object.assign(
@@ -274,6 +277,7 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     expect(snapshot.audit.totalItems).toBe(3);
     expect(snapshot.audit.counts.status).toEqual({ "(unset)": 1, Done: 1, "In Progress": 1 });
     expect(isProjectAudit(snapshot.audit)).toBe(true);
+    expect(snapshot.counts).toEqual({ reportedTotal: 2, emittedEntries: 2 });
     // The pool is deduplicated by item id as well.
     expect(snapshot.items.map((item) => item.id)).toEqual(["PVTI_1", "PVTI_2"]);
   });
@@ -283,6 +287,10 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     const snapshot = await fetchProjectSnapshot("test-token", mockFetch, "2026-11-01T21:00:00.000Z");
     expect(snapshot.items).toHaveLength(2);
     expect(snapshot.audit.totalItems).toBe(3);
+    // The board's third item is a draft the pool excludes: the
+    // comparable total is 3 - 1 = 2, so a complete collection shows
+    // no lag (Codex P2 on PR #5180).
+    expect(snapshot.counts).toEqual({ reportedTotal: 2, emittedEntries: 2 });
     expect(snapshot.audit.fields.map((field) => field.name)).toEqual(["Status", "Area"]);
     expect(snapshot.audit.views).toEqual([
       { id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" },

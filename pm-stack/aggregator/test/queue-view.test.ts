@@ -97,7 +97,7 @@ describe("buildQueueView (#1160)", () => {
         ...fresh,
         feed: {
           ...fresh.feed,
-          sections: [{ key: "projects", present: false, status: "unknown", ageMs: 60_000 }],
+          sections: [{ key: "projects", present: false, status: "unknown", ageMs: 60_000, behindBy: null, lastSyncAt: null, lagNote: null }],
         },
       }),
     ).toBe(true);
