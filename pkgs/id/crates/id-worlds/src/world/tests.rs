@@ -1655,7 +1655,9 @@ mod tests {
                 "{entry:?}"
             );
         }
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_WRITE_LEASE);
+        // The max-version pin moved to version 8 with recurring
+        // schedules (#1355); the lease entries still require exactly 7.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_SCHEDULE_RECURRENCE);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         let mut lease = WriteLease::bootstrap();
@@ -8642,11 +8644,12 @@ mod schedule_tests {
             assert!(error.to_string().contains("schedule id"), "{error}");
         }
 
-        core.schedules.insert("taken".to_owned(), now + 5);
+        core.schedules
+            .insert("taken".to_owned(), PendingSchedule::one_shot(now + 5));
         let error = core.check_schedule("taken", now + 9, now).unwrap_err();
         assert!(error.to_string().contains("already pending"), "{error}");
         assert_eq!(
-            core.schedules["taken"],
+            core.schedules["taken"].at_ms,
             now + 5,
             "a duplicate overwrites nothing"
         );
@@ -8660,10 +8663,12 @@ mod schedule_tests {
 
         let mut full = world(8);
         for index in 0..crate::world_caps::MAX_PENDING_SCHEDULES - 1 {
-            full.schedules.insert(format!("s{index}"), now);
+            full.schedules
+                .insert(format!("s{index}"), PendingSchedule::one_shot(now));
         }
         assert!(full.check_schedule("last", now, now).is_ok());
-        full.schedules.insert("last".to_owned(), now);
+        full.schedules
+            .insert("last".to_owned(), PendingSchedule::one_shot(now));
         let error = full.check_schedule("one-more", now, now).unwrap_err();
         assert!(error.to_string().contains("pending schedules"), "{error}");
     }
@@ -8678,7 +8683,8 @@ mod schedule_tests {
         let now = 1_000_000_000_000u64;
         let horizon = crate::world_caps::MAX_SCHEDULE_HORIZON_MS;
         let mut core = world(8);
-        core.schedules.insert("taken".to_owned(), now + 5);
+        core.schedules
+            .insert("taken".to_owned(), PendingSchedule::one_shot(now + 5));
         assert!(
             core.check_schedule_replacing("taken", now + 9, now).is_ok(),
             "replacing a pending id is not a duplicate"
@@ -8688,14 +8694,15 @@ mod schedule_tests {
             .unwrap_err();
         assert!(error.to_string().contains("days past"), "{error}");
         assert_eq!(
-            core.schedules["taken"],
+            core.schedules["taken"].at_ms,
             now + 5,
             "the refused replacement overwrites nothing"
         );
 
         let mut full = world(8);
         for index in 0..crate::world_caps::MAX_PENDING_SCHEDULES {
-            full.schedules.insert(format!("s{index}"), now);
+            full.schedules
+                .insert(format!("s{index}"), PendingSchedule::one_shot(now));
         }
         assert!(
             full.check_schedule_replacing("s0", now + 9, now).is_ok(),
@@ -8710,7 +8717,8 @@ mod schedule_tests {
         let now = 1_000_000_000_000u64;
         let mut full = world(8);
         for index in 0..crate::world_caps::MAX_PENDING_SCHEDULES {
-            full.schedules.insert(format!("s{index}"), now);
+            full.schedules
+                .insert(format!("s{index}"), PendingSchedule::one_shot(now));
         }
 
         let error = full
@@ -9039,6 +9047,9 @@ mod schedule_tests {
             JournalEntry::ScheduleSet {
                 id: "overdue".to_owned(),
                 at_ms: EPOCH_MS - 5_000,
+                interval_ms: None,
+                remaining: None,
+                target: None,
             },
         ];
         let restored = WorldCore::restore("sched-late", WorldLimits::default(), entries).unwrap();
@@ -9074,10 +9085,16 @@ mod schedule_tests {
             JournalEntry::ScheduleSet {
                 id: "later".to_owned(),
                 at_ms,
+                interval_ms: None,
+                remaining: None,
+                target: None,
             },
         ];
         let restored = WorldCore::restore("sched-later", WorldLimits::default(), entries).unwrap();
-        assert_eq!(restored.core.schedules.get("later"), Some(&at_ms));
+        assert_eq!(
+            restored.core.schedules.get("later"),
+            Some(&PendingSchedule::one_shot(at_ms))
+        );
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
         let mut core = restored.core;
         core.clock = clock.clone();
@@ -9139,13 +9156,18 @@ mod schedule_tests {
         let now = unix_ms();
         let mut core = world(8);
         core.active_module_hash = Some("h".to_owned());
-        core.schedules.insert("a".to_owned(), now + 100);
-        core.schedules.insert("b".to_owned(), now + 200);
+        core.schedules
+            .insert("a".to_owned(), PendingSchedule::one_shot(now + 100));
+        core.schedules
+            .insert("b".to_owned(), PendingSchedule::one_shot(now + 200));
         let entries = core.checkpoint_entries("state".to_owned()).unwrap();
         for (id, at_ms) in [("a", now + 100), ("b", now + 200)] {
             let set = JournalEntry::ScheduleSet {
                 id: id.to_owned(),
                 at_ms,
+                interval_ms: None,
+                remaining: None,
+                target: None,
             };
             assert!(
                 entries.contains(&set),
@@ -9165,8 +9187,11 @@ mod schedule_tests {
         let set = || JournalEntry::ScheduleSet {
             id: "a".to_owned(),
             at_ms: 5,
+            interval_ms: None,
+            remaining: None,
+            target: None,
         };
-        let checkpoint = |schedules: Option<Vec<(String, u64)>>| JournalEntry::Checkpoint {
+        let checkpoint = |schedules: Option<Vec<CheckpointSchedule>>| JournalEntry::Checkpoint {
             sequence: 0,
             module_hash: "h".to_owned(),
             seed: 1,
@@ -9181,16 +9206,23 @@ mod schedule_tests {
             admin_history: None,
             open_presence: None,
         };
-        let agreed = [header(), set(), checkpoint(Some(vec![("a".to_owned(), 5)]))];
+        let declared = || CheckpointSchedule {
+            id: "a".to_owned(),
+            at_ms: 5,
+            interval_ms: None,
+            remaining: 1,
+            target: None,
+        };
+        let agreed = [header(), set(), checkpoint(Some(vec![declared()]))];
         assert!(WorldCore::restore("w", WorldLimits::default(), agreed).is_ok());
         let omitted = [header(), set(), checkpoint(None)];
         assert!(WorldCore::restore("w", WorldLimits::default(), omitted).is_err());
-        let unwritten = [header(), checkpoint(Some(vec![("a".to_owned(), 5)]))];
+        let unwritten = [header(), checkpoint(Some(vec![declared()]))];
         assert!(WorldCore::restore("w", WorldLimits::default(), unwritten).is_err());
         let duplicated = [
             header(),
             set(),
-            checkpoint(Some(vec![("a".to_owned(), 5), ("a".to_owned(), 5)])),
+            checkpoint(Some(vec![declared(), declared()])),
         ];
         assert!(WorldCore::restore("w", WorldLimits::default(), duplicated).is_err());
     }
@@ -9213,10 +9245,16 @@ mod schedule_tests {
             JournalEntry::ScheduleSet {
                 id: "x".to_owned(),
                 at_ms: 1,
+                interval_ms: None,
+                remaining: None,
+                target: None,
             },
             JournalEntry::ScheduleSet {
                 id: "x".to_owned(),
                 at_ms: 2,
+                interval_ms: None,
+                remaining: None,
+                target: None,
             },
         ];
         assert!(WorldCore::restore("w", WorldLimits::default(), twice).is_err());
@@ -9225,6 +9263,9 @@ mod schedule_tests {
             JournalEntry::ScheduleSet {
                 id: "a\nb".to_owned(),
                 at_ms: 1,
+                interval_ms: None,
+                remaining: None,
+                target: None,
             },
         ];
         assert!(WorldCore::restore("w", WorldLimits::default(), malformed).is_err());
@@ -9233,7 +9274,7 @@ mod schedule_tests {
     #[test]
     fn schedules_wake_the_loop_only_while_the_program_can_take_them() {
         let mut schedules = BTreeMap::new();
-        schedules.insert("a".to_owned(), 2_000u64);
+        schedules.insert("a".to_owned(), PendingSchedule::one_shot(2_000));
         let now = std::time::Instant::now();
         assert!(next_schedule_wake(&schedules, 1_000, now, true).is_some());
         assert!(
@@ -9252,6 +9293,9 @@ mod schedule_tests {
         let set = serde_json::to_value(JournalEntry::ScheduleSet {
             id: "a".to_owned(),
             at_ms: 7,
+            interval_ms: None,
+            remaining: None,
+            target: None,
         })
         .unwrap();
         assert_eq!(
@@ -9300,6 +9344,551 @@ mod schedule_tests {
             reason.contains("already pending"),
             "unexpected reason: {reason}"
         );
+    }
+
+    /// #1355: a recurring `schedule.at` fires its exact finite count,
+    /// fixed-rate — a clock jump past every planned time neither drifts
+    /// the series nor extends it, and the schedule is gone afterwards.
+    #[tokio::test]
+    async fn a_recurring_schedule_fires_its_exact_count_then_stops() {
+        let (mut actor, clock, token, _journal) =
+            scheduling_actor("sched-recur", &["schedule.at"], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "set", "cap": "schedule.at", "args": {"id": "bell", "at": EPOCH_MS + 100, "interval_ms": 100, "count": 3}},
+            ]}),
+        )
+        .await;
+        let result = schedule_result(&actor, "set").unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["value"]["count"], 3, "{result}");
+        assert_eq!(result["value"]["interval_ms"], 100, "{result}");
+        actor.fire_schedules().await;
+        assert!(schedule_fires(&actor).is_empty(), "not due yet");
+        clock.advance(10_000);
+        for _ in 0..3 {
+            actor.fire_schedules().await;
+        }
+        let fires = schedule_fires(&actor);
+        assert_eq!(fires.len(), 3, "{fires:?}");
+        assert!(fires.iter().all(|fire| fire["id"] == "bell"));
+        actor.fire_schedules().await;
+        assert_eq!(schedule_fires(&actor).len(), 3, "the series is exhausted");
+        assert!(actor.core.schedules.is_empty());
+    }
+
+    /// #1355: replay derives a series' mid-state from its journaled fires
+    /// alone — no wall clock — and the version gate names recurrence.
+    #[test]
+    fn recurrence_replay_advances_from_the_journaled_fires() {
+        // A journal holding a recurring set carries the recurrence header
+        // version: the store bumps it on the first such append.
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_SCHEDULE_RECURRENCE,
+        };
+        let set = JournalEntry::ScheduleSet {
+            id: "r".to_owned(),
+            at_ms: 1_000,
+            interval_ms: Some(100),
+            remaining: Some(3),
+            target: None,
+        };
+        let fired = || JournalEntry::ScheduleFired { id: "r".to_owned() };
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [header(), set.clone(), fired()],
+        )
+        .unwrap();
+        assert_eq!(
+            restored.core.schedules["r"],
+            PendingSchedule {
+                at_ms: 1_100,
+                interval_ms: Some(100),
+                remaining: 2,
+                target: None,
+            }
+        );
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [header(), set.clone(), fired(), fired()],
+        )
+        .unwrap();
+        assert_eq!(
+            restored.core.schedules["r"],
+            PendingSchedule {
+                at_ms: 1_200,
+                interval_ms: Some(100),
+                remaining: 1,
+                target: None,
+            }
+        );
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [header(), set.clone(), fired(), fired(), fired()],
+        )
+        .unwrap();
+        assert!(!restored.core.schedules.contains_key("r"));
+        assert_eq!(
+            journal_version_required_by(&set),
+            JOURNAL_VERSION_SCHEDULE_RECURRENCE
+        );
+        let one_shot = JournalEntry::ScheduleSet {
+            id: "a".to_owned(),
+            at_ms: 7,
+            interval_ms: None,
+            remaining: None,
+            target: None,
+        };
+        assert_eq!(journal_version_required_by(&one_shot), JOURNAL_VERSION);
+    }
+
+    /// #1355: a recurring schedule survives checkpoint compaction with its
+    /// interval and remaining count, and the checkpoint requires version 8.
+    #[test]
+    fn a_recurring_schedule_survives_checkpoint_compaction() {
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.schedules.insert(
+            "r".to_owned(),
+            PendingSchedule {
+                at_ms: 500,
+                interval_ms: Some(50),
+                remaining: 4,
+                target: None,
+            },
+        );
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            entries.iter().any(|entry| {
+                journal_version_required_by(entry) == JOURNAL_VERSION_SCHEDULE_RECURRENCE
+            }),
+            "a checkpoint carrying a series requires the recurrence version"
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.schedules, core.schedules);
+    }
+
+    /// #1355: re-arming changes a schedule in place — one cap slot however
+    /// many fires remain.
+    #[test]
+    fn a_recurring_schedule_holds_one_cap_slot_across_rearms() {
+        let now = 1_000_000_000_000u64;
+        let mut core = world(8);
+        for index in 0..crate::world_caps::MAX_PENDING_SCHEDULES - 1 {
+            core.schedules
+                .insert(format!("s{index}"), PendingSchedule::one_shot(now));
+        }
+        core.schedules.insert(
+            "r".to_owned(),
+            PendingSchedule {
+                at_ms: now,
+                interval_ms: Some(10),
+                remaining: 5,
+                target: None,
+            },
+        );
+        assert!(core.apply_schedule_fired("r"));
+        assert_eq!(
+            core.schedules.len(),
+            crate::world_caps::MAX_PENDING_SCHEDULES
+        );
+        assert_eq!(core.schedules["r"].remaining, 4);
+        assert_eq!(core.schedules["r"].at_ms, now + 10);
+        let error = core.check_schedule("one-more", now, now).unwrap_err();
+        assert!(error.to_string().contains("pending schedules"), "{error}");
+    }
+
+    /// #1355: the recurrence pair's bounds, and the whole series inside
+    /// the horizon, are refused with reasons before anything is journaled.
+    #[test]
+    fn recurring_schedule_bounds_are_refused_with_reasons() {
+        let now = 1_000_000_000_000u64;
+        let horizon = crate::world_caps::MAX_SCHEDULE_HORIZON_MS;
+        let core = world(8);
+        let error = core
+            .check_schedule_recurring("a", now + 100, None, Some(3), now)
+            .unwrap_err();
+        assert!(error.to_string().contains("interval_ms"), "{error}");
+        let error = core
+            .check_schedule_recurring("a", now + 100, Some(100), None, now)
+            .unwrap_err();
+        assert!(error.to_string().contains("finite count"), "{error}");
+        let error = core
+            .check_schedule_recurring("a", now + 100, Some(100), Some(1), now)
+            .unwrap_err();
+        assert!(error.to_string().contains("count must be 2"), "{error}");
+        let error = core
+            .check_schedule_recurring("a", now + horizon - 50, Some(100), Some(3), now)
+            .unwrap_err();
+        assert!(error.to_string().contains("series ends"), "{error}");
+        assert!(
+            core.check_schedule_recurring("a", now + 100, Some(100), Some(3), now)
+                .is_ok()
+        );
+    }
+
+    /// #1355: recurrence keeps its journal shape, legacy entries parse as
+    /// one-shot, and checkpoint records round-trip in both forms.
+    #[test]
+    fn schedule_recurrence_keeps_its_journal_shape_and_legacy_entries_parse() {
+        let recurring = serde_json::to_value(JournalEntry::ScheduleSet {
+            id: "r".to_owned(),
+            at_ms: 7,
+            interval_ms: Some(50),
+            remaining: Some(3),
+            target: None,
+        })
+        .unwrap();
+        assert_eq!(
+            recurring,
+            serde_json::json!({"entry": "schedule_set", "id": "r", "at_ms": 7, "interval_ms": 50, "remaining": 3})
+        );
+        let legacy: JournalEntry = serde_json::from_value(
+            serde_json::json!({"entry": "schedule_set", "id": "a", "at_ms": 7}),
+        )
+        .unwrap();
+        assert_eq!(
+            legacy,
+            JournalEntry::ScheduleSet {
+                id: "a".to_owned(),
+                at_ms: 7,
+                interval_ms: None,
+                remaining: None,
+                target: None
+            }
+        );
+        let pair: CheckpointSchedule = serde_json::from_value(serde_json::json!(["a", 5])).unwrap();
+        assert_eq!(
+            pair,
+            CheckpointSchedule {
+                id: "a".to_owned(),
+                at_ms: 5,
+                interval_ms: None,
+                remaining: 1,
+                target: None,
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&pair).unwrap(),
+            serde_json::json!(["a", 5])
+        );
+        let full = CheckpointSchedule {
+            id: "r".to_owned(),
+            at_ms: 7,
+            interval_ms: Some(50),
+            remaining: 3,
+            target: None,
+        };
+        let full_json = serde_json::to_value(&full).unwrap();
+        assert_eq!(
+            full_json,
+            serde_json::json!({"id": "r", "at_ms": 7, "interval_ms": 50, "remaining": 3})
+        );
+        assert_eq!(
+            serde_json::from_value::<CheckpointSchedule>(full_json).unwrap(),
+            full
+        );
+    }
+
+    /// #1355 part 2: the targeted check refuses, with reasons, a target
+    /// that is this world, a malformed name, an isolated source, and a
+    /// peer the admin has not granted send consent for.
+    #[test]
+    fn cross_world_targets_are_refused_without_reciprocal_setup() {
+        let now = 1_000_000_000_000u64;
+        let mut core = world(8);
+        // Isolated by default: even a granted peer is refused.
+        core.schedule_grants.insert(
+            "dst-w".to_owned(),
+            ScheduleGrant {
+                send: true,
+                receive: false,
+            },
+        );
+        let error = core
+            .check_schedule_targeted("x", now + 100, None, None, Some("dst-w"), now)
+            .unwrap_err();
+        assert!(error.to_string().contains("isolated"), "{error}");
+        core.isolation = Isolation::Unisolated;
+        let error = core
+            .check_schedule_targeted("x", now + 100, None, None, Some("test-world"), now)
+            .unwrap_err();
+        assert!(error.to_string().contains("its own world"), "{error}");
+        let error = core
+            .check_schedule_targeted("x", now + 100, None, None, Some("Bad Name"), now)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("invalid schedule target"),
+            "{error}"
+        );
+        let error = core
+            .check_schedule_targeted("x", now + 100, None, None, Some("other-w"), now)
+            .unwrap_err();
+        assert!(error.to_string().contains("no send grant"), "{error}");
+        assert!(
+            core.check_schedule_targeted("x", now + 100, None, None, Some("dst-w"), now)
+                .is_ok()
+        );
+    }
+
+    /// #1355 part 2: a due cross-world schedule fires through the sink,
+    /// and only the sink's durable acceptance consumes the occurrence.
+    #[tokio::test]
+    async fn a_cross_world_fire_is_consumed_only_on_sink_acceptance() {
+        struct RecordingSink {
+            calls: std::sync::Mutex<Vec<(String, String, String, u64)>>,
+            accept: bool,
+        }
+        impl ScheduleDelivery for RecordingSink {
+            fn deliver_schedule<'a>(
+                &'a self,
+                source: &'a str,
+                target: &'a str,
+                id: &'a str,
+                at_ms: u64,
+                _late: bool,
+            ) -> ScheduleDeliveryFuture<'a> {
+                Box::pin(async move {
+                    self.calls.lock().unwrap().push((
+                        source.to_owned(),
+                        target.to_owned(),
+                        id.to_owned(),
+                        at_ms,
+                    ));
+                    self.accept
+                })
+            }
+        }
+        let (mut actor, _clock, _token, _journal) =
+            scheduling_actor("src-w", &["schedule.at"], false);
+        actor.core.isolation = Isolation::Unisolated;
+        actor.core.schedule_grants.insert(
+            "dst-w".to_owned(),
+            ScheduleGrant {
+                send: true,
+                receive: false,
+            },
+        );
+        actor.core.schedules.insert(
+            "x".to_owned(),
+            PendingSchedule {
+                at_ms: EPOCH_MS - 1,
+                interval_ms: None,
+                remaining: 1,
+                target: Some("dst-w".to_owned()),
+            },
+        );
+        // No sink installed: the occurrence stays pending.
+        actor.fire_schedules().await;
+        assert!(actor.core.schedules.contains_key("x"));
+        let sink = std::sync::Arc::new(RecordingSink {
+            calls: std::sync::Mutex::new(Vec::new()),
+            accept: false,
+        });
+        actor.schedule_delivery = Some(sink.clone());
+        actor.fire_schedules().await;
+        assert_eq!(sink.calls.lock().unwrap().len(), 1, "one delivery attempt");
+        assert!(
+            actor.core.schedules.contains_key("x"),
+            "a refused delivery consumes nothing"
+        );
+        let sink = std::sync::Arc::new(RecordingSink {
+            calls: std::sync::Mutex::new(Vec::new()),
+            accept: true,
+        });
+        actor.schedule_delivery = Some(sink.clone());
+        actor.fire_schedules().await;
+        assert_eq!(
+            sink.calls.lock().unwrap()[0],
+            (
+                "src-w".to_owned(),
+                "dst-w".to_owned(),
+                "x".to_owned(),
+                EPOCH_MS - 1
+            )
+        );
+        assert!(
+            !actor.core.schedules.contains_key("x"),
+            "acceptance consumes the occurrence"
+        );
+    }
+
+    /// #1355 part 2: the target accepts only with a receive grant while
+    /// unisolated, and a receipt answers a retry without a second fire.
+    #[tokio::test]
+    async fn cross_world_acceptance_needs_a_receive_grant_and_receipts_dedupe() {
+        let (mut actor, _clock, _token, _journal) = scheduling_actor("dst-w", &[], false);
+        async fn deliver(actor: &mut WorldActor, at_ms: u64) -> bool {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::DeliverSchedule {
+                    source: "src-w".to_owned(),
+                    id: "x".to_owned(),
+                    at_ms,
+                    late: false,
+                    reply,
+                })
+                .await;
+            response.await.unwrap()
+        }
+        // Isolated (the default): refused even before grants are read.
+        assert!(!deliver(&mut actor, EPOCH_MS).await);
+        actor.core.isolation = Isolation::Unisolated;
+        // Unisolated but no receive grant: refused.
+        assert!(!deliver(&mut actor, EPOCH_MS).await);
+        actor.core.schedule_grants.insert(
+            "src-w".to_owned(),
+            ScheduleGrant {
+                send: false,
+                receive: true,
+            },
+        );
+        assert!(deliver(&mut actor, EPOCH_MS).await);
+        let fires = schedule_fires(&actor);
+        assert_eq!(fires.len(), 1, "{fires:?}");
+        assert_eq!(fires[0]["id"], "x");
+        assert_eq!(fires[0]["from"], "src-w");
+        // A retry of the same occurrence is answered from the receipt.
+        assert!(deliver(&mut actor, EPOCH_MS).await);
+        assert_eq!(schedule_fires(&actor).len(), 1, "no second delivery");
+        // The next occurrence (a later planned time) is a new fire.
+        assert!(deliver(&mut actor, EPOCH_MS + 100).await);
+        assert_eq!(schedule_fires(&actor).len(), 2);
+    }
+
+    /// #1355 part 2: `schedule.at` with a `world` names the missing grant
+    /// on the wire, and pends the target once an admin grants send.
+    #[tokio::test]
+    async fn a_cross_world_schedule_at_names_the_missing_grant_then_pends() {
+        let (mut actor, _clock, token, _journal) =
+            scheduling_actor("src-w", &["schedule.at"], false);
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetIsolation {
+                authority: Authority::Admin,
+                isolation: Isolation::Unisolated,
+                reply,
+            })
+            .await;
+        response.await.unwrap().unwrap();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "x1", "cap": "schedule.at", "args": {"id": "bell", "at": EPOCH_MS + 60_000, "world": "dst-w"}},
+            ]}),
+        )
+        .await;
+        let result = schedule_result(&actor, "x1").unwrap();
+        assert_eq!(result["error"], "bad_args");
+        let reason = result["reason"].as_str().expect("a reason is carried");
+        assert!(
+            reason.contains("no send grant"),
+            "unexpected reason: {reason}"
+        );
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::AdminSetScheduleGrant {
+                peer: "dst-w".to_owned(),
+                send: true,
+                receive: false,
+                reply,
+            })
+            .await;
+        response.await.unwrap().unwrap();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "x2", "cap": "schedule.at", "args": {"id": "bell", "at": EPOCH_MS + 60_000, "world": "dst-w"}},
+            ]}),
+        )
+        .await;
+        let result = schedule_result(&actor, "x2").unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["value"]["world"], "dst-w", "{result}");
+        assert_eq!(
+            actor.core.schedules["bell"].target.as_deref(),
+            Some("dst-w")
+        );
+    }
+
+    /// #1355 part 2: grants and receipts replay from the journal, a
+    /// revocation clears the grant, and both survive compaction.
+    #[test]
+    fn schedule_grants_and_receipts_replay_and_survive_compaction() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_SCHEDULE_RECURRENCE,
+        };
+        let grant = JournalEntry::ScheduleGrantSet {
+            peer: "dst-w".to_owned(),
+            send: true,
+            receive: false,
+        };
+        let receipt = JournalEntry::ScheduleReceived {
+            source: "src-w".to_owned(),
+            id: "x".to_owned(),
+            at_ms: 5,
+        };
+        assert_eq!(
+            journal_version_required_by(&grant),
+            JOURNAL_VERSION_SCHEDULE_RECURRENCE
+        );
+        assert_eq!(
+            journal_version_required_by(&receipt),
+            JOURNAL_VERSION_SCHEDULE_RECURRENCE
+        );
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [header(), grant.clone(), receipt],
+        )
+        .unwrap();
+        assert_eq!(
+            restored.core.schedule_grants["dst-w"],
+            ScheduleGrant {
+                send: true,
+                receive: false
+            }
+        );
+        assert!(
+            restored
+                .core
+                .schedule_receipts
+                .contains(&("src-w".to_owned(), "x".to_owned(), 5))
+        );
+        let revoked = JournalEntry::ScheduleGrantSet {
+            peer: "dst-w".to_owned(),
+            send: false,
+            receive: false,
+        };
+        let restored =
+            WorldCore::restore("w", WorldLimits::default(), [header(), grant, revoked]).unwrap();
+        assert!(restored.core.schedule_grants.is_empty());
+        // Compaction: a core carrying both re-emits them before its
+        // checkpoint, so a restored core sees the same state.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.schedule_grants.insert(
+            "dst-w".to_owned(),
+            ScheduleGrant {
+                send: true,
+                receive: false,
+            },
+        );
+        core.schedule_receipts
+            .insert(("src-w".to_owned(), "x".to_owned(), 5));
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.schedule_grants, core.schedule_grants);
+        assert_eq!(restored.core.schedule_receipts, core.schedule_receipts);
     }
 }
 
