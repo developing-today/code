@@ -721,6 +721,25 @@ fn test_cli_parse_key_export_and_import() {
             }
         })
     ));
+
+    let export_seed = Cli::parse_from(["id", "key", "export-seed", "--client"]);
+    assert!(matches!(
+        export_seed.command,
+        Some(Command::Key {
+            command: KeyCommand::ExportSeed { client: true }
+        })
+    ));
+
+    let import_seed = Cli::parse_from(["id", "key", "import-seed", "--replace"]);
+    assert!(matches!(
+        import_seed.command,
+        Some(Command::Key {
+            command: KeyCommand::ImportSeed {
+                client: false,
+                replace: true
+            }
+        })
+    ));
 }
 
 #[test]

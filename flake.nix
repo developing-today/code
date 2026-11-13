@@ -10,6 +10,7 @@ rec {
         hosts = import ./nixos/hosts inputs; # inputs.host?
         configurations = lib.make-nixos-configurations hosts;
         vm-configurations = lib.make-vm-configurations hosts;
+        vmGuests = import ./nixos/vm-guests; # #5772 guest registry + carve-out list
         unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
         nixosConfigurations = lib.merge [
           configurations

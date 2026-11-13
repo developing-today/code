@@ -14,6 +14,16 @@ to it and are never used.
 
 Secrets: client_id / client_secret / refresh_token live in credentials.json
 (mode 600) under the cold-store home. They are loaded, never printed.
+
+Pagination contract (#6622): a paged read is complete, bounded, or
+says so. (1) The cursor/token is validated where read — type and
+progress (a truncated page must hand back a usable, advancing
+token). (2) The volume is bounded: every listing loop carries the
+LIST_MAX_PAGES / LIST_MAX_RESULTS bound, whose breach is an error
+naming the listing. (3) Truncation is never silent: a listing
+either completes, fails closed, or says it stopped. The closing
+inventory that dispositioned every paginated loop in the repo is
+on issue #6623.
 """
 
 from __future__ import annotations

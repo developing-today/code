@@ -573,16 +573,16 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		if opts.Deps.frozenNPM(rt.Kind) {
 			if cerr := installFrozenNPM(runCtx, workDir, opts.Deps, opts.Env); cerr != nil {
-				return nil, cerr
+				return nil, preflightErr(runCtx, cerr)
 			}
 		}
 		if opts.Deps.frozenBun(rt.Kind) {
 			if cerr := installFrozenBun(runCtx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
-				return nil, cerr
+				return nil, preflightErr(runCtx, cerr)
 			}
 		} else if rt.Kind == KindBun && (opts.Deps.AutoInstall == "fallback" || opts.Deps.AutoInstall == "always") && (len(opts.Deps.Packages) > 0 || opts.Deps.Manifest != "") {
 			if cerr := installBun(runCtx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
-				return nil, cerr
+				return nil, preflightErr(runCtx, cerr)
 			}
 		}
 		// A file script resolves bare imports from its own directory
@@ -614,7 +614,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			}
 			unlock, lerr2 := lockScriptDirs(runCtx, lockDirs...)
 			if lerr2 != nil {
-				return nil, lerr2
+				return nil, preflightErr(runCtx, lerr2)
 			}
 			defer unlock()
 			// The set must also be visible at the selected
@@ -903,6 +903,24 @@ var fileScriptLocks sync.Map // map[string]chan struct{}
 // vice versa) cannot deadlock by acquiring in opposite orders
 // (Codex review, PR #2589). The returned function releases every
 // acquired lock.
+// preflightErr preserves the run deadline's signal on a preparation
+// failure. The ctx-bound preflight steps (dependency installs,
+// directory-lock waits) run on the run's timeout context, but an
+// install killed by that context reports only "signal: killed", so
+// without this wrap a pre-execution timeout is indistinguishable
+// from a plain startup failure downstream (Codex review, PR #9205).
+// When the context has fired, its error leads and the step's own
+// error stays in the chain; otherwise the error passes unchanged.
+func preflightErr(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if cerr := ctx.Err(); cerr != nil && !errors.Is(err, cerr) {
+		return fmt.Errorf("%w: %w", cerr, err)
+	}
+	return err
+}
+
 func lockScriptDirs(ctx context.Context, dirs ...string) (func(), error) {
 	cleaned := make([]string, 0, len(dirs))
 	seen := map[string]bool{}

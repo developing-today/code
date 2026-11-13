@@ -90,6 +90,38 @@ export function parseWorldHostViewPage(payload: unknown): WorldHostViewPage {
 }
 
 /**
+ * The host-view page loop's pagination guard (#6622 contract, #9043).
+ *
+ * The loop follows `next_after` until null. The cursor's type is
+ * already validated by `parseWorldHostViewPage` and the server pins
+ * its emission to string-or-null, but the loop itself must still
+ * terminate against a buggy or compromised host: a cursor that does
+ * not advance past the one just requested would re-request the same
+ * page forever, and a cursor stream that never ends would fetch
+ * forever. Both end here with the page's designed error vocabulary.
+ * Each server page is a full budget-bounded records page, so
+ * HOST_VIEW_MAX_PAGES is far beyond any view the page can render.
+ */
+export const HOST_VIEW_MAX_PAGES = 256;
+
+export function advanceHostViewCursor(input: {
+  readonly previous: string | null;
+  readonly next: string | null;
+  readonly page: number;
+}): string | null {
+  if (input.next === null) return null;
+  if (input.next === input.previous) {
+    throw new Error("Host view unavailable: records cursor did not advance; refresh the host view");
+  }
+  if (input.page >= HOST_VIEW_MAX_PAGES) {
+    throw new Error(
+      `Host view unavailable: records paging exceeded ${HOST_VIEW_MAX_PAGES} pages; refresh the host view`,
+    );
+  }
+  return input.next;
+}
+
+/**
  * Validate an `/api/world/invite` response at the fetch boundary. The
  * capability is a credential: a missing, non-string, or empty one must
  * never reach `showCapability` (which persists it to sessionStorage).

@@ -4,6 +4,47 @@
 //! library when importable; messages for exotic packets can differ in
 //! wording, but accept/reject semantics match the manual contract and
 //! the database RPCs remain the backstop.)
+//!
+//! THE VALIDATION CONTRACT (design #6448; this statement landed
+//! with the Phase 4 closing inventory, #6449 — a future forwarded
+//! field or flag is added against this stated rule, not ad hoc):
+//!
+//! One rule: the queue validates every value it forwards — its
+//! type, its range, and its agreement with the packet's other
+//! fields — at the boundary, before the task row exists; a value
+//! that cannot be honoured is refused with an error naming the
+//! field, never forwarded verbatim. Reject, never clamp, never
+//! warn-and-forward: warnings keep their existing role (design
+//! defaults, size targets) and never carry a validity verdict.
+//!
+//! Bounds, with the same values enforced at all three points —
+//! validate_packet (packet fields), the client (usage error,
+//! exit 2, naming the flag), and the broker (rejection before
+//! the RPC/SQL call; the broker is the trust boundary for
+//! non-CLI callers):
+//!
+//!   max_attempts (either copy)  integer 1..=100; the two copies must agree
+//!   not_before (packet + park/revive flags)
+//!                               RFC 3339 string, at most 366 days in the future
+//!   priority                    one of 10, 20, 30, 40, 50, 70, 90
+//!   list --limit                1..=500 (default 20)
+//!   --lease-seconds             1..=86400 (default 2700)
+//!   --extend-seconds            1..=86400 (default 900)
+//!   --delay-seconds             1..=604800 (no default; an explicit 0 is rejected)
+//!   claim --count               1..=5 (batch claim cap)
+//!
+//! Broker-internal dep cadence/TTL values (#8276) are the one
+//! deliberate exception to reject-never-clamp: the broker clamps
+//! them (recheck 300..=3600, TTL 60..=604800) because they tune
+//! its own waits, not a producer's stated intent.
+//!
+//! Four rows diverge from design #6448's original table
+//! (max_attempts ceiling, delay ceiling, the lease/extend floor,
+//! and the creation-outbox retry_after ceiling): the values
+//! above are the implemented, live contract, and reconciling
+//! the two statements is tracked on #9029. The inventory that
+//! dispositioned every forwarded field, client flag, and broker
+//! verb parameter against this contract is recorded on #6449.
 
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};

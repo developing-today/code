@@ -256,6 +256,28 @@ class TestLaunchStep(unittest.TestCase):
             self.assertIn("--handoff", argv)
             self.assertNotIn("--task", argv)
 
+    def test_collection_claim_carries_the_launch_model_stamp(self):
+        # #8176: the sink-collection claim stamps the model this
+        # claimant launches every collected task under, so the
+        # task row records the model that will work it (a later
+        # stamped claim overwrites with its own session's model).
+        argvs = []
+
+        def fake_run(cmd, **kwargs):
+            argvs.append([str(part) for part in cmd])
+            return Result(0, json.dumps({"task": None}))
+
+        with patch.object(claimant.subprocess, "run", fake_run):
+            claimant._collect_handed_offs("q1", 1)
+        self.assertEqual(len(argvs), 1)
+        argv = argvs[0]
+        self.assertEqual(
+            argv[argv.index("--model-provider") + 1], claimant.LAUNCH_MODEL_PROVIDER
+        )
+        self.assertEqual(argv[argv.index("--model-id") + 1], claimant.LAUNCH_MODEL_ID)
+        self.assertEqual(claimant.LAUNCH_MODEL_PROVIDER, "opencode-route")
+        self.assertEqual(claimant.LAUNCH_MODEL_ID, "workhorse")
+
     def test_vanished_candidate_is_a_recorded_skip(self):
         calls = {"n": 0}
 

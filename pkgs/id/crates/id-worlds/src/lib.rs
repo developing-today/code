@@ -39,10 +39,6 @@
 //! facade; they name the lower crates that own those modules.
 
 pub mod blob_gate;
-pub mod directory;
-pub mod directory_auth;
-pub mod directory_mail;
-pub mod directory_view;
 pub mod groups;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
@@ -67,6 +63,10 @@ pub mod world_ssh;
 pub mod world_store;
 pub mod world_terminal;
 
+pub use id_directory::directory;
+pub use id_directory::directory_auth;
+pub use id_directory::directory_mail;
+pub use id_directory::directory_view;
 pub use id_sync::artifact;
 pub use id_core::abuse;
 pub use id_store::chain;

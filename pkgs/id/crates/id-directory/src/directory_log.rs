@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::directory::{Directory, DirectoryEntry, hex_to_array};
-use crate::world::hex_encode;
+use id_core::hex::hex_encode;
 
 /// The order in which replicas apply records: Lamport counter, then author, then hash.
 pub type MergeKey = (u64, String, String);
@@ -288,7 +288,7 @@ pub fn apply(directory: &mut Directory, log: &Log) -> Applied {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+    use id_core::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
 
     struct Draw(u64);
 

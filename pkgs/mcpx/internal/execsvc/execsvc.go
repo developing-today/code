@@ -506,6 +506,12 @@ type Result struct {
 	Runtime         string     `json:"runtime,omitempty"`
 	TimedOut        bool       `json:"timedOut,omitempty"`
 	Error           string     `json:"error,omitempty"`
+	// ErrorKind is the typed failure kind (CODE-30): one of the
+	// Failure* values below, set exactly when Error is. It lets a
+	// caller branch -- retry a timeout, fix the code on an execution
+	// failure, repair the environment on a not-started failure --
+	// without parsing the message.
+	ErrorKind string `json:"errorKind,omitempty"`
 	// Notice carries the runner's one-line statement of what a
 	// dispatched (non-JavaScript) run does not have: no generated
 	// client, no enforced permission profiles.
@@ -522,6 +528,36 @@ type Result struct {
 	// then discarded (Codex review, PR #9021). Retaining them here
 	// changes neither the script's result nor its error.
 	Hooks []HookFrame `json:"hooks,omitempty"`
+}
+
+// Typed failure kinds (CODE-30), the values Result.ErrorKind takes.
+const (
+	// FailureTimeout: the run exceeded its time bound.
+	FailureTimeout = "timeout"
+	// FailureNotStarted: the script never started -- a missing
+	// runtime, an unreadable launcher, a type error found before
+	// execution.
+	FailureNotStarted = "not_started"
+	// FailureExecution: the script started and failed -- it threw,
+	// exited non-zero, or the runner reported the failure.
+	FailureExecution = "execution"
+)
+
+// failureKind classifies a finished run's failure from the signals
+// the runner already reports, in the order that separates them: a
+// timeout is its own kind even though it also leaves an error
+// string, and a failure with no run behind it never started.
+func failureKind(res *Result, started bool) string {
+	if res.Error == "" {
+		return ""
+	}
+	if res.TimedOut {
+		return FailureTimeout
+	}
+	if !started {
+		return FailureNotStarted
+	}
+	return FailureExecution
 }
 
 // Source supplies the generated client the script is run against.
@@ -1154,6 +1190,17 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			msg = rerr.Error()
 		}
 		res.Error = msg
+		res.ErrorKind = FailureNotStarted
+		if errors.Is(rerr, context.DeadlineExceeded) {
+			// The run's bound expired before the script started -- a
+			// dependency install or a directory-lock wait in runner
+			// preflight: a timeout, not a startup failure, so a caller
+			// deciding whether to retry sees the true kind (Codex
+			// review, PR #9205). The runner preserves the deadline
+			// signal on those preflight errors for exactly this check.
+			res.ErrorKind = FailureTimeout
+			res.TimedOut = true
+		}
 		res.ExitCode = 1
 		emitFrame(Frame{Type: FrameError, Error: msg})
 		// Suffix is documented as running on both paths: a `before` hook
@@ -1255,6 +1302,12 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		res.Error = strings.TrimSpace(res.Error + "\n" + err.Error())
 		hookCtx.Error = res.Error
 	}
+
+	// The kind is classified last, from the final outcome: an onError
+	// hook may have replaced the error with a result (then there is
+	// no kind), and the delivery step may have added its own failure
+	// to the text.
+	res.ErrorKind = failureKind(res, true)
 
 	if res.Error != "" {
 		emitFrame(Frame{Type: FrameError, Error: res.Error})

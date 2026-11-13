@@ -4,6 +4,7 @@
 import {
   type AttentionView,
   type RoadmapGrain,
+  type TodayObjective,
   type TodayView,
   allRefs,
   buildQuotaActions,
@@ -114,6 +115,13 @@ import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import {
+  CANONICAL_STATUSES,
+  STATUS_SOURCE_LABELS,
+  STATUS_TAXONOMY,
+  canonicalStatusFor,
+  ghItemDerivedStatus,
+} from "./status-taxonomy.ts";
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
@@ -1329,8 +1337,10 @@ export function delegationDefaultHtml(records: DashAction[] | undefined, opts: A
   return `<div class="card"><strong>Standing delegation default</strong> — ${state}.${pending}${actboxHtml(opts, form)}</div>`;
 }
 
-/** The Project Status values a status request may target (#910 field). */
-export const PROJECT_STATUS_VALUES = ["Todo", "In Progress", "In Review", "Done"] as const;
+/** The Project Status values a status request may target (#910 field).
+ * #1198: this set IS the canonical status taxonomy's set — one
+ * definition (status-taxonomy.ts), adopted here, never a second copy. */
+export const PROJECT_STATUS_VALUES = CANONICAL_STATUSES;
 
 /** The #1154 control: request a Project Status change (never a direct write). */
 export function statusRequestHtml(
@@ -1567,7 +1577,21 @@ export function renderBoardBody(
             }
           }
           const kaneo = item.kaneoUrl ? ` <a class="badge" href="${esc(item.kaneoUrl)}">Kaneo ↗</a>` : "";
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${stripHtml(items, item.links)}${statusCtl}${briefs}</div>`;
+          // #1198: the board column is Kaneo's status; when the linked
+          // Project pool item's Status disagrees canonically, show BOTH
+          // instead of silently picking the column.
+          let statusClash = "";
+          if (act?.poolByRef) {
+            const pooled = item.links.map((l) => act.poolByRef!.get(l.ref)).find((p) => p !== undefined);
+            if (pooled?.status) {
+              const boardCanonical = canonicalStatusFor("kaneo", item.status);
+              const projectCanonical = canonicalStatusFor("project", pooled.status);
+              if (boardCanonical && projectCanonical && boardCanonical !== projectCanonical) {
+                statusClash = ` <span class="badge stale" title="The Kaneo board column and the Project Status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">⚠ board: ${esc(item.status)} · project: ${esc(pooled.status)}</span>`;
+              }
+            }
+          }
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${statusClash}${stripHtml(items, item.links)}${statusCtl}${briefs}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
@@ -1764,7 +1788,24 @@ function roadmapCard(
   const horizonWarning = row.horizonError
     ? ` <span class="badge horizon-invalid" title="${esc(row.horizonError)}">Invalid Horizon</span>`
     : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
+  // #1198: the row's status is Grist's; when the linked GitHub item's
+  // derived lifecycle status (or its Project Status) disagrees
+  // canonically, show BOTH instead of silently picking Grist's.
+  let statusClash = "";
+  const ghLinked = refs.map((r) => items.get(r)).find((x) => x !== undefined);
+  if (ghLinked) {
+    const gristCanonical = canonicalStatusFor("grist", row.status);
+    const derived = ghItemDerivedStatus(ghLinked);
+    if (gristCanonical && derived && derived !== gristCanonical) {
+      statusClash = ` <span class="badge stale" title="The Grist Roadmap Status and the status derived from the linked GitHub item disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">⚠ grist: ${esc(row.status)} · derived: ${esc(derived)}</span>`;
+    } else if (gristCanonical && ghLinked.projectStatus) {
+      const projectCanonical = canonicalStatusFor("project", ghLinked.projectStatus);
+      if (projectCanonical && projectCanonical !== gristCanonical) {
+        statusClash = ` <span class="badge stale" title="The Grist Roadmap Status and the Project Status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">⚠ grist: ${esc(row.status)} · project: ${esc(ghLinked.projectStatus)}</span>`;
+      }
+    }
+  }
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -2154,7 +2195,11 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
     ? ` <a class="badge conflict" href="/quota/service/${esc(svc.id)}" title="Sources disagree — the dated history is on the detail page">conflict</a>`
     : "";
   const pace = paceLineHtml(svc.id, history);
-  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
+  const extractionGap =
+    svc.extractionHealth?.status === "gap"
+      ? ` <span class="badge blocked" title="${esc(svc.extractionHealth.reason ?? "extractor miss")}">extraction gap</span>`
+      : "";
+  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}${extractionGap}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
 }
 
 function uninstrumentedServicesHtml(services: UsageView["uninstrumentedServices"]): string {
@@ -2359,7 +2404,12 @@ export function renderQuota(
       const fresh = p.freshness
         ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtDate(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
         : "";
-      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
+      const extractionGap =
+        p.extractionHealth?.status === "gap"
+          ? ` <span class="badge blocked" title="${esc(p.extractionHealth.reason ?? "extractor miss")}">extraction gap</span>`
+          : "";
+
+      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${extractionGap}${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
     })
     .join("");
   const burn = view.burn
@@ -3542,7 +3592,7 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
-  const quotaObjectives = quotaActions.map((a) => ({
+  const quotaObjectives: TodayObjective[] = quotaActions.map((a) => ({
     title: a.title,
     detail: a.detail,
     chip: "quota · action",
@@ -3557,7 +3607,7 @@ export function renderTodayBody(
     ? allObjectives
         .map(
           (o, i) =>
-            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
+            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.statusNote ? `<br><span class="badge stale" title="Source status vs derived status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">${esc(o.statusNote)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
         )
         .join("")
     : `<p class="muted">No objectives lined up for today.</p>`;
@@ -6421,6 +6471,19 @@ export function briefPanelHtml(brief: ItemBrief): string {
   return `<div class="brief" style="border-left:3px solid #888;padding-left:0.6em;margin-top:0.4em"><strong>Derived brief</strong> <span class="muted">(derived from the projection — not authored)</span><br><span>State: ${esc(brief.state.text)} Evidence: ${ev(brief.state.evidence)}.</span><br><span>Blocker: ${esc(brief.blocker.text)} Evidence: ${ev(brief.blocker.evidence)}.</span><br><span>${activity}</span><br><span>Next: ${esc(brief.nextAction.text)} Evidence: ${ev(brief.nextAction.evidence)}.</span>${clash}</div>`;
 }
 
+/** The canonical status taxonomy (#1198 acceptance 1): the mapping
+ * table from status-taxonomy.ts, rendered where the pool renders —
+ * /projects standalone and the pool section of /program. */
+export function statusTaxonomyHtml(): string {
+  const rows = STATUS_TAXONOMY.map(
+    (row) =>
+      `<tr><td>${esc(STATUS_SOURCE_LABELS[row.source])}</td><td>${esc(row.raw)}</td><td>${esc(row.canonical)}</td></tr>`,
+  ).join("");
+  return `<h2>Canonical status taxonomy (#1198)</h2>
+<p class="muted">One canonical status set — ${CANONICAL_STATUSES.map(esc).join(" · ")} — and every source's vocabulary mapped into it. An item's canonical status is the same on every page for the same inputs; a source value with no row here is unmapped and surfaces as a ⚠ disagreement rather than being guessed. The ⚠ badges on Board, Roadmap, Today, and this pool all compare through this table.</p>
+<div class="tblwrap"><table><caption>Per-source status mapping to the canonical set</caption><thead><tr><th scope="col">Source</th><th scope="col">Source status</th><th scope="col">Canonical status</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
 export function projectsBodyHtml(
   pool: ProjectPoolItem[],
   opts: {
@@ -6514,6 +6577,7 @@ export function projectsBodyHtml(
 <div class="chips">${chips}</div>
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 ${coverageSectionHtml(opts.coverage)}
+${statusTaxonomyHtml()}
 <p class="muted">Weighted progress (effort xs=1 · s=4 · m=12 · l=40, #1108): <strong>${esc(weightedLine(shownWeights))}</strong><br>${esc(handsLine(shownWeights))}</p>
 ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
 <p class="muted">Live services: ${serviceHomeLinks()

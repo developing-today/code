@@ -53,6 +53,7 @@ id-caps = { path = "../id-caps", default-features = false }
 id-core = { path = "../id-core", default-features = false, features = [
   "world",
 ] }
+id-directory = { path = "../id-directory", default-features = false }
 id-events = { path = "../id-events", default-features = false }
 id-groups = { path = "../id-groups", default-features = false }
 id-store = { path = "../id-store", default-features = false }

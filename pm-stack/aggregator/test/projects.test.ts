@@ -106,18 +106,35 @@ function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount 
 }
 
 describe("fetchProjectPool pagination", () => {
-  test("throws rather than returning a partial pool when page ten has another page", async () => {
+  test("paginates past ten pages and returns every item from a long finite pool", async () => {
+    // Oracle: the pool is complete iff every page was fetched and every
+    // delivered item returned — no page-count cap (Drew, 2026-11-12).
     let calls = 0;
     const fetchFn: typeof fetch = Object.assign(
       async () => {
         calls++;
-        return new Response(JSON.stringify(projectPage(true, `cursor-${calls}`)));
+        return new Response(JSON.stringify(projectPage(calls < 13, calls < 13 ? `cursor-${calls}` : null, 26)));
       },
       { preconnect: () => {} },
     );
 
-    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/truncat.*25/i);
-    expect(calls).toBe(10);
+    const items = await fetchProjectPool("test-token", fetchFn);
+    expect(calls).toBe(13);
+    expect(items).toHaveLength(26);
+  });
+
+  test("throws when pagination does not advance instead of looping forever", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = Object.assign(
+      async () => {
+        calls++;
+        return new Response(JSON.stringify(projectPage(true, "cursor-stuck")));
+      },
+      { preconnect: () => {} },
+    );
+
+    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/did not advance/i);
+    expect(calls).toBe(2);
   });
 
   test("returns every item from a finite multi-page pool", async () => {
@@ -190,6 +207,25 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     // projectItemUrl falls back to the bare board URL without an item id.
     expect(pool[0].url).toBe("https://github.com/orgs/developing-today/projects/4");
     expect(isProjectPoolItem(pool[0])).toBe(true);
+  });
+
+  test("the pool gate refuses impossible updatedAt stamps (#5202)", () => {
+    const item = parseProjectItems(GQL)[0];
+    // Control: the collector's own stamp passes, and the missing-stamp
+    // forms (absent field, '') stay valid.
+    expect(isProjectPoolItem(item)).toBe(true);
+    expect(isProjectPoolItem({ ...item, updatedAt: "" })).toBe(true);
+    const { updatedAt: _dropped, ...withoutStamp } = item;
+    expect(isProjectPoolItem(withoutStamp)).toBe(true);
+    // Impossible calendar days and non-ISO strings are refused: before
+    // the gate they rolled over in Date.parse and fabricated this-week
+    // activity in derive.ts momentum math.
+    for (const bad of ["2026-02-29", "2026-02-30", "2026-04-31", "March 2, 2026", "not-a-date"]) {
+      expect(isProjectPoolItem({ ...item, updatedAt: bad })).toBe(false);
+    }
+    // A real leap day and a full ISO datetime still pass.
+    expect(isProjectPoolItem({ ...item, updatedAt: "2024-02-29" })).toBe(true);
+    expect(isProjectPoolItem({ ...item, updatedAt: "2026-03-01T12:00:00Z" })).toBe(true);
   });
 
   test("derived state + disagreement", () => {

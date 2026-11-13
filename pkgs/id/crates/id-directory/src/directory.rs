@@ -17,11 +17,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 
-use crate::artifact::{
-    self, ArtifactLog, Document, FriendRemove, HomeDeclared, HomeServer, Kind, SignedArtifact,
+use id_sync::artifact::{
+    self, ArtifactLog, ArtifactSink, Document, FriendRemove, HomeDeclared, HomeServer, Kind,
+    SignedArtifact,
     Stored, Tag,
 };
-use crate::world::{WorldScopes, hex_encode};
+use {id_caps::world_scopes::WorldScopes, id_core::hex::hex_encode};
 
 const KEY_DOMAIN: &[u8] = b"id-account-v1";
 const MAX_NAME_CHARS: usize = 64;
@@ -1084,7 +1085,7 @@ impl Directory {
 
     /// Directory facts a read-only replica needs for spectator
     /// authorization (F12.13 phase 4): everything
-    /// [`crate::world::WorldCore::effective_scopes`] consults for the given
+    /// [`WorldCore::effective_scopes`] consults for the given
     /// capability subjects — account ceilings (tiers and group grants) and
     /// the friendship graph — as entries the replica applies to an empty
     /// directory. The caller passes every account appearing in the
@@ -1862,7 +1863,7 @@ impl Directory {
     /// to a read-only replica. It must use the same historical validation
     /// as replay, not new-write validation: an old group name containing a
     /// format character was valid when written and must remain loadable.
-    pub(crate) fn apply_replica_fact(&mut self, entry: &DirectoryEntry) -> Result<()> {
+    pub fn apply_replica_fact(&mut self, entry: &DirectoryEntry) -> Result<()> {
         self.apply_replay(entry)
     }
 
@@ -2489,7 +2490,7 @@ fn clean_name_mode(name: &str, refuse_format: bool) -> Result<String> {
     );
     if refuse_format {
         ensure!(
-            !name.chars().any(crate::petname::is_format_char),
+            !name.chars().any(id_core::petname::is_format_char),
             "name must not contain format characters"
         );
     }
@@ -2512,7 +2513,7 @@ fn clean_description_mode(description: &str, refuse_format: bool) -> Result<Stri
     );
     if refuse_format {
         ensure!(
-            !description.chars().any(crate::petname::is_format_char),
+            !description.chars().any(id_core::petname::is_format_char),
             "description must not contain format characters"
         );
     }
@@ -2541,7 +2542,7 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+    use id_core::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
 
     fn all() -> WorldScopes {
         WorldScopes::GUEST.union(WorldScopes::DELEGATE)
@@ -4883,5 +4884,27 @@ mod tests {
             signature: hex_encode(&identity_forgery()),
         };
         assert!(envelope.verify().is_err());
+    }
+}
+
+/// The `id-sync` artifact sink is the directory itself: the pull/apply
+/// transfer writes artifacts straight into the directory's store.
+/// This impl sat in `id-worlds`' `session_host` while the directory
+/// lived there; the orphan rule puts it in the crate that owns
+/// [`Directory`] (step 6b, #4409).
+impl ArtifactSink for Directory {
+    fn receive_artifact(&mut self, artifact: &SignedArtifact) -> Result<Stored> {
+        Directory::receive_artifact(self, artifact)
+    }
+
+    fn receive_artifact_with_outcome(
+        &mut self,
+        artifact: &SignedArtifact,
+    ) -> Result<(Stored, Option<id_sync::artifact::LegacyArtifactNote>)> {
+        Directory::receive_artifact_with_outcome(self, artifact)
+    }
+
+    fn artifact_head_seq(&self, account: &str) -> u64 {
+        self.artifacts().head_seq(account)
     }
 }

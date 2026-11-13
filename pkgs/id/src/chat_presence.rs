@@ -9,6 +9,37 @@
 //! its last heartbeat ages past [`PRESENCE_TTL_SECS`]; when it resumes, the next
 //! heartbeat makes it live again.
 //!
+//! # Gossip admission contract (#4502, Phase 5)
+//!
+//! **A gossip claim is stored only in the form its table's guards produce —
+//! canonical, scoped, and bounded — and every gossip ingest path enters
+//! through those guards. There is no second door.** The presence path is
+//! `decode_frame` → signature verification and group-membership scoping in
+//! `commands::serve::receive_presence_heartbeat` →
+//! [`PresenceTable::update_scoped`]. The unscoped `PresenceTable::update`
+//! entry point had no production caller and is removed; tests exercise the
+//! deterministic `update_at` core instead. The peer-announcement path is
+//! `SignedPeerAnnouncement::decode_frame` →
+//! [`crate::discovery::PeerDiscovery::update`], both in the serve receiver
+//! and the temporary table used by `commands::peers::discover_via_gossip`.
+//!
+//! `commands::peers::{query_local_peers, query_remote_peers, crawl_peers}`
+//! are deliberately a separate trust surface: they read a selected server's
+//! RPC snapshot for this one CLI output and never insert those claims into a
+//! local gossip table. Their combined output is capped by `--max-peers`;
+//! duplicate rows keep the newer advertised timestamp, so a stale gossip row
+//! cannot replace a fresher RPC row. This is display freshness, not an
+//! authentication guarantee for a remote RPC response.
+//!
+//! The gossip transport owns the frame-size bound: `pkgs/id` pins
+//! `iroh-gossip` 0.101.0 and uses `Gossip::builder().spawn` without overriding
+//! its default `Config::max_message_size` of 4 KiB. Presence `decode_frame`
+//! has no second byte limit; keep the transport configuration bounded, or add
+//! a matching decoder refusal if that configuration changes. Other
+//! `decode_frame` functions under `id-events::event_store::range` and
+//! `id-worlds::world::replication` decode their own non-gossip sync protocols
+//! and do not admit gossip claims.
+//!
 //! # Clock skew and the expiry basis (#8865)
 //!
 //! A sender's clock is not the receiver's clock. Expiry is therefore NOT
@@ -105,6 +136,13 @@ pub const TYPING_TTL_SECS: u64 = 12;
 /// The most channels one heartbeat may name. Bounds the frame size and the work a
 /// single received heartbeat can make the table do.
 pub const MAX_HEARTBEAT_CHANNELS: usize = 64;
+
+/// Maximum number of distinct nodes the presence table will store.
+///
+/// Bounding the node count prevents unbounded memory growth from a flood
+/// of self-signed heartbeats with minted keys on the public gossip topic (Fixes #4004).
+/// Matches discovery's maximum peer table bounds (1_000).
+pub const MAX_PRESENCE_NODES: usize = 1_000;
 
 /// Frame prefix distinguishing presence frames from peer-discovery announcements on
 /// the shared gossip topic. A frame without this prefix is not a presence frame, and
@@ -267,13 +305,6 @@ impl PresenceTable {
         Self::default()
     }
 
-    /// Records a heartbeat received at the local wall clock, with no membership
-    /// scoping (the transport layer's view; scoping is the receiver's job — see
-    /// [`update_scoped`](Self::update_scoped)). Returns whether it was accepted.
-    pub fn update(&self, heartbeat: PresenceHeartbeat) -> bool {
-        self.update_at(heartbeat, now_secs(), &|_, _| true)
-    }
-
     /// Records a heartbeat received at the local wall clock, keeping only the
     /// channels `is_member` confirms the sender belongs to. Returns whether the
     /// heartbeat was accepted.
@@ -286,7 +317,7 @@ impl PresenceTable {
     }
 
     /// Records a heartbeat as of `now` (unix seconds), the deterministic core of
-    /// [`update`](Self::update) and [`update_scoped`](Self::update_scoped).
+    /// [`update_scoped`](Self::update_scoped).
     ///
     /// Three guards, mirroring [`crate::discovery::PeerDiscovery`]:
     ///
@@ -308,6 +339,12 @@ impl PresenceTable {
     ///   duplicates are dropped: a wire-decoded heartbeat bypasses
     ///   [`PresenceHeartbeat::new`], so the constructor's dedupe/bound on
     ///   channels and typing is enforced here too.
+    ///
+    /// - **Node count bound.** The table stores at most [`MAX_PRESENCE_NODES`] nodes.
+    ///   Updates to an existing key update in place and consume no new capacity.
+    ///   At capacity, a new node is admitted only by evicting an entry already past
+    ///   its TTL (oldest such expired entry, ties broken by node key bytes). If every
+    ///   entry is fresh, the new node is refused (Fixes #4004).
     ///
     /// Returns whether the heartbeat was accepted (inserted or replacing).
     pub fn update_at(
@@ -360,6 +397,26 @@ impl PresenceTable {
             && heartbeat.ts == existing.heartbeat.ts
         {
             effective_ts = effective_ts.min(existing.effective_ts);
+        }
+        // Node count bound (#4004): a brand-new node key is admitted at
+        // capacity only by evicting the oldest expired entry (expiry runs
+        // from the effective stamp, #8865); if every entry is still fresh,
+        // the new node is refused. Existing keys refresh in place and
+        // consume no new capacity.
+        if !entries.contains_key(&node) && entries.len() >= MAX_PRESENCE_NODES {
+            let oldest_expired = entries
+                .iter()
+                .filter(|(_, entry)| now.saturating_sub(entry.effective_ts) > PRESENCE_TTL_SECS)
+                .min_by(|(k1, e1), (k2, e2)| {
+                    e1.effective_ts.cmp(&e2.effective_ts).then_with(|| k1.cmp(k2))
+                })
+                .map(|(k, _)| *k);
+            match oldest_expired {
+                Some(k) => {
+                    entries.remove(&k);
+                }
+                None => return false,
+            }
         }
         entries.insert(
             node,
@@ -1143,5 +1200,84 @@ mod tests {
         for chan in [a, b, c] {
             assert_eq!(table.liveness_at(&alice, &chan, 4_200), Liveness::Live);
         }
+    }
+
+    #[test]
+    fn node_count_bound_caps_storage_and_refuses_when_all_fresh() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let now = 10_000;
+
+        // Fill table up to MAX_PRESENCE_NODES with distinct keys
+        for i in 0..MAX_PRESENCE_NODES {
+            let mut node = [0u8; 32];
+            node[0..2].copy_from_slice(&(i as u16).to_le_bytes());
+            assert!(table.update_at(heartbeat(node, vec![chan], now), now, &|_, _| true));
+        }
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // A new node arrives while all entries are fresh: must be refused.
+        let mut new_node = [0xffu8; 32];
+        new_node[0] = 1;
+        assert!(!table.update_at(heartbeat(new_node, vec![chan], now), now, &|_, _| true));
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+        assert_eq!(table.liveness_at(&new_node, &chan, now), Liveness::Offline);
+    }
+
+    #[test]
+    fn node_count_bound_evicts_oldest_expired_entry_at_capacity() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let now = 20_000;
+
+        // Fill table with MAX_PRESENCE_NODES distinct keys
+        for i in 0..MAX_PRESENCE_NODES {
+            let mut node = [0u8; 32];
+            node[0..2].copy_from_slice(&(i as u16).to_le_bytes());
+            // node 0 has timestamp `now - 50`, others have timestamp `now`
+            let ts = if i == 0 { now - 50 } else { now };
+            assert!(table.update_at(heartbeat(node, vec![chan], ts), now, &|_, _| true));
+        }
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // At `later = now + 30`, node 0's age is 80 > 75 (expired).
+        // Other entries have age 30 <= 75 (still fresh).
+        let later = now + 30;
+        let mut new_node = [0xffu8; 32];
+        new_node[0] = 1;
+        assert!(table.update_at(heartbeat(new_node, vec![chan], later), later, &|_, _| true));
+
+        // Count stays capped at MAX_PRESENCE_NODES
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // Node 0 was the expired entry and was evicted
+        let mut node0 = [0u8; 32];
+        node0[0..2].copy_from_slice(&0u16.to_le_bytes());
+        assert_eq!(table.liveness_at(&node0, &chan, later), Liveness::Offline);
+        // New node was accepted and is live
+        assert_eq!(table.liveness_at(&new_node, &chan, later), Liveness::Live);
+    }
+
+    #[test]
+    fn existing_node_update_at_capacity_succeeds_in_place_without_eviction() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let now = 30_000;
+
+        // Fill table with MAX_PRESENCE_NODES distinct keys
+        for i in 0..MAX_PRESENCE_NODES {
+            let mut node = [0u8; 32];
+            node[0..2].copy_from_slice(&(i as u16).to_le_bytes());
+            assert!(table.update_at(heartbeat(node, vec![chan], now), now, &|_, _| true));
+        }
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // Updating an existing node key (node 42) at capacity
+        let mut node42 = [0u8; 32];
+        node42[0..2].copy_from_slice(&42u16.to_le_bytes());
+        assert!(table.update_at(heartbeat(node42, vec![chan], now + 1), now + 1, &|_, _| true));
+
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+        assert_eq!(table.liveness_at(&node42, &chan, now + 1), Liveness::Live);
     }
 }
