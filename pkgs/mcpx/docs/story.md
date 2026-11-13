@@ -3111,3 +3111,5 @@ else in this document is detail underneath those four verbs.
   documents this pattern as "programmatic tool calling".
 - [Cloudflare, *Code Mode*](https://blog.cloudflare.com/code-mode/) — where the
   idea was first argued publicly.
+
+<!-- guard live-fire probe for #6929 (task 11319): no code change, no test file, no attestation — the restored mcpx fix-test guard must FAIL this PR. It will be closed unmerged. -->
