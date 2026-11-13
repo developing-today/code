@@ -111,7 +111,37 @@ where
         .await
         .unwrap();
     let addr = endpoint.addr();
-    let events = blob_events(access, policy, AccessPolicy::restricted([]));
+    let events = blob_events(
+        access,
+        policy,
+        AccessPolicy::restricted([]),
+        std::collections::BTreeSet::new(),
+    );
+    let router = Router::builder(endpoint)
+        .accept(iroh_blobs::ALPN, BlobsProtocol::new(store, Some(events)))
+        .spawn();
+    (router, addr)
+}
+
+/// A provider whose gate also trusts `local` as local readers (the operator's
+/// own keys), as `id serve` wires it.
+async fn provider_with_local<A>(
+    store: &Store,
+    access: Arc<A>,
+    policy: BlobPolicy,
+    local: std::collections::BTreeSet<EndpointId>,
+) -> (Router, EndpointAddr)
+where
+    A: WorldAccess + Send + Sync + 'static,
+{
+    let endpoint = Endpoint::builder(presets::Minimal)
+        .relay_mode(RelayMode::Disabled)
+        .secret_key(SecretKey::from_bytes(&[200; 32]))
+        .bind()
+        .await
+        .unwrap();
+    let addr = endpoint.addr();
+    let events = blob_events(access, policy, AccessPolicy::restricted([]), local);
     let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(store, Some(events)))
         .spawn();
@@ -185,6 +215,38 @@ async fn a_non_member_is_refused_fetch_and_observe() {
     );
     assert!(observe(&stranger, &addr, docs).await.is_err());
     assert!(!stranger.store.blobs().has(docs).await.unwrap());
+
+    router.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_local_reader_fetches_an_unreferenced_blob_but_a_stranger_cannot() {
+    let server = server_store();
+    let (docs, _tag) = put(&server, DOCS_BODY).await;
+    let local = peer(7).await;
+    let stranger = peer(8).await;
+    // No world references the blob and nobody is a member of anything: this is
+    // a locally published blob, readable only through local trust (#7181 P1).
+    let graph = Graph {
+        members: vec![],
+        refs: vec![],
+    };
+    let (router, addr) = provider_with_local(
+        &server,
+        Arc::new(graph),
+        BlobPolicy::default(),
+        std::collections::BTreeSet::from([local.id]),
+    )
+    .await;
+
+    let got = fetch(&local, &addr, docs)
+        .await
+        .expect("a local reader may fetch its own store's blobs");
+    assert_eq!(got, DOCS_BODY);
+    assert_eq!(
+        fetch_refusal_code(&stranger, &addr, docs).await,
+        Some(DENIED)
+    );
 
     router.shutdown().await.unwrap();
 }

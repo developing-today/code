@@ -222,6 +222,7 @@ impl LocalNode {
                     Arc::clone(gate),
                     policy.clone(),
                     access,
+                    std::collections::BTreeSet::from([self.node_id]),
                 )),
             ),
             None => BlobsProtocol::new(&self.blobs, Some(blobs_events(access))),
