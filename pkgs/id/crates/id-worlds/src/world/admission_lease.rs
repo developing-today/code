@@ -18,12 +18,14 @@
 //!
 //! This module is the lease primitive: the signed payload, its
 //! domain-separated canonical encoding, issuance, and verification
-//! against a replica's pinned source. It deliberately does not wire
-//! the lease into session admission or the operator CLI (the rest of
-//! phase 5): a lease is only ever *presented* to a replica that already
-//! pins the writer's source key for journal verification, and
-//! [`SignedAdmissionLease::verify`] is the single check an admission
-//! path must pass before admitting a new spectator offline.
+//! against a replica's pinned source. [`ReplicaAdmissionGate`] is the
+//! enforcement seam: the world actor's token-admission path checks it
+//! for read-only replicas served with a gate (see
+//! `world::serve_replica_with_admission`), so a new spectator is
+//! admitted offline only when [`SignedAdmissionLease::verify`] passes
+//! for the current instant. The operator CLI that fetches the stream
+//! and the lease into a replica directory is the remaining phase 5
+//! surface.
 //!
 //! Security properties, mirroring the replication envelope's rules:
 //!
@@ -39,6 +41,8 @@
 //!   [`MAX_ADMISSION_LEASE_DURATION_MS`] at both issuance and
 //!   verification: policy B exists to bound revocation staleness, so
 //!   an over-long lease is refused even if its signature is valid.
+
+use std::collections::BTreeSet;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -242,6 +246,70 @@ pub enum AdmissionLeaseError {
     /// resync (policy B).
     #[error("admission lease has expired")]
     Expired,
+    /// The replica holds no admission lease at all: while the writer
+    /// is unreachable there is nothing to admit new spectators under.
+    #[error("no admission lease held")]
+    NoLease,
+}
+
+/// The policy-B gate a served replica applies at spectator admission
+/// (F12.13 phase 5): participants who were present at the verified
+/// journal cursor are existing sessions and are never gated — the
+/// ruling leaves existing verified sessions and read serving
+/// unaffected — while a participant who was not present is a NEW
+/// spectator, admitted only under a currently valid lease from the
+/// pinned writer ([`SignedAdmissionLease::verify`]). A gate holding
+/// no lease admits no new spectators.
+#[derive(Clone, Debug)]
+pub struct ReplicaAdmissionGate {
+    lease: Option<SignedAdmissionLease>,
+    pinned_source: [u8; 32],
+    world_id: String,
+    present_at_cursor: BTreeSet<u64>,
+}
+
+impl ReplicaAdmissionGate {
+    /// Build the gate for a replica of `world_id` pinned to
+    /// `pinned_source`, from the participants present at its verified
+    /// cursor (`present_at_cursor`, the restore's presence set) and
+    /// the lease it currently holds, if any.
+    pub fn new(
+        lease: Option<SignedAdmissionLease>,
+        pinned_source: [u8; 32],
+        world_id: impl Into<String>,
+        present_at_cursor: BTreeSet<u64>,
+    ) -> Self {
+        Self {
+            lease,
+            pinned_source,
+            world_id: world_id.into(),
+            present_at_cursor,
+        }
+    }
+
+    /// May `participant_id` be admitted at `now_unix_ms`? Existing
+    /// participants (present at the cursor) always may; a new
+    /// spectator needs the held lease to verify for this instant.
+    ///
+    /// # Errors
+    ///
+    /// The lease verification failure, or
+    /// [`AdmissionLeaseError::NoLease`] when the gate holds no lease.
+    pub fn admit(&self, participant_id: u64, now_unix_ms: u64) -> Result<(), AdmissionLeaseError> {
+        if self.present_at_cursor.contains(&participant_id) {
+            return Ok(());
+        }
+        match &self.lease {
+            Some(lease) => lease.verify(self.pinned_source, &self.world_id, now_unix_ms),
+            None => Err(AdmissionLeaseError::NoLease),
+        }
+    }
+
+    /// Whether `participant_id` counts as an existing participant
+    /// (present at the verified cursor) rather than a new spectator.
+    pub fn is_existing(&self, participant_id: u64) -> bool {
+        self.present_at_cursor.contains(&participant_id)
+    }
 }
 
 #[cfg(test)]

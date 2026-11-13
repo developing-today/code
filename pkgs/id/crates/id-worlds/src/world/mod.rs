@@ -52,7 +52,7 @@ mod tests;
 pub(crate) use actor::{WorldActor, WorldCommand};
 pub use admission_lease::{
     ADMISSION_LEASE_DOMAIN, ADMISSION_LEASE_VERSION, AdmissionLease, AdmissionLeaseError,
-    MAX_ADMISSION_LEASE_DURATION_MS, SignedAdmissionLease,
+    MAX_ADMISSION_LEASE_DURATION_MS, ReplicaAdmissionGate, SignedAdmissionLease,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use coordinator::{
