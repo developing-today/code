@@ -403,9 +403,9 @@ function computeAttemptAggregates(db: Database, now: number): AttemptAggregates 
 // #5082 follow-up (same day): one query per macrotask was not enough —
 // the widest single scans (leg/model rows over 15d, the unbounded
 // day-of-week history) still blocked the loop for ~2.6 s each. The
-// refresh now runs every windowed scan in day slices (30-day chunks
+// refresh now runs every windowed scan in day slices (2-day chunks
 // for the day-of-week history, whose span is set by the coverage
-// read): the widest measured slice is ~0.2 s, and slices merge
+// read): the widest measured slice is ~0.3 s, and slices merge
 // exactly — day-grouped rows are disjoint across day-aligned slices,
 // hour/day-of-week buckets merge by summation.
 const AGGREGATES_TTL_MS = 300_000;
@@ -448,9 +448,12 @@ function refreshAttemptAggregates(db: Database, path: string): void {
   steps.push(() => {
     data.coverage = queryCoverage(db);
     // The day-of-week history is unbounded; slice its full span (set
-    // by the coverage read) into 30-day chunks merged by summation.
+    // by the coverage read) into 2-day chunks merged by summation.
+    // (30-day chunks were tried first: with ~20 days of history that
+    // was the whole scan in one step — measured 2.58 s, the one slow
+    // poll hit in the post-deploy probe. 2-day chunks measure ~0.3 s.)
     const from = data.coverage.f ?? until;
-    for (const [cf, ct] of chunkBounds(from, until, 30 * DAY_MS)) {
+    for (const [cf, ct] of chunkBounds(from, until, 2 * DAY_MS)) {
       steps.push(() => {
         for (const r of queryDowHistoryRange(db, cf, ct)) {
           const acc = dowByDow.get(r.dow) ?? { dow: r.dow, calls: 0, tokens: 0 };
