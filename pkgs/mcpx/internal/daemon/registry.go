@@ -2199,26 +2199,38 @@ func termScore(term, name, fn, desc, ns string, words []string, tags []string) (
 
 // typoMatch is the #1923 slice-2 typo tier: the term is a near miss of a
 // tool-name word or of the namespace, measured by the shared nearmiss
-// matcher (Damerau-Levenshtein, so a transposition costs one edit) at
-// distance at most 2 — the reach docs/proposals.md sets for this rung.
-// It runs only after every exact tier above has missed, against names
-// only (never descriptions or tags), and scores below all of them, so an
-// exact query's results and ordering are unchanged. A term shorter than
-// three characters is never a typo candidate: at that length a distance
-// of 2 is noise, not a misspelling.
+// matcher (Damerau-Levenshtein, so a transposition costs one edit). The
+// reach is the docs/proposals.md distance of at most 2, scaled by name
+// length in the nearmiss spirit: a name shorter than five characters
+// allows only one edit, because at that length two edits is a different
+// word, not a typo ("disk" is not a misspelling of "dir"). It runs only
+// after every exact tier above has missed, against names only (never
+// descriptions or tags), and scores below all of them, so an exact
+// query's results and ordering are unchanged. A term shorter than three
+// characters is never a typo candidate.
 func typoMatch(term, ns string, words []string) bool {
 	if len(term) < 3 {
 		return false
 	}
-	if ns != "" && nearmiss.Distance(term, ns) <= 2 {
+	if ns != "" && nearmiss.Distance(term, ns) <= typoReach(ns) {
 		return true
 	}
 	for _, w := range words {
-		if nearmiss.Distance(term, w) <= 2 {
+		if nearmiss.Distance(term, w) <= typoReach(w) {
 			return true
 		}
 	}
 	return false
+}
+
+// typoReach is how far a name of this length may drift and still count
+// as a typo of the term: two edits for names of five or more characters,
+// one below that.
+func typoReach(name string) int {
+	if len(name) >= 5 {
+		return 2
+	}
+	return 1
 }
 
 // tagMatch: a term matches a tag when it equals the tag, equals the tag

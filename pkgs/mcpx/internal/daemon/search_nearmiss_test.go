@@ -76,6 +76,21 @@ func TestSearchNearmissExactQueryUnchanged(t *testing.T) {
 	}
 }
 
+func TestSearchNearmissShortNamesAreNotAbsorbed(t *testing.T) {
+	// Regression (found by the slice-1 suite): with a flat distance-2
+	// reach, "disk" typo-matched list_dir via its word "dir" (two edits).
+	// Short names allow one edit only, so a tag query for a tool carrying
+	// the "disk" tag still returns that tool alone.
+	reg := &Registry{testTools: []ToolInfo{
+		{Namespace: "files", Server: "files", Tool: "read_file", Function: "files.readFile", Description: "Read a file", Tags: []string{"io", "disk"}},
+		{Namespace: "files", Server: "files", Tool: "list_dir", Function: "files.listDir", Description: "List a directory", Tags: []string{"io"}},
+	}}
+	hits := reg.Search("disk", 10)
+	if len(hits) != 1 || hits[0].Tool != "read_file" {
+		t.Fatalf("hits = %+v, want read_file alone for \"disk\"", hits)
+	}
+}
+
 func TestSearchNearmissMultiTermTypo(t *testing.T) {
 	// requireAll runs first: both terms must match, a typo counting as a
 	// match, so "take scrrenshot" still lands on take_screenshot alone.
