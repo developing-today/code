@@ -144,3 +144,6 @@ assert.equal((await call('stores/'+personal+'/events',{data:{expectedVersion:inv
 const brokenAllocations=structuredClone(withNullableAllocations);brokenAllocations.inventory.push({id:'receipt_broken',mode:'Bought',qty:1,totalMinor:100,allocations:[null]});
 assert.equal((await call('stores/'+personal+'/events',{data:{expectedVersion:inventoryBase.version+1,event:{id:'null_allocation_element',after:brokenAllocations}}}))[0],400);
 console.log('PASS: nullable allocation collection accepted; malformed elements rejected with 400.');
+const restricted=(await call('stores/'+sid))[1];
+assert.equal((await call('stores/'+sid+'/variants',{data:{expectedVersion:restricted.version,commandId:'acl_variant',ids:['one'],options:{action:'group',name:'Unsafe family'}}}))[0],403);
+console.log('PASS: scoped variant commands fail closed for administrators as well as editors.');

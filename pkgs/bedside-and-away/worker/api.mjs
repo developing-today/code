@@ -215,6 +215,7 @@ export async function api(request,env){
      const next=historyTransition({current:source,event:parse(original.payload_json),action:b.action,latest:last?parse(last.payload_json):null});
      event={id:commandId,after:next,label:(b.action==='undo'?'Undo: ':'Redo: ')+parse(original.payload_json).label,operation:'history.'+b.action,target:b.targetEventId};
     }else{
+     if(hasScopedAccess(source))fail(403,'Variant grouping is disabled in stores with object restrictions');
      assertSnapshotMutation(source,source,context);
      const next=structuredClone(source);
      try{variantPlan(next,b.ids,b.options,()=>crypto.randomUUID())}catch(e){fail(400,e.message)}
