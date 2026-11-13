@@ -36,6 +36,7 @@ pub mod json_unique;
 pub mod membership;
 pub mod rejection;
 pub mod residency;
+pub mod residency_inventory;
 pub mod sanctions;
 pub mod sync_method;
 pub mod text;
