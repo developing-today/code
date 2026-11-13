@@ -349,3 +349,16 @@ Preserve the old numeric scores here as migration data; do not treat them as the
 - Binary-size budget beyond existing `fleet-connect`; proposed consumer profile targets need measured baselines and owner approval.
 - Typed private-key zeroization guarantees and algorithm/library support matrix, especially ML-DSA X.509/client support; validate against current primary sources before selecting dependencies.
 - Whether `fleet-secrets-admin` becomes a separate crate after first implementation; decide from measured feature closure/consumer reuse, not naming aesthetics.
+
+
+## Additive architecture packets (append-only update)
+
+### ARCH-12 — Unified input-reference/output-target resolver
+
+One reusable library surface normalizes typed file/directory/archive/stdin/structured bytes, PKI fingerprints, opaque IDs, qualified secret refs, non-root inventory, explicit signer handles and in-memory objects into `InputRef`; it separately plans file/archive/stdout/provider/memory/no-store targets. Ambiguity is a typed error, never first-match; signer handles are not authority; default inventory cannot authorize root signing; private output requires ARCH-06 `OutputAuthorization`. It delegates secret resolution to ARCH-01 and safe file/archive transactions to OPS-04. One cohesive `fleet-io` seam is justified by multiple callers, not split by format/input noun. V2, Backlog, L, High/600; dependencies ARCH-01/06 and OPS-04. No standalone CLI or new V1 behavior.
+
+### ARCH-11 — FleetContext composition facade and CLI/library parity
+
+One optional `FleetContext` facade composes ARCH-01 reads, ARCH-12 input/output plans, ARCH-06 authorization ports and domain services. It normalizes/dispatches requests but owns no domain policy and cannot mint signer/output authority. Existing CLI adapters and embedded Rust calls use the same typed operation path; synthetic in-memory stream tests exercise a two-sink pipeline without real services. V2, Backlog, L, High/700; dependencies ARCH-01/06/07/12. A god-object is the reversal trigger.
+
+Addendum to the initial architecture packet set: ARCH-11/12 extend the architecture proposal list; ARCH-01/06/07/10 packet bodies remain unchanged.

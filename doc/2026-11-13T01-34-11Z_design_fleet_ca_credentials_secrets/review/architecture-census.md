@@ -288,3 +288,59 @@ only. It does not approve the other domain drafts, global proposal graph,
 canonical inventory completeness, issue publication, or the overall design
 mission. The parent should run the whole-tree review after inventory/tools and
 the other domain packets freeze.
+
+## Additive-packet re-review — 2026-11-13 01:19 CST
+
+The parent later added TRACE-03, ARCH-11 and ARCH-12, plus the three gap
+rulings. I reviewed those packets and matching architecture/census sections
+against the original snapshot only (see source integrity below). The older six
+packet verdicts remain unchanged.
+
+| New packet | Verdict | Rationale |
+|---|---|---|
+| TRACE-03 — exhaustive pinned-repository census | **AGREE** | The packet scopes a deterministic static census at a full pinned revision, enumerates the requested repo/config/caller/profile surfaces, separates source/test facts from deployment facts, and leaves deployments `not-observed` without a dated read-only receipt. It uses generated evidence outputs rather than a second source of truth and does not claim the bounded V1 census is exhaustive. |
+| ARCH-12 — typed input-reference/output-target resolver | **AGREE** | It covers paths/directories/manifest, archives, stdin/structured bytes, PKI fingerprint, logical ID, qualified secret URI, non-root inventory, explicit signer-handle locator and in-memory input; ambiguity fails rather than guessing. Root inventory lookup does not authorize signing; private outputs require ARCH-06 authorization. OPS-04 is a hard dependency and owns safe file/archive transactions; ARCH-12 owns reference normalization/planning, so implementation must call OPS-04's archive safety interface rather than fork it. |
+| ARCH-11 — FleetContext and CLI/library parity | **AGREE** | The facade composes injected ports/domain services, owns dispatch/preflight only, and cannot mint signing/output authority or own domain policy. Its fake NATS→DB/Redis-shaped in-memory pipeline checks CLI/library typed-result parity without disk, subprocess or live services. The ARCH-07 dependency is proposal ordering only; no Rust dependency points from the library to the CLI binary. |
+
+**Gap-ruling resolution:** the three `resolved_by` IDs match their new packet
+IDs (ARCH-GAP-01→TRACE-03, ARCH-GAP-02→ARCH-11, ARCH-GAP-03→ARCH-12). All 8
+`source_member_id` values in the rulings resolve to `member_id` entries in the
+named `traceability/member-mappings` files. The source aliases point at the
+immutable original snapshot; no mapping was regenerated from the formatted
+`sources/` view. A local, read-only normalizer pass over the nine current
+proposal JSON arrays reported 157 packets and an acyclic dependency DAG. No
+Git, GitHub or queue call was made.
+
+**Input/stream boundary:** ARCH-12's `InMemory(MemoryArtifactRef)` and
+`Memory(SinkHandle)` cover object/target selection, while ARCH-11 owns the
+stream-composition seam required by source §2.1 line 80. Keep the API able to
+connect an in-memory/stream input to those sinks without manufacturing a file;
+the required fake pipeline test is the oracle. This is an acceptance point for
+the two packets together, not a request to add another resolver or format
+packet.
+
+The source-truth correction remains binding: the immutable §24.2 matrix is
+13 issuer certificates per partition, 52 issuer certificates total, plus 13
+root variants = 65 CA certificates. There is no sourced “32+20” conflict. The
+integration-draft I-6 correction/retraction remains in place.
+
+**No new blockers found in these three packets.** The census issue remains
+explicitly static/read-only; deployment facts require a separate read
+observation receipt and are not inferred. This closes only the three additive
+architecture/census gap packets for this review slice. The parent still owns
+the later whole-tree review after mapping/tools freeze; the overall design
+mission is not declared complete.
+
+**Additive-slice provenance:** read 2026-11-13 01:19 CST. The frozen design,
+census and packet hashes are `designs/architecture.md`
+`a66746313f96833751162a7a83007c679c336294c4cc483b515d604cfc794145`,
+`evidence/census.md`
+`121610131351191f467afaceaeff730765d4fb4eeb16954777b090f6721f6f4e`,
+`proposals/architecture.json`
+`0138f405474ea67e34d8121554649cac0e0c5163bfe0e7e03f49047a50d4e559`,
+`proposals/census.json`
+`bf36cc32d49e992aeeac2ccc97c2cd5ce7993b7f0703c63a1700c07112238965`, and
+`evidence/coverage-rulings-architecture-gaps.json`
+`95ab532a49a4e0558ac1a40db6da90024c6f8947043195224035d8854a73f77a`.
+All source citations in this additive review were read from the pinned original
+snapshot, not the formatted `sources/` view.
