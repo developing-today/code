@@ -18,7 +18,7 @@
 // credential it is.
 //
 // Usage:
-//   bun run scripts/submit-decision-set.ts --payload <path-to-json>
+//   bun run scripts/submit-decision-set.ts --payload <path-to-json> [--refresh]
 //
 // The intake bearer token is resolved BY NAME from Bitwarden Secrets
 // Manager (`pm-aggregator.alerts-intake-token`, via src/secrets.ts)
@@ -29,6 +29,17 @@
 // Re-submitting the same setId is idempotent server-side: the existing
 // set (and its token and resolutions) is returned unchanged with
 // "created": false, and no second push is sent.
+//
+// --refresh (#9354) is the exception, for STANDING ledger-mirror sets
+// only (e.g. the standing open-questions set): it sends
+// `refresh: true` in the envelope, and the server replaces the set's
+// title/items from the payload while preserving its token, createdAt
+// and original source, carrying resolutions (and, for unchanged
+// question wording, version history) over by qid. The response then
+// carries "refreshed": true (passed through on stdout here), sends no
+// push, and logs no set.created event. Do not use it for ordinary
+// sets: for them a re-post is deliberately a duplicate, not an edit.
+// Refreshing a setId that does not exist yet is a normal create.
 import { readFile } from "node:fs/promises";
 import { resolveBwsSecret } from "../src/secrets.ts";
 import { validateDecisionSet, withGeneratedSetId } from "../src/decisions.ts";
@@ -52,6 +63,11 @@ function rejectUnknownArgs(): void {
       if (seen.has(token)) usageError("duplicate --payload");
       seen.add(token);
       i++; // skip the value; arg() validates it
+      continue;
+    }
+    if (token === "--refresh") {
+      if (seen.has(token)) usageError("duplicate --refresh");
+      seen.add(token);
       continue;
     }
     usageError(`unknown argument ${JSON.stringify(token)}`);
@@ -96,11 +112,12 @@ async function main(): Promise<void> {
     console.error("submit-decision-set: intake token unavailable (bws secret pm-aggregator.alerts-intake-token)");
     process.exit(1);
   }
+  const refresh = process.argv.includes("--refresh");
   const base = (process.env.ALERTS_INTAKE_URL ?? "http://127.0.0.1:4870").replace(/\/+$/, "");
   const res = await fetch(`${base}/api/decision-sets`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ decisionSet: v.value, source: "decisions-ledger" }),
+    body: JSON.stringify({ decisionSet: v.value, source: "decisions-ledger", ...(refresh ? { refresh: true } : {}) }),
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
@@ -108,14 +125,23 @@ async function main(): Promise<void> {
     console.error(`submit-decision-set: submit API returned HTTP ${res.status}: ${text.slice(0, 300)}`);
     process.exit(1);
   }
-  const out = (await res.json().catch(() => null)) as { setId?: string; pageUrl?: string; created?: boolean } | null;
+  const out = (await res.json().catch(() => null)) as
+    | { setId?: string; pageUrl?: string; created?: boolean; refreshed?: boolean }
+    | null;
   if (!out?.setId || !out?.pageUrl) {
     console.error("submit-decision-set: submit API response carried no setId/pageUrl");
     process.exit(1);
   }
   // The one place the token page URL is printed: the authenticated
   // submitter's own stdout, as the API contract promises.
-  console.log(JSON.stringify({ setId: out.setId, pageUrl: out.pageUrl, created: out.created ?? false }));
+  console.log(
+    JSON.stringify({
+      setId: out.setId,
+      pageUrl: out.pageUrl,
+      created: out.created ?? false,
+      ...(out.refreshed !== undefined ? { refreshed: out.refreshed } : {}),
+    }),
+  );
 }
 
 await main();
