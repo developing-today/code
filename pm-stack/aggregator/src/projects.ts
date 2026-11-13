@@ -11,6 +11,7 @@
 // the live source so the wire shape is parsed exactly once.
 import type { GhItem, OrchestrationSection, ProjectAudit, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef, refKey } from "./model.ts";
+import { canonicalStatusFor, type CanonicalStatus } from "./status-taxonomy.ts";
 import { isIsoDate, isRecord, isTimestampNotFuture } from "./validate.ts";
 import { workItemRefSet } from "./work-items.ts";
 
@@ -505,19 +506,23 @@ export function poolItemToGhItem(p: ProjectPoolItem): GhItem {
   };
 }
 
-export type DerivedProjectState = "Todo" | "In Progress" | "Done";
+/** The derived state IS a canonical status (#1198): the derived side
+ * and every source side speak the one taxonomy in status-taxonomy.ts. */
+export type DerivedProjectState = CanonicalStatus;
 
 /**
- * Derived state — what the rest of the dashboard derives for an issue,
- * kept deliberately simple (documented per #910 stage 5):
+ * Derived state — what the rest of the dashboard derives for an item,
+ * in the canonical taxonomy (#1198; documented per #910 stage 5):
  *   - issue/PR closed or merged            -> Done
+ *   - open, ready (non-draft) PR            -> In Review
+ *     (GitHub's draft/ready distinction is the review boundary: a
+ *     ready PR is under review by construction, so a Project Status
+ *     of "In Review" AGREES for ready PRs instead of disagreeing by
+ *     construction, as it did before #1198)
  *   - open, and its ref appears anywhere in the orchestration
- *     section (a tier item, a goal's lined-up task, or a dependency)
- *                                            -> In Progress
+ *     section (a tier item, a goal's lined-up task, or a dependency),
+ *     or the item is an open draft PR        -> In Progress
  *   - otherwise                              -> Todo
- * There is no derived "In Review": a Project Status of "In Review"
- * therefore disagrees with an "In Progress" derivation, and the
- * /projects page shows that disagreement rather than hiding it.
  */
 export function derivedProjectState(
   p: ProjectPoolItem,
@@ -525,7 +530,9 @@ export function derivedProjectState(
   additionalInProgressRefs?: ReadonlySet<RefKey>,
 ): DerivedProjectState {
   if (p.state === "closed" || p.state === "merged") return "Done";
+  if (p.contentKind === "pr" && p.state === "open" && !p.draft) return "In Review";
   if ((section && refInOrchestration(p.ref, section)) || additionalInProgressRefs?.has(p.ref)) return "In Progress";
+  if (p.contentKind === "pr" && p.state === "open") return "In Progress";
   return "Todo";
 }
 
@@ -537,7 +544,12 @@ function refInOrchestration(ref: RefKey, section: OrchestrationSection): boolean
 }
 
 /** The disagreement to display, or null when both sides agree (or the
- * Project carries no Status to disagree with). */
+ * Project carries no Status to disagree with). The comparison is
+ * canonical (#1198): the Project Status is mapped through the
+ * taxonomy's project table first, so a spelling variant of the same
+ * status never fakes a disagreement — and an UNMAPPED Project Status
+ * (canonical null) always disagrees, because an unknown vocabulary
+ * silently treated as agreement is how the pages drifted apart. */
 export function projectDisagreement(
   p: ProjectPoolItem,
   section?: OrchestrationSection | null,
@@ -545,5 +557,5 @@ export function projectDisagreement(
 ): { project: string; derived: DerivedProjectState } | null {
   if (!p.status) return null;
   const derived = derivedProjectState(p, section, additionalInProgressRefs);
-  return p.status === derived ? null : { project: p.status, derived };
+  return canonicalStatusFor("project", p.status) === derived ? null : { project: p.status, derived };
 }

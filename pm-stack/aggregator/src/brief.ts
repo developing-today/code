@@ -73,9 +73,11 @@ function buildItemBriefWithIndexes(
       ? `Unknown — orchestration source is ${inputs.orchestrationStatus}; derived state is not asserted.`
       : derived === "Done"
         ? "Done — the linked issue/PR is closed or merged."
-        : derived === "In Progress"
-          ? "In Progress — open, and referenced by the orchestration plan (a tier item, a lined-up goal task, or a dependency)."
-          : "Todo — open, with no orchestration reference placing it in flight.";
+        : derived === "In Review"
+          ? "In Review — the linked item is an open, ready (non-draft) PR: under review by GitHub's draft/ready distinction (#1198)."
+          : derived === "In Progress"
+            ? "In Progress — open, and referenced by the orchestration plan (a tier item, a lined-up goal task, or a dependency)."
+            : "Todo — open, with no orchestration reference placing it in flight.";
   const stateEvidence: BriefEvidence =
     derived === "In Progress" || derived === "Unknown"
       ? {
