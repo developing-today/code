@@ -423,6 +423,43 @@ func firstSentence(s string) string {
 }
 
 var helpRowRE = regexp.MustCompile(`^\s{1,6}(\S+)\s{2,}(\S.*)$`)
+var usageBracketRE = regexp.MustCompile("\\[([^\\[\\]]*)\\]")
+
+// optionalPositionalNames extracts the positional names a help text's
+// usage block marks optional: the bracketed [name] form (argparse
+// [item], cobra add [item]). The usage block is the usage: line plus
+// its continuation lines, up to the first blank line; only bracket
+// groups there count, so a [word] in prose or a description further
+// down cannot flip a positional optional. Inside a group the first
+// field is the candidate: a leading dash makes it an optional flag
+// group ([-h], [--opt <v>]), not a positional.
+func optionalPositionalNames(text string) map[string]bool {
+	out := map[string]bool{}
+	inUsage := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(trimmed), "usage:") {
+			inUsage = true
+		} else if inUsage && trimmed == "" {
+			inUsage = false
+		}
+		if !inUsage {
+			continue
+		}
+		for _, m := range usageBracketRE.FindAllStringSubmatch(line, -1) {
+			fields := strings.Fields(m[1])
+			if len(fields) == 0 || strings.HasPrefix(fields[0], "-") {
+				continue
+			}
+			name := strings.Split(fields[0], "|")[0]
+			name = strings.TrimSuffix(strings.Trim(name, "<>[]"), "...")
+			if name != "" {
+				out[strings.ReplaceAll(name, "-", "_")] = true
+			}
+		}
+	}
+	return out
+}
 
 // parseFlagSpec parses the flag part of one help or man line:
 // "-f, --file <path>", "--output=FILE", "-v". A trailing token that is
@@ -482,6 +519,7 @@ func parseFlagSpec(spec string) []importFlag {
 
 func parseHelpText(text string) *importShape {
 	shape := &importShape{}
+	optional := optionalPositionalNames(text)
 	section := ""
 	seenGlobal := map[string]bool{}
 	var firstUsageLine string
@@ -543,6 +581,7 @@ func parseHelpText(text string) *importShape {
 					Long:       strings.ReplaceAll(name, "-", "_"),
 					Desc:       strings.TrimSpace(m[2]),
 					TakesValue: true,
+					Optional:   strings.HasPrefix(m[1], "[") || optional[strings.ReplaceAll(name, "-", "_")],
 				})
 			}
 		}
