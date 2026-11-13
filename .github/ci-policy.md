@@ -16,6 +16,31 @@ worktree and review rules. Do not infer authorization to bypass protection.
 The November 13 API audit found no rulesets and no required_status_checks
 on main protection. Other protection flags were left unchanged.
 
+## Host evaluation (nix-ci `host-eval`)
+
+Decision recorded for #3039 (Drew's answer `host-eval-gate-3039`, applied
+2026-11-13): the `host-eval` job in `nix-ci.yml` is **advisory only**. It is
+not a required check, it gates no merge, and no merge-queue or
+required-status-check route is to be built around it — the November 13 API
+audit found no rulesets and no `required_status_checks` on main, and this
+section supersedes the merge-queue-era text that once implied otherwise.
+
+`nix-ci` itself runs on schedule (nightly) and `workflow_dispatch` only —
+the full flake check, `host-eval` included, is a nightly/manual signal,
+not a push or PR gate. The main-tier controls that carry the host-eval
+signal instead are:
+
+- the automatic `ci-fix` dispatch when `host-eval` fails
+  (commit 43807e56f4, #705), which turns a red host evaluation into filed,
+  routed fix work without blocking merges;
+- `main-broken.yml`, the main broken watcher, which files or appends main
+  breakages from failing main runs;
+- the push-to-main suites in the agreement registry below, whose
+  post-merge conclusions are the merge evidence for main.
+
+A red `host-eval` therefore means "fix work is filed and routed", never
+"main is gated".
+
 ## Trigger contract
 
 - Existing push CI is restricted to exactly `branches: [main]`. Preserve
