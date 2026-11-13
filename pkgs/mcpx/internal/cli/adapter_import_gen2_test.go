@@ -201,3 +201,28 @@ func TestRelativeBinaryPathIsStoredAbsolute(t *testing.T) {
 		t.Errorf("command: got %q, want absolute %q", spec.Command, want)
 	}
 }
+
+// Oracle: issue #9557, the Codex scenario from PR #9161. Integer
+// typing comes only from complete numeric placeholder tokens;
+// ENDPOINT (which merely contains "int") must generate a string
+// parameter so argument validation accepts a URL value.
+func TestFlagParamsIntegerOnlyFromCompleteNumericTokens(t *testing.T) {
+	cases := []struct{ placeholder, want string }{
+		{"ENDPOINT", "string"},
+		{"POINT", "string"},
+		{"FILENAME", "string"},
+		{"INT", "integer"},
+		{"INTEGER", "integer"},
+		{"NUMBER", "integer"},
+		{"NUM", "integer"},
+		{"COUNT", "integer"},
+		{"MAX_COUNT", "integer"},
+		{"RETRY-NUM", "integer"},
+	}
+	for _, c := range cases {
+		params := flagParams([]importFlag{{Long: "opt", TakesValue: true, Value: c.placeholder}})
+		if len(params) != 1 || params[0].Type != c.want {
+			t.Errorf("placeholder %s: got %+v, want type %s", c.placeholder, params, c.want)
+		}
+	}
+}

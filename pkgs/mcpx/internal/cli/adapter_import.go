@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
 )
@@ -256,7 +257,7 @@ func flagParams(flags []importFlag) []adapter.Param {
 		if f.TakesValue {
 			p.Type = "string"
 			p.Equals = f.EqualsOnly
-			if v := strings.ToLower(f.Value); strings.Contains(v, "int") || strings.Contains(v, "num") || strings.Contains(v, "count") {
+			if placeholderIsInteger(f.Value) {
 				p.Type = "integer"
 			}
 		} else {
@@ -269,6 +270,29 @@ func flagParams(flags []importFlag) []adapter.Param {
 		out = append(out, p)
 	}
 	return out
+}
+
+// numericPlaceholderTokens are the complete placeholder tokens that
+// name a numeric type. Integer typing is inferred only when one of
+// them appears as a whole token in the placeholder, never as a
+// substring: ENDPOINT contains "int" but is a string placeholder
+// (#9557), while MAX_COUNT names a count.
+var numericPlaceholderTokens = map[string]bool{
+	"int": true, "integer": true, "num": true, "number": true, "count": true,
+}
+
+// placeholderIsInteger reports whether a value placeholder names a
+// numeric type with a complete token (INT, NUMBER, MAX_COUNT, ...).
+// String is the fallback for every other placeholder.
+func placeholderIsInteger(v string) bool {
+	for _, tok := range strings.FieldsFunc(strings.ToLower(v), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if numericPlaceholderTokens[tok] {
+			return true
+		}
+	}
+	return false
 }
 
 // shapeToSpec renders a parsed shape as a declaration. Global flags of a
