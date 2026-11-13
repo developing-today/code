@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 
 use crate::directory::{Refusal, normalize_key};
-use crate::world::hex_encode;
+use id_core::hex::hex_encode;
 
 /// How long a session lasts after it is opened.
 pub const SESSION_TTL_MS: u64 = 12 * 60 * 60 * 1000;
@@ -463,7 +463,7 @@ fn hex_bytes<const N: usize>(text: &str) -> Option<[u8; N]> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+    use id_core::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
 
     fn now() -> u64 {
         1_000_000_000_000

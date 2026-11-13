@@ -3903,6 +3903,7 @@ dependencies = [
  "hmac 0.13.0",
  "id-caps",
  "id-core",
+ "id-directory",
  "id-events",
  "id-groups",
  "id-store",
@@ -3999,6 +4000,34 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "vt100",
+]
+
+[[package]]
+name = "id-directory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "crypto_secretbox",
+ "ed25519-dalek 3.0.0",
+ "hmac 0.13.0",
+ "id-caps",
+ "id-core",
+ "id-events",
+ "id-sync",
+ "iroh-tickets",
+ "libc",
+ "p2panda-core",
+ "proptest",
+ "rand 0.10.3",
+ "rmp-serde",
+ "scrypt",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "subtle",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -4134,6 +4163,7 @@ dependencies = [
  "futures-lite",
  "id-caps",
  "id-core",
+ "id-directory",
  "id-events",
  "id-groups",
  "id-store",
