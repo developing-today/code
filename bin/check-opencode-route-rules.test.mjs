@@ -227,3 +227,67 @@ test('canonical OpenCode config satisfies the route rules', () => {
   const source = fs.readFileSync('.opencode/opencode.jsonc', 'utf8');
   assert.deepEqual(checkRouteRules(source), []);
 });
+
+// --- class fallback layout (Drew 2026-11-13) ---
+import { CLASS_FALLBACKS, inspectFallbackLayout } from './check-opencode-route-rules.mjs';
+
+function configWithFallbacks(overrides = {}) {
+  const config = configWith({
+    scout: ['good/model#low', 'opencode-route/workhorse'],
+    workhorse: ['good/model#high', 'opencode-route/scout', 'opencode-route/specialist'],
+    summit: ['plan/model#high', 'opencode-route/specialist'],
+    ...overrides,
+  });
+  const routes = config.experimental.model_routes;
+  routes.small = { targets: ['good/model#low', 'opencode-route/speed'] };
+  routes.speed = {
+    targets: ['good/model#high', 'opencode-route/workhorse', 'opencode-route/summit', 'opencode-route/specialist'],
+  };
+  routes.background = { targets: ['good/model#low', 'opencode-route/workhorse'] };
+  return config;
+}
+
+test('class fallback layout passes and the workhorse<->scout pair is not a cycle', () => {
+  const result = inspectRouteRules(configWithFallbacks());
+  assert.deepEqual(result.issues, []);
+});
+
+test('class fallback drift between config and the declared chain is flagged', () => {
+  const config = configWithFallbacks({
+    workhorse: ['good/model#high', 'opencode-route/scout'],
+  });
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('fallback') && issue.includes('"workhorse"') && issue.includes('class fallback chain')),
+    `expected a workhorse fallback drift issue, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('a composition cycle between non-class routes is flagged with its path', () => {
+  const config = configWithFallbacks();
+  config.experimental.model_routes.cycA = { targets: ['opencode-route/cycB'] };
+  config.experimental.model_routes.cycB = { targets: ['opencode-route/cycA'] };
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('route composition cycle: cycA -> cycB -> cycA')),
+    `expected a composition cycle issue, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('fallback reachability check fires when a class cannot reach specialist', () => {
+  const routes = configWithFallbacks().experimental.model_routes;
+  const issues = inspectFallbackLayout(routes, { ...CLASS_FALLBACKS, summit: [] });
+  assert.ok(
+    issues.some((issue) => issue.includes('"summit"') && issue.includes('cannot reach specialist')),
+    `expected a reachability issue, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('fallback escalation walk fires when the chain loops without reaching specialist', () => {
+  const routes = configWithFallbacks().experimental.model_routes;
+  const issues = inspectFallbackLayout(routes, { ...CLASS_FALLBACKS, speed: ['summit'], summit: ['speed'] });
+  assert.ok(
+    issues.some((issue) => issue.includes('escalation walk') && issue.includes('never reaches specialist')),
+    `expected an escalation walk issue, got: ${JSON.stringify(issues)}`,
+  );
+});
