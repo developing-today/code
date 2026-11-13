@@ -777,7 +777,7 @@
         }
         // (
           # NixOS VM integration tests (Linux only — VMs require KVM)
-          pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             nixos-serve = pkgs.testers.runNixOSTest (
               import ./nix/tests/serve-test.nix { idPackage = self.packages.${system}.id-web; }
             );
