@@ -17,6 +17,14 @@
 //! caller invokes it, and `submit` dispatches a workflow_dispatch
 //! run explicitly. No Actions triggers are enabled by this crate.
 //!
+//! Pagination contract (#6622): a paged read is complete,
+//! bounded, or says so — the cursor is validated where read, the
+//! volume is bounded by a named page/result bound whose breach
+//! errors, and truncation is never silent (a count reads to
+//! completion or via the source's `total_count`, never a page
+//! presented as exact). `fetch_all_pages` is this crate's
+//! implementation; the repo-wide closing inventory is on #6623.
+//!
 //! Execution homes (phase 2, Drew's corrected design): ONE repo —
 //! the fleet repo (default `dezren39/fleet`, config
 //! `[dispatch-test] fleet_repo`) — holds the other fleet repos as
