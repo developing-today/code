@@ -990,7 +990,7 @@ function callSite(): LogAttrs | undefined {
   };
 }
 
-function send(kind: "log" | "result" | "artifact", payload: Record<string, unknown>): void {
+function send(kind: "log" | "result" | "artifact" | "final", payload: Record<string, unknown>): void {
   writeStderr(LOG_SENTINEL + JSON.stringify({ kind, ts: new Date().toISOString(), ...payload }));
 }
 
@@ -1108,6 +1108,61 @@ export function emitResult(value: unknown): void {
 }
 
 export { emitResult as emit };
+
+/**
+ * Report the value of a snippet's final top-level expression
+ * (CODE-19). The runner rewrites that expression to call
+ * __mcpxFinal with its value; the value crosses as a "final"
+ * record, kept apart from stdout and from emit() values. A value
+ * JSON cannot carry degrades to its inspected form rather than
+ * failing the run that produced it.
+ *
+ * An undefined value sends nothing: it means the expression
+ * expressed no result (a void call -- console.log is the common
+ * last line of a print-style snippet), and the ordinary stdout
+ * rule should decide the result instead.
+ */
+// The largest final value carried as itself. The record channel
+// is line-based with an 8 MiB ceiling on the reading side; an
+// unbounded capture could turn a successful script into a failed
+// run, so anything larger crosses in inspected, truncated form.
+const FINAL_VALUE_LIMIT = 1 << 20;
+
+export function captureFinal(value: unknown): void {
+  if (value === undefined) return;
+  try {
+    // JSON.stringify silently drops a function or symbol value
+    // instead of throwing, which would read back as an explicit
+    // null result; inspect those, like the values that throw.
+    if (typeof value === "function" || typeof value === "symbol") {
+      send("final", { value: safeInspect(value) });
+      return;
+    }
+    let raw: string | undefined;
+    try {
+      raw = JSON.stringify(value);
+    } catch {
+      raw = undefined;
+    }
+    if (raw !== undefined && raw.length <= FINAL_VALUE_LIMIT) {
+      send("final", { value });
+      return;
+    }
+    const text = safeInspect(value);
+    send("final", {
+      value: text.length <= FINAL_VALUE_LIMIT ? text : text.slice(0, FINAL_VALUE_LIMIT) + "… [final value truncated]",
+    });
+  } catch {
+    // Even the inspected fallback failed (a hostile toJSON or
+    // inspect): the capture must never fail the run that produced
+    // the value, so report a placeholder and move on.
+    try {
+      send("final", { value: "[final value could not be represented]" });
+    } catch {
+      // Nothing more can be done; the run's own output stands.
+    }
+  }
+}
 
 /**
  * Route console output through the record stream.
@@ -1497,6 +1552,7 @@ export function installGlobals(): void {
   installDenoCompat();
   g.log ??= log;
   g.emit ??= emitResult;
+  g.__mcpxFinal ??= captureFinal;
   g.tools ??= tools;
   g.call ??= call;
   g.batch ??= batch;
@@ -1764,6 +1820,8 @@ func GlobalDeclarations(nss []Namespace) string {
 	b.WriteString("  const log: Logger;\n")
 	b.WriteString("  /** Stream a result before the script finishes. */\n")
 	b.WriteString("  const emit: (value: unknown) => void;\n")
+	b.WriteString("  /** The final-expression capture (CODE-19); installed by the runner, not for direct use. */\n")
+	b.WriteString("  const __mcpxFinal: typeof __mcpx.captureFinal;\n")
 	b.WriteString("  /** Call any tool by name. */\n")
 	b.WriteString("  const call: typeof __mcpx.call;\n")
 	b.WriteString("  /** Execute multiple tool calls in a single turn. */\n")

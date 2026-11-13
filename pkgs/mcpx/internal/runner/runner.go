@@ -99,6 +99,14 @@ type Options struct {
 	CollectLogs func(logging.Record)
 	// OnResult receives values a script streamed with emit().
 	OnResult func(logging.Streamed)
+
+	// OnFinal fires when the generated client reports the snippet's
+	// final top-level expression (CODE-19): Run rewrites an inline
+	// source whose last statement is an expression so the client
+	// captures its value, and the record arrives here kept apart
+	// from stdout and from result()/emit() values. Nil drops it,
+	// like OnResult.
+	OnFinal func(logging.Streamed)
 	// OnArtifact receives files a script registered with artifact().
 	OnArtifact func(logging.Artifacted)
 	// OnWarning receives each non-fatal preflight diagnostic, in order,
@@ -507,7 +515,27 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// the same program, the same program run twice reuses the path and
 		// so hits the runtime's type-check cache, and a different program
 		// cannot be mistaken for it.
-		src := opts.Prelude + opts.Source
+		source := opts.Source
+		if opts.Export == "" && strings.TrimSpace(opts.Launcher) != LauncherNone && opts.Log != nil && opts.OnFinal != nil && strings.Contains(opts.ClientSource, "__mcpxFinal") && launcherInstallsCaptureGlobal(opts) {
+			// CODE-19: a snippet's final top-level expression is
+			// its result; rewrite it to report through the client
+			// (whose capture global exists only when the client
+			// carries it). With no launcher shim there are no
+			// globals at all, so bare-runtime runs keep their
+			// source too. The rewrite also requires a consumer:
+			// records are demultiplexed only when a Log writer
+			// is set, and a caller without an OnFinal handler
+			// (saved-recipe and resolve executions, for one)
+			// would leak the record into its stderr and lose
+			// the answer, so those sources run as written. A
+			// selected named export is an entry
+			// point with its own result rule, like the default
+			// export the transform itself abstains on. The
+			// transform abstains on anything it cannot classify,
+			// leaving the source as written.
+			source, _ = rewriteFinalExpression(source)
+		}
+		src := opts.Prelude + source
 		sum := sha256.Sum256([]byte(src))
 		scriptPath = filepath.Join(workDir, "script-"+hex.EncodeToString(sum[:])[:16]+".ts")
 		// Written only when absent or different, so a concurrent run of the
@@ -827,6 +855,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				Collect:     opts.CollectLogs,
 				Result:      opts.OnResult,
 				Artifact:    opts.OnArtifact,
+				Final:       opts.OnFinal,
 			})
 		}()
 		defer func() {
@@ -1130,6 +1159,30 @@ func textScanSource(opts Options, scriptPath string) string {
 		scan += "\n" + string(b)
 	}
 	return scan
+}
+
+// launcherInstallsCaptureGlobal reports whether the selected
+// launcher actually installs the globals (installGlobals), which is
+// what defines __mcpxFinal at run time. The built-in launcher always
+// does. A custom template does only when it reaches the globals --
+// through the @globals placeholder or by calling installGlobals
+// itself; a template that references @import or @entry but never
+// @globals leaves __mcpxFinal undefined, so the CODE-19 rewrite must
+// not run for it (CODE-19 review, PR #9344).
+func launcherInstallsCaptureGlobal(opts Options) bool {
+	custom := strings.TrimSpace(opts.Launcher)
+	if custom == "" {
+		return true
+	}
+	if strings.Contains(custom, "installGlobals(") {
+		return true
+	}
+	for _, p := range launcher.Used(launcher.Template{Text: custom}) {
+		if p == launcher.Globals {
+			return true
+		}
+	}
+	return false
 }
 
 // LauncherNone given as the launcher means no shim at all: the script is

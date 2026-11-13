@@ -308,6 +308,11 @@ func (a *App) applyFrame(res *execsvc.Result, f execsvc.Frame, eo execOptions, p
 		res.Emits = append(res.Emits, f.Value)
 	case execsvc.FrameStdout:
 		res.Stdout += f.Text
+	case execsvc.FrameResult:
+		var v any
+		if json.Unmarshal(f.Value, &v) == nil {
+			res.Result, res.ResultPresent = v, true
+		}
 	case execsvc.FrameArtifact:
 		if f.Artifact != nil {
 			res.Artifacts = append(res.Artifacts, *f.Artifact)
@@ -416,6 +421,7 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 		if res.Stdout != "" {
 			_, _ = fmt.Fprint(os.Stdout, res.Stdout)
 		}
+		a.reportFinalResult(res)
 		a.reportArtifacts(res)
 		// The remote text path renders hooks too: this renderer is
 		// shared by every remote caller, and a prompt hook's advice
@@ -432,6 +438,36 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 		return &exitStatusError{code: res.ExitCode}
 	}
 	return nil
+}
+
+// reportFinalResult prints a run's result for a person at a
+// terminal when the script's own output did not already show it:
+// a snippet whose final expression is its answer (CODE-19) may
+// print nothing at all, and a result that merely repeats the
+// stdout parse must not be printed twice.
+func (a *App) reportFinalResult(res *execsvc.Result) {
+	if !res.ResultPresent && res.Result == nil {
+		return
+	}
+	b, err := json.Marshal(res.Result)
+	if err != nil {
+		return
+	}
+	if trimmed := strings.TrimSpace(res.Stdout); trimmed != "" {
+		var sv any
+		if json.Unmarshal([]byte(trimmed), &sv) == nil {
+			if sb, serr := json.Marshal(sv); serr == nil && string(sb) == string(b) {
+				return
+			}
+		}
+	}
+	// Separate the answer from stdout that did not end with a
+	// newline (a progress write, say), rather than gluing them
+	// into one line.
+	if res.Stdout != "" && !strings.HasSuffix(res.Stdout, "\n") {
+		_, _ = fmt.Fprintln(os.Stdout)
+	}
+	_, _ = fmt.Fprintln(os.Stdout, string(b))
 }
 
 // fetchArtifacts pulls bodies the daemon did not place for us.

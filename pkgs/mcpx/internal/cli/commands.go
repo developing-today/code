@@ -1241,6 +1241,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 			return err
 		}
 	} else if eo.Output != execsvc.OutputStream {
+		a.reportFinalResult(res)
 		a.reportArtifacts(res)
 		a.reportHooks(res)
 	}
@@ -1291,6 +1292,15 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			env["result"] = parsed
 		}
+	}
+	// The service's result outranks the envelope's own stdout parse:
+	// a final-expression capture (CODE-19) or a hook replacement is
+	// the run's answer even when stdout parses to something else,
+	// and a deliberate null is an answer too.
+	if res.Result != nil {
+		env["result"] = res.Result
+	} else if res.ResultPresent {
+		env["result"] = nil
 	}
 	if len(streamed) > 0 {
 		values := make([]json.RawMessage, 0, len(streamed))

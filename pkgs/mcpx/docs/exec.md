@@ -181,8 +181,15 @@ error?, errorKind?}`. A caller over HTTP wants fields, not text it has to scrape
   `Accept: application/x-ndjson`, because a program with a JSON decoder should
   not have to strip `data: ` off every line first.
 
-`result` is the script's stdout parsed when stdout is JSON. That rule is
-inherited from `mcpx --json run` rather than invented, so the two agree.
+`result` is the value of the snippet's final top-level expression when
+it has one (CODE-19): a snippet that ends in an expression statement
+reports that expression's value, REPL-style, with stdout and `emit()`
+values still carried separately under their own names. When the final
+expression is `undefined` -- a print-style snippet ending in
+`console.log(...)` -- or the source declares a default export instead,
+the older rule decides: the script's stdout parsed when stdout is JSON.
+That rule is inherited from `mcpx --json run` rather than invented, so
+the two agree.
 
 ### The frame order, and why it is the order
 

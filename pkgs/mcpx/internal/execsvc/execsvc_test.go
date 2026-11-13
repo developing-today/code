@@ -729,3 +729,225 @@ func TestFailureKindPreflightTimeout(t *testing.T) {
 		t.Errorf("preflight timeout: timedOut = %v, kind = %q, error = %q", res.TimedOut, res.ErrorKind, res.Error)
 	}
 }
+
+// CODE-19 (#1937): a snippet's final top-level expression is its
+// result without print/emit; stdout and emits stay separately
+// observable, and the expression outranks the stdout JSON parse.
+func TestFinalExpressionIsTheResult(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	run := func(src string) *execsvc.Result {
+		res, err := svc.RunWith(context.Background(), runner.Options{
+			Source: src, ClientSource: module, Permissions: "all",
+		}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res == nil {
+			t.Fatal("no result")
+		}
+		if res.Error != "" {
+			t.Fatalf("run of %q failed: %s", src, res.Error)
+		}
+		return res
+	}
+
+	// A bare final expression, nothing printed at all.
+	res := run(`1 + 2`)
+	if res.Result != float64(3) {
+		t.Errorf("bare expression: result = %#v, want 3", res.Result)
+	}
+
+	// Prints and emits along the way stay observable under their
+	// own names; the final expression is the result even though
+	// stdout carried JSON of its own.
+	res = run(`console.log(JSON.stringify({ printed: true })); emit("mid"); const out = { answer: 42 }; out`)
+	if got, ok := res.Result.(map[string]any); !ok || got["answer"] != float64(42) {
+		t.Errorf("final expression: result = %#v, want the answer object", res.Result)
+	}
+	if !strings.Contains(res.Stdout, "printed") {
+		t.Errorf("stdout lost the printed JSON: %q", res.Stdout)
+	}
+	if len(res.Emits) != 1 || string(res.Emits[0]) != `"mid"` {
+		t.Errorf("emits = %v, want the single mid emit kept apart", res.Emits)
+	}
+
+	// A declaration tail is not an expression: the stdout rule
+	// still decides.
+	res = run(`const x = JSON.stringify({ via: "stdout" }); console.log(x);`)
+	if got, ok := res.Result.(map[string]any); !ok || got["via"] != "stdout" {
+		t.Errorf("declaration tail: result = %#v, want the stdout object", res.Result)
+	}
+}
+
+// CODE-19 review (PR #9344): an explicit null final expression is
+// a deliberate result -- present, framed, and ahead of stdout --
+// not the absence of one.
+func TestFinalNullIsADeliberateResult(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	var frames []execsvc.Frame
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source: `console.log("1"); null`, ClientSource: module, Permissions: "all",
+	}, execsvc.Options{Output: execsvc.OutputStructured}, func(f execsvc.Frame) error {
+		frames = append(frames, f)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.ResultPresent || res.Result != nil {
+		t.Errorf("null final: present = %v, result = %#v, want present with nil", res.ResultPresent, res.Result)
+	}
+	found := false
+	for _, f := range frames {
+		if f.Type == execsvc.FrameResult && string(f.Value) == "null" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no null result frame in %v", frames)
+	}
+}
+
+// CODE-19 review (PR #9344): a selected named export is an entry
+// point; the module's trailing expression must not replace its
+// result.
+func TestNamedExportKeepsItsResult(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source: "export function main() { return 42; }\n1",
+		ClientSource: module, Permissions: "all", Export: "main",
+	}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Error != "" {
+		t.Fatalf("named export run failed: %s", res.Error)
+	}
+	if res.Result != float64(42) {
+		t.Errorf("named export: result = %#v, want 42 from main, not the trailing 1", res.Result)
+	}
+}
+
+// CODE-19 review (PR #9344): a before hook's own final expression
+// must not leak into the main script's result.
+func TestBeforeHookFinalExpressionDoesNotLeak(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source: `console.log(JSON.stringify({ answer: 42 }));`, ClientSource: module, Permissions: "all",
+	}, execsvc.Options{
+		Output: execsvc.OutputStructured,
+		Hooks:  []execsvc.Hook{{Phase: execsvc.HookBefore, Name: "leak", Script: `1 + 2`}},
+	}, func(execsvc.Frame) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Error != "" {
+		t.Fatalf("hooked run failed: %s", res.Error)
+	}
+	if got, ok := res.Result.(map[string]any); !ok || got["answer"] != float64(42) {
+		t.Errorf("main result = %#v, want the stdout answer object, not the hook's 3", res.Result)
+	}
+}
+
+// CODE-19 review (PR #9344): when truncation discards a
+// stdout-derived result, its presence marker goes with it --
+// otherwise consumers present the discard as a deliberate null.
+func TestTruncationClearsResultPresence(t *testing.T) {
+	svc := service(t, store(t))
+	svc.Limits.StdoutLimit = 200
+	res, _ := run(t, svc, `
+import { installGlobals } from "./mcpx-client.ts";
+installGlobals();
+console.log(JSON.stringify({ data: "x".repeat(5000) }));
+`, execsvc.Options{})
+	if !res.StdoutTruncated {
+		t.Fatal("expected StdoutTruncated")
+	}
+	if res.Result != nil || res.ResultPresent {
+		t.Errorf("truncated stdout result: value = %#v, present = %v, want neither", res.Result, res.ResultPresent)
+	}
+}
+
+// CODE-19 review (PR #9344): with no launcher shim there are no
+// globals to capture through, so the source must run as written
+// even when a client source is present.
+func TestLauncherNoneSkipsFinalRewrite(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source: `console.log(JSON.stringify({ ok: true }));`,
+		ClientSource: module, Permissions: "all", Launcher: runner.LauncherNone,
+	}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Error != "" {
+		t.Fatalf("bare-runtime run failed: %s", res.Error)
+	}
+	if got, ok := res.Result.(map[string]any); !ok || got["ok"] != true {
+		t.Errorf("bare-runtime result = %#v, want the stdout object", res.Result)
+	}
+}
+
+// CODE-19 review (PR #9344): a final value JSON silently omits
+// (a function, a symbol) is reported inspected, not as an
+// explicit null.
+func TestFinalUnstringifiableValuesAreInspected(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	run := func(src string) *execsvc.Result {
+		res, err := svc.RunWith(context.Background(), runner.Options{
+			Source: src, ClientSource: module, Permissions: "all",
+		}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Error != "" {
+			t.Fatalf("run of %q failed: %s", src, res.Error)
+		}
+		return res
+	}
+	res := run(`(() => 42)`)
+	if s, ok := res.Result.(string); !ok || s == "" || !res.ResultPresent {
+		t.Errorf("function final: result = %#v (present %v), want an inspected string", res.Result, res.ResultPresent)
+	}
+	res = run(`Symbol("answer")`)
+	if s, ok := res.Result.(string); !ok || !strings.Contains(s, "Symbol") {
+		t.Errorf("symbol final: result = %#v, want the inspected symbol", res.Result)
+	}
+}
+
+// CODE-19 review (PR #9344): a final value too large for the
+// record channel crosses inspected and truncated; the run still
+// succeeds instead of dying on an oversized stderr line.
+func TestFinalOversizedValueIsBounded(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source: `"x".repeat(9 * 1024 * 1024)`, ClientSource: module, Permissions: "all",
+	}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Error != "" {
+		t.Fatalf("oversized final failed the run: %s", res.Error)
+	}
+	s, ok := res.Result.(string)
+	if !ok || !res.ResultPresent {
+		t.Fatalf("oversized final: result = %#v (present %v), want a bounded string", res.Result, res.ResultPresent)
+	}
+	if len(s) > 2*1024*1024 || !strings.Contains(s, "truncated") {
+		t.Errorf("oversized final not bounded: len = %d", len(s))
+	}
+}

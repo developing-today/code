@@ -342,7 +342,7 @@ func renderExec(res execsvc.Result) (string, error) {
 	// printed nothing. res.Result then no longer matches what stdout
 	// parses to, and the replacement is the outcome the caller must
 	// see; the raw stdout stays available after it.
-	if res.Result != nil {
+	if res.Result != nil || res.ResultPresent {
 		if b, merr := json.Marshal(res.Result); merr == nil {
 			fromStdout := false
 			if trimmed := strings.TrimSpace(res.Stdout); trimmed != "" {
