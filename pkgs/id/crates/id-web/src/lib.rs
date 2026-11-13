@@ -144,23 +144,43 @@ impl SaveRateLimiter {
 
     /// Reserve a filename for a save that is about to run (#2466).
     ///
-    /// Combines the cooldown `check` with an in-flight reservation taken
-    /// atomically under the in-flight lock: if a save for the same name
-    /// is already running, returns `Err(self.cooldown)` so the caller can
-    /// refuse with the usual "Try again in Ns" contract instead of
-    /// racing the in-flight save to the filename tag. On success the
-    /// returned `SavePermit` holds the reservation until it is dropped —
-    /// on completion (after `complete` records the save) or on any early
-    /// error return, which releases the name without recording a save,
-    /// so a failed save never strands the filename.
+    /// Combines the cooldown `check` with an in-flight reservation: if a
+    /// save for the same name is already running, returns
+    /// `Err(self.cooldown)` so the caller can refuse with the usual
+    /// "Try again in Ns" contract instead of racing the in-flight save
+    /// to the filename tag. On success the returned `SavePermit` holds
+    /// the reservation until it is dropped — on completion (after
+    /// `complete` records the save) or on any early error return, which
+    /// releases the name without recording a save, so a failed save
+    /// never strands the filename.
+    ///
+    /// The check and the reservation use different locks, so the pair
+    /// is made atomic with respect to completion by re-validating the
+    /// cooldown after the reservation is taken (#9587): `complete`
+    /// records the save *before* `Drop` releases the reservation, so
+    /// any save that completes while this call is between its first
+    /// check and its reservation has already recorded its cooldown by
+    /// the time the reservation succeeds, and the re-validation below
+    /// observes that record and refuses. A refused re-validation
+    /// releases the reservation it just took, leaving nothing behind.
     pub async fn acquire(&self, name: &str) -> Result<SavePermit, Duration> {
         self.check(name).await?;
-        let mut flight = self
-            .in_flight
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !flight.insert(name.to_owned()) {
-            return Err(self.cooldown);
+        {
+            let mut flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !flight.insert(name.to_owned()) {
+                return Err(self.cooldown);
+            }
+        }
+        if let Err(remaining) = self.check(name).await {
+            let mut flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            flight.remove(name);
+            return Err(remaining);
         }
         Ok(SavePermit {
             limiter: self.clone(),
@@ -204,9 +224,16 @@ impl SavePermit {
 
 impl Drop for SavePermit {
     fn drop(&mut self) {
-        if let Ok(mut flight) = self.limiter.in_flight.lock() {
-            flight.remove(&self.name);
-        }
+        // Recover a poisoned lock exactly like `acquire` does (#9587):
+        // `if let Ok` here would silently leave the name reserved, and
+        // every later `acquire` (which recovers the guard and sees the
+        // name still present) would refuse that filename forever.
+        let mut flight = self
+            .limiter
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        flight.remove(&self.name);
     }
 }
 
@@ -724,6 +751,145 @@ mod tests {
             "the completed save's cooldown refuses the next save"
         );
         assert!(limiter.check("a.txt").await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_save_limiter_acquire_refuses_when_a_save_completes_between_check_and_reserve() {
+        use std::future::Future as _;
+        use std::task::{Context, Poll};
+
+        let limiter = SaveRateLimiter::new(Duration::from_secs(5));
+        let first = limiter.acquire("a.txt").await.expect("first save proceeds");
+
+        // Orchestration (no sleeps, no timing loops — locks and FIFO
+        // order force the interleaving):
+        //
+        // - A helper thread holds the in-flight lock, so the second
+        //   acquire cannot take its reservation until the helper
+        //   releases it. On the `go` signal the helper first takes
+        //   and drops the cooldown lock: the second acquire's first
+        //   check is queued ahead of it on that mutex (FIFO, see
+        //   below), so acquiring it proves the check has passed. The
+        //   helper then records the save through the real `record`
+        //   path, removes the first save's name from the in-flight
+        //   set (exactly the removal `SavePermit::drop` performs
+        //   after `complete` records), and only then releases the
+        //   in-flight lock.
+        // - The test holds the cooldown lock and polls the second
+        //   acquire once by hand: that poll registers it as the first
+        //   waiter on the cooldown mutex, ahead of the helper.
+        // - The test then drops the cooldown lock, signals `go`, and
+        //   polls the second acquire again: the poll drives its check
+        //   to a pass and then blocks inside the reservation on the
+        //   helper's in-flight lock while the helper completes the
+        //   record + release sequence above. The acquire therefore
+        //   takes its reservation strictly after the record, in
+        //   `complete`'s record-then-release order — the #9587 gap.
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel::<()>();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let limiter = limiter.clone();
+            std::thread::spawn(move || {
+                let mut flight = limiter
+                    .in_flight
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                locked_tx.send(()).unwrap();
+                go_rx.recv().unwrap();
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                runtime.block_on(async {
+                    // Queued behind the second acquire's first check
+                    // (FIFO): holding this lock proves the check ran.
+                    let _observed = limiter.last_save.lock().await;
+                    drop(_observed);
+                    limiter.record("a.txt").await;
+                });
+                flight.remove("a.txt");
+                drop(flight);
+                done_tx.send(()).unwrap();
+            })
+        };
+        locked_rx.recv().unwrap();
+
+        let cooldown_guard = limiter.last_save.lock().await;
+        let second_limiter = limiter.clone();
+        let mut second = Box::pin(async move { second_limiter.acquire("a.txt").await });
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(&waker);
+        assert!(
+            matches!(second.as_mut().poll(&mut cx), Poll::Pending),
+            "the second acquire waits on the held cooldown lock"
+        );
+        drop(cooldown_guard);
+        go_tx.send(()).unwrap();
+
+        // The second poll blocks inside the reservation until the
+        // helper releases the in-flight lock; later polls only cover
+        // the acquire's re-validation contending for the cooldown
+        // lock the helper's record is using. The interleaving itself
+        // is fixed by the locks, not by how often this loop polls.
+        let mut refused = None;
+        for _ in 0..100_000 {
+            match second.as_mut().poll(&mut cx) {
+                Poll::Ready(result) => {
+                    refused = Some(result);
+                    break;
+                }
+                Poll::Pending => std::thread::yield_now(),
+            }
+        }
+        let refused = refused.expect("the second acquire completed");
+        done_rx.recv().unwrap();
+        holder.join().unwrap();
+
+        assert!(
+            refused.is_err(),
+            "a save completing between check and reserve must refuse the acquire (#9587)"
+        );
+        assert!(
+            !limiter
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains("a.txt"),
+            "a refused acquire leaves no reservation behind"
+        );
+        drop(first);
+    }
+
+    #[tokio::test]
+    async fn test_save_limiter_permit_drop_recovers_a_poisoned_in_flight_lock() {
+        let limiter = SaveRateLimiter::new(Duration::from_secs(5));
+        // Poison the in-flight mutex: panic while holding it.
+        let in_flight = limiter.in_flight.clone();
+        let poisoning = std::thread::spawn(move || {
+            let _guard = in_flight.lock().unwrap();
+            panic!("poisoning the in-flight lock for the test");
+        });
+        assert!(poisoning.join().is_err(), "the poisoning thread panicked");
+        assert!(limiter.in_flight.is_poisoned());
+
+        let permit = limiter
+            .acquire("a.txt")
+            .await
+            .expect("acquire recovers the poisoned lock");
+        drop(permit);
+        assert!(
+            !limiter
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains("a.txt"),
+            "drop releases the reservation even on a poisoned lock (#9587)"
+        );
+        assert!(
+            limiter.acquire("a.txt").await.is_ok(),
+            "the filename is not wedged after a poisoned drop"
+        );
     }
 
     #[tokio::test]
