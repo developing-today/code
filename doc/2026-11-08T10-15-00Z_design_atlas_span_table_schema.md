@@ -100,8 +100,8 @@ nothing in the tables below is repository-specific.
 
 ## 4. Schema
 
-Nine core tables in the Atlas tier: `span_text`, `span_windows`,
-`embedders`, `span_embeddings`, `source_objects`, `source_versions`,
+Ten core tables in the Atlas tier: `span_text`, `span_windows`,
+`span_window_parts`, `embedders`, `span_embeddings`, `source_objects`, `source_versions`,
 `version_spans`, `span_contexts`, and `span_occurrences`. The per-store
 `span_index` and `legacy_chunk_map` mappings are additional. DDL is
 SQLite/libSQL dialect, as the
@@ -175,23 +175,37 @@ its vector, never a second copy of the text.
 ```sql
 CREATE TABLE span_windows (
   window_hash   TEXT PRIMARY KEY,   -- sha256 of the exact bytes handed to the embedder
-  text_hash     TEXT NOT NULL REFERENCES span_text(text_hash),  -- the span itself
-  prev_text_hash TEXT REFERENCES span_text(text_hash),          -- recorded left neighbour, NULL at version start
-  next_text_hash TEXT REFERENCES span_text(text_hash),          -- recorded right neighbour, NULL at version end
   window_text   TEXT NOT NULL,      -- the embedded bytes, verbatim (archaeological record, as span_text)
   byte_len      INTEGER NOT NULL,
   created_at    TEXT NOT NULL
 );
-CREATE INDEX span_windows_by_text ON span_windows (text_hash);
+
+CREATE TABLE span_window_parts (
+  window_hash    TEXT NOT NULL REFERENCES span_windows(window_hash),
+  text_hash      TEXT NOT NULL REFERENCES span_text(text_hash),  -- the target span of this window
+  prev_text_hash TEXT REFERENCES span_text(text_hash),           -- recorded left neighbour, NULL at version start
+  next_text_hash TEXT REFERENCES span_text(text_hash),           -- recorded right neighbour, NULL at version end
+  PRIMARY KEY (window_hash, text_hash, prev_text_hash, next_text_hash)
+);
+CREATE INDEX span_window_parts_by_text ON span_window_parts (text_hash);
 ```
 
 `window_text` is stored for the same reason `span_text.text` is: a hit
 must render its evidence even when the neighbours' spans have since been
-GC'd or the source version retired. `window_hash` is the reuse key; the
-`prev_/next_text_hash` columns make the re-embed trigger computable
-without re-deriving the manifest — a neighbour added, removed, replaced
-or boundary-moved produces a different `window_hash` and therefore a
-different `span_embeddings` row.
+GC'd or the source version retired. Window-byte identity and
+target-span identity are separate keys, deliberately: two different
+target spans can produce identical window bytes (in a two-span version
+A followed by B, the window of A and the window of B can both be the
+bytes A+B), so a single `span_windows` row keyed by `window_hash` is
+shared by both targets, and `span_window_parts` records which target
+and which neighbour decomposition each use of that window had. The
+vector is a function of the window bytes alone, so sharing the
+`span_embeddings` row across those targets is correct; what must never
+be shared is the claim about which span the window was centred on.
+The `prev_/next_text_hash` columns make the re-embed trigger
+computable without re-deriving the manifest — a neighbour added,
+removed, replaced or boundary-moved produces a different `window_hash`
+and therefore a different `span_embeddings` row.
 
 `version_spans` therefore also carries `window_hash` (the window each
 reference was embedded under), so a version's manifest is enough to
@@ -356,7 +370,8 @@ construction. Backfill the existing corpus:
   (`object_kind='message'`), one `source_versions` row from
   `messages.text` (`version_key` = sha256 of the text).
 - Locate each chunk's text in the message text by exact byte search.
-  - unique match → `start_off/end_off` recorded, `synthetic=0`;
+  - unique match → candidate `start_off/end_off` recorded (see the
+    coverage gate below before `synthetic` is decided);
   - multiple matches → first match recorded, plus a
     `span_occurrences` row per match (the occurrence table is where
     ambiguity belongs);
@@ -364,6 +379,27 @@ construction. Backfill the existing corpus:
     `synthetic=1` version whose text is the concatenation of the
     message's chunk texts, offsets into *that*, and a
     `legacy_chunk_map` row with `anchor_quality='synthetic'`.
+- Coverage gate, applied per message before any version is marked
+  `synthetic=0`: the union of the matched chunk intervals must cover
+  `[0, byte_len)` with no gap, and the I3 reconstruction hash must
+  equal the version `content_hash`. Unique matches alone do not prove
+  coverage — legacy chunkers omit separators and trailing text (the
+  `mA2` chunks in `pkgs/atlas-search/fixtures/fixture_corpus.sql` both
+  match uniquely while their union omits `; ` and ` follow`). A version
+  that fails the gate is marked `synthetic=1`, its uncovered ranges are
+  filled with spans interned from `messages.text` itself, and it is
+  counted for reconciliation; the shadow-read parity plan in Phase B
+  therefore treats synthetic rows as the only expected parity risk
+  because every non-synthetic row has passed this gate.
+- Messages whose text was deduplicated into another message's chunks
+  own no chunks, and the loop above never reaches them — yet §4.6
+  counts 6,344 such zero-chunk sessions whose occurrences this design
+  promises to recover. Enumerate retained messages with no chunks
+  explicitly: create their `source_objects`/`source_versions` rows from
+  `messages.text`, derive their manifest by interning the message text
+  (the `span_text` rows already exist, created by the owning message),
+  and record a `span_occurrences` row per derived span. Without this
+  step their provenance is absent after cutover.
 - Every legacy chunk gets `legacy_chunk_map(store, chunk_id,
   text_hash, version_id, start_off, end_off)`.
 
@@ -388,7 +424,7 @@ message, idempotent by `(object_id, version_key)`.
 |---|---|---|
 | I1 | `span_embeddings` has at most one row per `(window_hash, embedder_id)`; `span_text.text` hashes to `text_hash`; `span_windows.window_text` hashes to `window_hash` | recompute hashes; `UNIQUE` PK |
 | I1a | A vector is never reused across a window change: two references share a `span_embeddings` row only if their `window_hash` is equal, and any neighbour add/remove/replace or boundary move yields a different `window_hash` | construct the perturbed window (§#6038 cases) and assert the hash differs and a new row is required |
-| I1b | `version_spans.window_hash` resolves to a `span_windows` row whose `text_hash` equals `version_spans.text_hash` | join + equality check |
+| I1b | `version_spans` `(window_hash, text_hash)` resolves to a `span_window_parts` row with that pair, whose `window_hash` row's `window_text` hashes to `window_hash` | join + equality check |
 | I2 | Every non-synthetic version's span intervals cover `[0, byte_len)` with no gap; overlaps are allowed only where `head_match_hash`/`tail_match_hash` is set | interval arithmetic vs `source_versions.byte_len` |
 | I3 | Reconstruction (`sort by start_off`, union overlaps by byte-equality trimming) reproduces the version bytes exactly once — the non-doubling guarantee | sha256 of reconstruction == `source_versions.content_hash` |
 | I4 | Re-ingesting an unchanged version emits an identical manifest (same ordinals, offsets, hashes, window hashes) and creates **zero** new `span_text`/`span_windows`/`span_embeddings` rows | manifest diff; row counts before/after |
@@ -413,29 +449,39 @@ Version 1 (`object_kind='file'`, locator `repo@abc:doc/notes.md`), text
 | 1 | `h_B` | 80 | 200 | `ctx_1` |
 | 2 | `h_C` | 200 | 300 | `ctx_1` |
 
-Version 2 after an edit: bytes 0–16 match `h_A`'s head; bytes 17–241 are
-new; bytes 242–300 match `h_C`'s tail. Matcher (#6036) emits:
+Version 2 after an edit (half-open intervals): bytes `[0,17)` match
+`h_A`'s head; bytes `[17,242)` are new; bytes `[242,300)` match `h_C`'s
+tail. The matched fragments are **not** references to `h_A`/`h_C`: a
+reference must cover exactly the bytes its `text_hash` identifies (§4.1,
+I2), and `h_A` identifies 80 bytes, not 17. The matcher therefore
+interns the fragments as new `span_text` rows — `h_A17` for the 17-byte
+head fragment, `h_C58` for the 58-byte tail fragment — and records the
+match against `h_A`/`h_C` as provenance (`head_match_hash`/
+`tail_match_hash` on the new span's row, plus `span_occurrences` rows).
+Matcher (#6036) emits:
 
 | ordinal | text_hash | start | end | head_match_hash | tail_match_hash | context |
 |---|---|---|---|---|---|---|
-| 0 | `h_A` | 0 | 17 | — | — | `ctx_2` |
-| 1 | `h_N` (new embed of bytes 17–241) | 17 | 241 | `h_A` | `h_C` | `ctx_2` |
-| 2 | `h_C` | 242 | 300 | `h_A`\* | — | `ctx_2` |
+| 0 | `h_A17` (new intern of bytes [0,17)) | 0 | 17 | — | `h_A` | `ctx_2` |
+| 1 | `h_N` (new span, bytes [17,242)) | 17 | 242 | `h_A` | `h_C` | `ctx_2` |
+| 2 | `h_C58` (new intern of bytes [242,300)) | 242 | 300 | `h_C` | — | `ctx_2` |
 
-\* the row's `head_match_hash` names the prior embed whose tail run the
-span's head matched; the precise run lengths are #6036's acceptance
-data, stored in the occurrence/provenance rows, not in the interval.
-
-Result: one new `span_text` row (`h_N`), **two** new `span_embeddings`
-rows — `h_N`'s window, and `h_C`'s window, whose right neighbour changed
-from `h_N`'s predecessor to end-of-version (the #6038 re-embed trigger,
-I1a) — three new manifest rows, no re-embed of the 0–16 region (its
-window is unchanged), and a `span_occurrences` row recording that `h_A`
-and `h_C` were found again. Reconstruction of version 2 unions
-`[0,17)`, `[17,241)`, `[242,300)` → 300 bytes, exact. If the edit had
-left a 20-byte overlap between `h_A`'s tail and `h_N`'s head, both rows
-would still exist and the union would trim the duplicate — the
-non-doubling join.
+Result: three new `span_text` rows (`h_A17`, `h_N`, `h_C58`) and
+**three** new `span_embeddings` rows. Every window changed: the head
+fragment's right neighbour is now `h_N` instead of `h_B`; `h_N` is new;
+and the tail fragment's *left* neighbour changed from `h_B` to `h_N`
+(`h_C` was last in version 1 and the fragment is last in version 2 —
+its right side is end-of-version in both). Under the #6038 contract
+(I1a) a neighbour change on either side forces a re-embed, so this
+edit reuses text interning savings only where a span's *whole window*
+survives byte-identical — none does here, and the example does not
+pretend otherwise; I5's delta guarantee is stated per window, not per
+span. Three new manifest rows, and `span_occurrences` rows recording
+that fragments of `h_A` and `h_C` were found again. Reconstruction of
+version 2 unions `[0,17)`, `[17,242)`, `[242,300)` → 300 bytes, exact.
+If the edit had left a 20-byte overlap between the head fragment's tail
+and `h_N`'s head, both rows would still exist and the union would trim
+the duplicate — the non-doubling join.
 
 ## 9. Boundaries with the sibling designs
 
@@ -471,7 +517,7 @@ JSON text — default JSON text, matching `session_labels.topics`.
 
 ## 10. Go/no-go
 
-**GO** on the nine core tables and the
+**GO** on the ten core tables and the
 migration phases as written. The parts that are *not* decided here and
 must land before implementation starts: #6036's thresholds (they do not
 change the tables), #6039's overlap numbers (they change defaults, not
