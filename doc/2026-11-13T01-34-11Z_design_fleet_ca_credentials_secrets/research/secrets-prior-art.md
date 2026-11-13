@@ -1,0 +1,100 @@
+# Secrets providers and reconciliation: prior art and design implications
+
+**Research date:** 2026-11-12  
+**Scope:** provider model fidelity and safe reconciliation, especially BWS vs Bitwarden Password Manager (`bw`) vs 1Password (`op`). This is source research, not implementation authorization or a benchmark report. No provider credentials or vaults were accessed.
+
+## Executive conclusion
+
+Treat the three products as three distinct adapters with separate authorization scopes and native schemas. BWS is the currently integrated machine-secret path, with key/value/note semantics; it is not a Password Manager login vault. `bw` is a distinct optional adapter requiring explicit access to the relevant account/vault; it has richer login/URI/custom-field behavior and a client unlock/session model. `op` exposes structured item categories, fields, sections, tags, files, stable item IDs and item versions through Connect, but only for vaults the Connect server/token can access. A provider-neutral typed record plus versioned reversible field map and encrypted sidecars is a useful Fleet proposal, not a feature supplied by any provider.
+
+For reconciliation, borrow three-way comparison against a last verified common snapshot, per-field merge, provider revisions as preconditions where available, and a durable local write-ahead journal/outbox with replayable item-level saga stages. There is no cross-vendor atomic transaction. Unknown/inaccessible/truncated source views must never mean deletion. Keep tombstones as explicit retained history, not destructive provider delete calls. Use keyed equality proofs only where needed and accept that deterministic HMAC equality leaks repeat equality to holders of the index/key; unsalted hashes are especially unsuitable for low-entropy passwords and OTP values.
+
+## Scope and source precedence
+
+This note follows the intake precedence in `note.md` lines 24–30: current authorized instructions, dated addendum for its specific refinements, then v0.3 spec; safety restrictions remain binding. Relevant mandatory areas include spec §§8, 19–21, 30–38, 43, 48; addendum §§1, 8–9; the handoff and coordinator contracts. The package explicitly says no production reconciliation or personal `bw` vault access is authorized in this design pass (`note.md` lines 26–30, 41–50). Provider matrices below state documented capability, not live account scope.
+
+## Repository baseline (source facts)
+
+The current `fleet-secrets` crate is a resolver, not a synchronization engine. Its module contract defines broker then BWS fallback, redacted values/errors, no local persistence, and rejects empty values (`pkgs/fleet/crates/fleet-secrets/src/lib.rs:1-28`). The default chain is brokers followed by BWS (`:146-173`). The BWS adapter runs `bws secret list` then `bws secret get <id>` (`:517-603`); malformed listing results are unavailable rather than not-found (`:560-585`). There is no `op` or `bw` adapter evidenced in this crate. Existing CLI/smoke coverage exercises broker-first resolution and BWS fallback, not writes or reconciliation (`pkgs/fleet/smoke.sh:493-557,588-668`). Intake corroborates name-only `get|list`, no `put`, sync, reconcile, or `op` adapter (`note.md:32-39`). This is an implementation observation, not a claim that no scripts anywhere in the repository invoke other CLIs.
+
+The existing crate's “empty means failure” is intentionally safe for its resolver (incident rationale in `lib.rs:21-28`), but a future typed model must distinguish empty string from absent/null/inaccessible when the provider format actually permits those states. Do not blindly reuse the resolver's scalar-value semantics as the reconciliation schema.
+
+## Product/API comparison
+
+| System | First-party documented shape and scope | Design consequence |
+|---|---|---|
+| **BWS (`bws`)** | Bitwarden documents machine-account access tokens: only secrets/projects the machine account can access are addressable. `secret create` requires `KEY`, `VALUE`, `PROJECT_ID` and optionally note; edit supports key/value/note/project. Objects expose IDs, project/org IDs, key, value, note, creation/revision dates. (Sources [BWS CLI](https://bitwarden.com/help/secrets-manager-cli/), retrieved 2026-11-12.) | Keep it the existing machine-secret adapter (addendum §1.1), not the rich login adapter. Its native revision timestamp can be retained as evidence, but docs do not promise CAS/conditional updates or an idempotency token. Sidecar/opaque encrypted payload is needed for richer canonical fields; preserve the ordinary value path for backward compatibility (spec §19.6). |
+| **Bitwarden Password Manager (`bw`)** | Separate CLI/product. First-party docs describe full vault operations, item JSON templates, item create/edit, login URI matching, custom field types, attachments, folders and collections. `edit` is a replace operation; data commands require a decrypted vault session key. Trash restore is documented for 30 days; permanent deletion is irreversible. (Source [Password Manager CLI](https://bitwarden.com/help/cli/), retrieved 2026-11-12.) | Separate optional adapter and permission boundary. Do not imply BWS token grants this access. Fetch/modify complete native item JSON and preserve IDs/URI rules/custom fields/attachments; replacing from a reduced projection can erase unmodeled data. The CLI's own trash is not the Fleet `zz.delete` retention contract. |
+| **1Password (`op`/Connect)** | Connect API lists accessible vaults/items, supports create, replace, patch, delete, files, and reports item `version`; item shape includes category, sections, typed fields, tags, URLs, files and timestamps. Requires running Connect and scoped access token. (Source [Connect API reference](https://developer.1password.com/docs/connect/api-reference/), retrieved 2026-11-12.) | Use native IDs, category, sections/field IDs/purposes, version and file references. Prefer patch for a targeted field change when semantics permit; replacement must be based on full current object. API existence does not establish that this deployment or any particular vault is available. Docs do not establish a cross-provider transaction, CAS contract, or idempotency-key facility. |
+
+**Important unsupported inference:** the public docs establish object models and operations, but do not prove every field can be read/written under every account configuration, that writes are atomic/CAS-protected, or that every provider retains deleted items indefinitely. Record capability probes by adapter/version and authorized synthetic scope; treat unknown capability as unavailable, not as a permissive default.
+
+## What to borrow: typed fidelity, stable identity, and provider references
+
+The spec's canonical `global_item_id` separate from title/native ID, typed ordered fields with sensitivity/provenance, native refs/revisions, attachments, relations, and lifecycle is a coherent proposal (spec §19.2, lines 1042–1057). Keep raw values out of SQL/event metadata; if equality checks are required, use a separately protected/versioned keyed digest, never an unsalted digest (§19.2, lines 1057). Preserve unknown fields byte-for-byte or structurally in an encrypted, versioned envelope, and declare projection lossiness explicitly. “Password matched” is not “item fully synchronized.”
+
+Concrete loss counterexamples (design tests, not claims of observed production incidents):
+
+1. **BWS → `bw`:** exporting only BWS key/value/note into a login and marking it equivalent loses URI match mode, username, OTP field and autofill behavior. The CLI docs show these are distinct data/commands; the BWS CLI's documented secret object has no login category or URI field.
+2. **`bw` → BWS:** projecting login password alone discards username, multiple URIs, custom hidden/boolean fields, folders/collections and attachments. BWS `secret edit` is not a typed-login update.
+3. **`op` replace after a partial read:** read just password/title then submit a replacement assembled from those two fields; structured sections, tags, URLs and files may be absent from the replacement. Connect expressly distinguishes replace and patch endpoints; safest rule is full-object roundtrip or narrow patch, followed by readback.
+4. **Field state conflation:** if the source API cannot reveal a passkey/OTP/attachment and adapter maps it to “absent,” a target projection may erase a value it never actually observed. Represent `inaccessible`/`unverified` distinctly and block destructive projection.
+
+The sources support preserving structure; they do not specify Fleet's exact common schema. Proposed adapter contract: provider-specific native DTO → typed canonical record with unknown-field envelope and capability/version evidence; target projection returns a typed loss report (`lossless_projection_unavailable` if a required semantic cannot be represented), never a silent lossy success. Keep provider-specific compartments/replication policies rather than global fan-out (addendum §§1,8).
+
+## Reconciliation: revisions, three-way merge, idempotency, tombstones
+
+### Three-way, field-level merge
+
+Use `(current A, current B, last verified common base)`; derive per-field changes relative to base. Do not compare only `modifiedAt`: clocks differ and the destination's own write can look newer. Spec §20.3 (lines 1123–1134) explicitly calls for this, full scans as well as cursors, causal run IDs, bounded retries and item-level saga/replay. `op` documents integer item version; BWS examples expose revisionDate. Retain those as provider revision evidence and send preconditions only where the provider/API actually supports them. Do not advertise CAS where docs do not establish it.
+
+Example: base password `P0`, base note `N0`; side A changes password to `P1`, side B changes note to `N1`. A field-level merge can safely produce `(P1,N1)` after revision checks and readback. If both independently change password to `PA` and `PB`, preserve both current states and raise a conflict. Last-writer-wins by timestamp can overwrite `PA` even when the other clock is skewed or provider timestamp describes normalization, not user intent. The spec's `zz.delete` snapshot-and-in-place-update flow (§20.5, lines 1154–1156) preserves stable native login identity.
+
+### Identity, CAS and idempotency are different controls
+
+Stable global ID maps to provider-native IDs; never derive identity from title alone. Provider revisions/ETags can detect stale preconditions only when supported by actual endpoint semantics. An idempotency key deduplicates an operation only where the endpoint honors it; otherwise use a Fleet operation UUID plus deterministic intended target/content fingerprint, inspect-before-create, post-write readback, and resumable receipt. This narrows retries but cannot make the remote provider exactly-once. Two independent stores have no shared commit. Spec §8.3 (lines 608–620) correctly describes partial success and recovery receipt rather than claiming distributed atomicity.
+
+### Journal/outbox and saga
+
+Borrow the transactional outbox's atomic local intent: persist the planned operation/event and its idempotency identity before external side effects; dispatch; persist provider receipt/revision; verify readback; checkpoint only after verified completion. AWS's first-party pattern explains dual-write loss/duplication and recommends idempotent consumers and ordering; across separate vault APIs, the local journal cannot atomically commit with provider writes. Therefore use explicit states such as planned → write-attempted → provider-acknowledged → readback-verified, with partial/unknown terminal states and replay, and never treat “queued” or exit status zero as durable acceptance. Fleet spec §21.4 lines 1232–1236 proposes append-only local JSONL plus outbox and monotonic checkpoint; coordinator handoff §5 lines 124–139 requires not conflating pending intent with a created issue (analogous principle, not provider behavior).
+
+### Deletion and `zz.delete`
+
+Absence is evidence of deletion only after a complete authoritative scan of the same authorized scope, pagination completion, valid credentials, and prior verified sighting. A timeout, 401/403, rate limit, truncated page, moved vault, narrower permission or unavailable attachment is `unknown`, not deleted. These are explicit spec requirements (§20.3 lines 1127–1129, §20.4 lines 1136–1152). BWS and `op` deletion endpoints exist; `bw` trash is only documented as recoverable for 30 days and permanent delete is irreversible. None implements Fleet's indefinite encrypted `zz.delete` history for Fleet. Fleet must create its own protected retired-history record and never auto-purge it (spec §20.6 lines 1158–1162). This intentionally retains potentially reusable old credentials, so access restriction and explicit warning are required; tombstone retention is not revocation.
+
+### Equality blind indexing and leakage
+
+The spec proposes keyed digests for equality, not unsalted hashes (spec §19.2 line 1057). This is materially safer against offline guessing by a party holding only the database, particularly for low-entropy fields. But deterministic HMAC still reveals equality/repetition to any observer who can compare digests and enables linkability across items/runs; a key compromise enables dictionary tests. A digest is not encryption, and equality alone does not prove identity or safe merge. Keep HMAC key separate from data/index, version and rotate with controlled reindex, scope keys by tenant/domain where feasible, avoid indexing passwords/OTP unless essential, and do not export proofs in broad reports. These are design recommendations; no provider source establishes a provider-side blind-index facility.
+
+## Failure counterexamples to encode as negative tests
+
+| Failure | Incorrect result | Required oracle / safe result |
+|---|---|---|
+| `bws secret list` times out or returns malformed/truncated JSON | Mark every unseen record deleted | Adapter returns incomplete/unknown; no tombstones or destructive actions. Existing resolver correctly treats malformed list as unavailable, not not-found (`fleet-secrets/src/lib.rs:560–585`). |
+| `bw` unlock fails / Connect token loses one vault | Treat out-of-scope items as removed | Scope snapshot is incomplete; preserve prior mappings and halt retirements. Explicitly report inaccessible scope. |
+| provider accepts write but response is lost | blindly create duplicate on retry | Query by stable native/global linkage and compare desired projection; resume same operation; if ambiguous, conflict. Do not assume API idempotency. |
+| A stale writer read base revision `r4`; another actor writes `r5`; stale update then lands | overwrite newer value | Use conditional revision/CAS where verified; otherwise re-read immediately before write and classify residual race as unresolved risk, read back, never claim CAS. |
+| First provider write succeeds; second is down | report “both synced” or roll back blindly | Record partial saga/receipt, retain original payload securely, retry only the failed leg under same operation; no fake cross-provider atomicity. |
+| two sides independently change same password | pick newest timestamp | preserve both and require resolution; snapshot prior versions and keep active native IDs stable where a selected winner is applied. |
+| a rename/move or ACL change removes item from listing | create tombstone and retire counterpart | distinguish move/scope change from verified deletion using native refs, complete scopes and history; missing evidence is review. |
+| sidecar exceeds note size and is silently truncated | report successful fidelity | content-addressed/versioned sidecar with manifest, hash, exact reassembly and readback; otherwise fail the item. |
+
+Tests should be synthetic and hermetic first. Property/model tests should assert invariants: no destructive operation from incomplete snapshots; retry does not multiply logical items/history; unknown fields survive round-trip; item IDs remain stable for in-place value update; and event replay yields the same verified state. The oracle is the canonical model plus scripted provider responses, not a live personal vault.
+
+## Recommendations: borrow / do not borrow
+
+**Borrow:** provider-specific adapters and explicit scope; native IDs plus native revisions; typed fields and reversible mappings; encrypted sidecars for unrepresentable fidelity; three-way per-field merge; complete-scan evidence for deletion; append-only redacted journal; item-level saga and recovery receipts; readback verification; scoped, keyed equality proofs only where justified; safe synthetic capability probes.
+
+**Do not borrow:** treating all three products as interchangeable “Bitwarden”; title-based matching; timestamp-only conflict resolution; whole-object replace based on partial data; implicit `bw` access from BWS credentials; assuming API write acknowledgement means durable cross-store completion; treating provider trash/retention as `zz.delete`; automatic replication into every provider; plaintext or unsalted secret hashes in metadata; or provider latency/performance claims without reproducible measurements.
+
+**Design caveat:** v0.3 includes a strong detailed acceptance design, but its suggested DB/schema and universal adapter behaviors are proposals to validate. The addendum retains BWS now, asks for measured provider comparisons, allows scoped compartments, and keeps `bw` personal-vault migration separately authorized. Do not let this note turn those choices into existing implementation facts.
+
+## Sources consulted (retrieved 2026-11-12)
+
+1. Bitwarden, [Secrets Manager CLI](https://bitwarden.com/help/secrets-manager-cli/) — machine-account scope, documented BWS secret fields and create/edit/list/get operations; supports BWS’s machine-secret shape. Does **not** establish CAS, idempotency keys, or login autofill parity.
+2. Bitwarden, [Password Manager CLI](https://bitwarden.com/help/cli/) — separate product, encrypted vault/session unlock, JSON item templates, login URI rules/custom fields, replace-style edit, trash/restore and permanent delete semantics. Does **not** establish Fleet authorization to a personal vault.
+3. 1Password, [Connect API reference](https://developer.1password.com/docs/connect/api-reference/) — access-token/Connect requirements, vault/item endpoints, replace and patch operations, item versions, sections, typed fields, tags, files and activity. Does **not** establish Fleet deployment availability, cross-provider atomicity, or a conditional update contract.
+4. AWS Prescriptive Guidance, [Transactional outbox pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html) — dual-write failure cases, local transactional outbox, duplicates/order and idempotent consumer considerations. Applies as a journal/outbox pattern; does not make remote vault writes transactional.
+5. Repository sources pinned by this working tree: `pkgs/fleet/crates/fleet-secrets/src/lib.rs:1-28,146-193,493-603`; `pkgs/fleet/smoke.sh:493-557,588-668`; package intake `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/note.md:24-50`; governing local normative sources `sources/fleet_architecture_spec_v0_3.md:592-620,1029-1085,1087-1166,1168-1244`, addendum `sources/ADDENDUM_secrets_architecture_performance_infrastructure.md:5-18,82-103`, and coordinator contract `sources/COORDINATOR_summit_handoff.md:190-273`.
+
+No performance measurements are reported here. None were run; provider latency remains the addendum's benchmark question (§§1–2), not a fact inferred from anecdotes.

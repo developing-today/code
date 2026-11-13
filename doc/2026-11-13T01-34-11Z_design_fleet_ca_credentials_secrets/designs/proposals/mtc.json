@@ -1,0 +1,145 @@
+[
+  {
+    "id": "MTC-01",
+    "title": "Pin current MTC draft and verify implementation maturity",
+    "parent": "#9167",
+    "kind": "research",
+    "source_ranges": [
+      "spec §3.4, §9, §14, §27.4, §46 R-SEC-16",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-MTC-CURRENT-DRAFT",
+      "PKI-MTC-PROVENANCE"
+    ],
+    "stage": "optional research; V1 unaffected",
+    "lifecycle": "Backlog",
+    "urgency": 40,
+    "depends_on": [],
+    "body": "## Goal\nIdentify a trustworthy, current MTC specification and implementation for a future synthetic evaluation; resolve the phrase “Cloudflare/azul” from primary sources. No deployment.\n\n## Current evidence\nAs of 2026-11-12 Datatracker lists `draft-ietf-plants-merkle-tree-certs-08` as active WG document, updated 2026-11-01 and expiring 2027-05-06; older individual draft is replaced. `ietf-plants-wg/merkle-tree-certs` is the current source repository. `bwesterb/mtc` says it implements an outdated pre-photosynthesis version and lacks TLS/ACME integration. A guessed Cloudflare GitHub URL returned 404, not proof absence.\n\n## Acceptance\nRecord draft revision, status, change log, normative test vectors, repository commit/license, implementation support matrix, TLS/ACME integrations, independent verifier(s), maintenance/security evidence and exact Cloudflare/azul source URL if one exists. Distinguish affiliation/authorship from product implementation/deployment. If no current conforming implementation or provenance, mark no-go for implementation experiments until resolved.\n\n## Tests / oracle\nSource claims are checked against Datatracker plus project-owned repo/docs. Do not infer support from a demo, author affiliation, star count or old repo. Capture dates/SHAs and a machine-readable capability table.\n\n## Boundaries / rollback\nRead-only research. No key generation, DNS, certificates, server, client trust change or issue outside #9167. No rollback.\n\n## Priority\nOptional backlog, urgency 40, complexity medium. References: https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/ ; https://github.com/ietf-plants-wg/merkle-tree-certs ; https://github.com/bwesterb/mtc ."
+  },
+  {
+    "id": "MTC-02",
+    "title": "Run synthetic MTC CA, cosigner, mirror and independent verifier lab",
+    "parent": "#9167",
+    "kind": "test",
+    "source_ranges": [
+      "spec §§3, 11, 27.4, 46 R-SEC-16",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-MTC-PROOF-VALIDATION",
+      "PKI-MTC-NEGATIVE-CASES"
+    ],
+    "stage": "optional synthetic lab",
+    "lifecycle": "Backlog",
+    "urgency": 35,
+    "depends_on": [
+      "MTC-01"
+    ],
+    "body": "## Goal\nProve current-draft MTC issue/proof/verification semantics with disposable data and independent verifier, or determine implementation is not mature enough.\n\n## Evidence / prerequisites\nCurrent draft-08 is an Internet-Draft, not final RFC; legacy bwesterb implementation explicitly outdated. Must complete MTC-01 and pin tested implementation/draft before coding. Fleet MTC is optional; no production integration exists.\n\n## Scope\nUse fake domains and generated disposable keys in local isolated lab. Exercise assertion/certificate request, log entry, checkpoint, CA signature, cosignature, inclusion/consistency proof, mirror, monitor, validity window/landmark update and revocation mechanism as specified by pinned draft. Do not expose any endpoint, publish DNS, connect production CA or modify trust store.\n\n## Acceptance / oracle\nCurrent implementation output validates in at least one independently maintained verifier and conforms to draft test vectors. Mutated proof node, wrong issuer/CA ID, wrong domain, bad cosignature, stale checkpoint and replayed response are rejected. Log/mirror/cosigner unavailability behavior and recovery are recorded. Artifacts, exact commands, implementation commit and verifier versions are retained; keys/secret values removed. No-go if independent verifier unavailable or draft mismatch.\n\n## Rollback / boundary\nStop all local processes and remove synthetic keys/state. No Fleet CLI/PKI implementation or public service. Conventional ML-DSA-44 certificates remain baseline and fallback.\n\n## Priority\nOptional Backlog urgency 35, complexity high, depends MTC-01. Sources: https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/ ; https://github.com/ietf-plants-wg/merkle-tree-certs ."
+  },
+  {
+    "id": "MTC-03",
+    "title": "Measure full MTC versus conventional ML-DSA-44 certificate bytes",
+    "parent": "#9167",
+    "kind": "research",
+    "source_ranges": [
+      "spec §§3.4, 11, 27.4, 46 R-SEC-16",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-MTC-BYTE-ACCOUNTING",
+      "PKI-MLDSA44-BASELINE"
+    ],
+    "stage": "optional synthetic lab",
+    "lifecycle": "Backlog",
+    "urgency": 30,
+    "depends_on": [
+      "MTC-01",
+      "MTC-02"
+    ],
+    "body": "## Goal\nQuantify whether current MTC representations materially reduce actual authentication bytes versus the shortest conventional ML-DSA-44 chain for the same synthetic identity and policy.\n\n## Scope / acceptance\nGenerate equivalent synthetic conventional and MTC chains in standalone and landmark-relative modes. Count actual serialized TLS certificate/authentication flight at protocol boundary, including all certificates, TBSCertificate, inclusion proof, cosignatures, extensions, framing, and required fallback. Separately report public-key/signature bytes and unrelated handshake/KEX bytes. Include raw output sizes, exact versions, compression settings, scripts, p50/p95 over fixed repetitions if handshake randomized, and percent delta. Use a conventional shortest valid ML-DSA-44 path as comparator, not an artificially bloated chain.\n\n## Oracle / negative tests\nSize oracle is independent packet capture/decoder plus artifact byte count reconciled to components. Verify semantically equivalent SAN, validity, issuer, trust and algorithm policy using independent verifier. Reject a “savings” claim if required cosignatures/proofs/fallback omitted or profile differs.\n\n## Boundary / recovery\nSynthetic only, no network exposure or production client. Delete keys/artifacts after sanitized report; no rollback. The issue cannot change baseline ML-DSA-44 or introduce MTC dependency.\n\n## Dependencies / priority\nDepends MTC-01 and MTC-02. Optional Backlog urgency 30, complexity medium-high. Sources: current draft §6/§8 and https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/ ."
+  },
+  {
+    "id": "MTC-04",
+    "title": "Test fresh, cold, stale and offline MTC verifier behavior",
+    "parent": "#9167",
+    "kind": "test",
+    "source_ranges": [
+      "spec §§3.4, 11, 27.4, 46 R-SEC-16",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-MTC-STALE-FAIL-CLOSED",
+      "PKI-MTC-FALLBACK"
+    ],
+    "stage": "optional synthetic lab",
+    "lifecycle": "Backlog",
+    "urgency": 28,
+    "depends_on": [
+      "MTC-01",
+      "MTC-02"
+    ],
+    "body": "## Goal\nEstablish whether MTC can be verified safely by relying parties with current, absent, cold, stale or offline landmark/log state, and define conventional fallback requirements.\n\n## Acceptance\nBuild a matrix for fresh warmed client, first-use cold client, deliberately stale landmark, expired update channel, offline verifier and mirror outage. For each record required bytes, network dependency, accepted/rejected result, update interval, rollback protection and error behavior. Where compact landmark-relative cert cannot be proven current, client must choose a verifiable standalone form or fail closed; no silent acceptance of stale state. Verify current draft's exact freshness rules and implementation behavior.\n\n## Negative tests / oracle\nReplay earlier checkpoint/landmark; remove cosigner, corrupt update, swap trust domain, disconnect network and exceed configured age. Assert conventional signed fallback only where independently verified; else fail closed. Oracle is controlled verifier state/version plus independent proof verifier, not producer success.\n\n## Boundaries\nDisposable synthetic clients/domains only. No browser trust changes, deployed clients, DNS or production cert. Remove all synthetic state after report.\n\n## Dependencies / priority\nDepends MTC-01/MTC-02. Optional Backlog urgency 28, complexity high. Source: https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/ ."
+  },
+  {
+    "id": "MTC-05",
+    "title": "Verify MTC TLS integration without conflating certificate signatures and key exchange",
+    "parent": "#9167",
+    "kind": "security review",
+    "source_ranges": [
+      "spec §§3, 11, 27.4, 44, 46 R-SEC-16",
+      "source input 3 §3",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-PQ-KEX-SEPARATION",
+      "PKI-MLDSA44-BASELINE"
+    ],
+    "stage": "optional synthetic interoperability lab",
+    "lifecycle": "Backlog",
+    "urgency": 25,
+    "depends_on": [
+      "MTC-01",
+      "MTC-02",
+      "MTC-04"
+    ],
+    "body": "## Goal\nEstablish exact TLS client/version support and security properties for MTC, while proving certificate signing scheme and TLS key exchange are measured independently.\n\n## Scope / acceptance\nUsing synthetic endpoints only, test only clients claiming current draft support. Capture ClientHello/ServerHello, negotiated group, peer Certificate representation, CertificateVerify algorithm, validation chain, MTC update/fallback behavior and failure code. Separately validate ML-DSA-44 certificate signature/path policy. Matrix includes version, draft revision, implementation, client flags and independent packet/certificate decoder. Demonstrate no PQ KEX claim follows merely from ML-DSA-signed certificate.\n\n## Negative tests / oracle\nRequire-PQ-signature policy rejects classical signature; require-PQ-KEX policy rejects classical negotiated group independently; wrong trust anchor and malformed MTC proof fail. Oracle is packet capture plus independent cryptographic/path verifier and configured client policy. If tooling cannot distinguish negotiation components, test is inconclusive/no-go, not a positive result.\n\n## Boundaries / rollback\nLoopback/disposable lab, no public exposure, production trust or DNS. Delete keys and endpoint. Fleet's ML-DSA-44 baseline remains.\n\n## Priority\nOptional Backlog urgency 25, complexity high; depends MTC-01/02/04. References: draft-08 §§7–8, https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/ and relevant tested TLS implementation docs."
+  },
+  {
+    "id": "MTC-06",
+    "title": "Model MTC log availability, revocation and operator cost",
+    "parent": "#9167",
+    "kind": "research",
+    "source_ranges": [
+      "spec §§11, 14, 27.4, 46 R-SEC-16",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-MTC-LOG-AVAILABILITY",
+      "PKI-MTC-REVOCATION-OPERATIONS"
+    ],
+    "stage": "optional research",
+    "lifecycle": "Backlog",
+    "urgency": 20,
+    "depends_on": [
+      "MTC-01",
+      "MTC-02",
+      "MTC-04"
+    ],
+    "body": "## Goal\nDetermine if MTC log/cosigner/mirror/monitor and renewal responsibilities are viable for the named future relying-party set, compared with ordinary certificate transparency/private log monitoring.\n\n## Acceptance\nModel bounded traffic (explicit synthetic certs/day, proof retention, batch interval and validity) and list CA, cosigner quorum, mirror, monitor, update channel, offline recovery and renewal responsibilities. Fault-inject each component in prior lab or use clearly labelled calculations: report issuance delay, verification outcome, status/revocation delay, storage, egress/operations, alert coverage, restore RTO, named operator hours and failure-domain assumptions. Compare conventional ML-DSA chain and CT/monitor alternatives. State revocation semantics per exact draft, not generic X.509 assumptions. Recommend no-go if operator cost or online dependencies outweigh measured size/security outcome.\n\n## Oracle / negative tests\nStop CA, cosigner, mirror and update service individually; assert issuance/validation behavior as specified. Revoke/expire a test assertion and verify clients reject within a stated measured bound, including stale/offline case. Oracle is test client outcomes and current draft; projection formulas must identify input assumptions.\n\n## Scope / rollback\nNo production logs, keys, endpoints, domains or public account. No DNS, trust-store or service changes. Stop lab and remove synthetic records.\n\n## Priority\nOptional Backlog urgency 20, complexity high; depends MTC-01/02/04. Sources: current draft §§5, 7, 10, 12: https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/ ."
+  }
+]
