@@ -161,7 +161,10 @@ describe("the Projects merge into Program (#1497)", () => {
         title: "briefed pool card",
         state: "open",
         contentKind: "issue",
-        status: "Todo",
+        // #5082: briefs render on full cards (active work + epics);
+        // a Todo task renders compact, so the forwarded-brief
+        // fixture is active work.
+        status: "In Progress",
         area: "pm-dashboard",
         horizon: null,
         kind: null,

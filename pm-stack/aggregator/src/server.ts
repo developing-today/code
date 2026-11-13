@@ -4058,6 +4058,26 @@ for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
 }
 
+// #5082: warm the quota-analytics aggregates once at boot. The first
+// build pays the route_attempt scans synchronously (~10 s over the
+// 21 GB ledger); paying it here, off the request path, means no
+// /quota or /api/quota-analytics.json request ever waits on them —
+// later builds ride the stale-while-revalidate cache in
+// analytics-store.ts.
+setTimeout(() => {
+  void (async () => {
+    try {
+      const [quota, usage] = await Promise.all([
+        source.quota().catch(() => emptyQuotaView()),
+        source.usage().catch(() => emptyUsageView()),
+      ]);
+      buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile });
+    } catch {
+      // fail-soft: the first real /quota request retries the build
+    }
+  })();
+}, 0);
+
 // Cross-process publishers get a separate loopback-only listener; never
 // add this port to PM_AGG_HOSTS or expose it through the Cloudflare tunnel.
 const freshnessIpcServer = Bun.serve({
