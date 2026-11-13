@@ -68,9 +68,196 @@ use iroh_blobs::{Hash, api::Store};
 use serde::{Deserialize, Serialize};
 use tokio::{sync::Semaphore, task::JoinSet};
 
+use crate::fileops::{FileOpError, FileOps};
 use id_core::access::AccessPolicy;
 use id_core::discovery::{PeerAnnouncement, PeerDiscovery};
-use crate::fileops::{FileOpError, FileOps};
+
+/// Archive references are reserved for FileOps-generated metadata. Protocol
+/// peers may neither create nor change them through the general tag API.
+fn is_reserved_archive_reference_key(key: &[u8]) -> bool {
+    matches!(key, b"archive.rename" | b"archive.replace")
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod archive_reference_behavior_tests {
+    use std::sync::Arc;
+
+    use id_core::access::AccessPolicy;
+    use id_store::tags::TagStore;
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_base::SecretKey;
+    use iroh_blobs::{Hash, api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+
+    use super::{MetaProtocol, MetaRequest, MetaResponse};
+
+    #[tokio::test]
+    async fn authorized_peer_cannot_forge_refs_and_delete_preserves_preexisting_foreign_archive() {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "archive-reference-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let peer = SecretKey::from_bytes(&[42; 32]).public();
+        let server = MetaProtocol::new(
+            &store,
+            None,
+            Arc::clone(&tags),
+            AccessPolicy::restricted([peer]),
+            endpoint.id(),
+            None,
+        );
+        let foreign_hash = Hash::from([7; 32]);
+        let owned_hash = Hash::from([8; 32]);
+        store
+            .tags()
+            .set("my-file", Hash::from([1; 32]))
+            .await
+            .unwrap();
+        store
+            .tags()
+            .set("other-file.archive.123", foreign_hash)
+            .await
+            .unwrap();
+        store
+            .tags()
+            .set("my-file.archive.124", owned_hash)
+            .await
+            .unwrap();
+        tags.set_tag(
+            &tags.global,
+            b"other-file.archive.123",
+            b"keep",
+            Some(b"foreign metadata"),
+            b"",
+        )
+        .await
+        .unwrap();
+        tags.set_tag(
+            &tags.global,
+            b"my-file.archive.124",
+            b"keep",
+            Some(b"owned metadata"),
+            b"",
+        )
+        .await
+        .unwrap();
+        tags.set_tag(
+            &tags.global,
+            b"my-file",
+            b"archive.replace",
+            Some(b"my-file.archive.124"),
+            b"",
+        )
+        .await
+        .unwrap();
+
+        let rejected_set = server
+            .handle(
+                &peer,
+                MetaRequest::SetTag {
+                    subject: b"my-file".to_vec(),
+                    key: b"archive.replace".to_vec(),
+                    value: Some(b"other-file.archive.123".to_vec()),
+                },
+            )
+            .await;
+        assert!(matches!(rejected_set, MetaResponse::Error { .. }));
+        let rejected_delete = server
+            .handle(
+                &peer,
+                MetaRequest::DelTag {
+                    subject: b"my-file".to_vec(),
+                    key: b"archive.replace".to_vec(),
+                    value: None,
+                },
+            )
+            .await;
+        assert!(matches!(rejected_delete, MetaResponse::Error { .. }));
+
+        // Model legacy/persisted forged metadata written before the protocol
+        // reserved these keys; deletion must still refuse to follow it.
+        tags.set_tag(
+            &tags.global,
+            b"my-file",
+            b"archive.replace",
+            Some(b"other-file.archive.123"),
+            b"",
+        )
+        .await
+        .unwrap();
+        let response = server
+            .handle(
+                &peer,
+                MetaRequest::Delete {
+                    filename: "my-file".to_owned(),
+                },
+            )
+            .await;
+        assert!(matches!(response, MetaResponse::Delete { success: true }));
+
+        assert_eq!(
+            store
+                .tags()
+                .get("other-file.archive.123")
+                .await
+                .unwrap()
+                .unwrap()
+                .hash,
+            foreign_hash
+        );
+        let foreign_metadata = tags
+            .get_tags(&tags.global, b"other-file.archive.123")
+            .await
+            .unwrap();
+        assert!(
+            foreign_metadata
+                .iter()
+                .any(|tag| tag.key.as_bytes() == b"keep")
+        );
+        assert!(
+            store
+                .tags()
+                .get("my-file.archive.124")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            tags.get_tags(&tags.global, b"my-file.archive.124")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        endpoint.close().await;
+    }
+}
+
+#[cfg(test)]
+mod reserved_archive_reference_tests {
+    use super::is_reserved_archive_reference_key;
+
+    #[test]
+    fn archive_reference_keys_are_reserved_for_fileops() {
+        assert!(is_reserved_archive_reference_key(b"archive.rename"));
+        assert!(is_reserved_archive_reference_key(b"archive.replace"));
+        assert!(!is_reserved_archive_reference_key(b"user.label"));
+    }
+}
 use id_store::tags::TagStore;
 
 /// Decode exactly one meta-protocol value, rejecting any trailing bytes.
@@ -789,6 +976,19 @@ impl MetaProtocol {
             MetaRequest::Find { query, prefer_name } => MetaResponse::Find {
                 matches: self.find(&query, prefer_name).await,
             },
+            MetaRequest::SetTag { key, .. } if is_reserved_archive_reference_key(&key) => {
+                // These keys are FileOps-owned references, not user metadata.
+                // Allowing protocol peers to write them lets a later delete
+                // remove an archive (and metadata) belonging to another file.
+                MetaResponse::Error {
+                    message: "archive reference tags are reserved".to_owned(),
+                }
+            }
+            MetaRequest::DelTag { key, .. } if is_reserved_archive_reference_key(&key) => {
+                MetaResponse::Error {
+                    message: "archive reference tags are reserved".to_owned(),
+                }
+            }
             MetaRequest::SetTag {
                 subject,
                 key,
@@ -1079,7 +1279,6 @@ mod tests {
     };
     use iroh_base::{SecretKey, TransportAddr};
     use std::net::{Ipv4Addr, SocketAddr};
-
 
     #[test]
     fn test_find_match_struct() {

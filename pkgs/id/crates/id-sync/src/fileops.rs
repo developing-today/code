@@ -606,10 +606,13 @@ impl<'a> FileOps<'a> {
                 .await?
             {
                 if let Some(archive_name) = tag.value.as_ref().and_then(|value| value.as_str()) {
-                    if is_archive_tag_name(archive_name) {
+                    // Stored references are only actionable when they point
+                    // into this file's own archive namespace. Metadata may
+                    // predate protocol-level reservation of these keys.
+                    if is_owned_archive_tag_name(name, archive_name) {
                         archives.insert(archive_name.to_owned());
                     } else {
-                        tracing::warn!("ignoring malformed archive reference on {name}");
+                        tracing::warn!("ignoring invalid or foreign archive reference on {name}");
                     }
                 }
             }
@@ -682,6 +685,31 @@ impl<'a> FileOps<'a> {
             archives_removed,
             metadata_removed,
         })
+    }
+}
+
+/// Whether `archive_name` is a FileOps archive owned by `name`.
+fn is_owned_archive_tag_name(name: &str, archive_name: &str) -> bool {
+    archive_name
+        .strip_prefix(&format!("{name}.archive."))
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod archive_reference_tests {
+    use super::is_owned_archive_tag_name;
+
+    #[test]
+    fn deletion_ignores_foreign_archive_reference_but_accepts_owned_reference() {
+        assert!(!is_owned_archive_tag_name(
+            "my-file",
+            "other-file.archive.123"
+        ));
+        assert!(is_owned_archive_tag_name("my-file", "my-file.archive.123"));
+        assert!(!is_owned_archive_tag_name(
+            "my-file",
+            "my-file.archive.nope"
+        ));
     }
 }
 
@@ -808,9 +836,3 @@ mod archive_name_tests {
         );
     }
 }
-
-
-
-
-
-
