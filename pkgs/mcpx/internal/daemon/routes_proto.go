@@ -248,6 +248,20 @@ func (t *askTable) get(id string) (*askCall, bool) {
 	return a, ok
 }
 
+// forRun returns the ask call that owns the given exec run, if one is
+// registered: a run the call began (beginRun) or a run attached to it
+// afterwards (attachRun / attachRunToRun for a declared script tool
+// nested inside it).
+func (t *askTable) forRun(run string) (*askCall, bool) {
+	if run == "" {
+		return nil, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	a, ok := t.byRun[run]
+	return a, ok
+}
+
 // owner returns the one call that owns every registered entry on this
 // connection, and how many entries that is. Entries are interruptible calls
 // and the in-flight upstream calls of a running script (its members); plain
@@ -338,12 +352,23 @@ func (r *Registry) attach(ctx context.Context, server, key string, req elicit.Re
 // call, and the hook waited out its timeout instead of being answered
 // (Codex review, PR #9021).
 func (r *Registry) attachSample(ctx context.Context, req elicit.Request, params json.RawMessage) bool {
-	id, ok := ctx.Value(askCallKey{}).(string)
-	if !ok || id == "" {
-		return false
+	var a *askCall
+	if id, ok := ctx.Value(askCallKey{}).(string); ok && id != "" {
+		a, _ = r.asks.get(id)
 	}
-	a, ok := r.asks.get(id)
-	if !ok {
+	if a == nil {
+		// No ask id on the context: the nested /v1/call path restores
+		// only the run id (X-Mcpx-Run, server.go), and runDeclaredScript
+		// associates a script-backed tool's fresh run with that parent
+		// run instead of stamping an ask id, so a prompt hook inside
+		// such a tool carries a run but no askCallKey. Resolve the
+		// owning call through the run before abandoning attachment,
+		// or its question is never exposed to the host driving the
+		// interruptible call and waits out its timeout (Codex review,
+		// PR #9021).
+		a, _ = r.asks.forRun(runFrom(ctx))
+	}
+	if a == nil {
 		return false
 	}
 	a.add(mcpserver.Question{
