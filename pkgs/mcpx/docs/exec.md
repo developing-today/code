@@ -167,7 +167,14 @@ Three renderings of one run.
   must keep doing so.
 - **structured** — the `/v1` and MCP default. One document:
   `{result, emits[], logs[], stdout, artifacts[], exitCode, durationMs,
-error?}`. A caller over HTTP wants fields, not text it has to scrape.
+error?, errorKind?}`. A caller over HTTP wants fields, not text it has to scrape.
+
+  `errorKind` is the failure's typed kind (CODE-30), present exactly when
+  `error` is: `timeout` (the run exceeded its bound), `not_started` (a
+  missing runtime, an unreadable launcher, a type error found before
+  execution), or `execution` (the script started and failed — it threw,
+  exited non-zero, or the runner reported the failure). The message and
+  exit details are unchanged; the kind is what a caller branches on.
 - **stream** — frames as they happen. SSE by default because it is plain
   HTTP and a browser consumes it with no code; NDJSON on
   `Accept: application/x-ndjson`, because a program with a JSON decoder should

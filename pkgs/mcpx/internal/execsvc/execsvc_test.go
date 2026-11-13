@@ -613,3 +613,55 @@ func TestBorrowedSessionIsNotReleased(t *testing.T) {
 		})
 	}
 }
+
+// CODE-30 (#1937): a failure carries a typed kind beside its message,
+// so a caller can branch without parsing text -- and success carries
+// none.
+func TestFailureKindsAreTyped(t *testing.T) {
+	needRuntime(t)
+	svc := service(t, store(t))
+	run := func(ropts runner.Options) *execsvc.Result {
+		res, _ := svc.RunWith(context.Background(), ropts, execsvc.Options{Output: execsvc.OutputStructured},
+			func(execsvc.Frame) error { return nil })
+		if res == nil {
+			t.Fatal("no result")
+		}
+		return res
+	}
+
+	// The script started and threw: an execution failure, its own
+	// message preserved.
+	res := run(runner.Options{
+		Source: `throw new Error("boom");`, ClientSource: minimalClient, Permissions: "all",
+	})
+	if res.ErrorKind != execsvc.FailureExecution || !strings.Contains(res.Error, "boom") {
+		t.Errorf("thrown error: kind = %q, error = %q", res.ErrorKind, res.Error)
+	}
+
+	// The script outlived its bound: a timeout, distinct from the
+	// failure it also reports.
+	res = run(runner.Options{
+		Source:       `await new Promise((r) => setTimeout(r, 60000));`,
+		ClientSource: minimalClient, Permissions: "all", Timeout: time.Second,
+	})
+	if !res.TimedOut || res.ErrorKind != execsvc.FailureTimeout {
+		t.Errorf("timeout: timedOut = %v, kind = %q, error = %q", res.TimedOut, res.ErrorKind, res.Error)
+	}
+
+	// No such runtime: the script never started.
+	res = run(runner.Options{
+		Source: `console.log("ok");`, ClientSource: minimalClient, Permissions: "all",
+		Runtime: "no-such-runtime-9316",
+	})
+	if res.ErrorKind != execsvc.FailureNotStarted || res.Error == "" {
+		t.Errorf("never started: kind = %q, error = %q", res.ErrorKind, res.Error)
+	}
+
+	// A clean run has no kind.
+	res = run(runner.Options{
+		Source: `console.log("ok");`, ClientSource: minimalClient, Permissions: "all",
+	})
+	if res.Error != "" || res.ErrorKind != "" {
+		t.Errorf("clean run: kind = %q, error = %q", res.ErrorKind, res.Error)
+	}
+}
