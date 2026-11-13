@@ -321,6 +321,68 @@ func TestShapeToSpecSingleTool(t *testing.T) {
 	}
 }
 
+func TestShapeToSpecCatchAllNameNeverCollides(t *testing.T) {
+	// #9558: imported help that itself declares a positional named
+	// `args` (or a `--args` flag) must not yield two `args` params —
+	// Validate accepts duplicates, Schema overwrites, and buildArgs
+	// would render both from the same input. The parsed param keeps
+	// its name; the catch-all is renamed, in both branches.
+	prov := &adapter.Provenance{Source: "help", GeneratedAt: "2026-01-01T00:00:00Z", Generator: "test"}
+	argsFlag := importFlag{Long: "args", Desc: "the args flag", TakesValue: true}
+	argsPos := importFlag{Long: "args", Desc: "the args positional", TakesValue: true}
+
+	assertUnique := func(t *testing.T, tool adapter.ToolSpec, wantParsed bool) {
+		t.Helper()
+		seen := map[string]int{}
+		var catchAll *adapter.Param
+		for i := range tool.Params {
+			seen[tool.Params[i].Name]++
+			if tool.Params[i].Type == "array" {
+				catchAll = &tool.Params[i]
+			}
+		}
+		for name, n := range seen {
+			if n > 1 {
+				t.Errorf("tool %s: param name %q appears %d times: %+v", tool.Name, name, n, tool.Params)
+			}
+		}
+		if catchAll == nil {
+			t.Fatalf("tool %s: no array catch-all param: %+v", tool.Name, tool.Params)
+		}
+		if wantParsed {
+			if seen["args"] != 1 {
+				t.Errorf("tool %s: parsed `args` param should survive exactly once: %+v", tool.Name, tool.Params)
+			}
+			if catchAll.Name == "args" {
+				t.Errorf("tool %s: catch-all must be renamed off the collision: %+v", tool.Name, tool.Params)
+			}
+		} else if catchAll.Name != "args" {
+			t.Errorf("tool %s: uncollided catch-all keeps the name `args`: %+v", tool.Name, tool.Params)
+		}
+	}
+
+	// Single-tool branch: positional named args, and --args flag.
+	for name, shape := range map[string]*importShape{
+		"positional args": {Description: "d", Positionals: []importFlag{argsPos}},
+		"flag --args":     {Description: "d", Global: []importFlag{argsFlag}},
+		"no collision":    {Description: "d", Positionals: []importFlag{{Long: "item", TakesValue: true}}},
+	} {
+		spec, _, err := shapeToSpec("toolbox", "toolbox", shape, prov)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		assertUnique(t, spec.Tools[0], name != "no collision")
+	}
+
+	// Subcommand branch: positional named args on the subcommand.
+	shape := &importShape{Subs: []importSub{{Name: "add", Desc: "add one", Positionals: []importFlag{argsPos}}}}
+	spec, _, err := shapeToSpec("toolbox", "toolbox", shape, prov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertUnique(t, spec.Tools[0], true)
+}
+
 func TestParsersRefuseGarbage(t *testing.T) {
 	// Sources that are not machine-regular must yield an empty shape,
 	// and an empty shape must be an error at the spec step: no partial

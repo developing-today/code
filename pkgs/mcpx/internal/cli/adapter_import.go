@@ -313,6 +313,31 @@ func placeholderIsInteger(v string) bool {
 	return false
 }
 
+// catchAllParam builds a tool's positional catch-all, renamed until
+// its name is unique among the params already declared (#9558): when
+// the imported help itself declares a positional named `args` or a
+// `--args` flag, appending a second `args` param would pass Validate,
+// be overwritten in Schema, and be rendered twice by buildArgs from
+// the same input — operands passed twice, or a flag value also
+// becoming a trailing operand. The parsed parameter keeps its name;
+// the catch-all takes the first free `args_extra…` variant, the same
+// suffix discipline flagParams applies to duplicate flags.
+func catchAllParam(params []adapter.Param) adapter.Param {
+	used := make(map[string]bool, len(params))
+	for _, p := range params {
+		used[p.Name] = true
+	}
+	name := "args"
+	for used[name] {
+		name += "_extra"
+	}
+	return adapter.Param{
+		Name:        name,
+		Type:        "array",
+		Description: "Additional positional arguments, passed in order.",
+	}
+}
+
 // shapeToSpec renders a parsed shape as a declaration. Global flags of a
 // subcommand-ful binary are deliberately NOT folded into the subcommand
 // tools: they belong before the subcommand on a real command line
@@ -345,11 +370,7 @@ func shapeToSpec(name, command string, shape *importShape, prov *adapter.Provena
 			// run the operation it names (toolbox add ITEM), and
 			// buildArgs refuses undeclared arguments — so every
 			// subcommand tool carries the catch-all too.
-			params = append(params, adapter.Param{
-				Name:        "args",
-				Type:        "array",
-				Description: "Additional positional arguments, passed in order.",
-			})
+			params = append(params, catchAllParam(params))
 			spec.Tools = append(spec.Tools, adapter.ToolSpec{
 				Name:        sub.Name,
 				Description: sub.Desc,
@@ -374,11 +395,7 @@ func shapeToSpec(name, command string, shape *importShape, prov *adapter.Provena
 				Required:    !pos.Optional,
 			})
 		}
-		params = append(params, adapter.Param{
-			Name:        "args",
-			Type:        "array",
-			Description: "Additional positional arguments, passed in order.",
-		})
+		params = append(params, catchAllParam(params))
 		spec.Tools = []adapter.ToolSpec{{
 			Name:        "run",
 			Description: shape.Description,
