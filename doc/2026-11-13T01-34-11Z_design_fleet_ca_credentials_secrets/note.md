@@ -6,18 +6,18 @@ This directory is the canonical in-repo home of the Fleet v0.3 credentials/secre
 
 ## Sources (one intake) and provenance
 
-| File in `sources/` | Origin | Notes |
-|---|---|---|
-| `fleet_architecture_spec_v0_3.md` | v0.3 package (zip) | Governing spec: §§0–49 + Appendix A. 343,701 B. |
-| `SECRETS_BACKEND_RESEARCH_2026-11-06.md` | v0.3 package | Provider matrix, ADR-FLEET-SEC-001, R-SEC-01…18 research backlog. |
-| `DECISION_REVIEW_AND_NEXT_STEPS.md` | v0.3 package | Decision review; proposals until validated against live sources. |
-| `fleet_agent_handoff_prompt_v0_3.md` | v0.3 package | The eventual implementation assignment (future acceptance obligations; not this design phase's execution plan). |
-| `source_input_3_architectural_perspective.txt` | v0.3 package | Third original input; §47 of the spec reconciles it — retained for traceability. |
-| `README.md`, `SHA256SUMS` | v0.3 package | Package order/baseline + per-file integrity manifest. |
-| `HANDOFF_claude_fleet_ca_credentials_secrets.md` | Google Doc `1yeSWQvMIer92zQ4lj99TsTH2oXZem0WfH-WMYKYJpJ0` (modified 2026-11-12) | The run's handoff: scope, interpretation, safety gates, MTC research note. Text export (formatting flattened). |
-| `ADDENDUM_secrets_architecture_performance_infrastructure.md` | Google Doc `1QkQMPYGEHbjdyMBdrcSdo4i2GKxlJYK2S3PDrvCRfVw` | Dated refinement of the package: BWS retained, fnox near-term, root escrow to 3 named destinations, OpenBao staging. Text export. |
-| `COORDINATOR_summit_handoff.md` | Google Doc `1AKDACXObRcUwmJIeCfLaGv6bxcWC00e3rYjOztk4qiY` | Execution contract for this run (issue content contract, supervision design, completion criteria). Text export. |
-| `COMPANION_pm_charter_shared_conventions.md` | Google Doc `1_DQwNbuRmJnITDKKJJ7A3Q0FJa-q2rkzWlz-4PyA_iw` | Shared queue/dispatch conventions ONLY; the PM workstream is a separate program. Text export. |
+| File in `sources/`                                            | Origin                                                                          | Notes                                                                                                                             |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `fleet_architecture_spec_v0_3.md`                             | v0.3 package (zip)                                                              | Governing spec: §§0–49 + Appendix A. 343,701 B.                                                                                   |
+| `SECRETS_BACKEND_RESEARCH_2026-11-06.md`                      | v0.3 package                                                                    | Provider matrix, ADR-FLEET-SEC-001, R-SEC-01…18 research backlog.                                                                 |
+| `DECISION_REVIEW_AND_NEXT_STEPS.md`                           | v0.3 package                                                                    | Decision review; proposals until validated against live sources.                                                                  |
+| `fleet_agent_handoff_prompt_v0_3.md`                          | v0.3 package                                                                    | The eventual implementation assignment (future acceptance obligations; not this design phase's execution plan).                   |
+| `source_input_3_architectural_perspective.txt`                | v0.3 package                                                                    | Third original input; §47 of the spec reconciles it — retained for traceability.                                                  |
+| `README.md`, `SHA256SUMS`                                     | v0.3 package                                                                    | Package order/baseline + per-file integrity manifest.                                                                             |
+| `HANDOFF_claude_fleet_ca_credentials_secrets.md`              | Google Doc `1yeSWQvMIer92zQ4lj99TsTH2oXZem0WfH-WMYKYJpJ0` (modified 2026-11-12) | The run's handoff: scope, interpretation, safety gates, MTC research note. Text export (formatting flattened).                    |
+| `ADDENDUM_secrets_architecture_performance_infrastructure.md` | Google Doc `1QkQMPYGEHbjdyMBdrcSdo4i2GKxlJYK2S3PDrvCRfVw`                       | Dated refinement of the package: BWS retained, fnox near-term, root escrow to 3 named destinations, OpenBao staging. Text export. |
+| `COORDINATOR_summit_handoff.md`                               | Google Doc `1AKDACXObRcUwmJIeCfLaGv6bxcWC00e3rYjOztk4qiY`                       | Execution contract for this run (issue content contract, supervision design, completion criteria). Text export.                   |
+| `COMPANION_pm_charter_shared_conventions.md`                  | Google Doc `1_DQwNbuRmJnITDKKJJ7A3Q0FJa-q2rkzWlz-4PyA_iw`                       | Shared queue/dispatch conventions ONLY; the PM workstream is a separate program. Text export.                                     |
 
 **Integrity:** the package zip (`fleet_architecture_v0_3_complete.zip`, Drive file `1cdmoblf8yQM2NuXsR2i90N45dABU1EPo`) has SHA-256 `d853a2bacf391856a863c292b21f5a224352a6681dd81fe55c422040b1fb5644` — recomputed at intake in the sandbox AND after transfer to the laptop; `sha256sum -c SHA256SUMS` passes on all five covered files in both places. Immutable snapshot staged on the laptop at `~/.local/share/fleet/intake/fleet-ca-v03-20261112/` (with an `INTAKE.md`).
 
@@ -40,14 +40,14 @@ This directory is the canonical in-repo home of the Fleet v0.3 credentials/secre
 
 ## Requirement classification (intake level — the Summit verifies per-requirement)
 
-| Class | What falls in it (examples) |
-|---|---|
-| Verified-existing | secrets `get`/`list` broker→BWS resolution; name-only secret references; fleet multicall registry/profiles; SOPS/age in NixOS provisioning (outside Fleet). |
-| Partial | provider access (BWS yes; `op` only via external CLI habits, no Fleet adapter; `bw` not authorized); caching (broker cache exists, invalidation defective per #6767); event/audit (fleet has queue/outbox patterns, no secrets journal). |
-| Missing | canonical Credential model + field mapping; reconciliation engine + `zz.delete`; benchmark suite; fnox integration; generators (password/SSH/iroh); the entire PKI (`cert` domain): roots, issuers, leaves, CRL/publication; trust-install kits. |
-| Research | OpenBao staging; SecureStore; Cloudflare R2 root-backup destination; federation model; workload identity (SPIFFE/SPIRE); MTC experiment (#9167). |
-| Unsupported (record, don't fake) | ML-DSA OCSP via OpenBao (Go OCSP lacks ML-DSA per the research dossier); universal AIA chain discovery (clients may ignore/stop early); PQ assurance from classical trust (verifier policy, not issuance). |
-| Approval-blocked | any production vault write/reconciliation; production root generation/escrow/signing; credential rotation; DNS/trust-store changes; `bw` personal-vault access (separate authorization). |
+| Class                            | What falls in it (examples)                                                                                                                                                                                                                      |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Verified-existing                | secrets `get`/`list` broker→BWS resolution; name-only secret references; fleet multicall registry/profiles; SOPS/age in NixOS provisioning (outside Fleet).                                                                                      |
+| Partial                          | provider access (BWS yes; `op` only via external CLI habits, no Fleet adapter; `bw` not authorized); caching (broker cache exists, invalidation defective per #6767); event/audit (fleet has queue/outbox patterns, no secrets journal).         |
+| Missing                          | canonical Credential model + field mapping; reconciliation engine + `zz.delete`; benchmark suite; fnox integration; generators (password/SSH/iroh); the entire PKI (`cert` domain): roots, issuers, leaves, CRL/publication; trust-install kits. |
+| Research                         | OpenBao staging; SecureStore; Cloudflare R2 root-backup destination; federation model; workload identity (SPIFFE/SPIRE); MTC experiment (#9167).                                                                                                 |
+| Unsupported (record, don't fake) | ML-DSA OCSP via OpenBao (Go OCSP lacks ML-DSA per the research dossier); universal AIA chain discovery (clients may ignore/stop early); PQ assurance from classical trust (verifier policy, not issuance).                                       |
+| Approval-blocked                 | any production vault write/reconciliation; production root generation/escrow/signing; credential rotation; DNS/trust-store changes; `bw` personal-vault access (separate authorization).                                                         |
 
 ## Domain starters (Summit files granular children under each)
 

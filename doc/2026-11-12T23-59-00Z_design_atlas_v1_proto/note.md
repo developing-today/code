@@ -200,7 +200,7 @@ to it are filed (comments 6839361945, 6839362599); #9060's §12 note that
   (`shareable < personal < local-only < secret-bearing`) is the
   starting point, refined by the design; sensitivity is a §C strict
   enum.
-- **Disclosure contexts.** Access is a function of *surface*, not only
+- **Disclosure contexts.** Access is a function of _surface_, not only
   identity: fleet task agents see nearly everything; a result posted
   to a public surface (e.g. a GitHub comment) is filtered to
   public-allowed content even when the searcher could see more. §A's
@@ -281,7 +281,7 @@ saving beat the R2 cost, at acceptable hydration latency?
   transactional) vs the Turso index, judged on the VFS query shapes,
   update cost under §E's constant ingestion, and operational weight.
 - **Boundary:** the store, GC, and sensitivity tiers are #9084's; a
-  location record *is* a reference in #9084's sense. Prior art: #3125.
+  location record _is_ a reference in #9084's sense. Prior art: #3125.
 
 ## I. Worker instructions rollout — #9101
 
@@ -297,42 +297,42 @@ search — which tool for which question.
 
 ## J. Statement → issue map
 
-| Drew's statement (2026-11-12 17:38 CST) | Home |
-|---|---|
-| Build the search subcommand out substantially | #9092 (§A) |
-| Workers fan-out; explore other techniques | #9092 (§A) |
-| All workers instructed on search + queue/gh/connect | #9101 (§I) |
-| Benchmark shard sizes for lowest latency | #9092 (§A, named oracle) |
-| Workers + Durable Objects best use | #9092 (§A) |
-| Cache until corpus change; short staleness; real-time / no-cache flags | #9092 (§A) |
-| Query planner + other tooling investigation | #9092 (§A) |
-| Second embedding approach beside Snowflake | #9092 (§A) |
-| Backup all Turso DBs every ~14 days; Turso 30d protection inside 30d | #9093 (§B) |
-| Turso → restic zstd deltas → R2; R2 → laptop + Drive; full mesh; D1/laptop DBs → Turso | #9093 (§B) |
-| OpenCode DB: keep large; backup cost/growth investigation (Drive + laptop archive) | #9094 (§B) |
-| Corpus constantly updating; ingest queue/PM/GitHub/Muse/OpenCode(+thinking?)/ID + missed sources | #9097 (§E) |
-| Versioned Metadata schema on all items; many labels/categories applied | #9095 (§C) + #9097 (§E) |
-| Issue/PR Metadata also versioned; schema version always included | #9095 (§C) → #9073/#9074 amendments |
-| Additive-only evolution; old metadata valid indefinitely; old embeds on new systems | #9095 (§C) |
-| Breaking changes parked, applied as one set, reclassify everything | #9095 (§C) |
-| Extras / type-mismatch-as-extra / coercion rules | #9095 (§C) |
-| Strict enums (kind/area/group/sensitivity); invalid sensitivity → most locked-down | #9095 (§C) |
-| Optional attrs hard to filter — accepted; classifiers without schema permission | #9095 (§C) |
-| Per-embed classification; boundary safety without all-secret default | #9096 (§D) |
-| Granular sensitivity: project shareable / secrets hidden / personal-life off limits | #9096 (§D) |
-| Disclosure by surface (public posting filtered even for privileged searcher) | #9096 (§D) + #9092 (§A) |
-| Embeds backed up for restore | #9093 (§B) |
-| Fan-out + Turso/D1 sharding for speed, cost-bounded | #9092 (§A) |
-| Content offload to R2, fallback laptop → lab RustFS; hot cache in Turso/D1 | #9098 (§F) |
-| Store result cache forever; compare queries over time | #9099 (§G) |
-| Every query ingested as an embed attached to its results; all flags/params; tool hashes+versions | #9099 (§G) |
-| Version every Workers deploy; version Turso + D1 schemas | #9099 (§G) |
-| Turso stores embeddings + content hash + metadata; raw content in R2/RustFS/Drive — test the economics | #9098 (§F) |
-| Content-addressed files + virtual path abstraction (`geordi.png` lookups) | #9100 (§H) |
-| One upload, N location metadata records (host/date/process) | #9100 (§H) |
-| Aggregated VFS index (own Turso DB / sidecar tables), no corpus scans | #9100 (§H) |
-| Parquet / Cloudflare Basin / big-data fit for the metadata | #9100 (§H) |
-| Internal use only; never exposed directly to public | #9091 + §D everywhere |
+| Drew's statement (2026-11-12 17:38 CST)                                                                | Home                                |
+| ------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| Build the search subcommand out substantially                                                          | #9092 (§A)                          |
+| Workers fan-out; explore other techniques                                                              | #9092 (§A)                          |
+| All workers instructed on search + queue/gh/connect                                                    | #9101 (§I)                          |
+| Benchmark shard sizes for lowest latency                                                               | #9092 (§A, named oracle)            |
+| Workers + Durable Objects best use                                                                     | #9092 (§A)                          |
+| Cache until corpus change; short staleness; real-time / no-cache flags                                 | #9092 (§A)                          |
+| Query planner + other tooling investigation                                                            | #9092 (§A)                          |
+| Second embedding approach beside Snowflake                                                             | #9092 (§A)                          |
+| Backup all Turso DBs every ~14 days; Turso 30d protection inside 30d                                   | #9093 (§B)                          |
+| Turso → restic zstd deltas → R2; R2 → laptop + Drive; full mesh; D1/laptop DBs → Turso                 | #9093 (§B)                          |
+| OpenCode DB: keep large; backup cost/growth investigation (Drive + laptop archive)                     | #9094 (§B)                          |
+| Corpus constantly updating; ingest queue/PM/GitHub/Muse/OpenCode(+thinking?)/ID + missed sources       | #9097 (§E)                          |
+| Versioned Metadata schema on all items; many labels/categories applied                                 | #9095 (§C) + #9097 (§E)             |
+| Issue/PR Metadata also versioned; schema version always included                                       | #9095 (§C) → #9073/#9074 amendments |
+| Additive-only evolution; old metadata valid indefinitely; old embeds on new systems                    | #9095 (§C)                          |
+| Breaking changes parked, applied as one set, reclassify everything                                     | #9095 (§C)                          |
+| Extras / type-mismatch-as-extra / coercion rules                                                       | #9095 (§C)                          |
+| Strict enums (kind/area/group/sensitivity); invalid sensitivity → most locked-down                     | #9095 (§C)                          |
+| Optional attrs hard to filter — accepted; classifiers without schema permission                        | #9095 (§C)                          |
+| Per-embed classification; boundary safety without all-secret default                                   | #9096 (§D)                          |
+| Granular sensitivity: project shareable / secrets hidden / personal-life off limits                    | #9096 (§D)                          |
+| Disclosure by surface (public posting filtered even for privileged searcher)                           | #9096 (§D) + #9092 (§A)             |
+| Embeds backed up for restore                                                                           | #9093 (§B)                          |
+| Fan-out + Turso/D1 sharding for speed, cost-bounded                                                    | #9092 (§A)                          |
+| Content offload to R2, fallback laptop → lab RustFS; hot cache in Turso/D1                             | #9098 (§F)                          |
+| Store result cache forever; compare queries over time                                                  | #9099 (§G)                          |
+| Every query ingested as an embed attached to its results; all flags/params; tool hashes+versions       | #9099 (§G)                          |
+| Version every Workers deploy; version Turso + D1 schemas                                               | #9099 (§G)                          |
+| Turso stores embeddings + content hash + metadata; raw content in R2/RustFS/Drive — test the economics | #9098 (§F)                          |
+| Content-addressed files + virtual path abstraction (`geordi.png` lookups)                              | #9100 (§H)                          |
+| One upload, N location metadata records (host/date/process)                                            | #9100 (§H)                          |
+| Aggregated VFS index (own Turso DB / sidecar tables), no corpus scans                                  | #9100 (§H)                          |
+| Parquet / Cloudflare Basin / big-data fit for the metadata                                             | #9100 (§H)                          |
+| Internal use only; never exposed directly to public                                                    | #9091 + §D everywhere               |
 
 ## K. Open questions for the summit (defaults recorded; Drew settles only the starred)
 

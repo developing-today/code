@@ -13,3 +13,4 @@
 pub mod world_caps;
 pub mod world_limits;
 pub mod world_manifest;
+pub mod world_scopes;

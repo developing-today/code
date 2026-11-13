@@ -28,28 +28,28 @@ multi-TB tiered storage) and, potentially, advanced clustering of ID services.
 
 ## 2. Statement inventory (seed — the summit verifies and completes it)
 
-| # | Statement | Maps to |
-|---|-----------|---------|
-| S1 | The PM service gets a workable Workers edition: aggregator/dashboard/reconcile equivalents as one TypeScript service, Durable Objects where coordination needs them. | A #9079 |
-| S2 | The hosted PM edition consumes the #9060 data model (board registry, hierarchy, Metadata) — same model, new runtime. | A #9079 |
-| S3 | The ID service gets a workable hosted edition, built on the existing serverless line (#5524, #5681 + children, #3811) — gaps only, no re-filing covered ground. | B #9080 |
-| S4 | The fleet tool's hosted-world capabilities (Metadata stamping/query, session provenance, sync tools) exist as a TypeScript service/CLI against hosted backends. | C #9081 |
-| S5 | ID supports Turso/SQLite-over-HTTP as a database store in addition to redb; IndexedDB is evaluated for the browser client; one storage interface, pluggable backends. | D #9082 |
-| S6 | Store pluralism is pragmatic, not maximal: CF+Turso is the main line; the abstraction serves the tier-1 editions and the self-hosted backend, not store-count for its own sake. | D #9082 (amendment) |
-| S7 | Each user has per-user ID database(s) in Turso; a central tenancy DB is the control plane; Workers + Durable Objects serve routing/auth/sync. | E #9083 |
-| S8 | Hosted per-user instances connect and sync their data; everyone can also connect to a large public database we offer. | E #9083 |
-| S9 | Media is content-addressed and deduped in R2; sensitivity tiers decide placement/access (R2 + access controls, CDN for public, or inside the Turso DB). | F #9084 |
-| S10 | Open question, Drew's sketch: DBs hold IDs/references, content lives once in R2, GC only when ALL references drop; access iff the user's DB references the object or it is public-published in ≥1 DB. Copy and hybrid models are evaluated against it. | F #9084 |
-| S11 | This is substantially a second version in TypeScript (Workers limits); the design scopes it plainly. | G #9085 |
-| S12 | Client-side WASM is allowed in selected areas; per component, Rust logic is evaluated for WASM reuse vs TS rewrite. | G #9085 |
-| S13 | All base functions work over REST or WebSocket transports (HTTP/2/3, QUIC where provided). | G #9085 |
-| S14 | Direct Turso access to the user's own DB and to the public DB is allowed when prudent, under tenancy/auth rules that define "prudent". | G #9085, E #9083 |
-| S15 | Hosted services are relying parties for #9077 (GitHub/Google/Microsoft gated login + devtoday OIDC + account linking); the tenancy account model aligns with #9077/#1253 roles. Identity is not re-designed here. | H #9086 |
-| S16 | A longer-term self-hosted tier exists in the architecture: a Kubernetes cluster with multi-TB disk arrays as the largest central storage. | I #9087 |
-| S17 | F's primitives are adapter-friendly toward RustFS (S3-compatible), NATS (streams/messaging), and tiered storage — storage classes with different latency/bandwidth, per-tier retention, placement/movement between tiers. | I #9087, F #9084 |
-| S18 | Both platforms are tier 1 (CF+Turso and Rust binaries); parity + deliberate divergence, never "port down". | all (amendment) |
-| S19 | Our server is a peer, not a special case — same participant kinds, different backends; no protocol special-casing. | E/F/G/I (amendment) |
-| S20 | Advanced clustering of ID services is a legitimate self-hosted differentiator to design for. | I #9087, B #9080 |
+| #   | Statement                                                                                                                                                                                                                                              | Maps to             |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------- |
+| S1  | The PM service gets a workable Workers edition: aggregator/dashboard/reconcile equivalents as one TypeScript service, Durable Objects where coordination needs them.                                                                                   | A #9079             |
+| S2  | The hosted PM edition consumes the #9060 data model (board registry, hierarchy, Metadata) — same model, new runtime.                                                                                                                                   | A #9079             |
+| S3  | The ID service gets a workable hosted edition, built on the existing serverless line (#5524, #5681 + children, #3811) — gaps only, no re-filing covered ground.                                                                                        | B #9080             |
+| S4  | The fleet tool's hosted-world capabilities (Metadata stamping/query, session provenance, sync tools) exist as a TypeScript service/CLI against hosted backends.                                                                                        | C #9081             |
+| S5  | ID supports Turso/SQLite-over-HTTP as a database store in addition to redb; IndexedDB is evaluated for the browser client; one storage interface, pluggable backends.                                                                                  | D #9082             |
+| S6  | Store pluralism is pragmatic, not maximal: CF+Turso is the main line; the abstraction serves the tier-1 editions and the self-hosted backend, not store-count for its own sake.                                                                        | D #9082 (amendment) |
+| S7  | Each user has per-user ID database(s) in Turso; a central tenancy DB is the control plane; Workers + Durable Objects serve routing/auth/sync.                                                                                                          | E #9083             |
+| S8  | Hosted per-user instances connect and sync their data; everyone can also connect to a large public database we offer.                                                                                                                                  | E #9083             |
+| S9  | Media is content-addressed and deduped in R2; sensitivity tiers decide placement/access (R2 + access controls, CDN for public, or inside the Turso DB).                                                                                                | F #9084             |
+| S10 | Open question, Drew's sketch: DBs hold IDs/references, content lives once in R2, GC only when ALL references drop; access iff the user's DB references the object or it is public-published in ≥1 DB. Copy and hybrid models are evaluated against it. | F #9084             |
+| S11 | This is substantially a second version in TypeScript (Workers limits); the design scopes it plainly.                                                                                                                                                   | G #9085             |
+| S12 | Client-side WASM is allowed in selected areas; per component, Rust logic is evaluated for WASM reuse vs TS rewrite.                                                                                                                                    | G #9085             |
+| S13 | All base functions work over REST or WebSocket transports (HTTP/2/3, QUIC where provided).                                                                                                                                                             | G #9085             |
+| S14 | Direct Turso access to the user's own DB and to the public DB is allowed when prudent, under tenancy/auth rules that define "prudent".                                                                                                                 | G #9085, E #9083    |
+| S15 | Hosted services are relying parties for #9077 (GitHub/Google/Microsoft gated login + devtoday OIDC + account linking); the tenancy account model aligns with #9077/#1253 roles. Identity is not re-designed here.                                      | H #9086             |
+| S16 | A longer-term self-hosted tier exists in the architecture: a Kubernetes cluster with multi-TB disk arrays as the largest central storage.                                                                                                              | I #9087             |
+| S17 | F's primitives are adapter-friendly toward RustFS (S3-compatible), NATS (streams/messaging), and tiered storage — storage classes with different latency/bandwidth, per-tier retention, placement/movement between tiers.                              | I #9087, F #9084    |
+| S18 | Both platforms are tier 1 (CF+Turso and Rust binaries); parity + deliberate divergence, never "port down".                                                                                                                                             | all (amendment)     |
+| S19 | Our server is a peer, not a special case — same participant kinds, different backends; no protocol special-casing.                                                                                                                                     | E/F/G/I (amendment) |
+| S20 | Advanced clustering of ID services is a legitimate self-hosted differentiator to design for.                                                                                                                                                           | I #9087, B #9080    |
 
 ## 3. Version plan (mill pattern)
 

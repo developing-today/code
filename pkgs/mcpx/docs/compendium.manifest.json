@@ -968,7 +968,7 @@
       "chapter": "designs",
       "role": "chapter-source",
       "lines": 148,
-      "note": "modes: how a client reaches a daemon, how the daemon reaches a server, and mcpx itself as a server — the level-2 guide (#4821)"
+      "note": "modes: how a client reaches a daemon, how the daemon reaches a server, and mcpx itself as a server \u2014 the level-2 guide (#4821)"
     },
     {
       "path": "docs/opencode-plugin-v2.md",
@@ -1032,6 +1032,20 @@
       "role": "chapter-source",
       "lines": 107,
       "note": "a decision record under the chapter index"
+    },
+    {
+      "path": "docs/changes/ask-path-cancel.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #1864 (ask-path cancel); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/index.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 197,
+      "note": "the docs site home page (id: mcpx-home): level-1 site content (#1878), rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
     }
   ]
 }

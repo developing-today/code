@@ -18,6 +18,7 @@ use futures::{
     stream::{SplitSink, SplitStream},
 };
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 
 use crate::directory::Refusal;
 use crate::directory_auth::{Caller, Signed};
@@ -96,14 +97,10 @@ struct HostViewResponse {
     next_after: Option<String>,
 }
 
-/// A revision identifying the exact records snapshot, for the host view's
-/// cross-page consistency check. The watch channel's event sequence cannot
-/// serve: host-originated record changes republish records under an
-/// unchanged event sequence (`WorldActor::deliver`), so pages validated
-/// against it could silently mix snapshots. FNV-1a over the canonical
+/// The uncached records revision: FNV-1a over the canonical
 /// (BTreeMap-ordered) JSON encoding, folded to 53 bits so the value
 /// survives JSON number round-trips in the browser exactly.
-fn records_revision(records: &crate::world::Records) -> u64 {
+fn hash_records_revision(records: &crate::world::Records) -> u64 {
     let bytes = serde_json::to_vec(records).unwrap_or_default();
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
@@ -111,6 +108,81 @@ fn records_revision(records: &crate::world::Records) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash & ((1 << 53) - 1)
+}
+
+/// Bounded memo of records revisions, keyed by the published snapshot's
+/// `Arc`. `publish_records` swaps the `Arc` only when the records actually
+/// change, so `Arc` identity is exact snapshot identity; holding the `Arc`
+/// in the cache keeps its allocation alive, so a pointer can never be
+/// recycled by a different snapshot while its revision is cached. This is
+/// what keeps host-view paging from re-serializing and re-hashing the
+/// entire records map on every page (#9104): the full-map hash runs once
+/// per published snapshot, not once per request.
+struct RecordsRevisionCache {
+    entries: Mutex<Vec<(Arc<crate::world::Records>, u64)>>,
+}
+
+/// Snapshots whose revisions stay memoized. Host-view paging walks one
+/// snapshot at a time; a handful of slots covers interleaved worlds
+/// without letting superseded snapshots accumulate.
+const MAX_CACHED_RECORDS_REVISIONS: usize = 8;
+
+impl RecordsRevisionCache {
+    const fn new() -> Self {
+        Self {
+            entries: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn revision(&self, records: &Arc<crate::world::Records>) -> u64 {
+        self.revision_with(records, hash_records_revision)
+    }
+
+    /// `compute` is injectable so tests can count full-map hash runs.
+    fn revision_with(
+        &self,
+        records: &Arc<crate::world::Records>,
+        compute: impl Fn(&crate::world::Records) -> u64,
+    ) -> u64 {
+        if let Some(revision) = self.cached(records) {
+            return revision;
+        }
+        let revision = compute(records);
+        let mut entries = self.entries.lock().unwrap();
+        if let Some((_, cached)) = entries
+            .iter()
+            .find(|(snapshot, _)| Arc::ptr_eq(snapshot, records))
+        {
+            return *cached;
+        }
+        entries.push((Arc::clone(records), revision));
+        if entries.len() > MAX_CACHED_RECORDS_REVISIONS {
+            entries.remove(0);
+        }
+        revision
+    }
+
+    fn cached(&self, records: &Arc<crate::world::Records>) -> Option<u64> {
+        self.entries
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(snapshot, _)| Arc::ptr_eq(snapshot, records))
+            .map(|(_, revision)| *revision)
+    }
+}
+
+static RECORDS_REVISIONS: RecordsRevisionCache = RecordsRevisionCache::new();
+
+/// A revision identifying the exact records snapshot, for the host view's
+/// cross-page consistency check. The watch channel's event sequence cannot
+/// serve: host-originated record changes republish records under an
+/// unchanged event sequence (`WorldActor::deliver`), so pages validated
+/// against it could silently mix snapshots. The value is the full-map
+/// hash in [`hash_records_revision`], computed once per published
+/// snapshot and memoized in [`RECORDS_REVISIONS`].
+fn records_revision(records: &Arc<crate::world::Records>) -> u64 {
+    RECORDS_REVISIONS.revision(records)
 }
 
 /// The host view uses the existing admin secret, not a guest capability. It
@@ -696,6 +768,61 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// #9104 regression: paging a multi-page records set must not re-run
+    /// the full-map revision hash per page. The counting oracle wraps the
+    /// real hash and tallies invocations across five simulated page
+    /// requests against one published snapshot.
+    #[test]
+    fn records_revision_is_computed_once_per_snapshot_across_pages() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // A records set far beyond one 768 KiB page: 200 entries with
+        // 8 KiB values (~1.6 MiB serialized).
+        let mut records = crate::world::Records::new();
+        for index in 0..200 {
+            records.insert(
+                format!("key-{index:04}"),
+                serde_json::Value::String("x".repeat(8192)),
+            );
+        }
+        let snapshot = Arc::new(records);
+        let cache = RecordsRevisionCache::new();
+        let computations = AtomicUsize::new(0);
+        let counting_hash = |records: &crate::world::Records| {
+            computations.fetch_add(1, Ordering::SeqCst);
+            hash_records_revision(records)
+        };
+        let expected = hash_records_revision(&snapshot);
+        for _page in 0..5 {
+            assert_eq!(cache.revision_with(&snapshot, &counting_hash), expected);
+        }
+        assert_eq!(computations.load(Ordering::SeqCst), 1);
+
+        // Change detection: a changed records set is a new snapshot and
+        // must produce a new revision (exactly one more computation).
+        let mut changed = (*snapshot).clone();
+        changed.insert(
+            "key-0200".to_owned(),
+            serde_json::Value::String("y".repeat(8192)),
+        );
+        let changed = Arc::new(changed);
+        let changed_revision = cache.revision_with(&changed, &counting_hash);
+        assert_ne!(changed_revision, expected);
+        assert_eq!(changed_revision, hash_records_revision(&changed));
+        assert_eq!(computations.load(Ordering::SeqCst), 2);
+    }
+
+    /// The revision memo must not accumulate superseded snapshots.
+    #[test]
+    fn records_revision_cache_is_bounded() {
+        let cache = RecordsRevisionCache::new();
+        for index in 0..(MAX_CACHED_RECORDS_REVISIONS + 4) {
+            let mut records = crate::world::Records::new();
+            records.insert(format!("key-{index}"), serde_json::Value::Null);
+            cache.revision(&Arc::new(records));
+        }
+        assert!(cache.entries.lock().unwrap().len() <= MAX_CACHED_RECORDS_REVISIONS);
     }
 
     #[tokio::test]
@@ -1433,8 +1560,7 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), 4096)
             .await
             .unwrap();
-        let capability = serde_json::from_slice::<serde_json::Value>(&body).unwrap()
-            ["capability"]
+        let capability = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["capability"]
             .as_str()
             .unwrap()
             .to_owned();

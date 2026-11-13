@@ -94,11 +94,7 @@ export const STATUS_TAXONOMY: readonly StatusTaxonomyRow[] = [
 /** Separator/case-insensitive key: "In Review", "in-review" and
  * "in_review" are the same status spelled by different sources. */
 export function normalizeStatusKey(raw: string): string {
-  return raw
-    .trim()
-    .toLowerCase()
-    .replace(/[-_]+/g, " ")
-    .replace(/\s+/g, " ");
+  return raw.trim().toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ");
 }
 
 const LOOKUPS: Record<StatusSource, Map<string, CanonicalStatus>> = (() => {
@@ -140,11 +136,7 @@ export function canonicalStatus(raw: string | null | undefined): CanonicalStatus
  * — its derived state needs the orchestration evidence that
  * derivedProjectState (projects.ts) weighs.
  */
-export function ghItemDerivedStatus(item: {
-  state: string;
-  kind: string;
-  draft?: boolean;
-}): CanonicalStatus | null {
+export function ghItemDerivedStatus(item: { state: string; kind: string; draft?: boolean }): CanonicalStatus | null {
   if (item.state === "closed" || item.state === "merged") return "Done";
   if (item.kind === "pr" && item.state === "open") return item.draft ? "In Progress" : "In Review";
   return null;

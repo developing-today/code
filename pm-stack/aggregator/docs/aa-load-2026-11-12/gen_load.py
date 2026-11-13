@@ -20,6 +20,7 @@ follows the store's own conventions:
   versioned events for v5.0.1 + previous versions; estimates get NO events,
 - price_events appended for the 9 dataset models.
 """
+
 import json, math, sys
 
 DATA = json.load(open("/home/hatch/workspace/model-review-2026-11-12/aa-results.json"))
@@ -55,50 +56,110 @@ URL = {
 }
 # time per task (seconds) where the AA pull states it (aa-results.md)
 TIME_TASK = {
-    ("gemini-4-hydrogen", "low"): 78, ("gemini-4-hydrogen", "medium"): 222,
-    ("gemini-4-hydrogen", "high"): 360, ("gemini-4-hydrogen", "xhigh"): 780,
-    ("gemini-4-argon", "high"): 1812, ("gemini-3.8-flash", "high"): 888,
+    ("gemini-4-hydrogen", "low"): 78,
+    ("gemini-4-hydrogen", "medium"): 222,
+    ("gemini-4-hydrogen", "high"): 360,
+    ("gemini-4-hydrogen", "xhigh"): 780,
+    ("gemini-4-argon", "high"): 1812,
+    ("gemini-3.8-flash", "high"): 888,
 }
 # total output tokens across the AA index run, where AA states it (aa-results.md)
 TOTAL_OUT_TOKENS = {
-    ("gemini-4-hydrogen", "xhigh"): 304000000, ("gemini-4-carbon", "high"): 205000000,
-    ("gemini-4-argon", "high"): 113000000, ("gemini-3.8-flash", "high"): 126000000,
-    ("claude-sonnet-5-5", "max"): 335000000, ("claude-opus-5-5", "max"): 218000000,
+    ("gemini-4-hydrogen", "xhigh"): 304000000,
+    ("gemini-4-carbon", "high"): 205000000,
+    ("gemini-4-argon", "high"): 113000000,
+    ("gemini-3.8-flash", "high"): 126000000,
+    ("claude-sonnet-5-5", "max"): 335000000,
+    ("claude-opus-5-5", "max"): 218000000,
 }
 # previous-index version key per dataset row (ii_source AA-prev)
 PREV_KEY = {  # model -> benchmark_version_key for its AA-prev rows
-    "gemini-2.5-pro": "AA|v4.1", "gemini-2.5-flash-thinking": "AA|v4.1",
-    "gemini-2.5-flash": "AA|v4.3.2", "gemini-2.5-flash-lite": "AA|v4.3.2",
+    "gemini-2.5-pro": "AA|v4.1",
+    "gemini-2.5-flash-thinking": "AA|v4.1",
+    "gemini-2.5-flash": "AA|v4.3.2",
+    "gemini-2.5-flash-lite": "AA|v4.3.2",
 }
 PREV_VER = {"AA|v4.1": "4.1", "AA|v4.3.2": "4.3.2"}
 # existing Rankings rows (row_index) refreshed in place: (model, effort) -> row_index
 EXISTING_RK = {
-    ("claude-sonnet-5-5", "low"): 171, ("claude-sonnet-5-5", "medium"): 172,
-    ("claude-sonnet-5-5", "high"): 173, ("claude-sonnet-5-5", "xhigh"): 174,
-    ("claude-sonnet-5-5", "max"): 175, ("claude-opus-5-5", "low"): 176,
-    ("claude-opus-5-5", "medium"): 177, ("claude-opus-5-5", "high"): 178,
-    ("claude-opus-5-5", "xhigh"): 179, ("claude-opus-5-5", "max"): 180,
-    ("gemini-3.8-flash", "low"): 202, ("gemini-3.8-flash", "medium"): 203,
-    ("gemini-3.8-flash", "high"): 204, ("gemini-4-argon", "high"): 213,
+    ("claude-sonnet-5-5", "low"): 171,
+    ("claude-sonnet-5-5", "medium"): 172,
+    ("claude-sonnet-5-5", "high"): 173,
+    ("claude-sonnet-5-5", "xhigh"): 174,
+    ("claude-sonnet-5-5", "max"): 175,
+    ("claude-opus-5-5", "low"): 176,
+    ("claude-opus-5-5", "medium"): 177,
+    ("claude-opus-5-5", "high"): 178,
+    ("claude-opus-5-5", "xhigh"): 179,
+    ("claude-opus-5-5", "max"): 180,
+    ("gemini-3.8-flash", "low"): 202,
+    ("gemini-3.8-flash", "medium"): 203,
+    ("gemini-3.8-flash", "high"): 204,
+    ("gemini-4-argon", "high"): 213,
     ("gemini-4-carbon", "high"): 250,
 }
 # existing Rankings test_run_key per refreshed row (for Test_Runs joins)
 EXISTING_KEY = {
-    ("claude-sonnet-5-5", "low"): "anthropic|claude-sonnet-5.5|low|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
-    ("claude-sonnet-5-5", "medium"): "anthropic|claude-sonnet-5.5|medium|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
-    ("claude-sonnet-5-5", "high"): "anthropic|claude-sonnet-5.5|high|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
-    ("claude-sonnet-5-5", "xhigh"): "anthropic|claude-sonnet-5.5|xhigh|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
-    ("claude-sonnet-5-5", "max"): "anthropic|claude-sonnet-5.5|max|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
-    ("claude-opus-5-5", "low"): "anthropic|claude-opus-5.5|low|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
-    ("claude-opus-5-5", "medium"): "anthropic|claude-opus-5.5|medium|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
-    ("claude-opus-5-5", "high"): "anthropic|claude-opus-5.5|high|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
-    ("claude-opus-5-5", "xhigh"): "anthropic|claude-opus-5.5|xhigh|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
-    ("claude-opus-5-5", "max"): "anthropic|claude-opus-5.5|max|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
-    ("gemini-3.8-flash", "low"): "google|gemini-3.8-flash|low|reasoning|fallback-na|aa-v5|snapshot-2026-10-31",
-    ("gemini-3.8-flash", "medium"): "google|gemini-3.8-flash|medium|reasoning|fallback-na|aa-v5|snapshot-2026-10-31",
-    ("gemini-3.8-flash", "high"): "google|gemini-3.8-flash|high|reasoning|fallback-na|aa-v5|snapshot-2026-10-31",
-    ("gemini-4-argon", "high"): "google|gemini-4-argon|high|reasoning|fallback-na|aa-v5|snapshot-2026-10-31",
-    ("gemini-4-carbon", "high"): "google|gemini-4-carbon|high|reasoning|fallback-na|aa-v5|snapshot-2026-10-31",
+    (
+        "claude-sonnet-5-5",
+        "low",
+    ): "anthropic|claude-sonnet-5.5|low|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
+    (
+        "claude-sonnet-5-5",
+        "medium",
+    ): "anthropic|claude-sonnet-5.5|medium|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
+    (
+        "claude-sonnet-5-5",
+        "high",
+    ): "anthropic|claude-sonnet-5.5|high|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
+    (
+        "claude-sonnet-5-5",
+        "xhigh",
+    ): "anthropic|claude-sonnet-5.5|xhigh|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
+    (
+        "claude-sonnet-5-5",
+        "max",
+    ): "anthropic|claude-sonnet-5.5|max|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
+    (
+        "claude-opus-5-5",
+        "low",
+    ): "anthropic|claude-opus-5.5|low|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
+    (
+        "claude-opus-5-5",
+        "medium",
+    ): "anthropic|claude-opus-5.5|medium|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
+    (
+        "claude-opus-5-5",
+        "high",
+    ): "anthropic|claude-opus-5.5|high|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
+    (
+        "claude-opus-5-5",
+        "xhigh",
+    ): "anthropic|claude-opus-5.5|xhigh|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
+    (
+        "claude-opus-5-5",
+        "max",
+    ): "anthropic|claude-opus-5.5|max|reasoning|fallback-true|aa-v5|snapshot-2026-10-31",
+    (
+        "gemini-3.8-flash",
+        "low",
+    ): "google|gemini-3.8-flash|low|reasoning|fallback-na|aa-v5|snapshot-2026-10-31",
+    (
+        "gemini-3.8-flash",
+        "medium",
+    ): "google|gemini-3.8-flash|medium|reasoning|fallback-na|aa-v5|snapshot-2026-10-31",
+    (
+        "gemini-3.8-flash",
+        "high",
+    ): "google|gemini-3.8-flash|high|reasoning|fallback-na|aa-v5|snapshot-2026-10-31",
+    (
+        "gemini-4-argon",
+        "high",
+    ): "google|gemini-4-argon|high|reasoning|fallback-na|aa-v5|snapshot-2026-10-31",
+    (
+        "gemini-4-carbon",
+        "high",
+    ): "google|gemini-4-carbon|high|reasoning|fallback-na|aa-v5|snapshot-2026-10-31",
 }
 EXISTING_VARIANT = {k: v.rsplit("|aa-v5|", 1)[0] for k, v in EXISTING_KEY.items()}
 # existing null-version config events to update: (model, effort) -> event effort label
@@ -109,48 +170,77 @@ CLAUDE_EFFORT = {
     "xhigh": "Adaptive Reasoning, Xhigh Effort, Default Fallback",
     "max": "Adaptive Reasoning, Max Effort, Default Fallback",
 }
+
+
 def event_effort(model, effort):
     return CLAUDE_EFFORT[effort] if model.startswith("claude") else effort
 
+
 EXISTING_EVENTS = {  # (model, effort) pairs whose null-version event already exists
-    ("claude-sonnet-5-5", "medium"), ("claude-sonnet-5-5", "high"),
-    ("claude-sonnet-5-5", "xhigh"), ("claude-sonnet-5-5", "max"),
-    ("claude-opus-5-5", "low"), ("claude-opus-5-5", "medium"),
-    ("claude-opus-5-5", "high"), ("claude-opus-5-5", "xhigh"), ("claude-opus-5-5", "max"),
-    ("gemini-3.8-flash", "medium"), ("gemini-3.8-flash", "high"),
+    ("claude-sonnet-5-5", "medium"),
+    ("claude-sonnet-5-5", "high"),
+    ("claude-sonnet-5-5", "xhigh"),
+    ("claude-sonnet-5-5", "max"),
+    ("claude-opus-5-5", "low"),
+    ("claude-opus-5-5", "medium"),
+    ("claude-opus-5-5", "high"),
+    ("claude-opus-5-5", "xhigh"),
+    ("claude-opus-5-5", "max"),
+    ("gemini-3.8-flash", "medium"),
+    ("gemini-3.8-flash", "high"),
 }
 MODEL_ID = {  # ainventory.models id used by prior events for this model
-    "claude-opus-5-5": 3, "claude-sonnet-5-5": 4, "gemini-3.8-flash": 12,
-    "gemini-4-argon": 35, "gemini-4-carbon": 775,
+    "claude-opus-5-5": 3,
+    "claude-sonnet-5-5": 4,
+    "gemini-3.8-flash": 12,
+    "gemini-4-argon": 35,
+    "gemini-4-carbon": 775,
 }
 MODEL_ID_SLUG = {  # slug-generation models rows (backfill + versioned strata)
-    "claude-opus-5-5": 25, "claude-sonnet-5-5": 27, "gemini-3.8-flash": 33,
-    "gemini-4-argon": 35, "gemini-4-carbon": 775,
+    "claude-opus-5-5": 25,
+    "claude-sonnet-5-5": 27,
+    "gemini-3.8-flash": 33,
+    "gemini-4-argon": 35,
+    "gemini-4-carbon": 775,
 }
 BACKFILL_BATCH = "21b09af3-66b6-40df-8f39-a58044d57271"  # code#4401 tranche 1
 PRICE_ID = {  # v_current_prices model_name (models.dev style)
-    "gemini-4-hydrogen": "google/gemini-4-hydrogen", "gemini-4-carbon": "google/gemini-4-carbon",
-    "gemini-4-argon": "google/gemini-4-argon", "gemini-3.8-flash": "google/gemini-3.8-flash",
-    "gemini-2.5-pro": "google/gemini-2.5-pro", "gemini-2.5-flash": "google/gemini-2.5-flash",
+    "gemini-4-hydrogen": "google/gemini-4-hydrogen",
+    "gemini-4-carbon": "google/gemini-4-carbon",
+    "gemini-4-argon": "google/gemini-4-argon",
+    "gemini-3.8-flash": "google/gemini-3.8-flash",
+    "gemini-2.5-pro": "google/gemini-2.5-pro",
+    "gemini-2.5-flash": "google/gemini-2.5-flash",
     "gemini-2.5-flash-lite": "google/gemini-2.5-flash-lite",
-    "claude-sonnet-5-5": "anthropic/claude-sonnet-5.5", "claude-opus-5-5": "anthropic/claude-opus-5.5",
+    "claude-sonnet-5-5": "anthropic/claude-sonnet-5.5",
+    "claude-opus-5-5": "anthropic/claude-opus-5.5",
 }
 
+
 def fmt(x):
-    if x is None: return ""
-    if isinstance(x, int): return str(x)
+    if x is None:
+        return ""
+    if isinstance(x, int):
+        return str(x)
     s = repr(float(x))
     return s[:-2] if s.endswith(".0") else s
+
 
 def q(s):  # SQL string literal
     return "'" + str(s).replace("'", "''") + "'"
 
+
 def jq(s):  # JSON string literal for jsonb_set values
     return q(json.dumps(str(s)))
 
+
 rows = {(r["model"], r["effort"]): r for r in DATA}
-_backup = json.load(open("/home/hatch/workspace/model-review-2026-11-12/store-backup-before.json"))
-OLD_CELLS = {e["row_index"]: e["data"]["cells"] for e in _backup[0]["snap"]["rankings_touch"]}
+_backup = json.load(
+    open("/home/hatch/workspace/model-review-2026-11-12/store-backup-before.json")
+)
+OLD_CELLS = {
+    e["row_index"]: e["data"]["cells"] for e in _backup[0]["snap"]["rankings_touch"]
+}
 out = []
 out.append("BEGIN;")
 out.append(f"""DO $$ BEGIN
@@ -214,15 +304,25 @@ ON CONFLICT (id) DO NOTHING;""")
 # --- Rankings: in-place refreshes ---------------------------------------------
 for (model, effort), ri in sorted(EXISTING_RK.items(), key=lambda kv: kv[1]):
     r = rows[(model, effort)]
-    sets = [(6, fmt(r["ii_score"])), (8, fmt(r["ii_score"])), (16, fmt(r["ii_score"] - 39))]
-    if r["cost_per_task"] is not None: sets.append((9, fmt(r["cost_per_task"])))
+    sets = [
+        (6, fmt(r["ii_score"])),
+        (8, fmt(r["ii_score"])),
+        (16, fmt(r["ii_score"] - 39)),
+    ]
+    if r["cost_per_task"] is not None:
+        sets.append((9, fmt(r["cost_per_task"])))
     t = TIME_TASK.get((model, effort))
-    if t is not None: sets.append((10, fmt(t)))
-    if r["output_tps"] is not None: sets.append((11, fmt(r["output_tps"])))
+    if t is not None:
+        sets.append((10, fmt(t)))
+    if r["output_tps"] is not None:
+        sets.append((11, fmt(r["output_tps"])))
     expr = "data"
     for idx, val in sets:
         expr = f"jsonb_set({expr}, '{{cells,{idx}}}', {jq(val)})"
-    out.append(f"UPDATE ainventory.sheet_rows SET data = {expr} WHERE import_batch = '{BATCH}' AND sheet_name = 'Rankings' AND row_index = {ri};")
+    out.append(
+        f"UPDATE ainventory.sheet_rows SET data = {expr} WHERE import_batch = '{BATCH}' AND sheet_name = 'Rankings' AND row_index = {ri};"
+    )
+
 
 # --- Rankings: appended rows ----------------------------------------------------
 def variant_key(model, effort):
@@ -230,19 +330,25 @@ def variant_key(model, effort):
     fb = "fallback-true" if model.startswith("claude") else "fallback-na"
     return f"{CSLUG[model]}|{model}|{effort}|{seg4}|{fb}"
 
+
 def run_key(model, effort, vkey, estimated=False):
     seg = vkey.split("|")[1].lower()  # v5 / v4.1 / v4.3.2
     k = f"{variant_key(model, effort)}|aa-{seg}|snapshot-{SNAP}"
     return k + "|estimated" if estimated else k
 
+
 def qual_avail(model, effort):
-    if model in ("gemini-4-argon",): return "Tracked", "limited"
-    if model.startswith("gemini-2.5"): return "Tracked", "limited"
+    if model in ("gemini-4-argon",):
+        return "Tracked", "limited"
+    if model.startswith("gemini-2.5"):
+        return "Tracked", "limited"
     return "Contender", "yes"
+
 
 new_rk = []
 for (model, effort), r in rows.items():
-    if (model, effort) in EXISTING_RK: continue
+    if (model, effort) in EXISTING_RK:
+        continue
     estimated = r["ii_source"] == "GUESS"
     vkey = "AA|v5" if r["ii_source"] != "AA-prev" else PREV_KEY[model]
     new_rk.append((model, effort, r, vkey, estimated))
@@ -251,18 +357,44 @@ ri = 287
 rk_keys = {}  # (model, effort) -> (run_key, variant_key, vkey, estimated)
 new_cells = {}  # (model, effort) -> (row_index, cells) for the backfill mirror
 for model, effort, r, vkey, estimated in new_rk:
-    vk = variant_key(model, effort); rk = run_key(model, effort, vkey, estimated)
+    vk = variant_key(model, effort)
+    rk = run_key(model, effort, vkey, estimated)
     rk_keys[(model, effort)] = (rk, vk, vkey, estimated)
     qual, avail = qual_avail(model, effort)
-    eligible = "1" if (vkey == "AA|v5" and qual in ("Contender", "Close") and avail in ("yes", "limited")) else "0"
+    eligible = (
+        "1"
+        if (
+            vkey == "AA|v5"
+            and qual in ("Contender", "Close")
+            and avail in ("yes", "limited")
+        )
+        else "0"
+    )
     score = r["ii_score"]
-    cells = [rk, vk, FAMILY[model], CREATOR[model], effort, vkey, fmt(score), "1", fmt(score),
-             fmt(r["cost_per_task"]), fmt(TIME_TASK.get((model, effort))), fmt(r["output_tps"]),
-             qual, avail, eligible, "40", fmt(score - 39)] + [""] * 21
+    cells = [
+        rk,
+        vk,
+        FAMILY[model],
+        CREATOR[model],
+        effort,
+        vkey,
+        fmt(score),
+        "1",
+        fmt(score),
+        fmt(r["cost_per_task"]),
+        fmt(TIME_TASK.get((model, effort))),
+        fmt(r["output_tps"]),
+        qual,
+        avail,
+        eligible,
+        "40",
+        fmt(score - 39),
+    ] + [""] * 21
     if r["cost_per_task"]:
         cells[29] = repr(score / r["cost_per_task"])
     t = TIME_TASK.get((model, effort))
-    if t: cells[30] = repr(score / t)
+    if t:
+        cells[30] = repr(score / t)
     assert len(cells) == 38, len(cells)
     cells_json = json.dumps(cells)
     new_cells[(model, effort)] = (ri, cells)
@@ -273,37 +405,79 @@ SELECT (SELECT id FROM _src), '{BATCH}', 'Rankings', {ri}, jsonb_build_object('c
 # --- Test_Runs: appended rows for measured + previous rows only -----------------
 tri = 185
 for (model, effort), r in sorted(rows.items()):
-    if r["ii_source"] == "GUESS": continue
+    if r["ii_source"] == "GUESS":
+        continue
     if (model, effort) in EXISTING_KEY:
         rk, vk = EXISTING_KEY[(model, effort)], EXISTING_VARIANT[(model, effort)]
-        vkey = "AA|v5"; bver = "v5.0.1"
+        vkey = "AA|v5"
+        bver = "v5.0.1"
     else:
         rk, vk, vkey, _ = rk_keys[(model, effort)]
         bver = {"AA|v5": "v5.0.1", "AA|v4.1": "v4.1", "AA|v4.3.2": "v4.3.2"}[vkey]
     score = r["ii_score"]
-    notes = (f"AA web pull {SNAP} (Supabase-only); Intelligence Index {bver}"
-             if vkey == "AA|v5" else
-             f"AA web pull {SNAP} (Supabase-only); previous index {bver} — not comparable with v5 scores")
-    cells = [rk, vk, "Artificial Analysis Intelligence Index", bver, vkey, SNAP, SNAP,
-             fmt(score), fmt(round(score * score, 4)), fmt(r["cost_per_task"]), "",
-             "", "", fmt(TOTAL_OUT_TOKENS.get((model, effort))),
-             fmt(r["output_tps"]), fmt(r["ttft_s"]), fmt(r["ttft_s"]), "",
-             fmt(TIME_TASK.get((model, effort))), fmt(r["price_in"]), fmt(r["price_out"]), "",
-             "1000000", URL[model], "AA current public page", notes]
+    notes = (
+        f"AA web pull {SNAP} (Supabase-only); Intelligence Index {bver}"
+        if vkey == "AA|v5"
+        else f"AA web pull {SNAP} (Supabase-only); previous index {bver} — not comparable with v5 scores"
+    )
+    cells = [
+        rk,
+        vk,
+        "Artificial Analysis Intelligence Index",
+        bver,
+        vkey,
+        SNAP,
+        SNAP,
+        fmt(score),
+        fmt(round(score * score, 4)),
+        fmt(r["cost_per_task"]),
+        "",
+        "",
+        "",
+        fmt(TOTAL_OUT_TOKENS.get((model, effort))),
+        fmt(r["output_tps"]),
+        fmt(r["ttft_s"]),
+        fmt(r["ttft_s"]),
+        "",
+        fmt(TIME_TASK.get((model, effort))),
+        fmt(r["price_in"]),
+        fmt(r["price_out"]),
+        "",
+        "1000000",
+        URL[model],
+        "AA current public page",
+        notes,
+    ]
     cells_json = json.dumps(cells)
     out.append(f"""INSERT INTO ainventory.sheet_rows (source_id, import_batch, sheet_name, row_index, data)
 SELECT (SELECT id FROM _src), '{BATCH}', 'Test_Runs', {tri}, jsonb_build_object('cells', {q(cells_json)}::jsonb);""")
     tri += 1
 
 # --- Benchmark_Versions: AA|v4.1 row --------------------------------------------
-bv_notes = ("Previous AA Intelligence Index generation (v4.1), superseded by v4.3.2 and then v5. "
-            "Scores stand on the v4.1 scale; no empirical bridge to v4.3.2 or v5 computed — never "
-            "compare across versions. Rows keyed AA|v4.1 loaded 2026-11-12 from the AA web pull: "
-            "Gemini 2.5 Pro (high, II 25.8) and Gemini 2.5 Flash-Thinking (thinking, II 14.1) — "
-            "models AA no longer carries on the current index, retained so the fleet's remaining "
-            "2.5 references keep their last measured scores.")
-bv_cells = json.dumps(["AA|v4.1", "Artificial Analysis Intelligence Index", "v4.1", "", "AA|v4.3.2",
-                       "1", "", "1", "1", "0", "low", bv_notes])
+bv_notes = (
+    "Previous AA Intelligence Index generation (v4.1), superseded by v4.3.2 and then v5. "
+    "Scores stand on the v4.1 scale; no empirical bridge to v4.3.2 or v5 computed — never "
+    "compare across versions. Rows keyed AA|v4.1 loaded 2026-11-12 from the AA web pull: "
+    "Gemini 2.5 Pro (high, II 25.8) and Gemini 2.5 Flash-Thinking (thinking, II 14.1) — "
+    "models AA no longer carries on the current index, retained so the fleet's remaining "
+    "2.5 references keep their last measured scores."
+)
+bv_cells = json.dumps(
+    [
+        "AA|v4.1",
+        "Artificial Analysis Intelligence Index",
+        "v4.1",
+        "",
+        "AA|v4.3.2",
+        "1",
+        "",
+        "1",
+        "1",
+        "0",
+        "low",
+        bv_notes,
+    ]
+)
 out.append(f"""INSERT INTO ainventory.sheet_rows (source_id, import_batch, sheet_name, row_index, data)
 SELECT (SELECT id FROM _src), '{BATCH}', 'Benchmark_Versions', 103, jsonb_build_object('cells', {q(bv_cells)}::jsonb);""")
 
@@ -330,7 +504,14 @@ ml_details = (
     "Derived Rankings cells beyond the input columns recompute in the aggregator views (v_rankings maths); "
     "stored copies on refreshed rows updated for raw/adjusted/cost/time/speed/usable only."
 )
-ml_cells = json.dumps([SNAP, "AA refresh — web pull (Supabase-only)", ml_details, "muse (Drew order 2026-11-12)"])
+ml_cells = json.dumps(
+    [
+        SNAP,
+        "AA refresh — web pull (Supabase-only)",
+        ml_details,
+        "muse (Drew order 2026-11-12)",
+    ]
+)
 out.append(f"""INSERT INTO ainventory.sheet_rows (source_id, import_batch, sheet_name, row_index, data)
 VALUES (41, '{BATCH}', 'Maintenance_Log', 49, jsonb_build_object('cells', {q(ml_cells)}::jsonb));""")
 
@@ -339,7 +520,8 @@ VALUES (41, '{BATCH}', 'Maintenance_Log', 49, jsonb_build_object('cells', {q(ml_
 # therefore re-emits the winning event set under the new batch id, with the 11
 # superseded current configs EXCLUDED here and re-emitted corrected below.
 _superseded = ",\n    ".join(
-    f"({q(FAMILY[m])}, {q(event_effort(m, e))})" for (m, e) in sorted(EXISTING_EVENTS))
+    f"({q(FAMILY[m])}, {q(event_effort(m, e))})" for (m, e) in sorted(EXISTING_EVENTS)
+)
 out.append(f"""INSERT INTO ainventory.measurement_events
   (model_id, model_name, model_variant_key, run_key, effort, benchmark, benchmark_version, metric,
    value_num, intelligence_index, ttft_seconds, output_tps, output_tokens_per_task, cost_per_task_usd,
@@ -352,33 +534,48 @@ WHERE ingest_batch_id = '{OLD_EVENT_BATCH}'
   AND NOT (benchmark_version IS NULL AND metric = 'intelligence_index'
            AND (model_name, effort) IN ({_superseded}));""")
 
+
 # --- measurement_events: new rows ---------------------------------------------------
 def model_id_sql(model):
-    if model in MODEL_ID: return str(MODEL_ID[model])
+    if model in MODEL_ID:
+        return str(MODEL_ID[model])
     return f"(SELECT id FROM ainventory.models WHERE name = {q(CSLUG[model] + '|' + model)})"
+
 
 def event_row(model, effort, r, bver):
     if (model, effort) in EXISTING_KEY:
         rk, vk = EXISTING_KEY[(model, effort)], EXISTING_VARIANT[(model, effort)]
     else:
         rk, vk = rk_keys[(model, effort)][0], rk_keys[(model, effort)][1]
-    raw = {"url": URL[model], "cost": fmt(r["cost_per_task"]), "score": fmt(r["ii_score"]),
-           "speed": fmt(r["output_tps"]), "terminal": "", "ii_source": r["ii_source"],
-           "pull": f"aa-web {SNAP}", "test_run_key": rk,
-           "model": f"{FAMILY[model]} ({event_effort(model, effort)})"}
+    raw = {
+        "url": URL[model],
+        "cost": fmt(r["cost_per_task"]),
+        "score": fmt(r["ii_score"]),
+        "speed": fmt(r["output_tps"]),
+        "terminal": "",
+        "ii_source": r["ii_source"],
+        "pull": f"aa-web {SNAP}",
+        "test_run_key": rk,
+        "model": f"{FAMILY[model]} ({event_effort(model, effort)})",
+    }
     t = TIME_TASK.get((model, effort))
-    return (f"({model_id_sql(model)}, {q(FAMILY[model])}, {q(vk)}, {q(rk)}, {q(event_effort(model, effort))}, "
-            f"'AA Intelligence Index', {q(bver) if bver else 'NULL'}, 'intelligence_index', "
-            f"{r['ii_score']}, {r['ii_score']}, "
-            f"{r['ttft_s'] if r['ttft_s'] is not None else 'NULL'}, "
-            f"{r['output_tps'] if r['output_tps'] is not None else 'NULL'}, NULL, "
-            f"{r['cost_per_task'] if r['cost_per_task'] is not None else 'NULL'}, "
-            f"{t if t is not None else 'NULL'}, 'workbook-import', {q(URL[model])}, DATE '{SNAP}', now(), "
-            f"'{BATCH}', {q(json.dumps(raw))}::jsonb)")
+    return (
+        f"({model_id_sql(model)}, {q(FAMILY[model])}, {q(vk)}, {q(rk)}, {q(event_effort(model, effort))}, "
+        f"'AA Intelligence Index', {q(bver) if bver else 'NULL'}, 'intelligence_index', "
+        f"{r['ii_score']}, {r['ii_score']}, "
+        f"{r['ttft_s'] if r['ttft_s'] is not None else 'NULL'}, "
+        f"{r['output_tps'] if r['output_tps'] is not None else 'NULL'}, NULL, "
+        f"{r['cost_per_task'] if r['cost_per_task'] is not None else 'NULL'}, "
+        f"{t if t is not None else 'NULL'}, 'workbook-import', {q(URL[model])}, DATE '{SNAP}', now(), "
+        f"'{BATCH}', {q(json.dumps(raw))}::jsonb)"
+    )
+
 
 def slug_model_id_sql(model):
-    if model in MODEL_ID_SLUG: return str(MODEL_ID_SLUG[model])
+    if model in MODEL_ID_SLUG:
+        return str(MODEL_ID_SLUG[model])
     return f"(SELECT id FROM ainventory.models WHERE name = {q(CSLUG[model] + '|' + model)})"
+
 
 def versioned_row(model, effort, r, bver, vkey):
     """Rankings-derived versioned event, mirroring the 8152e746 stratum shape:
@@ -393,41 +590,83 @@ def versioned_row(model, effort, r, bver, vkey):
     if (model, effort) in EXISTING_RK:  # keep the stored row's status cells
         old = OLD_CELLS[EXISTING_RK[(model, effort)]]
         qual, avail = old[12], old[13]
-    eligible = 1 if (vkey == "AA|v5" and qual in ("Contender", "Close") and avail in ("yes", "limited")) else 0
-    score = r["ii_score"]; t = TIME_TASK.get((model, effort))
-    raw = {"test_run_key": rk, "model_variant_key": vk, "family": FAMILY[model], "creator": CREATOR[model],
-           "effort": effort, "benchmark_version_key": vkey, "raw_score": score, "version_level_factor": 1,
-           "adjusted_score": score, "cost_task": r["cost_per_task"], "time_task_sec": t,
-           "speed_tps": r["output_tps"], "qual_status": qual, "availability": avail, "eligible": eligible,
-           "target": 40, "usable_units": score - 39,
-           "points_per_dollar": (score / r["cost_per_task"]) if r["cost_per_task"] else None,
-           "points_per_second": (score / t) if t else None,
-           "row_index": row_index, "ii_source": r["ii_source"]}
-    return (f"({slug_model_id_sql(model)}, {q(CSLUG[model] + '|' + model)}, {q(vk)}, {q(rk)}, {q(effort)}, "
-            f"'AA Intelligence Index', {q(bver)}, 'intelligence_index', "
-            f"{score}, {score}, "
-            f"{r['ttft_s'] if r['ttft_s'] is not None else 'NULL'}, "
-            f"{r['output_tps'] if r['output_tps'] is not None else 'NULL'}, NULL, "
-            f"{r['cost_per_task'] if r['cost_per_task'] is not None else 'NULL'}, "
-            f"{t if t is not None else 'NULL'}, 'workbook-import', "
-            f"{q('aa-web:Rankings (AA web pull 2026-11-12; artificialanalysis.ai)')}, DATE '{SNAP}', now(), "
-            f"'{BATCH}', {q(json.dumps(raw))}::jsonb)")
+    eligible = (
+        1
+        if (
+            vkey == "AA|v5"
+            and qual in ("Contender", "Close")
+            and avail in ("yes", "limited")
+        )
+        else 0
+    )
+    score = r["ii_score"]
+    t = TIME_TASK.get((model, effort))
+    raw = {
+        "test_run_key": rk,
+        "model_variant_key": vk,
+        "family": FAMILY[model],
+        "creator": CREATOR[model],
+        "effort": effort,
+        "benchmark_version_key": vkey,
+        "raw_score": score,
+        "version_level_factor": 1,
+        "adjusted_score": score,
+        "cost_task": r["cost_per_task"],
+        "time_task_sec": t,
+        "speed_tps": r["output_tps"],
+        "qual_status": qual,
+        "availability": avail,
+        "eligible": eligible,
+        "target": 40,
+        "usable_units": score - 39,
+        "points_per_dollar": (score / r["cost_per_task"])
+        if r["cost_per_task"]
+        else None,
+        "points_per_second": (score / t) if t else None,
+        "row_index": row_index,
+        "ii_source": r["ii_source"],
+    }
+    return (
+        f"({slug_model_id_sql(model)}, {q(CSLUG[model] + '|' + model)}, {q(vk)}, {q(rk)}, {q(effort)}, "
+        f"'AA Intelligence Index', {q(bver)}, 'intelligence_index', "
+        f"{score}, {score}, "
+        f"{r['ttft_s'] if r['ttft_s'] is not None else 'NULL'}, "
+        f"{r['output_tps'] if r['output_tps'] is not None else 'NULL'}, NULL, "
+        f"{r['cost_per_task'] if r['cost_per_task'] is not None else 'NULL'}, "
+        f"{t if t is not None else 'NULL'}, 'workbook-import', "
+        f"{q('aa-web:Rankings (AA web pull 2026-11-12; artificialanalysis.ai)')}, DATE '{SNAP}', now(), "
+        f"'{BATCH}', {q(json.dumps(raw))}::jsonb)"
+    )
+
 
 new_current, versioned = [], []
 for (model, effort), r in rows.items():
-    if r["ii_source"] == "GUESS": continue
+    if r["ii_source"] == "GUESS":
+        continue
     if r["ii_source"] == "AA-prev":
-        versioned.append(versioned_row(model, effort, r, PREV_VER[PREV_KEY[model]], PREV_KEY[model]))
+        versioned.append(
+            versioned_row(model, effort, r, PREV_VER[PREV_KEY[model]], PREV_KEY[model])
+        )
         continue
     versioned.append(versioned_row(model, effort, r, "5.0.1", "AA|v5"))
     # every measured v5 config is (re-)emitted as a current (null-version) event
     # under this batch: 10 genuinely new + 11 corrected superseding the old rows
     new_current.append(event_row(model, effort, r, None))
-COLS = ("(model_id, model_name, model_variant_key, run_key, effort, benchmark, benchmark_version, metric, "
-        "value_num, intelligence_index, ttft_seconds, output_tps, output_tokens_per_task, cost_per_task_usd, "
-        "task_time_seconds, source_kind, source_ref, source_date, ingested_at, ingest_batch_id, raw)")
-out.append(f"INSERT INTO ainventory.measurement_events {COLS} VALUES\n" + ",\n".join(new_current) + ";")
-out.append(f"INSERT INTO ainventory.measurement_events {COLS} VALUES\n" + ",\n".join(versioned) + ";")
+COLS = (
+    "(model_id, model_name, model_variant_key, run_key, effort, benchmark, benchmark_version, metric, "
+    "value_num, intelligence_index, ttft_seconds, output_tps, output_tokens_per_task, cost_per_task_usd, "
+    "task_time_seconds, source_kind, source_ref, source_date, ingested_at, ingest_batch_id, raw)"
+)
+out.append(
+    f"INSERT INTO ainventory.measurement_events {COLS} VALUES\n"
+    + ",\n".join(new_current)
+    + ";"
+)
+out.append(
+    f"INSERT INTO ainventory.measurement_events {COLS} VALUES\n"
+    + ",\n".join(versioned)
+    + ";"
+)
 
 # --- sheet-backfill stratum follow-on (code#4401 mapping rule) ----------------------
 out.append(f"""CREATE TEMP TABLE _bf (id uuid) ON COMMIT DROP;
@@ -446,57 +685,95 @@ WITH ins AS (
   RETURNING id)
 INSERT INTO _bf SELECT id FROM ins;""")
 
+
 def backfill_insert(model, effort, ri, cells, source_ref_sql):
     r = rows[(model, effort)]
+
     def numcell(i):
         v = cells[i]
         return v if v not in ("", None) else "NULL"
+
     return f"""INSERT INTO ainventory.measurement_events
   (model_id, model_name, model_variant_key, run_key, effort, benchmark, benchmark_version, metric,
    value_num, intelligence_index, ttft_seconds, output_tps, output_tokens_per_task, cost_per_task_usd,
    task_time_seconds, source_kind, source_ref, source_date, ingested_at, ingest_batch_id, raw)
-SELECT {slug_model_id_sql(model)}, {q(FAMILY[model] + ' (' + effort + ')')}, {q(cells[1])}, {q(cells[0])}, {q(effort)},
-  'AA Intelligence Index', '5', 'intelligence_index', {r['ii_score']}, {r['ii_score']}, NULL,
+SELECT {slug_model_id_sql(model)}, {q(FAMILY[model] + " (" + effort + ")")}, {q(cells[1])}, {q(cells[0])}, {q(effort)},
+  'AA Intelligence Index', '5', 'intelligence_index', {r["ii_score"]}, {r["ii_score"]}, NULL,
   {numcell(11)}, NULL, {numcell(9)}, {numcell(10)}, 'sheet-backfill',
   {source_ref_sql},
   DATE '{SNAP}', now(), (SELECT id FROM _bf), {q(json.dumps(cells))}::jsonb;"""
 
+
 for (model, effort), ri in sorted(EXISTING_RK.items(), key=lambda kv: kv[1]):
     r = rows[(model, effort)]
     cells = list(OLD_CELLS[ri])
-    cells[6] = fmt(r["ii_score"]); cells[8] = fmt(r["ii_score"]); cells[16] = fmt(r["ii_score"] - 39)
-    if r["cost_per_task"] is not None: cells[9] = fmt(r["cost_per_task"])
+    cells[6] = fmt(r["ii_score"])
+    cells[8] = fmt(r["ii_score"])
+    cells[16] = fmt(r["ii_score"] - 39)
+    if r["cost_per_task"] is not None:
+        cells[9] = fmt(r["cost_per_task"])
     t = TIME_TASK.get((model, effort))
-    if t is not None: cells[10] = fmt(t)
-    if r["output_tps"] is not None: cells[11] = fmt(r["output_tps"])
-    out.append(backfill_insert(model, effort, ri, cells,
-                 f"'sheet_rows source_id=41 import_batch={BATCH} row_index={ri} sheet=Rankings'"))
+    if t is not None:
+        cells[10] = fmt(t)
+    if r["output_tps"] is not None:
+        cells[11] = fmt(r["output_tps"])
+    out.append(
+        backfill_insert(
+            model,
+            effort,
+            ri,
+            cells,
+            f"'sheet_rows source_id=41 import_batch={BATCH} row_index={ri} sheet=Rankings'",
+        )
+    )
 
 for (model, effort), (ri, cells) in sorted(new_cells.items(), key=lambda kv: kv[1][0]):
-    if cells[5] != "AA|v5": continue
-    out.append(backfill_insert(model, effort, ri, cells,
-                 f"'sheet_rows source_id=' || (SELECT id FROM _src)::text || ' import_batch={BATCH} row_index={ri} sheet=Rankings'"))
+    if cells[5] != "AA|v5":
+        continue
+    out.append(
+        backfill_insert(
+            model,
+            effort,
+            ri,
+            cells,
+            f"'sheet_rows source_id=' || (SELECT id FROM _src)::text || ' import_batch={BATCH} row_index={ri} sheet=Rankings'",
+        )
+    )
 
 # --- price_events ---------------------------------------------------------------------
 seen_price = {}
-for r in DATA: seen_price[r["model"]] = r
+for r in DATA:
+    seen_price[r["model"]] = r
 price_rows = []
 for model, r in sorted(seen_price.items()):
-    if model not in PRICE_ID: continue
-    raw = {"note": "AA-published list price (USD per 1M tokens), web pull 2026-11-12", "ii_source": "AA"}
+    if model not in PRICE_ID:
+        continue
+    raw = {
+        "note": "AA-published list price (USD per 1M tokens), web pull 2026-11-12",
+        "ii_source": "AA",
+    }
     price_rows.append(
         f"(NULL, {q(PRICE_ID[model])}, NULL, NULL, {r['price_in']}, {r['price_out']}, NULL, NULL, "
         f"0, 1000000, 'flat', NULL, NULL, DATE '{SNAP}', 'aa-web', "
         f"{q('https://artificialanalysis.ai/leaderboards/models')}, DATE '{SNAP}', now(), '{BATCH}', "
-        f"{q(json.dumps(raw))}::jsonb)")
-out.append("""INSERT INTO ainventory.price_events
+        f"{q(json.dumps(raw))}::jsonb)"
+    )
+out.append(
+    """INSERT INTO ainventory.price_events
   (model_id, model_name, model_variant_key, provider, input_usd_per_1m, output_usd_per_1m,
    cached_input_usd_per_1m, cache_write_usd_per_1m, context_min_tokens, context_max_tokens,
    window_kind, window_hours, window_tz, effective_date, source_kind, source_ref, source_date,
    ingested_at, ingest_batch_id, raw) VALUES
-""" + ",\n".join(price_rows) + ";")
+"""
+    + ",\n".join(price_rows)
+    + ";"
+)
 
 out.append("COMMIT;")
 sql = "\n\n".join(out)
-open("/home/hatch/workspace/model-review-2026-11-12/aa-load-2026-11-12.sql", "w").write(sql)
-print(f"wrote {len(sql)} bytes; new rankings rows: {len(new_rk)}; test runs to 184+{tri-185}")
+open("/home/hatch/workspace/model-review-2026-11-12/aa-load-2026-11-12.sql", "w").write(
+    sql
+)
+print(
+    f"wrote {len(sql)} bytes; new rankings rows: {len(new_rk)}; test runs to 184+{tri - 185}"
+)

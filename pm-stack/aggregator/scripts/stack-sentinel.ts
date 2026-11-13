@@ -32,11 +32,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolveBwsSecret } from "../src/secrets.ts";
-import {
-  applySentinelProbe,
-  normalizeSentinelEntry,
-  type SentinelServiceEntry,
-} from "../src/sentinel-damping.ts";
+import { applySentinelProbe, normalizeSentinelEntry, type SentinelServiceEntry } from "../src/sentinel-damping.ts";
 
 const LOOP_MS = 30_000;
 

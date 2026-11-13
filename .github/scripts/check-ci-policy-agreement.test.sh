@@ -240,7 +240,6 @@ fi
 grep -q "DISAGREEMENT map-build.yml: workflow file missing" "$TMP/nofile.out"
 echo "pass: a missing workflow file fails naming it"
 
-
 # Codex P2 regressions on #8513: pattern, comment and tags-ignore
 # semantics of the same main-tier question. A tags-ignore-only push
 # never runs for branch pushes, including main.
@@ -330,7 +329,6 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-pattern_main.out"
 echo "pass: branches: ['m*'] satisfies the main leg (waiver stale)"
 
-
 # Codex P2 regressions on #8513 round 2: indentless block sequences
 # are valid YAML — items aligned with the filter key still count.
 build_tree "$TMP/filter-indentless"
@@ -363,7 +361,6 @@ if bash "$SCRIPT" "$TMP/filter-ignore_plus_tags" >"$TMP/filter-ignore_plus_tags.
 fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-ignore_plus_tags.out"
 echo "pass: branches-ignore (not main) plus tags still satisfies the main leg"
-
 
 # Codex P2 regressions on #8513 round 3: GitHub filter patterns use
 # quantifiers, not shell glob — 'main?' excludes main (the ? makes
@@ -414,7 +411,6 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-flow_multiline.out"
 echo "pass: multiline flow branches list including main satisfies the main leg"
 
-
 # Codex P2 regression on #8513 round 4: character classes inside a
 # pattern are pattern syntax, not YAML delimiters — '[a-z]ain'
 # matches main, in both the positive and the ignore list.
@@ -441,7 +437,6 @@ bash "$SCRIPT" "$TMP/filter-class_ignore" >"$TMP/filter-class_ignore.out"
 grep -q "ci-policy-agreement: OK" "$TMP/filter-class_ignore.out"
 grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-class_ignore.out"
 echo "pass: branches-ignore: ['[a-z]ain'] keeps the main leg waived, not stale"
-
 
 # Codex P2 regressions on #8513 round 5. A **/ component matches
 # zero directories: '**/main' excludes main.
@@ -504,7 +499,6 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-inline_map_main.out"
 echo "pass: inline push mapping with branches: [main] satisfies the main leg"
 
-
 # Codex P2 regression on #8513 round 5b: a quoted character class
 # contains its own ] — that bracket is not the flow-list terminator,
 # in multiline sequences or inline mappings.
@@ -536,8 +530,6 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-inline_class.out"
 echo "pass: inline push mapping with a quoted character class satisfies the main leg"
 
-
-
 # Codex P2 regression on #8513 round 6: push children may sit at
 # any consistent indentation depth, not only four spaces.
 build_tree "$TMP/filter-deep_indent"
@@ -568,7 +560,6 @@ if bash "$SCRIPT" "$TMP/filter-deep_indent_list" >"$TMP/filter-deep_indent_list.
 fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-deep_indent_list.out"
 echo "pass: deep-indented branches list including main satisfies the main leg"
-
 
 # Codex P2 regressions on #8513 round 7: a quoted block item with a
 # trailing comment still unquotes, and quoted filter keys name the
@@ -615,7 +606,6 @@ grep -q "ci-policy-agreement: OK" "$TMP/filter-quoted_key_ignore.out"
 grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-quoted_key_ignore.out"
 echo "pass: quoted branches-ignore key with [main] keeps the main leg waived"
 
-
 # Codex P2 regressions on #8513 round 8: a quoted push key still
 # yields its inline mapping, and a tags: substring inside a path
 # scalar is not a tag filter.
@@ -644,7 +634,6 @@ if bash "$SCRIPT" "$TMP/filter-paths_tags_substring" >"$TMP/filter-paths_tags_su
 fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-paths_tags_substring.out"
 echo "pass: a tags: substring inside a path scalar is not a tag filter (waiver stale)"
-
 
 # Codex P2 regression on #8513 round 9: an inline push mapping may
 # span lines — the whole mapping is collected before its filters
@@ -867,7 +856,7 @@ wf_raw "$TMP/filter-inline_quoted_key_spaced_colon" mcpx-nixbuild.yml <<'EOF'
 EOF
 bash "$SCRIPT" "$TMP/filter-inline_quoted_key_spaced_colon" >"$TMP/filter-inline_quoted_key_spaced_colon.out"
 grep -q "ci-policy-agreement: OK" "$TMP/filter-inline_quoted_key_spaced_colon.out"
-grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-inline_quoted_key_spaced_colon.out"
+grep -q 'WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]' "$TMP/filter-inline_quoted_key_spaced_colon.out"
 if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-inline_quoted_key_spaced_colon.out"; then
   echo "FAIL: quoted inline branches-ignore key with spaced colon was missed" >&2
   exit 1
@@ -897,7 +886,7 @@ wf_raw "$TMP/filter-sequence_alias" mcpx-nixbuild.yml <<'EOF'
 EOF
 bash "$SCRIPT" "$TMP/filter-sequence_alias" >"$TMP/filter-sequence_alias.out"
 grep -q "ci-policy-agreement: OK" "$TMP/filter-sequence_alias.out"
-grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-sequence_alias.out"
+grep -q 'WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]' "$TMP/filter-sequence_alias.out"
 if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-sequence_alias.out"; then
   echo "FAIL: a sequence alias was not expanded before branch matching" >&2
   exit 1
@@ -911,7 +900,7 @@ wf_raw "$TMP/filter-sequence_alias_unknown" mcpx-nixbuild.yml <<'EOF'
     branches-ignore: *not_defined
 EOF
 bash "$SCRIPT" "$TMP/filter-sequence_alias_unknown" >"$TMP/filter-sequence_alias_unknown.out"
-grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-sequence_alias_unknown.out"
+grep -q 'WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]' "$TMP/filter-sequence_alias_unknown.out"
 if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-sequence_alias_unknown.out"; then
   echo "FAIL: an unresolved filter alias was treated as a pattern or unfiltered push" >&2
   exit 1

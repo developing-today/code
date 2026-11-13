@@ -82,7 +82,8 @@ describe("quota extractors", () => {
     const consumers = [
       {
         id: "_openai.main",
-        view: (reset: string, time: string) => `\n### ChatGPT — main account plans\n7-day 42% used; resets ${reset}, ${time} UTC.\n`,
+        view: (reset: string, time: string) =>
+          `\n### ChatGPT — main account plans\n7-day 42% used; resets ${reset}, ${time} UTC.\n`,
         window: { name: "7-day", percent: 42 },
         extraWindows: 0,
       },

@@ -12,17 +12,17 @@ Neither 1Password nor BWS should be an irrevocable single point of failure. To m
 
 ## B. Near-term components and responsibilities
 
-| Component | Acceptance phase | Primary role | What it does *not* become |
-|---|---|---|---|
-| 1Password CLI/service accounts | Now | Rich login record, human UX/autofill, authorized machine items | Universal root-key escrow by default |
-| BWS + native Rust SDK, existing Fleet resolver | Now | Existing machine-secret scopes, project separation, read/write experiments | Bitwarden human password-vault access |
-| Canonical normalized records and field mapping | Now | Stable logical IDs, native IDs, conditional writes, indexed metadata, no loss in roundtrip | Plaintext secrets database in Supabase |
-| Laptop daily reconciler | Now after safe review | Verified cross-store scope matching, snapshots, history, conflict/rollback | Blind timestamp-wins synchronization |
-| Fleet broker/cache with optional fnox | Now/pilot | Fewer cold backend requests, coherent TTL, approved offline reads | New authorization source or unbounded stale secret availability |
-| SOPS/age / sops-nix / Flux decryption | Now | Encrypted declarative NixOS/K8s deployment secrets | Human password manager or online lease server |
-| OpenBao isolated proof-of-concept | Future pilot | Dynamic secrets, service identity, PKI/Transit/SSH, bounded HA and authorization | Immediate production requirement or drop-in OpenBao/PQ OCSP assumption |
-| Worker+D1/R2 encrypted remote replica | Conditional future research | Third independent failure domain/access gateway if proven necessary | Off-the-shelf unlimited Cloudflare Secrets Store |
-| SecureStore, pass, scrt, Infisical | Review/adapter | Prior-art comparison and optional import/export or alternate service | Unreviewed canonical replacement |
+| Component                                      | Acceptance phase            | Primary role                                                                               | What it does _not_ become                                              |
+| ---------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| 1Password CLI/service accounts                 | Now                         | Rich login record, human UX/autofill, authorized machine items                             | Universal root-key escrow by default                                   |
+| BWS + native Rust SDK, existing Fleet resolver | Now                         | Existing machine-secret scopes, project separation, read/write experiments                 | Bitwarden human password-vault access                                  |
+| Canonical normalized records and field mapping | Now                         | Stable logical IDs, native IDs, conditional writes, indexed metadata, no loss in roundtrip | Plaintext secrets database in Supabase                                 |
+| Laptop daily reconciler                        | Now after safe review       | Verified cross-store scope matching, snapshots, history, conflict/rollback                 | Blind timestamp-wins synchronization                                   |
+| Fleet broker/cache with optional fnox          | Now/pilot                   | Fewer cold backend requests, coherent TTL, approved offline reads                          | New authorization source or unbounded stale secret availability        |
+| SOPS/age / sops-nix / Flux decryption          | Now                         | Encrypted declarative NixOS/K8s deployment secrets                                         | Human password manager or online lease server                          |
+| OpenBao isolated proof-of-concept              | Future pilot                | Dynamic secrets, service identity, PKI/Transit/SSH, bounded HA and authorization           | Immediate production requirement or drop-in OpenBao/PQ OCSP assumption |
+| Worker+D1/R2 encrypted remote replica          | Conditional future research | Third independent failure domain/access gateway if proven necessary                        | Off-the-shelf unlimited Cloudflare Secrets Store                       |
+| SecureStore, pass, scrt, Infisical             | Review/adapter              | Prior-art comparison and optional import/export or alternate service                       | Unreviewed canonical replacement                                       |
 
 ## C. Important review findings and corrections
 

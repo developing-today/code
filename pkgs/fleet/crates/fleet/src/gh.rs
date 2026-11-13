@@ -357,9 +357,8 @@ impl Owners {
             GhApp::DevToday => &self.devtoday,
             GhApp::Backup => &self.backup,
         };
-        over.clone().unwrap_or_else(|| {
-            app.default_owners().iter().map(|s| s.to_string()).collect()
-        })
+        over.clone()
+            .unwrap_or_else(|| app.default_owners().iter().map(|s| s.to_string()).collect())
     }
 }
 
@@ -519,11 +518,7 @@ impl<'a> FleetTokenProvider<'a> {
     }
 
     fn mint_installation_token(&mut self, app: GhApp, owner: &str) -> Result<String, String> {
-        if let Some((_, _, token)) = self
-            .minted
-            .iter()
-            .find(|(a, o, _)| *a == app && o == owner)
-        {
+        if let Some((_, _, token)) = self.minted.iter().find(|(a, o, _)| *a == app && o == owner) {
             return Ok(token.clone());
         }
         let jwt = self.jwt(app)?;
@@ -594,8 +589,7 @@ impl<'a> FleetTokenProvider<'a> {
             .filter(|t| !t.is_empty())
             .ok_or_else(|| "mint response carried no token".to_string())?
             .to_string();
-        self.minted
-            .push((app, owner.to_string(), token.clone()));
+        self.minted.push((app, owner.to_string(), token.clone()));
         Ok(token)
     }
 }
@@ -905,10 +899,7 @@ fn run_tiers(config: &Config) -> i32 {
                 );
             }
             Ok(attempt) => {
-                println!(
-                    "{label}\tDOWN\tgh api rate_limit exited {}",
-                    attempt.code
-                );
+                println!("{label}\tDOWN\tgh api rate_limit exited {}", attempt.code);
                 any_down = true;
             }
             Err(e) => {
@@ -917,11 +908,7 @@ fn run_tiers(config: &Config) -> i32 {
             }
         }
     }
-    if any_down {
-        EXIT_UNRESOLVED
-    } else {
-        EXIT_OK
-    }
+    if any_down { EXIT_UNRESOLVED } else { EXIT_OK }
 }
 
 pub fn run(config: &Config, args: &[String]) -> i32 {
@@ -1064,7 +1051,11 @@ mod tests {
             TokenSource::app(GhApp::Fleet, "developing-today-forks")
         );
 
-        let fixed = rotation_with(&fork_args, Some("app:dezren39,personal"), &Owners::default());
+        let fixed = rotation_with(
+            &fork_args,
+            Some("app:dezren39,personal"),
+            &Owners::default(),
+        );
         assert_eq!(
             fixed,
             vec![

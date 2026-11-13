@@ -181,7 +181,11 @@ describe("saas extraction (Part b)", () => {
       });
     }
     for (const id of ["vercel", "backblaze-b2", "fly-io", "baseten", "supabase"]) {
-      expect(shells.get(id)?.extractionHealth).toMatchObject({ status: "intentional", matched: null, reason: "uninstrumented" });
+      expect(shells.get(id)?.extractionHealth).toMatchObject({
+        status: "intentional",
+        matched: null,
+        reason: "uninstrumented",
+      });
     }
     expect(byId.get("cloudflare")?.extractionHealth?.status).toBe("matched");
     const noMetrics = extractSaasServices("### Cloudflare — Workers platform\n- **Usage / dates:** no metrics").find(

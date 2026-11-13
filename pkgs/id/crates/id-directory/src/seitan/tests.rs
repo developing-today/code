@@ -16,7 +16,7 @@ use super::derive;
 use super::freshness::{DEFAULT_WINDOW, Freshness};
 use super::token::{ALPHABET, Token, TokenError};
 
-use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+use id_core::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
 
 const VECTOR_TOKEN: &str = "4uywza+b3cga7rd6yc";
 const VECTOR_INVITE_ID: &str = "6303ec43bd61d21edb95a433faf06227";

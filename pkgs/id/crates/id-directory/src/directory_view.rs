@@ -9,16 +9,16 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::artifact::{SignedArtifact, Stored};
+use id_sync::artifact::{SignedArtifact, Stored};
 use crate::directory::{
     Actor, Directory, DirectoryEntry, Envelope, EnvelopeKind, Level, Member, Received, Refusal,
     normalize_email, normalize_key,
 };
 use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose, PurposeKind};
 use crate::directory_mail::Mail;
-use crate::envelope_outbox::{Entry, Finish, Outbox, Payload, check_target};
-use crate::petname::{Contact, Label, Petnames, labels};
-use crate::world::WorldScopes;
+use id_sync::envelope_outbox::{Entry, Finish, Outbox, Payload, check_target};
+use id_core::petname::{Contact, Label, Petnames, labels};
+use id_caps::world_scopes::WorldScopes;
 
 /// Who is looking at the directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1611,7 +1611,7 @@ fn scope_names(scopes: WorldScopes) -> Vec<String> {
     .collect()
 }
 
-pub(crate) const fn level_name(level: Level) -> &'static str {
+pub const fn level_name(level: Level) -> &'static str {
     match level {
         Level::Access => "access",
         Level::Read => "read",
@@ -1752,8 +1752,8 @@ pub fn render_text(view: &DirectoryView) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::artifact::HomeServer;
-    use crate::envelope_outbox::{MAX_FINISHED_ENTRIES, Outcome};
+    use id_sync::artifact::HomeServer;
+    use id_sync::envelope_outbox::{MAX_FINISHED_ENTRIES, Outcome};
     use ed25519_dalek::SigningKey;
 
     fn node() -> String {
@@ -1919,7 +1919,7 @@ mod tests {
             .record(
                 &id,
                 0,
-                crate::envelope_outbox::Outcome::Refused("no such account".to_owned()),
+                id_sync::envelope_outbox::Outcome::Refused("no such account".to_owned()),
             )
             .unwrap();
         assert_eq!(
@@ -2182,7 +2182,7 @@ mod tests {
     fn a_keyed_account_adds_keys_and_emails_and_signs_in_by_email() {
         let mut s = sample();
         let key =
-            crate::world::hex_encode(&SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes());
+            id_core::hex::hex_encode(&SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes());
         let signed = Caller {
             key: Some(key.clone()),
             ..Caller::default()
@@ -2208,7 +2208,7 @@ mod tests {
             ..Caller::default()
         };
         let other =
-            crate::world::hex_encode(&SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes());
+            id_core::hex::hex_encode(&SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes());
         let refused = run(
             &mut s.directory,
             &mut Petnames::new(),
@@ -2536,7 +2536,7 @@ mod tests {
     }
 
     fn keyed(directory: &mut Directory, seed: u8, name: &str) -> String {
-        let key = crate::world::hex_encode(
+        let key = id_core::hex::hex_encode(
             &SigningKey::from_bytes(&[seed; 32])
                 .verifying_key()
                 .to_bytes(),
@@ -2693,7 +2693,7 @@ mod tests {
         ));
 
         let stranger =
-            crate::world::hex_encode(&SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes());
+            id_core::hex::hex_encode(&SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes());
         let unknown = petname_act(
             &mut directory,
             &mut petnames,

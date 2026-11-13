@@ -63,6 +63,33 @@ type Spec struct {
 	// Tools are the subcommands worth exposing. Empty for a bare
 	// declaration, which exposes its single passthrough tool instead.
 	Tools []ToolSpec `json:"tools,omitempty"`
+	// Provenance records where a generated declaration came from, when
+	// it was generated rather than written by hand (#1962). Nil for a
+	// hand-written declaration, and nothing in the run path consults
+	// it: it exists so `adapter check` can report version drift and a
+	// reader can tell what the declaration was made from.
+	Provenance *Provenance `json:"provenance,omitempty"`
+}
+
+// Provenance is a generated declaration's birth certificate: the source
+// it was parsed from, the binary it describes, and when.
+type Provenance struct {
+	// Source is the ladder rung that produced the declaration:
+	// completion, man or help.
+	Source string `json:"source"`
+	// SourceDetail names the exact input: a completion file path, a
+	// probe command, a man page.
+	SourceDetail string `json:"sourceDetail,omitempty"`
+	// BinaryPath is the resolved path of the binary at import time.
+	BinaryPath string `json:"binaryPath,omitempty"`
+	// BinaryVersion is the version token read from the binary at
+	// import time; `adapter check` compares it against the binary's
+	// current version and reports drift.
+	BinaryVersion string `json:"binaryVersion,omitempty"`
+	// GeneratedAt is the import time, RFC 3339 UTC.
+	GeneratedAt string `json:"generatedAt"`
+	// Generator names the producing command.
+	Generator string `json:"generator"`
 }
 
 // ToolSpec is one subcommand.
@@ -100,6 +127,12 @@ type Param struct {
 	// Repeat sends an array as several occurrences of the flag rather than
 	// one comma-joined value, which is what most programs actually accept.
 	Repeat bool `json:"repeat,omitempty"`
+	// Equals renders the value attached: --flag=value rather than
+	// --flag value. Some programs accept a value only in this form
+	// (the man-page --flag[=<value>] shape); rendering it separated
+	// would run a different operation — git --exec-path /tmp prints
+	// the path instead of setting it (#1962).
+	Equals bool `json:"equals,omitempty"`
 	// Default is used when the caller omits it.
 	Default string `json:"default,omitempty"`
 	// Enum restricts the value.
@@ -417,13 +450,19 @@ func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
 			out = append(out, values...)
 			continue
 		}
+		render := func(v string) []string {
+			if p.Equals {
+				return []string{p.Flag + "=" + v}
+			}
+			return []string{p.Flag, v}
+		}
 		if p.Repeat {
 			for _, v := range values {
-				out = append(out, p.Flag, v)
+				out = append(out, render(v)...)
 			}
 			continue
 		}
-		out = append(out, p.Flag, strings.Join(values, ","))
+		out = append(out, render(strings.Join(values, ","))...)
 	}
 	// A key that names no declared parameter is a caller mistake — a typo is
 	// otherwise indistinguishable from success, and the executed command
