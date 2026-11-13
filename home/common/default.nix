@@ -277,7 +277,7 @@ let
       pkgs.antigravity-cli
       pkgs.git
       pkgs.openssh
-    ];
+    ] + ":/home/user/.local/bin:/home/user/bin";
   };
   # The daemon's configuration (the former ~/code/.mcpx.json), and the
   # config file the mcpx module renders from it: reproduced here so
