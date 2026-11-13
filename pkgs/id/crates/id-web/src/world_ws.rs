@@ -1,7 +1,7 @@
 //! WebSocket presentation bridge for the optional authoritative world actor.
 //!
 //! This is only a transport adapter: the protocol lives in
-//! [`crate::world_session`] and is shared with the Iroh transport.
+//! [`id_worlds::world_session`] and is shared with the Iroh transport.
 
 use axum::{
     Json,
@@ -20,11 +20,11 @@ use futures::{
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
-use crate::directory::Refusal;
-use crate::directory_auth::{Caller, Signed};
-use crate::directory_view::DirectoryAction;
-use crate::world_hub::{ResolveError, WorldHub};
-use crate::world_session::{Inbound, InviteError, MAX_FRAME_BYTES, SessionIo, run_session};
+use id_directory::directory::Refusal;
+use id_directory::directory_auth::{Caller, Signed};
+use id_directory::directory_view::DirectoryAction;
+use id_worlds::world_hub::{ResolveError, WorldHub};
+use id_worlds::world_session::{Inbound, InviteError, MAX_FRAME_BYTES, SessionIo, run_session};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct InviteRequest {
@@ -89,18 +89,18 @@ struct HostViewQuery {
 
 #[derive(Debug, Serialize)]
 struct HostViewResponse {
-    snapshot: Option<crate::world::WorldSnapshot>,
+    snapshot: Option<id_worlds::world::WorldSnapshot>,
     view: Option<String>,
-    surface: Option<crate::world_presentation::WorldSurface>,
+    surface: Option<id_core::world_presentation::WorldSurface>,
     records_sequence: u64,
-    records: crate::world::Records,
+    records: id_worlds::world::Records,
     next_after: Option<String>,
 }
 
 /// The uncached records revision: FNV-1a over the canonical
 /// (BTreeMap-ordered) JSON encoding, folded to 53 bits so the value
 /// survives JSON number round-trips in the browser exactly.
-fn hash_records_revision(records: &crate::world::Records) -> u64 {
+fn hash_records_revision(records: &id_worlds::world::Records) -> u64 {
     let bytes = serde_json::to_vec(records).unwrap_or_default();
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
@@ -119,7 +119,7 @@ fn hash_records_revision(records: &crate::world::Records) -> u64 {
 /// entire records map on every page (#9104): the full-map hash runs once
 /// per published snapshot, not once per request.
 struct RecordsRevisionCache {
-    entries: Mutex<Vec<(Arc<crate::world::Records>, u64)>>,
+    entries: Mutex<Vec<(Arc<id_worlds::world::Records>, u64)>>,
 }
 
 /// Snapshots whose revisions stay memoized. Host-view paging walks one
@@ -134,15 +134,15 @@ impl RecordsRevisionCache {
         }
     }
 
-    fn revision(&self, records: &Arc<crate::world::Records>) -> u64 {
+    fn revision(&self, records: &Arc<id_worlds::world::Records>) -> u64 {
         self.revision_with(records, hash_records_revision)
     }
 
     /// `compute` is injectable so tests can count full-map hash runs.
     fn revision_with(
         &self,
-        records: &Arc<crate::world::Records>,
-        compute: impl Fn(&crate::world::Records) -> u64,
+        records: &Arc<id_worlds::world::Records>,
+        compute: impl Fn(&id_worlds::world::Records) -> u64,
     ) -> u64 {
         if let Some(revision) = self.cached(records) {
             return revision;
@@ -162,7 +162,7 @@ impl RecordsRevisionCache {
         revision
     }
 
-    fn cached(&self, records: &Arc<crate::world::Records>) -> Option<u64> {
+    fn cached(&self, records: &Arc<id_worlds::world::Records>) -> Option<u64> {
         self.entries
             .lock()
             .unwrap()
@@ -181,7 +181,7 @@ static RECORDS_REVISIONS: RecordsRevisionCache = RecordsRevisionCache::new();
 /// against it could silently mix snapshots. The value is the full-map
 /// hash in [`hash_records_revision`], computed once per published
 /// snapshot and memoized in [`RECORDS_REVISIONS`].
-fn records_revision(records: &Arc<crate::world::Records>) -> u64 {
+fn records_revision(records: &Arc<id_worlds::world::Records>) -> u64 {
     RECORDS_REVISIONS.revision(records)
 }
 
@@ -224,7 +224,7 @@ async fn host_view_handler(
     };
     let (_, current_records) = world.records();
     let records_sequence = records_revision(&current_records);
-    let mut records = crate::world::Records::new();
+    let mut records = id_worlds::world::Records::new();
     let mut used = 0usize;
     let mut last_included = None;
     let mut more = false;
@@ -237,7 +237,7 @@ async fn host_view_handler(
             continue;
         }
         let size = key.len() + serde_json::to_vec(value).map_or(0, |bytes| bytes.len()) + 8;
-        if used + size > crate::world_session::MAX_RECORDS_PAGE_BYTES {
+        if used + size > id_worlds::world_session::MAX_RECORDS_PAGE_BYTES {
             if records.is_empty() {
                 return StatusCode::PAYLOAD_TOO_LARGE.into_response();
             }
@@ -251,7 +251,7 @@ async fn host_view_handler(
     let next_after = more.then_some(last_included).flatten();
     let surface = match view
         .as_deref()
-        .map(crate::world_presentation::parse_surface)
+        .map(id_core::world_presentation::parse_surface)
     {
         Some(Ok(surface)) => surface,
         Some(Err(_)) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -309,7 +309,7 @@ async fn metrics_handler(
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let handle = lease.service();
     let metrics = handle
-        .world
+        .world()
         .metrics()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -331,7 +331,7 @@ async fn metrics_handler(
     };
 
     let write_histogram =
-        |out: &mut String, name: &str, help: &str, hist: &crate::world::HistogramSnapshot| {
+        |out: &mut String, name: &str, help: &str, hist: &id_worlds::world::HistogramSnapshot| {
             out.push_str(&format!(
                 "# HELP {} {}\n# TYPE {} histogram\n",
                 name, help, name
@@ -577,7 +577,7 @@ fn refusal_response(error: &anyhow::Error) -> Response {
         error.downcast_ref::<Refusal>(),
         Some(Refusal::RateLimited(_))
     ) {
-        let retry_ms = crate::abuse::RETRY_FLOOR_MS;
+        let retry_ms = id_core::abuse::RETRY_FLOOR_MS;
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [(header::RETRY_AFTER, (retry_ms / 1_000).to_string())],
@@ -695,15 +695,15 @@ impl SessionIo for WsIo {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::world::{
+    use id_worlds::world::{
         JoinCapability, Participant, WorldCore, WorldHandle, WorldLimits, WorldProgram,
     };
-    use crate::world_session::WorldService;
+    use id_worlds::world_session::WorldService;
     use axum::http::StatusCode;
     use axum::{body::Body, http::Request};
     use ed25519_dalek::SigningKey;
 
-    use crate::directory_auth::sign_request;
+    use id_directory::directory_auth::sign_request;
 
     use tokio_tungstenite::tungstenite::Message as ClientMessage;
     use tower::ServiceExt as _;
@@ -779,7 +779,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         // A records set far beyond one 768 KiB page: 200 entries with
         // 8 KiB values (~1.6 MiB serialized).
-        let mut records = crate::world::Records::new();
+        let mut records = id_worlds::world::Records::new();
         for index in 0..200 {
             records.insert(
                 format!("key-{index:04}"),
@@ -789,7 +789,7 @@ mod tests {
         let snapshot = Arc::new(records);
         let cache = RecordsRevisionCache::new();
         let computations = AtomicUsize::new(0);
-        let counting_hash = |records: &crate::world::Records| {
+        let counting_hash = |records: &id_worlds::world::Records| {
             computations.fetch_add(1, Ordering::SeqCst);
             hash_records_revision(records)
         };
@@ -818,7 +818,7 @@ mod tests {
     fn records_revision_cache_is_bounded() {
         let cache = RecordsRevisionCache::new();
         for index in 0..(MAX_CACHED_RECORDS_REVISIONS + 4) {
-            let mut records = crate::world::Records::new();
+            let mut records = id_worlds::world::Records::new();
             records.insert(format!("key-{index}"), serde_json::Value::Null);
             cache.revision(&Arc::new(records));
         }
@@ -1128,7 +1128,7 @@ mod tests {
     }
 
     fn signed_directory_request(key: &SigningKey, nonce: &str, body: &str) -> Request<Body> {
-        let at = crate::time::unix_ms();
+        let at = id_core::time::unix_ms();
         let signed = sign_request(
             key,
             "POST",
@@ -1154,7 +1154,7 @@ mod tests {
     async fn a_signed_key_signs_up_and_opens_a_session_that_reads_as_its_account() {
         let router = app(Some(lobby()), None);
         let key = SigningKey::from_bytes(&[8; 32]);
-        let id = crate::world::hex_encode(&key.verifying_key().to_bytes());
+        let id = id_worlds::world::hex_encode(&key.verifying_key().to_bytes());
 
         let signed_up = router
             .clone()
@@ -1233,11 +1233,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "id-mail-http-{}-{}",
             std::process::id(),
-            crate::time::unix_ms()
+            id_core::time::unix_ms()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let service = WorldService::new(lobby(), None).with_mail(std::sync::Arc::new(
-            crate::directory_mail::OutboxSink::new(dir.clone()),
+            id_directory::directory_mail::OutboxSink::new(dir.clone()),
         ));
         let router = world_routes().with_state(WorldWebState {
             hub: Some(WorldHub::single(service)),
@@ -1437,7 +1437,7 @@ mod tests {
         // `surface` is skipped when absent: no screen document is attached.
         assert!(frame.get("surface").is_none(), "{frame}");
         assert!(
-            crate::world_presentation::parse_surface(data)
+            id_core::world_presentation::parse_surface(data)
                 .unwrap()
                 .is_none(),
             "legacy text must not parse as a screen document: {frame}"
@@ -1453,17 +1453,17 @@ mod tests {
     }
 
     #[cfg(feature = "sandbox")]
-    use crate::world_session::encode_hex;
+    use id_worlds::world_session::encode_hex;
 
     #[tokio::test]
     async fn http_invites_and_websocket_joins_route_by_world_name() {
-        let opener = crate::world_hub::testing::MemoryOpener::new(false);
-        let dyn_opener: std::sync::Arc<dyn crate::world_hub::WorldOpener> = opener.clone();
+        let opener = id_worlds::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: std::sync::Arc<dyn id_worlds::world_hub::WorldOpener> = opener.clone();
         let hub = WorldHub::new(
             dyn_opener,
             Some("admin".to_owned()),
             "lobby",
-            crate::world_hub::HubLimits::default(),
+            id_worlds::world_hub::HubLimits::default(),
         );
         let router = world_routes().with_state(WorldWebState {
             hub: Some(hub),
@@ -1532,13 +1532,13 @@ mod tests {
     /// join naming the pinned world reaches it and snapshots.
     #[tokio::test]
     async fn pinned_bridge_refuses_websocket_joins_to_other_worlds() {
-        let opener = crate::world_hub::testing::MemoryOpener::new(false);
-        let dyn_opener: std::sync::Arc<dyn crate::world_hub::WorldOpener> = opener.clone();
+        let opener = id_worlds::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: std::sync::Arc<dyn id_worlds::world_hub::WorldOpener> = opener.clone();
         let hub = WorldHub::new(
             dyn_opener,
             Some("admin".to_owned()),
             "lobby",
-            crate::world_hub::HubLimits::default(),
+            id_worlds::world_hub::HubLimits::default(),
         );
         hub.create("arena").await.unwrap();
         hub.create("vault").await.unwrap();
@@ -1591,11 +1591,11 @@ mod tests {
         let world = lobby();
         let addr = serve(app(Some(world.clone()), Some("admin"))).await;
         let (_, alice) = world
-            .issue("alice".to_owned(), crate::world::WorldScopes::GUEST)
+            .issue("alice".to_owned(), id_worlds::world::WorldScopes::GUEST)
             .await
             .unwrap();
         let (_, bob) = world
-            .issue("bob".to_owned(), crate::world::WorldScopes::GUEST)
+            .issue("bob".to_owned(), id_worlds::world::WorldScopes::GUEST)
             .await
             .unwrap();
 
@@ -1707,7 +1707,7 @@ mod tests {
         assert!(blobs.blobs().has(hash).await.unwrap());
 
         let (_, capability) = world
-            .issue("browser".to_owned(), crate::world::WorldScopes::GUEST)
+            .issue("browser".to_owned(), id_worlds::world::WorldScopes::GUEST)
             .await
             .unwrap();
         let mut player = connect(addr, join(&capability, None)).await;
@@ -1749,7 +1749,7 @@ mod tests {
             );
             return;
         }
-        let compiler = crate::world_compile::Compiler::new(platform_dir, roc_bin).unwrap();
+        let compiler = id_worlds::world_compile::Compiler::new(platform_dir, roc_bin).unwrap();
         let source = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/examples/roc-counter/main.roc"
@@ -1796,7 +1796,7 @@ mod tests {
         assert!(blobs.blobs().has(hash).await.unwrap());
 
         let (_, capability) = world
-            .issue("browser".to_owned(), crate::world::WorldScopes::GUEST)
+            .issue("browser".to_owned(), id_worlds::world::WorldScopes::GUEST)
             .await
             .unwrap();
         let mut player = connect(addr, join(&capability, None)).await;
@@ -1875,7 +1875,7 @@ mod tests {
         assert!(blobs.blobs().has(hash).await.unwrap());
 
         let (_, capability) = world
-            .issue("browser".to_owned(), crate::world::WorldScopes::GUEST)
+            .issue("browser".to_owned(), id_worlds::world::WorldScopes::GUEST)
             .await
             .unwrap();
         let mut player = connect(addr, join(&capability, None)).await;
@@ -1917,7 +1917,7 @@ mod tests {
             );
             return;
         }
-        let compiler = crate::world_compile::Compiler::new(platform_dir, roc_bin).unwrap();
+        let compiler = id_worlds::world_compile::Compiler::new(platform_dir, roc_bin).unwrap();
         let source = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/examples/roc-text-counter/main.roc"
@@ -1927,7 +1927,7 @@ mod tests {
         // roc-text-counter's main.roc imports no platform modules, so it needs
         // no grant. Admit everything the default ceiling admits except
         // `Screen`: a text-only world must compile without it.
-        let ceiling: Vec<String> = crate::world_caps::default_ceiling_names()
+        let ceiling: Vec<String> = id_worlds::world_caps::default_ceiling_names()
             .into_iter()
             .filter(|name| name != "Screen")
             .collect();
@@ -1965,7 +1965,7 @@ mod tests {
         assert!(blobs.blobs().has(hash).await.unwrap());
 
         let (_, capability) = world
-            .issue("browser".to_owned(), crate::world::WorldScopes::GUEST)
+            .issue("browser".to_owned(), id_worlds::world::WorldScopes::GUEST)
             .await
             .unwrap();
         let mut player = connect(addr, join(&capability, None)).await;
@@ -2012,11 +2012,11 @@ mod tests {
         let world = lobby();
         let addr = serve(app(Some(world.clone()), Some("admin"))).await;
         let (alice_id, alice) = world
-            .issue("alice".to_owned(), crate::world::WorldScopes::GUEST)
+            .issue("alice".to_owned(), id_worlds::world::WorldScopes::GUEST)
             .await
             .unwrap();
         let (_, bob) = world
-            .issue("bob".to_owned(), crate::world::WorldScopes::GUEST)
+            .issue("bob".to_owned(), id_worlds::world::WorldScopes::GUEST)
             .await
             .unwrap();
         let mut a = connect(addr, join(&alice, None)).await;

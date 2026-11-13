@@ -111,7 +111,7 @@ pub(super) async fn save_handler(
     }
 
     // Update metadata tags: set created (if first save) and modified
-    let now_str = crate::tags::now_unix().to_string();
+    let now_str = id_store::tags::now_unix().to_string();
     // `created_fresh` gates the origin stamp below: a legacy file
     // (created before origin stamping existed) keeps an unknown
     // origin on overwrite instead of claiming this node (Codex
@@ -269,7 +269,7 @@ pub(super) async fn new_file_handler(
     }
 
     // Set metadata tags: created + modified
-    let now_str = crate::tags::now_unix().to_string();
+    let now_str = id_store::tags::now_unix().to_string();
     // `created_fresh` gates the origin stamp below: a legacy file
     // (created before origin stamping existed) keeps an unknown
     // origin on overwrite instead of claiming this node (Codex
@@ -555,7 +555,7 @@ pub(super) async fn upload_handler(
     }
 
     // Set metadata tags (created, modified, content-type)
-    let now_str = crate::tags::now_unix().to_string();
+    let now_str = id_store::tags::now_unix().to_string();
     // `created_fresh` gates the origin stamp below: a legacy file
     // (created before origin stamping existed) keeps an unknown
     // origin on overwrite instead of claiming this node (Codex
@@ -637,16 +637,13 @@ pub(super) async fn upload_handler(
 
 /// Map independent image-list lookups concurrently while preserving input
 /// order for stable cursor pagination.
-fn bounded_image_lookups<T, S, F, Fut>(
-    items: S,
-    map: F,
-) -> impl futures_util::Stream<Item = Fut::Output>
+fn bounded_image_lookups<T, S, F, Fut>(items: S, map: F) -> impl futures::Stream<Item = Fut::Output>
 where
-    S: futures_util::Stream<Item = T>,
+    S: futures::Stream<Item = T>,
     F: FnMut(T) -> Fut,
     Fut: std::future::Future,
 {
-    use futures_util::stream::StreamExt;
+    use futures::stream::StreamExt;
 
     items.map(map).buffered(IMAGE_LOOKUP_CONCURRENCY)
 }
@@ -663,7 +660,7 @@ pub(super) async fn images_list_handler(
     use std::ops::Bound::{Excluded, Unbounded};
 
     use base64::Engine as _;
-    use futures_util::stream::{self, StreamExt};
+    use futures::stream::{self, StreamExt};
     use iroh_blobs::api::tags::ListOptions;
 
     const MAX_CURSOR_BYTES: usize = 4 * 1024;
@@ -714,7 +711,7 @@ pub(super) async fn images_list_handler(
         let tag_info = result.map_err(|err| err.to_string())?;
         let raw_name = tag_info.name.as_ref().to_vec();
         let name = String::from_utf8_lossy(&raw_name).to_string();
-        if crate::tags::is_internal_tag(&name) {
+        if id_store::tags::is_internal_tag(&name) {
             return Ok::<Option<Candidate>, String>(None);
         }
 
@@ -798,7 +795,7 @@ mod image_lookup_tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use futures_util::stream::{self, StreamExt};
+    use futures::stream::{self, StreamExt};
 
     use super::*;
 
@@ -1047,7 +1044,7 @@ pub(super) async fn delete_handler(
     }
 
     // Add "deleted" tag with timestamp
-    let now_str = crate::tags::now_unix().to_string();
+    let now_str = id_store::tags::now_unix().to_string();
     if let Err(err) = state
         .tag_store
         .set_singleton(

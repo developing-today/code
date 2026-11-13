@@ -28,11 +28,39 @@ func TestPrimitiveTypes(t *testing.T) {
 	}
 }
 
+func TestGeneratedSearchIncludesRecipes(t *testing.T) {
+	recipes := []codegen.RecipeMeta{
+		{Name: "screenshot-and-diff", Description: "Screenshot a page and diff it", Params: []string{"url", "baseline"}, Required: []string{"url"}},
+	}
+	got := codegen.ModuleWithRecipes([]codegen.Namespace{sampleNamespace()}, "http://127.0.0.1:1", "session", recipes)
+	for _, want := range []string{
+		"const __recipeMeta",
+		`"name": "screenshot-and-diff"`,
+		`"description": "Screenshot a page and diff it"`,
+		`"baseline"`,
+		`kind: "recipe"`,
+		`kind: "tool"`,
+		"Array<ToolMatch | RecipeMatch>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("generated client with recipes missing %q", want)
+		}
+	}
+
+	plain := codegen.Module([]codegen.Namespace{sampleNamespace()}, "http://127.0.0.1:1", "session")
+	if !strings.Contains(plain, "const __recipeMeta") {
+		t.Errorf("generated client without recipes must still emit __recipeMeta (one search shape)")
+	}
+	if strings.Contains(plain, "screenshot-and-diff") {
+		t.Errorf("generated client without recipes carries a recipe it was not given")
+	}
+}
+
 func TestGeneratedSearchSupportsStableOffsetPages(t *testing.T) {
 	got := codegen.Module([]codegen.Namespace{sampleNamespace()}, "http://127.0.0.1:1", "session")
 	for _, want := range []string{
 		"search(query: string, limit = 20, offset = 0)",
-		"a.match.namespace.localeCompare(b.match.namespace)",
+		"sortKey(a.match).localeCompare(sortKey(b.match))",
 		"const start = Math.max(0, Math.trunc(offset));",
 		"scored.slice(start, start + count)",
 	} {

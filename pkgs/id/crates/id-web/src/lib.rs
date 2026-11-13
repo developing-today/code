@@ -73,8 +73,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
-use crate::discovery::PeerDiscovery;
-use crate::tags::TagStore;
+use id_core::discovery::PeerDiscovery;
+use id_store::tags::TagStore;
 
 pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
 pub use assets::static_handler;
@@ -239,9 +239,9 @@ pub struct AppState {
     /// Client identity store for persistent client sessions.
     pub identity: IdentityStore,
     /// Node-signed event log used to publish durable document revisions.
-    pub(crate) local_events: Arc<Mutex<crate::local_events::LocalEvents>>,
+    pub(crate) local_events: Arc<Mutex<id_events::local_events::LocalEvents>>,
     /// Optional hosted world (and its invite secret) for the WebSocket bridge.
-    pub world: Option<crate::world_hub::WorldHub>,
+    pub world: Option<id_worlds::world_hub::WorldHub>,
     /// The `[interfaces.web]` page route this state's router binds
     /// the world page at (#2325). Defaults to the world app's own
     /// `/world`; `create_router_for_app` overwrites it from the
@@ -302,8 +302,8 @@ impl AppState {
         secret_key: [u8; 32],
         identity_db_path: std::path::PathBuf,
     ) -> anyhow::Result<Self> {
-        let events_dir = identity_db_path.with_file_name(crate::local_events::DIR_NAME);
-        let local_events = Arc::new(Mutex::new(crate::local_events::LocalEvents::open(
+        let events_dir = identity_db_path.with_file_name(id_events::local_events::DIR_NAME);
+        let local_events = Arc::new(Mutex::new(id_events::local_events::LocalEvents::open(
             &events_dir,
             p2panda_core::SigningKey::from_bytes(&secret_key),
         )?));
@@ -330,7 +330,7 @@ impl AppState {
         tag_store: Arc<TagStore>,
         secret_key: [u8; 32],
         identity_db_path: std::path::PathBuf,
-        local_events: Arc<Mutex<crate::local_events::LocalEvents>>,
+        local_events: Arc<Mutex<id_events::local_events::LocalEvents>>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             store,
@@ -430,7 +430,7 @@ pub async fn web_router(
     secret_key: [u8; 32],
     identity_db_path: std::path::PathBuf,
     security: WebSecurity,
-    world: Option<crate::world_hub::WorldHub>,
+    world: Option<id_worlds::world_hub::WorldHub>,
     cookie_secure: bool,
     groups_log: Option<std::path::PathBuf>,
 ) -> anyhow::Result<Router> {
@@ -465,10 +465,10 @@ pub async fn web_router_with_local_events(
     secret_key: [u8; 32],
     identity_db_path: std::path::PathBuf,
     security: WebSecurity,
-    world: Option<crate::world_hub::WorldHub>,
+    world: Option<id_worlds::world_hub::WorldHub>,
     cookie_secure: bool,
     groups_log: Option<std::path::PathBuf>,
-    local_events: Arc<Mutex<crate::local_events::LocalEvents>>,
+    local_events: Arc<Mutex<id_events::local_events::LocalEvents>>,
 ) -> anyhow::Result<Router> {
     let state = AppState::with_local_events(
         store,
@@ -510,9 +510,9 @@ pub async fn web_routers(
     secret_key: [u8; 32],
     identity_db_path: std::path::PathBuf,
     securities: Vec<WebSecurity>,
-    world: Option<crate::world_hub::WorldHub>,
+    world: Option<id_worlds::world_hub::WorldHub>,
     cookie_secure: bool,
-    local_events: Option<Arc<Mutex<crate::local_events::LocalEvents>>>,
+    local_events: Option<Arc<Mutex<id_events::local_events::LocalEvents>>>,
     surfaces: Vec<Option<String>>,
     groups_log: Option<std::path::PathBuf>,
     seitan: SeitanState,
@@ -568,7 +568,7 @@ pub async fn web_routers(
 fn finish_router(
     mut state: AppState,
     security: WebSecurity,
-    world: Option<crate::world_hub::WorldHub>,
+    world: Option<id_worlds::world_hub::WorldHub>,
     cookie_secure: bool,
     surface: Option<String>,
     groups_log: Option<std::path::PathBuf>,
@@ -810,12 +810,12 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let world = crate::world::WorldHandle::spawn(
-            crate::world::WorldCore::new("arena", crate::world::WorldLimits::default()).unwrap(),
+        let world = id_worlds::world::WorldHandle::spawn(
+            id_worlds::world::WorldCore::new("arena", id_worlds::world::WorldLimits::default()).unwrap(),
         );
-        let hub = crate::world_hub::WorldHub::single_named(
+        let hub = id_worlds::world_hub::WorldHub::single_named(
             "arena",
-            crate::world_session::WorldService::new(world.clone(), None),
+            id_worlds::world_session::WorldService::new(world.clone(), None),
         );
         let routers = web_routers(
             store,
@@ -897,12 +897,12 @@ mod tests {
         let (_, explorer_capability) = world
             .issue(
                 "explorer-guest".to_owned(),
-                crate::world::WorldScopes::GUEST,
+                id_worlds::world::WorldScopes::GUEST,
             )
             .await
             .unwrap();
         let (_, program_capability) = world
-            .issue("program-guest".to_owned(), crate::world::WorldScopes::GUEST)
+            .issue("program-guest".to_owned(), id_worlds::world::WorldScopes::GUEST)
             .await
             .unwrap();
         let mut explorer_client = connect_world(explorer_addr, explorer_capability.expose()).await;

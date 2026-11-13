@@ -55,7 +55,7 @@ pub(super) async fn feed_handler(State(state): State<AppState>) -> axum::respons
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
     };
-    let mut by_subject: std::collections::BTreeMap<String, Vec<crate::tags::Tag>> =
+    let mut by_subject: std::collections::BTreeMap<String, Vec<id_store::tags::Tag>> =
         std::collections::BTreeMap::new();
     for tag in tags {
         if let Some(subject) = tag.subject.as_str()
@@ -169,7 +169,7 @@ pub(super) async fn feed_handler(State(state): State<AppState>) -> axum::respons
 }
 
 pub(super) fn render_home(
-    worlds: &[crate::world_hub::WorldInfo],
+    worlds: &[id_worlds::world_hub::WorldInfo],
     default_world: &str,
     world_enabled: bool,
     world_route: &str,
@@ -190,7 +190,7 @@ pub(super) fn render_home(
     } else {
         // The explorer renders from the shared directory serializer
         // (#812): the same shape the CLI's `id world list --json` prints.
-        let directory = crate::world_hub::directory_json(worlds, default_world);
+        let directory = id_worlds::world_hub::directory_json(worlds, default_world);
         if let Some(entries) = directory["worlds"].as_array() {
             for entry in entries {
                 let raw_name = entry["name"].as_str().unwrap_or_default();
@@ -274,11 +274,11 @@ mod tests {
     async fn test_router() -> (
         axum::Router,
         Store,
-        std::sync::Arc<crate::tags::TagStore>,
+        std::sync::Arc<id_store::tags::TagStore>,
         tempfile::TempDir,
         Endpoint,
         Docs,
-        crate::world::WorldHandle,
+        id_worlds::world::WorldHandle,
     ) {
         let endpoint = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
@@ -296,7 +296,7 @@ mod tests {
             .unwrap();
         let temp = tempfile::tempdir().unwrap();
         let tags =
-            crate::tags::TagStore::init_in(&docs, "home-test", temp.path().join(".iroh-meta"))
+            id_store::tags::TagStore::init_in(&docs, "home-test", temp.path().join(".iroh-meta"))
                 .await
                 .unwrap();
         let tags = std::sync::Arc::new(tags);
@@ -310,12 +310,12 @@ mod tests {
         )
         .await
         .unwrap();
-        let world = crate::world::WorldHandle::spawn(
-            crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default()).unwrap(),
+        let world = id_worlds::world::WorldHandle::spawn(
+            id_worlds::world::WorldCore::new("lobby", id_worlds::world::WorldLimits::default()).unwrap(),
         );
-        state.world = Some(crate::world_hub::WorldHub::single_named(
+        state.world = Some(id_worlds::world_hub::WorldHub::single_named(
             "lobby",
-            crate::world_session::WorldService::new(world.clone(), None),
+            id_worlds::world_session::WorldService::new(world.clone(), None),
         ));
         (
             super::super::routes::create_router(
@@ -525,11 +525,11 @@ mod tests {
 
         let (router, _store, _tags, _temp, _endpoint, _docs, world) = test_router().await;
         let (_, alice) = world
-            .issue("alice".to_owned(), crate::world::WorldScopes::GUEST)
+            .issue("alice".to_owned(), id_worlds::world::WorldScopes::GUEST)
             .await
             .unwrap();
         let (_, bob) = world
-            .issue("bob".to_owned(), crate::world::WorldScopes::GUEST)
+            .issue("bob".to_owned(), id_worlds::world::WorldScopes::GUEST)
             .await
             .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -537,7 +537,7 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });
-        let connect = |capability: crate::world::JoinCapability| async move {
+        let connect = |capability: id_worlds::world::JoinCapability| async move {
             let (mut client, _) =
                 tokio_tungstenite::connect_async(format!("ws://{address}/ws/world"))
                     .await
