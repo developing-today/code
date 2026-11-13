@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BoardItem, GhItem, OrchestrationSection, ProjectPoolItem } from "../src/model.ts";
-import { buildQueueView, queueInputsStale } from "../src/queue-view.ts";
+import { buildQueueView, queueInputsStale, reconciledInProgress } from "../src/queue-view.ts";
 import { renderQueue, renderQueueBody } from "../src/render.ts";
 import { PAGES } from "../src/pages.ts";
 
@@ -309,5 +309,71 @@ describe("buildQueueView (#1160)", () => {
         aa: "fixtures",
       }),
     ).toContain('href="/api/queue.json"');
+  });
+});
+
+describe("buildQueueView reconciled in-progress parity (#1162)", () => {
+  test("a lined-up session puts a Todo pool item in progress with signals and a disagreement badge", () => {
+    const view = buildQueueView({
+      board: [],
+      pool: [poolItem({ ref: "developing-today/code#42", title: "Session-driven work", status: "Todo", updatedAt: recent })],
+      items: new Map(),
+      orchestration: section([task("Work on developing-today/code#42", "in-progress", "today", { ref: "developing-today/code#42" })]),
+      now: NOW,
+    });
+    const row = view.inProgress.find((r) => r.ref === "developing-today/code#42");
+    expect(row).toBeDefined();
+    expect(row?.signals).toContain("active-session");
+    expect(row?.signals).not.toContain("project-status");
+    expect(row?.disagreement?.project).toBe("Todo");
+    expect(row?.disagreement).not.toBeNull();
+    const body = renderQueueBody(view);
+    expect(body).toContain("Active session");
+    expect(body).toContain("⚠ project: Todo");
+  });
+
+  test("an open PR pool item joins the set on the open-pr signal alone", () => {
+    const view = buildQueueView({
+      board: [],
+      pool: [
+        poolItem({
+          ref: "developing-today/code#77",
+          title: "Open PR without project status",
+          status: null,
+          contentKind: "pr",
+          state: "open",
+          updatedAt: recent,
+        }),
+      ],
+      items: new Map(),
+      orchestration: null,
+      now: NOW,
+    });
+    const row = view.inProgress.find((r) => r.ref === "developing-today/code#77");
+    expect(row).toBeDefined();
+    expect(row?.signals).toEqual(["open-pr"]);
+  });
+
+  test("a Project In Progress item carries the project-status signal", () => {
+    const view = buildQueueView({
+      board: [],
+      pool: [poolItem({ ref: "developing-today/code#9", title: "Project-driven work", status: "In Progress", updatedAt: recent })],
+      items: new Map(),
+      orchestration: null,
+      now: NOW,
+    });
+    const row = view.inProgress.find((r) => r.ref === "developing-today/code#9");
+    expect(row).toBeDefined();
+    expect(row?.signals).toContain("project-status");
+    // Parity is the requirement: the disagreement is whatever the shared
+    // reconciled set computes for the same input (here the Project status
+    // is uncorroborated by any other source, so it reports a clash).
+    const shared = reconciledInProgress({
+      pool: [poolItem({ ref: "developing-today/code#9", title: "Project-driven work", status: "In Progress", updatedAt: recent })],
+      board: [],
+      items: new Map(),
+      orchestration: null,
+    });
+    expect(row?.disagreement).toEqual(shared[0]?.disagreement);
   });
 });

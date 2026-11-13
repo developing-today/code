@@ -67,7 +67,13 @@ import type { NotificationRollup } from "./notifications.ts";
 import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
-import type { QueueView, QueueRow } from "./queue-view.ts";
+import {
+  reconciledInProgress,
+  type InProgressSignal,
+  type QueueView,
+  type QueueRow,
+  type ReconciledInProgressItem,
+} from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
 import {
   type AaCaiRow,
@@ -3768,9 +3774,20 @@ function queueRows(rows: QueueRow[], empty: string): string {
           : `<br><span class="muted">Epic: ${esc(item.epic.title)}</span>`
         : "";
       const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
+      const signals = item.signals?.length
+        ? `<br>${item.signals
+            .map(
+              (signal) =>
+                `<span class="badge ${signal === "open-pr" ? "open" : signal === "active-session" ? "orch" : "src"}">${signal === "project-status" ? "Project Status" : signal === "active-session" ? "Active session" : "Open PR"}</span>`,
+            )
+            .join(" ")}`
+        : "";
+      const clash = item.disagreement
+        ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(item.disagreement.project)} · derived: ${esc(item.disagreement.derived)}</span>`
+        : "";
       const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
       const title = item.url ? `<a href="${esc(item.url)}">${esc(item.title)}</a>` : esc(item.title);
-      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${epic}${why}${blockers}${worker}</article>`;
+      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${signals}${clash}${epic}${why}${blockers}${worker}</article>`;
     })
     .join("")}</div>`;
 }
@@ -3831,16 +3848,9 @@ export interface OverviewData {
   actionsByObject?: Map<string, DashAction[]>;
 }
 
-export type OverviewInProgressSignal = "project-status" | "active-session" | "open-pr";
+export type OverviewInProgressSignal = InProgressSignal;
 
-export interface OverviewInProgressItem {
-  ref: RefKey;
-  title: string;
-  repo: string;
-  url: string;
-  signals: OverviewInProgressSignal[];
-  disagreement: { project: string; derived: string } | null;
-}
+export type OverviewInProgressItem = ReconciledInProgressItem;
 
 export interface OverviewSummary {
   /** count is null when the tier source is not present: the queue is
@@ -3851,101 +3861,6 @@ export interface OverviewSummary {
   health: { degraded: boolean; up: number; down: number; total: number; feedAgeMs: number | null };
   recentDone: { title: string; repo: string }[];
   inProgress: OverviewInProgressItem[];
-}
-
-function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
-  const poolByRef = new Map(data.pool.map((item) => [item.ref, item]));
-  const rows = new Map<
-    RefKey,
-    {
-      ref: RefKey;
-      title: string;
-      repo: string;
-      url: string;
-      signals: Set<OverviewInProgressSignal>;
-    }
-  >();
-  const ensure = (ref: RefKey, title?: string, repo?: string, url?: string) => {
-    const project = poolByRef.get(ref);
-    const item = data.items?.get(ref);
-    const existing = rows.get(ref);
-    if (existing) return existing;
-    const hashAt = ref.lastIndexOf("#");
-    const row = {
-      ref,
-      title: project?.title ?? item?.title ?? title ?? ref,
-      repo: project?.repo ?? (hashAt >= 0 ? ref.slice(0, hashAt) : (repo ?? "")),
-      url: project?.issueUrl ?? item?.url ?? url ?? refUrl(ref),
-      signals: new Set<OverviewInProgressSignal>(),
-    };
-    rows.set(ref, row);
-    return row;
-  };
-  const signal = (ref: RefKey, kind: OverviewInProgressSignal, title?: string, repo?: string, url?: string) => {
-    ensure(ref, title, repo, url).signals.add(kind);
-  };
-
-  for (const item of data.pool) {
-    if (item.status === "In Progress") signal(item.ref, "project-status", item.title, item.repo, item.issueUrl);
-    if (item.contentKind === "pr" && item.state === "open")
-      signal(item.ref, "open-pr", item.title, item.repo, item.issueUrl);
-  }
-  for (const goal of data.orchestration?.goals ?? []) {
-    for (const task of goal.linedUp) {
-      if (task.status !== "in-progress") continue;
-      if (task.ref) {
-        // #6205: a lined-up ref is feed data, not necessarily a GitHub
-        // ref (goal ids, bare numbers). Signaling an invalid ref makes
-        // ensure() fall back to refUrl(), whose parseRef throws and
-        // kills the whole overview — skip refs the shared rule rejects.
-        if (isValidRef(task.ref)) signal(task.ref, "active-session", task.title);
-        continue;
-      }
-      for (const ref of refsInText(task.title)) signal(ref, "active-session", task.title);
-      for (const match of task.title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
-        const ref = `${match[1]}#${match[2]}`;
-        // #6205: same guard for title-scraped refs — \d+ admits
-        // numbers parseRef rejects as unsafe integers.
-        if (isValidRef(ref)) signal(ref, "active-session", task.title);
-      }
-    }
-  }
-  for (const boardItem of data.board) {
-    const openPr = boardItem.links.some((link) => {
-      const item = data.items?.get(link.ref);
-      return item?.kind === "pr" && item.state === "open";
-    });
-    for (const link of boardItem.links) {
-      const item = data.items?.get(link.ref);
-      const title = item?.title ?? boardItem.title;
-      const repo = item?.ref.slice(0, link.ref.lastIndexOf("#")) ?? boardItem.repo;
-      if (boardItem.source === "orchestrator" && boardItem.orchStatus === "in-progress") {
-        signal(link.ref, "active-session", title, repo, item?.url);
-      }
-      // A board card ties its linked issue and PR to the same work item.
-      if (openPr) signal(link.ref, "open-pr", title, repo, item?.url);
-    }
-  }
-
-  const additionalInProgressRefs = new Set<RefKey>();
-  for (const row of rows.values()) {
-    if (row.signals.has("active-session") || row.signals.has("open-pr")) additionalInProgressRefs.add(row.ref);
-  }
-  const signalOrder: OverviewInProgressSignal[] = ["project-status", "active-session", "open-pr"];
-  return [...rows.values()]
-    .map((row) => {
-      const project = poolByRef.get(row.ref);
-      const disagreement = project ? projectDisagreement(project, data.orchestration, additionalInProgressRefs) : null;
-      return {
-        ref: row.ref,
-        title: row.title,
-        repo: row.repo,
-        url: row.url,
-        signals: signalOrder.filter((item) => row.signals.has(item)),
-        disagreement,
-      };
-    })
-    .sort((a, b) => a.repo.localeCompare(b.repo) || a.title.localeCompare(b.title) || a.ref.localeCompare(b.ref));
 }
 
 export function deriveOverview(data: OverviewData): OverviewSummary {
