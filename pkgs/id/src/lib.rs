@@ -249,6 +249,7 @@ pub mod grant_service;
 pub mod grants;
 pub mod groups;
 pub mod hosted_binding;
+pub mod hosted_export;
 pub use id_events::idset;
 pub mod input_framing;
 pub use id_directory::invite;
