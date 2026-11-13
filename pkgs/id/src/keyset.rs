@@ -380,9 +380,9 @@ impl KeysetState {
     }
 }
 
-/// Fold a log from a caller-trusted genesis hash. Any competing genesis is
-/// rejected, so a replica cannot reset authorization by injecting a new root
-/// after an admin rotation. The trusted hash must be persisted outside the
+/// Fold a log from a caller-trusted genesis hash. Only that genesis
+/// anchors the fold, so a replica cannot reset authorization by injecting
+/// a new root after an admin rotation. The trusted hash must be persisted outside the
 /// mergeable log (for example, alongside the identity's initial keyset).
 /// Invalid/unauthorized continuations and their descendants are excluded; the
 /// smallest valid `(lamport, author, hash)` continuation wins each fork.
@@ -402,19 +402,15 @@ pub fn fold(log: &Log, trusted_genesis_hash: &str) -> Result<KeysetState> {
             matches!(&record.entry, KeysetEntry::Genesis { admin_key, .. } if admin_key == &record.author)
         })
         .collect::<Vec<_>>();
-    ensure!(
-        roots
-            .iter()
-            .any(|record| record.hash == trusted_genesis_hash),
-        "trusted keyset genesis is missing from log"
-    );
-    ensure!(
-        roots
-            .iter()
-            .all(|record| record.hash == trusted_genesis_hash),
-        "keyset log contains a competing genesis"
-    );
-    let genesis = roots[0];
+    // Only the trusted genesis anchors the fold. Any other genesis is
+    // a competing root: it loses to the trusted anchor (ADR Decision 5)
+    // and is ignored, never folded — a stray or hostile root carried in
+    // by a merged replica log must not make the trusted chain
+    // unfoldable.
+    let genesis = roots
+        .into_iter()
+        .find(|record| record.hash == trusted_genesis_hash)
+        .context("trusted keyset genesis is missing from log")?;
 
     let KeysetEntry::Genesis {
         admin_key,
@@ -754,12 +750,28 @@ mod tests {
             None,
         )
         .unwrap();
+        let unrelated_root = KeysetRecord::sign(
+            &key(9),
+            1,
+            "",
+            KeysetEntry::Genesis {
+                admin_key: public(9),
+                device_key: public(9),
+                label: "unrelated identity".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
         let mut log = Log::default();
-        for record in [&trusted, &rotation, &forged_root] {
+        for record in [&trusted, &rotation, &forged_root, &unrelated_root] {
             log.insert(record.clone()).unwrap();
         }
 
-        assert!(fold(&log, &trusted.hash).is_err());
+        // Neither competing root resets or poisons the fold: both are
+        // ignored, the trusted chain folds, and the rotation stands.
+        let state = fold(&log, &trusted.hash).unwrap();
+        assert!(!state.is_admin(&public(1)));
+        assert!(state.is_admin(&public(4)));
 
         let mut trusted_only = Log::default();
         trusted_only.insert(trusted.clone()).unwrap();
