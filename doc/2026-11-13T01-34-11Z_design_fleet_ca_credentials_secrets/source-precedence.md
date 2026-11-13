@@ -1,9 +1,12 @@
 # Source precedence and authority
 
 Owner: Summit, task 15345, starter #9155. Design baseline: `34faffbff2`.
-The immutable inputs are in `sources/`; `note.md` is the intake record, not a
-substitute for those inputs. The five entries in the supplied SHA256SUMS
-were independently checked in this worktree: all pass. That manifest does
+The immutable intake inputs are in
+`source-snapshots/intake-34faffbff2/sources/`; `note.md` is the intake record,
+not a substitute for those inputs. Upstream auto-formatting changed the
+ordinary `sources/` view; both variants are preserved, as explained in
+[`source-integrity.md`](source-integrity.md). The five entries in the supplied
+SHA256SUMS were independently checked against the original snapshot: all pass. That manifest does
 not cover the other source files or independently prove the original ZIP
 hash; the ZIP's intake receipt is in `note.md`.
 

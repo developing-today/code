@@ -12,6 +12,10 @@ tests and authorized production behavior remain separate evidence states.
 ## Reading order
 
 1. [`note.md`](note.md): original, preserved intake and source provenance.
+   **Exact source bytes/line anchors:** use the
+   [immutable intake snapshot](source-snapshots/intake-34faffbff2/sources/).
+   See [source integrity](source-integrity.md) before hashing `sources/`:
+   upstream auto-formatting changed that working-tree view after intake.
 2. [`source-precedence.md`](source-precedence.md): binding resolutions.
 3. [`architecture-review.md`](architecture-review.md): Summit decisions and
    authority boundaries; [`review/architecture-challenge.md`](review/architecture-challenge.md)
