@@ -657,5 +657,120 @@ class TestFetchSessions(unittest.TestCase):
         self.assertEqual(len(calls), len(poll.SESSION_FETCH_LIMITS))
 
 
+class TestStaleBinding(unittest.TestCase):
+    """#5508: progress.session_id clear + lane-ledger binding present
+    must never be offered as a launch candidate."""
+
+    def row(self, **over):
+        r = {
+            "id": 4242,
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+            "lane_id": "code-a",
+        }
+        r.update(over)
+        return r
+
+    def binding(self, **over):
+        b = {
+            "session_id": "ses_bound",
+            "assigned_lane": "opencode",
+            "executed_lane": "opencode",
+            "updated_at": "2026-11-04T13:00:59Z",
+        }
+        b.update(over)
+        return b
+
+    def test_progress_cleared_ledger_bound_is_stale(self):
+        self.assertTrue(poll.is_stale_binding(self.row(), self.binding()))
+
+    def test_progress_cleared_ledger_unbound_is_not_stale(self):
+        self.assertFalse(
+            poll.is_stale_binding(self.row(), self.binding(session_id=None))
+        )
+
+    def test_no_ledger_row_is_not_stale(self):
+        self.assertFalse(poll.is_stale_binding(self.row(), None))
+
+    def test_progress_bound_row_is_never_stale(self):
+        row = self.row(
+            progress={"lane": "opencode", "session_id": "ses_live"}
+        )
+        self.assertFalse(poll.is_stale_binding(row, self.binding()))
+
+    def test_direct_lane_row_is_never_stale(self):
+        row = self.row(progress={"lane": "direct"})
+        self.assertFalse(poll.is_stale_binding(row, self.binding()))
+
+    def test_filter_keeps_unbound_and_no_row_candidates(self):
+        bound = self.row(id=1)
+        unbound = self.row(id=2)
+        no_row = self.row(id=3)
+        bindings = {1: self.binding(), 2: self.binding(session_id=None)}
+        launchable, stale = poll.apply_ledger_filter(
+            [bound, unbound, no_row], bindings
+        )
+        self.assertEqual(launchable, [unbound, no_row])
+        self.assertEqual(stale, [bound])
+
+    def test_filter_with_empty_ledger_keeps_candidates(self):
+        row = self.row()
+        launchable, stale = poll.apply_ledger_filter([row], {})
+        self.assertEqual(launchable, [row])
+        self.assertEqual(stale, [])
+
+    def test_unreadable_ledger_fails_closed(self):
+        row = self.row()
+        launchable, stale = poll.apply_ledger_filter([row], None)
+        self.assertEqual(launchable, [])
+        self.assertEqual(stale, [row])
+
+    def test_stale_entry_carries_ledger_evidence(self):
+        entry = poll._stale_binding_entry(
+            self.row(), "repo-health-code-pilot", self.binding(), True
+        )
+        self.assertEqual(entry["ledger_session_id"], "ses_bound")
+        self.assertEqual(entry["ledger_updated_at"], "2026-11-04T13:00:59Z")
+        self.assertTrue(entry["ledger_readable"])
+        self.assertIsNone(entry["session_id"])
+
+    def test_stale_entry_marks_unreadable_ledger(self):
+        entry = poll._stale_binding_entry(
+            self.row(), "repo-health-code-pilot", None, False
+        )
+        self.assertIsNone(entry["ledger_session_id"])
+        self.assertFalse(entry["ledger_readable"])
+
+    def test_fetch_ledger_bindings_parses_turso_output(self):
+        stdout = (
+            "HTTP 200\n"
+            "[0] ok affected=0 rowid=None rows=["
+            "[{'type': 'integer', 'value': '4924'}, "
+            "{'type': 'text', 'value': 'ses_x'}, "
+            "{'type': 'text', 'value': 'opencode'}, "
+            "{'type': 'null', 'value': None}, "
+            "{'type': 'text', 'value': '2026-11-04T13:00:59Z'}]]\n"
+        )
+        fake = unittest.mock.Mock(returncode=0, stdout=stdout)
+        with patch.object(poll.subprocess, "run", return_value=fake):
+            bindings = poll.fetch_ledger_bindings([4924])
+        self.assertEqual(bindings[4924]["session_id"], "ses_x")
+        self.assertEqual(bindings[4924]["assigned_lane"], "opencode")
+        self.assertIsNone(bindings[4924]["executed_lane"])
+
+    def test_fetch_ledger_bindings_fails_closed_on_error(self):
+        fake = unittest.mock.Mock(returncode=1, stdout="")
+        with patch.object(poll.subprocess, "run", return_value=fake):
+            self.assertIsNone(poll.fetch_ledger_bindings([4924]))
+        with patch.object(
+            poll.subprocess, "run", side_effect=OSError("no helper")
+        ):
+            self.assertIsNone(poll.fetch_ledger_bindings([4924]))
+
+    def test_fetch_ledger_bindings_no_ids_reads_nothing(self):
+        with patch.object(poll.subprocess, "run") as run:
+            self.assertEqual(poll.fetch_ledger_bindings([]), {})
+            run.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
