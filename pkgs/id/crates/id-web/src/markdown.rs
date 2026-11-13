@@ -3457,8 +3457,7 @@ mod tests {
         // container left the continuation's `>` in the matching key,
         // so the unused definition was keyed as the used label
         // `long > label` and silently dropped.
-        let original =
-            "[long > label]\n\n[long > label]: /used\n\n> [long\n> label]: /keep\n";
+        let original = "[long > label]\n\n[long > label]: /used\n\n> [long\n> label]: /keep\n";
         let (first, second) = two_saves(original);
         assert!(
             first.contains("/keep"),
@@ -3511,7 +3510,10 @@ mod tests {
             !first.contains("[long label]: /used"),
             "consumed definition is not appended: {first:?}"
         );
-        assert_eq!(first, second, "quoted-multiline-use round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "quoted-multiline-use round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -3521,8 +3523,7 @@ mod tests {
         // explicit label is `used`, and keying the use as the HTML
         // fragment made the genuinely unused definition look
         // consumed.
-        let original =
-            "[<i x=\"]\">label</i>][used]\n\n[used]: /used\n[<i x=\"]: /keep\n";
+        let original = "[<i x=\"]\">label</i>][used]\n\n[used]: /used\n[<i x=\"]: /keep\n";
         let (first, second) = two_saves(original);
         assert!(
             first.contains("(/used)"),
@@ -3536,7 +3537,10 @@ mod tests {
             !first.contains("[used]: /used"),
             "consumed definition is not appended: {first:?}"
         );
-        assert_eq!(first, second, "inline-html-bracket round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "inline-html-bracket round-trip is a fixpoint"
+        );
     }
 
     #[test]

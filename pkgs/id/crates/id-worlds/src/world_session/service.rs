@@ -843,7 +843,6 @@ impl WorldService {
         Ok((module_hash, installed.sequence))
     }
 
-
     /// Read the currently pinned module artifact for peer download.
     /// The caller must already have authenticated as a world participant.
     ///

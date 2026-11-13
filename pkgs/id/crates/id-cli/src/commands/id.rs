@@ -25,8 +25,8 @@
 use anyhow::Result;
 use iroh_base::EndpointId;
 
-use id_store::store::load_or_create_keypair;
 use crate::{CLIENT_KEY_FILE, KEY_FILE};
+use id_store::store::load_or_create_keypair;
 
 /// Prints the node ID derived from the local keypair.
 ///

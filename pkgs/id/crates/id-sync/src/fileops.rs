@@ -170,12 +170,7 @@ fn is_archive_tag_name(name: &str) -> bool {
 /// `hash` in the same critical section (#2462): when this returns, the
 /// tag already points at `hash`, and no concurrent claim in this process
 /// can receive the same name.
-pub async fn claim_archive_name(
-    store: &Store,
-    name: &str,
-    ts: u64,
-    hash: Hash,
-) -> Result<String> {
+pub async fn claim_archive_name(store: &Store, name: &str, ts: u64, hash: Hash) -> Result<String> {
     let _guard = ARCHIVE_CLAIM_LOCK.lock().await;
     let candidate = free_archive_name(store, name, ts).await?;
     store.tags().set(&candidate, hash).await?;
@@ -808,9 +803,3 @@ mod archive_name_tests {
         );
     }
 }
-
-
-
-
-
-

@@ -53,8 +53,8 @@ use super::{
     EVENTS, EventStore, HASHES, Ingest, PROOF_HEADERS, StoreError, corrupt, decode_stored,
     position_key,
 };
-use id_store::chain::{self, Event};
 use crate::pull_policy::{PullGate, PullRefused};
+use id_store::chain::{self, Event};
 use id_store::store_traits::SharedEventStore;
 
 /// The shared handle over this crate's [`EventStore`](super::EventStore):
@@ -869,9 +869,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use id_store::chain::ChainExt;
     use crate::pull_policy::{PullPolicy, PullRefused, testing};
     use id_core::waiting::WaitingLimits;
+    use id_store::chain::ChainExt;
     use p2panda_core::{Hash, SigningKey};
     use std::sync::Arc;
 

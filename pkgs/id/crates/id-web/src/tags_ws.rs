@@ -37,7 +37,6 @@
 //! - otherwise — delete the exact `(subject, key, value)` tag (a request with
 //!   no value deletes the value-less key-only tag)
 
-use id_core::frames::MAX_FRAME_BYTES;
 use axum::{
     Json,
     extract::{Query, State, WebSocketUpgrade, ws::Message},
@@ -46,6 +45,7 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use futures::{SinkExt, StreamExt};
+use id_core::frames::MAX_FRAME_BYTES;
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
@@ -506,9 +506,9 @@ mod tests {
     use tower::ServiceExt as _;
 
     use super::*;
+    use crate::AppState;
     use id_core::frames::MAX_FRAME_BYTES;
     use id_store::tags::TagStore;
-    use crate::AppState;
 
     async fn router() -> (Router, tempfile::TempDir, Endpoint, Docs) {
         let endpoint = Endpoint::builder(presets::Minimal)

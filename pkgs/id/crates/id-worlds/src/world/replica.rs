@@ -543,11 +543,17 @@ mod tests {
         let (replica, _cursor) =
             serve_replica_with_admission(fixture.restored, program(updates), Some(gate)).unwrap();
         assert_eq!(
-            replica.participant_id(fixture.present_token.clone()).await.unwrap(),
+            replica
+                .participant_id(fixture.present_token.clone())
+                .await
+                .unwrap(),
             fixture.present_id
         );
         assert_eq!(
-            replica.participant_id(fixture.new_token.clone()).await.unwrap(),
+            replica
+                .participant_id(fixture.new_token.clone())
+                .await
+                .unwrap(),
             fixture.new_id
         );
         assert!(replica.snapshot(fixture.new_token.clone()).await.is_ok());
@@ -574,12 +580,23 @@ mod tests {
         let (replica, _cursor) =
             serve_replica_with_admission(fixture.restored, program(updates), Some(gate)).unwrap();
         assert_eq!(
-            replica.participant_id(fixture.present_token.clone()).await.unwrap(),
+            replica
+                .participant_id(fixture.present_token.clone())
+                .await
+                .unwrap(),
             fixture.present_id
         );
-        assert!(replica.snapshot(fixture.present_token.clone()).await.is_ok());
+        assert!(
+            replica
+                .snapshot(fixture.present_token.clone())
+                .await
+                .is_ok()
+        );
         let refused = replica.participant_id(fixture.new_token.clone()).await;
-        assert!(refused.is_err(), "expired lease must refuse the new spectator");
+        assert!(
+            refused.is_err(),
+            "expired lease must refuse the new spectator"
+        );
         assert!(
             format!("{:#}", refused.unwrap_err()).contains("replica admission refused"),
             "refusal names the admission gate"
@@ -605,8 +622,18 @@ mod tests {
         let updates = Arc::new(AtomicUsize::new(0));
         let (replica, _cursor) =
             serve_replica_with_admission(fixture.restored, program(updates), Some(gate)).unwrap();
-        assert!(replica.snapshot(fixture.present_token.clone()).await.is_ok());
-        assert!(replica.participant_id(fixture.new_token.clone()).await.is_err());
+        assert!(
+            replica
+                .snapshot(fixture.present_token.clone())
+                .await
+                .is_ok()
+        );
+        assert!(
+            replica
+                .participant_id(fixture.new_token.clone())
+                .await
+                .is_err()
+        );
         replica.shutdown().await.unwrap();
     }
 
@@ -620,7 +647,10 @@ mod tests {
         let updates = Arc::new(AtomicUsize::new(0));
         let (replica, _cursor) = serve_replica(fixture.restored, program(updates)).unwrap();
         assert_eq!(
-            replica.participant_id(fixture.new_token.clone()).await.unwrap(),
+            replica
+                .participant_id(fixture.new_token.clone())
+                .await
+                .unwrap(),
             fixture.new_id
         );
         replica.shutdown().await.unwrap();

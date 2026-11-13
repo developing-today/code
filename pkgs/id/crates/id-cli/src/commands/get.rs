@@ -253,7 +253,8 @@ pub async fn cmd_get_one(
             let store_handle = store.as_store();
             let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
             let blobs_conn =
-                id_core::connectivity::connect(&endpoint, endpoint_addr.clone(), BLOBS_ALPN).await?;
+                id_core::connectivity::connect(&endpoint, endpoint_addr.clone(), BLOBS_ALPN)
+                    .await?;
 
             match store_handle.remote().fetch(blobs_conn.clone(), hash).await {
                 Ok(_) => {

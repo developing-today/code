@@ -23,12 +23,12 @@ mod tests {
     use iroh::{Endpoint, EndpointAddr};
 
     use crate::directory::{Directory, Envelope};
-    use crate::envelope_outbox::Outcome;
-    use crate::world_hub::WorldHub;
     use crate::directory_auth::Caller;
     use crate::directory_view::DirectoryAction;
+    use crate::envelope_outbox::Outcome;
     use crate::envelope_outbox::{Finish, Outbox, flush};
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
+    use crate::world_hub::WorldHub;
     use crate::world_session::WorldService;
     const NOW: u64 = 1_000_000_000;
     async fn endpoint() -> Endpoint {

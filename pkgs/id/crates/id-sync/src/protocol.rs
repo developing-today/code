@@ -68,9 +68,9 @@ use iroh_blobs::{Hash, api::Store};
 use serde::{Deserialize, Serialize};
 use tokio::{sync::Semaphore, task::JoinSet};
 
+use crate::fileops::{FileOpError, FileOps};
 use id_core::access::AccessPolicy;
 use id_core::discovery::{PeerAnnouncement, PeerDiscovery};
-use crate::fileops::{FileOpError, FileOps};
 use id_store::tags::TagStore;
 
 /// Decode exactly one meta-protocol value, rejecting any trailing bytes.
@@ -1079,7 +1079,6 @@ mod tests {
     };
     use iroh_base::{SecretKey, TransportAddr};
     use std::net::{Ipv4Addr, SocketAddr};
-
 
     #[test]
     fn test_find_match_struct() {

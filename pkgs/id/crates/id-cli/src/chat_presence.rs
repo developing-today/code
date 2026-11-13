@@ -102,8 +102,8 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
-use id_events::groups::GroupView;
 use id_core::waiting::AuthorKey;
+use id_events::groups::GroupView;
 
 /// How long a heartbeat keeps a node live, in seconds: 75, inside the 60–90 s band
 /// #2809 specifies. A node silent for longer than this reads as gone.
@@ -408,7 +408,9 @@ impl PresenceTable {
                 .iter()
                 .filter(|(_, entry)| now.saturating_sub(entry.effective_ts) > PRESENCE_TTL_SECS)
                 .min_by(|(k1, e1), (k2, e2)| {
-                    e1.effective_ts.cmp(&e2.effective_ts).then_with(|| k1.cmp(k2))
+                    e1.effective_ts
+                        .cmp(&e2.effective_ts)
+                        .then_with(|| k1.cmp(k2))
                 })
                 .map(|(k, _)| *k);
             match oldest_expired {
@@ -1275,7 +1277,11 @@ mod tests {
         // Updating an existing node key (node 42) at capacity
         let mut node42 = [0u8; 32];
         node42[0..2].copy_from_slice(&42u16.to_le_bytes());
-        assert!(table.update_at(heartbeat(node42, vec![chan], now + 1), now + 1, &|_, _| true));
+        assert!(
+            table.update_at(heartbeat(node42, vec![chan], now + 1), now + 1, &|_, _| {
+                true
+            })
+        );
 
         assert_eq!(table.count(), MAX_PRESENCE_NODES);
         assert_eq!(table.liveness_at(&node42, &chan, now + 1), Liveness::Live);

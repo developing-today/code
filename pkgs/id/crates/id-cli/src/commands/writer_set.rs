@@ -27,12 +27,12 @@ use serde_json::{Value, json};
 use crate::cli::WriterSetCommand;
 use crate::commands::doc::{print_action, print_rows};
 use crate::commands::group::hex;
+use id_core::waiting::WaitingLimits;
 use id_events::event_store::{DiscoveredWriterSet, EventStore};
-use id_groups::groups::log::hash_from_hex;
 use id_events::idset::WriterSet;
 use id_events::idset::view::ExpandedWriters;
 use id_events::local_events::DIR_NAME;
-use id_core::waiting::WaitingLimits;
+use id_groups::groups::log::hash_from_hex;
 
 /// Opens the event store the command reads, at `path` or the default
 /// events directory.

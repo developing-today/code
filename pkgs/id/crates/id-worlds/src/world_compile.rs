@@ -2083,7 +2083,10 @@ restore = |text| match U64.from_str(text) {
 
     fn default_platform_dir() -> Option<PathBuf> {
         let candidates = [
-            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/roc-world")),
+            PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../examples/roc-world"
+            )),
             PathBuf::from("examples/roc-world"),
             PathBuf::from("../examples/roc-world"),
         ];

@@ -35,8 +35,8 @@ use crate::commands::client::create_local_client_endpoint;
 use crate::commands::serve::get_serve_info;
 use crate::commands::text::list_tsv_row;
 use crate::protocol::{MetaRequest, MetaResponse};
-use id_store::store::{load_or_create_keypair, open_store};
 use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
+use id_store::store::{load_or_create_keypair, open_store};
 
 /// Lists all stored files (local or remote).
 ///

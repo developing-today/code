@@ -19,16 +19,16 @@ use p2panda_core::Hash;
 use serde_json::{Map, Value, json};
 
 use crate::cli::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
-use id_groups::groups::actions::{Action, NewGroup};
-use id_groups::groups::log::{FILE_NAME, GroupLog, hash_from_hex, key_from_hex};
+use crate::{KEY_FILE, load_or_create_keypair};
+use id_directory::invites::Invitation;
 use id_events::groups::policy::{
     History, Join, OnMemberRemoved, Removal, RemoveMode, RemoveSuccessor, SuccessorKind,
     TransferOpts,
 };
-use id_groups::groups::warnings::{Evaluator, Observation, Warning, size_tier};
 use id_events::groups::{Body, Delegate, GroupView, Key, MemberOp, Outcome};
-use id_directory::invites::Invitation;
-use crate::{KEY_FILE, load_or_create_keypair};
+use id_groups::groups::actions::{Action, NewGroup};
+use id_groups::groups::log::{FILE_NAME, GroupLog, hash_from_hex, key_from_hex};
+use id_groups::groups::warnings::{Evaluator, Observation, Warning, size_tier};
 
 /// The log a command reads and appends to: `--groups-log`, or the default file in the data directory.
 pub(crate) fn log_path(path: Option<PathBuf>) -> PathBuf {

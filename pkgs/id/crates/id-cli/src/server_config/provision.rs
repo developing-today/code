@@ -281,8 +281,8 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{ProvisionError, Provisioned, Report};
-    use id_events::groups::{Body, Event, Key, MemberOp, Outcome, Role};
     use crate::server_config::ServerConfig;
+    use id_events::groups::{Body, Event, Key, MemberOp, Outcome, Role};
     use id_worlds::world::hex_encode;
 
     fn key(n: u8) -> Key {

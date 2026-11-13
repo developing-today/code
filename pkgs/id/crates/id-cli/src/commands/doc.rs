@@ -20,9 +20,9 @@ use serde_json::{Value, json};
 use crate::cli::DocCommand;
 use crate::commands::claim::print_set;
 use crate::commands::group::{hex, object, tokens};
-use id_groups::groups::log::hash_from_hex;
-use id_events::local_events::{DIR_NAME, Entry, LocalEvents};
 use crate::{KEY_FILE, load_or_create_keypair};
+use id_events::local_events::{DIR_NAME, Entry, LocalEvents};
+use id_groups::groups::log::hash_from_hex;
 
 /// Opens the event store that the command reads and appends to, signed as this node. The store is
 /// `--event-store`, or the default directory in the data directory.
@@ -186,8 +186,8 @@ pub async fn cmd_doc(path: Option<PathBuf>, json: bool, command: DocCommand) -> 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use id_store::documents::DocumentRef;
     use id_core::waiting::AuthorKey;
+    use id_store::documents::DocumentRef;
 
     fn hash(byte: u8) -> Hash {
         Hash::from_bytes([byte; 32])

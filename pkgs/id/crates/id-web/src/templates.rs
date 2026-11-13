@@ -1239,8 +1239,9 @@ fn block_kind_label(kind: BlockKind) -> &'static str {
 fn block_value_display(block: &Block) -> String {
     match block.kind {
         BlockKind::PeerKey => hex_encode(&block.value),
-        BlockKind::Ip | BlockKind::TopicTag => String::from_utf8(block.value.clone())
-            .unwrap_or_else(|_| hex_encode(&block.value)),
+        BlockKind::Ip | BlockKind::TopicTag => {
+            String::from_utf8(block.value.clone()).unwrap_or_else(|_| hex_encode(&block.value))
+        }
     }
 }
 
@@ -1313,7 +1314,9 @@ pub fn render_blocks(blocks: &[Block]) -> String {
     html.push_str("        <h3 class=\"text-sm font-bold mt-6 mb-2\">Add a block</h3>\n");
     html.push_str("        <form method=\"post\" action=\"/api/blocks\" class=\"flex flex-wrap items-end gap-2\">\n");
     html.push_str("            <label class=\"text-xs\">kind\n");
-    html.push_str("            <select name=\"kind\" class=\"select select-bordered select-xs\">\n");
+    html.push_str(
+        "            <select name=\"kind\" class=\"select select-bordered select-xs\">\n",
+    );
     html.push_str("                <option value=\"peer_key\">peer key</option>\n");
     html.push_str("                <option value=\"ip\">IP</option>\n");
     html.push_str("                <option value=\"topic_tag\">topic tag</option>\n");
@@ -1325,7 +1328,9 @@ pub fn render_blocks(blocks: &[Block]) -> String {
     html.push_str("            <label class=\"text-xs\">expires at (unix ms, optional)\n");
     html.push_str("            <input type=\"text\" name=\"expires_at_ms\" class=\"input input-bordered input-xs\"/></label>\n");
     html.push_str("            <input type=\"hidden\" name=\"return_to\" value=\"/blocks\"/>\n");
-    html.push_str("            <button type=\"submit\" class=\"btn btn-warning btn-xs\">block</button>\n");
+    html.push_str(
+        "            <button type=\"submit\" class=\"btn btn-warning btn-xs\">block</button>\n",
+    );
     html.push_str("        </form>\n");
     html.push_str("    </div>\n");
     html.push_str("</div>\n");
@@ -1779,9 +1784,13 @@ mod tests {
             );
             assert!(html.contains("Discovered Peers"));
         }
-        assert!(render_peers_content(&peers, &std::collections::HashSet::new()).contains("test-node"));
-        assert!(render_peers_content(&[], &std::collections::HashSet::new())
-            .contains("No peers discovered yet"));
+        assert!(
+            render_peers_content(&peers, &std::collections::HashSet::new()).contains("test-node")
+        );
+        assert!(
+            render_peers_content(&[], &std::collections::HashSet::new())
+                .contains("No peers discovered yet")
+        );
     }
 
     #[test]

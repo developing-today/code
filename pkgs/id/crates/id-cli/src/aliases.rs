@@ -20,9 +20,9 @@ use std::collections::BTreeMap;
 
 use p2panda_core::Hash;
 
+use id_core::waiting::AuthorKey;
 use id_events::groups::Key;
 use id_store::tag_claims::Claim;
-use id_core::waiting::AuthorKey;
 
 /// The tag name an alias claim carries. Its value is the alias text.
 pub const ALIAS_NAME: &str = "alias";

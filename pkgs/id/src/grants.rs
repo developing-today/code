@@ -229,8 +229,7 @@ impl KeyRegistry {
         }
         let family_touched = self.rows.iter().any(|row| {
             row.storefront_id == storefront_id
-                || self.families.get(&row.storefront_id).map(String::as_str)
-                    == Some(family_id)
+                || self.families.get(&row.storefront_id).map(String::as_str) == Some(family_id)
                 || row.storefront_id == family_id
         });
         if family_touched {
@@ -512,7 +511,10 @@ mod tests {
             "106627753c23a3b8a7dd38d7078595d28a65aa7d5fa4d3e5f10527b5317fced7"
         );
         // Storefront namespace is part of the identity.
-        assert_ne!(fingerprint("steam", STEAM_KEY), fingerprint("other", STEAM_KEY));
+        assert_ne!(
+            fingerprint("steam", STEAM_KEY),
+            fingerprint("other", STEAM_KEY)
+        );
         assert_eq!(
             fingerprint_log_prefix(&fingerprint("steam", STEAM_KEY)),
             "106627753c23"
@@ -570,7 +572,10 @@ mod tests {
         // through the v2 fingerprint alone.
         let v2_only = vec![fingerprint_of_raw("steam-v2", raw)];
         assert!(reg.lookup(&v2_only[0]).is_some());
-        assert!(reg.register("steam-v2", &v2_only, "grant-2", "id-bob", 200).is_err());
+        assert!(
+            reg.register("steam-v2", &v2_only, "grant-2", "id-bob", 200)
+                .is_err()
+        );
         // A different family is a different universe.
         let gog = family_fingerprints(&["gog"], raw);
         assert!(reg.lookup(&gog[0]).is_none());

@@ -188,9 +188,9 @@ pub async fn groups_page_handler(State(state): State<AppState>) -> Response {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use id_groups::groups::log::GroupLog;
     use id_events::groups::policy::{Delegation, Policy, RemoveMode, Template};
     use id_events::groups::{Body, Create, Delegate, MemberOp, Role};
+    use id_groups::groups::log::GroupLog;
     use tempfile::TempDir;
 
     const OWNER: Key = [1; 32];

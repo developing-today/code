@@ -176,7 +176,6 @@ impl EventStore {
 }
 use id_store::event_types::{be_u64, corrupt, hash_of, seq_num};
 
-
 /// Where a store is built before it is renamed to [`FILE_NAME`]. A file under
 /// this name is never trusted: it is removed and built again.
 pub const TEMP_NAME: &str = "events.redb.tmp";
@@ -239,7 +238,6 @@ const BODIES: TableDefinition<'static, &'static [u8], &'static [u8]> =
 
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
-
 
 /// Where a store's files live. [`FileStorage`] is a directory on disk. The crash
 /// model implements this trait over a simulated directory, so every step of
@@ -1997,11 +1995,7 @@ impl id_store::store_traits::EventStoreBackend for EventStore {
         self.ingest_with_body(bytes, body, now_ms)
     }
 
-    fn ingest_batch(
-        &mut self,
-        batch: &[Vec<u8>],
-        now_ms: u64,
-    ) -> Result<Vec<Ingest>, StoreError> {
+    fn ingest_batch(&mut self, batch: &[Vec<u8>], now_ms: u64) -> Result<Vec<Ingest>, StoreError> {
         self.ingest_batch(batch, now_ms)
     }
 
@@ -2029,10 +2023,7 @@ impl id_store::store_traits::EventStoreBackend for EventStore {
         self.sync_entries()
     }
 
-    fn sync_bytes(
-        &self,
-        id: &id_store::range::Id,
-    ) -> Result<Option<Vec<u8>>, StoreError> {
+    fn sync_bytes(&self, id: &id_store::range::Id) -> Result<Option<Vec<u8>>, StoreError> {
         self.sync_bytes(id)
     }
 

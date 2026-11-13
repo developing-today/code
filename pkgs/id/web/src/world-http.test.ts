@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { advanceHostViewCursor, HOST_VIEW_MAX_PAGES, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
+import {
+  advanceHostViewCursor,
+  HOST_VIEW_MAX_PAGES,
+  parseWorldHostViewPage,
+  parseWorldInviteResponse,
+} from "./world-http";
 
 // Oracle: the server contracts in pkgs/id/src/web/world_ws.rs —
 // HostViewResponse (all fields always present; snapshot/view/surface/
@@ -113,9 +118,9 @@ describe("advanceHostViewCursor (#9043)", () => {
   });
 
   it("refuses to page past the named bound even with advancing cursors", () => {
-    expect(() =>
-      advanceHostViewCursor({ previous: "a", next: "b", page: HOST_VIEW_MAX_PAGES }),
-    ).toThrow(/^Host view unavailable: records paging exceeded/);
+    expect(() => advanceHostViewCursor({ previous: "a", next: "b", page: HOST_VIEW_MAX_PAGES })).toThrow(
+      /^Host view unavailable: records paging exceeded/,
+    );
     expect(advanceHostViewCursor({ previous: "a", next: "b", page: HOST_VIEW_MAX_PAGES - 1 })).toBe("b");
   });
 });

@@ -42,7 +42,6 @@ use crate::event_types::{
 };
 use id_core::waiting::AuthorKey;
 
-
 /// The event-store surface [`SharedEventStore`] wraps.
 ///
 /// Seam 3 of the crate split (design doc, #4405 step 2): the traits crate
@@ -65,14 +64,10 @@ pub trait EventStoreBackend: std::fmt::Debug + Send + Sync + 'static {
         now_ms: u64,
     ) -> Result<Ingest, StoreError>;
     /// See `EventStore::ingest_batch`.
-    fn ingest_batch(&mut self, batch: &[Vec<u8>], now_ms: u64)
-        -> Result<Vec<Ingest>, StoreError>;
+    fn ingest_batch(&mut self, batch: &[Vec<u8>], now_ms: u64) -> Result<Vec<Ingest>, StoreError>;
     /// See `EventStore::ingest_events`.
-    fn ingest_events(
-        &mut self,
-        events: Vec<Event>,
-        now_ms: u64,
-    ) -> Result<Vec<Ingest>, StoreError>;
+    fn ingest_events(&mut self, events: Vec<Event>, now_ms: u64)
+    -> Result<Vec<Ingest>, StoreError>;
     /// See `EventStore::ingest_events_with_bodies`.
     fn ingest_events_with_bodies(
         &mut self,
@@ -102,12 +97,8 @@ pub trait EventStoreBackend: std::fmt::Debug + Send + Sync + 'static {
     /// See `EventStore::chain`.
     fn chain(&self, author: &AuthorKey) -> Result<Option<crate::event_types::Chain>, StoreError>;
     /// See `EventStore::is_blocked` (the inherent method, which takes the clock).
-    fn is_blocked_at(
-        &self,
-        kind: BlockKind,
-        value: &[u8],
-        now_ms: u64,
-    ) -> Result<bool, StoreError>;
+    fn is_blocked_at(&self, kind: BlockKind, value: &[u8], now_ms: u64)
+    -> Result<bool, StoreError>;
     /// See `EventStore::tag_claims`.
     fn tag_claims(&self) -> Result<Vec<crate::tag_claims::Claim>, StoreError>;
     /// See `EventStore::event_by_id`.
@@ -238,13 +229,7 @@ impl<S: EventStoreBackend> SharedEventStore<S> {
     /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
     pub fn range_entries(
         &self,
-    ) -> Result<
-        Vec<(
-            crate::range::Key,
-            crate::range::Id,
-        )>,
-        TraitStoreError,
-    > {
+    ) -> Result<Vec<(crate::range::Key, crate::range::Id)>, TraitStoreError> {
         self.read(|store| Ok(store.sync_entries()?))
     }
 
@@ -255,10 +240,7 @@ impl<S: EventStoreBackend> SharedEventStore<S> {
     ///
     /// Returns [`TraitStoreError::Store`] for a redb or corruption error, and
     /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
-    pub fn range_bytes(
-        &self,
-        id: &crate::range::Id,
-    ) -> Result<Option<Vec<u8>>, TraitStoreError> {
+    pub fn range_bytes(&self, id: &crate::range::Id) -> Result<Option<Vec<u8>>, TraitStoreError> {
         self.read(|store| Ok(store.sync_bytes(id)?))
     }
 
@@ -269,10 +251,7 @@ impl<S: EventStoreBackend> SharedEventStore<S> {
     ///
     /// Returns [`TraitStoreError::Store`] for a redb or corruption error, and
     /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
-    pub fn range_body(
-        &self,
-        id: &crate::range::Id,
-    ) -> Result<Option<Vec<u8>>, TraitStoreError> {
+    pub fn range_body(&self, id: &crate::range::Id) -> Result<Option<Vec<u8>>, TraitStoreError> {
         self.read(|store| Ok(store.stored_body(&Hash::from_bytes(*id))?))
     }
 
@@ -449,7 +428,10 @@ impl<S: EventStoreBackend> BlockList for SharedEventStore<S> {
 }
 
 /// The sequence number of the author's last applied event, or `None` when none applies.
-fn applied_height<S: EventStoreBackend>(store: &S, author: &AuthorKey) -> Result<Option<SeqNum>, StoreError> {
+fn applied_height<S: EventStoreBackend>(
+    store: &S,
+    author: &AuthorKey,
+) -> Result<Option<SeqNum>, StoreError> {
     let Some(chain) = store.chain(author)? else {
         return Ok(None);
     };
@@ -551,7 +533,9 @@ impl<S: EventStoreBackend> Stream for LogEntries<S> {
     }
 }
 
-impl<S: EventStoreBackend> LogStore<AnyOperation, VerifyingKey, ChainLog, SeqNum, Hash> for SharedEventStore<S> {
+impl<S: EventStoreBackend> LogStore<AnyOperation, VerifyingKey, ChainLog, SeqNum, Hash>
+    for SharedEventStore<S>
+{
     type Error = TraitStoreError;
 
     /// The newest applied entry. The log id is ignored: an author has one log.

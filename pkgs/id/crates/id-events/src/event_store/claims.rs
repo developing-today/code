@@ -13,8 +13,8 @@ use redb::ReadableDatabase;
 
 use super::resolve::{self, author_of};
 use super::{ACTIONS, DEVICE_OPS, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt};
-use id_store::chain::Event;
 use crate::groups::{Projection, Role as GroupRole};
+use id_store::chain::Event;
 use id_store::tag_claims::{Applied, Claim, TagOp, compacted_claims, is_tag_kind};
 use id_store::tag_index::TagIndex;
 

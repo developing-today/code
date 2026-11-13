@@ -58,7 +58,7 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use coordinator::{
     ActiveHandoff, Coordinator, CoordinatorError, EntityInTransit, EntityOwner, ExportReceipt,
     HandoffCompletion, HandoffStage, ImportReceipt, ObserveOutcome, ReconcileOutcome,
-    TransitStage, STUCK_THRESHOLD_MS,
+    STUCK_THRESHOLD_MS, TransitStage,
 };
 pub(crate) use core::AdminHistoryByteLedger;
 pub use core::WorldCore;

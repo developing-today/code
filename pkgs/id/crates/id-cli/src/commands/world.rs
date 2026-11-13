@@ -179,9 +179,13 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             // replica keeps syncing with any host node for as long as it runs.
             let replica = Replica::start(dir.as_deref(), no_relay).await?;
             let timeout = std::time::Duration::from_secs(timeout_secs.max(1));
-            let (doc, records) =
-                id_worlds::world_records::replicate(&replica.docs, &replica.blobs, &ticket, timeout)
-                    .await?;
+            let (doc, records) = id_worlds::world_records::replicate(
+                &replica.docs,
+                &replica.blobs,
+                &ticket,
+                timeout,
+            )
+            .await?;
             println!("{}", serde_json::to_string_pretty(&records)?);
             if follow {
                 use futures_lite::StreamExt as _;
@@ -473,12 +477,10 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     let text = std::fs::read_to_string(&path)
                         .with_context(|| format!("read execution profile {}", path.display()))?;
                     Some(
-                        serde_json::from_str::<id_caps::world_limits::WorldExecutionProfile>(
-                            &text,
-                        )
-                        .with_context(|| {
-                            format!("parse execution profile {}", path.display())
-                        })?,
+                        serde_json::from_str::<id_caps::world_limits::WorldExecutionProfile>(&text)
+                            .with_context(|| {
+                                format!("parse execution profile {}", path.display())
+                            })?,
                     )
                 }
                 None => None,
@@ -1150,9 +1152,10 @@ async fn ssh_tunnel(
     let id: EndpointId = node.parse().context("parse node ID")?;
     let endpoint = client_endpoint(addrs, no_relay).await?;
     let addr = EndpointAddr::from_parts(id, addrs.iter().copied().map(TransportAddr::Ip));
-    let conn = id_core::connectivity::connect(&endpoint, addr, id_worlds::world_ssh::SSH_TUNNEL_ALPN)
-        .await
-        .context("connect ssh tunnel")?;
+    let conn =
+        id_core::connectivity::connect(&endpoint, addr, id_worlds::world_ssh::SSH_TUNNEL_ALPN)
+            .await
+            .context("connect ssh tunnel")?;
     if stdio {
         let (send, recv) = conn.open_bi().await.context("open tunnel stream")?;
         let mut tunnel = tokio::io::join(recv, send);
@@ -1560,7 +1563,8 @@ fn replay_fixture(
     .context("the fixture is not UTF-8")?;
     let fixture = id_worlds::world_fixture::decode(&text)?;
     id_worlds::world_fixture::check_module(&fixture.header, &wasm)?;
-    let runner = id_worlds::sandbox::Sandbox::compile(&wasm, id_worlds::sandbox::SandboxLimits::default())?;
+    let runner =
+        id_worlds::sandbox::Sandbox::compile(&wasm, id_worlds::sandbox::SandboxLimits::default())?;
     let replayed = id_worlds::world_fixture::replay(&runner, seed, &fixture, allow_partial)?;
     match &replayed.verdict {
         Verdict::Match => println!("records match"),
@@ -1622,7 +1626,8 @@ fn verify_fixture(
     .context("the fixture is not UTF-8")?;
     let fixture = id_worlds::world_fixture::decode(&text)?;
     id_worlds::world_fixture::check_module(&fixture.header, &wasm)?;
-    let runner = id_worlds::sandbox::Sandbox::compile(&wasm, id_worlds::sandbox::SandboxLimits::default())?;
+    let runner =
+        id_worlds::sandbox::Sandbox::compile(&wasm, id_worlds::sandbox::SandboxLimits::default())?;
     let verification = id_worlds::world_fixture::verify(&runner, seed, &fixture, allow_partial)?;
     match &verification.divergence {
         None => println!(
@@ -1938,9 +1943,9 @@ impl Replica {
                 .bind()
                 .await?
         } else {
-            id_core::connectivity::public_builder(id_core::connectivity::RelayPolicy::from_no_relay(
-                no_relay,
-            ))
+            id_core::connectivity::public_builder(
+                id_core::connectivity::RelayPolicy::from_no_relay(no_relay),
+            )
             .secret_key(key)
             .bind()
             .await?
@@ -2102,7 +2107,8 @@ where
 ///
 /// Fails on an unreadable transcript, or with every violation listed.
 fn check_contract(text: &str) -> Result<String> {
-    let contract = id_worlds::shell_contract::ShellContract::embedded().map_err(anyhow::Error::msg)?;
+    let contract =
+        id_worlds::shell_contract::ShellContract::embedded().map_err(anyhow::Error::msg)?;
     let violations = id_worlds::shell_contract::check_transcript(contract, text)?;
     let frames = text.lines().filter(|line| !line.trim().is_empty()).count();
     if violations.is_empty() {

@@ -93,13 +93,13 @@ use crate::commands::put::{add_raw, push_and_name};
 use crate::commands::serve::get_serve_info;
 use crate::commands::tag::{self as tag, TagDisplayOptions};
 use crate::commands::text::{list_tsv_row, plain_field};
-use id_core::discovery::PeerAnnouncement;
 use crate::local::LocalNode;
 use crate::meta_client::{MetaRequester, expect_ok, read_capped_response, request_over};
 use crate::{
     CLIENT_KEY_FILE, FindMatch, META_ALPN, MetaRequest, MetaResponse, StoreType, export_blob,
     is_node_id, load_or_create_keypair, open_store,
 };
+use id_core::discovery::PeerAnnouncement;
 
 /// Trim names entered at the forgiving REPL surface before calling FileOps.
 fn trim_file_name(name: &str) -> &str {
@@ -358,8 +358,9 @@ impl ReplContext {
                 {
                     return Ok(meta_conn.as_ref().unwrap());
                 }
-                let conn = id_core::connectivity::connect(endpoint, endpoint_addr.clone(), META_ALPN)
-                    .await?;
+                let conn =
+                    id_core::connectivity::connect(endpoint, endpoint_addr.clone(), META_ALPN)
+                        .await?;
                 *meta_conn = Some(conn);
                 Ok(meta_conn.as_ref().unwrap())
             }

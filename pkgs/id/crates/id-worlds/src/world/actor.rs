@@ -2548,12 +2548,12 @@ impl WorldActor {
                 let _ = reply.send(result);
             }
             WorldCommand::ParticipantId { token, reply } => {
-                let result = self
-                    .core
-                    .authorize(&token, WorldScopes::JOIN)
-                    .and_then(|participant| {
-                        self.check_admission(participant).map(|()| participant)
-                    });
+                let result =
+                    self.core
+                        .authorize(&token, WorldScopes::JOIN)
+                        .and_then(|participant| {
+                            self.check_admission(participant).map(|()| participant)
+                        });
                 let _ = reply.send(result);
             }
             WorldCommand::AuthorizeScope {

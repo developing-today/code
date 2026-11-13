@@ -9,16 +9,16 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-use id_sync::artifact::{SignedArtifact, Stored};
 use crate::directory::{
     Actor, Directory, DirectoryEntry, Envelope, EnvelopeKind, Level, Member, Received, Refusal,
     normalize_email, normalize_key,
 };
 use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose, PurposeKind};
 use crate::directory_mail::Mail;
-use id_sync::envelope_outbox::{Entry, Finish, Outbox, Payload, check_target};
-use id_core::petname::{Contact, Label, Petnames, labels};
 use id_caps::world_scopes::WorldScopes;
+use id_core::petname::{Contact, Label, Petnames, labels};
+use id_sync::artifact::{SignedArtifact, Stored};
+use id_sync::envelope_outbox::{Entry, Finish, Outbox, Payload, check_target};
 
 /// Who is looking at the directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1752,9 +1752,9 @@ pub fn render_text(view: &DirectoryView) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
     use id_sync::artifact::HomeServer;
     use id_sync::envelope_outbox::{MAX_FINISHED_ENTRIES, Outcome};
-    use ed25519_dalek::SigningKey;
 
     fn node() -> String {
         iroh::SecretKey::from_bytes(&[7; 32]).public().to_string()

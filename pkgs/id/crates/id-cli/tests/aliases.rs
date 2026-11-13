@@ -21,10 +21,10 @@
 use std::collections::BTreeMap;
 
 use id_cli::aliases::{ALIAS_NAME, Named, Object, Shown, aliases_of, rows};
-use id_store::chain::{ChainExt, Event, sign};
-use id_events::event_store::{EventStore, Ingest};
-use id_store::tag_claims::{SET_KIND, TagOp};
 use id_core::waiting::{AuthorKey, WaitingLimits};
+use id_events::event_store::{EventStore, Ingest};
+use id_store::chain::{ChainExt, Event, sign};
+use id_store::tag_claims::{SET_KIND, TagOp};
 use p2panda_core::{Hash, SeqNum, SigningKey};
 
 /// A signer with its own chain. Each event names the one before it as its `after`.
