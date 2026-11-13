@@ -3474,47 +3474,95 @@
         "selection": "ordered",
         "autonomy": "rules"
       },
-      "small-100k": {
-        "name": "Small 100k - Haiku + Luna below the 100k context cliff",
-        // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
-        // 2026-10-26 (as luna-haiku-100k): both members price much cheaper below 100k
-        // context. The route's context cap (developing-today/opencode#554) presents a
-        // 100k limit, so sessions pinned here compact before crossing the cliff. On fork
-        // builds predating #554 the decoder strips the unknown limit key and the pool
-        // simply runs uncapped.
-        // AA v5: Haiku #high II 30, Luna #xhigh II 23 (TTFT 24.2s; #max would be 93.8s).
-        // 2026-10-27 pool redesign: this is now the <=100k element of the
-        // renamed `small` pool (below).
+      "limited": {
+        "name": "Limited - light-work pool: every member seated at its own plan's real limits (model @ context # effort)",
+        // 2026-11-13 (Drew, direct order): replaces small-100k. A
+        // route name must not bake in one member's context limit
+        // when members differ, so the pool is ONE route whose
+        // targets each carry their own per-target context cap
+        // (the route schema's target limit; the old small
+        // comment claiming the schema has no per-target limit
+        // predates the fork feature). A request that does not
+        // fit a member's cap skips it like any other ineligible
+        // target, so small requests land on the small members
+        // and larger ones spill to the larger members. Members,
+        // each seated at its own plan's real limits:
+        // - Luna @ 100k #medium: Luna's ChatGPT-plan cheap tier
+        //   ends at 100k context (recorded at the old
+        //   small-100k). Native catalog context is 1.05M; the
+        //   plan's real pricing limit is the 100k cliff.
+        //   luna-plan's legs present different contexts
+        //   (opendesign leg 200k, OpenAI/Go legs 1.05M native);
+        //   the 100k cap is the binding limit across the legs.
+        //   Effort drops from the old seat's #xhigh (II 23,
+        //   TTFT 24.2s) to #medium (II 18): light work does
+        //   not need the top rung; claim-stamped task outcomes
+        //   will show if that judgement is wrong.
+        // - Terra @ 388k #low: seated at the plan-effective
+        //   388k (Drew 2026-11-13); native catalog context is
+        //   1.05M, so 388k is a plan/policy ceiling, not the
+        //   model limit. AA v5: Terra #low II 29 at $0.07/task.
+        //   This is terra-plan's first consumer (it was an
+        //   orphan pool: no route targeted it).
+        // - DeepSeek small variant #low, peak-aware: DeepSeek's
+        //   metered price doubles inside the deepseek-peak
+        //   windows, so during a peak window the MiMo Flash
+        //   plan serves first and DeepSeek #low serves
+        //   off-peak first (the background route's seat
+        //   pattern). Time-of-day routing: code#9378. The
+        //   plan's doors present different contexts (Go,
+        //   ClinePass and Mistral spellings 1M; OpenDesign and
+        //   CommandCode spellings 200k) - the member cap is
+        //   the model's 1M catalog context and each leaf's own
+        //   ceiling still applies, so no door is over-asked.
+        //   MiMo v2.6 Flash catalog context 1048576, same
+        //   per-door note.
+        // - Haiku @ 388k #medium, LAST (fleet rule: the
+        //   haiku-plan leg is last in the light tiers). Seated
+        //   at the plan-effective 388k (Drew 2026-11-13);
+        //   Haiku 5.5 native catalog context is 1M - 388k is a
+        //   plan/policy ceiling, not the model limit. Effort
+        //   #medium, down from the old seat's #high (II 30):
+        //   this is the light tier; harder work belongs to
+        //   speed/workhorse.
+        // MEASUREMENT: route_attempt per member (success,
+        // latency, tokens) plus claim-stamped outcomes for
+        // sessions pinned to small/limited, reviewed with the
+        // deepseek-effort-rr trial after 7 days live.
         "targets": [
-          "opencode-route/luna-plan#xhigh",
-          "opencode-route/haiku-plan#high"
+          { "model": "opencode-route/luna-plan#medium", "limit": { "context": 100000 } },
+          { "model": "opencode-route/terra-plan#low", "limit": { "context": 388000 } },
+          { "model": "opencode-route/mimo-flash-plan", "window": "deepseek-peak-early", "limit": { "context": 1048576 } },
+          { "model": "opencode-route/mimo-flash-plan", "window": "deepseek-peak-late", "limit": { "context": 1048576 } },
+          {
+            "model": "opencode-route/deepseek-flash-plan#low",
+            "window": { "name": "deepseek-peak-early", "invert": true },
+            "limit": { "context": 1000000 }
+          },
+          {
+            "model": "opencode-route/deepseek-flash-plan#low",
+            "window": "deepseek-peak-early",
+            "limit": { "context": 1000000 }
+          },
+          { "model": "opencode-route/haiku-plan#medium", "limit": { "context": 388000 } }
         ],
         "selection": "ordered",
-        "autonomy": "rules",
-        "limit": { "context": 100000 }
+        "autonomy": "rules"
       },
       "small": {
-        "name": "Small - light work in small contexts, Haiku + Luna value seats",
-        // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
-        // RENAMED 2026-10-27 (pool redesign) from luna-haiku-100k. Sessions
-        // pinned to the old id need re-pinning. The pool is the fleet's
-        // light/small tier: Haiku and Luna are much cheaper in small
-        // contexts, so membership is organized by context ceiling —
-        //   - the <=100k element (small-100k): Haiku #high + Luna #xhigh
-        //   - the <=200k element: Haiku #high alone (Luna's cheap tier
-        //     ends at 100k)
-        // The route schema has no per-target context limit, so the
-        // elements are expressed as a nested route (small-100k, capped at
-        // 100k) beside the direct Haiku target, under this route's 200k
-        // cap. Haiku 5.5 is 1M native — the 200k element is a cost-policy
-        // ceiling, not a model limit: bigger jobs belong to bigger pools.
-        "targets": [
-          "opencode-route/small-100k",
-          "opencode-route/haiku-plan#high"
-        ],
+        "name": "Small - light work: draws from the limited pool (per-member plan limits)",
+        // 2026-11-13 (Drew, direct order): rebuilt on the
+        // limited pool above. The route-level 200k cap is gone
+        // - members carry their own plan limits now - and the
+        // <=100k / <=200k element structure (and the small-100k
+        // route) is deleted. Sessions pinned to small-100k need
+        // re-pinning to small or limited. History: renamed
+        // 2026-10-27 from luna-haiku-100k; the pre-2026-11-13
+        // shape seated luna-plan#xhigh + haiku-plan#high under
+        // a 200k route cap.
+        "targets": ["opencode-route/limited"],
         "selection": "ordered",
-        "autonomy": "rules",
-        "limit": { "context": 200000 }
+        "autonomy": "rules"
       }
     },
     "model_route_windows": {
