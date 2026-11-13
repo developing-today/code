@@ -1,0 +1,29 @@
+publish_issues: proposals[0].urgency must be a non-negative intrinsic numeric score
+....publish_issues: sec-model-001.rendered_body exceeds GitHub's 65,536-character/byte issue limit
+......publish_issues: duplicate JSON key: id
+...publish_issues: program epic #9155 is not OPEN; refusing issue creation; no receipt or issue write was made
+.........publish_issues: repo-queue --status blocked filter returned a row with another status; no receipt or issue write was made
+.............publish_issues: --receipt must be the manifest-specific path /home/user/git/fleet/15345-fleet-ca-buildout/doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/publication/e3cda24da7507c32e28ae6bfe9980c24a92957577267b03318bea477703cdb7b.jsonl
+.....usage: test_publish_issues.py [-h] --manifest MANIFEST --queue QUEUE
+                              [--publish | --dry-run] [--receipt RECEIPT]
+test_publish_issues.py: error: unrecognized arguments: --publis
+usage: test_publish_issues.py [-h] --manifest MANIFEST --queue QUEUE
+                              [--publish | --dry-run] [--receipt RECEIPT]
+test_publish_issues.py: error: --receipt is required with --publish
+usage: test_publish_issues.py [-h] --manifest MANIFEST --queue QUEUE
+                              [--publish | --dry-run] [--receipt RECEIPT]
+test_publish_issues.py: error: unrecognized arguments: --fleet /usr/bin/gh
+usage: test_publish_issues.py [-h] --manifest MANIFEST --queue QUEUE
+                              [--publish | --dry-run] [--receipt RECEIPT]
+test_publish_issues.py: error: --queue must be the verified code pilot queue 'repo-health-code-pilot'
+usage: test_publish_issues.py [-h] --manifest MANIFEST --queue QUEUE
+                              [--publish | --dry-run] [--receipt RECEIPT]
+test_publish_issues.py: error: --manifest must not contain U+0000
+usage: test_publish_issues.py [-h] --manifest MANIFEST --queue QUEUE
+                              [--publish | --dry-run] [--receipt RECEIPT]
+test_publish_issues.py: error: --manifest must be strictly UTF-8 encodable
+........
+----------------------------------------------------------------------
+Ran 48 tests in 1.307s
+
+OK
