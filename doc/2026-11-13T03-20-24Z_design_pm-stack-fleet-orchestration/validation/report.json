@@ -1,0 +1,243 @@
+{
+  "completion_crash_cut_names": [
+    "before_prepare",
+    "after_prepare",
+    "before_send",
+    "after_send",
+    "before_apply",
+    "after_apply",
+    "before_ack",
+    "after_ack",
+    "before_finalize",
+    "after_finalize"
+  ],
+  "counts": {
+    "by_oracle": {
+      "completion_after_finalize_cut": 1,
+      "completion_before_finalize_cut": 1,
+      "completion_blocked_dependency_prepare_rejected": 1,
+      "completion_cancel_after_send_preserves_remote_effect": 1,
+      "completion_crash_cut_converges_or_remains_unknown": 9,
+      "completion_crash_cut_serialized_reload": 9,
+      "completion_duplicate_webhook_no_extra_effect": 1,
+      "completion_expired_receipt_scoped": 1,
+      "completion_finalize_unverified_rejected": 1,
+      "completion_fixture_declares_negative_preconditions": 1,
+      "completion_hold_prevents_finalize": 1,
+      "completion_model_explicitly_scoped_to_idempotent_fake": 1,
+      "completion_negative_prepare_no_mutation": 1,
+      "completion_partial_required_effect_no_false_complete": 1,
+      "completion_prepare_valid": 1,
+      "completion_readback_confirms_only_same_operation": 1,
+      "completion_receipt_does_not_authorize_new_command": 1,
+      "completion_recovery_never_blind_resends": 2,
+      "completion_response_lost_is_unknown": 1,
+      "completion_send_current_owner": 1,
+      "completion_stale_local_write_rejected": 1,
+      "completion_stale_owner_new_prepare_rejected": 1,
+      "completion_stale_owner_new_send_rejected": 1,
+      "completion_stale_prepare_rejected": 1,
+      "completion_unauthorized_prepare_rejected": 1,
+      "completion_verified_finalize": 1,
+      "completion_wrong_operation_receipt_no_finalize": 1,
+      "exploration_decimal_oracle_tolerance": 18,
+      "exploration_density_uses_unique_ids": 1,
+      "exploration_exact_tiny_inclusion_normalizes": 1,
+      "exploration_inclusion_not_first_draw": 1,
+      "exploration_invalid_parameters_typed_error": 4,
+      "exploration_population_0_1_2": 3,
+      "exploration_preregistered_6sigma_bound": 6,
+      "exploration_probability_normalization": 3,
+      "exploration_snapshot_density_counted_by_unique_eligible_ids": 1,
+      "exploration_tiny_inclusion_preregistered_bound": 3,
+      "exploration_u_ref_invariance": 1,
+      "exploration_without_replacement": 1,
+      "filter_default_true": 1,
+      "graph_blocker_to_dependent_orientation": 1,
+      "graph_cycle_insertion_rule": 144718,
+      "graph_cycle_oracle_detects_inserted_cycle": 1,
+      "graph_cycle_reverse_path": 1,
+      "graph_cycle_self_edge": 1,
+      "graph_dfs_matches_transitive_closure": 144718,
+      "graph_parent_and_advisory_nonblocking": 1,
+      "graph_serialized_opposite_insert_rejects_second": 1,
+      "priority_canonical_id_bytewise_tie": 1,
+      "priority_decimal_ids_preserved": 1,
+      "priority_decimal_peer_rank_9_before_10": 1,
+      "priority_golden_order": 1,
+      "requirements_and_filter": 4,
+      "requirements_default_true": 1
+    },
+    "completion_crash_cuts": 10,
+    "named_oracle_checks": 289539,
+    "random_graph_cases": 5000,
+    "statistical_draws": 50000
+  },
+  "generated_at": "intentionally omitted for deterministic output",
+  "historical_profile": {
+    "alpha": 0.5,
+    "bucket_width": 200,
+    "d": 200,
+    "decimal_first_draw_by_epsilon": {
+      "0": [
+        "0.260276246301666855929887636012836113953163082391192105095798",
+        "0.155681507075212697414603894500243048122016670582318912695836",
+        "0.134662142123094398009897293553495868970621894224227844480826",
+        "0.184172173975420511740004580300584003669753423279615220380138",
+        "0.147337739180336409392003664240467202935802738623692176304110",
+        "0.117870191344269127513602931392373762348642190898953741043289"
+      ],
+      "0.05": [
+        "0.255595767319916846466726587545527641588838261604965833174341",
+        "0.156230765054785395877207033108564229049249170386536300394377",
+        "0.136262368350273011442735762209154408855424132846349785590118",
+        "0.183296898609982819486337684618888136819599085448967792694464",
+        "0.148304185554652922255736814361777176122345935025840900822237",
+        "0.120310015110389004471256118156088407564543414687339387324458"
+      ],
+      "1": [
+        "0.166666666666666666666666666666666666666666666666666666666667",
+        "0.166666666666666666666666666666666666666666666666666666666667",
+        "0.166666666666666666666666666666666666666666666666666666666667",
+        "0.166666666666666666666666666666666666666666666666666666666667",
+        "0.166666666666666666666666666666666666666666666666666666666667",
+        "0.166666666666666666666666666666666666666666666666666666666667"
+      ]
+    },
+    "density_and_mixture_frozen_before_draws": true,
+    "epsilon_values": [
+      "0",
+      "0.05",
+      "1"
+    ],
+    "epsilon_zero_and_one_included": true,
+    "initial_masses_by_epsilon": {
+      "0": [
+        0.2602762463016669,
+        0.15568150707521272,
+        0.1346621421230944,
+        0.18417217397542052,
+        0.1473377391803364,
+        0.11787019134426913
+      ],
+      "0.05": [
+        0.2555957673199169,
+        0.15623076505478542,
+        0.136262368350273,
+        0.18329689860998283,
+        0.1483041855546529,
+        0.120310015110389
+      ],
+      "1": [
+        0.16666666666666666,
+        0.16666666666666666,
+        0.16666666666666666,
+        0.16666666666666666,
+        0.16666666666666666,
+        0.16666666666666666
+      ]
+    },
+    "r": 1.25
+  },
+  "inputs": {
+    "cases": 5000,
+    "draws": 50000,
+    "fixture_sha256": "4dbab02808888bb399f87e427bf2d2187c7fdd939e575d707c8b20ebaaa79096",
+    "seed": 9196
+  },
+  "limits": [
+    "Design experiment only; no imports from Fleet and no production implementation tests.",
+    "Synthetic fixtures do not establish production benefit, calibration, starvation bounds, or workload representativeness.",
+    "The completion remote ledger is an idempotent fake; no universal exactly-once guarantee and no remote GitHub fence are modeled.",
+    "No actual Fleet broker, Rust/TypeScript adapter, GitHub API, deployed service, or live completion behavior was tested.",
+    "This is not formal proof, full PBT/MBT production coverage, or authorization to implement, migrate, schedule, or roll out."
+  ],
+  "max_errors": {
+    "exploration_first_draw_frequency": 0.004256898609982823,
+    "exploration_tiny_inclusion_frequency": 0.0010684349096884427,
+    "exploration_u_ref_invariance": 0.0,
+    "float_vs_decimal_first_draw": 5.551115123125783e-17
+  },
+  "oracles": {
+    "completion": "golden transition expectations and model invariants over fence/operation/readback/hold/webhook/crash-cut sequences; fake idempotent remote ledger keyed by one operation identity",
+    "exploration": "60-digit Decimal analytic first-draw weights vs float log-weight implementation; exact enumeration of all weighted sequences for 3-item/two-draw inclusion probabilities checked empirically against a preregistered per-candidate 6-sigma + 1/n bound; first-draw bound likewise preregistered",
+    "graph": "independent Floyd-Warshall transitive closure vs DFS reachability; cycle insertion oracle; serialized opposite-edge case",
+    "priority": "golden exact-integer comparator and independent requirements-AND-explicit-filter truth table"
+  },
+  "result": "pass",
+  "runtime": {
+    "prng": "SHA-256 counter, pmo-experiment-v1 domain separator, 53-bit uniform grid; algorithm independent of Python random module",
+    "python": "3.14.8"
+  },
+  "schema": "pmo-offline-experiment/v1",
+  "small_population": {
+    "absolute_bounds": [
+      0.013117243658089351,
+      0.011179188449355087,
+      0.013082919617581054
+    ],
+    "draws_without_replacement": 2,
+    "exact_inclusion_probabilities": [
+      "0.608411565090311564419290106185561599572921525014867832092583",
+      "0.777570094129843083984933307681886946765212265547408795758186",
+      "0.614018340779845351595776586132551453661866209437723372149229"
+    ],
+    "max_standard_error_units": 0.48946248733573966,
+    "observed_inclusion_counts": [
+      30474,
+      38860,
+      30666
+    ],
+    "observed_inclusion_probabilities": [
+      0.60948,
+      0.7772,
+      0.61332
+    ],
+    "population": 3,
+    "preregistered_bound": "6*sqrt(p*(1-p)/draws) + 1/draws per item",
+    "sum_expected_inclusions": "2.00000000000000000000000000000000000000000000000000000000000"
+  },
+  "statistics": {
+    "absolute_bounds": [
+      0.011724355221651599,
+      0.00976229713341422,
+      0.009225452375181254,
+      0.010401877711202344,
+      0.009556416462863253,
+      0.008749351125350578
+    ],
+    "epsilon": 0.05,
+    "first_draw_counts": [
+      12875,
+      7802,
+      6795,
+      8952,
+      7529,
+      6047
+    ],
+    "first_draw_expected": [
+      0.2555957673199169,
+      0.15623076505478542,
+      0.136262368350273,
+      0.18329689860998283,
+      0.1483041855546529,
+      0.120310015110389
+    ],
+    "first_draw_observed": [
+      0.2575,
+      0.15604,
+      0.1359,
+      0.17904,
+      0.15058,
+      0.12094
+    ],
+    "max_standard_error_units": 2.4601899936017393,
+    "preregistered_bound": "6*sqrt(p*(1-p)/draws) + 1/draws per category"
+  },
+  "tolerances": {
+    "first_draw_frequency": "per-category 6*sqrt(p*(1-p)/draws) + 1/draws",
+    "float_vs_decimal_first_draw_abs": 2e-14,
+    "probability_normalization_abs": 2e-15,
+    "u_ref_normalized_probability_abs": 2e-15
+  }
+}
