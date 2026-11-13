@@ -42,6 +42,38 @@ let
     inherit models;
   };
   model = id: name: { inherit id name; };
+
+  # Telegram load fix (code#1029): nix-openclaw's stage-runtime creates
+  # lib/node_modules/openclaw/dist-runtime as a symlink to dist (module
+  # identity), and bundled-plugin discovery prefers the dist-runtime
+  # spelling — but the gateway's fs-safe plugin loader runs with
+  # rejectSymlinks, so the bundled telegram channel fails to load:
+  # "plugin module path escapes plugin root or fails alias checks:
+  # .../dist-runtime/extensions/telegram/index.js | symlink path
+  # component not allowed". Rebuild the gateway without the symlink:
+  # discovery then falls back to the canonical dist/extensions tree
+  # (same files, no symlink component, module identity preserved).
+  # The bundle only wraps the gateway binary via OPENCLAW_GATEWAY_BIN,
+  # so point it at the fixed gateway. Drop both overrides once
+  # upstream stops staging the symlink or the loader admits
+  # in-package aliases.
+  openclawGatewayNoDistRuntime = pkgs.openclaw-gateway.overrideAttrs (old: {
+    # Inside installPhase, not a post* hook: the npm gateway package
+    # sets dontFixup = true (no fixup phase), and its custom
+    # installPhase script path bypasses the postInstall hook — both
+    # were tried first and the symlink survived (code#1029).
+    installPhase = ''
+      runHook preInstall
+      ${old.installPhase}
+      rm -f $out/lib/node_modules/openclaw/dist-runtime
+      runHook postInstall
+    '';
+  });
+  openclawPackageNoDistRuntime = pkgs.openclaw.overrideAttrs (old: {
+    env = (old.env or { }) // {
+      OPENCLAW_GATEWAY_BIN = "${openclawGatewayNoDistRuntime}/bin/openclaw";
+    };
+  });
 in
 {
   imports = [ inputs.nix-openclaw.homeManagerModules.openclaw ];
@@ -167,6 +199,8 @@ in
 
   programs.openclaw = {
     enable = true;
+    # Telegram load fix (code#1029): see openclawGatewayNoDistRuntime above.
+    package = openclawPackageNoDistRuntime;
     systemd.enable = true;
 
     # Gateway runtime env: a value that names an existing file is read
