@@ -231,7 +231,7 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
  * Claude+GPT pool. Quota grouping must use the same rule, or burn and
  * quota would disagree about which pool a model draws from.
  */
-function antigravityPoolForModel(model: string, legacy = false): string {
+export function antigravityPoolForModel(model: string, legacy = false): string {
   if (legacy)
     return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
   return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;
