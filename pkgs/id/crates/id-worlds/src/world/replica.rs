@@ -215,7 +215,24 @@ pub fn restore_replica_entries_with_runtime(
 /// untouched; the replica simply does not open.
 pub fn serve_replica(
     restored: ReplicaRestore,
+    program: Box<dyn WorldProgram>,
+) -> Result<(WorldHandle, ReplicaCursor)> {
+    serve_replica_with_admission(restored, program, None)
+}
+
+/// As [`serve_replica`], with a policy-B admission gate (F12.13
+/// phase 5): before the replica admits a spectator who was not
+/// present at the verified cursor — at participant lookup, scope
+/// authorization, or snapshot — the actor checks
+/// [`super::ReplicaAdmissionGate::admit`] at the current time, so an
+/// expired or absent lease stops NEW admissions until resync while
+/// existing sessions and read serving continue unaffected. Build the
+/// gate from the restore's presence keys, the pinned source the
+/// journal was verified against, and the lease the writer issued.
+pub fn serve_replica_with_admission(
+    restored: ReplicaRestore,
     mut program: Box<dyn WorldProgram>,
+    admission_gate: Option<super::ReplicaAdmissionGate>,
 ) -> Result<(WorldHandle, ReplicaCursor)> {
     anyhow::ensure!(
         restored
@@ -230,7 +247,12 @@ pub fn serve_replica(
         })?;
     }
     let cursor = restored.cursor;
-    let handle = WorldHandle::spawn_read_only(restored.core, program, restored.presence)?;
+    let handle = WorldHandle::spawn_read_only_with_admission(
+        restored.core,
+        program,
+        restored.presence,
+        admission_gate,
+    )?;
     Ok((handle, cursor))
 }
 
@@ -388,6 +410,219 @@ mod tests {
         assert_eq!(replica.records().1["online"], true);
         assert_eq!(updates.load(Ordering::SeqCst), 1);
         assert!(replica.subscribe().try_recv().is_err());
+        replica.shutdown().await.unwrap();
+    }
+
+    /// Admission fixture: Bo was present at the verified cursor (the
+    /// journal records the join), Cy holds a journal-issued JOIN
+    /// capability but was never present — the NEW spectator of the
+    /// policy-B ruling.
+    struct AdmissionFixture {
+        restored: ReplicaRestore,
+        present_token: crate::world::JoinCapability,
+        present_id: u64,
+        new_token: crate::world::JoinCapability,
+        new_id: u64,
+    }
+
+    fn admission_fixture(world_id: &str) -> AdmissionFixture {
+        let mut source = WorldCore::new(world_id, WorldLimits::default()).unwrap();
+        let (ann_credential, _) = source.directory_mut().sign_up("Ann").unwrap();
+        let (bo_credential, _) = source.directory_mut().sign_up("Bo").unwrap();
+        let bo_account = source.directory().account_for(&bo_credential).unwrap();
+        let (cy_credential, _) = source.directory_mut().sign_up("Cy").unwrap();
+        let cy_account = source.directory().account_for(&cy_credential).unwrap();
+        let ann_account = source.directory().account_for(&ann_credential).unwrap();
+        for account in [&ann_account, &bo_account, &cy_account] {
+            source
+                .directory_mut()
+                .verify_account(Actor::Server, account)
+                .unwrap();
+        }
+        let (owner, _owner_token) = source
+            .issue_for_account(
+                &ann_credential,
+                WorldScopes::ALL,
+                CapabilityBounds::default(),
+                "Ann",
+            )
+            .unwrap();
+        let (present, present_token) = source
+            .issue_for_account(
+                &bo_credential,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Bo spectator",
+            )
+            .unwrap();
+        let (newcomer, new_token) = source
+            .issue_for_account(
+                &cy_credential,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Cy spectator",
+            )
+            .unwrap();
+        let source_directory = source.directory().clone();
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: world_id.to_owned(),
+                version: super::super::JOURNAL_VERSION,
+            },
+            source.issued_entry(owner.id).unwrap(),
+            source.issued_entry(present.id).unwrap(),
+            source.issued_entry(newcomer.id).unwrap(),
+            JournalEntry::System {
+                event: WorldEvent {
+                    sequence: 0,
+                    participant_id: 0,
+                    kind: WorldEventKind::System {
+                        event: serde_json::json!({
+                            "cap": "players",
+                            "event": "joined",
+                            "participant": {"id": present.id, "name": "Bo spectator"}
+                        })
+                        .to_string(),
+                    },
+                },
+            },
+        ];
+        let journal_bytes = journal(&entries);
+        let subjects = BTreeSet::from([ann_account, bo_account, cy_account]);
+        drop(source);
+        let restored = restore_replica_journal(
+            world_id,
+            WorldLimits::default(),
+            &journal_bytes,
+            &source_directory,
+            &subjects,
+        )
+        .unwrap();
+        assert_eq!(restored.presence.get(&present.id), Some(&1));
+        assert!(!restored.presence.contains_key(&newcomer.id));
+        AdmissionFixture {
+            restored,
+            present_token,
+            present_id: present.id,
+            new_token,
+            new_id: newcomer.id,
+        }
+    }
+
+    fn writer_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[11_u8; 32])
+    }
+
+    fn gate_for(
+        restored: &ReplicaRestore,
+        world_id: &str,
+        lease: Option<crate::world::SignedAdmissionLease>,
+    ) -> crate::world::ReplicaAdmissionGate {
+        crate::world::ReplicaAdmissionGate::new(
+            lease,
+            *writer_key().verifying_key().as_bytes(),
+            world_id,
+            restored.presence.keys().copied().collect(),
+        )
+    }
+
+    // Oracle: policy B ruling (#806 comment 6634842315) — a replica may
+    // admit new spectators during a writer outage only under a
+    // writer-signed admission lease; existing verified sessions are
+    // unaffected either way.
+    #[tokio::test]
+    async fn admission_gate_with_a_valid_lease_admits_the_new_spectator() {
+        let world_id = "replica-admission-valid-test";
+        let fixture = admission_fixture(world_id);
+        let now = crate::world::unix_ms();
+        let lease =
+            crate::world::SignedAdmissionLease::issue(world_id, &writer_key(), now, 3_600_000)
+                .unwrap();
+        let gate = gate_for(&fixture.restored, world_id, Some(lease));
+        let updates = Arc::new(AtomicUsize::new(0));
+        let (replica, _cursor) =
+            serve_replica_with_admission(fixture.restored, program(updates), Some(gate)).unwrap();
+        assert_eq!(
+            replica.participant_id(fixture.present_token.clone()).await.unwrap(),
+            fixture.present_id
+        );
+        assert_eq!(
+            replica.participant_id(fixture.new_token.clone()).await.unwrap(),
+            fixture.new_id
+        );
+        assert!(replica.snapshot(fixture.new_token.clone()).await.is_ok());
+        replica.shutdown().await.unwrap();
+    }
+
+    // Oracle: policy B ruling — when the lease expires, new admissions
+    // stop until resync; the participant present at the cursor keeps
+    // being served.
+    #[tokio::test]
+    async fn admission_gate_with_an_expired_lease_stops_new_spectators_only() {
+        let world_id = "replica-admission-expired-test";
+        let fixture = admission_fixture(world_id);
+        let now = crate::world::unix_ms();
+        let lease = crate::world::SignedAdmissionLease::issue(
+            world_id,
+            &writer_key(),
+            now - 7_200_000,
+            3_600_000,
+        )
+        .unwrap();
+        let gate = gate_for(&fixture.restored, world_id, Some(lease));
+        let updates = Arc::new(AtomicUsize::new(0));
+        let (replica, _cursor) =
+            serve_replica_with_admission(fixture.restored, program(updates), Some(gate)).unwrap();
+        assert_eq!(
+            replica.participant_id(fixture.present_token.clone()).await.unwrap(),
+            fixture.present_id
+        );
+        assert!(replica.snapshot(fixture.present_token.clone()).await.is_ok());
+        let refused = replica.participant_id(fixture.new_token.clone()).await;
+        assert!(refused.is_err(), "expired lease must refuse the new spectator");
+        assert!(
+            format!("{:#}", refused.unwrap_err()).contains("replica admission refused"),
+            "refusal names the admission gate"
+        );
+        assert!(replica.snapshot(fixture.new_token.clone()).await.is_err());
+        assert!(
+            replica
+                .authorize(fixture.new_token.clone(), WorldScopes::JOIN)
+                .await
+                .is_err()
+        );
+        replica.shutdown().await.unwrap();
+    }
+
+    // Oracle: policy B ruling — no lease held means nothing admits a
+    // new spectator while the writer is unreachable; existing
+    // participants are still served.
+    #[tokio::test]
+    async fn admission_gate_without_a_lease_admits_no_new_spectators() {
+        let world_id = "replica-admission-none-test";
+        let fixture = admission_fixture(world_id);
+        let gate = gate_for(&fixture.restored, world_id, None);
+        let updates = Arc::new(AtomicUsize::new(0));
+        let (replica, _cursor) =
+            serve_replica_with_admission(fixture.restored, program(updates), Some(gate)).unwrap();
+        assert!(replica.snapshot(fixture.present_token.clone()).await.is_ok());
+        assert!(replica.participant_id(fixture.new_token.clone()).await.is_err());
+        replica.shutdown().await.unwrap();
+    }
+
+    // Oracle: phase-4 posture — a replica served without a gate keeps
+    // journal authorization as its only admission rule (the gate is
+    // installed by the serving path, never implied).
+    #[tokio::test]
+    async fn ungated_replica_keeps_journal_only_admission() {
+        let world_id = "replica-admission-ungated-test";
+        let fixture = admission_fixture(world_id);
+        let updates = Arc::new(AtomicUsize::new(0));
+        let (replica, _cursor) = serve_replica(fixture.restored, program(updates)).unwrap();
+        assert_eq!(
+            replica.participant_id(fixture.new_token.clone()).await.unwrap(),
+            fixture.new_id
+        );
         replica.shutdown().await.unwrap();
     }
 

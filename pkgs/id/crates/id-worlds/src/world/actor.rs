@@ -427,6 +427,12 @@ pub(crate) struct WorldActor {
     /// journal and refuses every local mutation and side effect. Set only
     /// by the replica open path; a writer never runs this way.
     pub(crate) read_only: bool,
+    /// F12.13 phase 5 policy-B gate on NEW spectator admissions, set
+    /// only for a read-only replica served with an admission gate
+    /// (see [`super::ReplicaAdmissionGate`]). `None` — a writer, or a
+    /// replica served without a gate — keeps the phase-4 posture:
+    /// token admission is journal authorization alone.
+    pub(crate) admission_gate: Option<ReplicaAdmissionGate>,
     pub(crate) program_healthy: bool,
     /// Durable transfers whose journal append succeeded but whose program
     /// apply failed (#3902): their receipts sit in the core dedupe ledger
@@ -662,6 +668,22 @@ impl WorldActor {
     fn check_writable(&self) -> Result<()> {
         self.check_not_replica()?;
         self.check_storage()
+    }
+
+    /// Policy-B admission, checked at every token-admission entry
+    /// point (participant lookup, scope authorization, snapshot): a
+    /// participant present at the verified cursor is an existing
+    /// session and is never gated; anyone else is a NEW spectator and
+    /// the installed gate must admit them at the current time. No gate
+    /// installed is no check.
+    fn check_admission(&self, participant_id: u64) -> Result<()> {
+        let Some(gate) = &self.admission_gate else {
+            return Ok(());
+        };
+        gate.admit(participant_id, self.core.clock().now_ms())
+            .map_err(|error| {
+                anyhow::anyhow!("replica admission refused for new spectator: {error}")
+            })
     }
 
     fn record_issued(
@@ -2526,14 +2548,26 @@ impl WorldActor {
                 let _ = reply.send(result);
             }
             WorldCommand::ParticipantId { token, reply } => {
-                let _ = reply.send(self.core.authorize(&token, WorldScopes::JOIN));
+                let result = self
+                    .core
+                    .authorize(&token, WorldScopes::JOIN)
+                    .and_then(|participant| {
+                        self.check_admission(participant).map(|()| participant)
+                    });
+                let _ = reply.send(result);
             }
             WorldCommand::AuthorizeScope {
                 token,
                 required,
                 reply,
             } => {
-                let _ = reply.send(self.core.authorize(&token, required));
+                let result = self
+                    .core
+                    .authorize(&token, required)
+                    .and_then(|participant| {
+                        self.check_admission(participant).map(|()| participant)
+                    });
+                let _ = reply.send(result);
             }
             WorldCommand::BindAuthorKey {
                 token,
@@ -2738,7 +2772,15 @@ impl WorldActor {
                 let _ = reply.send(result);
             }
             WorldCommand::Snapshot { token, reply } => {
-                let _ = reply.send(self.core.snapshot(&token));
+                // Admission resolves the same JOIN authorization the
+                // snapshot itself performs, so the gate sees exactly
+                // the participant the snapshot would serve.
+                let result = self
+                    .core
+                    .authorize(&token, WorldScopes::JOIN)
+                    .and_then(|participant| self.check_admission(participant))
+                    .and_then(|()| self.core.snapshot(&token));
+                let _ = reply.send(result);
             }
             WorldCommand::HostView { reply } => {
                 let result = if self.program_healthy {
@@ -5121,6 +5163,7 @@ impl WorldActor {
             journal,
             storage_failed: false,
             read_only: false,
+            admission_gate: None,
             program_healthy,
             pending_transfer_replays: Vec::new(),
             view_failures: 0,
