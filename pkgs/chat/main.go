@@ -121,6 +121,7 @@ type app struct {
 	sendMu     sync.Mutex
 	progs      []sender
 	dispatches map[sender]*recipientQueue
+	sessions   map[ssh.Session]sender
 }
 
 // register adds a running program and its ordered delivery worker.
@@ -135,6 +136,49 @@ func (a *app) register(p sender) {
 	}
 	a.progs = append(a.progs, p)
 	a.dispatches[p] = newRecipientQueue(p)
+}
+
+// registerSession binds p to its session s in addition to registering it,
+// so the session's end can deregister exactly this program.
+func (a *app) registerSession(s ssh.Session, p sender) {
+	a.register(p)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sessions == nil {
+		a.sessions = make(map[ssh.Session]sender)
+	}
+	a.sessions[s] = p
+}
+
+// deregisterSession removes the program bound to s, if any. It runs when
+// the session's handler chain has returned — for the bubbletea middleware
+// that is after p.Run() has finished and the program has been killed — so
+// removal is tied to this session's completion, never to the shared
+// connection context (which survives individual sessions on multiplexed
+// connections) and never to p.Wait() (whose finished channel is only
+// created inside Run, so a Wait started by the handler can block on a nil
+// channel forever; #4515).
+func (a *app) deregisterSession(s ssh.Session) {
+	a.mu.Lock()
+	p, ok := a.sessions[s]
+	if ok {
+		delete(a.sessions, s)
+	}
+	a.mu.Unlock()
+	if ok {
+		a.remove(p)
+	}
+}
+
+// sessionCleanupMiddleware deregisters the session's program after the
+// inner handler chain returns. wish composes middleware outside-in from
+// the end of the WithMiddleware list, so this must be listed after the
+// bubbletea middleware for its post-handler step to run after p.Run().
+func (a *app) sessionCleanupMiddleware(next ssh.Handler) ssh.Handler {
+	return func(s ssh.Session) {
+		next(s)
+		a.deregisterSession(s)
+	}
 }
 
 // send enqueues a message for each running program in a single broadcast
@@ -163,6 +207,11 @@ func (a *app) send(msg tea.Msg) {
 func (a *app) remove(p sender) {
 	a.mu.Lock()
 	var dispatch *recipientQueue
+	for s, q := range a.sessions {
+		if q == p {
+			delete(a.sessions, s)
+		}
+	}
 	for i, q := range a.progs {
 		if q == p {
 			a.progs = append(a.progs[:i], a.progs[i+1:]...)
@@ -185,6 +234,7 @@ func newApp() *app {
 		wish.WithHostKeyPath(".ssh/term_info_ed25519"),
 		wish.WithMiddleware(
 			bm.MiddlewareWithProgramHandler(a.ProgramHandler, termenv.ANSI256),
+			a.sessionCleanupMiddleware,
 			lm.Middleware(),
 		),
 	)
@@ -245,11 +295,12 @@ func (a *app) ProgramHandler(s ssh.Session) *tea.Program {
 	model.id = s.User()
 
 	p := tea.NewProgram(model, tea.WithOutput(s), tea.WithInput(s))
-	a.register(p)
-	go func() {
-		p.Wait()
-		a.remove(p)
-	}()
+	// Deregistration happens in sessionCleanupMiddleware when this
+	// session's handler chain returns after p.Run() — not via p.Wait(),
+	// whose finished channel Run creates only after this handler has
+	// returned, so an early Wait can block on a nil channel forever and
+	// leak the registry entry (#4515).
+	a.registerSession(s, p)
 
 	return p
 }
