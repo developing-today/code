@@ -1,0 +1,2447 @@
+{
+  "source": "GitHub GraphQL API",
+  "repository": "developing-today/code",
+  "fetched_at": "2026-11-13T03:39:19.237341+00:00",
+  "requested_numbers": [
+    9107,
+    9108,
+    9109,
+    9110,
+    9111,
+    9112,
+    9113,
+    9114,
+    9115,
+    9116,
+    9117,
+    9118,
+    9119,
+    9120,
+    9121,
+    9122,
+    9123,
+    9124,
+    9125,
+    9126,
+    9127,
+    9128,
+    9129,
+    9130,
+    9131,
+    9132,
+    9133,
+    9134,
+    9135,
+    9136,
+    9137,
+    9138,
+    9139,
+    9140,
+    9141,
+    9142,
+    9143,
+    9144,
+    9145,
+    9146,
+    9147,
+    9148,
+    9077,
+    9078,
+    9082,
+    9083,
+    9084,
+    9085,
+    9091,
+    9100,
+    9092,
+    9106
+  ],
+  "concurrency_limit": 4,
+  "issues": [
+    {
+      "number": 9077,
+      "missing": false,
+      "body": "## Drew's ask (2026-11-12)\n\nDo we have SSO for our own fleet services shaped like this \u2014 and if not, this issue is its home:\n\n1. **Accept external login, gated to Drew (for now):** sign in with **GitHub**, **Google**, or **Microsoft** \u2014 allowlisted to Drew's accounts only.\n2. **Our own OAuth/OIDC provider:** stand up a devtoday identity provider usable by ANY of our apps, with **basic roles**, offered to our apps as a **\"devtoday SSO\"** button \u2014 the same way apps offer \"Sign in with Google\".\n3. **Account linking:** one account, every door. GitHub / Google / Microsoft / the devtoday provider are all linkable to the SAME account at the user's choice, so a single account accepts any of the options interchangeably.\n\n## What already exists (evidence, 2026-11-12 search)\n\n- **#1182** \u2014 dashboard behind Cloudflare Access, identity = Drew's Google SSO. Covers a slice of (1) for ONE app via Cloudflare Access (Google only), and is explicitly gated on Drew's go, not yet implemented.\n- **#1253** \u2014 design: one identity across the PM stack, SSO propagation from the public entry into every layer, roles (owner / orchestrator / agent / read-only) replacing asserted authorship. Assumes an IdP at the entry (Cloudflare Access); does NOT stand up our own provider, name GitHub/Microsoft as login options, or specify account linking.\n- **#2852 / spec #2258** (ID program, epic #2056) \u2014 hosted provisioning + **SSO\u2192ID binding**: external SSO identities bound to pkgs/id accounts; slices 1\u20132 landed (PRs #4854, #4885), slices 3\u20134 open. This is linking INSIDE the id system; it does not make any fleet service accept those logins, and id is not (yet) cast as an OIDC issuer for other apps.\n- pkgs/id itself (epic #2056) is Drew's identity system \u2014 capabilities (id-caps), directory, groups; production node on the laptop :3005; a Cloudflare Workers \"serverless edition\" is designed/implemented under #5524 / #5681. Related login-design line: #5684 (identity, login & delegation), #5885, #5889.\n- No issue found (searches: oidc, oauth, sso, \"identity provider\", \"login with\", \"relying party\", \"devtoday\") that frames (1)+(2)+(3) together for fleet services, and none that offers a \"devtoday SSO\" button to our own apps.\n\n## Open design question (for the owner \u2014 NOT decided here)\n\n**Is pkgs/id the OIDC provider, or a separate minimal provider?**\n- For id-as-provider: it already has accounts, binding ceremonies (#2852), capability/role machinery (id-caps, id-groups), a hosted/serverless edition path (#5524), and Drew's 2026-10-28 ID program directive behind it. Cost: id's key-custody model (see #5684) is more exotic than a conventional OIDC issuer; fleet services need boring, standard OIDC first.\n- For a separate minimal provider: a small standard OIDC issuer (GitHub/Google/Microsoft as upstream federated logins + linking tables + roles) is faster to make every app consume, but then two identity systems exist and the relationship (does the minimal provider later fold into id? does id consume it?) must be designed, not drifted into.\nEither way the deliverables above stand: external logins gated to Drew, account linking across all four doors, basic roles consumed by fleet services (the role model in #1253 is the consumer-side contract).\n\n## Acceptance\n\n- A design note (repo `doc/`) answering the provider question above with evidence, naming the issuer, the linking model (one account, N linked external identities), the role set, and the Drew-only gate mechanism.\n- Implementation issues filed as children of this issue for: provider stand-up, GitHub login, Google login, Microsoft login, account linking UI/flow, first consumer integration (PM stack, per #1253).\n- First consumer proves the full loop: Drew signs into a fleet service via each linked door against the same account, roles enforced server-side.\n\nParents/relatives: PM stack coherence epic #1184 (this issue's native parent), ID program epic #2056 (cross-linked \u2014 the provider question lives there too), design-register/turso-cloudflare programs unaffected. Relates: #1182, #1253, #2852, #2258, #5684, #5524.\n",
+      "url": "https://github.com/developing-today/code/issues/9077",
+      "node_id": "I_kwDOJWP4788AAAABex_O9Q",
+      "title": "SSO for fleet services: GitHub/Google/Microsoft login gated to Drew + devtoday OIDC provider with roles + account linking",
+      "state": "OPEN",
+      "created_at": "2026-11-12T22:53:13Z",
+      "updated_at": "2026-11-12T22:53:18Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABaMgXrg",
+        "number": 1253,
+        "title": "design(pm-stack): one identity across the stack \u2014 SSO propagation from the public entry into every layer, roles replace asserted authorship",
+        "url": "https://github.com/developing-today/code/issues/1253",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl5YmiA",
+          "url": "https://github.com/developing-today/code/issues/9077#issuecomment-6838167176",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2781](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/ydvz7sfdvrafukvj0o7f7ry8)",
+          "createdAt": "2026-11-12T22:53:18Z",
+          "updatedAt": "2026-11-12T22:53:18Z"
+        }
+      ]
+    },
+    {
+      "number": 9078,
+      "missing": false,
+      "body": "## Program (Drew's directive, 2026-11-12 16:58 CST)\n\nThe PM stack and pkgs/id cannot run on Cloudflare Workers today. Build **workable equivalents** of the PM service, the ID service, and the fleet tool for the Workers world, on a multi-tenant data architecture. This is a large multi-part design program: it runs through the **design mill** \u2014 this epic is the starter issue; the design is produced by a summit session owning the queue item for this epic, in the mill pattern (statement inventory \u2192 state-of-the-art expansion \u2192 versioned designs \u2192 granular implementation issues). Component issues A\u2013H below carry the open design questions; the mill's designs answer them and spawn the granular implementation issues.\n\nDrew's sketch, in substance:\n\n- **Per-user ID databases in Turso** plus a **central tenancy database**, handled and served by Workers and Durable Objects. Hosted per-user instances connect and sync their data; everyone can also connect to a large **public database** we offer.\n- **Media/content plane:** media content-addressed and deduped in **R2**, with sensitivity tiers deciding placement and access (R2 + access controls, CDN for public content, or inside the Turso DB where that fits). Central open question (posed, not decided): because everything is Turso/Cloudflare, maybe data is **not copied into each DB** \u2014 a DB holds IDs/references and the content lives once in R2, garbage-collectable only when **all** references drop; a user may access an object iff their DB holds a reference to it, or it is public-published in one or more DBs. Copy-into-each-DB and hybrid models are evaluated against this sketch.\n- **Transports:** Workers limitations mean this is substantially a **second version in TypeScript** \u2014 the design says so plainly and scopes it. Client-side **WASM** is allowed in selected areas (evaluate per component what Rust logic \u2014 e.g. ID crypto/store logic \u2014 compiles to WASM vs must be rewritten). All base functions must work over **REST or WebSocket** transports (HTTP/2/3, QUIC where the platform provides it). **Direct Turso access** to the user's own DB and to the public DB is also allowed when prudent, under the tenancy/auth rules.\n- **ID data stores:** ID gains **Turso/SQLite-over-HTTP as a database store in addition to redb**, and **IndexedDB** is evaluated for the browser client \u2014 one storage interface, pluggable backends.\n- **Identity:** the hosted services are relying parties for #9077 (GitHub/Google/Microsoft login gated to Drew + devtoday OIDC provider with roles + account linking); the tenancy account model lines up with #9077/#1253's roles. Identity itself is NOT re-designed here.\n\n## Components (each its own issue under this epic)\n\n- **A.** PM service, Workers edition \u2014 TypeScript equivalent of aggregator/dashboard/reconcile as one hosted service.\n- **B.** ID service, Workers edition \u2014 the missing pieces on top of the existing serverless line (#5524, #5681, #3811).\n- **C.** Fleet tool, Workers/TypeScript equivalent \u2014 hosted Metadata stamping/query, session provenance, sync tools.\n- **D.** ID store abstraction \u2014 Turso/SQLite-over-HTTP beside redb; IndexedDB evaluated.\n- **E.** Tenancy architecture \u2014 per-user Turso DBs + central tenancy DB; Workers/DO serving; public DB.\n- **F.** Content-addressed media/data plane \u2014 R2 dedup, reference-based access, GC on last reference.\n- **G.** Second-version-in-TypeScript scoping + transports \u2014 REST/WebSocket everywhere, WASM where it fits, direct Turso when prudent.\n- **H.** SSO relying-party integration \u2014 hosted services consume #9077; tenancy accounts \u2194 #1253 roles.\n\n## Lineage and relations\n\n- Data model consumed, not re-invented: #9060's merged design (doc/2026-11-12T22-50-00Z_design_pm-board-hierarchy-genealogy) \u2014 board registry, hierarchy, Metadata. Children #9062 (collector registry), #9070 (genealogy read model), #9073/#9074 (fleet Metadata superset + metadata DB), #9076 (dual ingestion) are the laptop-world counterparts this program's hosted editions must stay model-compatible with.\n- Turso + Cloudflare epic: #8987. PM data unification background: #3142, #1744. Fleet sync tools: #9016. SSO: #9077, #1253, #2852. ID program: #2056.\n\n## Acceptance (program level)\n\n- [ ] Design-mill build-out complete: statement inventory covering A\u2013H with zero unmapped statements; versioned designs (V1 = what exists today) merged to main under doc/.\n- [ ] Every component issue's named open questions answered in a merged design or explicitly batched to Drew as a ruling with options + recommendation.\n- [ ] Granular implementation issues filed for everything implementable, parented under the component issues.\n- [ ] The F-plane reference-vs-copy question decided with evidence (or batched to Drew with a recommendation).\n",
+      "url": "https://github.com/developing-today/code/issues/9078",
+      "node_id": "I_kwDOJWP4788AAAABeyGz7w",
+      "title": "epic: hosted editions \u2014 PM service, ID service, and fleet tool as workable Cloudflare Workers equivalents (multi-tenant Turso/R2 architecture)",
+      "state": "CLOSED",
+      "created_at": "2026-11-12T23:01:40Z",
+      "updated_at": "2026-11-13T00:40:35Z",
+      "closed_at": "2026-11-12T23:07:19Z",
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABeuuvjw",
+        "number": 8987,
+        "title": "epic: Turso + Cloudflare integration \u2014 databases, edge, gateway, and DNS",
+        "url": "https://github.com/developing-today/code/issues/8987",
+        "state": "OPEN"
+      },
+      "native_children": [
+        {
+          "id": "I_kwDOJWP4788AAAABeyHqLA",
+          "number": 9079,
+          "title": "design(pm-stack): PM service, Workers edition \u2014 TypeScript equivalent of aggregator/dashboard/reconcile as one hosted service",
+          "url": "https://github.com/developing-today/code/issues/9079",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABeyHr1w",
+          "number": 9080,
+          "title": "design(id): ID service, Workers edition \u2014 close the gaps on the #5524/#5681 serverless line to a workable hosted equivalent",
+          "url": "https://github.com/developing-today/code/issues/9080",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABeyHtlQ",
+          "number": 9081,
+          "title": "design(fleet): fleet tool, Workers/TypeScript equivalent \u2014 hosted Metadata stamping/query, session provenance, sync tools",
+          "url": "https://github.com/developing-today/code/issues/9081",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABeyHvyw",
+          "number": 9082,
+          "title": "design(id): store abstraction \u2014 Turso/SQLite-over-HTTP beside redb, IndexedDB evaluated (one interface, pluggable backends)",
+          "url": "https://github.com/developing-today/code/issues/9082",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABeyHxXA",
+          "number": 9083,
+          "title": "design(pm-stack): tenancy architecture \u2014 per-user Turso databases + central tenancy DB, served by Workers and Durable Objects",
+          "url": "https://github.com/developing-today/code/issues/9083",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABeyHzKw",
+          "number": 9084,
+          "title": "design(pm-stack): content-addressed media/data plane \u2014 R2 dedup, reference-based access, GC when the last reference drops",
+          "url": "https://github.com/developing-today/code/issues/9084",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABeyH01A",
+          "number": 9085,
+          "title": "design(fleet): second version in TypeScript \u2014 scope, WASM evaluation, transports (REST/WebSocket), and direct-Turso prudence rules",
+          "url": "https://github.com/developing-today/code/issues/9085",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABeyH2Sg",
+          "number": 9086,
+          "title": "design(pm-stack): SSO relying-party integration \u2014 hosted editions consume #9077; tenancy accounts aligned with #1253 roles",
+          "url": "https://github.com/developing-today/code/issues/9086",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABeyJcag",
+          "number": 9087,
+          "title": "design(pm-stack): self-hosted tier \u2014 Kubernetes cluster with multi-TB tiered storage as the largest central store; RustFS/NATS adapter primitives",
+          "url": "https://github.com/developing-today/code/issues/9087",
+          "state": "OPEN"
+        }
+      ],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl5kBgQ",
+          "url": "https://github.com/developing-today/code/issues/9078#issuecomment-6838354305",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2782](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/rpp5o6w4dllahrg2nyjqciss)",
+          "createdAt": "2026-11-12T23:01:47Z",
+          "updatedAt": "2026-11-12T23:01:47Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl5mXdg",
+          "url": "https://github.com/developing-today/code/issues/9078#issuecomment-6838392694",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "## Component map (filed 2026-11-12, design-mill intake)\n\nAll eight components are native sub-issues of this epic (verified by read-back):\n\n- **A** \u2014 #9079 PM service, Workers edition\n- **B** \u2014 #9080 ID service, Workers edition (gaps on #5524/#5681/#3811)\n- **C** \u2014 #9081 Fleet tool, Workers/TypeScript equivalent\n- **D** \u2014 #9082 ID store abstraction: Turso/SQLite-over-HTTP beside redb, IndexedDB evaluated\n- **E** \u2014 #9083 Tenancy architecture: per-user Turso DBs + central tenancy DB\n- **F** \u2014 #9084 Content-addressed media/data plane: R2 references vs copies (central open question)\n- **G** \u2014 #9085 Second version in TypeScript: scope, WASM, transports, direct-Turso rules\n- **H** \u2014 #9086 SSO relying-party integration (#9077 / #1253 / #2852)\n\nThis epic is a native sub-issue of #8987 (Turso + Cloudflare epic). Design doc scaffold: doc/2026-11-12T23-10-00Z_design_hosted-editions-workers/ (intake note, merged to main). The summit session owns the queue item for this epic and produces the full design build-out in the mill pattern.",
+          "createdAt": "2026-11-12T23:03:32Z",
+          "updatedAt": "2026-11-12T23:03:32Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl5nt2A",
+          "url": "https://github.com/developing-today/code/issues/9078#issuecomment-6838414808",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "## Architecture amendment (Drew, 2026-11-12 17:03 CST) \u2014 binding on all components\n\n1. **Dual tier-1 platforms.** We go ALL IN on Cloudflare + Turso as the primary hosted platform \u2014 AND the faster Rust-based binaries with extended features are ALSO primary. Both are tier 1: the Workers/Turso edition is not a reduced sibling, and the Rust native edition is not legacy. All issue/design language frames **parity + deliberate divergence** (extended features may exist Rust-side first/only where Workers cannot) \u2014 never 'port down'.\n2. **Store pluralism, rebalanced.** The store abstraction (redb / Turso-SQLite-over-HTTP / IndexedDB) stays, but do NOT over-index on supporting many stores or bucket/stream/DB variations for varied implementations. CF+Turso is the main line; the abstraction exists to serve the tier-1 editions and the self-hosted backend, not as an end in itself. (Applied to #9082's acceptance.)\n3. **Longer-term self-hosted tier.** Filed as component **I**: a Kubernetes cluster with multi-TB disk arrays as our LARGEST CENTRAL STORAGE. Component F's storage/content primitives must be adapter-friendly toward RustFS (S3-compatible object store), NATS (streams/messaging), and TIERED architectures \u2014 multiple disks/storage classes with different latency/bandwidth, retention policies per tier, placement/movement between tiers. Primitives + adapter interfaces are designed now; the cluster is the longer-term build.\n4. **Our server = a peer, not a special case.** A self-hosted server (the ID server) is no different from any other node in the protocol/architecture, except (a) a much more complex backend (the K8s/tiered storage of point 3) and (b) potentially advanced clustering of ID services for scalability. Tenancy/sync/content designs treat hosted-CF, Rust-binary, and clustered-self-hosted as the same participant kinds with different backends \u2014 no protocol special-casing for 'ours'.",
+          "createdAt": "2026-11-12T23:04:33Z",
+          "updatedAt": "2026-11-12T23:04:33Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl5rjKA",
+          "url": "https://github.com/developing-today/code/issues/9078#issuecomment-6838477608",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "Design-mill intake complete: queue item **task 15339** (queue: code, status: queued, priority 10) \u2014 the summit session claims it and owns the build-out per the launch packet in the design-mill skill. Intake doc merged: PR #9088 (doc/2026-11-12T23-04-00Z_design_hosted-editions-workers/note.md).",
+          "createdAt": "2026-11-12T23:07:29Z",
+          "updatedAt": "2026-11-12T23:07:29Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl5u3Hw",
+          "url": "https://github.com/developing-today/code/issues/9078#issuecomment-6838531871",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "\ud83e\udd16 **Agent note** \u00b7 done\n\nClaimed queue task 15339 in lane `code-h`; fresh GitHub verification found issue #9078 already CLOSED with `status:done`, and intake PR #9088 MERGED (`02beec0eac`). Per terminal protocol, task 15339 was completed as `already_done`. Note: the epic acceptance checklist remains unchecked, so closure does not demonstrate the full design-mill build-out is complete. Queue completion returned follow-on task 15340 for reconciliation.\n\n<!-- agent-note:v1 agent=repo-worker-code -->",
+          "createdAt": "2026-11-12T23:10:05Z",
+          "updatedAt": "2026-11-12T23:10:05Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl5xu6w",
+          "url": "https://github.com/developing-today/code/issues/9078#issuecomment-6838578923",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "<!-- agent-note:v1 agent=repo-worker-code state=done task=15340 lane=code-i at=2026-11-12T23:12:00Z -->\nClaimed task 15340, then freshly verified epic #9078 is already CLOSED with status:done. Component issues #9079\u2013#9087 remain OPEN. No files were changed; queue task completed as already_done based on the parent epic\u2019s current state.",
+          "createdAt": "2026-11-12T23:11:53Z",
+          "updatedAt": "2026-11-12T23:11:53Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl7X-6Q",
+          "url": "https://github.com/developing-today/code/issues/9078#issuecomment-6840254185",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "SUCCESSOR PROGRAM (Drew directive, 2026-11-12 18:29 CST): #9106 'ID/Atlas extensible primitives, federation, namespaces' is the follow-on major design iteration to this program. It consumes the hosted-editions model (dual tier-1 stands \u2014 fully featured editions, deliberate divergence documented, no reduced ports) and adds: the extensibility-as-architecture clarification (see the amendment on #9082), peer federation + trust, the namespace system, triples/user attributes, and storage economics. This epic's components remain the hosted-editions line; #9106's are the substrate/federation line. Cross-linked both ways.",
+          "createdAt": "2026-11-13T00:40:34Z",
+          "updatedAt": "2026-11-13T00:40:34Z"
+        }
+      ]
+    },
+    {
+      "number": 9082,
+      "missing": false,
+      "body": "Component **D** of epic #9078 (hosted editions program) \u2014 Drew's explicit item (2026-11-12). Design first (design mill, under #9078); filed under the ID program because the store is pkgs/id's own layer.\n\n## What\n\nOne storage interface for pkgs/id with pluggable backends:\n\n- **redb** \u2014 the existing native backend (stays).\n- **Turso / SQLite-over-HTTP (libSQL)** \u2014 NEW backend, so the same ID store runs against a hosted per-user Turso DB (component E of #9078) or the public DB.\n- **IndexedDB** \u2014 EVALUATE for the browser client (offline/local-first web use); adopt, defer, or reject with evidence.\n\n## Builds on / relations\n\n- #5681 (serverless storage: D1 vs Turso vs both) and #5863 (serverless storage contract) cover the SERVERLESS EDITION's storage choice \u2014 this issue is the store layer of id itself, shared by native, hosted, and browser builds. Coordinate: the contract in #5863 and the interface here must not diverge silently; divergences are named in the design.\n- Consumers: component B (hosted ID) and component E (per-user Turso DBs) under #9078; ID epic #2056.\n\n## Open design questions\n\n1. Interface shape: what is the smallest store contract (get/put/delete/scan/transactions/watch?) that redb, libSQL-over-HTTP, and IndexedDB can ALL honor without leaking backend semantics \u2014 and what id features (event store, group log) stress it hardest?\n2. Transaction and consistency semantics per backend: what does the interface promise when the backend can't (HTTP round-trips, IndexedDB transaction scoping)?\n3. Which backend is authoritative in each deployment shape (native single-user, hosted per-user, browser) and how does sync/migration between backends work (redb \u2192 Turso lift for existing users)?\n4. WASM angle: does any backend run as Rust-compiled WASM in the browser (redb on WASM? libSQL WASM client?) vs TypeScript implementations \u2014 feeds component G of #9078.\n\n## Acceptance\n\n- [ ] Design merged under doc/ as part of #9078's build-out: interface contract, per-backend semantics, IndexedDB verdict with evidence.\n- [ ] Relationship to #5681/#5863 stated explicitly.\n- [ ] Granular implementation issues filed under this issue.\n",
+      "url": "https://github.com/developing-today/code/issues/9082",
+      "node_id": "I_kwDOJWP4788AAAABeyHvyw",
+      "title": "design(id): store abstraction \u2014 Turso/SQLite-over-HTTP beside redb, IndexedDB evaluated (one interface, pluggable backends)",
+      "state": "OPEN",
+      "created_at": "2026-11-12T23:02:44Z",
+      "updated_at": "2026-11-13T00:40:33Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABeyGz7w",
+        "number": 9078,
+        "title": "epic: hosted editions \u2014 PM service, ID service, and fleet tool as workable Cloudflare Workers equivalents (multi-tenant Turso/R2 architecture)",
+        "url": "https://github.com/developing-today/code/issues/9078",
+        "state": "CLOSED"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl5lcUw",
+          "url": "https://github.com/developing-today/code/issues/9082#issuecomment-6838377555",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2786](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/xpk635q1tpod0prloyhg4w2y)",
+          "createdAt": "2026-11-12T23:02:51Z",
+          "updatedAt": "2026-11-12T23:02:51Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl5oCYg",
+          "url": "https://github.com/developing-today/code/issues/9082#issuecomment-6838420066",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "Amendment applied (Drew 2026-11-12 17:03, epic #9078): store pluralism REBALANCED. Acceptance language narrowed: CF+Turso is the main line; the abstraction exists to serve the two tier-1 editions and the self-hosted backend \u2014 NOT as an end in itself. Do not expand scope to many stores or bucket/stream/DB variations for varied implementations; redb + Turso/libSQL are the committed backends, IndexedDB stays an evaluate-only question.",
+          "createdAt": "2026-11-12T23:04:48Z",
+          "updatedAt": "2026-11-12T23:04:48Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl7X80A",
+          "url": "https://github.com/developing-today/code/issues/9082#issuecomment-6840253648",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "AMENDMENT \u2014 clarification of record (Drew, 2026-11-12 18:29 CST; program #9106): the framing 'store abstraction as plumbing, not a matrix' is accurate ONLY as an implementation priority. As architecture, extensibility IS the goal: the primitives/adapters/hooks in this issue must be DESIGNED for the full matrix of stores/buckets/streams/transports (Postgres plausible later, NATS-stream transports, custom per-operation connection types) \u2014 what is de-prioritized is implementing the long tail now. See #9110 (primitive/adapter/hook boundary spec + conformance suite), which this issue now feeds. Nothing about the redb -> +Turso/SQLite/IndexedDB scope changes.",
+          "createdAt": "2026-11-13T00:40:32Z",
+          "updatedAt": "2026-11-13T00:40:32Z"
+        }
+      ]
+    },
+    {
+      "number": 9083,
+      "missing": false,
+      "body": "Component **E** of epic #9078 (hosted editions program). Design first (design mill, under #9078).\n\n## What (Drew's sketch, 2026-11-12)\n\n- **Per-user ID databases in Turso**: each user gets their own hosted database(s), served and handled by Workers and Durable Objects (routing, auth, sync coordination, provisioning).\n- A **central tenancy database**: the registry of users, their databases, account state, and roles \u2014 the control plane the Workers consult.\n- **Hosted per-user instances connect and sync their data** (a user's local/native instance \u2194 their hosted DB, both directions, with a conflict story).\n- A large **public database we offer**: everyone can connect to it too \u2014 public content published there is readable by all; how publishing works (component F's reference model) is designed with F.\n\n## Builds on / relations\n\n- #3811 \u2014 hosted Worker API + per-user DO provisioning and metering (the closest existing machinery; E must state whether it builds on, wraps, or supersedes it).\n- Turso + Cloudflare epic: #8987 (databases, edge, scoped credentials). Identity/accounts: #9077 + component H under #9078; roles from #1253. Store backends: component D. Blob jurisdiction isolation: #3401.\n\n## Open design questions\n\n1. Tenancy DB schema: what lives centrally (accounts, DB registry, roles, publish index?) vs per-user \u2014 and what must NEVER live centrally (content? keys?)?\n2. DO responsibilities: one DO per user? per DB? \u2014 routing, presence, sync sessions, rate limiting, metering (vs #3811's metering).\n3. Provisioning lifecycle: signup \u2192 tenancy row \u2192 Turso DB creation \u2192 credential issuance/rotation \u2192 suspension/deletion; who can do each step.\n4. Sync protocol: native instance \u2194 hosted DB \u2014 change capture, ordering, conflict resolution, offline behavior; does sync ride component G's transports or direct Turso replication?\n5. Public DB: single shared Turso DB or a federation \u2014 write path (who may publish), moderation/abuse controls, and how per-user DBs reference its content (component F).\n6. Credential model for direct Turso access (component G): scoped, expiring tokens per user per DB \u2014 issuance and revocation from the tenancy plane.\n\n## Acceptance\n\n- [ ] Design merged under doc/ as part of #9078's build-out: tenancy schema sketch, DO inventory, provisioning lifecycle, sync protocol, public-DB rules.\n- [ ] Relationship to #3811 decided and recorded.\n- [ ] Granular implementation issues filed under this issue.\n",
+      "url": "https://github.com/developing-today/code/issues/9083",
+      "node_id": "I_kwDOJWP4788AAAABeyHxXA",
+      "title": "design(pm-stack): tenancy architecture \u2014 per-user Turso databases + central tenancy DB, served by Workers and Durable Objects",
+      "state": "OPEN",
+      "created_at": "2026-11-12T23:02:45Z",
+      "updated_at": "2026-11-13T00:40:36Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABeyGz7w",
+        "number": 9078,
+        "title": "epic: hosted editions \u2014 PM service, ID service, and fleet tool as workable Cloudflare Workers equivalents (multi-tenant Turso/R2 architecture)",
+        "url": "https://github.com/developing-today/code/issues/9078",
+        "state": "CLOSED"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl5lgOA",
+          "url": "https://github.com/developing-today/code/issues/9083#issuecomment-6838378552",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2787](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/rjk4zbymmguzrnxaasuw3x11)",
+          "createdAt": "2026-11-12T23:02:54Z",
+          "updatedAt": "2026-11-12T23:02:54Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl5oHxg",
+          "url": "https://github.com/developing-today/code/issues/9083#issuecomment-6838421446",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "Amendment applied (Drew 2026-11-12 17:03, epic #9078): PEER PRINCIPLE. The tenancy/sync design treats hosted-CF nodes, Rust-binary nodes, and clustered self-hosted nodes (component I, #9087) as the SAME participant kinds with different backends. Our own server is a peer, not a special case \u2014 no protocol special-casing; the only differences are backend complexity and possible ID-service clustering.",
+          "createdAt": "2026-11-12T23:04:51Z",
+          "updatedAt": "2026-11-12T23:04:51Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl7YBJw",
+          "url": "https://github.com/developing-today/code/issues/9083#issuecomment-6840254759",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "INPUT from program #9106 (Drew, 2026-11-12 18:29 CST): tenancy gains a federation dimension \u2014 peer classes (fully trusted / send-only / accept-signed-from), signed-data-only acceptance, federated query fan-out, and reputation are designed in Part B of #9106 (#9141-#9148, under #9108). The tenancy DB's peer/account model should expect those classes as configuration; don't invent a parallel trust model here.",
+          "createdAt": "2026-11-13T00:40:36Z",
+          "updatedAt": "2026-11-13T00:40:36Z"
+        }
+      ]
+    },
+    {
+      "number": 9084,
+      "missing": false,
+      "body": "Component **F** of epic #9078 (hosted editions program). Design first (design mill, under #9078). This carries the program's CENTRAL open question.\n\n## Drew's sketch (posed, not decided \u2014 2026-11-12)\n\nMedia is **content-addressed and deduped in R2**. Sensitivity tiers decide placement and access: R2 with access controls, CDN for public content, or inside the Turso DB where that fits.\n\nBecause everything is already Turso/Cloudflare, maybe data does NOT need to be copied into each database: **the DB holds IDs/references; the content lives once in R2** and can be garbage-collected only when ALL references drop. Access rule candidate: a user may access an object iff their DB holds a reference to it, OR the object is public-published in one or more DBs.\n\n## Alternatives the design must evaluate against the sketch\n\n1. Reference-only (Drew's sketch above).\n2. Copy-into-each-DB (content replicated per tenant DB).\n3. Hybrid (small content inline in DB, large content referenced in R2; or hot/cold split by sensitivity/size).\n\nEvaluation axes: storage cost under dedup, access-control soundness (can a reference be forged or enumerated?), GC correctness (reference counting vs mark-and-sweep across many DBs; races with new references), deletion/privacy (a user deleting content others still reference; jurisdiction rules per #3401), latency (extra hop through R2 vs local rows), and what 'published public' means mechanically.\n\n## Builds on / relations\n\n- Tenancy: component E under #9078 (per-user DBs + public DB are where references live). Turso + Cloudflare epic: #8987 (R2, CDN).\n- #3401 \u2014 isolate hosted blobs by jurisdiction and minimize shared directory (ID hosted blobs; the sensitivity/jurisdiction input).\n- Atlas's content-addressed provenance work (#3125) is a DIFFERENT domain \u2014 prior art to consult, not a dependency.\n\n## Acceptance\n\n- [ ] Design merged under doc/ as part of #9078's build-out: the three models compared on the axes above; a recommendation recorded \u2014 decided in the mill or batched to Drew with options + recommendation.\n- [ ] Sensitivity tier table: which content classes go R2-private / R2 + CDN / in-DB, and the access check for each.\n- [ ] GC design: reference tracking home (tenancy DB? per-DB?), collection safety argument.\n- [ ] Granular implementation issues filed under this issue.\n",
+      "url": "https://github.com/developing-today/code/issues/9084",
+      "node_id": "I_kwDOJWP4788AAAABeyHzKw",
+      "title": "design(pm-stack): content-addressed media/data plane \u2014 R2 dedup, reference-based access, GC when the last reference drops",
+      "state": "OPEN",
+      "created_at": "2026-11-12T23:02:47Z",
+      "updated_at": "2026-11-13T00:40:39Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABeyGz7w",
+        "number": 9078,
+        "title": "epic: hosted editions \u2014 PM service, ID service, and fleet tool as workable Cloudflare Workers equivalents (multi-tenant Turso/R2 architecture)",
+        "url": "https://github.com/developing-today/code/issues/9078",
+        "state": "CLOSED"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl5lk4g",
+          "url": "https://github.com/developing-today/code/issues/9084#issuecomment-6838379746",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2788](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/h9hpm8uv4zj0ac4o69syva2m)",
+          "createdAt": "2026-11-12T23:02:57Z",
+          "updatedAt": "2026-11-12T23:02:57Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl5oFBw",
+          "url": "https://github.com/developing-today/code/issues/9084#issuecomment-6838420743",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "Amendment applied (Drew 2026-11-12 17:03, epic #9078): the primitives designed here must be ADAPTER-FRIENDLY toward the self-hosted tier (component I, #9087): RustFS (S3-compatible) as R2's counterpart, NATS for streams/messaging, and tiered storage classes with per-tier retention and placement/movement. Design the object-store and reference/GC contracts against an adapter interface, not against R2 alone.",
+          "createdAt": "2026-11-12T23:04:49Z",
+          "updatedAt": "2026-11-12T23:04:49Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl6hmzw",
+          "url": "https://github.com/developing-today/code/issues/9084#issuecomment-6839363279",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "## Cross-reference from the Atlas v1 program (2026-11-12) \u2014 inputs, not decisions\n\nThe Atlas v1 program (starter #9091, proto design `doc/2026-11-12T23-59-00Z_design_atlas_v1_proto/note.md`) touches this issue's plane in two places, both as **inputs to this issue's open evaluation** \u2014 neither settles S10 (reference-vs-copy) or the GC design, which remain this issue's to decide:\n\n- **Workstream F (#9098)** measures the Atlas-specific case: embeddings + content-addressed hash + per-embed metadata in Turso, raw content in the R2/RustFS/Drive system, with a hot cache in Turso/D1. Its verdict (adopt / cold-only / reject, with storage, cost, and latency measurements) will be commented here as evidence for the hybrid model's Atlas instance.\n- **Workstream H (#9100)** designs the virtual filesystem over this issue's content-addressed store: path/location records referencing immutable bytes (one upload, N location records), with an aggregated index (own Turso DB or sidecar tables; Parquet / Cloudflare Basin evaluated for the aggregated metadata). Its location-record and reference model must compose with this issue's GC design \u2014 a location record is a reference in this issue's sense, and H's spec will say so explicitly.\n\nAtlas's in-domain prior art remains #3125 (provenance registry, content-addressed extracts), already noted in this issue as a different domain to consult.\n",
+          "createdAt": "2026-11-12T23:49:00Z",
+          "updatedAt": "2026-11-12T23:49:00Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl7YDUA",
+          "url": "https://github.com/developing-today/code/issues/9084#issuecomment-6840255312",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "INPUT from program #9106 (Drew, 2026-11-12 18:29 CST): content-plane addressing is specified in Part A of #9106 \u2014 ID shapes + hash.metadata sidecars (#9113/#9114) and the harvested LOCATION INDEX (#9115: all locations per hash \u2014 R2 bucket, laptop hostname+path, Drive account-prefixed, Drive URL) are the shared addressing layer; this issue's reference-vs-copy evaluation should treat them as inputs, not alternatives. Shared-bucket tenancy (trusted vs untrusted) is designed in #9136; GC large-file priority in #9137.",
+          "createdAt": "2026-11-13T00:40:38Z",
+          "updatedAt": "2026-11-13T00:40:38Z"
+        }
+      ]
+    },
+    {
+      "number": 9085,
+      "missing": false,
+      "body": "Component **G** of epic #9078 (hosted editions program). Design first (design mill, under #9078). This is the program's cross-cutting runtime/transport design; components A\u2013C consume its verdicts.\n\n## Premise (Drew, 2026-11-12)\n\nWorkers limitations mean the hosted editions are substantially **a second version written in TypeScript**. The design says so plainly and scopes exactly what 'second version' covers \u2014 PM service (A), ID service (B), fleet tool (C) \u2014 and what is NOT rewritten.\n\n## Scope of the design\n\n1. **Rewrite-vs-WASM per component**: client-side WASM is allowed in selected areas. For each piece of Rust logic (ID crypto and store logic are the named candidates), evaluate: compile to WASM and reuse / rewrite in TypeScript / keep server-side only. Criteria: correctness risk (crypto!), maintenance divergence between two implementations of the same semantics, bundle/runtime limits.\n2. **Transports**: ALL base functions must work over REST or WebSocket transports (HTTP/2/3, QUIC where the platform provides it). Define the base-function inventory per component and the transport contract for each (request/response vs streaming vs realtime sync), including offline/reconnect behavior.\n3. **Direct Turso access**: also allowed \u2014 to the user's OWN database and to the PUBLIC database \u2014 'when prudent'. This design defines prudent: which operations may go direct (reads? writes? sync?), under what credential scoping/expiry (from component E), and which operations must NEVER bypass the service layer (anything needing stamping, authorization beyond the DB scope, or cross-tenant access).\n4. **Shared-semantics discipline**: how the TS version and the Rust/native version keep one data model (Metadata, packets, store contracts) \u2014 shared schemas/fixtures/tests, and what happens when they diverge.\n\n## Builds on / relations\n\n- Components A, B, C, D, E under #9078 (D's WASM question feeds \u00a71; E's credential model feeds \u00a73).\n- #5671 \u2014 ID transport fallback for UDP-denied networks (transport prior art inside the ID program).\n\n## Acceptance\n\n- [ ] Design merged under doc/ as part of #9078's build-out: per-component rewrite/WASM table, base-function transport inventory, direct-Turso prudence rules.\n- [ ] Granular implementation issues filed under this issue or handed to the owning component issues with cross-links.\n",
+      "url": "https://github.com/developing-today/code/issues/9085",
+      "node_id": "I_kwDOJWP4788AAAABeyH01A",
+      "title": "design(fleet): second version in TypeScript \u2014 scope, WASM evaluation, transports (REST/WebSocket), and direct-Turso prudence rules",
+      "state": "OPEN",
+      "created_at": "2026-11-12T23:02:49Z",
+      "updated_at": "2026-11-13T00:40:47Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABeyGz7w",
+        "number": 9078,
+        "title": "epic: hosted editions \u2014 PM service, ID service, and fleet tool as workable Cloudflare Workers equivalents (multi-tenant Turso/R2 architecture)",
+        "url": "https://github.com/developing-today/code/issues/9078",
+        "state": "CLOSED"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl5lpXQ",
+          "url": "https://github.com/developing-today/code/issues/9085#issuecomment-6838380893",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2789](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/hhvk25apeilyhzq93xixatbc)",
+          "createdAt": "2026-11-12T23:03:00Z",
+          "updatedAt": "2026-11-12T23:03:00Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl5oKfg",
+          "url": "https://github.com/developing-today/code/issues/9085#issuecomment-6838422142",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "Amendment applied (Drew 2026-11-12 17:03, epic #9078): DUAL TIER-1 FRAMING. Both editions are primary \u2014 Cloudflare+Turso AND the Rust binaries with extended features. Scope/transport verdicts are framed as parity + deliberate divergence (extended features may be Rust-side first/only where Workers cannot), never as porting down to a reduced edition.",
+          "createdAt": "2026-11-12T23:04:53Z",
+          "updatedAt": "2026-11-12T23:04:53Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl7YLvg",
+          "url": "https://github.com/developing-today/code/issues/9085#issuecomment-6840257470",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "INPUT from program #9106 (Drew, 2026-11-12 18:29 CST): (1) dual tier-1 reaffirmed \u2014 the TS edition is fully featured, and \u00a70 of #9106 (#9110) requires the primitive/adapter/hook surface be designed for the full transport matrix (REST/WebSocket now; NATS-stream and others as adapters later), so transport choice in this issue is a first adapter, not the architecture. (2) Federated query transports (Part B, #9144) ride the same transports designed here.",
+          "createdAt": "2026-11-13T00:40:47Z",
+          "updatedAt": "2026-11-13T00:40:47Z"
+        }
+      ]
+    },
+    {
+      "number": 9091,
+      "missing": false,
+      "body": "## What this is\n\nDesign-mill starter for the **Atlas v1 program** (Drew directive, 2026-11-12 17:38 CST): build out a full design for a strong v1 of Atlas \u2014 search build-out with Workers fan-out, the backup mesh, the Metadata schema + evolution doctrine, the per-embed classification model, always-on corpus ingestion, embed-storage economics, query-as-data, a virtual filesystem over the content-addressed store, and the worker-instructions rollout.\n\n- **Proto design (intake output, merged to main):** `doc/2026-11-12T23-59-00Z_design_atlas_v1_proto/note.md` in developing-today/code \u2014 current-state inventory, workstream specs A\u2013I, and the statement map. Read it from the repo.\n- **Program home:** epic #8983 (Atlas program). Workstreams are filed as sibling sub-issues of #8983 and linked from the proto design \u00a7J.\n- **Summit ownership:** the claiming session runs the design-mill pattern (statement inventory \u2192 state-of-the-art expansion \u2192 versioned designs \u2192 granular implementation issues) under the launch packet in `~/workspace/custom-skills/design-mill/SKILL.md`, owning this issue end to end. It elaborates the proto design into the full design set \u2014 many smaller designs \u2014 and files the granular implementation issues under each workstream issue.\n\n## Binding constraints from the directive\n\n- Atlas is **internal-use only**; the corpus is never exposed directly to a public surface (disclosure contexts are a classification-model concern, workstream D).\n- Coordinate, don't duplicate: #9060 design \u00a712 (issue/PR Metadata), slices #9073/#9074; content-plane models in #9084 (reference-vs-copy is UNDECIDED there \u2014 this program references its evaluation, never pre-settles it); queue/PM genealogy model from #9060 generally.\n- The Metadata schema doctrine (workstream C) is shared between Atlas corpus metadata and issue/PR Metadata: additive-only evolution, version always carried, breaking changes parked and applied as one set with a reclassify-everything pass.\n\n## Acceptance\n\n- [ ] Statement inventory from the proto design \u00a7J: zero unmapped statements.\n- [ ] Each workstream A\u2013I elaborated into versioned design docs merged under `doc/`, or explicitly folded into an existing design by amendment with a link recorded here.\n- [ ] Granular implementation issues filed under each workstream issue with acceptance criteria.\n- [ ] Open questions answered in the mill or batched to Drew with options + a recommendation.\n- [ ] This issue's checklist updated as workstreams land; the queue task completes only when the above are demonstrably done (not on epic closure alone).\n",
+      "url": "https://github.com/developing-today/code/issues/9091",
+      "node_id": "I_kwDOJWP4788AAAABeyvb3w",
+      "title": "design(atlas): Atlas v1 build-out \u2014 design-mill starter (proto design \u2192 full design set)",
+      "state": "OPEN",
+      "created_at": "2026-11-12T23:47:16Z",
+      "updated_at": "2026-11-13T02:39:51Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABeuqMYg",
+        "number": 8983,
+        "title": "epic: Atlas program \u2014 unified search and memory index over every corpus",
+        "url": "https://github.com/developing-today/code/issues/8983",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl6f2cg",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6839334514",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2794](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/dlk44xl0s2ay514unzhlwbw9)",
+          "createdAt": "2026-11-12T23:47:19Z",
+          "updatedAt": "2026-11-12T23:47:19Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl6nuTw",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6839463503",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "## Design-mill intake complete (2026-11-12)\n\n- **Proto design merged:** PR #9102 (merge `810924ae8c`) \u2014 `doc/2026-11-12T23-59-00Z_design_atlas_v1_proto/note.md` (21,083 B, verified on main). Current-state inventory + workstream specs A\u2013I + statement\u2192issue map (\u00a7J) + open questions (\u00a7K).\n- **Workstream issues** (all native sub-issues of #8983, `epic/atlas-program` labeled): A #9092 \u00b7 B #9093 \u00b7 B-research #9094 \u00b7 C #9095 \u00b7 D #9096 \u00b7 E #9097 \u00b7 F #9098 \u00b7 G #9099 \u00b7 H #9100 \u00b7 I #9101.\n- **Amendments landed:** Metadata doctrine bound onto #9073 (comment 6839361945) and #9074 (comment 6839362599); content-plane cross-reference on #9084 (comment 6839363279); breaking-changes parking lot seeded on #9095 (comment 6839363887 \u2014 parked set explicitly empty).\n- **Queue task: 15341** (queue `code`, priority 10, status queued at filing) \u2014 validated `repo-task/v1` packet; its body carries the summit-ownership instructions and the anti-`already_done` lesson from task 15339. The claiming summit session owns this issue's acceptance checklist end to end.\n- **One correction to the original brief, on the record:** there is no `developing-today/atlas` repository \u2014 Atlas lives in developing-today/code (`pkgs/atlas-search`, `pkgs/fleet/crates/fleet-search`, `doc/` designs), which is why the proto design landed in code's `doc/` per the 17 existing Atlas design precedents.\n- **Source-coverage note for workstream E:** every source in Drew's list was confirmed to exist (queue/PM Turso DBs, GitHub orgs, Muse data, OpenCode DB + sessions, ID stores). One adjustment: the Muse corpus source is partially in the index already via the 2026-10-31 publish (Muse among its adapters); OpenCode **thinking traces** are NOT confirmed present in any store today \u2014 that is exactly the investigation #9097 carries.\n",
+          "createdAt": "2026-11-12T23:54:54Z",
+          "updatedAt": "2026-11-12T23:54:54Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl6vBNg",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6839583030",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "agent-note:v1\nstate: picked_up\ntask: 15341\nlane: any-b (Muse lane, worker repo-worker-code)\nstage: claimed -> summit_launch\n\nPicked up task 15341 (Atlas v1 design-mill build-out, starter #9091) and revalidated against fresh GitHub state:\n\n- #9091 was CLOSED at intake (2026-11-12T23:50:20Z, label status:done) with its acceptance checklist entirely unchecked; the intake comment names the claiming summit session as owning that checklist end to end. Per the packet's explicit lesson from task 15339, this task is NOT being completed as already_done. I have reopened #9091 and synced labels to in-progress.\n- All workstreams are OPEN: #9092 (A), #9093 (B), #9094 (B-research), #9095 (C), #9096 (D), #9097 (E), #9098 (F), #9099 (G), #9100 (H), #9101 (I); epic #8983 OPEN. No hard-stop labels on #9091.\n- Next: this task is being sent to a summit session on opencode-route/summit via the #8210 transfer (Rule 4(1): the packet and the design-mill skill require summit ownership; the Muse lane is the orchestrator that launches it). The bound session owns the acceptance checklist: statement inventory vs proto section J (zero unmapped), state-of-the-art expansion A-I, versioned designs merged under doc/, granular implementation issues under #9092-#9101, #9091 checklist updated as workstreams land.\n",
+          "createdAt": "2026-11-13T00:01:55Z",
+          "updatedAt": "2026-11-13T00:01:55Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl6xMHg",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6839618590",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "\ud83e\udd16 **Agent note** \u00b7 handed off\n\n- **Agent:** opencode claimant (opencode-claimant)\n- **Session / ID:** queue task 15341; bound session `ses_e5e2dc87169ffeXD5Q6yj2SIeR`\n- **Found via:** queue task handoff on the opencode execution lane\n- **Task:** Design mill: Atlas v1 program \u2014 summit build-out for starter #9091\n- **Expectation:** the bound worker session works task 15341 to a terminal queue state and must not claim another task. It revalidates the issue/PR before acting.\n- **Links:** https://github.com/developing-today/code/issues/9091\n\n<!-- agent-note:v1 agent=opencode-claimant state=handed-off task=15341 session=ses_e5e2dc87169ffeXD5Q6yj2SIeR at=2026-11-13T00:03:48.047171+00:00 -->",
+          "createdAt": "2026-11-13T00:03:49Z",
+          "updatedAt": "2026-11-13T00:03:49Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl6yfgw",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6839639939",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "agent-note:v1\nstate: working\ntask: 15341\nlane: opencode (summit session `ses_e5e2dc87169ffeXD5Q6yj2SIeR`, route opencode-route/summit, worker opencode-claimant)\nstage: summit_started\n\nSummit session picked up task 15341 and revalidated fresh state (2026-11-13 ~00:10Z): #9091 OPEN with `status/in-progress`, no hard-stop labels; checklist entirely unchecked; proto design present on main (21,083 B). Worktree branch `queue/15341-muse-send` fast-forwarded to main and pushed.\n\nPlan (mill pattern): statement inventory vs proto \u00a7J \u2192 per-workstream research + versioned design drafts by workhorse subsessions (A split into contract/cache, fan-out/shards, second embedder; B; B-research; C; D; E; F; G; H; I) \u2192 summit judgment pass \u2192 fresh judge pass \u2192 designs merged under `doc/` \u2192 granular implementation issues filed under #9092\u2013#9101 \u2192 open questions answered or batched to Drew \u2192 checklist updated here.\n\nQuestions log: recorded in the program doc in the repo (`questions.md` in the Atlas v1 program design dir, path posted here when it lands) with the default chosen for each; nothing waits on an answer.",
+          "createdAt": "2026-11-13T00:05:02Z",
+          "updatedAt": "2026-11-13T00:05:02Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl7Dnkg",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6839920530",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "Conductor follow-up (2026-11-13 00:20Z): the bound summit session was launched in `/home/user/.local/share/opencode/tmp/opencode/queue-15341-9091-muse-send`, outside the required `~/git/fleet/` root. I steered it to stop writes and park; fresh queue read confirms task 15341 is parked with reason `executor-directory-outside-fleet` until 2026-11-13T01:17:17Z. No PR exists. The already-pushed branch `queue/15341-muse-send` is at `04c2ecd910da64f34180c6b9a8558d15a082774b` (two draft design documents); the session reports 14 uncommitted draft files in the invalid directory, and 13 child sessions are terminal. Nothing was deleted or changed by the conductor; preserve the branch/drafts as evidence. Resume only from a correctly launched worktree under `~/git/fleet/`, after reconciling/salvaging those artifacts without duplicate work.",
+          "createdAt": "2026-11-13T00:20:45Z",
+          "updatedAt": "2026-11-13T00:20:45Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl7Txdg",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6840185206",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "agent-note:v1\nstate: parked (correction)\ntask: 15341\nsession: `ses_e5e2dc87169ffeXD5Q6yj2SIeR`\n\nCorrection to the draft count in the conductor follow-up above. Around 18:34 CST several of my stopped child sessions received a bare \"Continue.\" Two of them (A3 second embedder, B backup mesh) wrote one more file each before reading my hold message:\n\n- `doc/2026-11-13T00-30-00Z_design_atlas_v1_second_embedder/issues.md` (18:35:34 CST)\n- `doc/2026-11-13T00-30-00Z_design_atlas_v1_backup_mesh/issues.md` (18:35:48 CST)\n\nSo the invalid directory now holds **16** uncommitted draft files, not 14. All are unreviewed scratch. Nothing was committed, pushed or deleted; the branch is still at `04c2ecd910`. All 13 child sessions are terminal again and each has been told the stop order stands until an instruction names a working directory under `~/git/fleet/`. I could not add this to task progress because the task is parked and no longer claimed.",
+          "createdAt": "2026-11-13T00:36:29Z",
+          "updatedAt": "2026-11-13T00:36:29Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl7YNsQ",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6840257969",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "RELATED PROGRAM (filed 2026-11-12, Drew directive 18:29 CST): #9106 Part C (#9109, components #9133-#9140) is the Atlas-facing half of the new extensible-primitives program: storage benchmarks (D1/R2/redb/Turso, shards x growth \u2014 coordinate with this program's #9092 shard benchmarks, don't duplicate), D1 hot cache, tenant store placement, shared-bucket tenancy, GC, ID search vectorization (consumes #9092's second embedder), and recommendations. Statement inventories are in #9106's proto design.",
+          "createdAt": "2026-11-13T00:40:48Z",
+          "updatedAt": "2026-11-13T00:40:48Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl8Ef4g",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6840983522",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "agent-note:v1\nstate: picked_up\ntask: 15341\nlane: code-c (Muse, repo-worker-code)\nstage: claimed\n\nLane code-c claimed task 15341 (Atlas v1 design-mill, starter #9091) after its park for executor-directory-outside-fleet expired. Revalidated fresh: #9091 OPEN, no hard-stop labels (held / user/owned / do-not-merge / do-not-auto-edit absent); workstreams #9092-#9101 and epic #8983 all OPEN; acceptance checklist on #9091 still entirely unchecked \u2014 no acceptance item met, this is NOT already_done.\n\nResume per the parked resume plan, corrected for directory: a worktree now exists under ~/git/fleet/ at ~/git/fleet/queue-15341-9091-atlas-mill on new branch queue/15341-9091-atlas-mill, created at the preserved head 04c2ecd910da64f34180c6b9a8558d15a082774b of branch queue/15341-muse-send (mill-brief.md + j-rows.md J01-J34 present, tree clean). The old branch/worktree and its 16 unreviewed scratch drafts are left untouched as evidence (the old branch is still checked out there, which is why the fleet worktree uses a new branch at the same head).\n\nNext: transfer task 15341 to a fresh summit session (opencode-route/summit) bound in the fleet worktree via the #8210 send path (manual driver, as before: the send tool's queue whitelist lacks the one-queue stream), with the full design-mill launch packet.\n",
+          "createdAt": "2026-11-13T01:23:38Z",
+          "updatedAt": "2026-11-13T01:23:38Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl8KOug",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6841077434",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "agent-note:v1\nstate: parked\ntask: 15341\nlane: code-c (Muse, repo-worker-code)\nstage: bound_session_blocker\n\nParked 30 minutes per runbook \u00a71b for a row with a session already bound: task 15341's lane ledger is still bound to session `ses_e5e2dc87169ffeXD5Q6yj2SIeR`. That session is verified idle/terminal (time.idle set, not in the OpenCode server active set, its own correction note confirms the stop order stands) \u2014 but the broker's transfer guard reads the ledger binding as a live launch, so the #8210 send of a fresh summit session into the prepared fleet worktree was refused (\"a bound launch is not a transfer\"), and the rollback could not flip the assignment direct either.\n\nRoot cause (evidence posted on #5508): binding-clearing only nulls the ledger when the progress object being cleared carried a `session_id`; this task's progress was already cleared by the earlier park, so the ledger binding survived the park and the fresh claim. The send tool's separate one-queue stream defect is #9103.\n\nResume state, ready to use:\n- Fleet worktree: `~/git/fleet/queue-15341-9091-atlas-mill` on branch `queue/15341-9091-atlas-mill` at 04c2ecd910da64f34180c6b9a8558d15a082774b (mill-brief.md + j-rows.md present), with the full sender notes in `SEND_NOTES.md` in that worktree.\n- Old branch `queue/15341-muse-send` and its 16 unreviewed scratch drafts remain untouched as evidence.\n- Resume condition: once the stale ledger binding clears (fix on #5508, or a claim path that clears it), re-run the send into that worktree; acceptance on #9091 is still entirely unmet.\n",
+          "createdAt": "2026-11-13T01:29:19Z",
+          "updatedAt": "2026-11-13T01:29:19Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl8pTIg",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6841586466",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "agent-note:v1\nstate: picked_up\ntask: 15341\nlane: code-j (OpenChamber scheduled lane, worker repo-worker-code)\nstage: claimed -> route_validation\n\nOpenChamber scheduled lane claimed task 15341 and wrote the required first checkpoint (`origin: openchamber-scheduled-lane`). Fresh GitHub state confirms #9091 is OPEN with its acceptance checklist still unchecked and no hard-stop labels; the prior parked progress names the preserved fleet worktree and branch. This session is checking the mandatory summit-route handoff requirement before resuming substantive design work.",
+          "createdAt": "2026-11-13T02:01:15Z",
+          "updatedAt": "2026-11-13T02:01:15Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl8qKig",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6841600650",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "agent-note:v1\nstate: parked\ntask: 15341\nlane: code-j (OpenChamber scheduled lane, worker repo-worker-code)\nstage: route_blocker\n\nParked for 30 minutes. This session cannot satisfy the packet's required summit ownership: its active head is `_openai.main/gpt-6-luna`, and an OpenCode session cannot switch its own model/route. No design work was started. Fresh revalidation: #9091 remains OPEN with acceptance unchecked; epic #8983 and workstreams #9092\u2013#9101 are OPEN; no hard-stop labels are present.\n\nResume condition: dispatch the task to a session whose head is `opencode-route/summit` in `~/git/fleet/queue-15341-9091-atlas-mill`. Preserved branch `queue/15341-9091-atlas-mill` is at `04c2ecd910da64f34180c6b9a8558d15a082774b`; `SEND_NOTES.md` is the only existing untracked file there. Prior scratch drafts remain unreviewed evidence in the old worktree and must not be treated as accepted output.",
+          "createdAt": "2026-11-13T02:02:11Z",
+          "updatedAt": "2026-11-13T02:02:11Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl9MdWQ",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6842162521",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "agent-note:v1\nstate: picked_up\ntask: 15341\nlane: any-b (Muse, repo-worker-code)\nstage: verified -> bound_session_blocker\n\nLane any-b claimed task 15341 (Atlas v1 design-mill, starter #9091). Fresh revalidation this shift: issue #9091 OPEN, no hard-stop labels (held / user/owned / do-not-merge / do-not-auto-edit absent); acceptance checklist still entirely unchecked \u2014 no acceptance item met, NOT already_done. Epic #8983 and workstreams #9092-#9101 all verified OPEN this shift; issue #9103 verified OPEN this shift.\n\nLane assignment call returned opencode with the ledger still bound to session ses_e5e2dc87169ffeXD5Q6yj2SIeR. Verified fresh via the OpenCode server API this shift: that session's outcome is \"interrupted\", its idle time is set, and it is NOT in the server's active set \u2014 it is a stale binding, not live work (root cause filed on issue #5508: binding-clearing only nulls the ledger when the cleared progress carried a session_id).\n\nDispatch attempts this shift, both refused by the one-queue stream defect (issue #9103, still OPEN): send_to_opencode.py --dry-run with --queue repo-health-code-pilot failed at verify_claim (\"task 15341 is not claimed (by anyone) in repo-health-code-pilot\" \u2014 the task row lives in stream \"code\"); launch_one.py --preflight repo-health-code-pilot:15341 likewise reported \"task 15341 not found in queue repo-health-code-pilot\", and the \"code\" stream name is rejected by its whitelist.\n\nPrepared resume state is intact: worktree ~/git/fleet/queue-15341-9091-atlas-mill on branch queue/15341-9091-atlas-mill at 04c2ecd910da64f34180c6b9a8558d15a082774b, clean except untracked SEND_NOTES.md.\n\nPer runbook section 1b, a row with a session already bound is parked naming the bound session; this lane parks task 15341 for 30 minutes naming ses_e5e2dc87169ffeXD5Q6yj2SIeR. Resume condition: the stale ledger binding clears (fix on issue #5508) or the claimant tools learn the \"code\" stream (issue #9103) \u2014 then re-run the send into the fleet worktree above.\n",
+          "createdAt": "2026-11-13T02:38:24Z",
+          "updatedAt": "2026-11-13T02:38:24Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl9Nvkw",
+          "url": "https://github.com/developing-today/code/issues/9091#issuecomment-6842183571",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "agent-note:v1\nstate: parked\ntask: 15341\nlane: any-b (Muse, repo-worker-code)\nstage: bound_session_blocker\n\nParked task 15341 for 30 minutes per runbook section 1b: the lane ledger row for task 15341 remains bound to session ses_e5e2dc87169ffeXD5Q6yj2SIeR, and a bound row is parked naming the bound session rather than flipped or re-sent. Fresh verification this shift: that session is interrupted/idle and absent from the OpenCode server active set (stale binding; root cause on issue #5508), and both summit dispatch tools refuse the task via the one-queue stream defect on issue #9103.\n\nResume condition: stale ledger binding clears (issue #5508 fix) or the claimant tools learn the \"code\" stream (issue #9103) \u2014 then re-run the send into ~/git/fleet/queue-15341-9091-atlas-mill (branch queue/15341-9091-atlas-mill at 04c2ecd910da64f34180c6b9a8558d15a082774b, SEND_NOTES.md present). Acceptance on issue #9091 remains entirely unmet.\n",
+          "createdAt": "2026-11-13T02:39:51Z",
+          "updatedAt": "2026-11-13T02:39:51Z"
+        }
+      ]
+    },
+    {
+      "number": 9092,
+      "missing": false,
+      "body": "## Workstream A \u2014 Search subcommand build-out + Workers fan-out\n\nParent program: #8983 \u00b7 Proto design: `doc/2026-11-12T23-59-00Z_design_atlas_v1_proto/note.md` \u00a7A \u00b7 Starter: the Atlas v1 design-mill starter issue (sibling).\n\n### Current state (verified 2026-11-12)\n\n`atlas-search` / `fleet search`: one-stage hybrid (FTS5/BM25 + Snowflake cosine, RRF k=10) over a 7.3 GB Turso monolith (107,639 chunks) + 29 topic shards. The shard fan-out path is a hidden experimental flag (`--shards`, #5755); the production default is the monolith scan. Contract flags for the query planner, spell correction, query-class hint, and `rewritten|both` variants are **accepted but unimplemented**. The Cloudflare Worker cache (one Durable Object per query key) caches results **indefinitely \u2014 no TTL, eviction, or invalidation** (#6805 open; gated purge route #8312). No result caching in the standalone CLI (#5668). Query-understanding front-end and parameter surface are open designs #5773/#5774.\n\n### Scope\n\n1. **Search v1 build-out:** implement the dead contract surface or formally retire each flag \u2014 planner (query understanding per #5773), spell, query-class hint, rewritten/both variants; Jaccard third signal per #5733 where it earns its place. Every advertised flag either works or is removed from the contract.\n2. **Workers fan-out:** make the hosted search path fan out across Workers/Durable Objects/shards as the default serving shape: parallel shard queries, connection fan-out, DO roles (coordination, hot shards, cache). Respect platform limits in the design (Paid: 1,000 subrequests/invocation; DO SQLite 10 GB/object) \u2014 wider fan-out chains via queues/multiple invocations.\n3. **Shard-size benchmark programme (own deliverable):** benchmark latency vs shard size and shard count across Turso shards AND D1, on the production corpus shape. **Named oracle:** p50/p95 end-to-end query latency at fixed recall@10 against the standing eval sets (#8627) \u2014 a shard configuration wins only at equal-or-better recall. Output: a measured shard-size recommendation + the fan-out width curve (where more parallelism stops helping).\n4. **Cache policy:** results cached until the corpus changes; on corpus change, cached results may serve for a short, specified staleness window UNLESS the caller passes a real-time requirement or a cache-disable flag (both become first-class search flags, in the CLI, the service protocol, and the Worker). Builds on #6805's eviction/invalidation policy and #8312's purge route; the corpus-change signal (ingest watermark) is defined with workstream E.\n5. **Second embedder:** evaluate a second embedding approach alongside Snowflake arctic-embed-m-v2.0 (candidates to evaluate, not pre-picked: BGE-M3, Voyage, OpenAI text-embedding-3, Workers AI models \u2014 judged on quality vs the eval sets, cost, self-hostability, and mixed-embedder corpus support under the workstream C schema). Per-corpus model identity already exists as a concept (#8623); v1 must support mixed embedders in one corpus without a flag-day re-embed.\n\n### Acceptance\n\n- [ ] Design doc(s) merged under `doc/` covering items 1\u20135, with the benchmark programme's protocol (corpus snapshot, query set, oracle) specified before any benchmark runs.\n- [ ] Benchmark results published in the design or a linked research doc: latency/recall table per shard size \u00d7 count, Turso and D1, with the chosen configuration named.\n- [ ] Cache semantics specified exactly: invalidation trigger, staleness window value, real-time + cache-disable flag names and behavior at every surface (CLI/service/Worker).\n- [ ] Granular implementation issues filed for each build item; dead-flag disposition (implement vs retire) recorded per flag.\n",
+      "url": "https://github.com/developing-today/code/issues/9092",
+      "node_id": "I_kwDOJWP4788AAAABeyvfbQ",
+      "title": "impl(atlas-search): search v1 \u2014 build-out, Workers fan-out, shard benchmarks, cache policy, second embedder",
+      "state": "OPEN",
+      "created_at": "2026-11-12T23:47:20Z",
+      "updated_at": "2026-11-12T23:47:23Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABeuqMYg",
+        "number": 8983,
+        "title": "epic: Atlas program \u2014 unified search and memory index over every corpus",
+        "url": "https://github.com/developing-today/code/issues/8983",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl6f6cg",
+          "url": "https://github.com/developing-today/code/issues/9092#issuecomment-6839335538",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2795](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/ty0nz6uu5mrjv3ilf6i1noso)",
+          "createdAt": "2026-11-12T23:47:23Z",
+          "updatedAt": "2026-11-12T23:47:23Z"
+        }
+      ]
+    },
+    {
+      "number": 9100,
+      "missing": false,
+      "body": "## Workstream H \u2014 Virtual filesystem over the content-addressed store\n\nParent program: #8983 \u00b7 Proto design \u00a7H \u00b7 **References, does not restate:** #9084 (content plane: addressing, GC, sensitivity tiers \u2014 the store this filesystem sits on) and #3125 (Atlas provenance/occurrence registry \u2014 in-domain prior art; the occurrence registry is this design's closest ancestor).\n\n### The model (Drew, 2026-11-12)\n\n- Content lands **content-addressed and immutable**: bytes are uploaded once and never change.\n- **Paths are a first-class abstraction over the bytes** \u2014 a rough virtual filesystem. \"Find everything referencing `geordi.png`\" returns every path/location naming those bytes, across hosts and stores.\n- The same bytes in five places = **one upload + five metadata records**. Each location record carries its own metadata: the path, the host it came from, the date, the process that produced/placed it \u2014 attached as metadata on the embeds/records for that location.\n- Locations are editable/addable without touching the bytes: adding a sixth place that references the same content adds a metadata record, nothing else.\n\n### Aggregated index (the performance rule)\n\nByte-hash and filename lookups must **not** scan the whole Atlas corpus's metadata. The virtual-file index is **aggregated**: its own Turso database, or dedicated tables maintained beside the bucket (a sidecar manifest/index uploaded alongside the content-addressed data so the bucket works standalone), with lookups by hash, by filename, by path prefix, and by host.\n\n### Big-data evaluation (required, not optional)\n\nEvaluate whether the aggregated metadata belongs in a big-data system instead of / beside the Turso index:\n\n- **Parquet** (file-format lake over R2),\n- **Cloudflare Basin** (verified: GA 2026-10-01; the renamed Cloudflare Data Platform \u2014 Apache Iceberg over R2: Basin Pipelines for ingest, Basin Catalog for table maintenance, Basin SQL for serverless queries over Iceberg tables; an analytics/lakehouse fit, not a transactional store),\n- or another system the research surfaces \u2014 judged on lookup latency for the VFS query shapes (hash, filename, prefix), update cost under constant ingestion (workstream E), and operational weight.\n\n### Acceptance\n\n- [ ] Design merged under `doc/`: the location-record schema (aligned with workstream C doctrine), the aggregated index shape, and the VFS query set (by hash, filename, path, host) with latency expectations.\n- [ ] The big-data evaluation published with a verdict (Turso index / Parquet / Basin / hybrid) and its evidence.\n- [ ] Worked example in the design: one image at five locations \u2014 records, lookups, and what a rename/move/deletion of one location does (and does not do) to the others.\n- [ ] Granular implementation issues filed; #9084 and #3125 cross-linked from the design.\n",
+      "url": "https://github.com/developing-today/code/issues/9100",
+      "node_id": "I_kwDOJWP4788AAAABeyv57Q",
+      "title": "design(atlas): virtual filesystem over the content-addressed store + aggregated file index (Basin/Parquet evaluation)",
+      "state": "OPEN",
+      "created_at": "2026-11-12T23:47:50Z",
+      "updated_at": "2026-11-13T00:40:50Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABeuqMYg",
+        "number": 8983,
+        "title": "epic: Atlas program \u2014 unified search and memory index over every corpus",
+        "url": "https://github.com/developing-today/code/issues/8983",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl6gaxQ",
+          "url": "https://github.com/developing-today/code/issues/9100#issuecomment-6839343813",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2803](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/bzsd5e0huyp2mn1hfod8rmgx)",
+          "createdAt": "2026-11-12T23:47:52Z",
+          "updatedAt": "2026-11-12T23:47:52Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl7YPnQ",
+          "url": "https://github.com/developing-today/code/issues/9100#issuecomment-6840258461",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "INPUT from program #9106 (Drew, 2026-11-12 18:29 CST): the VFS location backend is the \u00a73 LOCATION INDEX designed in #9115 \u2014 populated by the metadata-sidecar harvester (batch or immediate), holding ALL location records per hash (R2 bucket; laptop hostname+path; account-prefixed Drive location; Drive URL; future types), not a single canonical path. Existence acknowledgement (#9115) is the VFS stat-equivalent for hash-addressed files. Namespaces (#9116-#9124) are the VFS mount model: string-path names = the human path layer, streams = files readable while in progress, signed coordinate worlds = read-only mounts.",
+          "createdAt": "2026-11-13T00:40:50Z",
+          "updatedAt": "2026-11-13T00:40:50Z"
+        }
+      ]
+    },
+    {
+      "id": "I_kwDOJWP4788AAAABezTP9Q",
+      "number": 9106,
+      "title": "epic: ID/Atlas extensible primitives, federation, namespaces \u2014 major design iteration (2026-11-12 directive)",
+      "url": "https://github.com/developing-today/code/issues/9106",
+      "state": "CLOSED",
+      "body": "# Program: ID/Atlas extensible primitives, federation, namespaces\n\n**Source:** Drew directive, 2026-11-12 18:29 CST (clarifies and greatly extends the hosted-editions program #9078). Filed via design-mill intake; the summit elaboration is queued as a design-mill task pointing at this issue.\n\n## What this program is\n\nA new major design iteration for the ID substrate and its Atlas-facing surfaces, in three parts:\n\n- **Part A \u2014 ID core** (namespaces, ID shapes, triples, user attributes): the addressing and data model everything else stands on.\n- **Part B \u2014 federation & trust**: how peer servers exchange signed data, sync, fan out queries, and earn or lose trust.\n- **Part C \u2014 Atlas-facing economics & discovery**: storage benchmarks/economics, ID search, recommendations.\n\nProgram-level items (\u00a70 extensibility architecture, \u00a77 modes/configuration, refine-and-prioritize) sit directly under this epic.\n\n**Why three parts, not one flat list:** the directive itself splits this way \u2014 one part Atlas, one part ID, one part the federation layer both share. The parts have different design tempos (Part A is data model, Part B is protocol/trust, Part C is measurement-driven) and different nearest neighbors (#2056 ID designs; #9083 tenancy; #8983 Atlas). One program epic keeps the statement inventory whole: nothing in the directive belongs to only one audience, and the summit owns cohesion across the parts.\n\n## Clarification of record (\u00a70)\n\nExtensibility IS the architecture goal. Primitives, adapters, and hooks are **designed** for the full matrix of stores / buckets / streams / transports from the start. What was de-prioritized in #9078/#9082's framing is **implementing** the long tail now \u2014 the earlier \"plumbing, not a matrix\" line stands as an implementation priority, NOT as an architecture limit. Both tier-1 editions (Rust binaries, Cloudflare/Turso hosted) are fully featured; neither is a reduced edition. Everything behavioral is configuration where it is behavior, primitives where it is mechanism (\u00a77). Our system is not special: every capability is a config option anyone could replicate by investing the same effort.\n\n## Inputs / feeds\n\n- Feeds into and amends: #9078 (hosted editions), #9082 (store abstraction), #9083 (tenancy), #9084 (content plane), #9085 (TS transports), Atlas starter #9091 and VFS #9100, ID epic #2056 (parent).\n- Proto design scaffold: `doc/` note merged with this intake (linked below once merged).\n- Statement inventory: numbered S0\u2013S7 in the proto design; every statement maps to a component issue under this epic or to a named existing issue. Zero unmapped is the intake acceptance bar; the summit verifies it again (mill return-on-agreement).\n\n## Acceptance\n\n- [ ] Statement inventory verified complete by the summit + a fresh judge pass (zero unmapped).\n- [ ] Versioned designs (V1 = what exists today; V2+ layer the vision) merged under `doc/` for each part, or the part explicitly folded into an existing design by amendment with the link recorded here.\n- [ ] Granular implementation issues filed under the component issues for everything implementable.\n- [ ] Open questions batched to Drew with options + a recommendation; defaults recorded, never stalled on.\n",
+      "updatedAt": "2026-11-13T03:37:01Z",
+      "parent": {
+        "number": 2056,
+        "title": "epic: ID platform expansion \u2014 apps, comms, currency, hosting, boards (2026-10-28 directive, LIST 6\u201315)",
+        "url": "https://github.com/developing-today/code/issues/2056"
+      },
+      "subIssues": {
+        "nodes": [
+          {
+            "id": "I_kwDOJWP4788AAAABezTVdw",
+            "number": 9107,
+            "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+            "url": "https://github.com/developing-today/code/issues/9107",
+            "state": "OPEN"
+          },
+          {
+            "id": "I_kwDOJWP4788AAAABezTYVA",
+            "number": 9108,
+            "title": "epic(id): Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation",
+            "url": "https://github.com/developing-today/code/issues/9108",
+            "state": "OPEN"
+          },
+          {
+            "id": "I_kwDOJWP4788AAAABezTbgg",
+            "number": 9109,
+            "title": "epic(atlas): Part C \u2014 Atlas-facing: storage economics, benchmarks, ID search, recommendations",
+            "url": "https://github.com/developing-today/code/issues/9109",
+            "state": "OPEN"
+          },
+          {
+            "id": "I_kwDOJWP4788AAAABezUNVw",
+            "number": 9110,
+            "title": "design(id): extensibility architecture \u2014 primitive/adapter/hook boundary spec + backend conformance",
+            "url": "https://github.com/developing-today/code/issues/9110",
+            "state": "OPEN"
+          },
+          {
+            "id": "I_kwDOJWP4788AAAABezUQIg",
+            "number": 9111,
+            "title": "design(id): modes & configuration surface \u2014 modes, link kinds, storages, tiering as config",
+            "url": "https://github.com/developing-today/code/issues/9111",
+            "state": "OPEN"
+          },
+          {
+            "id": "I_kwDOJWP4788AAAABezUS-Q",
+            "number": 9112,
+            "title": "plan: refine and prioritize the #9106 program \u2014 sequencing for quick results, nothing dropped",
+            "url": "https://github.com/developing-today/code/issues/9112",
+            "state": "OPEN"
+          }
+        ]
+      },
+      "comments": {
+        "nodes": [
+          {
+            "databaseId": 6840126039,
+            "url": "https://github.com/developing-today/code/issues/9106#issuecomment-6840126039",
+            "author": {
+              "login": "developing-today"
+            },
+            "createdAt": "2026-11-13T00:32:57Z",
+            "updatedAt": "2026-11-13T00:32:57Z",
+            "body": "[CODE-2807](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/o7eyhsiziovv0mjspzmvupmb)"
+          },
+          {
+            "databaseId": 6842551257,
+            "url": "https://github.com/developing-today/code/issues/9106#issuecomment-6842551257",
+            "author": {
+              "login": "dezren39"
+            },
+            "createdAt": "2026-11-13T03:04:16Z",
+            "updatedAt": "2026-11-13T03:04:16Z",
+            "body": "INTAKE COMPLETE (2026-11-12): proto design merged \u2014 PR #9184 (merge 0c50faddf61e5efa43043976b5c9ba42828a2e2f), `doc/2026-11-13T00-41-00Z_design_id-atlas-primitives-federation-namespaces/note.md` (40,844 B on main): 384-statement inventory (S0 17 \u00b7 S1 120 \u00b7 S2 19 \u00b7 S3 38 \u00b7 S4 93 \u00b7 S5 64 \u00b7 S6 17 \u00b7 S7 16), statement\u2192issue map, V1\u2013V4 plan, open questions with defaults. Ruled in the design (principle 3): the signature gate (S1.12/S1.20) is a primitive invariant \u2014 configuration cannot disable it; that resolves the \u00a71/\u00a77 tension explicitly. Amendments posted on #9078, #9082, #9083, #9084, #9085, #9091, #9100, #2056. Design-mill summit task enqueued on this epic (see queue read-back in the intake report)."
+          },
+          {
+            "databaseId": 6842625368,
+            "url": "https://github.com/developing-today/code/issues/9106#issuecomment-6842625368",
+            "author": {
+              "login": "dezren39"
+            },
+            "createdAt": "2026-11-13T03:09:00Z",
+            "updatedAt": "2026-11-13T03:09:00Z",
+            "body": "agent-note:v1 agent=repo-worker-code lane=code-h task=15354 state=picked-up at=2026-11-13T03:10:00Z \u2014 Revalidated #9106 and merged intake PR #9184. Continuing the acceptance checklist; closed/status:done reflects proto intake and is not completion of this task."
+          },
+          {
+            "databaseId": 6842643215,
+            "url": "https://github.com/developing-today/code/issues/9106#issuecomment-6842643215",
+            "author": {
+              "login": "dezren39"
+            },
+            "createdAt": "2026-11-13T03:10:11Z",
+            "updatedAt": "2026-11-13T03:10:11Z",
+            "body": "agent-note:v1 agent=repo-worker-code lane=code-h task=15354 state=parked at=2026-11-13T03:10:00Z \u2014 Parked for 20 minutes. Resume when the required design-mill launch packet is available; worktree queue/15354-9106-id-atlas-design is ready at /home/user/git/fleet/15354-9106-id-atlas-design. Primary main was left untouched because it has user changes and is behind. #9106 remains closed from intake only; verify the acceptance checklist before any completion."
+          },
+          {
+            "databaseId": 6843006010,
+            "url": "https://github.com/developing-today/code/issues/9106#issuecomment-6843006010",
+            "author": {
+              "login": "dezren39"
+            },
+            "createdAt": "2026-11-13T03:34:37Z",
+            "updatedAt": "2026-11-13T03:34:37Z",
+            "body": "agent-note:v1 \u2014 task 15354 (queue) design-mill SUMMIT LAUNCH PACKET, posted by lane any-c (repo-worker-code). This comment IS the summit session's launch packet; the session's first prompt points here.\n\nYou own task-queue item task 15354 and starter issue https://github.com/developing-today/code/issues/9106 (epic: ID/Atlas extensible primitives, federation, namespaces). The source docs are merged on main; read them from the repo: the proto design at `doc/2026-11-13T00-41-00Z_design_id-atlas-primitives-federation-namespaces/note.md` (384-statement inventory S0\u2013S7 with statement\u2192issue map, V1\u2013V4 plan, open questions with defaults) and the mill concept doc at `doc/2026-11-13T01-25-00Z_design_design_mill/note.md`. Program structure: parts #9107 (A), #9108 (B), #9109 (C); program-level components #9110 (extensibility boundary), #9111 (modes/config), #9112 (refine & prioritize \u2014 the working sequencing order); Part A components #9113\u2013#9132; Part B #9141\u2013#9148; Part C #9133\u2013#9140.\n\nBuild this design out in the design-mill pattern: statement inventory (verify every statement S0\u2013S7 maps to a design section or an issue \u2014 zero unmapped) \u2192 state-of-the-art expansion per component (research filed as its own issues/docs where it earns it: #9143 CRDT/sync set is research-first; #9125 triple-encoding bake-off and #9133 benchmark harness produce evidence, not opinions) \u2192 versioned designs (V1 = what exists today per proto design section 4; V2 cores; V3 federation + names; V4 horizon) merged to main under doc/ and linked from #9106 or its parts \u2192 granular implementation issues under each component for everything implementable (incl. the 30 candidate Part B sub-items named in the proto design) \u2192 #9112 sequencing refined as designs land.\n\nBinding constraints (do not re-open): the signature gate is a primitive invariant \u2014 configuration cannot disable it (proto design principle 3); extensibility is the architecture goal while implementing the long tail stays de-prioritized (proto design section 0); identity/SSO is #9077's, tenancy is #9083's, and #9084's reference-vs-copy question stays open \u2014 this program supplies addressing/tenancy/GC inputs to it, never a unilateral settlement. Acceptance is the checklist on task 15354 / #9106 \u2014 #9106 reading CLOSED reflects intake only and is NOT completion (lesson of task 15339).\n\n1. **Detached operation.** You are running detached; a human checks in every 5\u201315 minutes or longer. Never stall on a question. The `question` tool is forbidden in detached work \u2014 it blocks you and your foreground parent, nobody is notified, and retries can loop it. Record every question as an agent-note comment on issue #9106 with the default you chose, and keep working.\n2. **Your head.** You run on the summit route (opencode-route/summit). Every subsession you launch defaults to the **workhorse** route (`opencode-route/workhorse`) \u2014 state it explicitly in the launch even though inheritance is automatic; use the speed route only for latency-bound shallow work. Your session's route ref is your identity; the serving leaf can vary step to step, so judge subsessions by their output, not their leaf.\n3. **Worktree and directory.** Work in /home/user/git/fleet/15354-9106-id-atlas-design on branch queue/15354-9106-id-atlas-design (already created, fast-forwarded to current origin/main). Subsessions inherit your directory \u2014 keep them in it. Never the primary checkout. All artifacts land in the repo (committed) or in issues \u2014 never only in your transcript.\n4. **Delegate by spec.** Anything you can spec crisply, a workhorse subsession does: research, inventories, codebase audits, first drafts, per-section write-ups, verification passes. You keep architecture, scalability, performance, reliability, extensibility, prior-art judgment, versioning decisions, and the final top-to-bottom pass with precise language.\n5. **Subsession mechanics (verified 2026-11-06).** Launch with the `subagent` tool. Foreground (default): you wait and get the final output inline. Background (`background: true`): you are notified by an automatic turn when it finishes \u2014 do not sleep, poll, or duplicate its work meanwhile. Subsessions may launch their own subsessions (depth cap 5). Continue a finished subsession by its sessionID instead of relaunching cold. Cross-session data: messaging via code mode, `tools.comms.msg` (direct message + `deliver: \"wake\"`; `mode: \"unread\"` with a `wait` to receive).\n6. **Model switching.** You cannot switch your own model in-session \u2014 and shouldn't want to: switching kills prompt cache. If a task needs a different head, launch a subsession on that head.\n7. **Return-on-agreement.** If you launch reviewer/judge subsessions, you return to your parent only when you **and** your reviewer agree the work is complete and correct. Disagreement loops: launch gap-fill subsessions (or the judge fills), re-review, then return.\n8. **Trust but verify.** Read what a subsession actually *did* \u2014 files, diffs, its session log \u2014 not just its final message, for anything that writes or anything surprising. A final message is enough for pure lookups and marker results. Double-check results that everything else will build on.\n9. **Research autonomy.** At every step: never wait for Drew or any magic oracle. Do the research yourself (delegated), build out the designs and specs, explore every option you can think of *and* hunt for options you didn't know about, learn what makes each better or worse, produce research docs and simple tests, commit everything, merge it into main, and reference it in follow-up issues and designs. Only a decision that is genuinely Drew's batches up \u2014 with options + a recommendation \u2014 recorded on #9106; everything else is decided in the mill.\n10. **Expansion mandate.** More options and valid research beat one converged answer. Consider architecture, scalability, performance, reliability, extensibility, current and prior examples of similar concepts, pros/cons, learnings from prior art and best-in-class leaders, and where to go from here (V2/V3/V4, short- and long-term). The breakdown may spark designs beyond the given inputs \u2014 capture them: tiny issues for neat ideas, detailed research reports for future-design seeds, anything in between at the depth it earns.\n11. **Errors are results.** A subsession that errors reports the error as its output \u2014 read it, re-spec or reroute, and continue. Never let one failed child stall the design.\n12. **Queue discipline.** You own queue task 15354 end to end: heartbeat/checkpoint it as worker repo-worker-code (`fleet queue heartbeat 15354 --worker repo-worker-code --extend-seconds 2700` \u2014 note the extension REPLACES, never use 900), checkpoint at each mill stage, and when the acceptance checklist is demonstrably met, complete it with the structured result; if you must stop with real progress checkpointed, park it naming the exact next step. Never leave the claim silent.\n"
+          },
+          {
+            "databaseId": 6843035677,
+            "url": "https://github.com/developing-today/code/issues/9106#issuecomment-6843035677",
+            "author": {
+              "login": "dezren39"
+            },
+            "createdAt": "2026-11-13T03:36:36Z",
+            "updatedAt": "2026-11-13T03:36:36Z",
+            "body": "agent-note:v1 agent=repo-worker-code lane=any-c task=15354 state=handed_off \u2014 Design-mill SUMMIT LAUNCHED AND BOUND.\n\n- Summit session `ses_e5e2d06f0ccffefg2Z4FGyW3mW` (model opencode-route/summit, agent build) created in worktree /home/user/git/fleet/15354-9106-id-atlas-design (branch queue/15354-9106-id-atlas-design, fast-forwarded to origin/main a0f3a529d3), bound to task 15354 in lane ledger 7093 with the packet's opencode requirement recorded as the assignment reason. Launch packet: comment 6843006010 on this issue (all mandatory mill clauses, filled). Prompt delivery verified by readback (session message list non-empty; session already active, 6 messages at last check).\n- Why not the standard claimant/send path: task 15354's queue stream is `code`, which the opencode claimant's queue set (the four repo-health-*-pilot streams) cannot see \u2014 `launch_one.py --preflight repo-health-code-pilot:15354` returns \"task not found\", and the packet carries no `route` field for the claimant to pick the summit head from. The session was therefore created directly through the claimant's own verified server transport, at the summit head the packet mandates, and bound with `fleet queue bind`.\n- Lane any-c parks task 15354 for 24h naming this session: resume = orchestrator/next lane reads the session status via the server API and the notes on this issue; on stall, nudge the session by ID or re-dispatch from the checkpoint (stage: handed_off). The summit was told (second prompt, delivered) that queue heartbeats may verdict \"not claimed\" while parked and to record stage progress here instead of stalling.\n- #9106 remains closed from intake only; completion of task 15354 requires the acceptance checklist demonstrably met (statement inventory zero unmapped, per-component SOTA expansion, V1\u2013V4 designs merged under doc/, granular implementation issues, #9112 sequencing refined).\n"
+          },
+          {
+            "databaseId": 6843042894,
+            "url": "https://github.com/developing-today/code/issues/9106#issuecomment-6843042894",
+            "author": {
+              "login": "dezren39"
+            },
+            "createdAt": "2026-11-13T03:37:01Z",
+            "updatedAt": "2026-11-13T03:37:01Z",
+            "body": "agent-note:v1 agent=repo-worker-code task=15354 state=summit_started \u2014 Summit live in queue/15354-9106-id-atlas-design. Read the full mandatory launch packet and proto design from origin/main. First inventory step: independently parse/count all S0\u2013S7 statements, expand the range\u2192issue map, and verify live component homes with workhorse subsessions; a fresh judge will reconcile gaps before acceptance. Signed-ingest invariant and sibling ownership boundaries remain binding. Detached: questions recorded here with defaults; never blocking."
+          }
+        ]
+      }
+    },
+    {
+      "number": 9107,
+      "missing": false,
+      "body": "# Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes\n\nParent program: the extensible-primitives/federation/namespaces epic (this issue's parent). Source: Drew directive 2026-11-12 18:29 CST, \u00a73 (ID shapes + metadata sidecars), \u00a74 (namespaces), \u00a75 (graph + user attributes).\n\nThe substrate part: multiple ID shapes (content-addressed hash among them), metadata sidecars and the harvested location index, a per-server namespace registry with two cores (content-addressed; array-address of typed bytes), derived namespace families (string-path names with lenses and authority groups, numeric registries, streams, signed coordinate worlds), and the triples graph with user attributes, append-lists, versioning, true-delete, client-bound spaces, and cross-signed delegation \u2014 the layer feeds, profiles, and bulletin boards are built from.\n\nComponents are the sub-issues of this epic. Feeds: Atlas VFS #9100 (location index), content plane #9084 (addressing), ID epic #2056.\n",
+      "url": "https://github.com/developing-today/code/issues/9107",
+      "node_id": "I_kwDOJWP4788AAAABezTVdw",
+      "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:33:01Z",
+      "updated_at": "2026-11-13T00:33:04Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTP9Q",
+        "number": 9106,
+        "title": "epic: ID/Atlas extensible primitives, federation, namespaces \u2014 major design iteration (2026-11-12 directive)",
+        "url": "https://github.com/developing-today/code/issues/9106",
+        "state": "CLOSED"
+      },
+      "native_children": [
+        {
+          "id": "I_kwDOJWP4788AAAABezUVqg",
+          "number": 9113,
+          "title": "design(id): ID-shape registry + dispatch; content-addressed hash no-map rule",
+          "url": "https://github.com/developing-today/code/issues/9113",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezUYbw",
+          "number": 9114,
+          "title": "design(id): metadata sidecar format \u2014 hash.metadata schema + versioning-form decision",
+          "url": "https://github.com/developing-today/code/issues/9114",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezUbGw",
+          "number": 9115,
+          "title": "design(id): existence acknowledgement + metadata harvester + location index",
+          "url": "https://github.com/developing-today/code/issues/9115",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezUeMw",
+          "number": 9116,
+          "title": "design(id): namespace model + per-server namespace registry",
+          "url": "https://github.com/developing-today/code/issues/9116",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezUg5Q",
+          "number": 9117,
+          "title": "design(id): id:// URI scheme + per-namespace handlers and encodings",
+          "url": "https://github.com/developing-today/code/issues/9117",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezUjQw",
+          "number": 9118,
+          "title": "design(id): array-address core (core b) \u2014 data model, TYPE+BYTES values, serialization",
+          "url": "https://github.com/developing-today/code/issues/9118",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezUmAg",
+          "number": 9119,
+          "title": "design(id): bare-string shorthand + default-index configuration; streaming interfaces + max-items",
+          "url": "https://github.com/developing-today/code/issues/9119",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezUpWQ",
+          "number": 9120,
+          "title": "design(id): content-addressed namespace (core a) spec",
+          "url": "https://github.com/developing-today/code/issues/9120",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezUsXQ",
+          "number": 9121,
+          "title": "design(id): string-path names \u2014 per-server resolution, search lenses, standing, authority groups",
+          "url": "https://github.com/developing-today/code/issues/9121",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezUvhg",
+          "number": 9122,
+          "title": "design(id): numeric registry namespaces over the byte system",
+          "url": "https://github.com/developing-today/code/issues/9122",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezUybA",
+          "number": 9123,
+          "title": "design(id): stream namespaces \u2014 lifecycle + redirect to the final object",
+          "url": "https://github.com/developing-today/code/issues/9123",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezU1eg",
+          "number": 9124,
+          "title": "design(id): signed namespace definitions + signed coordinate worlds",
+          "url": "https://github.com/developing-today/code/issues/9124",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezU4kA",
+          "number": 9125,
+          "title": "research(id): triple encoding bake-off \u2014 compressed binary vs JSONB vs normalized byte-key maps",
+          "url": "https://github.com/developing-today/code/issues/9125",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezU7vQ",
+          "number": 9126,
+          "title": "research(id): graph query language selection + visualization",
+          "url": "https://github.com/developing-today/code/issues/9126",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezU_UA",
+          "number": 9127,
+          "title": "design(id): append-list user-attribute protocol \u2014 signed submission, server order, pending queue",
+          "url": "https://github.com/developing-today/code/issues/9127",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezVCVw",
+          "number": 9128,
+          "title": "design(id): social app reference model \u2014 feeds, profiles, bulletin boards, freshness token",
+          "url": "https://github.com/developing-today/code/issues/9128",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezVF7Q",
+          "number": 9129,
+          "title": "design(id): versioning \u2014 succeeds triples + carried-forward comments",
+          "url": "https://github.com/developing-today/code/issues/9129",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezVJBw",
+          "number": 9130,
+          "title": "design(id): true-delete + moderation pipeline",
+          "url": "https://github.com/developing-today/code/issues/9130",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezVMVQ",
+          "number": 9131,
+          "title": "design(id): client-bound spaces \u2014 [null, iroh-key] binding + petnames",
+          "url": "https://github.com/developing-today/code/issues/9131",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezVO4w",
+          "number": 9132,
+          "title": "design(id): delegation + cross-signed identity ceremony",
+          "url": "https://github.com/developing-today/code/issues/9132",
+          "state": "OPEN"
+        }
+      ],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7QSGg",
+          "url": "https://github.com/developing-today/code/issues/9107#issuecomment-6840128026",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2808](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/g982umsllixq8em508oe8mve)",
+          "createdAt": "2026-11-13T00:33:04Z",
+          "updatedAt": "2026-11-13T00:33:04Z"
+        }
+      ]
+    },
+    {
+      "number": 9108,
+      "missing": false,
+      "body": "# Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation\n\nParent program: the extensible-primitives/federation/namespaces epic (this issue's parent). Source: Drew directive 2026-11-12 18:29 CST, \u00a71 and \u00a77.\n\nThe protocol part: peer classes (fully trusted / send-only / accept-signed-from); data accepted only when signed and validated regardless of source; implicit-trust internal peers syncing toward 1:1 sameness with conflict reports first and CRDT/merge exploration (Automerge, diamonds, Willow, OCAPN) as a named research set; federated query fan-out over prioritized remotes with trusted relay and max-hops, duplicate/loop handling, and routing-state network-shape validation; and reputation \u2014 ratings, a public claims/dispute log, adaptive trust including the takeover case, and acknowledgment-based inconsistency detection.\n\nComponents are the sub-issues of this epic. Feeds: tenancy #9083, content plane #9084.\n",
+      "url": "https://github.com/developing-today/code/issues/9108",
+      "node_id": "I_kwDOJWP4788AAAABezTYVA",
+      "title": "epic(id): Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:33:05Z",
+      "updated_at": "2026-11-13T00:33:08Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTP9Q",
+        "number": 9106,
+        "title": "epic: ID/Atlas extensible primitives, federation, namespaces \u2014 major design iteration (2026-11-12 directive)",
+        "url": "https://github.com/developing-today/code/issues/9106",
+        "state": "CLOSED"
+      },
+      "native_children": [
+        {
+          "id": "I_kwDOJWP4788AAAABezW5Vg",
+          "number": 9141,
+          "title": "design(id): peer trust classes + signed-data acceptance rule",
+          "url": "https://github.com/developing-today/code/issues/9141",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezW8GA",
+          "number": 9142,
+          "title": "design(id): implicit-trust sync \u2014 convergence toward 1:1 + conflict reports",
+          "url": "https://github.com/developing-today/code/issues/9142",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezW-SQ",
+          "number": 9143,
+          "title": "research(id): CRDT/merge exploration \u2014 Automerge, diamonds, Willow, OCAPN",
+          "url": "https://github.com/developing-today/code/issues/9143",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezXAtQ",
+          "number": 9144,
+          "title": "design(id): federated query fan-out \u2014 prioritized remotes, trusted relay, max-hops",
+          "url": "https://github.com/developing-today/code/issues/9144",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezXDlw",
+          "number": 9145,
+          "title": "design(id): relay duplicate + loop handling \u2014 inform, short-circuit, dedup, loop-inform",
+          "url": "https://github.com/developing-today/code/issues/9145",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezXGVw",
+          "number": 9146,
+          "title": "design(id): routing state + periodic network-shape validation",
+          "url": "https://github.com/developing-today/code/issues/9146",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezXJrg",
+          "number": 9147,
+          "title": "design(id): reputation system + public claims/dispute log",
+          "url": "https://github.com/developing-today/code/issues/9147",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezXMXw",
+          "number": 9148,
+          "title": "research(id): takeover resistance + acknowledgment-based inconsistency detection",
+          "url": "https://github.com/developing-today/code/issues/9148",
+          "state": "OPEN"
+        }
+      ],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7QVvg",
+          "url": "https://github.com/developing-today/code/issues/9108#issuecomment-6840128958",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2809](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/udul4v71qotelpd9q7qhvoj5)",
+          "createdAt": "2026-11-13T00:33:08Z",
+          "updatedAt": "2026-11-13T00:33:08Z"
+        }
+      ]
+    },
+    {
+      "number": 9109,
+      "missing": false,
+      "body": "# Part C \u2014 Atlas-facing: storage economics, benchmarks, ID search, recommendations\n\nParent program: the extensible-primitives/federation/namespaces epic (this issue's parent). Source: Drew directive 2026-11-12 18:29 CST, \u00a72 and \u00a76.\n\nThe measurement part: latency/characteristic benchmarks across D1 vs R2 vs laptop redb vs laptop Turso at various shard levels and as databases grow; tenant hot cache in D1; tenant store placement (in-D1 vs SQLite files synced to S3/R2); shared R2/RustFS buckets serving many ID instances in trusted vs untrusted modes; garbage collection prioritizing very large files; automatic vectorization of ID content (Snowflake + the second embedder from Atlas #9092) feeding built-in ID search; and the recommendation surfaces \u2014 one fan-out worker, a Durable Object accumulating \"next 10\", recommendations as stored objects with per-class retention.\n\nComponents are the sub-issues of this epic. Feeds: Atlas program #8983 / starter #9091, store abstraction #9082, hosted editions #9079/#9080.\n",
+      "url": "https://github.com/developing-today/code/issues/9109",
+      "node_id": "I_kwDOJWP4788AAAABezTbgg",
+      "title": "epic(atlas): Part C \u2014 Atlas-facing: storage economics, benchmarks, ID search, recommendations",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:33:09Z",
+      "updated_at": "2026-11-13T00:33:12Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTP9Q",
+        "number": 9106,
+        "title": "epic: ID/Atlas extensible primitives, federation, namespaces \u2014 major design iteration (2026-11-12 directive)",
+        "url": "https://github.com/developing-today/code/issues/9106",
+        "state": "CLOSED"
+      },
+      "native_children": [
+        {
+          "id": "I_kwDOJWP4788AAAABezVRYQ",
+          "number": 9133,
+          "title": "research(atlas): benchmark harness \u2014 D1 vs R2 vs laptop redb vs laptop Turso, shards x growth",
+          "url": "https://github.com/developing-today/code/issues/9133",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezVT3g",
+          "number": 9134,
+          "title": "design(atlas): D1 tenant hot cache \u2014 admission, invalidation, Turso-hop skip",
+          "url": "https://github.com/developing-today/code/issues/9134",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezVWog",
+          "number": 9135,
+          "title": "research(atlas): tenant store placement \u2014 in-D1 vs SQLite files synced to S3/R2",
+          "url": "https://github.com/developing-today/code/issues/9135",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezVZVg",
+          "number": 9136,
+          "title": "design(atlas): shared-bucket multi-tenancy \u2014 trusted vs untrusted modes on R2/RustFS",
+          "url": "https://github.com/developing-today/code/issues/9136",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezVbxg",
+          "number": 9137,
+          "title": "design(atlas): garbage collection for shared stores \u2014 large-file priority, segment reclamation",
+          "url": "https://github.com/developing-today/code/issues/9137",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezVe1Q",
+          "number": 9138,
+          "title": "design(id): ID search \u2014 auto-vectorization queue + dual-embedder index",
+          "url": "https://github.com/developing-today/code/issues/9138",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezViNA",
+          "number": 9139,
+          "title": "design(atlas): recommendation fan-out worker + Durable Object next-10 accumulation",
+          "url": "https://github.com/developing-today/code/issues/9139",
+          "state": "OPEN"
+        },
+        {
+          "id": "I_kwDOJWP4788AAAABezVksQ",
+          "number": 9140,
+          "title": "design(atlas): recommendation objects, search history, retention classes",
+          "url": "https://github.com/developing-today/code/issues/9140",
+          "state": "OPEN"
+        }
+      ],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7QZ4Q",
+          "url": "https://github.com/developing-today/code/issues/9109#issuecomment-6840130017",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2810](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/z260gmiv2c4hi8yk3q29ad2v)",
+          "createdAt": "2026-11-13T00:33:12Z",
+          "updatedAt": "2026-11-13T00:33:12Z"
+        }
+      ]
+    },
+    {
+      "number": 9110,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9106.\n\n\u00a70. Define the stable primitive surface (stores, buckets, streams, transports) every backend implements, the hook/callback registry along all normal paths (points, ordering, failure semantics), per-operation custom connection types, and a backend conformance suite run against redb/Turso/SQLite/IndexedDB and extensible to Postgres. Core logic must not hard-code a single store/bucket/stream/transport; feature parity is defined at the primitive layer. Also: NATS-stream transport adapter prototype as the proof a second transport is additive. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9110",
+      "node_id": "I_kwDOJWP4788AAAABezUNVw",
+      "title": "design(id): extensibility architecture \u2014 primitive/adapter/hook boundary spec + backend conformance",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:15Z",
+      "updated_at": "2026-11-13T00:34:18Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTP9Q",
+        "number": 9106,
+        "title": "epic: ID/Atlas extensible primitives, federation, namespaces \u2014 major design iteration (2026-11-12 directive)",
+        "url": "https://github.com/developing-today/code/issues/9106",
+        "state": "CLOSED"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7Rg7Q",
+          "url": "https://github.com/developing-today/code/issues/9110#issuecomment-6840148205",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2811](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/lm9mshzmn4hkojkzpufgkwxw)",
+          "createdAt": "2026-11-13T00:34:18Z",
+          "updatedAt": "2026-11-13T00:34:18Z"
+        }
+      ]
+    },
+    {
+      "number": 9111,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9106.\n\n\u00a77. Specify the configuration model: different modes, kinds of links, storages, and built-in tiering expressed as config where behavior, primitives where mechanism. Includes the peer/trust knobs Part B defines and the per-server namespace knobs Part A defines, in one config schema story. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9111",
+      "node_id": "I_kwDOJWP4788AAAABezUQIg",
+      "title": "design(id): modes & configuration surface \u2014 modes, link kinds, storages, tiering as config",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:18Z",
+      "updated_at": "2026-11-13T00:34:21Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTP9Q",
+        "number": 9106,
+        "title": "epic: ID/Atlas extensible primitives, federation, namespaces \u2014 major design iteration (2026-11-12 directive)",
+        "url": "https://github.com/developing-today/code/issues/9106",
+        "state": "CLOSED"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7RkCQ",
+          "url": "https://github.com/developing-today/code/issues/9111#issuecomment-6840149001",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2812](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/z8p625yomfyhmv1tpx8xye61)",
+          "createdAt": "2026-11-13T00:34:21Z",
+          "updatedAt": "2026-11-13T00:34:21Z"
+        }
+      ]
+    },
+    {
+      "number": 9112,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9106.\n\nRefine-and-prioritize pass over program #9106: order the parts/components for fastest useful results first (substrate before federation before economics polish, unless evidence says otherwise), mark each component now / next / later (~3 months out is a legitimate slot \u2014 being in the plan is the requirement, being early is not), name dependencies between components and on #9078/#9091 lines, and record the sequence on #9106. Re-run the pass whenever a part's design lands. Nothing may be dropped from the inventory to make the plan shorter; deferral must be explicit with a slot.\n",
+      "url": "https://github.com/developing-today/code/issues/9112",
+      "node_id": "I_kwDOJWP4788AAAABezUS-Q",
+      "title": "plan: refine and prioritize the #9106 program \u2014 sequencing for quick results, nothing dropped",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:22Z",
+      "updated_at": "2026-11-13T00:41:08Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTP9Q",
+        "number": 9106,
+        "title": "epic: ID/Atlas extensible primitives, federation, namespaces \u2014 major design iteration (2026-11-12 directive)",
+        "url": "https://github.com/developing-today/code/issues/9106",
+        "state": "CLOSED"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7RoYw",
+          "url": "https://github.com/developing-today/code/issues/9112#issuecomment-6840150115",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2813](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/b91ov6js475zk9ezw4xghjdt)",
+          "createdAt": "2026-11-13T00:34:25Z",
+          "updatedAt": "2026-11-13T00:34:25Z"
+        },
+        {
+          "id": "IC_kwDOJWP4788AAAABl7Yiqw",
+          "url": "https://github.com/developing-today/code/issues/9112#issuecomment-6840263339",
+          "author": {
+            "login": "dezren39"
+          },
+          "body": "FIRST-CUT SEQUENCE (intake, 2026-11-12; this issue owns refining it as designs land):\n\nNOW (substrate + cheap evidence first): #9110 primitive/adapter/hook boundary (everything hangs off it) \u00b7 #9113 ID shapes \u00b7 #9114 sidecar format \u00b7 #9116 namespace registry \u00b7 #9118 array-address core \u00b7 #9133 benchmark harness (evidence is cheap now, expensive to retrofit).\nNEXT (once cores exist): #9115 location index + harvester \u00b7 #9117 id:// \u00b7 #9120 core (a) spec \u00b7 #9119 shorthand/streaming \u00b7 #9125 triple encoding \u00b7 #9141 trust classes + signed acceptance \u00b7 #9144 federated fan-out \u00b7 #9142 trusted sync/conflicts \u00b7 #9138 ID search vectorization \u00b7 #9127 append-lists \u00b7 #9134/#9135 cache + placement (fed by #9133 results).\nLATER (~3 months out is a legitimate slot; in the plan, not dropped): #9143 CRDT exploration \u00b7 #9147 reputation log \u00b7 #9148 takeover research \u00b7 #9124 signed worlds \u00b7 #9126 graph viz \u00b7 #9111 modes/config polish \u00b7 #9139/#9140 recommendation depth.\n\nRule: deferral is explicit with a slot; nothing leaves the inventory to shorten the plan.",
+          "createdAt": "2026-11-13T00:41:08Z",
+          "updatedAt": "2026-11-13T00:41:08Z"
+        }
+      ]
+    },
+    {
+      "number": 9113,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a73 (statements 1-10). The extensible set of ID shapes and how every consumer dispatches on shape; new shapes add without invalidating existing IDs. For the hash shape: algorithm/profile, store-hash/ship-hash transport unchanged, recompute-to-verify, dedup by identity of content, NO mapping/registry layer interposed. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9113",
+      "node_id": "I_kwDOJWP4788AAAABezUVqg",
+      "title": "design(id): ID-shape registry + dispatch; content-addressed hash no-map rule",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:25Z",
+      "updated_at": "2026-11-13T00:34:28Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7Rr6g",
+          "url": "https://github.com/developing-today/code/issues/9113#issuecomment-6840151018",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2814](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/zljw7ihe1kgcm8yqzvts8084)",
+          "createdAt": "2026-11-13T00:34:28Z",
+          "updatedAt": "2026-11-13T00:34:28Z"
+        }
+      ]
+    },
+    {
+      "number": 9114,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a73 (11-22). The complete metadata schema carried beside a hash in `hash.metadata`, and the versioning decision: single file vs R2 path-per-version vs pointer to `hash.metadata.<date>` \u2014 compared on immutability, latest-pointer semantics, R2 naming/escaping, with a migration story. Related path links: syntax, allowed target kinds, dangling-link behaviour. Metadata stays outside hashed content so hashes stay stable. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9114",
+      "node_id": "I_kwDOJWP4788AAAABezUYbw",
+      "title": "design(id): metadata sidecar format \u2014 hash.metadata schema + versioning-form decision",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:28Z",
+      "updated_at": "2026-11-13T00:34:31Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7Rvhw",
+          "url": "https://github.com/developing-today/code/issues/9114#issuecomment-6840151943",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2815](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/zuwy6pxgfqxx1v3zrqkbbi7o)",
+          "createdAt": "2026-11-13T00:34:31Z",
+          "updatedAt": "2026-11-13T00:34:31Z"
+        }
+      ]
+    },
+    {
+      "number": 9115,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a73 (23-38). Protocol op by which a server acks a hash exists without transferring content. Harvester (batch AND immediate modes) reading sidecars and inserting ALL location records into the location index: record-type registry (R2 bucket; laptop hostname+path; Drive account-prefixed location; Drive URL; open-ended), insert-all semantics, stale/move handling. The index is shared infrastructure: this writes it, Atlas VFS #9100 reads it, content plane #9084 relies on it. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9115",
+      "node_id": "I_kwDOJWP4788AAAABezUbGw",
+      "title": "design(id): existence acknowledgement + metadata harvester + location index",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:32Z",
+      "updated_at": "2026-11-13T00:34:35Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7RzcA",
+          "url": "https://github.com/developing-today/code/issues/9115#issuecomment-6840152944",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2816](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/gp6s5kfisswmh0edalmumqau)",
+          "createdAt": "2026-11-13T00:34:35Z",
+          "updatedAt": "2026-11-13T00:34:35Z"
+        }
+      ]
+    },
+    {
+      "number": 9116,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a74 (39-56). What a namespace definition declares (core type, handler, encoding, resolution/write rules); how a server defines/registers multiple namespaces under its own rules; divergence between servers is by design \u2014 no global registry, no globally canonical resolution, same name may resolve differently on different servers without error. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9116",
+      "node_id": "I_kwDOJWP4788AAAABezUeMw",
+      "title": "design(id): namespace model + per-server namespace registry",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:36Z",
+      "updated_at": "2026-11-13T00:34:39Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7R4Pw",
+          "url": "https://github.com/developing-today/code/issues/9116#issuecomment-6840154175",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2817](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/mu92zz3bnrqa90lctbrjdg1t)",
+          "createdAt": "2026-11-13T00:34:39Z",
+          "updatedAt": "2026-11-13T00:34:39Z"
+        }
+      ]
+    },
+    {
+      "number": 9117,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a74 (46-56). An RFC-conformant, human-readable, expandable `id://` design (scheme/authority/path, reserved chars, percent-encoding, case/normalisation, length); explicitly evaluate and supersede Drew's `idb64+...` sketch rather than adopting it \u2014 the common case must not be an opaque base64 blob. How a namespace declares its handler and encoding (base64 one option) and how URLs select them. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9117",
+      "node_id": "I_kwDOJWP4788AAAABezUg5Q",
+      "title": "design(id): id:// URI scheme + per-namespace handlers and encodings",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:40Z",
+      "updated_at": "2026-11-13T00:34:43Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7R8Lg",
+          "url": "https://github.com/developing-today/code/issues/9117#issuecomment-6840155182",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2818](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/efowfr82u3jgw94krjoqf8iu)",
+          "createdAt": "2026-11-13T00:34:43Z",
+          "updatedAt": "2026-11-13T00:34:43Z"
+        }
+      ]
+    },
+    {
+      "number": 9118,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a74 (61-78). Addresses as arrays of null-or-bytes items, order-significant, length 0..n (zero-length valid, nulls are meaningful sparse slots). Values stored as TYPE+BYTES with a type-tag registry and type-sensitive equality (number 1 != string \"1\"); serialization round-trips type; arbitrary objects serialize in (format + primitive-vs-encoded boundary is this design's to settle). Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9118",
+      "node_id": "I_kwDOJWP4788AAAABezUjQw",
+      "title": "design(id): array-address core (core b) \u2014 data model, TYPE+BYTES values, serialization",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:43Z",
+      "updated_at": "2026-11-13T00:34:46Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7R_sg",
+          "url": "https://github.com/developing-today/code/issues/9118#issuecomment-6840156082",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2819](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/xyaxbdzacmfcx74ayp7tfloc)",
+          "createdAt": "2026-11-13T00:34:46Z",
+          "updatedAt": "2026-11-13T00:34:46Z"
+        }
+      ]
+    },
+    {
+      "number": 9119,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a74 (67-71, 79-82). Bare string query resolves via a SERVER-CONFIGURABLE default index (Drew's index-2-with-[0][1]-null is one server's config, never the protocol rule); two servers with different configs resolve the same string differently, by design. Streaming result delivery, max-items, and truncation/continuation signalling; max-items is an interface capability, not a data limit. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9119",
+      "node_id": "I_kwDOJWP4788AAAABezUmAg",
+      "title": "design(id): bare-string shorthand + default-index configuration; streaming interfaces + max-items",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:46Z",
+      "updated_at": "2026-11-13T00:34:49Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7SC4w",
+          "url": "https://github.com/developing-today/code/issues/9119#issuecomment-6840156899",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2820](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/z2kltrsktnepqqtvs9avlm1x)",
+          "createdAt": "2026-11-13T00:34:49Z",
+          "updatedAt": "2026-11-13T00:34:49Z"
+        }
+      ]
+    },
+    {
+      "number": 9120,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a74 (57-60). Core (a) = the \u00a73 hash shape operating as a namespace: handler/encoding defaults, write/read rules. Derived families are configurations/compositions of a core, not new storage primitives, unless a design proves otherwise. Neither this spec nor \u00a73's may redefine the hash. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9120",
+      "node_id": "I_kwDOJWP4788AAAABezUpWQ",
+      "title": "design(id): content-addressed namespace (core a) spec",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:50Z",
+      "updated_at": "2026-11-13T00:34:54Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7SHpg",
+          "url": "https://github.com/developing-today/code/issues/9120#issuecomment-6840158118",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2821](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/vjkr4fh2ylgn0segaple25xs)",
+          "createdAt": "2026-11-13T00:34:53Z",
+          "updatedAt": "2026-11-13T00:34:53Z"
+        }
+      ]
+    },
+    {
+      "number": 9121,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a74 (83-101). Wikipedia-style names (`us president.md`) resolving per-server, hand-picked or algorithmic, multiple candidates expected. Search returns ALL resolutions, lens-able: own-server overrides; popularity total / among interacted users / among users of a standing (standing itself defined here: what it is, who assigns it, how it's queried without leaking). Authority groups curate names and are adoptable as a preferred filter (wiki-group model); adoption is voluntary, groups overlap. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9121",
+      "node_id": "I_kwDOJWP4788AAAABezUsXQ",
+      "title": "design(id): string-path names \u2014 per-server resolution, search lenses, standing, authority groups",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:54Z",
+      "updated_at": "2026-11-13T00:34:57Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7SLAg",
+          "url": "https://github.com/developing-today/code/issues/9121#issuecomment-6840158978",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2822](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/mfbql4613qqzuvoetw2i3jl3)",
+          "createdAt": "2026-11-13T00:34:57Z",
+          "updatedAt": "2026-11-13T00:34:57Z"
+        }
+      ]
+    },
+    {
+      "number": 9122,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a74 (102-111). Test the hypothesis 'array-address bytes + numeric-style write validation' against ints, floats, decimals, bigints, infinitely growable numbers: extensible byte encoding (no fixed width), canonical encoding, ordering, precision, rejection rules \u2014 numeric-ness enforced at write, not by a separate engine. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9122",
+      "node_id": "I_kwDOJWP4788AAAABezUvhg",
+      "title": "design(id): numeric registry namespaces over the byte system",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:34:58Z",
+      "updated_at": "2026-11-13T00:35:01Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7SPrw",
+          "url": "https://github.com/developing-today/code/issues/9122#issuecomment-6840160175",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2823](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/u8nu9ov4yd0nw58qj2tslzpp)",
+          "createdAt": "2026-11-13T00:35:01Z",
+          "updatedAt": "2026-11-13T00:35:01Z"
+        }
+      ]
+    },
+    {
+      "number": 9123,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a74 (112-120). Addressing in-progress streams (text, chat-as-typed in multi-user docs, voice, video): a stream is addressable BEFORE it finishes; lifecycle open -> in-progress -> finished; write vs subscribe rights; redirect semantics on completion \u2014 following a finished stream's address yields the stored object, and what pre-completion followers observe is specified. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9123",
+      "node_id": "I_kwDOJWP4788AAAABezUybA",
+      "title": "design(id): stream namespaces \u2014 lifecycle + redirect to the final object",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:02Z",
+      "updated_at": "2026-11-13T00:35:05Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7ST-g",
+          "url": "https://github.com/developing-today/code/issues/9123#issuecomment-6840161274",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2824](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/pfbsoz1a6enat1y6u1ixx173)",
+          "createdAt": "2026-11-13T00:35:05Z",
+          "updatedAt": "2026-11-13T00:35:05Z"
+        }
+      ]
+    },
+    {
+      "number": 9124,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a74 (121-131). Signing, verification, key identity, revocation/re-signing for namespace definitions. Coordinate worlds: tuple addresses (e.g. 1,3,7) landing in signer-designated world data, presentable/renderable, read-only for non-signers; a signature confers canonicity for that signer's world, not a protocol monopoly \u2014 other servers serve their own worlds legitimately and clients choose. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9124",
+      "node_id": "I_kwDOJWP4788AAAABezU1eg",
+      "title": "design(id): signed namespace definitions + signed coordinate worlds",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:06Z",
+      "updated_at": "2026-11-13T00:35:09Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7SY2g",
+          "url": "https://github.com/developing-today/code/issues/9124#issuecomment-6840162522",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2825](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/zi51at182y8uft8ja8q5yxp6)",
+          "createdAt": "2026-11-13T00:35:09Z",
+          "updatedAt": "2026-11-13T00:35:09Z"
+        }
+      ]
+    },
+    {
+      "number": 9125,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a75 (1-12). Everything breaks into triples, infinitely many; storage is NOT pretty-printed UTF-8 JSON. Bake-off on size, scan, point-query, streaming/partial-read (never load a whole graph to answer a query): compressed/streamable binary vs JSONB vs normalized byte-key->byte-value maps. Acceptance: evidence-backed research note merged under doc/ and linked from the parent epic, with a recommendation the sibling designs can build on; open questions recorded, not silently settled.\n",
+      "url": "https://github.com/developing-today/code/issues/9125",
+      "node_id": "I_kwDOJWP4788AAAABezU4kA",
+      "title": "research(id): triple encoding bake-off \u2014 compressed binary vs JSONB vs normalized byte-key maps",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:10Z",
+      "updated_at": "2026-11-13T00:35:13Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7Sdmg",
+          "url": "https://github.com/developing-today/code/issues/9125#issuecomment-6840163738",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2826](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/mc1jeqps585r4naqenh6yi28)",
+          "createdAt": "2026-11-13T00:35:13Z",
+          "updatedAt": "2026-11-13T00:35:13Z"
+        }
+      ]
+    },
+    {
+      "number": 9126,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a75 (8-12). Evaluate graph query languages and visualization tooling against the encoding chosen in the bake-off; metadata is accessed via the graph when graph query lands; visualization consumes the same query layer, not a separate store. Acceptance: evidence-backed research note merged under doc/ and linked from the parent epic, with a recommendation the sibling designs can build on; open questions recorded, not silently settled.\n",
+      "url": "https://github.com/developing-today/code/issues/9126",
+      "node_id": "I_kwDOJWP4788AAAABezU7vQ",
+      "title": "research(id): graph query language selection + visualization",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:14Z",
+      "updated_at": "2026-11-13T00:35:18Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7SixQ",
+          "url": "https://github.com/developing-today/code/issues/9126#issuecomment-6840165061",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2827](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/ge6s9ovco18nrhh978omw1sd)",
+          "createdAt": "2026-11-13T00:35:18Z",
+          "updatedAt": "2026-11-13T00:35:18Z"
+        }
+      ]
+    },
+    {
+      "number": 9127,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a75 (13-29). User attributes (Drew's term \u2014 distinct from Atlas metadata and content-location metadata) are objects; append-list attributes (e.g. comments at `geordi.png/comments`): anyone may SUBMIT a signed comment object + hash; signature+hash verified before append or queueing; server appends in server-defined central order (submitter order/timestamps not authoritative); submitters cannot set/edit the list; OPENED is an explicit per-attribute state; non-group submitters land in a PENDING queue needing member/admin approval per config. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9127",
+      "node_id": "I_kwDOJWP4788AAAABezU_UA",
+      "title": "design(id): append-list user-attribute protocol \u2014 signed submission, server order, pending queue",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:19Z",
+      "updated_at": "2026-11-13T00:35:22Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7SnBg",
+          "url": "https://github.com/developing-today/code/issues/9127#issuecomment-6840166150",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2828](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/tdmi4nahwot4x8yg8vxo8shi)",
+          "createdAt": "2026-11-13T00:35:22Z",
+          "updatedAt": "2026-11-13T00:35:22Z"
+        }
+      ]
+    },
+    {
+      "number": 9128,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a75 (30-40). Infinitely nesting objects as substrate: feeds/Twitter-like, profiles/Facebook-LinkedIn-like, bulletin boards (phpBB/Usenet/Reddit/HN-like) where accepted objects become topics and comments nest on comments (comment objects content-addressed in the mutable area). Forum views carry a cheap freshness TOKEN (latest check / since-date / before-date) that proves 'nothing new' without a full scan or refetch. Nesting depth is not capped by the data model; caps are view/policy. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9128",
+      "node_id": "I_kwDOJWP4788AAAABezVCVw",
+      "title": "design(id): social app reference model \u2014 feeds, profiles, bulletin boards, freshness token",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:22Z",
+      "updated_at": "2026-11-13T00:35:26Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7SrQA",
+          "url": "https://github.com/developing-today/code/issues/9128#issuecomment-6840167232",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2829](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/erxvg2dihwzn0u1xip26fu8f)",
+          "createdAt": "2026-11-13T00:35:25Z",
+          "updatedAt": "2026-11-13T00:35:25Z"
+        }
+      ]
+    },
+    {
+      "number": 9129,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a75 (41-45). Mutable-area items editable by owner/admins; versioning expressed as a `succeeds` triple v1 -> v2; views show v2 by default and carry v1's comments forward, asterisked as old-version comments. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9129",
+      "node_id": "I_kwDOJWP4788AAAABezVF7Q",
+      "title": "design(id): versioning \u2014 succeeds triples + carried-forward comments",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:27Z",
+      "updated_at": "2026-11-13T00:35:29Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7SvLQ",
+          "url": "https://github.com/developing-today/code/issues/9129#issuecomment-6840168237",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2830](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/okhrnreitpus669enxckflbn)",
+          "createdAt": "2026-11-13T00:35:29Z",
+          "updatedAt": "2026-11-13T00:35:29Z"
+        }
+      ]
+    },
+    {
+      "number": 9130,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a75 (46-53). Three distinct states: marked, moderation-queued, true-deleted. True delete governed by server policy: server admins, or GC when unreferenced; group admins/users mark own items for next-batch deletion (batched, not immediate); a firehose 'please delete / please moderate' queue for admin review; a referenced object is not GC-deleted even if marked, until references clear or policy overrides. Coordinates with Part C's GC design. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9130",
+      "node_id": "I_kwDOJWP4788AAAABezVJBw",
+      "title": "design(id): true-delete + moderation pipeline",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:31Z",
+      "updated_at": "2026-11-13T00:35:33Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7Szqg",
+          "url": "https://github.com/developing-today/code/issues/9130#issuecomment-6840169386",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2831](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/fwmbaqqr484v3h2orqobuldq)",
+          "createdAt": "2026-11-13T00:35:33Z",
+          "updatedAt": "2026-11-13T00:35:33Z"
+        }
+      ]
+    },
+    {
+      "number": 9131,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a75 (54-55, 62). Assigning array[0..1] = [null, user's public ID (iroh key)] creates a space client-validatable as that signer's WITHOUT trusting the server for signer identity. Petname attributes, distinct from canonical IDs. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9131",
+      "node_id": "I_kwDOJWP4788AAAABezVMVQ",
+      "title": "design(id): client-bound spaces \u2014 [null, iroh-key] binding + petnames",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:35Z",
+      "updated_at": "2026-11-13T00:35:37Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7S31g",
+          "url": "https://github.com/developing-today/code/issues/9131#issuecomment-6840170454",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2832](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/tx138wf6vru0ehbc6smfzjd6)",
+          "createdAt": "2026-11-13T00:35:37Z",
+          "updatedAt": "2026-11-13T00:35:37Z"
+        }
+      ]
+    },
+    {
+      "number": 9132,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9107.\n\n\u00a75 (56-64). Other keys own/write a location via delegation: a well-known location listing delegations/transfers, or identity triples ('XYZ is the same as 123') accepted ONLY when cross-signed (both sides state/publish toward each other). Transfer (replaces owner) vs delegation (grants, original may remain) are distinct; a unilateral claim is at most pending/unverified. The exact ceremony is this design's deliverable. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9132",
+      "node_id": "I_kwDOJWP4788AAAABezVO4w",
+      "title": "design(id): delegation + cross-signed identity ceremony",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:38Z",
+      "updated_at": "2026-11-13T00:35:41Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTVdw",
+        "number": 9107,
+        "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
+        "url": "https://github.com/developing-today/code/issues/9107",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7S79Q",
+          "url": "https://github.com/developing-today/code/issues/9132#issuecomment-6840171509",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2833](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/p1xxmb6fb7y5nhp0wtonvonr)",
+          "createdAt": "2026-11-13T00:35:41Z",
+          "updatedAt": "2026-11-13T00:35:41Z"
+        }
+      ]
+    },
+    {
+      "number": 9133,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9109.\n\n\u00a72 (1-3, 16). Latency/characteristic benchmarks across D1, R2, laptop redb, laptop Turso \u2014 at various shard levels AND as databases grow (size is a dimension, not a fixed fixture), reporting economics (cost per tenant / per query shape) alongside latency. Named oracle: the harness + dataset generator are the deliverable; results feed C2/C3 and Atlas #9092's shard benchmarks (coordinate, don't duplicate). Acceptance: evidence-backed research note merged under doc/ and linked from the parent epic, with a recommendation the sibling designs can build on; open questions recorded, not silently settled.\n",
+      "url": "https://github.com/developing-today/code/issues/9133",
+      "node_id": "I_kwDOJWP4788AAAABezVRYQ",
+      "title": "research(atlas): benchmark harness \u2014 D1 vs R2 vs laptop redb vs laptop Turso, shards x growth",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:41Z",
+      "updated_at": "2026-11-13T00:35:44Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTbgg",
+        "number": 9109,
+        "title": "epic(atlas): Part C \u2014 Atlas-facing: storage economics, benchmarks, ID search, recommendations",
+        "url": "https://github.com/developing-today/code/issues/9109",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7S_Mw",
+          "url": "https://github.com/developing-today/code/issues/9133#issuecomment-6840172339",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2834](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/pnskfzpmt653lw8vtxlyx1ux)",
+          "createdAt": "2026-11-13T00:35:44Z",
+          "updatedAt": "2026-11-13T00:35:44Z"
+        }
+      ]
+    },
+    {
+      "number": 9134,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9109.\n\n\u00a72 (4-6, 17). Hot cache in D1: admission by tenant tier / compute usage; recent heavy or frequent queries skip the Turso hop; invalidation/staleness vs the Turso source of truth specified \u2014 skipping is only valid inside a defined freshness bound. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9134",
+      "node_id": "I_kwDOJWP4788AAAABezVT3g",
+      "title": "design(atlas): D1 tenant hot cache \u2014 admission, invalidation, Turso-hop skip",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:45Z",
+      "updated_at": "2026-11-13T00:35:49Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTbgg",
+        "number": 9109,
+        "title": "epic(atlas): Part C \u2014 Atlas-facing: storage economics, benchmarks, ID search, recommendations",
+        "url": "https://github.com/developing-today/code/issues/9109",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7TFCA",
+          "url": "https://github.com/developing-today/code/issues/9134#issuecomment-6840173832",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2835](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/fr56xwcidl2mmxw3nzk2ysrv)",
+          "createdAt": "2026-11-13T00:35:49Z",
+          "updatedAt": "2026-11-13T00:35:49Z"
+        }
+      ]
+    },
+    {
+      "number": 9135,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9109.\n\n\u00a72 (7-9). Evaluate existing SQLite-file sync tooling BEFORE building any; recommend the placement rule (which tenants/stores live in D1, which are files synced to S3/R2 on an interval, which stay Turso). Acceptance: evidence-backed research note merged under doc/ and linked from the parent epic, with a recommendation the sibling designs can build on; open questions recorded, not silently settled.\n",
+      "url": "https://github.com/developing-today/code/issues/9135",
+      "node_id": "I_kwDOJWP4788AAAABezVWog",
+      "title": "research(atlas): tenant store placement \u2014 in-D1 vs SQLite files synced to S3/R2",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:48Z",
+      "updated_at": "2026-11-13T00:35:52Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTbgg",
+        "number": 9109,
+        "title": "epic(atlas): Part C \u2014 Atlas-facing: storage economics, benchmarks, ID search, recommendations",
+        "url": "https://github.com/developing-today/code/issues/9109",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7TIXg",
+          "url": "https://github.com/developing-today/code/issues/9135#issuecomment-6840174686",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2836](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/pc42zu0ghwrmr3u5tg27pfpw)",
+          "createdAt": "2026-11-13T00:35:52Z",
+          "updatedAt": "2026-11-13T00:35:52Z"
+        }
+      ]
+    },
+    {
+      "number": 9136,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9109.\n\n\u00a72 (10-13, 18). One (or a set of) R2/RustFS buckets serving many ID instances. Trusted mode: sync just ID + hash. Untrusted mode: broker and/or encryption so co-tenants see only encrypted blobs. Trusted-vs-untrusted is a per-bucket/per-tenant threat model, not a global flag. Feeds content plane #9084. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9136",
+      "node_id": "I_kwDOJWP4788AAAABezVZVg",
+      "title": "design(atlas): shared-bucket multi-tenancy \u2014 trusted vs untrusted modes on R2/RustFS",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:52Z",
+      "updated_at": "2026-11-13T00:35:55Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTbgg",
+        "number": 9109,
+        "title": "epic(atlas): Part C \u2014 Atlas-facing: storage economics, benchmarks, ID search, recommendations",
+        "url": "https://github.com/developing-today/code/issues/9109",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7TLlg",
+          "url": "https://github.com/developing-today/code/issues/9136#issuecomment-6840175510",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2837](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/gvrwh0notadnfqcqamii7cp5)",
+          "createdAt": "2026-11-13T00:35:55Z",
+          "updatedAt": "2026-11-13T00:35:55Z"
+        }
+      ]
+    },
+    {
+      "number": 9137,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9109.\n\n\u00a72 (14-15, 19) + \u00a75 delete interplay. GC design for the shared-store model, prioritizing very large files; chunk/segment reclamation so reclaiming a small fraction never forces re-upload/rewrite of a whole file; reference tracking consistent with #9084's refcount model and Part A's true-delete states. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9137",
+      "node_id": "I_kwDOJWP4788AAAABezVbxg",
+      "title": "design(atlas): garbage collection for shared stores \u2014 large-file priority, segment reclamation",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:55Z",
+      "updated_at": "2026-11-13T00:35:58Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTbgg",
+        "number": 9109,
+        "title": "epic(atlas): Part C \u2014 Atlas-facing: storage economics, benchmarks, ID search, recommendations",
+        "url": "https://github.com/developing-today/code/issues/9109",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7TPNg",
+          "url": "https://github.com/developing-today/code/issues/9137#issuecomment-6840176438",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2838](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/j0bp13v4n32iv1b4v2tvy9f9)",
+          "createdAt": "2026-11-13T00:35:58Z",
+          "updatedAt": "2026-11-13T00:35:58Z"
+        }
+      ]
+    },
+    {
+      "number": 9138,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9109.\n\n\u00a76 (1-3, 13-14). Much/all ID-ingested content auto-queued for vectorization (asynchronous, dedup, backfill) with Snowflake + the second embedder from Atlas #9092; built-in ID search as a platform feature. Both embedders' outputs searchable/comparable; the embedder sits behind the \u00a70 adapter/hook extensibility, never hard-coded. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9138",
+      "node_id": "I_kwDOJWP4788AAAABezVe1Q",
+      "title": "design(id): ID search \u2014 auto-vectorization queue + dual-embedder index",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:35:59Z",
+      "updated_at": "2026-11-13T00:36:02Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTbgg",
+        "number": 9109,
+        "title": "epic(atlas): Part C \u2014 Atlas-facing: storage economics, benchmarks, ID search, recommendations",
+        "url": "https://github.com/developing-today/code/issues/9109",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7TThA",
+          "url": "https://github.com/developing-today/code/issues/9138#issuecomment-6840177540",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2839](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/us2d9qi17e0hy7tr27avduih)",
+          "createdAt": "2026-11-13T00:36:02Z",
+          "updatedAt": "2026-11-13T00:36:02Z"
+        }
+      ]
+    },
+    {
+      "number": 9139,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9109.\n\n\u00a76 (4-7, 15). 'News feed' / 'you might be interested': ONE worker fans out (not one per request/user); a Durable Object accumulates incrementally and serves 'give me the next 10'; accumulation survives restarts (DO, not in-memory paging); backpressure specified. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9139",
+      "node_id": "I_kwDOJWP4788AAAABezViNA",
+      "title": "design(atlas): recommendation fan-out worker + Durable Object next-10 accumulation",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:36:03Z",
+      "updated_at": "2026-11-13T00:36:06Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTbgg",
+        "number": 9109,
+        "title": "epic(atlas): Part C \u2014 Atlas-facing: storage economics, benchmarks, ID search, recommendations",
+        "url": "https://github.com/developing-today/code/issues/9109",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7TXzg",
+          "url": "https://github.com/developing-today/code/issues/9139#issuecomment-6840178638",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2840](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/ha13785dpxr67d9f5jsj5soo)",
+          "createdAt": "2026-11-13T00:36:06Z",
+          "updatedAt": "2026-11-13T00:36:06Z"
+        }
+      ]
+    },
+    {
+      "number": 9140,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9109.\n\n\u00a76 (8-12, 16-17). Recommendations stored as their own objects; search history as objects/inputs; versioned/timestamped snapshots enabling admin before/after comparison; retention per data class, with short-retention classes for intermediate 'what's hot' data. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9140",
+      "node_id": "I_kwDOJWP4788AAAABezVksQ",
+      "title": "design(atlas): recommendation objects, search history, retention classes",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:36:06Z",
+      "updated_at": "2026-11-13T00:36:09Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTbgg",
+        "number": 9109,
+        "title": "epic(atlas): Part C \u2014 Atlas-facing: storage economics, benchmarks, ID search, recommendations",
+        "url": "https://github.com/developing-today/code/issues/9109",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7TbMg",
+          "url": "https://github.com/developing-today/code/issues/9140#issuecomment-6840179506",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2841](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/suk0q4zajzuckoxtmne0v7k8)",
+          "createdAt": "2026-11-13T00:36:09Z",
+          "updatedAt": "2026-11-13T00:36:09Z"
+        }
+      ]
+    },
+    {
+      "number": 9141,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9108.\n\n\u00a71. Peer classes: fully trusted / send-only (we send, never accept) / accept-signed-from. The acceptance rule: data is accepted ONLY when cryptographically signed and validated, regardless of source \u2014 including from nominally trusted peers. Class semantics per operation type (reads, writes, relays) and how class is configured per peer. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9141",
+      "node_id": "I_kwDOJWP4788AAAABezW5Vg",
+      "title": "design(id): peer trust classes + signed-data acceptance rule",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:37:56Z",
+      "updated_at": "2026-11-13T00:38:00Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTYVA",
+        "number": 9108,
+        "title": "epic(id): Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation",
+        "url": "https://github.com/developing-today/code/issues/9108",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7VSww",
+          "url": "https://github.com/developing-today/code/issues/9141#issuecomment-6840210115",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2842](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/gd8tvnplwp9djohooq2ad2tz)",
+          "createdAt": "2026-11-13T00:38:00Z",
+          "updatedAt": "2026-11-13T00:38:00Z"
+        }
+      ]
+    },
+    {
+      "number": 9142,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9108.\n\n\u00a71. Internal backend peers trusted implicitly sync so both become one-to-one the same 'within reason' (the tolerance is this design's to define). Conflicts are detected and surfaced as CONFLICT REPORTS first \u2014 no silent resolution; merge/CRDT machinery is explicitly later work (see the exploration issue). Sync runs over the \u00a70 primitives/adapters. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9142",
+      "node_id": "I_kwDOJWP4788AAAABezW8GA",
+      "title": "design(id): implicit-trust sync \u2014 convergence toward 1:1 + conflict reports",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:38:00Z",
+      "updated_at": "2026-11-13T00:38:03Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTYVA",
+        "number": 9108,
+        "title": "epic(id): Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation",
+        "url": "https://github.com/developing-today/code/issues/9108",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7VWEg",
+          "url": "https://github.com/developing-today/code/issues/9142#issuecomment-6840210962",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2843](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/pcr26aluy5v728eyupkpxv5x)",
+          "createdAt": "2026-11-13T00:38:03Z",
+          "updatedAt": "2026-11-13T00:38:03Z"
+        }
+      ]
+    },
+    {
+      "number": 9143,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9108.\n\n\u00a71. State-of-the-art expansion for the merge layer deliberately deferred by the sync design: Automerge, diamonds (Diamond Types), the Willow protocol, and OCAPN \u2014 fit against our triples/array-address data model, signature story, and peer classes; what each would change in the sync protocol if adopted; recommendation for when (which scale/pain) to revisit. Acceptance: evidence-backed research note merged under doc/ and linked from the parent epic, with a recommendation the sibling designs can build on; open questions recorded, not silently settled.\n",
+      "url": "https://github.com/developing-today/code/issues/9143",
+      "node_id": "I_kwDOJWP4788AAAABezW-SQ",
+      "title": "research(id): CRDT/merge exploration \u2014 Automerge, diamonds, Willow, OCAPN",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:38:03Z",
+      "updated_at": "2026-11-13T00:38:06Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTYVA",
+        "number": 9108,
+        "title": "epic(id): Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation",
+        "url": "https://github.com/developing-today/code/issues/9108",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7VZHw",
+          "url": "https://github.com/developing-today/code/issues/9143#issuecomment-6840211743",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2844](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/pb88g35kvf3lcxrt7ndamrhf)",
+          "createdAt": "2026-11-13T00:38:06Z",
+          "updatedAt": "2026-11-13T00:38:06Z"
+        }
+      ]
+    },
+    {
+      "number": 9144,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9108.\n\n\u00a71. An ID server answers a query by checking its own store, then a prioritized list of remotes known not to hold everything, in configured order. Remotes trusted the right way may re-fan-out to THEIR remotes, recursively, bounded by max-hops (internet-request style). Signatures and validation ride every hop; per-hop provenance is recorded. Priority lists and relay permission are configuration (\u00a77 modes issue). Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9144",
+      "node_id": "I_kwDOJWP4788AAAABezXAtQ",
+      "title": "design(id): federated query fan-out \u2014 prioritized remotes, trusted relay, max-hops",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:38:06Z",
+      "updated_at": "2026-11-13T00:38:10Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTYVA",
+        "number": 9108,
+        "title": "epic(id): Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation",
+        "url": "https://github.com/developing-today/code/issues/9108",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7VdPQ",
+          "url": "https://github.com/developing-today/code/issues/9144#issuecomment-6840212797",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2845](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/f787xndjt29xg0l7sjv8by8e)",
+          "createdAt": "2026-11-13T00:38:10Z",
+          "updatedAt": "2026-11-13T00:38:10Z"
+        }
+      ]
+    },
+    {
+      "number": 9145,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9108.\n\n\u00a71. When the same request reaches a host twice (directly from the origin and via a relay that got it from the origin), the receiving host can: inform the users, short-circuit, dedup the query (answer once), and inform the parties this is a loop. Request identity/dedup keys, loop detection state, and which behavior applies when are specified here. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9145",
+      "node_id": "I_kwDOJWP4788AAAABezXDlw",
+      "title": "design(id): relay duplicate + loop handling \u2014 inform, short-circuit, dedup, loop-inform",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:38:10Z",
+      "updated_at": "2026-11-13T00:38:14Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTYVA",
+        "number": 9108,
+        "title": "epic(id): Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation",
+        "url": "https://github.com/developing-today/code/issues/9108",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7Vinw",
+          "url": "https://github.com/developing-today/code/issues/9145#issuecomment-6840214175",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2846](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/r41gnywa275stk7up3x5qchx)",
+          "createdAt": "2026-11-13T00:38:14Z",
+          "updatedAt": "2026-11-13T00:38:14Z"
+        }
+      ]
+    },
+    {
+      "number": 9146,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9108.\n\n\u00a71. Servers may store routing state (which remotes hold what, reachability, relay permissions) and test it occasionally to validate the shape of the network as known to themselves. Staleness handling, probe design, and how validated shape feeds the fan-out priority lists. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9146",
+      "node_id": "I_kwDOJWP4788AAAABezXGVw",
+      "title": "design(id): routing state + periodic network-shape validation",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:38:13Z",
+      "updated_at": "2026-11-13T00:38:17Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTYVA",
+        "number": 9108,
+        "title": "epic(id): Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation",
+        "url": "https://github.com/developing-today/code/issues/9108",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7Vl4w",
+          "url": "https://github.com/developing-today/code/issues/9146#issuecomment-6840215011",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2847](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/fa2qyyitmoo3oqmv05z03ll4)",
+          "createdAt": "2026-11-13T00:38:17Z",
+          "updatedAt": "2026-11-13T00:38:17Z"
+        }
+      ]
+    },
+    {
+      "number": 9147,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9108.\n\n\u00a71. Ratings for servers/peers and protections against bad actors, so trust can rise with good behavior and performance improve with trust. A PUBLIC LOG where claims are tracked when a server claims something was done incorrectly \u2014 claim format, evidence, dispute/response flow, and how log outcomes adapt a peer's trust. Acceptance: design section merged under doc/ (or folded into a named existing design by amendment with the link recorded on the parent epic); open questions recorded with chosen defaults; granular implementation issues filed for anything implementable.\n",
+      "url": "https://github.com/developing-today/code/issues/9147",
+      "node_id": "I_kwDOJWP4788AAAABezXJrg",
+      "title": "design(id): reputation system + public claims/dispute log",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:38:17Z",
+      "updated_at": "2026-11-13T00:38:20Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTYVA",
+        "number": 9108,
+        "title": "epic(id): Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation",
+        "url": "https://github.com/developing-today/code/issues/9108",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7VpnA",
+          "url": "https://github.com/developing-today/code/issues/9147#issuecomment-6840215964",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2848](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/kh6zkb17qy4hppl15mlyvygp)",
+          "createdAt": "2026-11-13T00:38:20Z",
+          "updatedAt": "2026-11-13T00:38:20Z"
+        }
+      ]
+    },
+    {
+      "number": 9148,
+      "missing": false,
+      "body": "Program #9106 (extensible primitives / federation / namespaces), Drew directive 2026-11-12 18:29 CST.\nParent: #9108.\n\n\u00a71. Threat design: a highly trusted server is taken over (or waits until trusted) and begins behaving inappropriately \u2014 including tampering with search results. Worked detection: acknowledgments make lying expensive \u2014 if A answers 'don't have it' while B produces the recipient list showing the data was sent to A, one of them is provably wrong; defeating detection requires collusion across servers. All transfers are signed and ALL signatures still validated, always. Specify what's logged, what's provable, and the response playbook when a contradiction is detected. Acceptance: evidence-backed research note merged under doc/ and linked from the parent epic, with a recommendation the sibling designs can build on; open questions recorded, not silently settled.\n",
+      "url": "https://github.com/developing-today/code/issues/9148",
+      "node_id": "I_kwDOJWP4788AAAABezXMXw",
+      "title": "research(id): takeover resistance + acknowledgment-based inconsistency detection",
+      "state": "OPEN",
+      "created_at": "2026-11-13T00:38:20Z",
+      "updated_at": "2026-11-13T00:38:23Z",
+      "closed_at": null,
+      "parent": {
+        "id": "I_kwDOJWP4788AAAABezTYVA",
+        "number": 9108,
+        "title": "epic(id): Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation",
+        "url": "https://github.com/developing-today/code/issues/9108",
+        "state": "OPEN"
+      },
+      "native_children": [],
+      "comments": [
+        {
+          "id": "IC_kwDOJWP4788AAAABl7VtGw",
+          "url": "https://github.com/developing-today/code/issues/9148#issuecomment-6840216859",
+          "author": {
+            "login": "developing-today"
+          },
+          "body": "[CODE-2849](https://kaneo.security.cab/dashboard/workspace/6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE/project/pfcq432h349r20up18gttfv4/task/x7vunipizb2prg10pyz89xnf)",
+          "createdAt": "2026-11-13T00:38:23Z",
+          "updatedAt": "2026-11-13T00:38:23Z"
+        }
+      ]
+    }
+  ]
+}
