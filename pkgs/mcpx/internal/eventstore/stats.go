@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"math"
 	"sort"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/statsorder"
 )
 
 // CallStat is one server+tool pair's call history — the same shape as
@@ -90,13 +92,7 @@ func (s *Store) CallStats() ([]CallStat, error) {
 		out = append(out, *st)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].TotalMs != out[j].TotalMs {
-			return out[i].TotalMs > out[j].TotalMs
-		}
-		if out[i].Server != out[j].Server {
-			return out[i].Server < out[j].Server
-		}
-		return out[i].Tool < out[j].Tool
+		return statsorder.Less(out[i].TotalMs, out[i].Server, out[i].Tool, out[j].TotalMs, out[j].Server, out[j].Tool)
 	})
 	return out, nil
 }

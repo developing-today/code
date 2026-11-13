@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/statsorder"
 )
 
 // Dimensions are the aggregates `mcpx stats` can produce.
@@ -105,13 +107,7 @@ func (s *Store) Calls(q Query) ([]CallStat, error) {
 	// always "what is costing me", and a rare tool that takes ten seconds
 	// matters more than a fast one called constantly.
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].TotalMs != out[j].TotalMs {
-			return out[i].TotalMs > out[j].TotalMs
-		}
-		if out[i].Server != out[j].Server {
-			return out[i].Server < out[j].Server
-		}
-		return out[i].Tool < out[j].Tool
+		return statsorder.Less(out[i].TotalMs, out[i].Server, out[i].Tool, out[j].TotalMs, out[j].Server, out[j].Tool)
 	})
 	return out, nil
 }
