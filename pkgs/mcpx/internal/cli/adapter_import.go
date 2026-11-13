@@ -223,6 +223,19 @@ type importSub struct {
 	Desc        string
 	Flags       []importFlag
 	Positionals []importFlag // Long holds the name; always TakesValue
+	// Path is the full command path below the binary, for a subcommand
+	// nested under other subcommands (git bisect start: Path is
+	// ["bisect", "start"], Name is "bisect_start"). Empty means the
+	// subcommand is top-level: the path is just [Name].
+	Path []string
+}
+
+// path returns the subcommand's full command path below the binary.
+func (s importSub) path() []string {
+	if len(s.Path) > 0 {
+		return s.Path
+	}
+	return []string{s.Name}
 }
 
 // importShape is what any source parses into: subcommands with their own
@@ -335,7 +348,7 @@ func shapeToSpec(name, command string, shape *importShape, prov *adapter.Provena
 			spec.Tools = append(spec.Tools, adapter.ToolSpec{
 				Name:        sub.Name,
 				Description: sub.Desc,
-				Args:        []string{sub.Name},
+				Args:        sub.path(),
 				Params:      params,
 			})
 		}

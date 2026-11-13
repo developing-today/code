@@ -193,6 +193,84 @@ func TestParseBashCompletion(t *testing.T) {
 	}
 }
 
+// gitStyleBashFixture mirrors the installed git completion's shape:
+// a top-level handler, a nested-command handler (_git_bisect), and an
+// internal helper whose lists name no command context at all.
+const gitStyleBashFixture = `_git() {
+  local commands="bisect checkout"
+  local opts="--git-dir --bare"
+}
+_git_bisect() {
+  local subcommands="start bad good reset"
+  local opts="--term-good --term-bad"
+}
+__git_helper() {
+  local commands="bogus"
+}
+complete -F _git git
+`
+
+func TestParseBashCompletionNestedHandlerKeepsContext(t *testing.T) {
+	// Oracle: the completion file's own handler structure. _git_bisect
+	// completes "git bisect ...", so its subcommands list is the word
+	// list of git bisect, never of git itself; __git_helper follows no
+	// handler naming convention, so its list establishes nothing.
+	shape := parseBashCompletion(gitStyleBashFixture, "git")
+	var names []string
+	byName := map[string]importSub{}
+	for _, s := range shape.Subs {
+		names = append(names, s.Name)
+		byName[s.Name] = s
+	}
+	for _, want := range []string{"bisect", "checkout", "bisect_start", "bisect_bad", "bisect_good", "bisect_reset"} {
+		if _, ok := byName[want]; !ok {
+			t.Errorf("missing subcommand %q in %v", want, names)
+		}
+	}
+	for _, banned := range []string{"start", "bad", "good", "reset", "bogus"} {
+		if _, ok := byName[banned]; ok {
+			t.Errorf("context-free subcommand %q promoted to top level: %v", banned, names)
+		}
+	}
+	if path := byName["bisect_start"].Path; len(path) != 2 || path[0] != "bisect" || path[1] != "start" {
+		t.Errorf("bisect_start path: %v", path)
+	}
+	// The nested handler's own flags belong to the nested command, not
+	// to the binary's global flag set.
+	if len(byName["bisect"].Flags) != 2 {
+		t.Errorf("bisect flags: %+v", byName["bisect"].Flags)
+	}
+	if len(shape.Global) != 2 {
+		t.Errorf("global flags: %+v", shape.Global)
+	}
+}
+
+func TestShapeToSpecNestedSubcommandArgs(t *testing.T) {
+	// Oracle: shapeToSpec's fixed-args contract — a tool's Args are the
+	// exact words the binary is invoked with, so the tool for
+	// "git bisect start" must carry both words, in order.
+	shape := parseBashCompletion(gitStyleBashFixture, "git")
+	prov := &adapter.Provenance{Source: "completion", SourceDetail: "fixture", GeneratedAt: "2026-01-01T00:00:00Z", Generator: "test"}
+	spec, _, err := shapeToSpec("git", "git", shape, prov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]adapter.ToolSpec{}
+	for _, tool := range spec.Tools {
+		byName[tool.Name] = tool
+		if tool.Name == "start" {
+			t.Errorf("bare start tool generated: %+v", tool)
+		}
+	}
+	tool, ok := byName["bisect_start"]
+	if !ok {
+		t.Fatalf("no bisect_start tool in %+v", spec.Tools)
+	}
+	if len(tool.Args) != 2 || tool.Args[0] != "bisect" || tool.Args[1] != "start" {
+		t.Errorf("bisect_start args: %v", tool.Args)
+	}
+}
+
 func TestShapeToSpecSubcommands(t *testing.T) {
 	shape := parseFishCompletion(fishFixture, "toolbox")
 	prov := &adapter.Provenance{Source: "completion", SourceDetail: "fixture", GeneratedAt: "2026-01-01T00:00:00Z", Generator: "test"}
