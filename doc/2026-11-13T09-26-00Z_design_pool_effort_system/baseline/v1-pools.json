@@ -1,0 +1,249 @@
+{
+  "meta": {
+    "config": ".opencode/opencode.jsonc (identical on origin/main 08c1834b78 and worktree HEAD 5700c42349)",
+    "fork_source": "~/git/opencode origin/HEAD 25b50a485b (packages/core/src/config/plugin/model-routes.ts, model-resolver.ts, model-route.ts, schema/src/config/model-routes.ts)",
+    "usage_window": "route_usage hours=72, from 2026-11-10T12:04:35Z to 2026-11-13 (counts are per attempt, per provider/model leaf)",
+    "line_refs": "line numbers are in .opencode/opencode.jsonc unless a file is named",
+    "unverified": "Variant lists for providers whose models are catalog-only (opendesign, cline-pass, _commandcode, opencode-go instances, _openai.*, _antigravity, mistral runtime overlay) are not declared in config and are not in this audit."
+  },
+  "routes": [
+    {"name": "small", "kind": "class", "strategy": "ordered", "line": 3672, "targets": [{"ref": "opencode-route/limited"}, {"ref": "opencode-route/speed"}], "fallback": ["speed"], "windows": []},
+    {"name": "speed", "kind": "class", "strategy": "ordered", "line": 3544, "targets": [
+      {"ref": "_muse/muse-spark-1.3-contributor", "variant": "xhigh", "line": 3586},
+      {"ref": "opencode-route/deepseek-flash-plan", "variant": "high", "line": 3587},
+      {"ref": "opencode-route/gemini-hydrogen-plan", "variant": "high", "line": 3588},
+      {"ref": "opencode-route/haiku-plan", "variant": "high", "line": 3589},
+      {"ref": "opencode-route/workhorse", "line": 3590},
+      {"ref": "opencode-route/summit", "line": 3591},
+      {"ref": "opencode-route/specialist", "line": 3592}
+    ], "fallback": ["workhorse", "summit", "specialist"], "windows": []},
+    {"name": "workhorse", "kind": "class", "strategy": "ordered", "line": 3176, "targets": [
+      {"ref": "opencode-route/workhorse-ordered", "line": 3225},
+      {"ref": "opencode-route/workhorse-primary", "line": 3226},
+      {"ref": "opencode-route/workhorse-weighted", "line": 3227},
+      {"ref": "opencode-route/workhorse-last-resort", "line": 3228},
+      {"ref": "opencode-route/scout", "line": 3229},
+      {"ref": "opencode-route/specialist", "line": 3230}
+    ], "fallback": ["scout", "specialist"], "windows": []},
+    {"name": "summit", "kind": "class", "strategy": "ordered", "line": 3490, "targets": [
+      {"ref": "opencode-route/fable-plan", "variant": "medium", "line": 3533},
+      {"ref": "opencode-route/opus-plan", "variant": "high", "line": 3534},
+      {"ref": "opencode-route/argon-plan", "variant": "high", "line": 3535},
+      {"ref": "_antigravity/gemini-4-hydrogen", "variant": "high", "line": 3536},
+      {"ref": "_muse/muse-wonder-1.0-contributor", "variant": "xhigh", "line": 3537},
+      {"ref": "opencode-route/sol-plan", "variant": "xhigh", "line": 3538},
+      {"ref": "opencode-route/specialist", "line": 3539}
+    ], "fallback": ["specialist"], "windows": []},
+    {"name": "specialist", "kind": "class-sink", "strategy": "ordered", "line": 3445, "targets": [
+      {"ref": "opencode-route/fable-plan", "variant": "low", "line": 3480},
+      {"ref": "opencode-route/sonnet-plan", "variant": "high", "line": 3481},
+      {"ref": "opencode-route/argon-plan", "variant": "high", "line": 3482},
+      {"ref": "opencode-route/spark-plan", "variant": "xhigh", "line": 3484},
+      {"ref": "opencode-route/sol-plan", "variant": "medium", "line": 3485}
+    ], "fallback": [], "windows": []},
+    {"name": "scout", "kind": "class", "strategy": "ordered", "line": 2859, "targets": [
+      {"ref": "opencode-route/beam-plan", "line": 2890},
+      {"ref": "opencode-route/deepseek-flash-plan", "variant": "low", "line": 2891},
+      {"ref": "opencode-route/haiku-plan", "variant": "low", "line": 2892},
+      {"ref": "opencode-route/workhorse", "line": 2893}
+    ], "fallback": ["workhorse"], "windows": []},
+    {"name": "background", "kind": "class", "strategy": "ordered", "line": 2898, "targets": [
+      {"ref": "opencode-route/mimo-flash-plan", "window": "deepseek-peak-early", "line": 2949},
+      {"ref": "opencode-route/mimo-flash-plan", "window": "deepseek-peak-late", "line": 2953},
+      {"ref": "opencode-route/deepseek-flash-plan", "variant": "high", "window": "NOT deepseek-peak-early", "line": 2957},
+      {"ref": "opencode-route/deepseek-flash-plan", "variant": "high", "window": "deepseek-peak-early", "line": 2961},
+      {"ref": "opencode-route/mimo-flash-plan", "line": 2964},
+      {"ref": "opencode-route/workhorse", "line": 2965}
+    ], "fallback": ["workhorse"], "windows": ["deepseek-peak-early", "deepseek-peak-late"]},
+    {"name": "workhorse-ordered", "kind": "workhorse-stage", "strategy": "ordered", "line": 3007, "targets": [
+      {"ref": "opencode-route/deepseek-effort-rr", "line": 3021}
+    ], "fallback": [], "windows": [], "timeouts": {"firstTokenTimeoutMs": 60000}},
+    {"name": "workhorse-primary", "kind": "workhorse-stage", "strategy": "round-robin", "line": 3030, "targets": [], "note": "emptied 2026-11-07 (line 3167); contributes nothing", "fallback": [], "windows": []},
+    {"name": "workhorse-weighted", "kind": "workhorse-stage", "strategy": "weighted", "line": 3240, "targets": [
+      {"ref": "opencode-route/luna-effort-rr", "weight": 10, "line": 3381},
+      {"ref": "_muse/muse-spark-1.3-contributor", "variant": "high", "weight": 10, "line": 3382},
+      {"ref": "_antigravity/gemini-4-hydrogen", "variant": "low", "weight": 10, "line": 3383},
+      {"ref": "_antigravity/claude-sonnet-5-5", "variant": "medium", "weight": 10, "line": 3384}
+    ], "fallback": [], "windows": [], "timeouts": {"firstTokenTimeoutMs": 60000}},
+    {"name": "workhorse-last-resort", "kind": "workhorse-stage", "strategy": "ordered", "line": 3400, "targets": [
+      {"ref": "_claude/claude-haiku-5-5", "variant": "high", "line": 3435},
+      {"ref": "opencode-route/fable-plan", "variant": "low", "line": 3436}
+    ], "fallback": [], "windows": [], "timeouts": {"firstTokenTimeoutMs": 60000}},
+
+    {"name": "limited", "kind": "tier-pool (light work)", "strategy": "ordered", "line": 3597, "targets": [
+      {"ref": "opencode-route/luna-plan", "variant": "medium", "cap": {"context": 100000}, "line": 3653},
+      {"ref": "opencode-route/terra-plan", "variant": "low", "cap": {"context": 388000}, "line": 3654},
+      {"ref": "opencode-route/mimo-flash-plan", "cap": {"context": 1048576}, "window": "deepseek-peak-early", "line": 3655},
+      {"ref": "opencode-route/mimo-flash-plan", "cap": {"context": 1048576}, "window": "deepseek-peak-late", "line": 3656},
+      {"ref": "opencode-route/deepseek-flash-plan", "variant": "low", "cap": {"context": 1000000}, "window": "NOT deepseek-peak-early", "line": 3658},
+      {"ref": "opencode-route/deepseek-flash-plan", "variant": "low", "cap": {"context": 1000000}, "window": "deepseek-peak-early", "line": 3663},
+      {"ref": "opencode-route/haiku-plan", "variant": "medium", "cap": {"context": 388000}, "line": 3667}
+    ], "fallback": [], "windows": ["deepseek-peak-early", "deepseek-peak-late"], "note": "member of small; class escalation is small -> speed (line 3685)"},
+
+    {"name": "deepseek-flash-plan", "kind": "*-plan", "strategy": "round-robin", "line": 2165, "targets": [
+      {"ref": "opencode-go-plans/deepseek-v4.1-flash", "weight": 2, "remap": {"medium": "high", "xhigh": "max"}, "line": 2284},
+      {"ref": "cline-pass/deepseek-v4.1-flash", "weight": 1, "remap": {"medium": "high", "xhigh": "max"}, "line": 2288},
+      {"ref": "opendesign/deepseek-v4.1-flash", "weight": 1, "remap": {"xhigh": "high", "max": "high"}, "line": 2292},
+      {"ref": "mistral-plan/deepseek-v4-1-flash-1017", "weight": 1, "remap": {"low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max"}, "line": 2296}
+    ], "fallback": [], "windows": [], "note": "weights are priority tiers under round-robin (line 2310); _commandcode seat removed 2026-11-13 (line 2167); deepseek provider seat removed 2026-11-06 (line 2240); timeouts 60s (line 2323)"},
+    {"name": "deepseek-flash", "kind": "*-plan (wrapper)", "strategy": "ordered", "line": 2325, "targets": [{"ref": "opencode-route/deepseek-flash-plan", "line": 2339}], "fallback": [], "windows": []},
+    {"name": "deepseek-pro-plan", "kind": "*-plan", "strategy": "round-robin", "line": 2348, "targets": [
+      {"ref": "opencode-go-plans/deepseek-v4-pro", "weight": 3, "remap": {"medium": "high", "xhigh": "max"}, "line": 2363},
+      {"ref": "cline-pass/deepseek-v4-pro", "weight": 1, "remap": {"low": "high", "medium": "high", "xhigh": "max"}, "line": 2367},
+      {"ref": "opendesign/deepseek-v4-pro", "weight": 1, "remap": {"xhigh": "high", "max": "high"}, "line": 2371}
+    ], "fallback": [], "windows": [], "note": "ClinePass remaps low -> high (line 2368): silent"},
+    {"name": "fable-plan", "kind": "*-plan", "strategy": "ordered", "line": 2381, "targets": [{"ref": "_claude/claude-fable-5-2", "line": 2392}], "fallback": [], "windows": [], "note": "single door"},
+    {"name": "haiku-plan", "kind": "*-plan", "strategy": "ordered", "line": 2397, "targets": [{"ref": "_claude/claude-haiku-5-5", "line": 2416}], "fallback": [], "windows": [], "note": "single door (Go and OpenDesign legs removed 2026-11-11, lines 2403-2409)"},
+    {"name": "sonnet-plan", "kind": "*-plan", "strategy": "round-robin", "line": 2550, "targets": [
+      {"ref": "_claude/claude-sonnet-5-5", "line": 2569},
+      {"ref": "_antigravity/claude-sonnet-5-5", "remap": {"xhigh": "high", "max": "high"}, "line": 2571}
+    ], "fallback": [], "windows": []},
+    {"name": "opus-plan", "kind": "*-plan", "strategy": "ordered", "line": 2578, "targets": [
+      {"ref": "_claude/claude-opus-5-5", "line": 2593},
+      {"ref": "_antigravity/claude-opus-5-5", "remap": {"xhigh": "high", "max": "high"}, "line": 2595}
+    ], "fallback": [], "windows": []},
+    {"name": "gemini-hydrogen-plan", "kind": "*-plan", "strategy": "round-robin", "line": 2512, "targets": [
+      {"ref": "_antigravity/gemini-4-hydrogen", "remap": {"max": "xhigh"}, "line": 2543}
+    ], "fallback": [], "windows": [], "note": "single door (antigravity-direct)"},
+    {"name": "luna-plan", "kind": "*-plan", "strategy": "round-robin", "line": 2430, "targets": [
+      {"ref": "openai-plan/gpt-6-luna", "line": 2467},
+      {"ref": "opendesign/gpt-6-luna", "remap": {"xhigh": "high", "max": "high"}, "line": 2469},
+      {"ref": "opencode-go-plans/gpt-6-luna", "line": 2472}
+    ], "fallback": [], "windows": [], "weights": {"opencode-go-plans/gpt-6-luna": 6, "openai-plan/gpt-6-luna": 2.5}, "note": "consumed by limited as luna-plan#medium (line 3653); openai-plan/gpt-6-luna#medium|high is also seated directly in luna-effort-rr"},
+    {"name": "luna-effort-rr", "kind": "effort-trial", "strategy": "round-robin", "line": 2481, "targets": [
+      {"ref": "openai-plan/gpt-6-luna", "variant": "medium", "line": 2500},
+      {"ref": "openai-plan/gpt-6-luna", "variant": "high", "line": 2501}
+    ], "fallback": [], "windows": [], "note": "measurement trial; no review date recorded in config beyond the 2026-11-12 comment"},
+    {"name": "terra-plan", "kind": "*-plan", "strategy": "round-robin", "line": 2692, "targets": [{"ref": "openai-plan/gpt-6.1-terra", "line": 2728}], "fallback": [], "windows": [], "note": "consumed by limited#low (line 3654); the orphan comment at 2716-2727 is stale"},
+    {"name": "sol-plan", "kind": "*-plan", "strategy": "round-robin", "line": 2647, "targets": [
+      {"ref": "openai-plan/gpt-6.1-sol", "weight": 3, "line": 2680},
+      {"ref": "opendesign/gpt-6.1-sol", "remap": {"xhigh": "high", "max": "high"}, "line": 2682}
+    ], "fallback": [], "windows": [], "note": "_commandcode removed 2026-11-13 (403 MODEL_NOT_IN_PLAN since 2026-11-09)"},
+    {"name": "spark-plan", "kind": "*-plan", "strategy": "ordered", "line": 2602, "targets": [
+      {"ref": "opencode-go-plans/muse-spark-1.3-contributor", "line": 2640},
+      {"ref": "cline-pass/muse-spark-1.3-contributor", "line": 2641},
+      {"ref": "_muse/muse-spark-1.3-contributor", "line": 2642}
+    ], "fallback": [], "windows": [], "note": "_commandcode removed 2026-11-13 (line 2604)"},
+    {"name": "argon-plan", "kind": "*-plan", "strategy": "round-robin", "line": 2732, "targets": [
+      {"ref": "opencode-go-plans/gemini-4-argon", "weight": 3, "line": 2760},
+      {"ref": "_antigravity/gemini-4-argon", "line": 2761}
+    ], "fallback": [], "windows": []},
+    {"name": "beam-plan", "kind": "*-plan", "strategy": "round-robin", "line": 2769, "targets": [
+      {"ref": "opencode-go-plans/beam-free", "weight": 3, "line": 2784}
+    ], "fallback": [], "windows": [], "note": "_commandcode beam:free removed 2026-11-13 (free tier ended, line 2771)"},
+    {"name": "mimo-flash-plan", "kind": "*-plan", "strategy": "round-robin", "line": 2792, "targets": [
+      {"ref": "opencode-go-plans/mimo-v2.6-flash", "weight": 3, "line": 2809},
+      {"ref": "cline-pass/mimo-v2.6-flash", "line": 2810},
+      {"ref": "opendesign/mimo-v2.6-flash", "line": 2811}
+    ], "fallback": [], "windows": [], "note": "_commandcode removed 2026-11-13 (line 2794)"},
+    {"name": "glm-5-3-plan", "kind": "*-plan (defined only)", "strategy": "round-robin", "line": 2819, "targets": [
+      {"ref": "_vibe/zai-glm-5-3", "remap": {"xhigh": "max"}, "line": 2834}
+    ], "fallback": [], "windows": [], "note": "no route references this pool (line 2831)"},
+    {"name": "glm-5-3-flash-plan", "kind": "*-plan (defined only)", "strategy": "round-robin", "line": 2841, "targets": [
+      {"ref": "_vibe/zai-glm-5-3-flash", "remap": {"xhigh": "max"}, "line": 2852}
+    ], "fallback": [], "windows": [], "note": "no route references this pool (line 2849)"},
+
+    {"name": "deepseek-effort-rr", "kind": "effort-trial", "strategy": "weighted", "line": 2970, "targets": [
+      {"ref": "opencode-route/deepseek-flash-plan", "variant": "high", "weight": 3, "line": 3001},
+      {"ref": "opencode-route/deepseek-flash-plan", "variant": "low", "weight": 1, "line": 3002}
+    ], "fallback": [], "windows": [], "note": "measurement: review after 5,000 low draws or 7 days; revert if low success < 90% of high (lines 2992-2997)"},
+
+    {"name": "openai-plan", "kind": "provider-route", "strategy": "round-robin", "line": 2097, "members": ["_openai.alt", "_openai.main"], "note": "experimental.provider_routes (line 2074); weights removed 2026-11-10"},
+    {"name": "mistral-plan", "kind": "provider-route", "strategy": "ordered", "line": 2126, "members": ["_vibe", "mistral"], "note": "experimental.provider_routes"},
+    {"name": "opencode-go-plans", "kind": "provider-route", "strategy": "weighted", "line": 2149, "members": ["opencode-go.drewrypope", "opencode-go.popesdrew", "opencode-go.developing-today-0"], "weights": {"opencode-go.drewrypope": 1, "opencode-go.popesdrew": 1, "opencode-go.developing-today-0": 1}, "note": "experimental.provider_routes"}
+  ],
+
+  "models": [
+    {"provider": "_claude", "model": "claude-haiku-5-5", "variants": ["low", "medium", "high", "xhigh", "max"], "variant_map": {"low": "thinking 4096", "medium": "thinking 8192", "high": "thinking 16384", "xhigh": "thinking 32768", "max": "thinking 65536"}, "limit": {"context": 1000000, "input": null, "output": 64000}, "line": 284},
+    {"provider": "_claude", "model": "claude-sonnet-5-5", "variants": ["low", "medium", "high", "xhigh", "max"], "limit": {"context": 1000000, "input": null, "output": 64000}, "line": 333},
+    {"provider": "_claude", "model": "claude-opus-5-5", "variants": ["low", "medium", "high", "xhigh", "max"], "limit": {"context": 1000000, "input": null, "output": 64000}, "line": 382},
+    {"provider": "_claude", "model": "claude-fable-5-2", "variants": ["low", "medium", "high", "xhigh", "max"], "limit": {"context": 1000000, "input": null, "output": 64000}, "line": 441},
+    {"provider": "_vibe", "model": "mistral-vibe-cli-latest", "variants": [], "limit": {"context": 262144, "input": null, "output": 32000}, "line": 542},
+    {"provider": "_vibe", "model": "mistral-small-latest", "variants": ["none", "high"], "limit": {"context": null, "input": null, "output": null}, "line": 555},
+    {"provider": "_vibe", "model": "deepseek-v4-1-flash-1017", "variants": ["none", "low", "high", "max"], "limit": {"context": 1048576, "input": null, "output": 128000}, "line": 583},
+    {"provider": "_vibe", "model": "zai-glm-5-3", "variants": ["none", "low", "high", "max"], "limit": {"context": null, "input": null, "output": null}, "line": 625},
+    {"provider": "_vibe", "model": "zai-glm-5-3-flash", "variants": ["none", "low", "high", "max"], "limit": {"context": null, "input": null, "output": null}, "line": 661},
+    {"provider": "_vibe", "model": "mistral-medium-latest|mistral-large-latest|codestral-latest|ministral-*", "variants": [], "limit": {"context": null, "input": null, "output": null}, "note": "name only; fork default 200000/32000 per comment line 540", "line": 549},
+    {"provider": "deepseek (disabled)", "model": "deepseek-chat", "variants": ["low", "high", "max"], "limit": {"context": 1048576, "input": null, "output": 393216}, "line": 830},
+    {"provider": "deepseek (disabled)", "model": "deepseek-v4-pro", "variants": ["low", "high", "max"], "limit": {"context": 1048576, "input": null, "output": 393216}, "line": 854},
+    {"provider": "deepseek (disabled)", "model": "deepseek-flash", "variants": ["low", "high", "max"], "limit": {"context": 1048576, "input": null, "output": 393216}, "line": 881},
+    {"provider": "deepseek (disabled)", "model": "deepseek-v4-flash, deepseek-v4-flash-vision-exp", "variants": [], "limit": {"context": null, "input": null, "output": null}, "line": 878},
+    {"provider": "_muse", "model": "muse-spark-1.3-contributor", "variants": ["minimal", "low", "medium", "high", "xhigh", "max"], "limit": {"context": null, "input": null, "output": null}, "line": 1082},
+    {"provider": "_muse", "model": "muse-wonder-1.0-contributor", "variants": ["minimal", "low", "medium", "high", "xhigh", "max"], "limit": {"context": null, "input": null, "output": null}, "line": 1093},
+    {"provider": "meta (disabled)", "model": "muse-spark-1.3-contributor, muse-wonder-1.0-contributor", "variants": ["minimal", "low", "medium", "high", "xhigh", "max"], "limit": {"context": null, "input": null, "output": null}, "line": 1015},
+    {"provider": "openrouter (disabled)", "model": "minimax/minimax-m3.1-flash:free", "variants": [], "limit": {"context": 204800, "input": null, "output": 131072}, "line": 919},
+    {"provider": "openrouter (disabled)", "model": "poolside/laguna-s-2.1:free", "variants": [], "limit": {"context": 131072, "input": null, "output": 32768}, "line": 926},
+    {"provider": "groq (disabled)", "model": "qwen/qwen3.8-27b", "variants": [], "limit": {"context": 131072, "input": null, "output": 8192}, "line": 942},
+    {"provider": "groq (disabled)", "model": "openai/gpt-oss-120b", "variants": [], "limit": {"context": 131072, "input": null, "output": 16384}, "line": 949},
+    {"provider": "opendesign", "model": "13 ids (claude-haiku-5.5, deepseek-v4-flash, deepseek-v4.1-flash, deepseek-v4-pro, gpt-6-luna, gpt-6.1-sol, mimo-v2.6-flash, ...)", "variants": [], "limit": {"context": null, "input": null, "output": null}, "note": "names only; variant tops (high) inferred from route remaps, not declared", "line": 781},
+    {"provider": "cline-pass", "model": "16 ids (glm-5.3, deepseek-v4-pro, deepseek-v4.1-flash, mimo-v2.6-flash, muse-spark-1.3-contributor, ...)", "variants": [], "limit": {"context": null, "input": null, "output": null}, "note": "names/ids only; no medium/xhigh per line 2174", "line": 1115},
+    {"provider": "_commandcode", "model": "~110 ids (catalog only)", "variants": [], "limit": {"context": null, "input": null, "output": null}, "note": "NO seats remain in any route; provider still ON (not in disabled_providers, lines 210-224)", "line": 1232}
+  ],
+
+  "agents": {
+    "default_model": {"key": "model", "value": "opencode-route/workhorse", "line": 254},
+    "small_model": {"key": "small_model", "value": "opencode-route/speed", "line": 260},
+    "build": {"model": null, "note": "no model pin; inherits default"},
+    "general": {"model": null, "note": "no model pin in jsonc or .opencode/agents/general.md; inherits default"},
+    "plan": {"model": null, "note": "no model pin in jsonc or .opencode/agents/plan.md; inherits default"},
+    "explore": {"model": "opencode-route/scout", "line": 1754, "md_frontmatter_model": null},
+    "classifier": {"model": "opencode-route/scout", "line": 1757},
+    "classifier-complex": {"model": "opencode-route/workhorse", "line": 1633},
+    "reasoner": {"model": "opencode-route/specialist", "line": 1855},
+    "coder": {"model": "opencode-route/workhorse", "line": 1947},
+    "compaction": {"threshold": 0.5, "line": 2043, "top_level_reserved": 8192, "top_level_line": 2051}
+  },
+
+  "door_health": [
+    {"provider": "_antigravity", "model": "claude-opus-5-5", "requests": 1, "failed": 1},
+    {"provider": "_antigravity", "model": "claude-sonnet-5-5", "requests": 13, "failed": 13},
+    {"provider": "_antigravity", "model": "gemini-3.8-flash", "requests": 54, "failed": 54},
+    {"provider": "_antigravity", "model": "gemini-4-argon", "requests": 295, "failed": 101},
+    {"provider": "_antigravity", "model": "gemini-4-hydrogen", "requests": 125, "failed": 125},
+    {"provider": "_claude", "model": "claude-fable-5-2", "requests": 2975, "failed": 2609},
+    {"provider": "_claude", "model": "claude-haiku-5-5", "requests": 8499, "failed": 5581},
+    {"provider": "_claude", "model": "claude-opus-5-5", "requests": 108, "failed": 106},
+    {"provider": "_claude", "model": "claude-sonnet-5-5", "requests": 16099, "failed": 14588},
+    {"provider": "_commandcode", "model": "deepseek/deepseek-v4.1-flash", "requests": 717, "failed": 717},
+    {"provider": "_commandcode", "model": "gpt-6.1-sol", "requests": 243, "failed": 243},
+    {"provider": "_commandcode", "model": "reflection/beam:free", "requests": 513, "failed": 513},
+    {"provider": "_commandcode", "model": "xiaomi/mimo-v2.6-flash", "requests": 4, "failed": 4},
+    {"provider": "_muse", "model": "muse-spark-1.3-contributor", "requests": 256, "failed": 256},
+    {"provider": "_muse", "model": "muse-wonder-1.0-contributor", "requests": 1, "failed": 1},
+    {"provider": "_openai", "model": "gpt-6-luna", "requests": 28, "failed": 28, "note": "retired id (renamed to _openai.main 2026-11-10)"},
+    {"provider": "_openai", "model": "gpt-6.1-sol", "requests": 63, "failed": 3},
+    {"provider": "_openai", "model": "gpt-6.1-terra", "requests": 17858, "failed": 637},
+    {"provider": "_openai.alt", "model": "gpt-6-luna", "requests": 339, "failed": 26},
+    {"provider": "_openai.alt", "model": "gpt-6.1-sol", "requests": 18, "failed": 8},
+    {"provider": "_openai.alt", "model": "gpt-6.1-terra", "requests": 3404, "failed": 2783},
+    {"provider": "_openai.main", "model": "gpt-6-luna", "requests": 76058, "failed": 113},
+    {"provider": "_openai.main", "model": "gpt-6.1-sol", "requests": 936, "failed": 71},
+    {"provider": "_openai.main", "model": "gpt-6.1-terra", "requests": 2881, "failed": 2825},
+    {"provider": "_vibe", "model": "deepseek-v4-1-flash-1017", "requests": 1097, "failed": 1096},
+    {"provider": "claude-code", "model": "claude-haiku-5-5", "requests": 163, "failed": 111, "note": "retired id (renamed _claude)"},
+    {"provider": "cline-pass", "model": "deepseek-v4.1-flash", "requests": 654, "failed": 654},
+    {"provider": "mistral", "model": "deepseek-v4-1-flash-1017", "requests": 141, "failed": 141},
+    {"provider": "openai.alternate", "model": "gpt-6-luna", "requests": 748, "failed": 245, "note": "retired id"},
+    {"provider": "openai.alternate", "model": "gpt-6.1-sol", "requests": 108, "failed": 10, "note": "retired id"},
+    {"provider": "openai.alternate", "model": "gpt-6.1-terra", "requests": 19, "failed": 19, "note": "retired id"},
+    {"provider": "openai.main", "model": "gpt-6-luna", "requests": 7, "failed": 7, "note": "retired id"},
+    {"provider": "openai.main", "model": "gpt-6.1-sol", "requests": 8, "failed": 8, "note": "retired id"},
+    {"provider": "openai.main", "model": "gpt-6.1-terra", "requests": 25, "failed": 25, "note": "retired id"},
+    {"provider": "opencode-go.developing-today-0", "model": "claude-haiku-5-5", "requests": 518, "failed": 518},
+    {"provider": "opencode-go.developing-today-0", "model": "deepseek-v4.1-flash", "requests": 116, "failed": 116},
+    {"provider": "opencode-go.developing-today-0", "model": "gemini-4-argon", "requests": 10, "failed": 10},
+    {"provider": "opencode-go.developing-today-0", "model": "muse-spark-1.3-contributor", "requests": 10, "failed": 10},
+    {"provider": "opencode-go.drewrypope", "model": "claude-haiku-5-5", "requests": 504, "failed": 504},
+    {"provider": "opencode-go.drewrypope", "model": "deepseek-v4.1-flash", "requests": 112, "failed": 112},
+    {"provider": "opencode-go.drewrypope", "model": "gemini-4-argon", "requests": 2, "failed": 2},
+    {"provider": "opencode-go.drewrypope", "model": "muse-spark-1.3-contributor", "requests": 10, "failed": 10},
+    {"provider": "opencode-go.popesdrew", "model": "claude-haiku-5-5", "requests": 396, "failed": 396},
+    {"provider": "opencode-go.popesdrew", "model": "deepseek-v4.1-flash", "requests": 288, "failed": 288},
+    {"provider": "opencode-go.popesdrew", "model": "gemini-4-argon", "requests": 8, "failed": 8},
+    {"provider": "opencode-go.popesdrew", "model": "muse-spark-1.3-contributor", "requests": 10, "failed": 10},
+    {"provider": "opendesign", "model": "claude-haiku-5.5", "requests": 340, "failed": 340},
+    {"provider": "opendesign", "model": "deepseek-v4.1-flash", "requests": 12941, "failed": 2738},
+    {"provider": "opendesign", "model": "gpt-6.1-sol", "requests": 46, "failed": 46},
+    {"provider": "opendesign", "model": "mimo-v2.6-flash", "requests": 2, "failed": 2}
+  ]
+}
