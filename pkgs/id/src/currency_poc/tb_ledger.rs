@@ -220,7 +220,10 @@ fn unmodelled_account(status: tb::CreateAccountStatus) -> AccountError {
 }
 
 fn unmodelled_transfer(status: tb::CreateTransferStatus) -> TransferError {
-    tracing::error!(?status, "TigerBeetle returned an unmodelled transfer status");
+    tracing::error!(
+        ?status,
+        "TigerBeetle returned an unmodelled transfer status"
+    );
     TransferError::UnmodelledStatus
 }
 
@@ -263,9 +266,7 @@ fn map_account_status(status: tb::CreateAccountStatus) -> Result<(), AccountErro
         | Status::ImportedEventNotExpected
         | Status::ImportedEventTimestampOutOfRange
         | Status::ImportedEventTimestampMustNotAdvance
-        | Status::ImportedEventTimestampMustNotRegress => {
-            Err(unmodelled_account(status))
-        }
+        | Status::ImportedEventTimestampMustNotRegress => Err(unmodelled_account(status)),
         // The binding never sets an account timestamp.
         Status::TimestampMustBeZero => Err(unmodelled_account(status)),
         // The binding never sets reserved fields or reserved flags.
@@ -305,15 +306,9 @@ fn map_transfer_status(status: tb::CreateTransferStatus) -> Result<(), TransferE
         Status::IdAlreadyFailed => Err(TransferError::IdAlreadyFailed),
         Status::IdMustNotBeZero => Err(TransferError::IdMustNotBeZero),
         Status::IdMustNotBeIntMax => Err(TransferError::IdMustNotBeIntMax),
-        Status::DebitAccountIdMustNotBeZero => {
-            Err(TransferError::DebitAccountIdMustNotBeZero)
-        }
-        Status::DebitAccountIdMustNotBeIntMax => {
-            Err(TransferError::DebitAccountIdMustNotBeIntMax)
-        }
-        Status::CreditAccountIdMustNotBeZero => {
-            Err(TransferError::CreditAccountIdMustNotBeZero)
-        }
+        Status::DebitAccountIdMustNotBeZero => Err(TransferError::DebitAccountIdMustNotBeZero),
+        Status::DebitAccountIdMustNotBeIntMax => Err(TransferError::DebitAccountIdMustNotBeIntMax),
+        Status::CreditAccountIdMustNotBeZero => Err(TransferError::CreditAccountIdMustNotBeZero),
         Status::CreditAccountIdMustNotBeIntMax => {
             Err(TransferError::CreditAccountIdMustNotBeIntMax)
         }
@@ -322,9 +317,7 @@ fn map_transfer_status(status: tb::CreateTransferStatus) -> Result<(), TransferE
         Status::DebitAccountNotFound => Err(TransferError::DebitAccountNotFound),
         Status::CreditAccountNotFound => Err(TransferError::CreditAccountNotFound),
         Status::DebitAccountAlreadyClosed => Err(TransferError::DebitAccountAlreadyClosed),
-        Status::CreditAccountAlreadyClosed => {
-            Err(TransferError::CreditAccountAlreadyClosed)
-        }
+        Status::CreditAccountAlreadyClosed => Err(TransferError::CreditAccountAlreadyClosed),
         Status::AccountsMustBeDifferent => Err(TransferError::AccountsMustBeDifferent),
         Status::AccountsMustHaveTheSameLedger
         | Status::TransferMustHaveTheSameLedgerAsAccounts
@@ -599,9 +592,7 @@ impl LedgerBackend for TigerBeetleLedger {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        map_account_status, map_transfer_status, poc_code, wire_code,
-    };
+    use super::{map_account_status, map_transfer_status, poc_code, wire_code};
     use crate::currency_poc::ledger::{AccountError, TransferError};
     use tigerbeetle as tb;
 
@@ -655,7 +646,10 @@ mod tests {
                 S::ExistsWithDifferentCode,
                 Err(AccountError::ExistsWithDifferentFields),
             ),
-            (S::LedgerMustNotBeZero, Err(AccountError::LedgerMustNotBeZero)),
+            (
+                S::LedgerMustNotBeZero,
+                Err(AccountError::LedgerMustNotBeZero),
+            ),
             (S::LinkedEventFailed, Err(AccountError::LinkedEventFailed)),
             (
                 S::LinkedEventChainOpen,
@@ -686,7 +680,10 @@ mod tests {
             ),
             // Unreachable families: enumerated in the mapper with
             // their reasons; the outcome stays UnmodelledStatus.
-            (S::ImportedEventExpected, Err(AccountError::UnmodelledStatus)),
+            (
+                S::ImportedEventExpected,
+                Err(AccountError::UnmodelledStatus),
+            ),
             (
                 S::ImportedEventNotExpected,
                 Err(AccountError::UnmodelledStatus),
@@ -826,8 +823,14 @@ mod tests {
                 Err(TransferError::LedgerMismatch),
             ),
             (S::LedgerMustNotBeZero, Err(TransferError::LedgerMismatch)),
-            (S::ExceedsCredits, Err(TransferError::DebitsMustNotExceedCredits)),
-            (S::ExceedsDebits, Err(TransferError::CreditsMustNotExceedDebits)),
+            (
+                S::ExceedsCredits,
+                Err(TransferError::DebitsMustNotExceedCredits),
+            ),
+            (
+                S::ExceedsDebits,
+                Err(TransferError::CreditsMustNotExceedDebits),
+            ),
             (
                 S::OverflowsDebitsPending,
                 Err(TransferError::DebitsMustNotExceedCredits),
@@ -836,7 +839,10 @@ mod tests {
                 S::OverflowsDebitsPosted,
                 Err(TransferError::DebitsMustNotExceedCredits),
             ),
-            (S::OverflowsDebits, Err(TransferError::DebitsMustNotExceedCredits)),
+            (
+                S::OverflowsDebits,
+                Err(TransferError::DebitsMustNotExceedCredits),
+            ),
             (
                 S::OverflowsCreditsPending,
                 Err(TransferError::CreditsMustNotExceedDebits),

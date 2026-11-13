@@ -29,15 +29,15 @@ pub mod connectivity;
 pub mod discovery;
 pub mod frames;
 pub mod hex;
-pub mod key_envelope;
-pub mod seed_phrase;
 pub mod ip_evidence;
 pub mod json_unique;
+pub mod key_envelope;
 pub mod membership;
 pub mod rejection;
 pub mod residency;
 pub mod residency_inventory;
 pub mod sanctions;
+pub mod seed_phrase;
 pub mod sync_method;
 pub mod text;
 pub mod time;
@@ -126,4 +126,3 @@ pub const SERVE_LOCK: &str = ".iroh-serve.lock";
 pub fn is_node_id(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
-

@@ -75,19 +75,19 @@ use tracing::{debug, info, warn};
 use crate::chat_presence::{
     HEARTBEAT_INTERVAL, PresenceHeartbeat, PresenceTable, decode_frame, encode_frame,
 };
+use crate::peer_announcement::SignedPeerAnnouncement;
+use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
+use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
 use id_core::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
     defaults, resolve_config,
 };
+use id_core::waiting::AuthorKey;
+use id_events::groups::{Key as GroupKey, Projection};
 use id_groups::groups::log::{FILE_NAME as GROUPS_FILE_NAME, GroupLog};
 use id_groups::groups::warnings::{Evaluator, Observation, Warning};
-use id_events::groups::{Key as GroupKey, Projection};
-use crate::peer_announcement::SignedPeerAnnouncement;
-use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use id_store::store::{load_or_create_keypair, open_store};
 use id_store::tags::TagStore;
-use id_core::waiting::AuthorKey;
-use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
 
 /// Print a status line to stdout **without panicking** if stdout is gone.
 ///
@@ -475,9 +475,8 @@ impl WebContentTarget {
             !world.is_empty(),
             "program target world name must not be empty (expected program:<world-name>)"
         );
-        id_worlds::world_hub::validate_world_name(world).map_err(|e| {
-            anyhow::anyhow!("invalid program target world name {world:?}: {e}")
-        })?;
+        id_worlds::world_hub::validate_world_name(world)
+            .map_err(|e| anyhow::anyhow!("invalid program target world name {world:?}: {e}"))?;
         Ok(Self::Program(world.to_owned()))
     }
 
@@ -845,8 +844,8 @@ fn mail_sink(
     smtp: Option<SocketAddr>,
     from: Option<String>,
 ) -> Result<Option<Arc<dyn id_directory::directory_mail::MailSink>>> {
-    use id_directory::directory_mail::{CommandSink, MailSink, OutboxSink, SmtpSink};
     use anyhow::Context as _;
+    use id_directory::directory_mail::{CommandSink, MailSink, OutboxSink, SmtpSink};
     let sink: Arc<dyn MailSink> = match (outbox, command, smtp) {
         (Some(dir), _, _) => Arc::new(OutboxSink::new(dir)),
         (None, Some(program), _) => Arc::new(CommandSink::new(program, Vec::new())),
@@ -964,7 +963,8 @@ impl ServeWorlds {
         let dir = world_dir(name);
         let namespace_file = (!self.ephemeral).then(|| dir.join("records.namespace"));
         let records =
-            id_worlds::world_records::RecordsStore::open(&self.docs, namespace_file.as_deref()).await?;
+            id_worlds::world_records::RecordsStore::open(&self.docs, namespace_file.as_deref())
+                .await?;
         info!(
             world = name,
             namespace = %records.namespace(),
@@ -1175,7 +1175,8 @@ pub fn start_server_config_persisted(
 ) -> Result<StartedServerConfig> {
     let config = crate::server_config::ServerConfig::load(path)
         .map_err(|error| anyhow::anyhow!("server config {}: {error}", path.display()))?;
-    let directory = id_directory::directory::Directory::open(&server_config_directory_path(groups_log))?;
+    let directory =
+        id_directory::directory::Directory::open(&server_config_directory_path(groups_log))?;
     let mut log = id_groups::groups::log::GroupLog::open(groups_log)?;
     let already = log.events().len();
     let mut provisioned =
@@ -1564,7 +1565,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // it unconditionally would change the local CLI's access to the directory
     // while serve runs.
     #[cfg(feature = "web")]
-    let event_events: Option<Arc<tokio::sync::Mutex<id_events::local_events::LocalEvents>>> = if web {
+    let event_events: Option<Arc<tokio::sync::Mutex<id_events::local_events::LocalEvents>>> = if web
+    {
         let identity_db_path = std::path::Path::new(KEY_FILE).with_file_name(".identity.redb");
         let events_dir = identity_db_path.with_file_name(id_events::local_events::DIR_NAME);
         let events = id_events::local_events::LocalEvents::open(
@@ -1693,7 +1695,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         .as_ref()
         .map(id_worlds::world_net::WorldProtocol::abuse_handle);
     #[cfg(not(feature = "world"))]
-    let abuse_handle: Option<std::sync::Arc<std::sync::Mutex<id_core::abuse::AbuseEvaluator>>> = None;
+    let abuse_handle: Option<std::sync::Arc<std::sync::Mutex<id_core::abuse::AbuseEvaluator>>> =
+        None;
 
     let meta = MetaProtocol::new(
         &store_handle,
@@ -1932,9 +1935,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             let ssh_port = listener.local_addr()?.port();
             #[cfg(feature = "world")]
             let _ = ssh_tunnel_port.set(ssh_port);
-            let host_key =
-                id_worlds::world_ssh::load_or_create_host_key(id_worlds::world_ssh::SSH_HOST_KEY_FILE)
-                    .await?;
+            let host_key = id_worlds::world_ssh::load_or_create_host_key(
+                id_worlds::world_ssh::SSH_HOST_KEY_FILE,
+            )
+            .await?;
             Some((
                 listener,
                 ssh_port,
@@ -2035,7 +2039,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             // same journal.
             #[cfg(feature = "world")]
             let seitan_state = id_web::SeitanState::new(
-                id_directory::directory::Directory::open(&server_config_directory_path(&groups_log))?,
+                id_directory::directory::Directory::open(&server_config_directory_path(
+                    &groups_log,
+                ))?,
                 serve_freshness_window(started_server_config.as_ref()),
             );
             #[cfg(not(feature = "world"))]
@@ -2717,7 +2723,8 @@ async fn run_gossip_loop(
 
                 // Try to connect and send ListPeers RPC
                 let probe_result = tokio::time::timeout(PROBE_TIMEOUT, async {
-                    let conn = id_core::connectivity::connect(&endpoint, peer_id, META_ALPN).await?;
+                    let conn =
+                        id_core::connectivity::connect(&endpoint, peer_id, META_ALPN).await?;
                     let (mut send, mut recv) = conn.open_bi().await?;
                     let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
                     send.write_all(&req).await?;
@@ -2785,9 +2792,9 @@ fn select_stale_probe_batch(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use super::*;
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError};
-    use super::*;
 
     fn stale_test_peer(seed: u8) -> id_core::discovery::PeerInfo {
         let node_id = iroh_base::SecretKey::from_bytes(&[seed; 32]).public();
@@ -3700,14 +3707,14 @@ mod tests {
         // reject every name id_worlds::world_hub::validate_world_name
         // rejects -- a target no world can bear could never resolve.
         for bad in [
-            "Arena",               // uppercase
-            ".",                   // dot segment
-            "..",                  // parent segment
-            "a/b",                 // slash
-            "a.b",                 // embedded dot
-            "has space",           // interior whitespace survives trim
-            "caf\u{e9}",          // non-ASCII
-            &"a".repeat(65),       // over the 64-byte cap
+            "Arena",         // uppercase
+            ".",             // dot segment
+            "..",            // parent segment
+            "a/b",           // slash
+            "a.b",           // embedded dot
+            "has space",     // interior whitespace survives trim
+            "caf\u{e9}",     // non-ASCII
+            &"a".repeat(65), // over the 64-byte cap
         ] {
             assert!(
                 WebContentTarget::program(bad).is_err(),
@@ -3992,7 +3999,8 @@ mod tests {
         assert_eq!(seeded.users_created, 2);
         // The world's own directory now resolves both configured
         // accounts, as world_store::open_world would load it.
-        let directory = id_directory::directory::Directory::open(&world.join("directory.jsonl")).unwrap();
+        let directory =
+            id_directory::directory::Directory::open(&world.join("directory.jsonl")).unwrap();
         assert!(directory.account(&id(1)).is_some());
         assert!(directory.account(&id(2)).is_some());
         drop(directory);
@@ -4103,7 +4111,8 @@ mod tests {
             id_core::abuse::BudgetPolicy::default()
         );
         let world = id_worlds::world::WorldHandle::spawn(
-            id_worlds::world::WorldCore::new("lobby", id_worlds::world::WorldLimits::default()).unwrap(),
+            id_worlds::world::WorldCore::new("lobby", id_worlds::world::WorldLimits::default())
+                .unwrap(),
         );
         let service = id_worlds::world_session::WorldService::new(world, None);
         let protocol = world_protocol_for(service.into(), [9; 32], Some(&started));
@@ -4120,7 +4129,10 @@ mod tests {
         let refusal = evaluator
             .check_budget(id_core::abuse::Direction::Inbound, ann, None, 600, 1_000)
             .unwrap_err();
-        assert_eq!(refusal.reason, id_core::abuse::RefusalReason::BudgetExhausted);
+        assert_eq!(
+            refusal.reason,
+            id_core::abuse::RefusalReason::BudgetExhausted
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4128,7 +4140,8 @@ mod tests {
     #[tokio::test]
     async fn serve_world_protocol_defaults_budgets_without_config() {
         let world = id_worlds::world::WorldHandle::spawn(
-            id_worlds::world::WorldCore::new("lobby", id_worlds::world::WorldLimits::default()).unwrap(),
+            id_worlds::world::WorldCore::new("lobby", id_worlds::world::WorldLimits::default())
+                .unwrap(),
         );
         let service = id_worlds::world_session::WorldService::new(world, None);
         let protocol = world_protocol_for(service.into(), [9; 32], None);

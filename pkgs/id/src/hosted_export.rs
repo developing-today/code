@@ -40,9 +40,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::hosted_binding::{
-    hex_encode, BindingRecord, HostedBindingService, RebindRecord,
-};
+use crate::hosted_binding::{BindingRecord, HostedBindingService, RebindRecord, hex_encode};
 
 /// Domain separator for the manifest signature, so a manifest
 /// signature can never be replayed as another record type's.
@@ -186,7 +184,11 @@ impl ExportManifest {
             &self.object_count.to_string(),
             &self.blob_count.to_string(),
             self.objects_digest.as_str(),
-            if self.unkeyed_export { "unkeyed" } else { "keyed" },
+            if self.unkeyed_export {
+                "unkeyed"
+            } else {
+                "keyed"
+            },
             if self.client_side_encryption {
                 "cse"
             } else {
@@ -277,7 +279,10 @@ impl std::fmt::Display for ExportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ManifestBindingMismatch => {
-                write!(f, "manifest does not name the binding record it travels with")
+                write!(
+                    f,
+                    "manifest does not name the binding record it travels with"
+                )
             }
             Self::ManifestSignatureInvalid => {
                 write!(f, "manifest signature does not verify")
@@ -305,13 +310,19 @@ impl std::fmt::Display for ExportError {
                 write!(f, "manifest counts do not match the received sets")
             }
             Self::ObjectsDigestMismatch => {
-                write!(f, "manifest objects digest does not match the received objects")
+                write!(
+                    f,
+                    "manifest objects digest does not match the received objects"
+                )
             }
             Self::ObjectHashMismatch => {
                 write!(f, "object hash is not the SHA-256 of its bytes")
             }
             Self::ObjectSignatureInvalid => {
-                write!(f, "object signature does not verify under a binding-chain key")
+                write!(
+                    f,
+                    "object signature does not verify under a binding-chain key"
+                )
             }
             Self::DuplicateObject => write!(f, "duplicate object hash in export"),
             Self::BlobHashMismatch => {

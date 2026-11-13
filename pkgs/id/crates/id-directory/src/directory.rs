@@ -19,8 +19,7 @@ use subtle::ConstantTimeEq as _;
 
 use id_sync::artifact::{
     self, ArtifactLog, ArtifactSink, Document, FriendRemove, HomeDeclared, HomeServer, Kind,
-    SignedArtifact,
-    Stored, Tag,
+    SignedArtifact, Stored, Tag,
 };
 use {id_caps::world_scopes::WorldScopes, id_core::hex::hex_encode};
 

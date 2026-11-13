@@ -30,12 +30,12 @@ use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol, api::Store};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
 
-use id_core::access::AccessPolicy;
-use id_sync::fileops::FileOps;
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
+use id_core::access::AccessPolicy;
+use id_core::access::blobs_events;
 use id_store::store::{StoreType, load_or_create_keypair, open_store};
 use id_store::tags::TagStore;
-use id_core::access::blobs_events;
+use id_sync::fileops::FileOps;
 
 use crate::{KEY_FILE, META_ALPN, STORE_PATH};
 

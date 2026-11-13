@@ -311,7 +311,8 @@ mod tests {
         .await
         .unwrap();
         let world = id_worlds::world::WorldHandle::spawn(
-            id_worlds::world::WorldCore::new("lobby", id_worlds::world::WorldLimits::default()).unwrap(),
+            id_worlds::world::WorldCore::new("lobby", id_worlds::world::WorldLimits::default())
+                .unwrap(),
         );
         state.world = Some(id_worlds::world_hub::WorldHub::single_named(
             "lobby",

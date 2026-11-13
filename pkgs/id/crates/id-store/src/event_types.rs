@@ -223,7 +223,6 @@ impl Block {
     }
 }
 
-
 /// Why an event was refused. A refused event changes nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -328,4 +327,3 @@ pub fn hash_of(bytes: &[u8]) -> Result<Hash, StoreError> {
         .map_err(|_err| corrupt("a hash is not 32 bytes"))?;
     Ok(Hash::from_bytes(bytes))
 }
-

@@ -654,9 +654,9 @@ mod tests {
 
     use ed25519_dalek::SigningKey;
 
+    use crate::server_config::{ConfigError, CreateRule, Object, PolicySpec, ServerConfig};
     use id_events::groups::{Key, Role};
     use id_events::pull_policy::PullPolicy;
-    use crate::server_config::{ConfigError, CreateRule, Object, PolicySpec, ServerConfig};
     use id_worlds::world::hex_encode;
 
     /// The public key of the account that the test calls `n`.
@@ -708,7 +708,10 @@ mod tests {
     fn test_no_policy_table_keeps_the_code_defaults() {
         let config = config("").unwrap();
         assert_eq!(config.pull_policy(), PullPolicy::Open);
-        assert_eq!(config.freshness().window(), id_directory::seitan::DEFAULT_WINDOW);
+        assert_eq!(
+            config.freshness().window(),
+            id_directory::seitan::DEFAULT_WINDOW
+        );
         assert_eq!(config.policy(), PolicySpec::default());
     }
 

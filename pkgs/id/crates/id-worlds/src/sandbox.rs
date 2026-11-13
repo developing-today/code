@@ -1765,7 +1765,10 @@ mod tests {
         // Rerun with:
         //   cd pkgs/id && cargo test --lib bytes_per_frame_baseline -- --nocapture
         const EXAMPLES: [(&str, &[u8]); 7] = [
-            ("lounge", include_bytes!("../../../examples/lounge/lounge.wasm")),
+            (
+                "lounge",
+                include_bytes!("../../../examples/lounge/lounge.wasm"),
+            ),
             (
                 "roc-chat",
                 include_bytes!("../../../examples/roc-chat/roc-chat.wasm"),

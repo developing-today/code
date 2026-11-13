@@ -1105,19 +1105,13 @@ fn find_balanced_label_close(source: &str) -> Option<usize> {
                 i += 1;
             }
             '`' => {
-                let run = chars[i..]
-                    .iter()
-                    .take_while(|(_, c)| *c == '`')
-                    .count();
+                let run = chars[i..].iter().take_while(|(_, c)| *c == '`').count();
                 // Find a closing run of exactly the same length.
                 let mut j = i + run;
                 let mut closed_at = None;
                 while j < chars.len() {
                     if chars[j].1 == '`' {
-                        let r = chars[j..]
-                            .iter()
-                            .take_while(|(_, c)| *c == '`')
-                            .count();
+                        let r = chars[j..].iter().take_while(|(_, c)| *c == '`').count();
                         if r == run {
                             closed_at = Some(j + r);
                             break;

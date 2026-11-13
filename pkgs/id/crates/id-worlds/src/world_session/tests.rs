@@ -2729,8 +2729,7 @@ mod tests {
         }
 
         fn record_attempt(&self) {
-            self.0
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -2757,14 +2756,11 @@ mod tests {
         use iroh_blobs::store::mem::MemStore;
 
         let journal = FailingJournal::default();
-        let world = WorldHandle::spawn_durable(
-            core,
-            Box::new(NoProgram),
-            Some(Box::new(journal.clone())),
-        );
+        let world =
+            WorldHandle::spawn_durable(core, Box::new(NoProgram), Some(Box::new(journal.clone())));
         let blobs: Store = MemStore::new().into();
-        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
-            .with_blob_store(blobs);
+        let service =
+            WorldService::new(world.clone(), Some("admin".to_owned())).with_blob_store(blobs);
         (world, service, journal)
     }
 

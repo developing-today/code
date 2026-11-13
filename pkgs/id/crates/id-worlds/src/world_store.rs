@@ -270,10 +270,9 @@ impl FileJournal {
                         anyhow::anyhow!(
                             "world journal {} is corrupt at byte {good_len}: {}",
                             path.display(),
-                            parsed.err().map_or_else(
-                                || "unterminated entry".to_owned(),
-                                |e| e.to_string()
-                            )
+                            parsed
+                                .err()
+                                .map_or_else(|| "unterminated entry".to_owned(), |e| e.to_string())
                         )
                     };
                     if complete {
@@ -290,7 +289,6 @@ impl FileJournal {
         }
         Ok((entries, good_len, torn))
     }
-
 }
 
 impl WorldJournal for FileJournal {

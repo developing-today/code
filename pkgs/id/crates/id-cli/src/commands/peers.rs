@@ -58,11 +58,11 @@ use anyhow::{Result, bail};
 use iroh_base::EndpointId;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 
-use id_core::discovery::{PeerAnnouncement, PeerDiscovery, resolve_config};
 use crate::peer_announcement::SignedPeerAnnouncement;
 use crate::protocol::{AbuseCountersRow, AbusePolicyView, MetaRequest, MetaResponse};
-use id_store::store::load_or_create_keypair;
 use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
+use id_core::discovery::{PeerAnnouncement, PeerDiscovery, resolve_config};
+use id_store::store::load_or_create_keypair;
 
 use super::client::create_local_client_endpoint;
 use super::serve::get_serve_info;

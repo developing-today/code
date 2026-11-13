@@ -488,9 +488,7 @@ impl WorldHub {
     /// on a pinned view, the hub's default otherwise.
     #[must_use]
     pub fn default_world(&self) -> &str {
-        self.pin
-            .as_deref()
-            .unwrap_or(&self.inner.default_world)
+        self.pin.as_deref().unwrap_or(&self.inner.default_world)
     }
 
     /// Whether `token` is the process-wide admin token.
@@ -983,7 +981,10 @@ mod tests {
         drop(lease);
         let listed = hub.list();
         let names: Vec<&str> = listed.iter().map(|info| info.name.as_str()).collect();
-        assert!(names.contains(&"arena") && names.contains(&"vault"), "{names:?}");
+        assert!(
+            names.contains(&"arena") && names.contains(&"vault"),
+            "{names:?}"
+        );
     }
 
     #[test]

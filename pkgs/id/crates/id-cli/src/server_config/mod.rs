@@ -57,9 +57,9 @@ use std::time::Duration;
 
 use p2panda_core::Hash;
 
+use id_directory::seitan::Freshness;
 use id_events::groups::{Key, Projection, Role};
 use id_events::pull_policy::PullPolicy;
-use id_directory::seitan::Freshness;
 
 /// Re-exported so `crate::server_config::Object` keeps working: the type now lives in
 /// [`crate::aliases`] so alias display builds without the `world` feature.

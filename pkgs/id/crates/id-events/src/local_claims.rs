@@ -22,10 +22,10 @@ use std::path::{Path, PathBuf};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
+use id_core::waiting::AuthorKey;
 use id_store::tag_claims::{
     LocalClaim, MAX_NAME_BYTES, MAX_VALUE_BYTES, TagError, TagScope, check_text,
 };
-use id_core::waiting::AuthorKey;
 
 /// The file local claims live in, under the event store's directory.
 pub const FILE_NAME: &str = "local-claims.jsonl";

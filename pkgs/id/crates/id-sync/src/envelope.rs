@@ -119,4 +119,3 @@ impl Envelope {
             .context("envelope signature does not verify")
     }
 }
-

@@ -212,26 +212,26 @@ pub mod backup;
 pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;
+pub use id_core::connectivity;
 pub use id_store::chain;
 pub use id_store::chat;
-pub use id_core::connectivity;
 pub mod conversion;
 pub mod currency;
 pub mod currency_poc;
-pub use id_sync::dht;
 #[cfg(feature = "world")]
 pub use id_directory::directory;
 #[cfg(feature = "world")]
 pub use id_directory::directory_auth;
 #[cfg(feature = "world")]
 pub use id_directory::directory_log;
+pub use id_sync::dht;
 #[cfg(feature = "world")]
 pub mod keyset;
+pub use id_core::discovery;
 #[cfg(feature = "world")]
 pub use id_directory::directory_mail;
 #[cfg(feature = "world")]
 pub use id_directory::directory_view;
-pub use id_core::discovery;
 pub mod didit;
 pub use id_store::documents;
 #[cfg(feature = "world")]
@@ -254,49 +254,49 @@ pub use id_events::idset;
 pub mod input_framing;
 pub use id_directory::invite;
 pub use id_directory::invites;
-pub use id_store::issuer_rotation;
 pub use id_events::local_claims;
 pub use id_events::local_events;
+pub use id_store::issuer_rotation;
 pub use id_sync::log_sync;
 pub mod serve_proxy;
 pub use id_core::membership;
-pub use id_store::note_links;
-pub use id_store::notes;
 #[cfg(feature = "world")]
 pub use id_core::petname;
+pub use id_store::note_links;
+pub use id_store::notes;
 pub mod pull_policy;
 pub use id_core::residency;
 pub mod references;
 pub use id_core::rejection;
-#[cfg(feature = "sandbox")]
-pub use id_worlds::sandbox;
-#[cfg(feature = "sandbox")]
-pub use id_worlds::world_dev;
-pub use id_store::search;
 #[cfg(feature = "world")]
 pub use id_directory::seitan;
+pub use id_store::search;
 #[cfg(feature = "world")]
 pub use id_store::session_checkpoint;
+pub use id_store::store;
+#[cfg(feature = "sandbox")]
+pub use id_worlds::sandbox;
 #[cfg(feature = "world")]
 pub use id_worlds::shell_contract;
-pub use id_store::store;
+#[cfg(feature = "sandbox")]
+pub use id_worlds::world_dev;
 pub mod store_traits;
 pub mod structured_logging;
+#[cfg(feature = "world")]
+pub use id_caps::world_caps;
+pub(crate) use id_core::is_format_char;
 pub use id_core::sync_method;
-pub use id_store::tag_claims;
-pub use id_store::tag_index;
-pub use id_store::tags;
 #[cfg(test)]
 pub(crate) use id_core::test_forgeries;
 pub(crate) use id_core::text;
-pub(crate) use id_core::is_format_char;
 pub(crate) use id_core::time;
 pub use id_core::tuple;
 pub use id_core::waiting;
+pub use id_store::tag_claims;
+pub use id_store::tag_index;
+pub use id_store::tags;
 #[cfg(feature = "world")]
 pub use id_worlds::world;
-#[cfg(feature = "world")]
-pub use id_caps::world_caps;
 #[cfg(feature = "world")]
 pub use id_worlds::world_cache;
 pub use id_worlds::world_compile;
@@ -305,22 +305,22 @@ pub use id_worlds::world_doctor;
 #[cfg(feature = "world")]
 pub use id_worlds::world_fixture;
 
-pub use id_worlds::world_hub;
 #[cfg(feature = "world")]
 pub use id_caps::world_limits;
-pub(crate) use id_worlds::world_line;
 #[cfg(feature = "world")]
 pub use id_caps::world_manifest;
+#[cfg(feature = "world")]
+pub use id_core::world_presentation;
+pub use id_worlds::world_hub;
+pub(crate) use id_worlds::world_line;
 #[cfg(feature = "world")]
 pub use id_worlds::world_native;
 #[cfg(feature = "world")]
 pub use id_worlds::world_net;
 #[cfg(feature = "world")]
-pub use id_worlds::world_replication_net;
-#[cfg(feature = "world")]
-pub use id_core::world_presentation;
-#[cfg(feature = "world")]
 pub use id_worlds::world_records;
+#[cfg(feature = "world")]
+pub use id_worlds::world_replication_net;
 #[cfg(feature = "world")]
 pub use id_worlds::world_session;
 #[cfg(feature = "ssh")]
@@ -336,14 +336,19 @@ pub use id_core::qr;
 // below live in the id-cli crate and are re-exported at their
 // historical `id::` paths. `main.rs` consumes them through here.
 pub use id_cli::{
-    aliases, app_manifest, chat_presence, cli, commands, helpers, local, match_audit,
-    meta_client, protocol, publications, publications_runtime, repl, server_config,
+    aliases, app_manifest, chat_presence, cli, commands, helpers, local, match_audit, meta_client,
+    protocol, publications, publications_runtime, repl, server_config,
 };
 
 #[cfg(feature = "web")]
 pub use id_web as web;
 
 // Re-export commonly used types for convenience
+pub use discovery::{
+    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, MAX_PEER_NAME_BYTES,
+    MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
+    STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
+};
 pub use id_cli::cli::{Cli, Command, KeyCommand, TagCommand};
 pub use id_cli::commands::{
     PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo,
@@ -353,17 +358,14 @@ pub use id_cli::commands::{
     cmd_put_one_remote, cmd_search, cmd_serve, cmd_show, cmd_tag, create_local_client_endpoint,
     create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
 };
-pub use discovery::{
-    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, MAX_PEER_NAME_BYTES,
-    MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
-    STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
-};
 pub use id_cli::helpers::{
     download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,
     print_matches_cli,
 };
-pub use id_cli::protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
 pub use id_cli::protocol::match_kind;
+pub use id_cli::protocol::{
+    FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch,
+};
 pub use id_cli::repl::run_repl;
 pub use store::{StoreType, load_or_create_keypair, open_store};
 
@@ -374,12 +376,9 @@ use std::path::PathBuf;
 // Constants
 // ============================================================================
 
-
-
 pub use id_core::{CLIENT_KEY_FILE, KEY_FILE, SERVE_LOCK};
 
 pub use id_store::STORE_PATH;
-
 
 pub use id_sync::protocol::META_ALPN;
 
@@ -388,8 +387,6 @@ pub use id_sync::protocol::META_ALPN;
 // ============================================================================
 
 pub use id_cli::to_absolute;
-
-
 
 pub use id_core::is_node_id;
 

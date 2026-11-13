@@ -902,7 +902,6 @@ mod tests {
         assert_eq!(state.head_hash, enrolled.hash);
     }
 
-
     /// One step the generated-history property test can append. Indices
     /// pick from a small key universe so collisions (re-enrol, double
     /// revoke, rotate-to-self, unbind-before-bind) actually occur; the
@@ -1037,11 +1036,7 @@ mod tests {
                         .get(&public(*seed))
                         .is_some_and(|device| !device.revoked);
                     if valid {
-                        self.state
-                            .devices
-                            .get_mut(&public(*seed))
-                            .unwrap()
-                            .revoked = true;
+                        self.state.devices.get_mut(&public(*seed)).unwrap().revoked = true;
                     }
                     self.emit(record, valid);
                 }

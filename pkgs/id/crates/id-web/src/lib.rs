@@ -83,8 +83,8 @@ pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
 pub use routes::{create_program_router, create_router, create_router_for_app};
-pub use seitan::SeitanState;
 pub use security::WebSecurity;
+pub use seitan::SeitanState;
 pub use templates::{AssetUrls, render_page};
 
 /// Default save rate limit cooldown period.
@@ -811,7 +811,8 @@ mod tests {
                 .unwrap(),
         );
         let world = id_worlds::world::WorldHandle::spawn(
-            id_worlds::world::WorldCore::new("arena", id_worlds::world::WorldLimits::default()).unwrap(),
+            id_worlds::world::WorldCore::new("arena", id_worlds::world::WorldLimits::default())
+                .unwrap(),
         );
         let hub = id_worlds::world_hub::WorldHub::single_named(
             "arena",
@@ -902,7 +903,10 @@ mod tests {
             .await
             .unwrap();
         let (_, program_capability) = world
-            .issue("program-guest".to_owned(), id_worlds::world::WorldScopes::GUEST)
+            .issue(
+                "program-guest".to_owned(),
+                id_worlds::world::WorldScopes::GUEST,
+            )
             .await
             .unwrap();
         let mut explorer_client = connect_world(explorer_addr, explorer_capability.expose()).await;

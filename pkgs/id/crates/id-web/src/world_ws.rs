@@ -695,13 +695,13 @@ impl SessionIo for WsIo {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
+    use axum::{body::Body, http::Request};
+    use ed25519_dalek::SigningKey;
     use id_worlds::world::{
         JoinCapability, Participant, WorldCore, WorldHandle, WorldLimits, WorldProgram,
     };
     use id_worlds::world_session::WorldService;
-    use axum::http::StatusCode;
-    use axum::{body::Body, http::Request};
-    use ed25519_dalek::SigningKey;
 
     use id_directory::directory_auth::sign_request;
 
