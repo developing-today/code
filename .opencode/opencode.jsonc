@@ -2876,6 +2876,43 @@
         "selection": "ordered",
         "autonomy": "rules"
       },
+      "deepseek-effort-rr": {
+        "name": "DeepSeek Flash - workhorse effort trial: high/low weighted 3:1 data gathering (Drew 2026-11-13)",
+        // 2026-11-13 (Drew, direct order): can workhorse's average
+        // effort be lowered? route_attempt for the 14 days to
+        // 2026-11-13 shows deepseek-v4.1-flash serving almost
+        // exclusively at #high (66,113 attempts on the dotted leaf
+        // id, 86.2% success, ~276 reasoning tokens/call) - the
+        // reasoning burn is the price of the rung. #medium is NOT
+        // a real lower rung on the metered leaves:
+        // deepseek-flash-plan remaps medium->high on its Go and
+        // ClinePass leaves (the model natively offers low/high/max
+        // there), so a medium seat would silently gather #high
+        // data. #low passes through as low on every leaf (Go,
+        // ClinePass, OpenDesign, CommandCode, Mistral), so low is
+        // the only honest lower rung. Fleet data at #low is
+        // effectively zero: 36 wall-era attempts (0 success, no
+        // token data) plus 72 tiny scout/background-shaped
+        // successes. This weighted seat (3 high : 1 low) is the
+        // data-gathering trial, mirroring luna-effort-rr
+        // (PR #9018); only the workhorse-ordered stage rides it -
+        // speed, background, scout and the specialist seats keep
+        // their own effort choices.
+        // MEASUREMENT (named before landing): route_attempt
+        // variant=low vs high on deepseek-v4.1-flash models -
+        // success rate, first-token latency, reasoning tokens per
+        // call, and the workhorse stage fall-through rate; review
+        // after 5,000 low draws or 7 days live, whichever first.
+        // REVERT if low success falls below 90% of high success
+        // or fall-through rises materially. Adds no new pool
+        // load: same plan, same doors, different effort split.
+        "targets": [
+          { "model": "opencode-route/deepseek-flash-plan#high", "weight": 3 },
+          { "model": "opencode-route/deepseek-flash-plan#low", "weight": 1 }
+        ],
+        "selection": "weighted",
+        "autonomy": "rules"
+      },
       "workhorse-ordered": {
         "name": "Workhorse ordered - DeepSeek Flash plan first, strictly ordered",
         // 2026-11-03 (Drew): a dedicated ordered pool in FRONT of
@@ -2886,7 +2923,11 @@
         // workhorse-primary unchanged. deepseek-flash-plan KEEPS its
         // workhorse-primary seat (weight 2) in the same edit - this is
         // an addition, not a move.
-        "targets": ["opencode-route/deepseek-flash-plan#high"],
+        // 2026-11-13 (Drew, direct order): the seat now rides
+        // deepseek-effort-rr (defined just above) - the high/low
+        // effort trial - instead of addressing
+        // deepseek-flash-plan#high directly.
+        "targets": ["opencode-route/deepseek-effort-rr"],
         "selection": "ordered",
         "autonomy": "rules",
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
