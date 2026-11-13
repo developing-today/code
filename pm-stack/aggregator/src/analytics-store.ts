@@ -306,7 +306,10 @@ function computeActivity(db: Database, now: number): ActivityCounts {
   const byName = new Map(named.map((r) => [r.name as string, r.c]));
   const skillRows = db
     .query(
-      `SELECT json_extract(j.value, '$.state.input.name') AS name, COUNT(*) AS c
+      // Skill name rides at state.input.id on live parts (verified
+      // 2026-11-13: {"input":{"id":"diagnosing-bugs"}}); input.name
+      // kept as a fallback for other part generations.
+      `SELECT COALESCE(json_extract(j.value, '$.state.input.id'), json_extract(j.value, '$.state.input.name')) AS name, COUNT(*) AS c
          FROM session_message sm, json_each(sm.data, '$.content') j
         WHERE sm.type = 'assistant' AND sm.time_created >= ?
           AND json_extract(j.value, '$.type') = 'tool'
