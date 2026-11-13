@@ -1760,15 +1760,24 @@ test.describe("Image Browser", () => {
     const imagesResp = await page.request.get(`${baseURL}/api/images`);
     expect(imagesResp.ok()).toBeTruthy();
 
-    const images = (await imagesResp.json()) as Array<{
-      hash: string;
-      name: string;
-      url: string;
-    }>;
-    expect(Array.isArray(images)).toBeTruthy();
+    let imagePage = (await imagesResp.json()) as {
+      images: Array<{ hash: string; name: string; url: string }>;
+      next_cursor: string | null;
+    };
+    expect(Array.isArray(imagePage.images)).toBeTruthy();
+    expect(imagePage.images.length).toBeLessThanOrEqual(50);
 
     // The uploaded image should be in the list
-    const found = images.find((img) => img.name === filename);
+    let found = imagePage.images.find((img) => img.name === filename);
+    while (!found && imagePage.next_cursor) {
+      const nextResp = await page.request.get(
+        `${baseURL}/api/images?after=${encodeURIComponent(imagePage.next_cursor)}`,
+      );
+      expect(nextResp.ok()).toBeTruthy();
+      imagePage = (await nextResp.json()) as typeof imagePage;
+      expect(imagePage.images.length).toBeLessThanOrEqual(50);
+      found = imagePage.images.find((img) => img.name === filename);
+    }
     expect(found).toBeTruthy();
     expect(found?.url).toMatch(/^\/blob\//);
   });

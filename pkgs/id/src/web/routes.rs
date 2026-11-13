@@ -73,6 +73,13 @@ const ALLOWED_IMAGE_TYPES: &[&str] = &[
     "image/x-icon",
 ];
 
+/// Default and maximum number of images returned by one browser request.
+const DEFAULT_IMAGE_PAGE_SIZE: usize = 50;
+const MAX_IMAGE_PAGE_SIZE: usize = 100;
+
+/// Maximum number of concurrent metadata or blob-status reads for image pages.
+const IMAGE_LOOKUP_CONCURRENCY: usize = 16;
+
 /// Map an image MIME type to a file extension.
 fn mime_to_extension(mime: &str) -> &'static str {
     match mime {
@@ -588,7 +595,10 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/api/files", get(files_list_handler))
         .route("/api/home/feed", get(super::home::feed_handler))
         .route("/api/peers", get(peers_partial_handler))
-        .route("/api/blocks", get(blocks_partial_handler).post(block_create_handler))
+        .route(
+            "/api/blocks",
+            get(blocks_partial_handler).post(block_create_handler),
+        )
         .route("/api/blocks/remove", post(block_remove_handler))
         // File management API routes
         .route("/api/save", post(save_handler))
@@ -620,8 +630,14 @@ fn create_router_inner(state: AppState) -> Router {
         // Identity API routes
         .route("/api/identity/register", post(identity_register_handler))
         // Seitan admission API (#8487)
-        .route("/api/seitan/invite", post(super::seitan::seitan_invite_handler))
-        .route("/api/seitan/admit", post(super::seitan::seitan_admit_handler))
+        .route(
+            "/api/seitan/invite",
+            post(super::seitan::seitan_invite_handler),
+        )
+        .route(
+            "/api/seitan/admit",
+            post(super::seitan::seitan_admit_handler),
+        )
         .route("/api/identity/me", get(identity_me_handler))
         .route("/api/identity/name", post(identity_update_name_handler))
         // WebSocket for collaboration
@@ -1827,6 +1843,22 @@ struct ImageEntry {
     size: u64,
 }
 
+/// Query parameters for one image-browser page.
+#[derive(Debug, Deserialize)]
+struct ImageListQuery {
+    /// URL-safe-base64 tag-name cursor returned by the previous page.
+    after: Option<String>,
+    /// Requested page size, clamped to [`MAX_IMAGE_PAGE_SIZE`].
+    limit: Option<usize>,
+}
+
+/// A bounded page of image-browser entries.
+#[derive(Debug, Serialize)]
+struct ImageListResponse {
+    images: Vec<ImageEntry>,
+    next_cursor: Option<String>,
+}
+
 /// Request body for renaming a file.
 #[derive(Debug, Deserialize)]
 struct RenameRequest {
@@ -2298,8 +2330,7 @@ mod upload_router_tests {
     async fn program_router_bridge_is_pinned_to_the_bound_world() {
         let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
         let opener = crate::world_hub::testing::MemoryOpener::new(false);
-        let dyn_opener: std::sync::Arc<dyn crate::world_hub::WorldOpener> =
-            opener.clone();
+        let dyn_opener: std::sync::Arc<dyn crate::world_hub::WorldOpener> = opener.clone();
         let hub = crate::world_hub::WorldHub::new(
             dyn_opener,
             Some("admin".to_owned()),
@@ -2468,7 +2499,9 @@ mod upload_router_tests {
     ) -> (Router, AppState, tempfile::TempDir, Endpoint, Docs) {
         let (_, mut state, dir, endpoint, docs) = router_with_state().await;
         if with_account {
-            seitan.sign_up_keyed(&seitan_account_key(), "joiner").unwrap();
+            seitan
+                .sign_up_keyed(&seitan_account_key(), "joiner")
+                .unwrap();
         }
         state.seitan = seitan;
         state.world = Some(hub_with_world("arena", Some("s3cret")));
@@ -2530,13 +2563,9 @@ mod upload_router_tests {
         let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
         assert_eq!(registered.status(), StatusCode::OK);
         let uid = seitan_account_key();
-        let proof = crate::seitan::accept::sign(
-            &token,
-            &uid,
-            1,
-            seitan_now_ms().saturating_sub(480_000),
-        )
-        .unwrap();
+        let proof =
+            crate::seitan::accept::sign(&token, &uid, 1, seitan_now_ms().saturating_sub(480_000))
+                .unwrap();
         let admitted = seitan_admit(&app, &proof).await;
         assert_eq!(admitted.status(), StatusCode::OK);
         let body = seitan_response_json(admitted).await;
@@ -2581,8 +2610,8 @@ mod upload_router_tests {
         let token = crate::seitan::Token::generate();
         let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
         assert_eq!(registered.status(), StatusCode::OK);
-        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
-            .unwrap();
+        let proof =
+            crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms()).unwrap();
         let admitted = seitan_admit(&app, &proof).await;
         assert_eq!(admitted.status(), StatusCode::OK);
     }
@@ -2594,11 +2623,14 @@ mod upload_router_tests {
         let (app, _state, _dir, _endpoint, _docs) =
             seitan_app(crate::web::SeitanState::default(), true).await;
         let token = crate::seitan::Token::generate();
-        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
-            .unwrap();
+        let proof =
+            crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms()).unwrap();
         let refused = seitan_admit(&app, &proof).await;
         assert_eq!(refused.status(), StatusCode::NOT_FOUND);
-        assert_eq!(seitan_response_json(refused).await["reason"], "unknown_invite");
+        assert_eq!(
+            seitan_response_json(refused).await["reason"],
+            "unknown_invite"
+        );
     }
 
     #[tokio::test]
@@ -2615,7 +2647,10 @@ mod upload_router_tests {
         let proof = crate::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
         let refused = seitan_admit(&app, &proof).await;
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
-        assert_eq!(seitan_response_json(refused).await["reason"], "unknown_account");
+        assert_eq!(
+            seitan_response_json(refused).await["reason"],
+            "unknown_account"
+        );
 
         state.seitan.sign_up_keyed(&uid, "joiner").unwrap();
         let admitted = seitan_admit(&app, &proof).await;
@@ -2776,12 +2811,12 @@ mod upload_router_tests {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    async fn list_images(router: Router) -> Vec<serde_json::Value> {
+    async fn list_images_page(router: Router, uri: &str) -> serde_json::Value {
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/images")
+                    .uri(uri)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2790,6 +2825,46 @@ mod upload_router_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn list_images(router: Router) -> Vec<serde_json::Value> {
+        let mut images = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let uri = cursor
+                .as_deref()
+                .map(|cursor| format!("/api/images?after={cursor}"))
+                .unwrap_or_else(|| "/api/images".to_owned());
+            let page = list_images_page(router.clone(), &uri).await;
+            images.extend(
+                page["images"]
+                    .as_array()
+                    .expect("image page has an images array")
+                    .iter()
+                    .cloned(),
+            );
+            cursor = page["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        images
+    }
+
+    async fn add_tagged_blob(state: &AppState, name: &str, content_type: &str, bytes: &[u8]) {
+        let added = state.store.blobs().add_bytes(bytes.to_vec()).await.unwrap();
+        state.store.tags().set(name, added.hash).await.unwrap();
+        state
+            .tag_store
+            .set_tag(
+                &state.tag_store.global,
+                name.as_bytes(),
+                b"content-type",
+                Some(content_type.as_bytes()),
+                b"",
+            )
+            .await
+            .unwrap();
     }
 
     fn multipart_body_noname(content_type: &str, file_bytes: &[u8]) -> Vec<u8> {
@@ -3200,6 +3275,85 @@ mod upload_router_tests {
         };
         assert_eq!(hash_of(&first_name), uploaded_hash(&first));
         assert_eq!(hash_of(&second_name), uploaded_hash(&second));
+    }
+
+    #[tokio::test]
+    async fn image_listing_pages_filter_mixed_tags_in_name_order() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        add_tagged_blob(&state, "a-image.png", "image/png", b"first-image").await;
+        add_tagged_blob(&state, "b-not-image.txt", "text/plain", b"text").await;
+        add_tagged_blob(&state, ".internal.png", "image/png", b"internal").await;
+        add_tagged_blob(&state, "c-image.jpg", "image/jpeg", b"second-image").await;
+        add_tagged_blob(&state, "z-image.webp", "image/webp", b"third-image").await;
+
+        let first = list_images_page(router.clone(), "/api/images?limit=2").await;
+        let first_images = first["images"].as_array().unwrap();
+        assert_eq!(first_images.len(), 2);
+        assert_eq!(first_images[0]["name"], "a-image.png");
+        assert_eq!(first_images[1]["name"], "c-image.jpg");
+        assert_eq!(first_images[0]["size"], 11);
+        assert!(first["next_cursor"].as_str().is_some());
+
+        let cursor = first["next_cursor"].as_str().unwrap();
+        let second = list_images_page(
+            router.clone(),
+            &format!("/api/images?limit=2&after={cursor}"),
+        )
+        .await;
+        let second_images = second["images"].as_array().unwrap();
+        assert_eq!(second_images.len(), 1);
+        assert_eq!(second_images[0]["name"], "z-image.webp");
+        assert_eq!(second["next_cursor"], serde_json::Value::Null);
+        assert!(
+            second_images[0]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("/blob/")
+        );
+    }
+
+    #[tokio::test]
+    async fn image_listing_rejects_malformed_cursor_and_clamps_page_size() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        for index in 0..=MAX_IMAGE_PAGE_SIZE {
+            add_tagged_blob(
+                &state,
+                &format!("image-{index:03}.png"),
+                "image/png",
+                b"image",
+            )
+            .await;
+        }
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/images?limit=1000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            page["images"].as_array().unwrap().len(),
+            MAX_IMAGE_PAGE_SIZE
+        );
+        assert!(page["next_cursor"].as_str().is_some());
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/images?after=not-base64!")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     // #751: a body over UPLOAD_BODY_LIMIT must surface as the clear 413,
