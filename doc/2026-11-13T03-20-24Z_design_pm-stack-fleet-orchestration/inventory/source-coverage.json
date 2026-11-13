@@ -42,18 +42,18 @@
       "bytes": 11687,
       "characters": 10045,
       "lines": 22,
-      "unit_count": 65,
+      "unit_count": 66,
       "coverage_method": "all non-whitespace spans segmented on sentence punctuation/newlines; original byte/character spans retained for flattened sources",
       "sha256_imported_export_as_recorded_in_note": "d5855c278a7f7276adb7bf32ea25da1b41ab978fb3d9e207154d1803d4cf1121"
     }
   },
-  "inventory_rows": 3571,
+  "inventory_rows": 3572,
   "domains": {
     "priority": 478,
     "distribution": 76,
     "pm-mobile": 248,
     "dispatch-events": 400,
-    "queue-selection": 507,
+    "queue-selection": 508,
     "lifecycle-cli": 407,
     "hydration-activity": 308,
     "dependencies-authority": 536,

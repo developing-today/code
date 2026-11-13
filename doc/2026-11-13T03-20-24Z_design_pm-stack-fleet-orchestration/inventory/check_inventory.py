@@ -47,7 +47,7 @@ def split_units(text):
     # Mechanical occurrence segmentation only. Whitespace and sentence-ending
     # punctuation are delimiters (not occurrences); dots attached to path or
     # identifier text, e.g. .fleet, remain part of the occurrence.
-    for m in re.finditer(r"\S(?:.*?\S)?(?=(?:[.!?](?:[\"')\]]*)?\s+)|\n|$)", text, re.S):
+    for m in re.finditer(r"\S(?:.*?\S)?(?=(?:[.!?](?:[\"')\]]*)?\s+)|\n|\s*$)", text, re.S):
         s = m.group().strip()
         if s:
             a = m.start() + len(m.group()) - len(m.group().lstrip())

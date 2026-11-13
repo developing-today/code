@@ -386,7 +386,12 @@ and issue/session attribution is not authentication.
 Minimum order: `CLI-01` → `CLI-02` → `CLI-03`; `CLI-12` follows identity/auth contract and may proceed
 independently of work lifecycle transitions. Then `CLI-04/05` follow existing #9178/#9179 review.
 Independent handler seams `CLI-06/07/08/09/10/11` proceed only within their named owners; `CLI-13`
-is last and blocks on every handler it registers. All issues remain unfiled pending #9196 review.
+is last among the CLI slices and blocks on every CLI handler interface it registers
+(CLI-02 through CLI-12). Domain handler slices owned outside the CLI family (for
+example HYD-08 with work.refresh / activity.reconcile / activity.watch) are not
+CLI-13 prerequisites: they register afterwards through the mechanism CLI-13
+delivers, so HYD-08 is blocked by CLI-13 and not the reverse — the registration
+graph stays acyclic (post-review correction, task 15381). All issues remain unfiled pending #9196 review.
 
 ## 9. Open decisions for parent integration
 

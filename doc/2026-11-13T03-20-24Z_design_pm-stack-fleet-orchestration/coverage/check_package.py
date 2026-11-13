@@ -82,7 +82,7 @@ def validate_trace(reqs: list[dict], crosswalk: list[dict], statements: list[dic
     errors=[]; ids={r.get("id") for r in reqs}; cids={r.get("requirement_id") for r in crosswalk}
     if ids != cids: errors.append(f"crosswalk ID mismatch missing={sorted(ids-cids)[:10]} extra={sorted(cids-ids)[:10]}")
     dids=[r.get("occurrence_id") for r in dispositions]; sids=[r.get("id") for r in statements]
-    if len(dids)!=3571 or len(set(dids))!=3571 or set(dids)!=set(sids): errors.append(f"seed/disposition ID-set mismatch: statements={len(set(sids))}, dispositions={len(set(dids))}")
+    if len(dids)!=3572 or len(set(dids))!=3572 or set(dids)!=set(sids): errors.append(f"seed/disposition ID-set mismatch: statements={len(set(sids))}, dispositions={len(set(dids))}")
     aliases={r["id"]:r.get("duplicate_of") for r in reqs if r.get("node_kind")=="alias"}
     groups={r["id"]:r.get("child_requirement_ids",[]) for r in reqs if r.get("node_kind")=="group"}
     if len(aliases)!=40 or len(groups)!=9: errors.append(f"expected 40 alias records and 9 groups, got {len(aliases)}/{len(groups)}")
@@ -235,8 +235,8 @@ def run() -> dict:
     crosswalk = jsonl(census / "requirements-crosswalk.jsonl")
     if len(reqs) != 389 or len(req_ids) != 389:
         problems.append(f"requirements expected 389 unique IDs, got {len(reqs)}/{len(req_ids)}")
-    if len(disp) != 3571:
-        problems.append(f"expected 3571 occurrence dispositions, got {len(disp)}")
+    if len(disp) != 3572:
+        problems.append(f"expected 3572 occurrence dispositions, got {len(disp)}")
     refs = [x.get("occurrence_id") for r in reqs for x in r.get("source_occurrence_refs", [])]
     if not refs:
         problems.append("requirement inventory has no occurrence references")

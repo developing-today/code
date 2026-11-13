@@ -74,3 +74,40 @@ queue coverage, which this pass performed.
   the queue coverage helper, as the stub's own text prescribes.
 - Epic #9196 stays open for the program; this pass completes the design
   and issue-publication deliverables only.
+
+## Post-review correction — Codex findings on PR #9225 (task 15381)
+
+All five Codex P2 findings (reviews 5885655024, 5886159845, 5887339607) were
+dispositioned in this pass; replies are posted on each thread.
+
+1. Flattened-source section extraction (r4559397776): the unbounded section
+   strings do not exist in the current artifacts — the curated dispositions
+   carry no section text and inventory statement sections are bounded at
+   160 chars by the checker (verified max = 160 across the 1,311 O rows).
+   No change needed; evidence replied on the thread.
+2. Dropped final clause of source 05 (r4559397779): REAL. The mechanical
+   segmentation in inventory/check_inventory.py could not terminate a unit
+   whose text ends with horizontal whitespace before the final newline, so
+   the clause after S-065 was missing from both ledgers. Fixed the
+   segmentation (trailing-whitespace-at-EOF lookahead), regenerated the
+   ledger (3,571 -> 3,572 occurrences), added statement/disposition S-066
+   (bytes 11481-11684, chars 9870-10043) mapped as a qualifier of S-R011,
+   and updated the coverage checker constants. check_inventory --check and
+   check_requirements --check both pass: 3,572 dispositions cover every
+   seed occurrence exactly once. Published artifacts that cite 3,571
+   (including the CEN-01 issue body) are corrected by comment, not by
+   editing published bodies.
+3. Inherited-pressure cache invalidation (r4559698913): FIXED in
+   components/9199-distributed-priority.md — invalidation now marks
+   downstream dependents for eligibility effects and upstream blockers
+   for inherited-pressure recomputation.
+4. Legacy lease migration (r4560572009): FIXED in
+   components/9209-leases-fencing-outbox-direct-completion.md — rows with
+   an active lease retain claimed state, owner, and lease expiry under
+   generation 0/unknown; only unleased rows map to unclaimed.
+5. CLI-13 / HYD-08 registration cycle (r4560572016): FIXED in
+   components/9206-work-item-lifecycle-fleet-subcommands.md — CLI-13 is
+   last among the CLI slices and blocks on the CLI-02..CLI-12 interfaces;
+   domain handlers such as HYD-08 register afterwards through the
+   delivered mechanism, matching the filed graph (HYD-08 blocked by
+   CLI-13, acyclic).

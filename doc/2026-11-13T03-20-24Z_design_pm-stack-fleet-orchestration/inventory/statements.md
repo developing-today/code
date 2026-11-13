@@ -28601,3 +28601,10 @@ Where (x_i) is the item's value and (n_{b(i)}) is the number of item
 **Design targets:** components/9199-distributed-priority.md # Priority model, urgency, importance, effective pressure; components/9204-queue-selection-bounded-exploration.md # Queue selection and bounded exploration
 
 and for the filters we only have priority right now but plan we'll add more scales later, ratio or formula that lightly prefers higher priority (lower) bands with no or less impact based on numbers of items in each band
+## S-066 — 05_supplemental_raw_note.md:21
+
+**Domains:** queue-selection
+**Modality:** requirement
+**Design targets:** components/9204-queue-selection-bounded-exploration.md # Queue selection and bounded exploration
+
+make all the numbers configurable and build tooling so as little as possible has to be manually done by agent, idk bake it into fleet queue here's beginning design for that:
