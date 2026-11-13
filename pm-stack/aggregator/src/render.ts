@@ -6531,6 +6531,42 @@ export function projectsBodyHtml(
       const statusBadge = p.status
         ? `<span class="badge ${p.status === "Done" ? "merged" : p.status === "Todo" ? "closed" : "implementing"}">${esc(p.status)}</span>`
         : `<span class="badge">no status</span>`;
+      const linksLine = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
+      // #5082: only active work (canonical Project status
+      // In Progress / In Review) and epics
+      // render as a full card — status-request control, derived
+      // brief, rollups. An epic's rollup / forecast / spend ARE its
+      // substance at any status (#3984, #4824) and epics are few
+      // (40 of 1,422). Every other item renders compact: title,
+      // badges, links — the shape the per-project pages already
+      // use. The pool only ever
+      // grows — 725 of 1,422 items were Done at the 2026-11-13
+      // measurement — and at ~2.8 KB per full card (actbox ~1.2 KB +
+      // brief ~0.9 KB of it) the page reached 4.08 MB and grew with
+      // every filed item. A compact row keeps the item's identity,
+      // status, badges and links; the dropped blocks are the ones
+      // whose content is formulaic for a queued/finished item (the
+      // brief's "Next: No action" for Done items) or an action that
+      // belongs to active work. When the derived state disagrees the
+      // ⚠ clash badge still shows on the compact row, so no signal
+      // is lost. Counts, chips and weights use the whole pool either
+      // way; the area filter and saved views filter rows the same.
+      // Action-result badges (a pending / applied status request)
+      // also stay on compact rows — only the form and brief drop.
+      const canonical = canonicalStatusFor("project", p.status);
+      const active = canonical === "In Progress" || canonical === "In Review" || p.kind === "Epic";
+      const objectRef = ghObjectRef(p.ref);
+      const actionBadges = actionBadgesHtml(opts.actionsByObject?.get(objectRef));
+      if (!active) {
+        const metaCompact = [
+          p.area ? `<span class="badge src">${esc(p.area)}</span>` : "",
+          p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
+          p.kind ? `<span class="badge src">${esc(p.kind)}</span>` : "",
+          `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
+        ].join(" ");
+        const compactLinks = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
+        return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${metaCompact}<br>${compactLinks}${actionBadges}</div>`;
+      }
       const meta = [
         p.area ? `<span class="badge src">${esc(p.area)}</span>` : "",
         p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
@@ -6539,9 +6575,8 @@ export function projectsBodyHtml(
         `<span class="badge src">derived: ${esc(derived)}</span>`,
       ].join(" ");
       // #1154: the status-request control + the store's visible state.
-      const objectRef = ghObjectRef(p.ref);
       const statusCtl = opts.identities
-        ? `${actionBadgesHtml(opts.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, p.ref, p.status ?? null, { identities: opts.identities })}`
+        ? `${actionBadges}${statusRequestHtml(objectRef, p.ref, p.status ?? null, { identities: opts.identities })}`
         : "";
       const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
@@ -6549,7 +6584,7 @@ export function projectsBodyHtml(
       const spendHtml = spendCard ? spendCardHtml(spendCard) : "";
       const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
       const forecastHtml = forecastSummaryHtml(opts.forecasts?.get(p.ref));
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br>${linksLine}${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>

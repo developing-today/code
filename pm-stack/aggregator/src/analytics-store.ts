@@ -207,12 +207,21 @@ interface DayModelRow {
   cost_rows: number;
 }
 
-const BURN_TTL_MS = 120_000;
-let burnCache: { at: number; days: string[]; legRows: DayLegRow[]; modelRows: DayModelRow[] } | null = null;
+/** Every route_attempt-derived input the builder needs, computed in
+ * one pass over the ledger. */
+interface AttemptAggregates {
+  legRows: DayLegRow[];
+  modelRows: DayModelRow[];
+  coverage: { f: number; t: number };
+  hourRows: DayModelRow[];
+  credentialCoveragePct: number | null;
+  hourly7d: { hour: number; calls: number; tokens: number }[];
+  dowHistory: { dow: number; calls: number; tokens: number }[];
+  daily21d: { day: string; calls: number; tokens: number }[];
+}
 
-function loadBurnRows(db: Database, now: number): { legRows: DayLegRow[]; modelRows: DayModelRow[]; days: string[] } {
-  if (burnCache && now - burnCache.at < BURN_TTL_MS) return burnCache;
-  const legRows = db
+function queryLegRows(db: Database, now: number): DayLegRow[] {
+  return db
     .query(
       `SELECT date(time_started/1000, 'unixepoch', 'localtime') AS day,
               provider_id, credential_id,
@@ -230,7 +239,10 @@ function loadBurnRows(db: Database, now: number): { legRows: DayLegRow[]; modelR
         GROUP BY day, provider_id, credential_id`,
     )
     .all(now - 15 * DAY_MS) as DayLegRow[];
-  const modelRows = db
+}
+
+function queryModelRows(db: Database, now: number): DayModelRow[] {
+  return db
     .query(
       `SELECT date(time_started/1000, 'unixepoch', 'localtime') AS day,
               model_id, variant,
@@ -248,9 +260,135 @@ function loadBurnRows(db: Database, now: number): { legRows: DayLegRow[]; modelR
         GROUP BY day, model_id, variant`,
     )
     .all(now - 15 * DAY_MS) as DayModelRow[];
-  const days = [...new Set([...legRows, ...modelRows].map((r) => r.day))].sort();
-  burnCache = { at: now, days, legRows, modelRows };
-  return burnCache;
+}
+
+function queryCoverage(db: Database): { f: number; t: number } {
+  return db.query(`SELECT MIN(time_started) AS f, MAX(time_started) AS t FROM route_attempt`).get() as { f: number; t: number };
+}
+
+function queryHourRows(db: Database, now: number): DayModelRow[] {
+  return db
+    .query(
+      `SELECT model_id, variant, COUNT(*) AS calls, SUM(outcome='success') AS success,
+              COALESCE(SUM(tokens_input),0) AS input, COALESCE(SUM(tokens_output),0) AS output,
+              COALESCE(SUM(tokens_reasoning),0) AS reasoning, COALESCE(SUM(tokens_cache_read),0) AS cache_read,
+              COALESCE(SUM(tokens_cache_write),0) AS cache_write, COALESCE(SUM(cost_usd),0) AS cost, COUNT(cost_usd) AS cost_rows
+         FROM route_attempt WHERE time_started >= ? GROUP BY model_id, variant`,
+    )
+    .all(now - HOUR_MS) as DayModelRow[];
+}
+
+function queryCredentialCoveragePct(db: Database, now: number): number | null {
+  const credCov = db
+    .query(`SELECT COUNT(*) AS n, COUNT(credential_id) AS c FROM route_attempt WHERE time_started >= ?`)
+    .get(now - 7 * DAY_MS) as { n: number; c: number };
+  return credCov.n > 0 ? (credCov.c / credCov.n) * 100 : null;
+}
+
+function queryHourly7d(db: Database, now: number): { hour: number; calls: number; tokens: number }[] {
+  return db
+    .query(
+      `SELECT CAST(strftime('%H', time_started/1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
+              COUNT(*) AS calls,
+              COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
+         FROM route_attempt WHERE time_started >= ? GROUP BY hour ORDER BY hour`,
+    )
+    .all(now - 7 * DAY_MS) as { hour: number; calls: number; tokens: number }[];
+}
+
+function queryDowHistory(db: Database): { dow: number; calls: number; tokens: number }[] {
+  return db
+    .query(
+      `SELECT CAST(strftime('%w', time_started/1000, 'unixepoch', 'localtime') AS INTEGER) AS dow,
+              COUNT(*) AS calls,
+              COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
+         FROM route_attempt GROUP BY dow ORDER BY dow`,
+    )
+    .all() as { dow: number; calls: number; tokens: number }[];
+}
+
+function queryDaily21d(db: Database, now: number): { day: string; calls: number; tokens: number }[] {
+  return db
+    .query(
+      `SELECT date(time_started/1000, 'unixepoch', 'localtime') AS day,
+              COUNT(*) AS calls,
+              COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
+         FROM route_attempt WHERE time_started >= ? GROUP BY day ORDER BY day`,
+    )
+    .all(now - 21 * DAY_MS) as { day: string; calls: number; tokens: number }[];
+}
+
+function computeAttemptAggregates(db: Database, now: number): AttemptAggregates {
+  return {
+    legRows: queryLegRows(db, now),
+    modelRows: queryModelRows(db, now),
+    coverage: queryCoverage(db),
+    hourRows: queryHourRows(db, now),
+    credentialCoveragePct: queryCredentialCoveragePct(db, now),
+    hourly7d: queryHourly7d(db, now),
+    dowHistory: queryDowHistory(db),
+    daily21d: queryDaily21d(db, now),
+  };
+}
+
+// #5082: ALL route_attempt aggregates ride ONE stale-while-revalidate
+// cache. The scans cost seconds each over the 21 GB ledger (measured
+// 2026-11-13: ~5.4 s of uncached scans per build, ~10 s cold) and the
+// builder runs synchronously on the server's only event loop, so
+// per-request scans made /quota take 5-19 s and stalled every other
+// page queued behind them. The aggregates are slow-moving (hour/day
+// buckets over 7-21 day windows), so a minutes-old copy is honest;
+// refreshes run chunked in the background, one query per macrotask,
+// so a refresh never monopolizes the loop either. The first build in
+// a process computes synchronously — server.ts warms it at boot, off
+// the request path.
+const AGGREGATES_TTL_MS = 300_000;
+let aggregatesCache: { path: string; at: number; data: AttemptAggregates } | null = null;
+let aggregatesRefreshing = false;
+
+function refreshAttemptAggregates(db: Database, path: string): void {
+  if (aggregatesRefreshing) return;
+  aggregatesRefreshing = true;
+  const now = Date.now();
+  const data: Partial<AttemptAggregates> = {};
+  const steps: Array<() => void> = [
+    () => { data.legRows = queryLegRows(db, now); },
+    () => { data.modelRows = queryModelRows(db, now); },
+    () => { data.coverage = queryCoverage(db); },
+    () => { data.hourRows = queryHourRows(db, now); },
+    () => { data.credentialCoveragePct = queryCredentialCoveragePct(db, now); },
+    () => { data.hourly7d = queryHourly7d(db, now); },
+    () => { data.dowHistory = queryDowHistory(db); },
+    () => { data.daily21d = queryDaily21d(db, now); },
+  ];
+  const step = (): void => {
+    const next = steps.shift();
+    if (!next) {
+      aggregatesCache = { path, at: Date.now(), data: data as AttemptAggregates };
+      aggregatesRefreshing = false;
+      return;
+    }
+    try {
+      next();
+    } catch {
+      // fail-soft: keep serving the stale copy; a later stale read retries
+      aggregatesRefreshing = false;
+      return;
+    }
+    setTimeout(step, 0);
+  };
+  setTimeout(step, 0);
+}
+
+function loadAttemptAggregates(db: Database, path: string, now: number): AttemptAggregates {
+  if (aggregatesCache && aggregatesCache.path === path) {
+    if (now - aggregatesCache.at < AGGREGATES_TTL_MS) return aggregatesCache.data;
+    refreshAttemptAggregates(db, path);
+    return aggregatesCache.data;
+  }
+  const data = computeAttemptAggregates(db, now);
+  aggregatesCache = { path, at: now, data };
+  return data;
 }
 
 function addInto(into: BurnBucket, r: { calls: number; success: number; input: number; output: number; reasoning: number; cache_read: number; cache_write: number; cost: number; cost_rows: number }): void {
@@ -513,10 +651,10 @@ export function buildQuotaAnalytics(args: {
   };
   if (!db) return base;
   try {
-    const { legRows, modelRows } = loadBurnRows(db, now);
-    const coverage = db.query(`SELECT MIN(time_started) AS f, MAX(time_started) AS t FROM route_attempt`).get() as { f: number; t: number };
-    base.attemptsFrom = coverage.f ? new Date(coverage.f).toISOString() : null;
-    base.attemptsTo = coverage.t ? new Date(coverage.t).toISOString() : null;
+    const aggregates = loadAttemptAggregates(db, dbPath, now);
+    const { legRows, modelRows } = aggregates;
+    base.attemptsFrom = aggregates.coverage.f ? new Date(aggregates.coverage.f).toISOString() : null;
+    base.attemptsTo = aggregates.coverage.t ? new Date(aggregates.coverage.t).toISOString() : null;
 
     const today = localDay(now);
     const last7 = dayRange(now, 7);
@@ -533,16 +671,7 @@ export function buildQuotaAnalytics(args: {
       base.totals.last7d.input + base.totals.last7d.output + base.totals.last7d.cacheRead + base.totals.last7d.cacheWrite + base.totals.last7d.reasoning,
       base.totals.prev7d.input + base.totals.prev7d.output + base.totals.prev7d.cacheRead + base.totals.prev7d.cacheWrite + base.totals.prev7d.reasoning,
     );
-    const hourRows = db
-      .query(
-        `SELECT model_id, variant, COUNT(*) AS calls, SUM(outcome='success') AS success,
-                COALESCE(SUM(tokens_input),0) AS input, COALESCE(SUM(tokens_output),0) AS output,
-                COALESCE(SUM(tokens_reasoning),0) AS reasoning, COALESCE(SUM(tokens_cache_read),0) AS cache_read,
-                COALESCE(SUM(tokens_cache_write),0) AS cache_write, COALESCE(SUM(cost_usd),0) AS cost, COUNT(cost_usd) AS cost_rows
-           FROM route_attempt WHERE time_started >= ? GROUP BY model_id, variant`,
-      )
-      .all(now - HOUR_MS) as DayModelRow[];
-    base.totals.lastHour = sumWhere(hourRows, () => true);
+    base.totals.lastHour = sumWhere(aggregates.hourRows, () => true);
 
     const group = (rows: DayModelRow[], keyOf: (r: DayModelRow) => { key: string; label: string }): BurnGroup[] => {
       const map = new Map<string, BurnGroup>();
@@ -569,36 +698,11 @@ export function buildQuotaAnalytics(args: {
     }
     base.byLeg7d = [...legGroups.values()].sort((a, b) => b.calls - a.calls);
 
-    const credCov = db
-      .query(`SELECT COUNT(*) AS n, COUNT(credential_id) AS c FROM route_attempt WHERE time_started >= ?`)
-      .get(now - 7 * DAY_MS) as { n: number; c: number };
-    base.credentialCoveragePct = credCov.n > 0 ? (credCov.c / credCov.n) * 100 : null;
+    base.credentialCoveragePct = aggregates.credentialCoveragePct;
 
-    base.hourly7d = db
-      .query(
-        `SELECT CAST(strftime('%H', time_started/1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
-                COUNT(*) AS calls,
-                COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
-           FROM route_attempt WHERE time_started >= ? GROUP BY hour ORDER BY hour`,
-      )
-      .all(now - 7 * DAY_MS) as { hour: number; calls: number; tokens: number }[];
-    base.dowHistory = db
-      .query(
-        `SELECT CAST(strftime('%w', time_started/1000, 'unixepoch', 'localtime') AS INTEGER) AS dow,
-                COUNT(*) AS calls,
-                COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
-           FROM route_attempt GROUP BY dow ORDER BY dow`,
-      )
-      .all() as { dow: number; calls: number; tokens: number }[];
-    const daily = db
-      .query(
-        `SELECT date(time_started/1000, 'unixepoch', 'localtime') AS day,
-                COUNT(*) AS calls,
-                COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
-           FROM route_attempt WHERE time_started >= ? GROUP BY day ORDER BY day`,
-      )
-      .all(now - 21 * DAY_MS) as { day: string; calls: number; tokens: number }[];
-    base.daily21d = daily.map((d) => ({ ...d, holiday: usFederalHoliday(d.day) }));
+    base.hourly7d = aggregates.hourly7d;
+    base.dowHistory = aggregates.dowHistory;
+    base.daily21d = aggregates.daily21d.map((d) => ({ ...d, holiday: usFederalHoliday(d.day) }));
 
     // ---- pools -------------------------------------------------------------
     const credMap = readCredentialMap(args.quotaCurrentPath);

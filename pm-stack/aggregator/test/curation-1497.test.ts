@@ -7,6 +7,7 @@ import { buildBriefs } from "../src/brief.ts";
 import { PAGES, SUBROUTE_PARENTS, manifestRouteFor, pageByRoute, primaryGroupedPages } from "../src/pages.ts";
 import { buildProgramData } from "../src/program.ts";
 import { navLinks, pageDropdown, renderPages, renderProgram } from "../src/render.ts";
+import { STANDING_IDENTITIES } from "../src/registry.ts";
 
 const PROV: Provenance = {
   board: "x",
@@ -161,7 +162,10 @@ describe("the Projects merge into Program (#1497)", () => {
         title: "briefed pool card",
         state: "open",
         contentKind: "issue",
-        status: "Todo",
+        // #5082: briefs render on full cards (active work + epics);
+        // a Todo task renders compact, so the forwarded-brief
+        // fixture is active work.
+        status: "In Progress",
         area: "pm-dashboard",
         horizon: null,
         kind: null,
@@ -189,5 +193,46 @@ describe("the Projects merge into Program (#1497)", () => {
     expect(withBriefs).toContain("Last activity by alice");
     const without = renderProgram(data, items, PROV, undefined, { pool, area: null });
     expect(without).not.toContain("Last activity by alice");
+  });
+
+  test("pool rows: active work and epics render full cards, the rest render compact (#5082)", () => {
+    const mk = (n: number, title: string, status: string, kind: string | null): ProjectPoolItem => ({
+      id: `PVTI_${n}`,
+      url: `https://github.com/orgs/developing-today/projects/4?pane=issue&itemId=${n}`,
+      projectUrl: "https://github.com/orgs/developing-today/projects/4",
+      ref: `developing-today/code#${n}`,
+      repo: "developing-today/code",
+      number: n,
+      issueUrl: `https://github.com/developing-today/code/issues/${n}`,
+      title,
+      state: "open",
+      contentKind: "issue",
+      status,
+      area: "pm-dashboard",
+      horizon: null,
+      kind,
+    });
+    const pool: ProjectPoolItem[] = [
+      mk(10, "compact todo marker", "Todo", null),
+      mk(11, "full active marker", "In Progress", null),
+      mk(12, "full epic marker", "Todo", "Epic"),
+      mk(13, "compact done marker", "Done", null),
+    ];
+    const items = new Map();
+    const data = { ...buildProgramData(items, pool, null), projects: [] };
+    const html = renderProgram(data, items, PROV, undefined, { pool, area: null, identities: STANDING_IDENTITIES });
+    // Every item is still listed.
+    for (const t of ["compact todo marker", "full active marker", "full epic marker", "compact done marker"]) {
+      expect(html).toContain(t);
+    }
+    // Full cards (active + epic) carry the brief panel and the
+    // status-request form; compact rows carry neither.
+    expect(html.split('class="brief"').length - 1).toBe(2);
+    expect(html.split('class="aform"').length - 1).toBe(2);
+    const todoAt = html.indexOf("compact todo marker");
+    const todoCard = html.slice(html.lastIndexOf('<div class="card">', todoAt), html.indexOf('<div class="card">', todoAt));
+    expect(todoCard).not.toContain('class="brief"');
+    expect(todoCard).not.toContain('class="aform"');
+    expect(todoCard).toContain("developing-today/code#10");
   });
 });
