@@ -68,19 +68,18 @@ func fishTokens(line string) []string {
 
 var fishSeenSubRE = regexp.MustCompile(`__fish_seen_subcommand_from\s+([^;'"]+)`)
 
-// fishSubcommandOf reads the subcommand a -n condition scopes a flag to:
-// the first word after __fish_seen_subcommand_from. Compound conditions
-// scope deeper paths; the top-level word is the tool mcpx declares.
-func fishSubcommandOf(cond string) string {
+// fishSubcommandsOf reads the commands a -n condition scopes a flag to:
+// every word after __fish_seen_subcommand_from. A condition may list
+// several spellings of one command (mcpx's own generated fish
+// completions join a command's aliases exactly this way), and the flag
+// belongs to each of them — taking only the first word would strip the
+// flag from every other spelling's tool.
+func fishSubcommandsOf(cond string) []string {
 	m := fishSeenSubRE.FindStringSubmatch(cond)
 	if m == nil {
-		return ""
+		return nil
 	}
-	words := strings.Fields(m[1])
-	if len(words) == 0 {
-		return ""
-	}
-	return words[0]
+	return strings.Fields(m[1])
 }
 
 func parseFishCompletion(text, name string) *importShape {
@@ -135,7 +134,8 @@ func parseFishCompletion(text, name string) *importShape {
 		if len(toks) < 2 {
 			continue
 		}
-		var cmd, sub, desc, args string
+		var cmd, desc, args string
+		var subs []string
 		var flag importFlag
 		isCompleteForSelf := false
 		for i := 1; i < len(toks); i++ {
@@ -157,7 +157,7 @@ func parseFishCompletion(text, name string) *importShape {
 				case "-d", "--description":
 					desc = v
 				case "-n", "--condition":
-					sub = fishSubcommandOf(v)
+					subs = fishSubcommandsOf(v)
 					isCompleteForSelf = isCompleteForSelf || strings.Contains(v, "__fish_use_subcommand")
 				case "-a", "--arguments":
 					args = v
@@ -189,7 +189,12 @@ func parseFishCompletion(text, name string) *importShape {
 			continue
 		}
 		flag.Desc = desc
-		addFlag(sub, flag)
+		if len(subs) == 0 {
+			addFlag("", flag)
+		}
+		for _, sub := range subs {
+			addFlag(sub, flag)
+		}
 	}
 	sort.Strings(subOrder)
 	for _, sub := range subOrder {
@@ -402,6 +407,7 @@ func helpShape(binary string) (*importShape, error) {
 		}
 		subShape := parseHelpText(subOut)
 		shape.Subs[i].Flags = subShape.Global
+		shape.Subs[i].Positionals = subShape.Positionals
 		if shape.Subs[i].Desc == "" {
 			shape.Subs[i].Desc = firstSentence(subShape.Description)
 		}
@@ -437,12 +443,16 @@ func parseFlagSpec(spec string) []importFlag {
 			switch {
 			case strings.HasPrefix(tok, "--"):
 				name := strings.TrimPrefix(tok, "--")
-				// "--flag=value", "--flag=<value>" and the man-page
-				// form "--flag[=<value>]" all name a value.
+				// "--flag=value" and "--flag=<value>" name a value;
+				// the bracketed "--flag[=<value>]" form names an
+				// optional one, which the program accepts only
+				// attached — rendering it separated would run a
+				// different operation, so the binding is preserved.
 				if i := strings.IndexAny(name, "=["); i >= 0 {
 					f.Long = name[:i]
 					f.Value = strings.Trim(name[i:], "=[]<>")
 					f.TakesValue = true
+					f.EqualsOnly = name[i] == '['
 				} else {
 					f.Long = name
 				}

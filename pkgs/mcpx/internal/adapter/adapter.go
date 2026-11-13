@@ -127,6 +127,12 @@ type Param struct {
 	// Repeat sends an array as several occurrences of the flag rather than
 	// one comma-joined value, which is what most programs actually accept.
 	Repeat bool `json:"repeat,omitempty"`
+	// Equals renders the value attached: --flag=value rather than
+	// --flag value. Some programs accept a value only in this form
+	// (the man-page --flag[=<value>] shape); rendering it separated
+	// would run a different operation — git --exec-path /tmp prints
+	// the path instead of setting it (#1962).
+	Equals bool `json:"equals,omitempty"`
 	// Default is used when the caller omits it.
 	Default string `json:"default,omitempty"`
 	// Enum restricts the value.
@@ -444,13 +450,19 @@ func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
 			out = append(out, values...)
 			continue
 		}
+		render := func(v string) []string {
+			if p.Equals {
+				return []string{p.Flag + "=" + v}
+			}
+			return []string{p.Flag, v}
+		}
 		if p.Repeat {
 			for _, v := range values {
-				out = append(out, p.Flag, v)
+				out = append(out, render(v)...)
 			}
 			continue
 		}
-		out = append(out, p.Flag, strings.Join(values, ","))
+		out = append(out, render(strings.Join(values, ","))...)
 	}
 	// A key that names no declared parameter is a caller mistake — a typo is
 	// otherwise indistinguishable from success, and the executed command

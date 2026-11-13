@@ -195,6 +195,10 @@ type importFlag struct {
 	Value      string // value placeholder, when the source names one
 	Desc       string
 	TakesValue bool
+	// EqualsOnly records the bracketed optional-value form
+	// (--flag[=<value>]): the value binds only attached, as
+	// --flag=value, and rendering it separated changes the operation.
+	EqualsOnly bool
 }
 
 func (f importFlag) flag() string {
@@ -214,9 +218,10 @@ func (f importFlag) paramName() string {
 }
 
 type importSub struct {
-	Name  string
-	Desc  string
-	Flags []importFlag
+	Name        string
+	Desc        string
+	Flags       []importFlag
+	Positionals []importFlag // Long holds the name; always TakesValue
 }
 
 // importShape is what any source parses into: subcommands with their own
@@ -250,6 +255,7 @@ func flagParams(flags []importFlag) []adapter.Param {
 		}
 		if f.TakesValue {
 			p.Type = "string"
+			p.Equals = f.EqualsOnly
 			if v := strings.ToLower(f.Value); strings.Contains(v, "int") || strings.Contains(v, "num") || strings.Contains(v, "count") {
 				p.Type = "integer"
 			}
@@ -284,11 +290,29 @@ func shapeToSpec(name, command string, shape *importShape, prov *adapter.Provena
 	var notes []string
 	if len(shape.Subs) > 0 {
 		for _, sub := range shape.Subs {
+			params := flagParams(sub.Flags)
+			for _, pos := range sub.Positionals {
+				params = append(params, adapter.Param{
+					Name:        pos.Long,
+					Description: pos.Desc,
+					Type:        "string",
+					Required:    true,
+				})
+			}
+			// A subcommand tool without a positional outlet cannot
+			// run the operation it names (toolbox add ITEM), and
+			// buildArgs refuses undeclared arguments — so every
+			// subcommand tool carries the catch-all too.
+			params = append(params, adapter.Param{
+				Name:        "args",
+				Type:        "array",
+				Description: "Additional positional arguments, passed in order.",
+			})
 			spec.Tools = append(spec.Tools, adapter.ToolSpec{
 				Name:        sub.Name,
 				Description: sub.Desc,
 				Args:        []string{sub.Name},
-				Params:      flagParams(sub.Flags),
+				Params:      params,
 			})
 		}
 		if len(shape.Global) > 0 {
@@ -342,6 +366,17 @@ func buildGeneratedImport(binary string, o importOptions) (adapter.Spec, []strin
 	if name == "" {
 		name = adapterName(filepath.Base(binary))
 	}
+	// The command is stored the way buildBareImport stores it: a
+	// path-like binary becomes absolute, because the adapter server
+	// resolves a relative command against its own working directory,
+	// not the importer's — ./bin/tool would otherwise probe (or run)
+	// whatever sits at that relative path there.
+	command := binary
+	if strings.ContainsRune(binary, '/') {
+		if abs, aerr := filepath.Abs(binary); aerr == nil {
+			command = abs
+		}
+	}
 	version, verr := binaryVersion(binary)
 
 	var shape *importShape
@@ -361,7 +396,15 @@ func buildGeneratedImport(binary string, o importOptions) (adapter.Spec, []strin
 	}
 	done := false
 	if want == "auto" || want == "completion" {
-		sh, det := completionForBinary(binary, filepath.Base(binary))
+		// Probing executes the binary with positional arguments a
+		// program that has no completion command will read as
+		// operands — `import rm` would run `rm completion fish` and
+		// delete files by those names. So in auto mode the probe is
+		// gated on the binary advertising a completion subcommand in
+		// its own --help (the cobra/clap convention); an explicit
+		// --source completion is the caller's opt-in to probe anyway.
+		probe := want == "completion" || helpAdvertisesCompletion(binary)
+		sh, det := completionForBinary(binary, filepath.Base(binary), probe)
 		done = try("completion", sh, det)
 		if !done && want == "completion" {
 			return adapter.Spec{}, nil, fmt.Errorf("no completion source for %q: no system completion file and the binary printed nothing parseable for `completion fish|zsh|bash`", binary)
@@ -396,7 +439,7 @@ func buildGeneratedImport(binary string, o importOptions) (adapter.Spec, []strin
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
 		Generator:     "mcpx adapter import",
 	}
-	spec, notes, err := shapeToSpec(name, binary, shape, prov)
+	spec, notes, err := shapeToSpec(name, command, shape, prov)
 	if err != nil {
 		return adapter.Spec{}, nil, fmt.Errorf("importing %q from %s: %w", binary, source, err)
 	}
@@ -492,9 +535,9 @@ func sniffCompletionShell(text, path string) string {
 
 // completionForBinary finds a completion for a program: packager-shipped
 // files first (the strongest version of this feature — `import jq`
-// finding a completion nobody has to generate), then the binary's own
-// `completion <shell>` output, the cobra/clap convention.
-func completionForBinary(binary, base string) (*importShape, string) {
+// finding a completion nobody has to generate), then, when probe is
+// allowed, the binary's own `completion <shell>` output.
+func completionForBinary(binary, base string, probe bool) (*importShape, string) {
 	for _, shell := range []string{"fish", "zsh", "bash"} {
 		for _, path := range systemCompletionPaths(shell, base) {
 			b, err := os.ReadFile(path)
@@ -506,6 +549,9 @@ func completionForBinary(binary, base string) (*importShape, string) {
 			}
 		}
 	}
+	if !probe {
+		return nil, ""
+	}
 	for _, shell := range []string{"fish", "zsh", "bash"} {
 		out, err := runCapture(binary, "completion", shell)
 		if err != nil || out == "" {
@@ -516,6 +562,20 @@ func completionForBinary(binary, base string) (*importShape, string) {
 		}
 	}
 	return nil, ""
+}
+
+var completionRowRE = regexp.MustCompile(`(?m)^\s+completion\s{2,}\S`)
+
+// helpAdvertisesCompletion reports whether a binary's --help lists a
+// completion subcommand — the gate for probing `completion <shell>` in
+// auto mode, so import never runs a program with operand-shaped
+// arguments it did not ask for.
+func helpAdvertisesCompletion(binary string) bool {
+	out, err := runCapture(binary, "--help")
+	if err != nil {
+		return false
+	}
+	return completionRowRE.MatchString(out)
 }
 
 func systemCompletionPaths(shell, base string) []string {
