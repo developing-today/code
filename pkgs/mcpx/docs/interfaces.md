@@ -124,8 +124,8 @@ finds saved scripts (recipes): every match carries a `kind` --
 `"tool"`, with a callable, or `"recipe"`, with the script's name
 and placeholders -- and both kinds are ranked and paged together
 in one stable order (CODE-36). The contract a
-script runs under — stdout is the result, `emit()` streams, a
-default export is the entry point — is the
+script runs under — a final expression or stdout is the result,
+`emit()` streams, a default export is the entry point — is the
 [scripts page](./scripts.md#script).
 
 ### The CLI — for people, shells and CI

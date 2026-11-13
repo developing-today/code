@@ -729,3 +729,54 @@ func TestFailureKindPreflightTimeout(t *testing.T) {
 		t.Errorf("preflight timeout: timedOut = %v, kind = %q, error = %q", res.TimedOut, res.ErrorKind, res.Error)
 	}
 }
+
+// CODE-19 (#1937): a snippet's final top-level expression is its
+// result without print/emit; stdout and emits stay separately
+// observable, and the expression outranks the stdout JSON parse.
+func TestFinalExpressionIsTheResult(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	run := func(src string) *execsvc.Result {
+		res, err := svc.RunWith(context.Background(), runner.Options{
+			Source: src, ClientSource: module, Permissions: "all",
+		}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res == nil {
+			t.Fatal("no result")
+		}
+		if res.Error != "" {
+			t.Fatalf("run of %q failed: %s", src, res.Error)
+		}
+		return res
+	}
+
+	// A bare final expression, nothing printed at all.
+	res := run(`1 + 2`)
+	if res.Result != float64(3) {
+		t.Errorf("bare expression: result = %#v, want 3", res.Result)
+	}
+
+	// Prints and emits along the way stay observable under their
+	// own names; the final expression is the result even though
+	// stdout carried JSON of its own.
+	res = run(`console.log(JSON.stringify({ printed: true })); emit("mid"); const out = { answer: 42 }; out`)
+	if got, ok := res.Result.(map[string]any); !ok || got["answer"] != float64(42) {
+		t.Errorf("final expression: result = %#v, want the answer object", res.Result)
+	}
+	if !strings.Contains(res.Stdout, "printed") {
+		t.Errorf("stdout lost the printed JSON: %q", res.Stdout)
+	}
+	if len(res.Emits) != 1 || string(res.Emits[0]) != `"mid"` {
+		t.Errorf("emits = %v, want the single mid emit kept apart", res.Emits)
+	}
+
+	// A declaration tail is not an expression: the stdout rule
+	// still decides.
+	res = run(`const x = JSON.stringify({ via: "stdout" }); console.log(x);`)
+	if got, ok := res.Result.(map[string]any); !ok || got["via"] != "stdout" {
+		t.Errorf("declaration tail: result = %#v, want the stdout object", res.Result)
+	}
+}

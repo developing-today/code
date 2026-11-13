@@ -16,7 +16,12 @@ around it.
 
 ### The contract
 
-- **stdout is the result; stderr is diagnostics.** Use the `log`
+- **A snippet's final expression is its result; otherwise stdout
+  is.** An `mcpx exec` snippet whose last top-level statement is an
+  expression reports that expression's value as the result
+  (CODE-19); a snippet that prints its answer, or one whose final
+  expression is `undefined`, follows the stdout rule instead:
+  stdout is the result, stderr is diagnostics. Use the `log`
   helper rather than `console.error` for diagnostics:
   `log.info("fetched {count} pages", { count: 3 })` — a message
   may carry `{placeholders}` filled from the attributes, and

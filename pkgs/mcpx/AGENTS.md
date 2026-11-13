@@ -50,7 +50,8 @@ active profile is not callable from a script.
 
 ## Script contract
 
-stdout is your result; stderr is diagnostics. Use the log helper rather than
+for an exec snippet a final top-level expression is your result;
+otherwise stdout is your result; stderr is diagnostics. Use the log helper rather than
 `console.error`:
 
     import tools, { log } from "./mcpx-client.ts";

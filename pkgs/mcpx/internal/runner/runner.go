@@ -99,6 +99,14 @@ type Options struct {
 	CollectLogs func(logging.Record)
 	// OnResult receives values a script streamed with emit().
 	OnResult func(logging.Streamed)
+
+	// OnFinal fires when the generated client reports the snippet's
+	// final top-level expression (CODE-19): Run rewrites an inline
+	// source whose last statement is an expression so the client
+	// captures its value, and the record arrives here kept apart
+	// from stdout and from result()/emit() values. Nil drops it,
+	// like OnResult.
+	OnFinal func(logging.Streamed)
 	// OnArtifact receives files a script registered with artifact().
 	OnArtifact func(logging.Artifacted)
 	// OnWarning receives each non-fatal preflight diagnostic, in order,
@@ -507,7 +515,16 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// the same program, the same program run twice reuses the path and
 		// so hits the runtime's type-check cache, and a different program
 		// cannot be mistaken for it.
-		src := opts.Prelude + opts.Source
+		source := opts.Source
+		if strings.Contains(opts.ClientSource, "__mcpxFinal") {
+			// CODE-19: a snippet's final top-level expression is
+			// its result; rewrite it to report through the client
+			// (whose capture global exists only when there is a
+			// client source). The transform abstains on anything
+			// it cannot classify, leaving the source as written.
+			source, _ = rewriteFinalExpression(source)
+		}
+		src := opts.Prelude + source
 		sum := sha256.Sum256([]byte(src))
 		scriptPath = filepath.Join(workDir, "script-"+hex.EncodeToString(sum[:])[:16]+".ts")
 		// Written only when absent or different, so a concurrent run of the
@@ -827,6 +844,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				Collect:     opts.CollectLogs,
 				Result:      opts.OnResult,
 				Artifact:    opts.OnArtifact,
+				Final:       opts.OnFinal,
 			})
 		}()
 		defer func() {

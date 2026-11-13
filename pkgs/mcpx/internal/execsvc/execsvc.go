@@ -1051,6 +1051,15 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			priorLogs(r)
 		}
 	}
+	var finalValue json.RawMessage
+	var finalCaptured bool
+	priorFinal := ropts.OnFinal
+	ropts.OnFinal = func(v logging.Streamed) {
+		finalValue, finalCaptured = v.Value, true
+		if priorFinal != nil {
+			priorFinal(v)
+		}
+	}
 	priorResult := ropts.OnResult
 	ropts.OnResult = func(v logging.Streamed) {
 		res.Emits = append(res.Emits, v.Value)
@@ -1207,6 +1216,20 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			res.Result = parsed
 			stdoutParsed, haveStdoutParsed = parsed, true
+		}
+	}
+
+	// A snippet's final top-level expression is its result
+	// (CODE-19): the runner rewrote it to report through the record
+	// channel, and what it reported outranks the stdout parse --
+	// the expression is the deliberate answer, stdout is what the
+	// script printed along the way. The outcome hooks below still
+	// see (and may replace) this result.
+	if finalCaptured {
+		var v any
+		if err := json.Unmarshal(finalValue, &v); err == nil {
+			res.Result = v
+			stdoutParsed, haveStdoutParsed = nil, false
 		}
 	}
 
