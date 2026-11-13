@@ -19,6 +19,11 @@ test-provider = []
 
 [dependencies]
 anyhow = "1"
+argon2 = "0.6"
+chacha20poly1305 = "0.10"
+rand = "0.10"
+sha2 = "0.11"
+zeroize = "1"
 # Content address of a boundary declaration (boundary.rs, #7782).
 blake3 = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }

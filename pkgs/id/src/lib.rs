@@ -260,8 +260,6 @@ pub mod input_framing;
 pub use id_directory::invite;
 pub use id_directory::invites;
 pub use id_store::issuer_rotation;
-pub(crate) mod key_envelope;
-pub(crate) mod seed_phrase;
 pub mod local;
 pub use id_events::local_claims;
 pub use id_events::local_events;
@@ -382,25 +380,12 @@ use std::path::PathBuf;
 // Constants
 // ============================================================================
 
-/// Filename for the server's Ed25519 keypair.
-///
-/// This file is created in the working directory and contains the private key
-/// used to identify this node. The public key derived from this is the node ID.
-pub const KEY_FILE: &str = ".iroh-key";
 
-/// Filename for the client's Ed25519 keypair.
-///
-/// Used when connecting to remote peers. Separate from the server key to allow
-/// different identities for serving vs. connecting.
-pub const CLIENT_KEY_FILE: &str = ".iroh-key-client";
+
+pub use id_core::{CLIENT_KEY_FILE, KEY_FILE, SERVE_LOCK};
 
 pub use id_store::STORE_PATH;
 
-/// Filename for the serve lock file.
-///
-/// Created when `id serve` is running. Contains the node ID and addresses
-/// for local clients to connect. Automatically removed on clean shutdown.
-pub const SERVE_LOCK: &str = ".iroh-serve.lock";
 
 pub use id_sync::protocol::META_ALPN;
 

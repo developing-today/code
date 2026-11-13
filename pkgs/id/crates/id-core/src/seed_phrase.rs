@@ -30,7 +30,7 @@ fn wordlist() -> Vec<&'static str> {
 /// Encode entropy as a seed phrase: the entropy bits followed by the
 /// first `entropy_bits / 32` bits of its SHA-256, split into 11-bit
 /// word indices.
-pub(crate) fn encode(entropy: &[u8]) -> Result<String> {
+pub fn encode(entropy: &[u8]) -> Result<String> {
     if !ENTROPY_LENGTHS.contains(&entropy.len()) {
         bail!(
             "seed phrase entropy must be one of {ENTROPY_LENGTHS:?} bytes, got {}",
@@ -61,7 +61,7 @@ pub(crate) fn encode(entropy: &[u8]) -> Result<String> {
 /// against the wordlist and the trailing checksum against SHA-256.
 /// Input is normalized the way a person pastes: any whitespace runs
 /// separate words, and case is folded (the wordlist is lowercase).
-pub(crate) fn decode(phrase: &str) -> Result<Zeroizing<Vec<u8>>> {
+pub fn decode(phrase: &str) -> Result<Zeroizing<Vec<u8>>> {
     let words = wordlist();
     let tokens: Vec<&str> = phrase.split_whitespace().collect();
     let total_bits = tokens.len() * 11;
@@ -100,12 +100,12 @@ pub(crate) fn decode(phrase: &str) -> Result<Zeroizing<Vec<u8>>> {
 }
 
 /// Encode the identity key (32 bytes) as its 24-word seed phrase.
-pub(crate) fn encode_key(key: &[u8; 32]) -> Result<String> {
+pub fn encode_key(key: &[u8; 32]) -> Result<String> {
     encode(key)
 }
 
 /// Decode a seed phrase that must carry a full 32-byte identity key.
-pub(crate) fn decode_key(phrase: &str) -> Result<Zeroizing<[u8; 32]>> {
+pub fn decode_key(phrase: &str) -> Result<Zeroizing<[u8; 32]>> {
     let entropy = decode(phrase)?;
     if entropy.len() != 32 {
         bail!(
