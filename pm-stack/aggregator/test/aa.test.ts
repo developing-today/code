@@ -901,6 +901,23 @@ describe("aa chart expand + zoom/pan (#3298)", () => {
     expect(scripts.length).toBeGreaterThan(0);
     for (const script of scripts) expect(() => new Function(script)).not.toThrow();
   });
+
+  test("the enhancer delegates its viewBox math to the tested computations module (#9581)", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    const importMatch = html.match(/import \{([^}]+)\} from "\/assets\/aa-explorer-computations\.js";/);
+    expect(importMatch).not.toBeNull();
+    const imported = (importMatch as RegExpMatchArray)[1]
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    // the zoom/pan behavior the executable tests in
+    // aa-explorer-computations.test.ts drive is the module's — the
+    // page must import it, not carry an inline copy that could drift
+    for (const name of ["parseChartViewBox", "effectiveChartView", "zoomChartView", "panChartView", "resetChartView", "chartClickSuppressed"]) {
+      expect(imported).toContain(name);
+      expect(html).not.toMatch(new RegExp("function " + name + "\\s*\\("));
+    }
+  });
 });
 
 describe("AA_GO_CAPS keys are reachable (#2645)", () => {
