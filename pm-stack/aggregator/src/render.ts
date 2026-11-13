@@ -6532,7 +6532,8 @@ export function projectsBodyHtml(
         ? `<span class="badge ${p.status === "Done" ? "merged" : p.status === "Todo" ? "closed" : "implementing"}">${esc(p.status)}</span>`
         : `<span class="badge">no status</span>`;
       const linksLine = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
-      // #5082: only active work (In Progress / In Review) and epics
+      // #5082: only active work (canonical Project status
+      // In Progress / In Review) and epics
       // render as a full card — status-request control, derived
       // brief, rollups. An epic's rollup / forecast / spend ARE its
       // substance at any status (#3984, #4824) and epics are few
@@ -6550,7 +6551,12 @@ export function projectsBodyHtml(
       // ⚠ clash badge still shows on the compact row, so no signal
       // is lost. Counts, chips and weights use the whole pool either
       // way; the area filter and saved views filter rows the same.
-      const active = p.status === "In Progress" || p.status === "In Review" || p.kind === "Epic";
+      // Action-result badges (a pending / applied status request)
+      // also stay on compact rows — only the form and brief drop.
+      const canonical = canonicalStatusFor("project", p.status);
+      const active = canonical === "In Progress" || canonical === "In Review" || p.kind === "Epic";
+      const objectRef = ghObjectRef(p.ref);
+      const actionBadges = actionBadgesHtml(opts.actionsByObject?.get(objectRef));
       if (!active) {
         const metaCompact = [
           p.area ? `<span class="badge src">${esc(p.area)}</span>` : "",
@@ -6559,7 +6565,7 @@ export function projectsBodyHtml(
           `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
         ].join(" ");
         const compactLinks = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
-        return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${metaCompact}<br>${compactLinks}</div>`;
+        return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${metaCompact}<br>${compactLinks}${actionBadges}</div>`;
       }
       const meta = [
         p.area ? `<span class="badge src">${esc(p.area)}</span>` : "",
@@ -6569,9 +6575,8 @@ export function projectsBodyHtml(
         `<span class="badge src">derived: ${esc(derived)}</span>`,
       ].join(" ");
       // #1154: the status-request control + the store's visible state.
-      const objectRef = ghObjectRef(p.ref);
       const statusCtl = opts.identities
-        ? `${actionBadgesHtml(opts.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, p.ref, p.status ?? null, { identities: opts.identities })}`
+        ? `${actionBadges}${statusRequestHtml(objectRef, p.ref, p.status ?? null, { identities: opts.identities })}`
         : "";
       const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
