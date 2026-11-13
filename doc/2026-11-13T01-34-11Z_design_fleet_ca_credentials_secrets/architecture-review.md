@@ -33,8 +33,14 @@ enough. A root signing operation consumes a `SigningAuthorization` bound to:
 the root key fingerprint or handle; the subject public-key identity and the
 requested signature algorithm; profile and purpose; exact validity; the
 digest of the artifact plan; and any authorized output or escrow
-destinations. It carries an expiry and is single-use by default (bounded-use
-only when the plan enumerates every signature in advance). The signer adapter
+destinations. It carries an expiry and is single-use by default. Bounded use
+is permitted only for an enumerated finite set of `(signer fingerprint/handle,
+subject-key identity, signature algorithm, profile/purpose, exact validity,
+artifact digest)` tuples, with an individual durable consumption record for
+each tuple. The reference bundle can authorize its precise multi-signer
+signature set without an unbounded blanket grant. An uncertain submission is
+reconciled against its transaction receipt before any retry; replay cannot
+authorize a new artifact. The signer adapter
 refuses on any mismatch and returns a receipt naming the transaction it
 executed, so an offline or hardware signer can attest the plan it signed
 without exposing key material. Public inventory lookup, escrow read access
@@ -92,9 +98,26 @@ policy whose residual lost-update window is stated in the plan and receipt.
 Additive operations that cannot destroy a peer value (create a new item,
 write a new immutable history record) are not gated this way. No adapter is
 treated as guarded by default; until evidence exists, BWS, `op` and `bw` are
-all `unguarded`. Synthetic model tests cover every crash boundary and the
-schedule preflight → external edit → apply, whose oracle is that the external
-value stays recoverable and the step reports conflict, not success.
+all `unguarded`.
+
+The required §20.5 in-place stale-password update is not discarded by this
+gate: its synthetic saga preserves dated immutable history first, updates the
+existing native item ID rather than replacing the item, and reads back each
+mutation. Actual unattended operation additionally needs a provider-enforced
+guard, an all-writer serialization contract, or an explicitly approved weaker
+operating policy. A permanently `needs-review` plan does **not** satisfy the
+routine bidirectional-reconciliation acceptance requirement. The weaker policy
+must name the exact adapter, scope, fields, validity window and operator,
+report `applied-with-unprotected-race` rather than unconditional safe success,
+and state that an external edit between preflight and update may be lost.
+History of the preflight value cannot recover an unseen concurrent value.
+
+Synthetic model tests cover every crash boundary. For default guarded mode,
+the schedule preflight → external edit → apply must retain the external value
+and report conflict/refusal. For explicitly weaker mode, the oracle instead
+checks authorization, retained preflight history, native-ID stability,
+readback and the explicit residual-risk receipt; it must never claim to prove
+preservation of the unseen external edit.
 
 **Alternatives.** Timestamp-wins loses concurrent password edits; wholesale
 item replacement destroys native identity/autofill; a centralized universal
