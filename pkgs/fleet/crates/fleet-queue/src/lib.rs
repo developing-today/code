@@ -27,6 +27,7 @@ mod home;
 pub mod log;
 pub mod merge_intent;
 pub mod token_file;
+pub mod work;
 
 #[cfg(feature = "client")]
 pub mod client;
