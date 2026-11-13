@@ -200,6 +200,11 @@ type importFlag struct {
 	// (--flag[=<value>]): the value binds only attached, as
 	// --flag=value, and rendering it separated changes the operation.
 	EqualsOnly bool
+	// Optional records a positional whose source usage marks it
+	// optional (the bracketed [name] form). Only meaningful for
+	// positionals: shapeToSpec emits Required: !Optional for them.
+	// A positional with no bracket evidence stays required.
+	Optional bool
 }
 
 func (f importFlag) flag() string {
@@ -333,7 +338,7 @@ func shapeToSpec(name, command string, shape *importShape, prov *adapter.Provena
 					Name:        pos.Long,
 					Description: pos.Desc,
 					Type:        "string",
-					Required:    true,
+					Required:    !pos.Optional,
 				})
 			}
 			// A subcommand tool without a positional outlet cannot
@@ -366,7 +371,7 @@ func shapeToSpec(name, command string, shape *importShape, prov *adapter.Provena
 				Name:        pos.Long,
 				Description: pos.Desc,
 				Type:        "string",
-				Required:    true,
+				Required:    !pos.Optional,
 			})
 		}
 		params = append(params, adapter.Param{
