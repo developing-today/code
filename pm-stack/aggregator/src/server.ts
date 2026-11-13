@@ -847,20 +847,27 @@ const DECISIONS_PAGE_STYLE = `${ANSWER_PAGE_STYLE}<style>
   .reco-note { color: #3fb950; font-size: 0.9rem; }
   label.own { display: block; margin-top: 0.6rem; color: #9da7b1; font-size: 0.92rem; }
   button.defaults { background: #238636; }
+  .submitted-bar { margin: 0.6rem 0; color: #9da7b1; font-size: 0.95rem; }
+  section.item.submitted { display: none; }
+  body.show-submitted section.item.submitted { display: block; opacity: 0.85; }
+  .group.submitted-group { display: none; }
+  body.show-submitted .group.submitted-group { display: block; }
+  button.submit.top { margin: 0.2rem 0 0.4rem; }
 </style>`;
 
 /** Render GET /decisions/<setId>. The caller has already verified the
  * token; the 403 shape renders nothing about the set. Only open
  * questions are interactive; resolved ones show as a compact recorded
- * line, and an item whose questions are all resolved is not rendered
- * at all — it has gone away, per the spec. */
+ * line. An item whose questions are all resolved renders as a
+ * submitted card, hidden by default (Drew, 2026-11-13): the page's
+ * "Show submitted items" toggle brings it back for review, since the
+ * page has no undo. */
 function renderDecisionsPage(set: DecisionSet): string {
   const progress = decisionSetProgress(set);
   const groups: string[] = [];
   for (const item of set.items) if (!groups.includes(item.group)) groups.push(item.group);
   const itemCard = (item: DecisionItem): string => {
     const open = item.questions.filter((q) => !q.resolution);
-    if (open.length === 0) return "";
     const links = item.links
       .filter((l) => /^https?:\/\//.test(l))
       .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
@@ -886,6 +893,14 @@ function renderDecisionsPage(set: DecisionSet): string {
         return `<div class="done">✓ ${esc(q.question)} — ${what}</div>`;
       })
       .join("");
+    if (open.length === 0) {
+      return `<section class="item submitted" data-ledger="${esc(item.ledgerId)}" data-submitted="1">
+<h2>${esc(item.title)}</h2>
+${links ? `<div class="links">${links}</div>` : ""}
+${resolvedLines}
+<div class="done">✓ Submitted — hidden by default. Tick "Show submitted items" at the top of the page to review it.</div>
+</section>`;
+    }
     const sortedOpen = open
       .map((q, i) => ({ q, i }))
       .sort((a, b) => (a.q.order ?? a.i) - (b.q.order ?? b.i))
@@ -927,25 +942,30 @@ ${inputs}
 </div>`;
       })
       .join("");
+    const submitBtn = (cls: string): string =>
+      `<button class="${cls}" type="button" data-submit-item="${esc(item.ledgerId)}">Submit this item</button>`;
     return `<section class="item" data-ledger="${esc(item.ledgerId)}">
 <label class="bulkchk"><input type="checkbox" class="bulk"> select this item for a bulk action below (defer or request info)</label>
 <h2>${esc(item.title)}</h2>
 ${links ? `<div class="links">${links}</div>` : ""}
 ${resolvedLines}
+${open.length > 1 ? submitBtn("submit top") : ""}
 ${questionBlocks}
-<button class="submit" type="button" data-submit-item="${esc(item.ledgerId)}">Submit this item</button>
+${submitBtn("submit")}
 </section>`;
   };
-  const body = groups
+  const isSubmittedItem = (i: DecisionItem): boolean => i.questions.every((q) => q.resolution);
+    const submittedCount = set.items.filter(isSubmittedItem).length;
+    const body = groups
     .map((g) => {
-      const cards = set.items
+      const groupItems = set.items
         .filter((i) => i.group === g)
         .map((item, i) => ({ item, i }))
         .sort((a, b) => (a.item.order ?? a.i) - (b.item.order ?? b.i))
-        .map((x) => x.item)
-        .map(itemCard)
-        .join("");
-      return cards ? `<div class="group">${esc(g)}</div>${cards}` : "";
+        .map((x) => x.item);
+      const cards = groupItems.map(itemCard).join("");
+      const allSubmitted = groupItems.length > 0 && groupItems.every(isSubmittedItem);
+      return cards ? `<div class="group${allSubmitted ? " submitted-group" : ""}">${esc(g)}</div>${cards}` : "";
     })
     .join("");
   const caughtUp = progress.openQuestions === 0;
@@ -953,7 +973,9 @@ ${questionBlocks}
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Decisions — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
 <body><main><h1>${esc(set.title)}</h1>
 <p class="context">${progress.openQuestions} question${progress.openQuestions === 1 ? "" : "s"} open across ${progress.openItems} item${progress.openItems === 1 ? "" : "s"} · ${progress.answered} answered · ${progress.deferred} deferred · ${progress.infoRequested} sent back for more information so far. Fill in what you want — you can submit a partially-filled item; what you filled in is recorded and the rest stays here.</p>
-${caughtUp ? `<div class="confirm"><p>All caught up — every question in this set has been answered or sent back. Nothing left on this page.</p></div>` : body}
+${caughtUp ? `<div class="confirm"><p>All caught up — every question in this set has been answered or sent back. Nothing left on this page.</p></div>` : ""}
+<div class="submitted-bar" id="submittedBar"${submittedCount === 0 ? " hidden" : ""}><label><input type="checkbox" id="showSubmitted"> Show submitted items (<span id="submittedCount">${submittedCount}</span>)</label></div>
+${body}
 <div class="bar">
 <p class="context">Bulk actions</p>
 <button class="submit" type="button" id="submitAll">Submit everything I've filled in</button>
@@ -1019,9 +1041,21 @@ function applyOpenState(state) {
     if (open.indexOf(block.getAttribute('data-qid')) === -1) block.remove();
   });
   document.querySelectorAll('section.item').forEach(function (card) {
-    if (!card.querySelector('.q')) card.remove();
+    if (card.classList.contains('submitted')) return;
+    if (!card.querySelector('.q')) {
+      card.classList.add('submitted');
+      card.setAttribute('data-submitted', '1');
+      card.querySelectorAll('button.submit').forEach(function (el) { el.remove(); });
+      var bulk = card.querySelector('.bulkchk');
+      if (bulk) bulk.remove();
+      var note = document.createElement('div');
+      note.className = 'done';
+      note.textContent = '✓ Submitted — hidden by default. Tick "Show submitted items" at the top of the page to review it.';
+      card.appendChild(note);
+    }
   });
-  if (!document.querySelector('section.item')) {
+  refreshSubmitted();
+  if (!document.querySelector('section.item:not(.submitted)')) {
     status('All caught up — every question in this set is recorded. You can close this page.');
   }
 }
@@ -1158,6 +1192,21 @@ async function submitDefaults() {
 }
 var defaultsBtn = document.getElementById('submitDefaults');
 if (defaultsBtn) defaultsBtn.addEventListener('click', submitDefaults);
+// --- Submitted items hide by default (Drew, 2026-11-13): the toggle
+// brings them back for review; the count tracks server-rendered
+// submitted cards and cards submitted during this session alike.
+function refreshSubmitted() {
+  var n = document.querySelectorAll('section.item.submitted').length;
+  var bar = document.getElementById('submittedBar');
+  if (bar) bar.hidden = n === 0;
+  var c = document.getElementById('submittedCount');
+  if (c) c.textContent = String(n);
+}
+var showSubmittedBox = document.getElementById('showSubmitted');
+if (showSubmittedBox) showSubmittedBox.addEventListener('change', function () {
+  document.body.classList.toggle('show-submitted', showSubmittedBox.checked);
+});
+refreshSubmitted();
 // --- Draft event reporting (#9335): typed-but-not-submitted changes are
 // events too. Debounced per question (2.5s of inactivity), never per
 // keystroke; the server drafts push remains the durable state copy.
