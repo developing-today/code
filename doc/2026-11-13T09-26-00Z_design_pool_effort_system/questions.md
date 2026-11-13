@@ -67,3 +67,30 @@ second configurable cap on the same counter.
 (openai-plan gpt-6-luna #medium with the @100k policy cap, PR #9384), pinned
 directly as the decision chain's last resort — never through `small` or
 `limited` as a whole (supplement §4: "don't use small").
+
+## Q5 — 2026-11-13 06:55 CT — open-default — who serves Jev (supplement §0 vs the code)
+
+**Observed (V1 decision audit, baseline/v1-decisions-auto.md):** nothing in
+the fork ties the systemone path to `_commandcode`. Jev is served as
+TypeSafe `jev-latest`, OpenCode Zen `jev-1.13-free` / `jev-1.13`, OpenRouter
+`typesafe/jev-1.13`, and Vercel `typesafe-ai/jev`. A live probe of Zen's
+`/v1/systemone` with `jev-1.13-free` returned 200 with a typed answer
+(2026-11-13). Clef (the Cloudflare Workers AI path behind the fork's
+façade) was ruled won't-do in opencode#1651 (2026-11-04).
+
+**Default chosen:** design on the code's facts. Jev's free door is OpenCode
+Zen's promo (the "opencodego free" in brief §1 most plausibly means this),
+followed by Jev's paid doors (TypeSafe / Zen-key / OpenRouter / Vercel), then
+Cloudflare. Command Code is not a Jev door in V1 and is dead anyway. Clef is
+recorded as **reopen-candidate**, not revived: Drew's supplement names it
+(and the Cloudflare included-usage burn), so the V2 design keeps a Clef/
+Workers-AI leg behind a flag, and the decision on reviving opencode#1651 is
+batched as a **RULING** for Drew with the recommendation "revive as a
+budget-capped leg only after the labelled cost-per-correct comparison".
+
+## Q6 — 2026-11-13 06:55 CT — open-default — OpenChamber category `research` pins effort `max`
+
+**Default chosen:** per brief §4 ("until implemented, make xhigh / max /
+ultra / fast all point to high"), V2 treats `max` as an alias of `high`; the
+category config is left as is, and the alias is applied in the effort
+resolver rather than by editing user settings.
