@@ -1,0 +1,320 @@
+[
+  {
+    "id": "FUT-01",
+    "title": "Prove isolated OpenBao Raft lab behavior and recovery",
+    "parent": "#9166",
+    "kind": "research",
+    "source_ranges": [
+      "spec §40.2–40.3",
+      "spec §46 R-SEC-05",
+      "addendum §7",
+      "backend research R-SEC-04",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-OPENBAO-LAB",
+      "SEC-INFRA-NO-HA-CLAIM",
+      "SEC-INFRA-RECOVERY"
+    ],
+    "stage": "V2 synthetic lab",
+    "lifecycle": "Backlog",
+    "urgency": 1400,
+    "depends_on": [],
+    "body": "## Goal / user outcome\nProduce reproducible evidence whether a pinned OpenBao release is a viable future machine-secrets service, without making it a Fleet or production dependency. A three-node local container cluster is a functional Raft experiment only: because all nodes share host/power/kernel/storage failure, it MUST NOT be described as highly available.\n\n## Current evidence / prerequisites\nThe repo has no OpenBao adapter or production service in the intake census (`note.md` §§32–50). Official OpenBao 2.7.x docs describe Raft replication/HA, leader behavior, Shamir per-node unseal, auto-seal lifecycle dependency, audit fail-closed behavior and KV v2 features. The dated addendum §7 requests three local synthetic nodes. No cluster, provider token, real data or live credentials have been used.\n\n## Scope and boundaries\nCreate a disposable, pinned image-digest lab and scripts/config in an isolated, nonproduction location. Use synthetic fixture values only. Do not write production config, repo secrets, real account data, root keys or provider credentials. Do not add Fleet code/adapters, deploy to OCI/Kubernetes, change DNS/trust, or claim uptime. Record image/version, resource budget, host topology and exact commands.\n\n## Experiment and acceptance\n1. Start three Raft nodes with separate data volumes; verify membership, leader and quorum using OpenBao status/API. 2. Exercise successful synthetic KV read/write and policy-denied cross-path read/write. 3. Inject one process loss, restart, network partition, disk-full condition, full-host stop/start and audit-sink outage/hang. 4. Take a snapshot, restore to a clean isolated data directory/cluster, and compare a known synthetic manifest. 5. Record p50/p95/p99 for a bounded fixed workload, CPU/RAM/disk, recovery wall time, lost/duplicated operations and every manual intervention. Acceptance requires reproducible commands, pinned versions, all outcomes and a topology diagram; a whole-host outage MUST demonstrate that the same-host lab is unavailable. No production claim.\n\n## Negative tests / oracle\nWrong token and insufficient policy must be denied; partition without quorum must fail writes rather than report success; corrupted snapshot must be rejected; absent audit sinks must show blocked or explicitly documented behavior; restored state must match fixture hashes/version metadata. Oracle: independent API read-back and hash comparison of synthetic fixtures, plus expected Raft quorum behavior; do not treat process health as data correctness.\n\n## Recovery / rollback\nStop and remove only the disposable lab resources created by this issue. Preserve sanitized logs/config/metrics and snapshot checksums; destroy all synthetic secret values after evidence capture. Rollback is deleting lab artifacts, not changing any user service. Document recovery procedure and restore result.\n\n## Dependencies / decisions\nNo blocking prerequisite. This is research, not deployment approval. Any V3 host, OCI, Kubernetes or production work requires a separate issue and human authorization. Unknowns: actual future host, desired RPO/RTO, budget, operator coverage and release target.\n\n## Priority / size\nUrgency 180 (future exploration; V1 work outranks it), importance medium, complexity very high; recommended V2. Evidence/source links: https://openbao.org/docs/configuration/storage/raft/ ; https://openbao.org/docs/concepts/ha/ ; https://openbao.org/docs/concepts/seal/ ; https://openbao.org/docs/concepts/recovery-mode/ ; https://openbao.org/docs/audit/ .\n\n**Priority semantics:** intrinsic urgency 1400 (Low); separate from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map; do not overwrite intrinsic urgency with queue priority.\n\n## Technical boundary and file ownership\nNo Fleet runtime crate, CLI, config, provider adapter, schedule, DNS or trust-store change is in scope. The issue deliverable is an issue-specific report and sanitized synthetic evidence under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-01/`; do not rewrite this proposal JSON as the result. Data owner is the disposable lab/test harness only. All other credentials, customer records and root material are out of scope. If a go decision recommends implementation, open a separate scoped implementation issue with its own approval.",
+    "urgency_band": "Low",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-02",
+    "title": "Map OpenBao secret, lease, Transit, PKI and SSH capabilities",
+    "parent": "#9166",
+    "kind": "research",
+    "source_ranges": [
+      "spec §§35,40,46 R-SEC-05/R-SEC-10/R-SEC-16",
+      "addendum §7",
+      "backend research R-SEC-04",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-OPENBAO-CAPABILITIES",
+      "SEC-INFRA-LEASE-BOUNDARY",
+      "SEC-INFRA-CRYPTO-AGILITY"
+    ],
+    "stage": "V2 synthetic lab",
+    "lifecycle": "Backlog",
+    "urgency": 1400,
+    "depends_on": [
+      "FUT-01"
+    ],
+    "body": "## Goal\nReturn a version-pinned capability matrix and go/no-go for each OpenBao surface independently; avoid adopting OpenBao wholesale or duplicating Fleet behavior.\n\n## Current evidence\nCurrent official docs describe KV v2 CAS/version/delete, leased dynamic secrets, Transit signing/encryption, PKI dynamic X.509 issuance and SSH certificate/OTP modes. Docs list ML-DSA-44 for Transit signing; this does not establish X.509 encoding, TLS KEX or ML-DSA OCSP support. Fleet currently has no OpenBao adapter (`note.md` §35).\n\n## Scope\nUse only FUT-01 disposable lab and synthetic values. Test KV v2, one selected dynamic engine, Transit Ed25519 and ML-DSA-44 sign/verify, PKI certificate/profile/CRL/OCSP behavior, and SSH certificate constraints. No Fleet implementation, production mounts, root key imports, real certificates or secrets. Pin exact server/API version.\n\n## Acceptance / tests\nFor every capability record supported operations, API path, policy actions, version-specific limitations, payload limits, latency distribution, lifecycle and failure behavior. KV: CAS stale-write rejection and soft-delete/undelete/destroy permission separation. Dynamic engine: obtain, renew, revoke, expire and test downstream invalidation. Transit: independent verify, wrong-message/signature rejection, key rotation/version behavior. PKI: generated chain and profile constraints; check actual OCSP output and ML-DSA behavior rather than assuming. SSH: wrong principal/role must fail verification. Acceptance requires a table with evidence artifact per claim and explicit unsupported entries.\n\n## Oracle / negative cases\nUse independent crypto verifier for signatures/cert chains, API metadata for leases and version state, and policy-denial tests for unauthorized actions. Negative tests include stale CAS, expired/revoked lease, wrong key/message, expired cert, wrong EKU/issuer/principal, unsupported ML-DSA OCSP. Never describe a successful Transit signature as a PQ TLS handshake.\n\n## Boundaries, recovery and rollback\nNo changes outside the disposable lab; preserve sanitized results only, then remove mounts and synthetic secrets. Rollback is lab teardown. Fleet remains owner of canonical credential IDs, cross-provider reconciliation and four-root policy; OpenBao may own only delegated service operation after separate decision.\n\n## Priority / dependencies / unknowns\nDepends FUT-01. Backlog; intrinsic urgency 1400 (Low), queue projection 70; size L, recommended V2. Unknown exact adopted release, required production profiles, expected workload and whether any dynamic engine has sufficient supported plugin maturity. References: https://openbao.org/docs/secrets/kv/ ; https://openbao.org/docs/concepts/lease/ ; https://openbao.org/docs/secrets/transit/ ; https://openbao.org/docs/secrets/pki/ ; https://openbao.org/docs/secrets/ssh/ .\n\n**Priority semantics:** intrinsic urgency 1400 (Low); separate from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map; do not overwrite intrinsic urgency with queue priority.\n\n## Technical boundary and file ownership\nNo Fleet runtime crate, CLI, config, provider adapter, schedule, DNS or trust-store change is in scope. The issue deliverable is an issue-specific report and sanitized synthetic evidence under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-02/`; do not rewrite this proposal JSON as the result. Data owner is the disposable lab/test harness only. All other credentials, customer records and root material are out of scope. If a go decision recommends implementation, open a separate scoped implementation issue with its own approval.",
+    "urgency_band": "Low",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-03",
+    "title": "Compare OpenBao workload bootstrap and authentication methods",
+    "parent": "#9166",
+    "kind": "security review",
+    "source_ranges": [
+      "spec §27.2 and §27.4",
+      "spec §§40,46 R-SEC-10/R-SEC-14",
+      "addendum §7",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-WORKLOAD-AUTH",
+      "SEC-INFRA-LEAST-PRIVILEGE",
+      "SEC-INFRA-SSO-BOUNDARY"
+    ],
+    "stage": "V2 synthetic lab",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [
+      "FUT-01"
+    ],
+    "body": "## Goal\nDetermine whether a future nonproduction workload can authenticate to OpenBao with a short-lived, attributable identity and no baked-in long-lived bootstrap secret. Keep human SSO/OIDC ownership with #9077.\n\n## Current evidence\nOpenBao documents Kubernetes auth using ServiceAccount JWT/TokenReview and AppRole with constrained SecretIDs/response wrapping. SPIRE documents node/workload attestation and SVID delivery. No workload topology exists in the reviewed repo census; no integration was attempted.\n\n## Scope\nIn a disposable synthetic environment, compare Kubernetes auth (including projected short-lived service-account token), JWT/OIDC validation, AppRole with response-wrapped pull SecretID, and TLS client certificate or SPIRE SVID integration only if available. No production identity provider, user account, SSO configuration, real secret, or reusable credential. Do not implement an OIDC issuer or absorb #9077.\n\n## Acceptance\nFor each candidate: draw trust path and principal-to-policy mapping; document issuer/audience/namespace/service-account binding, token TTL/revocation semantics, bootstrap material, renewal, outage and compromise response. Demonstrate a valid workload gets one narrow synthetic path; a different namespace/service account/audience, expired token and revoked identity are denied. Show no static secret in image, repo, argv or environment artifact after login. Include a credential rotation and full bootstrap recovery test. Recommend no-go if identity is merely self-asserted or revocation is outside acceptable window.\n\n## Oracle / negative tests\nAPI policy read on only authorized synthetic path is positive oracle; cross-path and invalid-identity requests must return denied. Record exact auth method configuration and token expiry. Independent Kubernetes TokenReview or SPIRE Workload API evidence verifies identity provenance.\n\n## Boundaries / rollback\nFleet owns mapping of verified workload principal to narrowly scoped grants; OpenBao owns auth role/policy; SPIRE owns attestation if chosen; #9077 owns human SSO/OIDC issuer/client lifecycle. Remove disposable role, tokens, service accounts and test artifacts after capture. No production rollout.\n\n## Priority / dependency / unknowns\nDepends FUT-01. Backlog; intrinsic urgency 1800 (Someday), queue projection 70; size L, V2 research. Unknown future cluster, issuer, trust domain, service identity, and acceptable offline duration. Sources: https://openbao.org/docs/auth/kubernetes/ ; https://openbao.org/docs/auth/approle/ ; https://spiffe.io/docs/latest/spire-about/ ; #9077.\n\n**Priority semantics:** intrinsic urgency 1800 (Someday); separate from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map; do not overwrite intrinsic urgency with queue priority.\n\n## Technical boundary and file ownership\nNo Fleet runtime crate, CLI, config, provider adapter, schedule, DNS or trust-store change is in scope. The issue deliverable is an issue-specific report and sanitized synthetic evidence under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-03/`; do not rewrite this proposal JSON as the result. Data owner is the disposable lab/test harness only. All other credentials, customer records and root material are out of scope. If a go decision recommends implementation, open a separate scoped implementation issue with its own approval.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-04",
+    "title": "Prove OpenBao seal, audit and backup recovery paths",
+    "parent": "#9166",
+    "kind": "test",
+    "source_ranges": [
+      "spec §§40,46 R-SEC-04/R-SEC-05",
+      "addendum §7",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-SEAL-RECOVERY",
+      "SEC-INFRA-AUDIT-CONTINUITY",
+      "SEC-INFRA-RESTORE"
+    ],
+    "stage": "V2 synthetic lab",
+    "lifecycle": "Backlog",
+    "urgency": 1400,
+    "depends_on": [
+      "FUT-01"
+    ],
+    "body": "## Goal / user outcome\nProduce a tested recovery runbook and evidence set for snapshot restoration, sealing/unsealing, audit-device failure and seal-provider loss in the disposable OpenBao lab.\n\n## Deliverable\nA tested recovery runbook and evidence set for snapshot restoration, sealing/unsealing, audit-device failure, and loss of auto-seal dependency in the disposable OpenBao lab.\n\n## Current evidence / scope\nOpenBao docs state Shamir threshold shares are required on each node after restart; auto-unseal depends on its external mechanism/key and recovery shares do not decrypt the data barrier; audit failures can block requests; recovery mode is an expert repair mechanism. No backup/restore of a deployed Fleet service has been performed. Use synthetic lab only. Never capture seal/recovery shares or root tokens in repository artifacts.\n\n## Acceptance\n1. Configure and exercise two audit destinations; stop each separately, then both; hang one to document request blocking. 2. Rotate log sink and confirm uninterrupted identifiable evidence; redact/HMAC synthetic payload according to configuration. 3. Snapshot and restore clean cluster with correct seal method; compare fixture inventory and policies. 4. Simulate unavailable auto-seal dependency, document whether startup/recovery succeeds and exact required external asset. 5. Measure RPO/RTO and hands-on steps. Recovery from snapshot must be demonstrated, not inferred from snapshot command success.\n\n## Negative tests / oracle\nNo request should be claimed audited when both sinks are unavailable; no secret plaintext in logs; incomplete threshold cannot unseal; wrong snapshot/keys must not be silently accepted. Oracle: restored synthetic manifest, policy-denial tests and audit event IDs compared to expected request inventory; explicitly list unaudited system endpoints.\n\n## Boundaries / rollback\nSynthetic only; no production operator tokens, shares or provider credentials. Keep recovery material in ephemeral protected lab handling, not repo. Tear down test cluster after recording sanitized runbook. Rollback is lab teardown; never attempt recovery-mode mutation on any real cluster.\n\n## Priority\nDepends FUT-01. Backlog; intrinsic urgency 1400 (Low), queue projection 70; size L, V2. Open decision: Shamir vs auto-seal under future independent custodians/host. Sources: https://openbao.org/docs/concepts/seal/ ; https://openbao.org/docs/audit/ ; https://openbao.org/docs/concepts/recovery-mode/ .\n\n**Priority semantics:** intrinsic urgency 1400 (Low); separate from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map; do not overwrite intrinsic urgency with queue priority.\n\n## Technical boundary and file ownership\nNo Fleet runtime crate, CLI, config, provider adapter, schedule, DNS or trust-store change is in scope. The issue deliverable is an issue-specific report and sanitized synthetic evidence under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-04/`; do not rewrite this proposal JSON as the result. Data owner is the disposable lab/test harness only. All other credentials, customer records and root material are out of scope. If a go decision recommends implementation, open a separate scoped implementation issue with its own approval.",
+    "urgency_band": "Low",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-05",
+    "title": "Assess OCI Always Free feasibility for a nonproduction OpenBao site",
+    "parent": "#9166",
+    "kind": "research",
+    "source_ranges": [
+      "spec §§40.3,46 R-SEC-05",
+      "addendum §7",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-OCI-COST",
+      "SEC-INFRA-FAILURE-DOMAINS",
+      "SEC-INFRA-BUDGET-GATE"
+    ],
+    "stage": "V3 feasibility; no deployment",
+    "lifecycle": "Backlog",
+    "urgency": 1400,
+    "depends_on": [
+      "FUT-01",
+      "FUT-04"
+    ],
+    "body": "## Goal / user outcome\nDetermine whether OCI Always Free can host a bounded nonproduction OpenBao experiment, from current documented limits and explicit failure-domain accounting. Research only; no account signup, resource creation or deployment.\n\n## Current evidence\nOracle's current Always Free docs state A1 allowance equivalent to 2 OCPU/12 GB total (1,500 OCPU-hours + 9,000 GB-hours/month), home-region scope, one or two A1 instances depending allocation, 200 GB combined boot/block volume and five combined volume backups. Oracle says instances can be reclaimed if CPU p95, network and (A1) memory utilization stay below 20% over seven days. Prior trial docs advertise $300/30 days, not permanent capacity. Tenancy, region, quotas and capacity are unverified.\n\n## Scope / deliverable\nPublish feasibility table for FUT-01 measured resource needs, A1 max two nodes, E2 micro alternatives, boot/storage/backup, networking, region/account/control-plane and costs. Map independent failure domains; explicitly assess whether three-voter quorum can be hosted at all and do not call two nodes a 3-voter HA cluster. Compare basement and small paid VM as estimates. Cite date/URL for every constraint; mark live quota unknown.\n\n## Acceptance / oracle\nResource total arithmetic and a Go/No-go/unknown recommendation. No-go if service plus recovery assets cannot fit published limits or there is no independent failure domain. Oracle: OCI published terms and read-only actual tenancy quota only if available; never infer guaranteed capacity from signup marketing.\n\n## Negative tests\nReject any resource plan over limits, treat idle reclaim as outage possibility, and reject 3-node-HA wording under two-A1 cap. Region-capacity/quota failures remain unknown, not proof of service availability.\n\n## Boundaries / rollback\nNo Terraform/CLI/API provisioning, tokens, IAM, billing changes, public IP or data upload. Draft calculations only; delete if source limits change. Deployment requires separate approval and issue.\n\n## Dependencies / priority / lifecycle\nDepends FUT-01/FUT-04; Backlog, urgency 1400 (Low; queue projection 70), complexity M. Source checked 2026-11-12: https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm and https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier.htm.\n\n**Priority semantics:** intrinsic urgency 1400 (Low); separate from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map; do not overwrite intrinsic urgency with queue priority.\n\n## Technical boundary and file ownership\nNo Fleet runtime crate, CLI, config, provider adapter, schedule, DNS or trust-store change is in scope. The issue deliverable is an issue-specific report and sanitized synthetic evidence under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-05/`; do not rewrite this proposal JSON as the result. Data owner is the disposable lab/test harness only. All other credentials, customer records and root material are out of scope. If a go decision recommends implementation, open a separate scoped implementation issue with its own approval.",
+    "urgency_band": "Low",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-06",
+    "title": "Validate Kubernetes secret and certificate delivery ownership",
+    "parent": "#9166",
+    "kind": "research",
+    "source_ranges": [
+      "spec §§39–40, 45–46 R-SEC-09/R-SEC-13",
+      "addendum §7",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-K8S-DELIVERY",
+      "SEC-INFRA-SINGLE-WRITER",
+      "SEC-INFRA-OPERATOR-MATURITY"
+    ],
+    "stage": "V2 disposable Kubernetes",
+    "lifecycle": "Backlog",
+    "urgency": 1400,
+    "depends_on": [
+      "FUT-01",
+      "FUT-02"
+    ],
+    "body": "## Goal / user outcome\nEstablish which Kubernetes controller, if any, should own delivery of synthetic OpenBao values, a test certificate and trust bundle; prevent overlapping reconcilers and accidental data duplication. This is not a proposal for new Fleet V1 behavior.\n\n## Current evidence and prerequisite state\nPrimary docs describe cert-manager certificate acquisition/renewal, trust-manager bundle distribution, ESO provider-to-Kubernetes Secret synchronization and Secrets Store CSI volume projection. The fetched current ESO support table marks its OpenBao provider alpha; CSI core is stable but optional auto-rotation/sync features are alpha. No cluster or provider deployment has been verified. #9160 PERF-04/PERF-06 own SOPS/age adapter, NixOS provisioning and single-host recovery; consume their evidence rather than repeating those experiments.\n\n## Scope, technical boundary and data owner\nIn a disposable, version-pinned Kubernetes cluster, test synthetic OpenBao data via ESO and CSI; test cert-manager against a synthetic test issuer and trust-manager with a synthetic trust bundle. Use one delivery controller per resource. Fleet owns global credential/replication policy, OpenBao owns provider values/auth, and Kubernetes operators own in-cluster materialization/renewal. No Fleet crate/CLI/config changes; no BWS/1Password, real age identity, production OpenBao, root key, deployment, DNS or trust-store mutation. Evidence location: `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-06/`.\n\n## Acceptance / oracle\nFor each path record image/chart/CRD versions, RBAC, provider stability tier, data copies at etcd/Kubernetes Secret/node filesystem, refresh interval, deletion semantics, outage/stale behavior, pod reload/restart, upgrade/rollback and ownership refs. Perform 20 synthetic rotations and measure source-revision-to-workload update latency (p50/p95); revoke/remove access and report measured propagation bound. Demonstrate exactly one controller owns each target. Oracle is synthetic source revision/hash vs resulting mounted/Secret value, independently verified certificate/bundle, controller status and explicit RBAC decision. No default path selected if evidence fails.\n\n## Negative tests\nWrong ServiceAccount/policy denied; provider outage does not erase last-known fixture unless explicit deletion policy; inaccessible/not-found due scope never becomes deletion; revoked access disappears within the measured bound or the path fails no-go; stale trust bundle and invalid chain rejected; second controller ownership detected as failure.\n\n## Failure, rollback and recovery\nUse only disposable cluster/namespace and synthetic values. Stop controller, remove namespace/charts/CRDs after retaining sanitized report; verify fixture data removed. Any partial deployment or restore uncertainty means mark failed and destroy disposable lab, never touch an existing cluster. Production install needs a separate design and approval.\n\n## Dependencies, priority and unknowns\nDepends on FUT-01/FUT-02 only if an OpenBao provider is tested. Cross-reference #9160 PERF-04/PERF-06; do not duplicate their SOPS/age or NixOS deliverables. Backlog; intrinsic urgency 1400 (Low), queue projection 70; size L, V2. Unknown target Talos/Kubernetes versions, actual cluster topology and workload reload behavior. Sources checked 2026-11-12: https://cert-manager.io/docs/ ; https://cert-manager.io/docs/trust/trust-manager/ ; https://external-secrets.io/latest/introduction/stability-support/ ; https://secrets-store-csi-driver.sigs.k8s.io/ .\n\n**Priority semantics:** urgency is separate from importance, hard blocking, stage and dispatch directive; queue projection 70 does not replace intrinsic score.\n\n## File/interface boundary\nNo Fleet runtime files change. Results and sanitized fixtures go under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-06/`; this packet remains the proposal, not a test-result location.\n\n## Technical boundary and file ownership\nNo Fleet runtime crates, CLI, production config, provider adapters, schedules, DNS, trust store, or external infrastructure are changed by this research. Store only sanitized issue-specific report and synthetic test receipts under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-06/`; do not store secret values, tokens, root keys or recovery shares. Any implementation recommendation requires a distinct issue and relevant approval.",
+    "urgency_band": "Low",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-07",
+    "title": "Choose GitOps and infrastructure control-plane boundaries",
+    "parent": "#9166",
+    "kind": "design",
+    "source_ranges": [
+      "spec §§45–46 R-SEC-12",
+      "backend research §Upcoming infrastructure investigation",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-GITOPS-BOUNDARY",
+      "SEC-INFRA-CONTROL-PLANE-OWNERSHIP"
+    ],
+    "stage": "V2/V3 design",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [],
+    "body": "## Goal\nProduce one decision record for prospective Cozystack/Talos management and tenant clusters specifying which system owns host config, GitOps reconciliation, CI and virtualization. Do not install any control plane.\n\n## Evidence / scope\nBackend dossier recommends evaluating Cozystack Flux/Helm vs Argo CD and clarifies Tekton is primarily pipelines/CI. Existing repo evidence does not verify a ready cluster, site topology or current Cozystack installation. Inventory current NixOS authority and existing CI only; no claims of deployed cluster without evidence.\n\n## Acceptance\nCompare Flux+Helm baseline and Argo CD on bootstrap, drift, RBAC/tenancy, dependency ordering, rollback, secrets decryption, cluster failure and upgrade burden. Place Tekton strictly in pipeline category and compare against existing CI rather than as equivalent GitOps tool. State one writer/source of truth per resource; map Fleet, NixOS, cluster operator, certificate controller and cloud IaC responsibilities. Include a failure-mode diagram and explicit no-go conditions.\n\n## Tests / oracle\nUse a table of concrete lifecycle scenarios (bootstrap, drift, operator outage, deleted resource, rollback) and verify documented behavior from first-party docs; a claim without primary-source citation is marked unverified. No cluster tests unless a separate disposable-lab issue authorizes.\n\n## Boundaries / rollback\nDocumentation/design only: no repo config mutation, cluster access or deployment. No rollback required. Preserve NixOS host authority; mise is developer tooling, not host config.\n\n## Priority / unknowns\nBacklog, urgency 1800 (Someday), queue projection 70, complexity high; separate from importance/blocking/stage. Unknown current infrastructure and operator capacity. Sources: https://github.com/cozystack/cozystack/blob/main/GENERAL_TECHNICAL_REVIEW.md ; https://fluxcd.io/ ; https://argo-cd.readthedocs.io/ ; https://tekton.dev/ .\n\n**Priority semantics:** intrinsic urgency 1800 (Someday); separate from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map; do not overwrite intrinsic urgency with queue priority.\n\n## Technical boundary and file ownership\nNo Fleet runtime crate, CLI, config, provider adapter, schedule, DNS or trust-store change is in scope. The issue deliverable is an issue-specific report and sanitized synthetic evidence under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-07/`; do not rewrite this proposal JSON as the result. Data owner is the disposable lab/test harness only. All other credentials, customer records and root material are out of scope. If a go decision recommends implementation, open a separate scoped implementation issue with its own approval.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-08",
+    "title": "Determine whether attested workload identity or service mesh is warranted",
+    "parent": "#9166",
+    "kind": "research",
+    "source_ranges": [
+      "spec §§27.2–27.4, 46 R-SEC-10/R-SEC-14",
+      "addendum §7",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-WORKLOAD-IDENTITY",
+      "SEC-INFRA-MESH-NEED",
+      "SEC-INFRA-IDENTITY-BOUNDARY"
+    ],
+    "stage": "V2 synthetic lab; V3 only by approval",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [],
+    "body": "## Goal\nDecide whether SPIRE/SPIFFE and/or a service mesh adds a demonstrated workload-identity/security benefit for a defined Fleet service, or should be deferred. Do not install production mesh.\n\n## Current evidence\nSPIRE's official project docs describe node/workload attestation and SVID issuance. SPIFFE federation spec makes endpoint URL, profile and trust-domain binding explicit and directional. Tailscale identity-based connectivity is a separate access plane; membership does not itself authorize secret access. No workload topology or service-mesh need is verified.\n\n## Experiment / acceptance\nFor a disposable two-service synthetic application, model a static-token baseline and compare SPIRE-issued X.509-SVID/JWT-SVID plus one candidate mesh only if useful. FUT-03/FUT-06 results may inform configuration choices but are optional context, not prerequisites; this experiment can proceed with fake principals and an explicitly defined synthetic workload. Define attestation inputs, SPIFFE ID, issuer/bundle trust, authorization mapping, rotation TTL, revocation bound, control-plane outage, bootstrap and multi-domain trust. Prove unrelated workload cannot obtain secret or impersonate other identity. Measure resource and operator burden. Decision must identify a concrete service and user outcome; otherwise recommend defer.\n\n## Negative tests / oracle\nWrong node/workload selector, forged SPIFFE ID, wrong trust domain, stale bundle, expired SVID and compromised service identity denied. Oracle: verifier's identity assertion tied to attestation evidence, not workload self-claim; authorization policy separately denies unauthorized resource.\n\n## Boundaries / rollback\nNo actual Tailscale/Teleport policy change, OIDC/SSO setup, production cluster, credential or public trust change. #9077 owns human SSO/OIDC; Fleet owns grant mapping; SPIRE owns attestation. Destroy synthetic cluster resources.\n\n## Priority\nNo hard dependencies. Optionally consume FUT-03/FUT-06 evidence; do not block this synthetic workload comparison on those studies. Backlog; urgency 1800 (Someday), queue projection 70, complexity L; separate from importance/blocking/stage. Sources: https://spiffe.io/docs/latest/spire-about/ ; https://spiffe.io/docs/latest/spiffe-specs/spiffe_federation/ ; https://tailscale.com/kb/ .\n\n**Priority semantics:** intrinsic urgency 1800 (Someday); separate from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map; do not overwrite intrinsic urgency with queue priority.\n\n## Technical boundary and file ownership\nNo Fleet runtime crate, CLI, config, provider adapter, schedule, DNS or trust-store change is in scope. The issue deliverable is an issue-specific report and sanitized synthetic evidence under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-08/`; do not rewrite this proposal JSON as the result. Data owner is the disposable lab/test harness only. All other credentials, customer records and root material are out of scope. If a go decision recommends implementation, open a separate scoped implementation issue with its own approval.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-09",
+    "title": "Specify directed site federation and replication policy model",
+    "parent": "#9166",
+    "kind": "test",
+    "source_ranges": [
+      "spec §§20, 36–38, 46 R-SEC-03/R-SEC-05/R-SEC-17",
+      "addendum §§1,8",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-FED-RECONCILIATION-INVARIANTS",
+      "SEC-FED-LEASE-NOT-STATIC",
+      "SEC-FED-OUTAGE-NOT-DELETE"
+    ],
+    "stage": "V2 model/test before provider adapter",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [],
+    "body": "## Goal / user outcome\nDecide whether independent OpenBao/Fleet sites should exchange trust bundles, static-secret replicas or neither, with directed authorization and explicit failure behavior. This is a V4 federation policy design, not another reconciliation engine.\n\n## Current evidence\nFleet reconciliation work is already decomposed under #9159 SEC-02/03 and REC-01–09 (opaque logical IDs, revision guards, three-way planning, incomplete inventory, saga/journal). PERF-02 under #9160 owns cache freshness. #6767 remains open for deployment/canary of mitigation PR #8491; neither deployment nor canary is authorized here. SPIFFE federation is directional and requires explicit trust-domain/endpoint/profile configuration. No multi-site deployment is verified.\n\n## Scope / deliverable\nSpecify graph schema for sites, administrative/failure domains, trust relationships, allowed data classes and direction; compare read-only SPIFFE bundle federation, one-way encrypted archive distribution and explicit static-secret replication. Distinguish identity/trust federation from secret value replication, and root signing from escrow. Define revoke/remove trust, site partition, compromised site, stale replica, approval and reconciliation integration points. Reference SEC/REC issue IDs for state-machine behavior; do not recreate them. No live site/provider.\n\n## Acceptance / falsifiable gate\nPublish state model and matrix for bootstrap, add/remove trust, rotate, partition, concurrent divergent change, provider outage, site compromise, restore, revocation and stale/offline verifier. For each, specify accept/deny/queue, owner, observable receipt and maximum risk window or say unknown. Run >=10,000 generated graph/event sequences; invariants: no implicit mutual trust, no default all-provider replication, root keys excluded from general graph, revocation removes access as modeled, unauthorized principal never obtains protected class. Go only when all transitions have explicit owner and tested recovery.\n\n## Negative tests / oracle\nWrong trust domain/profile, endpoint substitution, overbroad/cyclic trust, replay, revoked site, unauthorized write despite permitted public read, and admin compromise must not expand privileges. Oracle: directed graph/reference policy model and exact authorization outcomes.\n\n## Boundaries / rollback\nDesign/model only; no production replication, multi-site OpenBao config, DNS/trust change, timer or root escrow. Rollback is reject proposed graph revision and retain last reviewed policy; no destructive operation.\n\n## Dependencies / priority / lifecycle\nReferences #9159 SEC-02/03, REC-01–09 and #9160 PERF-02; does not duplicate them. Depends FUT-08 only if workload identity is selected. Backlog, urgency 1800 (Someday; queue projection 70), complexity XL/V4, nonblocking. Sources: spec §§27.2/27.4/36/46; https://spiffe.io/docs/latest/spiffe-specs/spiffe_federation/ ; https://openbao.org/docs/concepts/lease/ .\n\n**Priority semantics:** intrinsic urgency 1800 (Someday); separate from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map; do not overwrite intrinsic urgency with queue priority.\n\n## Technical boundary and file ownership\nNo Fleet runtime crate, CLI, config, provider adapter, schedule, DNS or trust-store change is in scope. The issue deliverable is an issue-specific report and sanitized synthetic evidence under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-09/`; do not rewrite this proposal JSON as the result. Data owner is the disposable lab/test harness only. All other credentials, customer records and root material are out of scope. If a go decision recommends implementation, open a separate scoped implementation issue with its own approval.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-10",
+    "title": "Evaluate client-encrypted R2 continuity archive without deployment",
+    "parent": "#9166",
+    "kind": "security review",
+    "source_ranges": [
+      "spec §§41,46 R-SEC-06",
+      "addendum §§5,8",
+      "backend research Path D/R-SEC-06",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-R2-ENCRYPTED-ARCHIVE",
+      "SEC-INFRA-NO-CUSTOM-VAULT-WITHOUT-NEED",
+      "SEC-INFRA-OFFLINE-RESTORE"
+    ],
+    "stage": "V2 local synthetic design/prototype only",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [],
+    "body": "## Goal / user outcome\nDetermine whether Cloudflare R2 could serve as a narrow client-encrypted offsite artifact sink, not a custom secret store/vault. No account or object is created.\n\n## Current evidence\nR2 is object storage; current S3 compatibility docs explicitly say conditional PutObject and CompleteMultipartUpload headers are atomic against committed bucket state. D1 read replicas are asynchronous; Sessions API gives sequential consistency for a session. These primitives do not create cross-service Worker+D1+R2 transactions or secret policy, leases, and recovery ownership. R2 costs/free quotas are finite. No account or user plan checked.\n\n## Scope / deliverable\nCompare against #9160 PERF-06 offline SOPS/age recovery. Design local synthetic artifact/manifest format, client-side envelope encryption, recipient/key rotation, immutable object version, signed manifest, anti-replay, object preconditions, account loss, authorization boundary, backup/restore and cost. Specify which operation uses conditional S3 `If-Match`/`If-None-Match` and test expected outcomes; do not claim there is no CAS at object level, or that single-object conditionals provide multi-object transaction consistency. No bucket, Worker, D1, token, upload or deployment.\n\n## Acceptance / oracle\nOffline clean-host restore succeeds for selected synthetic fixture; substituted/old manifest and wrong key fail. Inject concurrent conditional writes and confirm at most intended precondition succeeds. Inject missing object, partial multipart upload, account/network loss and D1/R2 cross-service partial effects; recovery never reports globally committed without readback/receipt. Cost model uses dated official rates and workload assumptions. Recommend go only if an actual gap remains after PERF-06 and separate keys/restore ownership are feasible.\n\n## Negative tests\nBitflip, key swap, manifest replay, stale object version, failed multipart, unauthorized principal and provider outage fail closed or expose explicitly selected last-known artifact. Oracle: independent decrypt/signature verifier against expected fixture hashes and conditional-write fault tests.\n\n## Boundaries / rollback\nNo real secrets/root keys, upload, Worker deployment, IAM or billing change. Remove local fixtures after report. R2 remains unapproved for root escrow. A later implementation requires separate security review and issue.\n\n## Dependencies / priority / lifecycle\nReferences #9160 PERF-06 (do not duplicate SOPS/age recovery); depends only on proof that its required offline continuity gap remains. Backlog, urgency 1800 (Someday; queue projection 70), complexity XL. Sources checked 2026-11-12: https://developers.cloudflare.com/r2/api/s3/api/ ; https://developers.cloudflare.com/r2/pricing/ ; https://developers.cloudflare.com/d1/best-practices/read-replication/ ; https://developers.cloudflare.com/secrets-store/manage-secrets/ .\n\n**Priority semantics:** intrinsic urgency 1800 (Someday); separate from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map; do not overwrite intrinsic urgency with queue priority.\n\n## Technical boundary and file ownership\nNo Fleet runtime crate, CLI, config, provider adapter, schedule, DNS or trust-store change is in scope. The issue deliverable is an issue-specific report and sanitized synthetic evidence under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-10/`; do not rewrite this proposal JSON as the result. Data owner is the disposable lab/test harness only. All other credentials, customer records and root material are out of scope. If a go decision recommends implementation, open a separate scoped implementation issue with its own approval.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-11",
+    "title": "Define access-plane boundaries for Tailscale, Teleport and Cloudflare Access",
+    "parent": "#9166",
+    "kind": "design",
+    "source_ranges": [
+      "spec §§27.4, 46 R-SEC-14",
+      "addendum §§7–8",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-ACCESS-PLANE",
+      "SEC-INFRA-SECRET-AUTHZ-SEPARATION",
+      "SEC-INFRA-SSO-BOUNDARY"
+    ],
+    "stage": "V2 threat model",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [],
+    "body": "## Goal\nDeliver a threat model and decision matrix for network/access products versus secret authorization, without changing a tailnet, Teleport deployment or Cloudflare Access policy.\n\n## Current evidence\nSpecification §27.4/§46 and backend research distinguish connectivity/bastion from secret source. Tailscale documentation describes an identity-based connectivity platform; account tier and exact machine/workload identity requirements are not verified. #9077 owns SSO/OIDC.\n\n## Acceptance\nFor each candidate map human principal, device identity, workload identity, network path, OpenBao/Fleet authorization, revocation, emergency access and audit evidence. Compare network-level access with OAuth sender-constrained tokens: RFC 9700 recommends sender-constraining where practical and RFC 9449 DPoP binds a token to key possession at the HTTP layer; neither substitutes for resource authorization or a network access plane. Keep SSO/OIDC issuer and relying-party lifecycle in #9077. Include a concrete sequence where authorized VPN access is insufficient for secret read and prove secret server independently denies unauthorized principal. Cite only current product-primary docs for feature claims; unknown commercial plan features remain unknown. Decision explains if any access plane solves an evidenced requirement; otherwise no-go/defer.\n\n## Negative tests / oracle\nTailnet member with no OpenBao/Fleet policy must be denied; disabled user/device must lose path/access according to measured semantics; emergency operator cannot bypass audit silently. Oracle is explicit authorization decision and access log, not network reachability alone.\n\n## Boundaries / rollback\nDesign only. No account signup, login, ACL edit, policy change, agent credential or external service call. #9077 owns SSO/OIDC, Fleet owns secret grants, access product owns connectivity. No rollback required.\n\n## Priority\nBacklog, urgency 1800 (Someday), queue projection 70, complexity L; depends on an evidenced use case. Sources checked 2026-11-12: https://tailscale.com/kb/ ; https://goteleport.com/docs/ ; https://developers.cloudflare.com/cloudflare-one/ ; https://datatracker.ietf.org/doc/rfc9700/ ; https://datatracker.ietf.org/doc/rfc9449/ .\n\n**Priority semantics:** intrinsic urgency 1800 (Someday); separate from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map; do not overwrite intrinsic urgency with queue priority.\n\n## Technical boundary and file ownership\nNo Fleet runtime crate, CLI, config, provider adapter, schedule, DNS or trust-store change is in scope. The issue deliverable is an issue-specific report and sanitized synthetic evidence under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-11/`; do not rewrite this proposal JSON as the result. Data owner is the disposable lab/test harness only. All other credentials, customer records and root material are out of scope. If a go decision recommends implementation, open a separate scoped implementation issue with its own approval.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-12",
+    "title": "Assess OCapN, iroh and Fleet id capability-seam convergence",
+    "parent": "#9166",
+    "kind": "research",
+    "source_ranges": [
+      "spec §15.2/§15.3",
+      "spec §27.4 item 3 and §27.5 OCapN/iroh prompt",
+      "spec §46 R-SEC-11",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-OCAPN-OPTIONAL",
+      "SEC-INFRA-ID-SEPARATION",
+      "SEC-INFRA-NO-UPSTREAM-AI-CONTRIBUTION"
+    ],
+    "stage": "V4 research / local synthetic prototype only",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [],
+    "body": "## Goal / user outcome\nDetermine whether a narrow object-capability transport integration among existing Fleet `id`/iroh identities and a future OCapN implementation solves a concrete cross-site agent/workload grant problem. Do not implement a new capability protocol or merge repositories.\n\n## Current evidence\nSpec §27.4 calls OCapN experimental/pre-standard and explicitly distinguishes authentication keys, capabilities, policy and transport; it notes upstream restrictions on AI contributions to official spec/tooling. `pkgs/id` owns an existing iroh application identity; generator proposal GEN-06 owns Fleet's versioned native iroh adapter and GEN-10 owns capability registries. Those owners remain authoritative; no OCapN feature or federation deployment is verified.\n\n## Scope / deliverable\nRead current OCapN primary specifications/project docs and actual Fleet `id` API. Map CapTP, netlayers, locators, third-party handoff, attenuation, revocation, identity and policy seams. Compare: no integration; iroh transport adapter only; OCapN-compatible adapter; existing authenticated RPC. Read related findings from FUT-08/FUT-09 if available, but these are soft context, not prerequisites; the prototype research can proceed with published specs and fake principals alone. Produce one small local synthetic prototype only if a stable independent implementation exists. Do not submit AI-generated material to OCapN official spec/tooling. No production transport/network, signing key or capability grant.\n\n## Acceptance / falsifiable gate\nDeliver threat model and sequence diagram; typed separation of Fleet logical ID, iroh EndpointId, principal, bearer capability, authorization policy and transport; one synthetic delegated capability can be attenuated and revoked without making identity key globally powerful. Independent test denies replay, expired/revoked capability, wrong audience/object, transport identity without capability, capability without expected principal, and forged endpoint binding. If no mature implementation or concrete use case, mark parked/no-go with exact blocker and no adapter proposal.\n\n## Oracle / rollback\nOracle: reference capability policy model plus independent protocol implementation or spec test vectors. Stop prototype and delete synthetic key/state; no upstream submissions or Fleet changes. Rollback restores no-integration design.\n\n## Dependencies / priority\nCoordinate with #2056/Fleet `id` and generator proposals GEN-06/GEN-10; depends on FUT-08/09 only if workload/site identity is chosen. Backlog, urgency 1800 (Someday; queue projection 70), complexity XL. Sources: spec §27.4 and https://ocapn.org/ ; https://github.com/ocapn/ocapn ; `pkgs/id` reviewed at implementation start.\n\n**Priority semantics:** intrinsic urgency 1800 (Someday); separate from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map; do not overwrite intrinsic urgency with queue priority.\n\n## Technical boundary and file ownership\nNo Fleet runtime crate, CLI, config, provider adapter, schedule, DNS or trust-store change is in scope. The issue deliverable is an issue-specific report and sanitized synthetic evidence under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-12/`; do not rewrite this proposal JSON as the result. Data owner is the disposable lab/test harness only. All other credentials, customer records and root material are out of scope. If a go decision recommends implementation, open a separate scoped implementation issue with its own approval.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "FUT-13",
+    "title": "Test cross-source offline continuity under independent and common-mode failures",
+    "parent": "#9166",
+    "kind": "research+security-review+test",
+    "source_ranges": [
+      "spec §15.3 encrypted backup/continuity",
+      "spec §27.3 item 6 and §27.4 item 10",
+      "spec §46 R-SEC-03/R-SEC-04/R-SEC-06",
+      "addendum §§4–5,7–8",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "SEC-INFRA-CROSS-SOURCE-CONTINUITY",
+      "SEC-INFRA-RECOVERY-INDEPENDENCE",
+      "SEC-INFRA-NO-ROOT-REPLICATION"
+    ],
+    "stage": "V2 read-only model/mock experiment; no host restore or provider connection",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70,
+    "depends_on": [],
+    "body": "## Goal / user outcome\nFind common-mode recovery failures across modeled provider, encrypted deployment artifact and future service dependencies without building another cache/provider. The output is a failure-dependency model, not a claim that a cold-host restore has been executed.\n\n## Current evidence\n#9160 PERF-04 owns Fleet's SOPS/age adapter; PERF-06 owns NixOS provisioning, recipient lifecycle and single-host offline recovery. #9163 ROOT-09/ROOT-10 own closed root escrow adapter/recovery policy; #9158 SEC-02 owns credential classification; #9159 owns cross-provider reconciliation/journal. None is duplicated here. No real source access, host restore, provider outage exercise or root operation is authorized. R2 object conditionals are not cross-service transactions; OpenBao seal/recovery has its own key dependency.\n\n## Scope / deliverable\nProduce a directed failure-dependency graph and mock state machine for one synthetic non-root `deployment-snapshot` record. Model sources: provider A/B (BWS/OP-shaped fake), local age/SOPS ciphertext+recipient, optional OpenBao KV+seal identity, optional R2 object+account identity. Each fake records independent service, auth, key-custody, host, site and admin failure domains. Generate scenarios for each service outage, provider-auth/IdP outage, laptop/storage loss, age-recipient loss, seal backend loss, remote account outage, and paired failures sharing one recovery credential. Reuse #9160 PERF-04/PERF-06 results as optional inputs when present; absent result is an explicit evidence gap, not a prerequisite. Do not add resolver/cache, adapter, NixOS provisioning, scheduler, account credentials, host restore, cloud upload or production test.\n\n## Acceptance / falsifiable oracle\nRun at least 10,000 generated dependency/fault sequences against an explicit reference model. For each, output reachable authorized synthetic artifact states, shared dependencies, and whether the approved class would be available; a missing edge/key/auth dependency must change outcome from recoverable to unavailable. Invariants: two nominal copies sharing auth/key/host are not called independent; no root/recovery class enters the model; stale copies never become authoritative or write back; unauthorized class remains denied; no undocumented dependency is marked satisfied. Oracle: graph reachability plus independent policy/reference state machine, with minimized counterexamples. If the graph has no independent authorized path, report no-go and identify the exact dependency to separate; do not claim measured RTO or actual restore.\n\n## Negative tests\nRemove each decryption recipient, provider-auth identity, host, seal key, bucket/account, and metadata index independently and in paired combinations; assert availability status matches reference graph. Replayed older artifact cannot become current; missing or incomplete policy is unavailable, not success. No provider request or actual key is used.\n\n## Technical boundary and file ownership\nNo Fleet crate/CLI/config, provider adapter, cache, database, timer, NixOS module, cloud resource, DNS, trust-store or root-custody change. Output only a model/report and synthetic receipts under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/FUT-13/`; do not rewrite this packet as results. #9160 PERF-04/06, #9158 SEC-02, #9159 REC-* and #9163 ROOT-09/10 remain owners of their interfaces and implementation.\n\n## Failure, rollback and recovery\nModel/test failure is recorded with a minimized sequence; no external state exists to roll back. Remove synthetic fixtures after report or retain only nonsecret graph and minimized model cases. A later real host-restore test requires a separate explicitly authorized implementation/operations issue.\n\n## Dependencies, priority and unknowns\nNo hard proposal dependencies: FUT-04/FUT-10 and #9160 PERF-04/PERF-06 are optional evidence consumers if already complete, not blockers. Backlog; intrinsic urgency 1800 (Someday), queue projection 70, complexity L, V2. Unknown which actual non-root records need offline continuity, acceptable recovery time and independent custodians. Sources: spec §15.3 and §46 R-SEC-03/04/06; addendum §§4, 7–8; https://getsops.io/docs/ ; https://openbao.org/docs/concepts/seal/ ; https://developers.cloudflare.com/r2/api/s3/api/ .\n\n**Priority semantics:** urgency is separate from importance, hard blocking, stage and dispatch directive; queue projection 70 does not replace intrinsic score."
+  }
+]

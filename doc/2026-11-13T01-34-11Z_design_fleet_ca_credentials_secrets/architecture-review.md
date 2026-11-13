@@ -51,6 +51,15 @@ Negative tests: ambient discovery, signer substitution, changed plan digest,
 wrong purpose, expired grant, replayed grant, and a signer handle presented
 as an ordinary secret reference.
 
+Ceremony/key-generation/storage approval is distinct from authorization of
+an exact signature. For a newly generated subject, first obtain the bounded
+generation/custody approval, prepare the key and its public SPKI, reserve a
+serial durably, and freeze the exact TBS/signature tuple plan; only then can
+the signature grant bind its final bytes. A dry run may describe estimated
+work with non-executable placeholders, but cannot issue a final signature
+authorization before the SPKI, serial and TBS are known. Burned serial gaps
+are acceptable; silently changing a previously authorized tuple is not.
+
 **Alternatives.** One universal provider object is initially simpler but
 creates confused-deputy and future-provider expansion risks. Independent
 unrelated tools avoid coupling but duplicate policy and break library/CLI
@@ -178,6 +187,20 @@ from TLS presentation. AIA is a best-effort aid, not a universal path-search
 oracle. Revocation is indexed by actual signing issuer/key and serial, not
 the human issuer-set name. Cross variants are distinct certificates with
 distinct issuer/serial identities.
+
+**Publication identity is not frozen revocation state.** Certificates and
+archived numbered CRLs have immutable bytes. An embedded CDP must instead
+remain a durable per-signing-key/generation current-CRL endpoint: its signed
+content or controlled alias advances monotonically as revocations and
+refreshes occur, without changing the authority it represents. Pointing a
+long-lived certificate only at its initial immutable empty CRL would make
+future revocations invisible and is forbidden. Current-CDP cache policy
+must permit refresh before `nextUpdate`; it is not the immutable-object
+cache policy. Test initial empty CRL → revoke → publish newer CRL → fetch
+the **original embedded CDP** on every selected mirror → verify the new
+number, signature, validity and revoked serial. A stable endpoint never
+silently switches to an unrelated key/generation. This follows spec §4.1's
+durable-alias exception and §4.3's required subsequent CRL updates.
 
 **Alternatives.** Roots-only is retained for ordinary future profiles because
 direct variants add revocation/publication burden. It cannot replace the
