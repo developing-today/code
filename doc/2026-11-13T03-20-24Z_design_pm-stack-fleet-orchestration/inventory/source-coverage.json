@@ -1,0 +1,70 @@
+{
+  "validation": "mechanical source-occurrence preservation only; not an atomic requirement or implementation/issue coverage claim",
+  "source_coverage": {
+    "01_handoff_pm_stack_fleet_orchestration.md": {
+      "sha256_repo_bytes": "e293349ec31e997ac3330d8df947f121e8aba537477b1bfd6e6f8290b85675c0",
+      "bytes": 19465,
+      "characters": 19422,
+      "lines": 131,
+      "unit_count": 166,
+      "coverage_method": "all non-whitespace spans segmented on sentence punctuation/newlines; original byte/character spans retained for flattened sources",
+      "sha256_imported_export_as_recorded_in_note": "e293349ec31e997ac3330d8df947f121e8aba537477b1bfd6e6f8290b85675c0"
+    },
+    "02_charter_v1_1.md": {
+      "sha256_repo_bytes": "293925e58f5b19f319ec494665ec7646d36f9bdb1f823501ed8211ad8dfd9136",
+      "bytes": 23884,
+      "characters": 23780,
+      "lines": 205,
+      "unit_count": 253,
+      "coverage_method": "all non-whitespace spans segmented on sentence punctuation/newlines; original byte/character spans retained for flattened sources",
+      "sha256_imported_export_as_recorded_in_note": "293925e58f5b19f319ec494665ec7646d36f9bdb1f823501ed8211ad8dfd9136"
+    },
+    "03_full_orchestration_proposal.md": {
+      "sha256_repo_bytes": "7d24690d14409e4dc32876a50d1a7ac19fe3599b0ecaed7ae909009baec695d1",
+      "bytes": 60023,
+      "characters": 59975,
+      "lines": 2487,
+      "unit_count": 1776,
+      "coverage_method": "all non-whitespace spans segmented on sentence punctuation/newlines; original byte/character spans retained for flattened sources",
+      "sha256_imported_export_as_recorded_in_note": "7d24690d14409e4dc32876a50d1a7ac19fe3599b0ecaed7ae909009baec695d1"
+    },
+    "04_recovered_original_combined_design.md": {
+      "sha256_repo_bytes": "6607fba35aee81e7e4e521e8ff7cb6ee31280823c667b9c22f3766fd30edff86",
+      "bytes": 83971,
+      "characters": 83878,
+      "lines": 15,
+      "unit_count": 1311,
+      "coverage_method": "all non-whitespace spans segmented on sentence punctuation/newlines; original byte/character spans retained for flattened sources",
+      "sha256_imported_export_as_recorded_in_note": "6607fba35aee81e7e4e521e8ff7cb6ee31280823c667b9c22f3766fd30edff86"
+    },
+    "05_supplemental_raw_note.md": {
+      "sha256_repo_bytes": "d5855c278a7f7276adb7bf32ea25da1b41ab978fb3d9e207154d1803d4cf1121",
+      "bytes": 11687,
+      "characters": 10045,
+      "lines": 22,
+      "unit_count": 65,
+      "coverage_method": "all non-whitespace spans segmented on sentence punctuation/newlines; original byte/character spans retained for flattened sources",
+      "sha256_imported_export_as_recorded_in_note": "d5855c278a7f7276adb7bf32ea25da1b41ab978fb3d9e207154d1803d4cf1121"
+    }
+  },
+  "inventory_rows": 3571,
+  "domains": {
+    "priority": 478,
+    "distribution": 76,
+    "pm-mobile": 248,
+    "dispatch-events": 400,
+    "queue-selection": 507,
+    "lifecycle-cli": 407,
+    "hydration-activity": 308,
+    "dependencies-authority": 536,
+    "leases-outbox-completion": 272,
+    "crosscutting": 1584
+  },
+  "coverage_limits": [
+    "Sentence/line segmentation is a traceable preservation aid, not a semantic completeness oracle.",
+    "Punctuation separators and whitespace are excluded; punctuation-only spans are not requirements. Attached path punctuation such as .fleet remains in text.",
+    "No occurrence is asserted as implemented or covered by an issue; design target suggestions are heuristic and planned only.",
+    "Export hashes are transcribed from note.md; repository-byte hashes are computed independently.",
+    "Conflict refs are heuristic links to adjudication records in conflicts.md, not automated resolution."
+  ]
+}
