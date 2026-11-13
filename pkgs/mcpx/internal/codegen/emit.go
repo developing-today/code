@@ -1122,19 +1122,45 @@ export { emitResult as emit };
  * last line of a print-style snippet), and the ordinary stdout
  * rule should decide the result instead.
  */
+// The largest final value carried as itself. The record channel
+// is line-based with an 8 MiB ceiling on the reading side; an
+// unbounded capture could turn a successful script into a failed
+// run, so anything larger crosses in inspected, truncated form.
+const FINAL_VALUE_LIMIT = 1 << 20;
+
 export function captureFinal(value: unknown): void {
   if (value === undefined) return;
-  // JSON.stringify silently drops a function or symbol value
-  // instead of throwing, which would read back as an explicit
-  // null result; inspect those, like the values that throw.
-  if (typeof value === "function" || typeof value === "symbol") {
-    send("final", { value: safeInspect(value) });
-    return;
-  }
   try {
-    send("final", { value });
+    // JSON.stringify silently drops a function or symbol value
+    // instead of throwing, which would read back as an explicit
+    // null result; inspect those, like the values that throw.
+    if (typeof value === "function" || typeof value === "symbol") {
+      send("final", { value: safeInspect(value) });
+      return;
+    }
+    let raw: string | undefined;
+    try {
+      raw = JSON.stringify(value);
+    } catch {
+      raw = undefined;
+    }
+    if (raw !== undefined && raw.length <= FINAL_VALUE_LIMIT) {
+      send("final", { value });
+      return;
+    }
+    const text = safeInspect(value);
+    send("final", {
+      value: text.length <= FINAL_VALUE_LIMIT ? text : text.slice(0, FINAL_VALUE_LIMIT) + "… [final value truncated]",
+    });
   } catch {
-    send("final", { value: safeInspect(value) });
+    // Even the inspected fallback failed (a hostile toJSON or
+    // inspect): the capture must never fail the run that produced
+    // the value, so report a placeholder and move on.
+    try {
+      send("final", { value: "[final value could not be represented]" });
+    } catch {
+      // Nothing more can be done; the run's own output stands.
+    }
   }
 }
 

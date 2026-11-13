@@ -926,3 +926,28 @@ func TestFinalUnstringifiableValuesAreInspected(t *testing.T) {
 		t.Errorf("symbol final: result = %#v, want the inspected symbol", res.Result)
 	}
 }
+
+// CODE-19 review (PR #9344): a final value too large for the
+// record channel crosses inspected and truncated; the run still
+// succeeds instead of dying on an oversized stderr line.
+func TestFinalOversizedValueIsBounded(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source: `"x".repeat(9 * 1024 * 1024)`, ClientSource: module, Permissions: "all",
+	}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Error != "" {
+		t.Fatalf("oversized final failed the run: %s", res.Error)
+	}
+	s, ok := res.Result.(string)
+	if !ok || !res.ResultPresent {
+		t.Fatalf("oversized final: result = %#v (present %v), want a bounded string", res.Result, res.ResultPresent)
+	}
+	if len(s) > 2*1024*1024 || !strings.Contains(s, "truncated") {
+		t.Errorf("oversized final not bounded: len = %d", len(s))
+	}
+}

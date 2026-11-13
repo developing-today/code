@@ -401,7 +401,7 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 // print nothing at all, and a result that merely repeats the
 // stdout parse must not be printed twice.
 func (a *App) reportFinalResult(res *execsvc.Result) {
-	if !res.ResultPresent {
+	if !res.ResultPresent && res.Result == nil {
 		return
 	}
 	b, err := json.Marshal(res.Result)
@@ -415,6 +415,12 @@ func (a *App) reportFinalResult(res *execsvc.Result) {
 				return
 			}
 		}
+	}
+	// Separate the answer from stdout that did not end with a
+	// newline (a progress write, say), rather than gluing them
+	// into one line.
+	if res.Stdout != "" && !strings.HasSuffix(res.Stdout, "\n") {
+		_, _ = fmt.Fprintln(os.Stdout)
 	}
 	_, _ = fmt.Fprintln(os.Stdout, string(b))
 }

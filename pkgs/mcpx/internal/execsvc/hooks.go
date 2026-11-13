@@ -364,6 +364,7 @@ func applyHookResult(r *hookRun, phase string, res *Result) json.RawMessage {
 	switch phase {
 	case HookOnSuccess:
 		res.Result = v
+		res.ResultPresent = true
 	case HookOnError:
 		// The original outcome on this path is the error, not the result
 		// value (usually nil for a thrown exception): record it before it
@@ -373,6 +374,7 @@ func applyHookResult(r *hookRun, phase string, res *Result) json.RawMessage {
 			original, _ = json.Marshal(map[string]any{"error": res.Error})
 		}
 		res.Result = v
+		res.ResultPresent = true
 		res.Error = ""
 		res.ExitCode = 0
 	}

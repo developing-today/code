@@ -117,3 +117,58 @@ func TestRewriteFinalExpressionReview2Cases(t *testing.T) {
 		})
 	}
 }
+
+// Review cases, round 3 (PR #9344): update operators respect
+// statement boundaries, export lists can declare the default
+// export, a newline inside a block comment abstains, and a regex
+// may open the statement after a block.
+func TestRewriteFinalExpressionReview3Cases(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+		ok   bool
+	}{
+		{"postfix update then statement", "let i = 0;\ni++\ni", "let i = 0;\ni++\n__mcpxFinal(await (i));", true},
+		{"prefix update statement", "let i = 0;\ni\n++i", "let i = 0;\ni\n__mcpxFinal(await (++i));", true},
+		{"export list default abstains", "const answer = () => 42;\nexport { answer as default };\n1", "", false},
+		{"block comment newline abstains", "console.log('start') /* one\ntwo */ 42", "", false},
+		{"regex after block", "if (true) {} /a;b/.test('a;b')", "if (true) {} __mcpxFinal(await (/a;b/.test('a;b')));", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := rewriteFinalExpression(tc.src)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v (got %q)", ok, tc.ok, got)
+			}
+			if tc.ok && got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+			if !tc.ok && got != tc.src {
+				t.Errorf("abstention changed the source: got %q want %q", got, tc.src)
+			}
+		})
+	}
+}
+
+// Review cases, CodeRabbit (PR #9344): an unbraced control-flow
+// body stays inside its statement across newlines, and a
+// declaration split after its keyword is not cut in half. All of
+// these must come through untouched: the final span is not an
+// expression statement, and a wrong split would corrupt a valid
+// program.
+func TestRewriteFinalExpressionControlCases(t *testing.T) {
+	cases := []string{
+		"if (true)\n  1\nelse\n  2",
+		"if (ready)\n  go();",
+		"for (let i = 0; i < 3; i++)\n  tick();",
+		"while (more)\n  step();",
+		"const\nanswer = 42",
+		"let\nx = 1",
+	}
+	for _, src := range cases {
+		if got, ok := rewriteFinalExpression(src); ok || got != src {
+			t.Errorf("rewriteFinalExpression(%q) = %q, %v; want untouched", src, got, ok)
+		}
+	}
+}

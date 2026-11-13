@@ -58,14 +58,23 @@ var nonExpressionHeads = map[string]bool{
 	"namespace": true, "declare": true, "abstract": true,
 }
 
-// operandKeywords end an unfinished expression, never a statement:
+// operandKeywords end an unfinished construct, never a statement:
 // a newline after one continues the same statement (new\nC(),
-// typeof\nx), so it is not a boundary.
+// typeof\nx, const\nanswer = 42), so it is not a boundary.
 var operandKeywords = map[string]bool{
 	"new": true, "typeof": true, "delete": true, "void": true,
 	"await": true, "yield": true, "return": true, "throw": true,
 	"case": true, "instanceof": true, "in": true, "of": true,
 	"extends": true, "else": true, "do": true,
+	"const": true, "let": true, "var": true, "function": true,
+	"class": true, "import": true, "export": true,
+}
+
+// controlHeads open a statement whose condition group is followed
+// by a body: a newline between the group and an unbraced body does
+// not end the statement.
+var controlHeads = map[string]bool{
+	"if": true, "for": true, "while": true, "switch": true, "with": true,
 }
 
 // blockHeads are the first words of statements a closing brace at
@@ -144,6 +153,8 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 	start := -1    // offset of the current statement's first code token
 	lastEnd := -1  // offset just past its last code token
 	head := ""     // first word of the current statement
+	stmtTokens := 0
+	condGroup := false // the statement so far is a control head + its condition group
 	prevOperand := false
 
 	i := 0
@@ -163,12 +174,22 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			spans = append(spans, stmtSpan{start, lastEnd})
 		}
 		start, lastEnd, head = -1, -1, ""
+		stmtTokens, condGroup = 0, false
+		// A completed statement resets the operand context: a /
+		// that opens the next statement is a regex, not division.
+		prevOperand = false
 	}
 	markToken := func(pos, end int) {
 		if start < 0 {
 			start = pos
 		}
 		lastEnd = end
+		stmtTokens++
+		// A token at depth zero after the condition group is the
+		// body arriving; the group no longer stands alone.
+		if condGroup && stmtTokens > 2 && paren == 0 && len(braces) == 0 && templates == 0 {
+			condGroup = false
+		}
 	}
 
 	for i < len(src) {
@@ -182,6 +203,13 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 				continue
 			}
 		case blockComment:
+			if c == '\n' && start >= 0 && paren == 0 && bracket == 0 && len(braces) == 0 && templates == 0 {
+				// A line terminator inside a block comment can
+				// separate two statements by ASI, which this
+				// scanner does not model: abstain rather than
+				// merge them (CODE-19 review, PR #9344).
+				return nil, false, false
+			}
 			if c == '*' && i+1 < len(src) && src[i+1] == '/' {
 				mode = code
 				i += 2
@@ -302,6 +330,9 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			continue
 		case c == '(':
 			markToken(i, i+1)
+			if paren == 0 && stmtTokens == 2 && controlHeads[head] {
+				condGroup = true
+			}
 			paren++
 			prevOperand = false
 			i++
@@ -358,7 +389,7 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			// can end one and what follows plainly does not continue
 			// it (a chained call, a binary operator, an else/catch
 			// belonging to the statement above).
-			if canEndAtNewline(src, lastEnd) && !operandKeywords[lastWordOf(src, lastEnd)] && !continuesOnNextLine(src, i+1) {
+			if canEndAtNewline(src, lastEnd) && !condGroup && !operandKeywords[lastWordOf(src, lastEnd)] && !continuesOnNextLine(src, i+1) {
 				boundary()
 			}
 			i++
@@ -388,6 +419,11 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 				if nextWordAfter(src, j) == "default" {
 					hasDefault = true
 				}
+			}
+			if head == "export" && word == "default" {
+				// export { answer as default } declares the
+				// entry point through a list; same abstention.
+				hasDefault = true
 			}
 			prevOperand = true
 			switch word {
@@ -430,6 +466,11 @@ func lastWordOf(src string, end int) string {
 func canEndAtNewline(src string, end int) bool {
 	if end <= 0 || end > len(src) {
 		return false
+	}
+	// A postfix update ends a statement (i++ is complete even
+	// though its last character is an operator).
+	if end >= 2 && (src[end-2:end] == "++" || src[end-2:end] == "--") {
+		return true
 	}
 	switch src[end-1] {
 	case ';', '{', '}', '(', ')', '[', ']':
@@ -482,6 +523,12 @@ func nextWordAfter(src string, pos int) string {
 func continuesOnNextLine(src string, pos int) bool {
 	s := skipTrivia(src[pos:])
 	if s == "" {
+		return false
+	}
+	// A leading ++ or -- is a prefix update opening a new
+	// statement (a restricted production: the newline before it
+	// separates), never a binary continuation.
+	if strings.HasPrefix(s, "++") || strings.HasPrefix(s, "--") {
 		return false
 	}
 	switch s[0] {
