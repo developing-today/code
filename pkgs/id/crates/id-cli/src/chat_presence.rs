@@ -343,8 +343,13 @@ impl PresenceTable {
     /// - **Node count bound.** The table stores at most [`MAX_PRESENCE_NODES`] nodes.
     ///   Updates to an existing key update in place and consume no new capacity.
     ///   At capacity, a new node is admitted only by evicting an entry already past
-    ///   its TTL (oldest such expired entry, ties broken by node key bytes). If every
-    ///   entry is fresh, the new node is refused (Fixes #4004).
+    ///   its TTL whose sender stamp no longer passes the freshness bound either
+    ///   (oldest such expired entry, ties broken by node key bytes) — the same
+    ///   replay-watermark rule [`prune_at`](Self::prune_at) keeps: an entry whose
+    ///   sender stamp is still fresh pins the effective stamp a replay may earn,
+    ///   so evicting it would let a replay resurrect the node past its
+    ///   receipt-based expiry (#9579). If no entry is evictable, the new node is
+    ///   refused (Fixes #4004).
     ///
     /// Returns whether the heartbeat was accepted (inserted or replacing).
     pub fn update_at(
@@ -402,11 +407,20 @@ impl PresenceTable {
         // capacity only by evicting the oldest expired entry (expiry runs
         // from the effective stamp, #8865); if every entry is still fresh,
         // the new node is refused. Existing keys refresh in place and
-        // consume no new capacity.
+        // consume no new capacity. An entry counts as expired here only
+        // when its sender stamp has also aged past the TTL — the
+        // `prune_at` watermark rule (#8865): while the sender stamp still
+        // passes the freshness bound the entry pins the effective stamp a
+        // replay may earn, and evicting it would let that replay re-insert
+        // the heartbeat with a later effective stamp and resurrect the
+        // node past its receipt-based expiry (#9579).
         if !entries.contains_key(&node) && entries.len() >= MAX_PRESENCE_NODES {
             let oldest_expired = entries
                 .iter()
-                .filter(|(_, entry)| now.saturating_sub(entry.effective_ts) > PRESENCE_TTL_SECS)
+                .filter(|(_, entry)| {
+                    now.saturating_sub(entry.effective_ts) > PRESENCE_TTL_SECS
+                        && now.saturating_sub(entry.heartbeat.ts) > PRESENCE_TTL_SECS
+                })
                 .min_by(|(k1, e1), (k2, e2)| {
                     e1.effective_ts
                         .cmp(&e2.effective_ts)
@@ -1258,6 +1272,75 @@ mod tests {
         assert_eq!(table.liveness_at(&node0, &chan, later), Liveness::Offline);
         // New node was accepted and is live
         assert_eq!(table.liveness_at(&new_node, &chan, later), Liveness::Live);
+    }
+
+    #[test]
+    fn node_count_bound_never_evicts_a_watermark_live_entry_9579() {
+        // #9579 oracle: capacity eviction obeys the same replay watermark
+        // as prune_at (#8865). A future-stamped heartbeat (inside the skew
+        // allowance) is clamped to its receipt time as its effective
+        // stamp; once that effective stamp ages past the TTL the entry
+        // reads gone, but while its *sender* stamp still passes the
+        // freshness bound it pins the effective stamp a replay may earn.
+        // Evicting it in that window would let a replay re-insert the
+        // heartbeat with a later effective stamp and resurrect the node
+        // past effective_ts + PRESENCE_TTL_SECS.
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let t0 = 50_000;
+        let victim = key(0x77);
+
+        // Victim accepted at t0 with a stamp one skew allowance ahead:
+        // its effective stamp is the receipt time t0.
+        assert!(table.update_at(
+            heartbeat(victim, vec![chan], t0 + MAX_FUTURE_SKEW_SECS),
+            t0,
+            &|_, _| true
+        ));
+        // Fill the rest of the table one second later, so the victim is
+        // also the oldest entry by effective stamp.
+        for i in 1..MAX_PRESENCE_NODES {
+            let mut node = [0u8; 32];
+            node[0..2].copy_from_slice(&(i as u16).to_le_bytes());
+            assert!(table.update_at(heartbeat(node, vec![chan], t0 + 1), t0 + 1, &|_, _| true));
+        }
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+        // Sanity: the victim reads live through its receipt-based bound.
+        assert_eq!(
+            table.liveness_at(&victim, &chan, t0 + PRESENCE_TTL_SECS),
+            Liveness::Live
+        );
+
+        // Advance past the victim's effective-stamp expiry (age 76 > 75)
+        // but not its sender-stamp expiry (age 66 <= 75). Every filler is
+        // exactly at the TTL (age 75), so no entry is evictable under the
+        // watermark rule: the capacity admission must be refused rather
+        // than evict the watermark-live victim.
+        let t1 = t0 + PRESENCE_TTL_SECS + 1;
+        let newcomer = key(0x78);
+        assert!(!table.update_at(heartbeat(newcomer, vec![chan], t1), t1, &|_, _| true));
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // Replay the victim's captured heartbeat at t1: the retained
+        // entry pins the effective stamp at t0, so the node must not
+        // read live past t0 + PRESENCE_TTL_SECS — on the pre-fix
+        // eviction path the replay re-inserted it with effective stamp
+        // t0 + MAX_FUTURE_SKEW_SECS and it read live until then + TTL.
+        assert!(table.update_at(
+            heartbeat(victim, vec![chan], t0 + MAX_FUTURE_SKEW_SECS),
+            t1,
+            &|_, _| true
+        ));
+        assert_eq!(table.liveness_at(&victim, &chan, t1), Liveness::Offline);
+        assert_eq!(
+            table.liveness_at(
+                &victim,
+                &chan,
+                t0 + PRESENCE_TTL_SECS + MAX_FUTURE_SKEW_SECS
+            ),
+            Liveness::Offline,
+            "replay must not resurrect the victim past its receipt-based expiry"
+        );
     }
 
     #[test]
