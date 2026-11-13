@@ -45,6 +45,7 @@ also scans the full workflow directory. Main and manual venues are explicit:
 | workflow-lint | none | yes |
 | proxy-port-fallbacks | none | yes |
 | fleet-search-parity-guard | none | yes |
+| fleet-rust-tests | main push, path gated | yes |
 | opencode-config-guard | main push | yes |
 | mcpx fix-test guard | main push contract tests | yes |
 | production-line guard | main push, path gated | yes |

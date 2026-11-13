@@ -31,9 +31,9 @@ permissions:
 
 concurrency:
   # Push-to-main runs are keyed by run_id so every merged tree gets
-  # its own completed run (the scripts-test/nix-ci contract);
-  # pull-request runs share a per-ref group so a new push supersedes
-  # the stale one.
+  # its own completed run (the scripts-test/nix-ci contract); manual
+  # dispatch runs share a per-ref group so a new dispatch supersedes
+  # the stale one. (Main-only CI policy: no PR runs exist.)
   group: fleet-rust-tests-${{ github.event_name == 'push' && github.run_id || github.ref }}
   cancel-in-progress: true
 
@@ -51,7 +51,7 @@ jobs:
           bash .github/scripts/check-fleet-rust-tests.test.sh
 
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.99.0 --profile minimal
+        run: rustup toolchain install 1.99.1 --profile minimal
 
       - name: Test the fleet Rust workspace
-        run: cargo +1.99.0 test --manifest-path pkgs/fleet/Cargo.toml --workspace --all-targets --locked
+        run: cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml --workspace --all-targets --locked
