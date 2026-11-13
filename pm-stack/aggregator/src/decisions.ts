@@ -44,6 +44,35 @@ export function isDeferLean(value: unknown): value is DeferLean {
 export interface DecisionOption {
   id: string;
   label: string;
+  /** Hint chips rendered next to the option (simpler, safer,
+   * distributed, portable, performance, recommended, ...). */
+  tags?: string[];
+  /** For a combination option ("A+B"): the ids of the component
+   * options it combines. Components stay selectable on their own. */
+  combinationOf?: string[];
+}
+
+/** Answer mode (#9335 v2): "single" renders radios, "multi" renders
+ * checkboxes. Absent means "single" (every v1 set). */
+export type DecisionAnswerMode = "single" | "multi";
+
+export function isDecisionAnswerMode(value: unknown): value is DecisionAnswerMode {
+  return value === "single" || value === "multi";
+}
+
+/** The mode a question renders/submits with; v1 questions are single. */
+export function effectiveQuestionMode(q: DecisionQuestion): DecisionAnswerMode {
+  return q.mode === "multi" ? "multi" : "single";
+}
+
+/** One kept wording version of a question (#9335 v2 versioning). */
+export interface DecisionQuestionVersion {
+  version: number;
+  question: string;
+  context?: string;
+  description?: string;
+  editedAt: string;
+  note?: string;
 }
 
 export interface DecisionResolution {
@@ -53,8 +82,16 @@ export interface DecisionResolution {
    * orchestrator — the defer is still the resolution kind. */
   optionId?: string;
   optionLabel?: string;
+  /** Answered (multi mode, or a guided defer with several picks): all
+   * chosen option ids/labels. optionId/optionLabel carry the first. */
+  optionIds?: string[];
+  optionLabels?: string[];
   /** Answered only: Drew's own words, when he wrote any. */
   freeText?: string;
+  /** Answered only (#9335 v2): the "my own answer" free-text field.
+   * Mirrored into freeText when a submit carries only customAnswer,
+   * so v1 feed consumers keep seeing the words. */
+  customAnswer?: string;
   /** Deferred only: the lean Drew recorded with the defer. */
   lean?: DeferLean;
   /** Request-info only: what Drew said is missing (optional). */
@@ -72,6 +109,27 @@ export interface DecisionQuestion {
   qid: string;
   question: string;
   context?: string;
+  /** Rich detail (#9335 v2): background, why it matters, and the
+   * consequences of each direction — beyond the one-line `context`.
+   * The v2 raise contract sends `description` (input alias: `detail`). */
+  description?: string;
+  /** Question-level hint chips (see DecisionOption.tags). */
+  tags?: string[];
+  /** Answer mode; absent = "single" (v1). */
+  mode?: DecisionAnswerMode;
+  /** Raiser-recommended default selection (#9335 v2): the page renders
+   * these preselected and offers one-click "submit defaults". They are
+   * NOT a resolution until Drew submits. */
+  recommendedOptionIds?: string[];
+  /** Explicit ordering within the item (lower first); absent keeps
+   * raise order. */
+  order?: number;
+  /** Per-question grouping override; absent = the item's group. */
+  group?: string;
+  /** ALL wording versions, oldest first (#9335 v2). */
+  versions?: DecisionQuestionVersion[];
+  /** Pointer into versions: the current version number. */
+  currentVersion?: number;
   /** Information the orchestrator gathered after Drew requested more
    * info on this question in an earlier set (the re-raise payload);
    * rendered on the page as a marked "information you requested" block. */
@@ -84,6 +142,9 @@ export interface DecisionItem {
   /** The decisions-ledger item id this mirrors. */
   ledgerId: string;
   title: string;
+  /** Explicit ordering within the set (lower first); absent keeps
+   * raise order. */
+  order?: number;
   /** Page grouping (e.g. "Goals census", "Issue rulings"). */
   group: string;
   links: string[];
@@ -103,14 +164,22 @@ export interface DecisionSet {
 export interface DecisionQuestionInput {
   question: string;
   context?: string;
+  description?: string;
   infoProvided?: string;
   options: DecisionOption[];
+  mode?: DecisionAnswerMode;
+  tags?: string[];
+  recommendedOptionIds?: string[];
+  order?: number;
+  group?: string;
+  versions?: DecisionQuestionVersion[];
 }
 
 export interface DecisionItemInput {
   ledgerId: string;
   title: string;
   group?: string;
+  order?: number;
   links: string[];
   questions: DecisionQuestionInput[];
 }
@@ -131,7 +200,10 @@ export interface DecisionResolutionRecord {
   kind: "answered" | "deferred" | "request-info";
   optionId?: string;
   optionLabel?: string;
+  optionIds?: string[];
+  optionLabels?: string[];
   freeText?: string;
+  customAnswer?: string;
   lean?: DeferLean;
   /** Request-info only: what Drew said is missing (optional). */
   note?: string;
@@ -153,6 +225,59 @@ const SET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 
 function isHttpUrl(s: string): boolean {
   return /^https?:\/\//.test(s);
+}
+
+const TAG_MAX = 12;
+const TAG_LEN_MAX = 40;
+
+function parseTagList(raw: unknown): string[] | null {
+  if (!Array.isArray(raw) || raw.length > TAG_MAX) return null;
+  const out: string[] = [];
+  for (const t of raw) {
+    if (typeof t !== "string" || !t.trim() || t.length > TAG_LEN_MAX) return null;
+    const v = t.trim();
+    if (!out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
+function sanitizeQuestionVersions(raw: unknown): DecisionQuestionVersion[] | null {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 32) return null;
+  const out: DecisionQuestionVersion[] = [];
+  for (const rv of raw) {
+    if (!rv || typeof rv !== "object" || Array.isArray(rv)) return null;
+    const v = rv as Record<string, unknown>;
+    if (typeof v.version !== "number" || !Number.isFinite(v.version)) return null;
+    if (typeof v.question !== "string" || !v.question.trim()) return null;
+    if (typeof v.editedAt !== "string" || !v.editedAt) return null;
+    out.push({
+      version: v.version,
+      question: v.question,
+      ...(typeof v.context === "string" ? { context: v.context } : {}),
+      ...(typeof v.description === "string" ? { description: v.description } : {}),
+      editedAt: v.editedAt,
+      ...(typeof v.note === "string" ? { note: v.note } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Submit-API preparation (#9335 v2): a submit may omit setId — a UUID
+ * is minted for it. Accepts either the bare set object or the
+ * `{ decisionSet: ... }` envelope. Returns the (possibly new) object,
+ * ready for validateDecisionSet; validateDecisionSet stays strict.
+ */
+export function withGeneratedSetId(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const b = raw as Record<string, unknown>;
+  const inner =
+    b.decisionSet && typeof b.decisionSet === "object" && !Array.isArray(b.decisionSet)
+      ? (b.decisionSet as Record<string, unknown>)
+      : b;
+  if (typeof inner.setId === "string" && inner.setId.trim()) return raw;
+  const filled = { ...inner, setId: randomUUID() };
+  return inner === b ? filled : { ...b, decisionSet: filled };
 }
 
 /** Validate the intake `decisionSet` extension object (#8766 wire contract). */
@@ -188,6 +313,9 @@ export function validateDecisionSet(
     if (it.group !== undefined && typeof it.group !== "string") {
       return { ok: false, error: `decisionSet item ${ledgerId} group must be a string` };
     }
+    if (it.order !== undefined && (typeof it.order !== "number" || !Number.isFinite(it.order))) {
+      return { ok: false, error: `decisionSet item ${ledgerId} order must be a number` };
+    }
     let links: string[] = [];
     if (it.links !== undefined) {
       if (!Array.isArray(it.links) || it.links.some((l) => typeof l !== "string" || !isHttpUrl(l))) {
@@ -214,8 +342,8 @@ export function validateDecisionSet(
       }
       // Options may be empty: a free-text-only question is legitimate
       // (the ledger carries questions with no recorded options).
-      if (!Array.isArray(q.options) || q.options.length > 8) {
-        return { ok: false, error: `decisionSet item ${ledgerId} question options must be an array of 0-8 entries` };
+      if (!Array.isArray(q.options) || q.options.length > 12) {
+        return { ok: false, error: `decisionSet item ${ledgerId} question options must be an array of 0-12 entries` };
       }
       const options: DecisionOption[] = [];
       const seenOptionIds = new Set<string>();
@@ -233,19 +361,108 @@ export function validateDecisionSet(
           return { ok: false, error: `decisionSet item ${ledgerId} question duplicates option id ${id}` };
         }
         seenOptionIds.add(id);
-        options.push({ id, label });
+        let optTags: string[] | undefined;
+        if (o.tags !== undefined) {
+          const parsed = parseTagList(o.tags);
+          if (!parsed) {
+            return { ok: false, error: `decisionSet item ${ledgerId} question option ${id} tags must be an array of up to ${TAG_MAX} short strings` };
+          }
+          optTags = parsed;
+        }
+        let combinationOf: string[] | undefined;
+        if (o.combinationOf !== undefined) {
+          if (
+            !Array.isArray(o.combinationOf) ||
+            o.combinationOf.length < 2 ||
+            o.combinationOf.some((c) => typeof c !== "string" || !c.trim())
+          ) {
+            return { ok: false, error: `decisionSet item ${ledgerId} question option ${id} combinationOf must be an array of 2+ option ids` };
+          }
+          combinationOf = [...(o.combinationOf as string[])];
+        }
+        options.push({ id, label, ...(optTags ? { tags: optTags } : {}), ...(combinationOf ? { combinationOf } : {}) });
+      }
+      // Combination options must reference real sibling options (#9335).
+      for (const o of options) {
+        for (const cid of o.combinationOf ?? []) {
+          if (cid === o.id || !seenOptionIds.has(cid)) {
+            return { ok: false, error: `decisionSet item ${ledgerId} question option ${o.id} combinationOf references unknown option ${cid}` };
+          }
+        }
+      }
+      if (q.description !== undefined && typeof q.description !== "string") {
+        return { ok: false, error: `decisionSet item ${ledgerId} question description must be a string` };
+      }
+      if (q.detail !== undefined && typeof q.detail !== "string") {
+        return { ok: false, error: `decisionSet item ${ledgerId} question detail must be a string` };
+      }
+      const description =
+        typeof q.description === "string" && q.description.trim()
+          ? q.description
+          : typeof q.detail === "string" && q.detail.trim()
+            ? q.detail
+            : undefined;
+      let mode: DecisionAnswerMode | undefined;
+      if (q.mode !== undefined) {
+        if (!isDecisionAnswerMode(q.mode)) {
+          return { ok: false, error: `decisionSet item ${ledgerId} question mode must be single|multi` };
+        }
+        mode = q.mode;
+      }
+      let qTags: string[] | undefined;
+      if (q.tags !== undefined) {
+        const parsed = parseTagList(q.tags);
+        if (!parsed) {
+          return { ok: false, error: `decisionSet item ${ledgerId} question tags must be an array of up to ${TAG_MAX} short strings` };
+        }
+        qTags = parsed;
+      }
+      let recommendedOptionIds: string[] | undefined;
+      if (q.recommendedOptionIds !== undefined) {
+        if (
+          !Array.isArray(q.recommendedOptionIds) ||
+          q.recommendedOptionIds.some((r) => typeof r !== "string" || !seenOptionIds.has(r))
+        ) {
+          return { ok: false, error: `decisionSet item ${ledgerId} question recommendedOptionIds must be ids of its options` };
+        }
+        if (mode !== "multi" && q.recommendedOptionIds.length > 1) {
+          return { ok: false, error: `decisionSet item ${ledgerId} question recommendedOptionIds allows one id unless mode is multi` };
+        }
+        recommendedOptionIds = [...(q.recommendedOptionIds as string[])];
+      }
+      if (q.order !== undefined && (typeof q.order !== "number" || !Number.isFinite(q.order))) {
+        return { ok: false, error: `decisionSet item ${ledgerId} question order must be a number` };
+      }
+      if (q.group !== undefined && typeof q.group !== "string") {
+        return { ok: false, error: `decisionSet item ${ledgerId} question group must be a string` };
+      }
+      let versions: DecisionQuestionVersion[] | undefined;
+      if (q.versions !== undefined) {
+        const parsed = sanitizeQuestionVersions(q.versions);
+        if (!parsed) {
+          return { ok: false, error: `decisionSet item ${ledgerId} question versions must be an array of {version, question, editedAt}` };
+        }
+        versions = parsed;
       }
       questions.push({
         question,
         ...(typeof q.context === "string" && q.context.trim() ? { context: q.context } : {}),
+        ...(description ? { description } : {}),
         ...(typeof q.infoProvided === "string" && q.infoProvided.trim() ? { infoProvided: q.infoProvided } : {}),
         options,
+        ...(mode ? { mode } : {}),
+        ...(qTags ? { tags: qTags } : {}),
+        ...(recommendedOptionIds ? { recommendedOptionIds } : {}),
+        ...(typeof q.order === "number" ? { order: q.order } : {}),
+        ...(typeof q.group === "string" && q.group.trim() ? { group: q.group.trim() } : {}),
+        ...(versions ? { versions } : {}),
       });
     }
     items.push({
       ledgerId,
       title: itemTitle,
       ...(typeof it.group === "string" && it.group.trim() ? { group: it.group.trim() } : {}),
+      ...(typeof it.order === "number" ? { order: it.order } : {}),
       links,
       questions,
     });
@@ -379,24 +596,52 @@ export async function raiseDecisionSet(
     const sets = await readDecisionSets(file);
     const existing = sets.find((s) => s.setId === input.setId);
     if (existing) return existing;
+    const createdAt = new Date().toISOString();
     const set: DecisionSet = {
       setId: input.setId,
       title: input.title,
       token: randomUUID(),
-      createdAt: new Date().toISOString(),
+      createdAt,
       source,
       items: input.items.map((item) => ({
         ledgerId: item.ledgerId,
         title: item.title,
         group: item.group ?? "Decisions",
+        ...(item.order !== undefined ? { order: item.order } : {}),
         links: item.links,
-        questions: item.questions.map((q, i) => ({
-          qid: `${item.ledgerId}#${i + 1}`,
-          question: q.question,
-          ...(q.context !== undefined ? { context: q.context } : {}),
-          ...(q.infoProvided !== undefined ? { infoProvided: q.infoProvided } : {}),
-          options: q.options,
-        })),
+        questions: item.questions.map((q, i) => {
+          // Versioning backfill (#9335): every raised question starts
+          // its version history at v1 (or keeps the history the raiser
+          // supplied); the current pointer is the newest version.
+          const versions: DecisionQuestionVersion[] =
+            q.versions && q.versions.length
+              ? q.versions
+              : [
+                  {
+                    version: 1,
+                    question: q.question,
+                    ...(q.context !== undefined ? { context: q.context } : {}),
+                    ...(q.description !== undefined ? { description: q.description } : {}),
+                    editedAt: createdAt,
+                    note: "initial version",
+                  },
+                ];
+          return {
+            qid: `${item.ledgerId}#${i + 1}`,
+            question: q.question,
+            ...(q.context !== undefined ? { context: q.context } : {}),
+            ...(q.description !== undefined ? { description: q.description } : {}),
+            ...(q.infoProvided !== undefined ? { infoProvided: q.infoProvided } : {}),
+            ...(q.mode !== undefined ? { mode: q.mode } : {}),
+            ...(q.tags !== undefined ? { tags: q.tags } : {}),
+            ...(q.recommendedOptionIds !== undefined ? { recommendedOptionIds: q.recommendedOptionIds } : {}),
+            ...(q.order !== undefined ? { order: q.order } : {}),
+            ...(q.group !== undefined ? { group: q.group } : {}),
+            options: q.options,
+            versions,
+            currentVersion: Math.max(...versions.map((v) => v.version)),
+          };
+        }),
       })),
     };
     sets.push(set);
@@ -408,6 +653,63 @@ export async function raiseDecisionSet(
 export async function getDecisionSet(file: string, setId: string): Promise<DecisionSet | null> {
   const sets = await readDecisionSets(file);
   return sets.find((s) => s.setId === setId) ?? null;
+}
+
+/**
+ * Append a new wording version to a question (#9335 v2 versioning):
+ * the new text becomes current, every prior version stays on the
+ * record. A question raised before versioning existed is first
+ * backfilled with its current wording as v1. Returns the updated
+ * question, or null for an unknown set/question.
+ */
+export async function appendQuestionVersion(
+  file: string,
+  setId: string,
+  ledgerId: string,
+  qid: string,
+  update: { question: string; context?: string; description?: string; note?: string },
+): Promise<DecisionQuestion | null> {
+  if (!update.question?.trim()) return null;
+  return serializeDecisions(file, async () => {
+    const sets = await readDecisionSets(file);
+    const set = sets.find((x) => x.setId === setId);
+    if (!set) return null;
+    const q = findQuestion(set, ledgerId, qid);
+    if (!q) return null;
+    const prev: DecisionQuestionVersion[] =
+      q.versions && q.versions.length
+        ? q.versions
+        : [
+            {
+              version: 1,
+              question: q.question,
+              ...(q.context !== undefined ? { context: q.context } : {}),
+              ...(q.description !== undefined ? { description: q.description } : {}),
+              editedAt: set.createdAt,
+              note: "initial version",
+            },
+          ];
+    const nextVersion = Math.max(...prev.map((v) => v.version), q.currentVersion ?? 0) + 1;
+    const entry: DecisionQuestionVersion = {
+      version: nextVersion,
+      question: update.question,
+      ...(update.context !== undefined ? { context: update.context } : q.context !== undefined ? { context: q.context } : {}),
+      ...(update.description !== undefined
+        ? { description: update.description }
+        : q.description !== undefined
+          ? { description: q.description }
+          : {}),
+      editedAt: new Date().toISOString(),
+      ...(update.note ? { note: update.note } : {}),
+    };
+    q.versions = [...prev, entry];
+    q.currentVersion = nextVersion;
+    q.question = update.question;
+    if (update.context !== undefined) q.context = update.context;
+    if (update.description !== undefined) q.description = update.description;
+    await writeDecisionSets(file, sets);
+    return q;
+  });
 }
 
 // --- Decision drafts (server layer, #8766 both-layers upgrade) --------
@@ -426,6 +728,8 @@ export async function getDecisionSet(file: string, setId: string): Promise<Decis
 export interface DecisionQuestionDraft {
   /** Selected option id (the page radio's value). */
   opt?: string;
+  /** Selected option ids for a multi-mode question's checkboxes. */
+  opts?: string[];
   /** The question's text box: the answer text, or the comment that
    * rides with a defer — the page uses one field for both. */
   ft?: string;
@@ -462,12 +766,19 @@ function sanitizeDraftEntry(raw: unknown): DecisionQuestionDraft | null {
   const r = raw as Record<string, unknown>;
   const entry: DecisionQuestionDraft = { updatedAt: "" };
   if (typeof r.opt === "string" && r.opt) entry.opt = r.opt.slice(0, 200);
+  if (Array.isArray(r.opts)) {
+    const ids = r.opts
+      .filter((x): x is string => typeof x === "string" && !!x)
+      .slice(0, 12)
+      .map((x) => x.slice(0, 200));
+    if (ids.length) entry.opts = [...new Set(ids)];
+  }
   if (typeof r.ft === "string" && r.ft) entry.ft = r.ft.slice(0, DRAFT_TEXT_MAX);
   if (isDeferLean(r.lean)) entry.lean = r.lean;
   if (typeof r.note === "string" && r.note) entry.note = r.note.slice(0, DRAFT_TEXT_MAX);
   const at = typeof r.updatedAt === "string" ? Date.parse(r.updatedAt) : NaN;
   entry.updatedAt = Number.isFinite(at) ? new Date(at).toISOString() : "";
-  if (!entry.opt && !entry.ft && !entry.lean && !entry.note) return null;
+  if (!entry.opt && !entry.opts && !entry.ft && !entry.lean && !entry.note) return null;
   return entry;
 }
 
@@ -519,7 +830,12 @@ export interface DecisionSubmission {
   qid: string;
   kind: "answered" | "deferred" | "request-info";
   optionId?: string;
+  /** Multi mode (#9335 v2): every chosen option id. */
+  optionIds?: string[];
   freeText?: string;
+  /** The "my own answer" field (#9335 v2); an alias source for the
+   * answer text, recorded on the resolution as customAnswer. */
+  customAnswer?: string;
   lean?: DeferLean;
   /** Request-info only: what Drew says is missing (optional). */
   note?: string;
@@ -572,18 +888,26 @@ export async function recordResolutions(
           outcomes.push({ qid: sub.qid, applied: false, reason: "bad-lean" });
           continue;
         }
-        // Guided defer: a tentative option pick may ride along as
-        // guidance. It never changes the resolution kind.
-        const guide = sub.optionId !== undefined ? q.options.find((o) => o.id === sub.optionId) : undefined;
-        if (sub.optionId !== undefined && !guide) {
+        // Guided defer: tentative option pick(s) may ride along as
+        // guidance. They never change the resolution kind.
+        const guideIds = [
+          ...(sub.optionId ? [sub.optionId] : []),
+          ...((sub.optionIds ?? []).filter((id) => id !== sub.optionId)),
+        ];
+        const guides = guideIds.map((id) => q.options.find((o) => o.id === id));
+        if (guides.some((g) => !g)) {
           outcomes.push({ qid: sub.qid, applied: false, reason: "bad-option" });
           continue;
         }
+        const guide = guides[0];
         const comment = typeof sub.comment === "string" ? sub.comment.trim() : "";
         q.resolution = {
           kind: "deferred",
           lean: sub.lean,
           ...(guide ? { optionId: guide.id, optionLabel: guide.label } : {}),
+          ...(guides.length > 1
+            ? { optionIds: guideIds, optionLabels: guides.map((g) => g!.label) }
+            : {}),
           ...(comment ? { comment } : {}),
           at: now,
           via,
@@ -606,22 +930,34 @@ export async function recordResolutions(
         outcomes.push({ qid: sub.qid, applied: true });
         continue;
       }
-      // kind === "answered"
-      const option = sub.optionId !== undefined ? q.options.find((o) => o.id === sub.optionId) : undefined;
-      if (sub.optionId !== undefined && !option) {
+      // kind === "answered" (#9335 v2: multi-select + custom answer)
+      const pickedIds = [
+        ...(sub.optionId ? [sub.optionId] : []),
+        ...((sub.optionIds ?? []).filter((id) => id !== sub.optionId)),
+      ];
+      const picked = pickedIds.map((id) => q.options.find((o) => o.id === id));
+      if (picked.some((o) => !o)) {
         outcomes.push({ qid: sub.qid, applied: false, reason: "bad-option" });
         continue;
       }
-      const freeText = typeof sub.freeText === "string" ? sub.freeText.trim() : "";
-      if (!option && !freeText) {
+      if (pickedIds.length > 1 && effectiveQuestionMode(q) !== "multi") {
+        outcomes.push({ qid: sub.qid, applied: false, reason: "too-many-options" });
+        continue;
+      }
+      const customAnswer = typeof sub.customAnswer === "string" ? sub.customAnswer.trim() : "";
+      const freeText = (typeof sub.freeText === "string" ? sub.freeText.trim() : "") || customAnswer;
+      if (picked.length === 0 && !freeText) {
         outcomes.push({ qid: sub.qid, applied: false, reason: "empty-answer" });
         continue;
       }
+      const first = picked[0];
       const comment = typeof sub.comment === "string" ? sub.comment.trim() : "";
       q.resolution = {
         kind: "answered",
-        ...(option ? { optionId: option.id, optionLabel: option.label } : {}),
+        ...(first ? { optionId: first.id, optionLabel: first.label } : {}),
+        ...(picked.length ? { optionIds: pickedIds, optionLabels: picked.map((o) => o!.label) } : {}),
         ...(freeText ? { freeText } : {}),
+        ...(customAnswer ? { customAnswer } : {}),
         ...(comment ? { comment } : {}),
         at: now,
         via,
@@ -914,7 +1250,10 @@ export async function listDecisionResolutions(file: string): Promise<DecisionRes
           kind: r.kind,
           ...(r.optionId !== undefined ? { optionId: r.optionId } : {}),
           ...(r.optionLabel !== undefined ? { optionLabel: r.optionLabel } : {}),
+          ...(r.optionIds !== undefined ? { optionIds: r.optionIds } : {}),
+          ...(r.optionLabels !== undefined ? { optionLabels: r.optionLabels } : {}),
           ...(r.freeText !== undefined ? { freeText: r.freeText } : {}),
+          ...(r.customAnswer !== undefined ? { customAnswer: r.customAnswer } : {}),
           ...(r.lean !== undefined ? { lean: r.lean } : {}),
           ...(r.note !== undefined ? { note: r.note } : {}),
           ...(r.comment !== undefined ? { comment: r.comment } : {}),
@@ -1188,6 +1527,8 @@ function draftCollect() {
     var entry = {};
     var picked = block.querySelector('input[type=radio]:checked');
     if (picked) entry.opt = picked.value;
+    var boxes = block.querySelectorAll('input[type=checkbox].optin:checked');
+    if (boxes.length) entry.opts = Array.prototype.map.call(boxes, function (c) { return c.value; });
     var ft = block.querySelector('textarea.ft').value;
     if (ft) entry.ft = ft;
     var lean = block.querySelector('select.defer').value;
@@ -1198,7 +1539,7 @@ function draftCollect() {
       var qid = block.getAttribute('data-qid');
       seen[qid] = true;
       var prev = draftState.q[qid];
-      if (!prev || prev.opt !== entry.opt || prev.ft !== entry.ft || prev.lean !== entry.lean || prev.note !== entry.note) {
+      if (!prev || prev.opt !== entry.opt || JSON.stringify(prev.opts || []) !== JSON.stringify(entry.opts || []) || prev.ft !== entry.ft || prev.lean !== entry.lean || prev.note !== entry.note) {
         entry.updatedAt = Date.now();
       } else {
         entry.updatedAt = prev.updatedAt || Date.now();
@@ -1235,6 +1576,7 @@ function draftPushNow(keepalive) {
     var e = draftState.q[qid];
     var out = {};
     if (e.opt) out.opt = e.opt;
+    if (e.opts && e.opts.length) out.opts = e.opts;
     if (e.ft) out.ft = e.ft;
     if (e.lean) out.lean = e.lean;
     if (e.note) out.note = e.note;
@@ -1278,6 +1620,7 @@ function draftMergeServer(sv) {
     if (sAt > lAt) {
       var e = {};
       if (s.opt) e.opt = s.opt;
+      if (Array.isArray(s.opts) && s.opts.length) e.opts = s.opts;
       if (s.ft) e.ft = s.ft;
       if (s.lean) e.lean = s.lean;
       if (s.note) e.note = s.note;
@@ -1302,6 +1645,11 @@ function draftRestore() {
     if (entry.opt) {
       block.querySelectorAll('input[type=radio]').forEach(function (r) {
         if (r.value === entry.opt) { r.checked = true; restored++; }
+      });
+    }
+    if (entry.opts) {
+      block.querySelectorAll('input[type=checkbox].optin').forEach(function (c) {
+        if (entry.opts.indexOf(c.value) !== -1) { c.checked = true; restored++; }
       });
     }
     if (entry.ft) { block.querySelector('textarea.ft').value = entry.ft; restored++; }

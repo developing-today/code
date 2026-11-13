@@ -14,7 +14,7 @@ import {
   validateDecisionEvent,
   type DecisionSetEvent,
   type FetchFn,
-} from "../src/decision-events.ts";
+} from "../src/decision-events-sync.ts";
 
 const ev = (eventId: string, extra: Partial<DecisionSetEvent> = {}): DecisionSetEvent => ({
   eventId,
@@ -246,5 +246,40 @@ describe("sync state", () => {
     expect(loaded.acked.turso).toEqual(["e1"]);
     await writeFile(path, "{broken", "utf8");
     expect((await loadSyncState(path)).acked.turso).toEqual([]);
+  });
+});
+
+describe("Track A outbox format (reconciliation with PR #9343)", () => {
+  test("reads Track A outbox lines: envelope unwrapped, set.created accepted", async () => {
+    const file = join(dir, "outbox.jsonl");
+    await writeFile(
+      file,
+      JSON.stringify({
+        eventId: "a1",
+        setId: "3df0fc87-dded-4ecf-be73-c3f51b1c1def",
+        type: "set.created",
+        payload: { via: "api/decision-sets" },
+        ts: "2026-11-13T05:37:12.808Z",
+        outbox: { status: "pending", enqueuedAt: "2026-11-13T05:37:12.808Z", sink: "turso-cloudflare" },
+      }) + "\n",
+      "utf8",
+    );
+    const read = await readOutboxEvents(file);
+    expect(read.errors).toEqual([]);
+    expect(read.events).toHaveLength(1);
+    expect(read.events[0]).toMatchObject({ eventId: "a1", type: "set.created", questionRef: null });
+  });
+
+  test("maps Track A object questionRef {ledgerId, qid} onto the qid string", () => {
+    const v = validateDecisionEvent({
+      eventId: "a2",
+      setId: "s1",
+      type: "answer",
+      ts: "2026-11-12T10:00:00.000Z",
+      questionRef: { ledgerId: "ledger-1", qid: "ledger-1#2", questionIndex: 2 },
+      payload: {},
+    });
+    expect(v.ok).toBe(true);
+    if (v.ok) expect(v.value.questionRef).toBe("ledger-1#2");
   });
 });

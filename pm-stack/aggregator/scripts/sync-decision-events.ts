@@ -35,7 +35,9 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  DECISION_EVENTS_TURSO_TOKEN_NAME,
   DECISION_EVENTS_TURSO_URL,
+  DECISION_EVENTS_WEBHOOK_SECRET_NAME,
   defaultDecisionEventsOutboxFile,
   defaultDecisionEventsStateFile,
   loadSyncState,
@@ -46,9 +48,8 @@ import {
   SYNC_LEGS,
   type DecisionSetEvent,
   type SyncLeg,
-} from "../src/decision-events.ts";
+} from "../src/decision-events-sync.ts";
 import { resolveBwsSecret } from "../src/secrets.ts";
-import { DECISION_EVENTS_TURSO_TOKEN_NAME, DECISION_EVENTS_WEBHOOK_SECRET_NAME } from "../src/decision-events.ts";
 
 const USAGE =
   "usage: sync-decision-events.ts [--file <path>]... [--outbox-dir <dir>] [--target turso|webhook|both] [--state <path>] [--dry-run]";

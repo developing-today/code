@@ -4,7 +4,7 @@
 // and the Durable Object.
 //
 // The shape is the shared #9335 wire contract — the same one the
-// aggregator validates in pm-stack/aggregator/src/decision-events.ts.
+// aggregator validates in pm-stack/aggregator/src/decision-events-sync.ts.
 // The two implementations are deliberately independent (the Worker is
 // a standalone package) and must be kept in step by the tests on both
 // sides, not by a shared import.
