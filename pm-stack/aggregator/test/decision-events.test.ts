@@ -45,7 +45,9 @@ describe("validateDecisionEvent", () => {
   });
   test("rejects missing ids, bad type, bad ts, array payload", () => {
     expect(validateDecisionEvent({ setId: "s", type: "x", ts: "2026-11-12T10:00:00Z" }).ok).toBe(false);
-    expect(validateDecisionEvent({ eventId: "e", setId: "s", type: "has space", ts: "2026-11-12T10:00:00Z" }).ok).toBe(false);
+    expect(validateDecisionEvent({ eventId: "e", setId: "s", type: "has space", ts: "2026-11-12T10:00:00Z" }).ok).toBe(
+      false,
+    );
     expect(validateDecisionEvent({ eventId: "e", setId: "s", type: "x", ts: "2026-02-30T10:00:00Z" }).ok).toBe(false);
     expect(
       validateDecisionEvent({ eventId: "e", setId: "s", type: "x", ts: "2026-11-12T10:00:00Z", payload: [1] }).ok,

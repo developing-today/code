@@ -175,6 +175,7 @@ error?, errorKind?}`. A caller over HTTP wants fields, not text it has to scrape
   execution), or `execution` (the script started and failed — it threw,
   exited non-zero, or the runner reported the failure). The message and
   exit details are unchanged; the kind is what a caller branches on.
+
 - **stream** — frames as they happen. SSE by default because it is plain
   HTTP and a browser consumes it with no code; NDJSON on
   `Accept: application/x-ndjson`, because a program with a JSON decoder should

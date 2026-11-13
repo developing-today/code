@@ -104,9 +104,7 @@ export const DECISION_SET_EVENTS_DDL: readonly string[] = [
 ];
 
 /** Default outbox path (mirrors defaultDecisionsFile in decisions.ts). */
-export function defaultDecisionEventsOutboxFile(
-  env: Record<string, string | undefined> = process.env,
-): string {
+export function defaultDecisionEventsOutboxFile(env: Record<string, string | undefined> = process.env): string {
   const v = env.DECISION_EVENTS_OUTBOX_FILE?.trim();
   // Fall back to Track A's resolver (PM_AGG_DECISION_OUTBOX_FILE, else
   // the shared state-dir default) so the sync and the producer always
@@ -115,9 +113,7 @@ export function defaultDecisionEventsOutboxFile(
 }
 
 /** Default per-leg sync-state path: beside the outbox file. */
-export function defaultDecisionEventsStateFile(
-  env: Record<string, string | undefined> = process.env,
-): string {
+export function defaultDecisionEventsStateFile(env: Record<string, string | undefined> = process.env): string {
   const v = env.DECISION_EVENTS_STATE_FILE?.trim();
   return v ? v : `${defaultDecisionEventsOutboxFile(env)}.sync-state.json`;
 }
@@ -283,12 +279,24 @@ export async function tursoPipeline(
 export function decisionEventInsertStatement(e: DecisionSetEvent): TursoStatement {
   return {
     sql: `INSERT OR IGNORE INTO ${DECISION_SET_EVENTS_TABLE} (event_id, set_id, question_ref, type, payload, ts) VALUES (?, ?, ?, ?, ?, ?)`,
-    args: [tArg(e.eventId), tArg(e.setId), tArg(e.questionRef), tArg(e.type), tArg(JSON.stringify(e.payload)), tArg(e.ts)],
+    args: [
+      tArg(e.eventId),
+      tArg(e.setId),
+      tArg(e.questionRef),
+      tArg(e.type),
+      tArg(JSON.stringify(e.payload)),
+      tArg(e.ts),
+    ],
   };
 }
 
 export async function ensureDecisionEventsTable(url: string, token: string, fetchFn: FetchFn = fetch): Promise<void> {
-  await tursoPipeline(url, token, DECISION_SET_EVENTS_DDL.map((sql) => ({ sql })), fetchFn);
+  await tursoPipeline(
+    url,
+    token,
+    DECISION_SET_EVENTS_DDL.map((sql) => ({ sql })),
+    fetchFn,
+  );
 }
 
 /** Insert events into Turso in pipeline batches. INSERT OR IGNORE on
@@ -307,7 +315,8 @@ export async function insertDecisionEventsTurso(
   for (let i = 0; i < events.length; i += batchSize) {
     const batch = events.slice(i, i + batchSize);
     const results = await tursoPipeline(url, token, batch.map(decisionEventInsertStatement), fetchFn);
-    for (const r of results) inserted += r.response?.result?.affected_row_count ?? r.response?.result?.rows_affected ?? 0;
+    for (const r of results)
+      inserted += r.response?.result?.affected_row_count ?? r.response?.result?.rows_affected ?? 0;
   }
   return { attempted: events.length, inserted };
 }
@@ -440,7 +449,13 @@ export async function syncDecisionEvents(opts: SyncOptions): Promise<LegReport[]
         if (!opts.webhookSecret) {
           throw new Error(`webhook secret unresolved by name (${DECISION_EVENTS_WEBHOOK_SECRET_NAME})`);
         }
-        const r = await postDecisionEventsWebhook(opts.webhookUrl, opts.webhookSecret, pending, fetchFn, opts.batchSize);
+        const r = await postDecisionEventsWebhook(
+          opts.webhookUrl,
+          opts.webhookSecret,
+          pending,
+          fetchFn,
+          opts.batchSize,
+        );
         report.attempted = r.attempted;
         report.inserted = r.inserted;
       }

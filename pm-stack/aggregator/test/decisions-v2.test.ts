@@ -60,7 +60,8 @@ function v2Input(setId = "set-v2-1"): DecisionSetInput {
           {
             question: "Pick the rollout shape?",
             context: "short context",
-            description: "Background: the rollout touches three repos. Why it matters: a wrong shape doubles the migration. Consequences: A is fastest, A+B is safest.",
+            description:
+              "Background: the rollout touches three repos. Why it matters: a wrong shape doubles the migration. Consequences: A is fastest, A+B is safest.",
             mode: "multi",
             tags: ["rollout"],
             order: 1,

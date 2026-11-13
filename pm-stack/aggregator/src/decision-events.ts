@@ -134,7 +134,10 @@ const appendChains = new Map<string, Promise<unknown>>();
 function serializeAppend<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const prev = appendChains.get(key) ?? Promise.resolve();
   const run = prev.then(fn, fn);
-  appendChains.set(key, run.catch(() => {}));
+  appendChains.set(
+    key,
+    run.catch(() => {}),
+  );
   return run;
 }
 
@@ -160,7 +163,10 @@ export async function appendDecisionEvents(
     const outboxLines =
       events
         .map((e) =>
-          JSON.stringify({ ...e, outbox: { status: "pending", enqueuedAt, sink: "turso-cloudflare" } } satisfies DecisionEventOutboxRecord),
+          JSON.stringify({
+            ...e,
+            outbox: { status: "pending", enqueuedAt, sink: "turso-cloudflare" },
+          } satisfies DecisionEventOutboxRecord),
         )
         .join("\n") + "\n";
     await appendFile(eventsFile, logLines, "utf8");
@@ -183,7 +189,13 @@ function parseEventLine(line: string): DecisionEvent | null {
     const v: unknown = JSON.parse(line);
     if (!v || typeof v !== "object" || Array.isArray(v)) return null;
     const e = v as Record<string, unknown>;
-    if (typeof e.eventId !== "string" || typeof e.setId !== "string" || typeof e.type !== "string" || typeof e.ts !== "string") return null;
+    if (
+      typeof e.eventId !== "string" ||
+      typeof e.setId !== "string" ||
+      typeof e.type !== "string" ||
+      typeof e.ts !== "string"
+    )
+      return null;
     return v as DecisionEvent;
   } catch {
     return null; // a torn final line never poisons the read
@@ -240,13 +252,22 @@ export async function readDecisionEvents(
   }
   const limit = opts.limit && opts.limit > 0 ? Math.min(opts.limit, 1000) : 1000;
   const events = all.slice(start, start + limit);
-  return { events, nextCursor: events.length ? events[events.length - 1]!.eventId : (opts.since ?? null), count: events.length };
+  return {
+    events,
+    nextCursor: events.length ? events[events.length - 1]!.eventId : (opts.since ?? null),
+    count: events.length,
+  };
 }
 
 /** Validate one client-reported event (POST /api/decisions/<id>/events). */
 export function validateDecisionEventInput(
   value: unknown,
-): { ok: true; value: { type: DecisionEventType; questionRef?: DecisionEventQuestionRef; payload: Record<string, unknown> } } | { ok: false; error: string } {
+):
+  | {
+      ok: true;
+      value: { type: DecisionEventType; questionRef?: DecisionEventQuestionRef; payload: Record<string, unknown> };
+    }
+  | { ok: false; error: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ok: false, error: "event must be an object" };
   }
@@ -266,11 +287,16 @@ export function validateDecisionEventInput(
     questionRef = {
       ledgerId: r.ledgerId,
       qid: r.qid,
-      ...(typeof r.questionIndex === "number" && Number.isFinite(r.questionIndex) ? { questionIndex: r.questionIndex } : {}),
+      ...(typeof r.questionIndex === "number" && Number.isFinite(r.questionIndex)
+        ? { questionIndex: r.questionIndex }
+        : {}),
     };
   }
   if (b.payload !== undefined && (!b.payload || typeof b.payload !== "object" || Array.isArray(b.payload))) {
     return { ok: false, error: "event payload must be an object" };
   }
-  return { ok: true, value: { type: b.type, ...(questionRef ? { questionRef } : {}), payload: sanitizePayload(b.payload ?? {}) } };
+  return {
+    ok: true,
+    value: { type: b.type, ...(questionRef ? { questionRef } : {}), payload: sanitizePayload(b.payload ?? {}) },
+  };
 }

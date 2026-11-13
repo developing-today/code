@@ -332,9 +332,7 @@ const freshnessStore = new FreshnessStore(cfg.freshnessFile);
  *  aggregator's own canonical source, fingerprinted exactly as the
  *  collector's notice identity (generatedAt + sha256 of the file).
  *  Its health view feeds /health + /api/health via healthContext. */
-const freshnessReconciler = new FreshnessReconciler(freshnessStore, [
-  fleetFeedRevisionReader(cfg.feedFile),
-]);
+const freshnessReconciler = new FreshnessReconciler(freshnessStore, [fleetFeedRevisionReader(cfg.feedFile)]);
 const activityStore = new IngestionStore(cfg.activityFile);
 
 /** #1739: the event log's fire-and-forget sink for source-side
@@ -3308,9 +3306,7 @@ async function handler(req: Request): Promise<Response> {
     }
     const prepared = withGeneratedSetId(rawBody);
     const ext =
-      prepared && typeof prepared === "object" && !Array.isArray(prepared)
-        ? (prepared as Record<string, unknown>)
-        : {};
+      prepared && typeof prepared === "object" && !Array.isArray(prepared) ? (prepared as Record<string, unknown>) : {};
     const candidate = ext.decisionSet !== undefined ? ext.decisionSet : prepared;
     const v = validateDecisionSet(candidate);
     if (!v.ok) return json({ error: v.error }, 400);
@@ -3392,7 +3388,9 @@ async function handler(req: Request): Promise<Response> {
         payload: ve.value.payload,
       });
     }
-    const stored = await appendDecisionEvents(cfg.decisionsEventsFile, cfg.decisionsOutboxFile, inputs).catch(() => null);
+    const stored = await appendDecisionEvents(cfg.decisionsEventsFile, cfg.decisionsOutboxFile, inputs).catch(
+      () => null,
+    );
     if (!stored) return json({ error: "event append failed" }, 500);
     return json({ appended: stored.length, eventIds: stored.map((e) => e.eventId) });
   }
@@ -3520,7 +3518,12 @@ async function handler(req: Request): Promise<Response> {
             {
               setId,
               type: "defer" as const,
-              payload: { bulk: true, deferredCount: result.deferredCount, lean: body.lean as string, scope: all ? "allRemaining" : "checked" },
+              payload: {
+                bulk: true,
+                deferredCount: result.deferredCount,
+                lean: body.lean as string,
+                scope: all ? "allRemaining" : "checked",
+              },
             } satisfies DecisionEventInput,
           ]
         : []),

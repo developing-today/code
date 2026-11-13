@@ -84,9 +84,7 @@ async function main(): Promise<void> {
   }
   const prepared = withGeneratedSetId(raw);
   const envelope =
-    prepared && typeof prepared === "object" && !Array.isArray(prepared)
-      ? (prepared as Record<string, unknown>)
-      : {};
+    prepared && typeof prepared === "object" && !Array.isArray(prepared) ? (prepared as Record<string, unknown>) : {};
   const candidate = envelope.decisionSet !== undefined ? envelope.decisionSet : prepared;
   const v = validateDecisionSet(candidate);
   if (!v.ok) {

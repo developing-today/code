@@ -16,13 +16,13 @@ land in three places, all idempotent on `eventId`:
 
 ## Endpoints
 
-| Route | Auth | Purpose |
-| --- | --- | --- |
-| `POST /events` (alias `/webhook`) | shared secret | Accept an event batch: `{events: [...]}` (or a bare array / single event). Stores new events in D1, fans them out to each set's Durable Object, returns `{accepted, inserted, duplicates, errors, fanout}`. |
-| `GET /sets/<setId>/events?limit=&after=` | shared secret | Read a set's events back from D1, in `ts` order. |
-| `GET /sets/<setId>/state` | shared secret | The set's Durable Object state merged with D1's stored count. |
-| `GET /sets/<setId>/stream` | shared secret | WebSocket upgrade routed to the set's Durable Object; subscribers get `{type:"decision-events", setId, events}` per new batch, plus the current state on connect. Send `ping` → `pong`, `state` → current state. |
-| `GET /health` | none | Liveness + whether the webhook secret is configured. |
+| Route                                    | Auth          | Purpose                                                                                                                                                                                                          |
+| ---------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /events` (alias `/webhook`)        | shared secret | Accept an event batch: `{events: [...]}` (or a bare array / single event). Stores new events in D1, fans them out to each set's Durable Object, returns `{accepted, inserted, duplicates, errors, fanout}`.      |
+| `GET /sets/<setId>/events?limit=&after=` | shared secret | Read a set's events back from D1, in `ts` order.                                                                                                                                                                 |
+| `GET /sets/<setId>/state`                | shared secret | The set's Durable Object state merged with D1's stored count.                                                                                                                                                    |
+| `GET /sets/<setId>/stream`               | shared secret | WebSocket upgrade routed to the set's Durable Object; subscribers get `{type:"decision-events", setId, events}` per new batch, plus the current state on connect. Send `ping` → `pong`, `state` → current state. |
+| `GET /health`                            | none          | Liveness + whether the webhook secret is configured.                                                                                                                                                             |
 
 Auth is the shared secret as `Authorization: Bearer <secret>` or the
 `X-Webhook-Secret` header, compared in constant time. With no secret

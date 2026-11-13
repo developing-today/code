@@ -365,7 +365,10 @@ export function validateDecisionSet(
         if (o.tags !== undefined) {
           const parsed = parseTagList(o.tags);
           if (!parsed) {
-            return { ok: false, error: `decisionSet item ${ledgerId} question option ${id} tags must be an array of up to ${TAG_MAX} short strings` };
+            return {
+              ok: false,
+              error: `decisionSet item ${ledgerId} question option ${id} tags must be an array of up to ${TAG_MAX} short strings`,
+            };
           }
           optTags = parsed;
         }
@@ -376,7 +379,10 @@ export function validateDecisionSet(
             o.combinationOf.length < 2 ||
             o.combinationOf.some((c) => typeof c !== "string" || !c.trim())
           ) {
-            return { ok: false, error: `decisionSet item ${ledgerId} question option ${id} combinationOf must be an array of 2+ option ids` };
+            return {
+              ok: false,
+              error: `decisionSet item ${ledgerId} question option ${id} combinationOf must be an array of 2+ option ids`,
+            };
           }
           combinationOf = [...(o.combinationOf as string[])];
         }
@@ -386,7 +392,10 @@ export function validateDecisionSet(
       for (const o of options) {
         for (const cid of o.combinationOf ?? []) {
           if (cid === o.id || !seenOptionIds.has(cid)) {
-            return { ok: false, error: `decisionSet item ${ledgerId} question option ${o.id} combinationOf references unknown option ${cid}` };
+            return {
+              ok: false,
+              error: `decisionSet item ${ledgerId} question option ${o.id} combinationOf references unknown option ${cid}`,
+            };
           }
         }
       }
@@ -413,7 +422,10 @@ export function validateDecisionSet(
       if (q.tags !== undefined) {
         const parsed = parseTagList(q.tags);
         if (!parsed) {
-          return { ok: false, error: `decisionSet item ${ledgerId} question tags must be an array of up to ${TAG_MAX} short strings` };
+          return {
+            ok: false,
+            error: `decisionSet item ${ledgerId} question tags must be an array of up to ${TAG_MAX} short strings`,
+          };
         }
         qTags = parsed;
       }
@@ -423,10 +435,16 @@ export function validateDecisionSet(
           !Array.isArray(q.recommendedOptionIds) ||
           q.recommendedOptionIds.some((r) => typeof r !== "string" || !seenOptionIds.has(r))
         ) {
-          return { ok: false, error: `decisionSet item ${ledgerId} question recommendedOptionIds must be ids of its options` };
+          return {
+            ok: false,
+            error: `decisionSet item ${ledgerId} question recommendedOptionIds must be ids of its options`,
+          };
         }
         if (mode !== "multi" && q.recommendedOptionIds.length > 1) {
-          return { ok: false, error: `decisionSet item ${ledgerId} question recommendedOptionIds allows one id unless mode is multi` };
+          return {
+            ok: false,
+            error: `decisionSet item ${ledgerId} question recommendedOptionIds allows one id unless mode is multi`,
+          };
         }
         recommendedOptionIds = [...(q.recommendedOptionIds as string[])];
       }
@@ -440,7 +458,10 @@ export function validateDecisionSet(
       if (q.versions !== undefined) {
         const parsed = sanitizeQuestionVersions(q.versions);
         if (!parsed) {
-          return { ok: false, error: `decisionSet item ${ledgerId} question versions must be an array of {version, question, editedAt}` };
+          return {
+            ok: false,
+            error: `decisionSet item ${ledgerId} question versions must be an array of {version, question, editedAt}`,
+          };
         }
         versions = parsed;
       }
@@ -693,7 +714,11 @@ export async function appendQuestionVersion(
     const entry: DecisionQuestionVersion = {
       version: nextVersion,
       question: update.question,
-      ...(update.context !== undefined ? { context: update.context } : q.context !== undefined ? { context: q.context } : {}),
+      ...(update.context !== undefined
+        ? { context: update.context }
+        : q.context !== undefined
+          ? { context: q.context }
+          : {}),
       ...(update.description !== undefined
         ? { description: update.description }
         : q.description !== undefined
@@ -892,7 +917,7 @@ export async function recordResolutions(
         // guidance. They never change the resolution kind.
         const guideIds = [
           ...(sub.optionId ? [sub.optionId] : []),
-          ...((sub.optionIds ?? []).filter((id) => id !== sub.optionId)),
+          ...(sub.optionIds ?? []).filter((id) => id !== sub.optionId),
         ];
         const guides = guideIds.map((id) => q.options.find((o) => o.id === id));
         if (guides.some((g) => !g)) {
@@ -905,9 +930,7 @@ export async function recordResolutions(
           kind: "deferred",
           lean: sub.lean,
           ...(guide ? { optionId: guide.id, optionLabel: guide.label } : {}),
-          ...(guides.length > 1
-            ? { optionIds: guideIds, optionLabels: guides.map((g) => g!.label) }
-            : {}),
+          ...(guides.length > 1 ? { optionIds: guideIds, optionLabels: guides.map((g) => g!.label) } : {}),
           ...(comment ? { comment } : {}),
           at: now,
           via,
@@ -933,7 +956,7 @@ export async function recordResolutions(
       // kind === "answered" (#9335 v2: multi-select + custom answer)
       const pickedIds = [
         ...(sub.optionId ? [sub.optionId] : []),
-        ...((sub.optionIds ?? []).filter((id) => id !== sub.optionId)),
+        ...(sub.optionIds ?? []).filter((id) => id !== sub.optionId),
       ];
       const picked = pickedIds.map((id) => q.options.find((o) => o.id === id));
       if (picked.some((o) => !o)) {
