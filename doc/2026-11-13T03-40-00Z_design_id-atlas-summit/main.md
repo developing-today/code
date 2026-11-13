@@ -79,6 +79,27 @@ cohesion and correctness. No stage is inferred from a worker's success message.
     supplies addressing, scoped provenance, lifecycle and GC contracts to those
     owners. It does not pick their product decisions by implication.
 
+### Shared identity and signature preimages
+
+New profiles distinguish a raw `PayloadId` from a signed record's `EnvelopeId`.
+Both are content IDs over their declared **exact bytes**, not a per-object registry
+translation. A canonical body commits to payload identity/length and its protocol,
+signer, authority and tenant context. Its signature covers a domain prefix and the
+canonical body, excluding its own signature and envelope ID. The envelope ID then
+hashes the complete canonical signed envelope, including the signature. Sidecar
+snapshot IDs and graph assertion IDs follow that rule. Logical graph/space IDs
+are separate stable names, never a circular hash of the assertion containing them.
+New profiles use deterministic CBOR with an explicit version; existing artifact
+JSON preimages remain a separate legacy profile, with no silent rehash/re-sign.
+
+The audited initial raw content profile is Iroh's exact-byte BLAKE3-256. Existing
+artifact SHA-256 and event/world commitments keep their domain meaning. Atlas's
+checked-in package consumes `content_hash` but does not define its production
+producer; that missing producer contract is a tracked integration input, not
+permission to assign it Iroh semantics. Snowflake refers to the Arctic embedding
+model, not an assumed Snowflake Cortex deployment. #9092 owns the second-embedder
+evaluation; its candidate set is not a preselected model.
+
 ## 3. Version layering
 
 | Layer | Meaning | Must not be claimed |
@@ -125,3 +146,17 @@ until the corresponding evidence-backed component selection is reviewed.
 - 2026-11-13: launching lane instructed parked-task handoff; issue notes and
   committed artifacts remain the stage record. No queue claim is taken back by
   this session solely to make heartbeat/checkpoint calls succeed.
+- 2026-11-13: draft PR #9238 opened. Independent inventory judge confirmed 384
+  IDs, rejected a malformed-map false-success hole and incorrect hierarchy
+  reporting; focused fixes now reject unknown endpoints and report 42 program
+  hierarchy edges. Re-review is in progress; initial disagreement is retained.
+- 2026-11-13: summit top-to-bottom pass requested concrete gap-fills: RFC-compliant
+  nonambiguous URI examples, arbitrary-precision float profile, mandatory pending
+  review for non-group append submissions, predecessor-to-successor `succeeds`,
+  aggregate rather than per-path fan-out accounting, V2 emergency revocation,
+  GC fencing against reference-add races, and model-backed evidence rather than
+  invented production benchmark claims.
+- 2026-11-13: bounded recovery did not find the original enumeration of 30 Part B
+  candidates. The question and default are recorded on #9106 comment 6843258938:
+  continue a transparently statement-derived replacement covering all S1 and the
+  seven named categories; retain the provenance gap, never claim recovered text.
