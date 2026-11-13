@@ -38,15 +38,16 @@ grep -q "GRANDFATHERED pkgs/id/src/boards.rs: 3000 production lines (limit 2500)
 echo "pass: grandfathered file passes with a warning naming its split issue"
 
 # A grandfathered file that MOVED keeps its exemption only when the
-# key names its current path (#8894): the id-worlds files live under
-# pkgs/id/crates/id-worlds/src/; with the pre-move pkgs/id/src/ key
-# this fixture would report OVER LIMIT instead of GRANDFATHERED.
-mkdir -p "$TMP/moved/pkgs/id/crates/id-worlds/src"
-gen "$TMP/moved/pkgs/id/crates/id-worlds/src/directory.rs" 3000
+# key names its current path (#8894, #9522): the directory.rs split
+# owner (#8591) lives under pkgs/id/crates/id-directory/src/; with a
+# pre-move pkgs/id/crates/id-worlds/src/ key this fixture would report
+# OVER LIMIT instead of GRANDFATHERED.
+mkdir -p "$TMP/moved/pkgs/id/crates/id-directory/src"
+gen "$TMP/moved/pkgs/id/crates/id-directory/src/directory.rs" 3000
 bash "$SCRIPT" "$TMP/moved" >"$TMP/moved.out"
 grep -q "production-line-guard: OK" "$TMP/moved.out"
-grep -q "GRANDFATHERED pkgs/id/crates/id-worlds/src/directory.rs: 3000 production lines (limit 2500) - split tracked by #8591" "$TMP/moved.out"
-echo "pass: grandfather entry matches the file at its moved (crates/id-worlds) path"
+grep -q "GRANDFATHERED pkgs/id/crates/id-directory/src/directory.rs: 3000 production lines (limit 2500) - split tracked by #8591" "$TMP/moved.out"
+echo "pass: grandfather entry matches the file at its moved (crates/id-directory) path"
 
 # Violating tree: one synthetic over-limit production file.
 mkdir -p "$TMP/bad/pkgs/id/src"
