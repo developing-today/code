@@ -658,6 +658,7 @@ const SHELL_POOLS: QuotaPool[] = [
     state: "healthy",
     windows: [],
     note: "No dated read. Live windows arrive through the quota gatherer (the Mistral credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent.",
+    extractionHealth: { status: "intentional", matched: null, reason: "uninstrumented", count: 0 },
   },
 ];
 
