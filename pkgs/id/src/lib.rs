@@ -259,6 +259,7 @@ pub mod invite;
 pub mod invites;
 pub use id_store::issuer_rotation;
 pub(crate) mod key_envelope;
+pub(crate) mod seed_phrase;
 pub mod local;
 pub use id_events::local_claims;
 pub use id_events::local_events;
