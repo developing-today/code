@@ -30,6 +30,15 @@ Queue Table Improvements was not located in repo text/history, GitHub issue sear
 
 ### Authority and precedence table (proposal)
 
+Precedence below is subordinate to the existing **protected owner priority policy**:
+[`architecture.md`](../architecture.md#protected-owner-priority-policy). A routine manual
+or automatic producer cannot change Drew's protected expedite value, peer placement,
+membership or priority-label intent. Check current membership/policy plus `owner_policy_ref`
+atomically; only the trusted configured Drew owner action can amend it. A mutable mirror
+label is not membership authority. Deny with `OWNER_POLICY_PROTECTED`, or conflict on a stale
+policy reference; preserve before/after and source proof for allowed owner amendments.
+DST-01/DST-04 share these fixtures with PRI-01/PRI-05/AUTH-01; no re-ratification is requested.
+
 This table defines *candidate interpretation* and must be checked against source authority/access controls before acceptance. Source-of-doc precedence (handoff > charter > proposal > recovered; supplement non-overriding) is not the same as field-write precedence.
 
 | Input / producer | Accepted as | Field authority and effect | Conflict / precedence behavior |
@@ -86,7 +95,7 @@ Every projection snapshot identifies desired work version, effective-policy vers
 
 ```json
 {
-  "schema_version": "1",
+  "schema_version": "fleet.command/v1",
   "operation_id": "op_...",
   "idempotency_key": "github-delivery-derived-key",
   "request_digest": "sha256:...",
@@ -104,6 +113,7 @@ Every projection snapshot identifies desired work version, effective-policy vers
   "source_event_ref": "github:delivery:...",
   "expected_work_version": "41",
   "observed_snapshot_ref": "queue:rev:...;graph:rev:...",
+  "owner_policy_ref": "owner-priority-policy:accepted-version-ref",
   "reason": {"code": "priority_label_changed", "evidence_refs": ["github:event:..."], "confidence": null},
   "dry_run": false
 }
@@ -112,6 +122,15 @@ Every projection snapshot identifies desired work version, effective-policy vers
 This composes with the common `Command` interface; authentication/capabilities are checked out of band, and this payload deliberately has no `authorized` boolean. The shared `Result` fields are `schema_version`, `operation_id`, `work`, `work_version`, `outcome`, `effects`, `warnings`, `error`, `next_action`, and `observed_at`. Integer-like values crossing JSON use the common canonical decimal-string rule when necessary. `expected_work_version` and `observed_snapshot_ref` are distinct: producer snapshot may be stale. Timestamps provide audit chronology only, not conflict ordering. Optional fields are explicitly nullable and unknown fields/version handling follow the shared architecture contract.
 
 ### Cross-target order and reconciliation
+
+The byte framing and exact full-population `fleet.selection-order/v1` DTO in
+[`architecture.md`](../architecture.md#digest-and-serialization-contract) are normative for
+`order_hash`: fixed ASCII purpose + one NUL byte + RFC 8785 canonical UTF-8, SHA-256, then
+`sha256:` plus 64 lowercase hex characters. Include snapshot/policy/graph/protection/lane
+inputs and every ordered item's comparator keys; do not hash only a top-page display or
+silently substitute target-local references. Numeric work-ID tie order preserves `9 < 10`
+despite string wire encoding. DST-06 tests framing vectors, included-input changes and
+cross-target hashes; a partial candidate set cannot claim full-order conformance.
 
 Same total order can be promised only if targets share the same `(authority_id, work_id)` string identities, taxonomy mapping, normalized fields, policy/comparator versions, both matching predicates, eligibility/capability set, as-of time and queue/graph snapshot. Apply both matching predicates, then hard eligibility, then effective urgency ascending, exact peer rank within equal effective urgency, creation time, and normalized canonical identity, per `architecture.md`. Compute a deterministic `order_hash` over authority-qualified identities and comparator inputs for the relevant eligible lane snapshot. User-facing Project order/`POSITION` may be a lossy display projection; do not claim it equals queue claim order unless verified. Claim service remains authority and must atomically recheck candidate against current work version, graph/policy snapshot, eligibility and lease. Stale order means re-evaluate, not claim stale head.
 

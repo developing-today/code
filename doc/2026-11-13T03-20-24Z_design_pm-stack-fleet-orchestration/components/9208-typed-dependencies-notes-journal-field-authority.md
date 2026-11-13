@@ -121,6 +121,15 @@ Checkpoints are durable, append-only snapshots/references useful to resume; not 
 
 ## 4. Field authority and external synchronization
 
+Priority permission is field-scoped **and** constrained by the existing protected-owner
+policy in [`architecture.md`](../architecture.md#protected-owner-priority-policy). AUTH-01
+must reject every routine/automatic protected-set score, peer-rank, priority-label or
+membership edit, including a forged owner actor field and a manual hysteresis bypass.
+Only the authenticated configured Drew owner amendment may change that policy; validate its
+version atomically and retain exact before/after evidence. Label removal never removes
+protection. Shared PRI/DST/AUTH fixtures cover all entry surfaces, stale membership versions
+and allowed owner amendments. This consumes #7030 without asking for ratification again.
+
 | Field/resource | Authority and write rule | Mirror/consumer rule |
 |---|---|---|
 | Fleet queue/work ID, title, summary | Fleet; title/summary can be seeded from issue/PR at creation only. Then independently edited. | No continuous title/body copy. Resource links explicit. |

@@ -146,7 +146,7 @@ is a local precedent, not automatic CLI conformance).
 
 ```json
 {
-  "schema_version": "1",
+  "schema_version": "fleet.command/v1",
   "operation_id": "op_<stable-id>",
   "idempotency_key": "client-stable-key",
   "request_digest": "sha256:…",
@@ -159,6 +159,7 @@ is a local precedent, not automatic CLI conformance).
   "expected_work_version": "12",
   "lease_generation": "4",
   "observed_snapshot_ref": "snapshot-<pinned-revision>",
+  "owner_policy_ref": null,
   "reason": {"code": "awaiting_maintainer", "evidence_refs": []},
   "dry_run": false
 }
@@ -195,9 +196,16 @@ Normative constraints for V2 review:
 
 ### Result and error envelopes
 
+The common wire identifiers and exact intent hashing DTO/framing are fixed in
+[`architecture.md`](../architecture.md#digest-and-serialization-contract):
+`fleet.command/v1`, `fleet.result/v1`, and the separate `fleet.command-intent/v1`
+digest purpose. CLI-02 must test fixed default/null semantics, excluded delivery/wait/output
+metadata, included state/fence/snapshot/owner-policy preconditions, RFC 8785 canonical bytes,
+and `sha256:` lowercase-hex output. Hash agreement never authorizes an actor or an effect.
+
 ```json
 {
-  "schema_version": "1",
+  "schema_version": "fleet.result/v1",
   "operation_id": "op_<stable-id>",
   "work": {"authority_id": "local-fleet", "work_id": "842"},
   "work_version": "13",
@@ -296,6 +304,12 @@ dispatch/bind proof. Proposed test portfolio:
   behavior first. No schema migration assumed. If later required, schema owner supplies expand/read
   compatibility/backfill/rollback plan and proves old clients still function; rollback must preserve
   operation receipts and avoid converting ambiguous `done` to verified completion.
+
+Source 03 §21's `CLAIM_CONFLICT`, `LEASE_EXPIRED`, `DEPENDENCY_BLOCKED`,
+`CONTEXT_INCOMPLETE`, `EXTERNAL_STATE_CHANGED`, `OUTBOX_PENDING`,
+`REMOTE_MUTATION_FAILED` and `COMPLETION_INCOMPLETE` remain explicit error-registry
+entries or documented versioned compatibility mappings. New names do not erase those
+source contracts; test the distinct conditions rather than treating every failure as one alias.
 
 ### Performance and evidence limits
 

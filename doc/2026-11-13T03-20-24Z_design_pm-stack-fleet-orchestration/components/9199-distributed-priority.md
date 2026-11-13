@@ -55,6 +55,16 @@ This proposed tuple repairs V1's no-final-ID claim tie and reconciles queue/list
 
 ### Triage mechanics
 
+All priority-affecting paths first apply the versioned protected-owner gate in
+[`architecture.md`](../architecture.md#protected-owner-priority-policy). Drew's existing
+protected expedite membership/value/peer placement is not editable by routine manual
+`priority.write`, automatic aging/clump moves, label normalization, or a hysteresis bypass.
+Only the specifically authenticated owner amendment (or that exact authorized operation)
+may change protected policy. Validate `owner_policy_ref` with the work mutation; stale policy
+conflicts and denied mutations change no score/rank/membership. This consumes #7030, not a
+new ratification request. PRI-01/PRI-05 and AUTH-01 share protected/ordinary/owner/stale-policy
+oracle cases, including label removal that must not remove protection.
+
 * Triage may compare candidates in categories (much more/slightly more/equal/slightly less/much less/custom/research); ordinary automated policy permits at most one move per item per sweep except a separate high-confidence event. Preserve original cluster intent `50 → rough 25/10/5/singles` as an illustration, not fixed group sizes or a deterministic flattening rule.
 * Adjustments require a reason, evidence, confidence, as-of, previous/new score or component, policy version, and next-review/retriage time. ±10/±25 and source examples are candidate operations, not mandates.
 * Aging is bidirectional and evidence-based: meaningful triage age, freshness, pivots, effort, deadlines, opportunities and value matter. Age alone never escalates to Critical. A pivot can lower a formerly High task; useful stagnant work may rise only with evidence.

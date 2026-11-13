@@ -25,6 +25,23 @@ before canonical dispatch cutover. Any temporary compatibility adapter must forw
 authoritative broker, retain the same operation/dedup identity, verify the returned authority
 and binding, and never dual-write stores or roll back to the bypass on broker failure.
 
+V1 also has useful projector substrate: bounded HMAC-verified webhook intake,
+delivery-GUID deduplication, remote-activity reconciliation and a hot ledger with issued
+high-water marks and monotone consumer acknowledgments. Reuse those mechanisms and fixtures;
+do not invent a second webhook service. Its broker-task-export queue view is a read-only
+snapshot, not a continuously refreshed canonical claim feed. The `pmp_` projection store
+remains disposable/non-authoritative and never becomes the work journal, mutation outbox,
+private-note store or Project writer. A projection's `delivery applied` marker does **not**
+mean an operational command was durably accepted. Actionable forwarding needs separate
+canonical operation identity/durability and result; do not lose a command behind an already
+deduplicated projection event or report acceptance from a projection-only acknowledgment.
+
+"Disposable" applies only to rebuildable projection rows, **not deletion of the shared
+database or unique human input**. Preserve manually written `pmp_links`, accepted link-write
+records and unrelated applications' tables; projector README lines 48–64 explicitly requires
+a full backup including those links. A link-registry fact retains its current owner until an
+explicit one-home-per-fact compatibility/migration decision, not an implicit copy into Fleet.
+
 ```mermaid
 flowchart LR
   Human[Human rulings / CLI] --> Command[Shared validated command interface]
@@ -85,13 +102,15 @@ mechanisms. An implementation slice can be useful before the entire program is i
 
 Component examples are illustrative until resolved into this common interface. Use a
 versioned, typed envelope; do not implement a collection of independent CLI backends.
+The new shared wire identifiers are `fleet.command/v1` and `fleet.result/v1`; nested
+manifests, observations and policy profiles have their own named schema identifiers.
 
 ```text
 Command {
   schema_version, operation_id, idempotency_key, request_digest,
   work: { authority_id, work_id }, kind, arguments,
   actor_ref, source_ref, source_event_ref?, delivery_id?, source_revision?, session_ref?,
-  expected_work_version?, lease_generation?, observed_snapshot_ref?,
+  expected_work_version?, lease_generation?, observed_snapshot_ref?, owner_policy_ref?,
   reason: { code, evidence_refs[], confidence? }, dry_run
 }
 Result {
@@ -127,6 +146,10 @@ Result {
 - Integer IDs, versions, generations and rank keys cross JSON as canonical decimal strings
   wherever they may exceed JavaScript's exact integer range. Do not coerce through floating
   point. UTC instants and snapshot/policy inputs must be pinned for deterministic replay.
+- Work IDs in this queue's contract are canonical unsigned decimal strings. Compare authority
+  IDs bytewise, then work IDs by arbitrary-precision integer value (equivalently digit count,
+  then lexical digits). This preserves V1 list's numeric ID tie order; it is not lexical
+  `"10" < "9"` ordering. Opaque provider/session IDs stay opaque strings, never integers.
 - Outcomes distinguish `rejected`, `accepted`, `running`, `pending_sync`, `partial`,
   `conflict`, `uncertain`, and `verified_complete`. A particular read-only operation can
   have a verified result without completing the work item. Effects name their requested,
@@ -134,6 +157,104 @@ Result {
 - A timeout returns a resumable operation receipt, not fictional cancellation. Dry-run
   creates no work-state, journal, outbox or remote mutation. Capability discovery advertises
   only the commands and guarantees that target actually supports.
+
+### Digest and serialization contract
+
+Use the [RFC 8785 JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785.txt)
+for **new work-command v1** fingerprints, with SHA-256 and a purpose/version domain separator.
+This informational RFC is a serialization reference, not a new signing/PKI system or a
+change to the existing creation-outbox hash format. Its UTF-16 property-name ordering,
+UTF-8 output, unchanged string values and finite-number rules need shared Rust/TS golden
+vectors; ordinary language-default JSON sorting is not an equivalent specification.
+
+`request_digest` hashes the validated, default-expanded intent DTO: schema version, canonical
+work pair, kind, typed arguments, expected work version, lease generation, observed snapshot
+reference, owner-policy reference and reason. Scope the idempotency lookup by authenticated principal and authority;
+client actor claims cannot select that scope. Exclude operation/key identifiers, delivery
+attempt IDs, receipt times, output formatting, `wait`/timeout and dry-run execution mode from
+this intent DTO. Transport/source/session attribution stays durably recorded alongside it.
+A replay with the same key and altered **intent/precondition** must conflict; an attempt with
+a new delivery ID or wait budget must still recover the original operation. New authorization
+is never implied by a matching digest. The command schema defines any set normalization before
+hashing; JCS itself preserves arrays and string values and performs no Unicode normalization.
+Reject duplicate properties, invalid Unicode, NaN/Infinity and lossy numeric IDs before hashing.
+
+Byte framing is **exactly**:
+
+```text
+digest(domain, dto) = "sha256:" + lower_hex(
+  SHA256(ASCII(domain) || byte(0x00) || UTF8(JCS(dto))))
+```
+
+There is one NUL byte, no length prefix, BOM, newline or other whitespace outside the
+canonical JSON bytes. `domain` is selected only from this registry, never arbitrary client text:
+
+| Purpose | Exact ASCII domain | Canonical DTO |
+|---|---|---|
+| Request fingerprint | `fleet.command-intent/v1` | Exact intent object below |
+| Hydration manifest | `fleet.context-manifest/v1` | Full manifest, omitting only `integrity.manifest_digest` |
+| Cross-target selection order | `fleet.selection-order/v1` | Exact order object below |
+
+The intent object has **exactly** these top-level keys; nullable fields are present as `null`
+and fixed schema defaults are expanded before JCS. Do not inject current wall-clock or newly
+fetched state as an implicit default that changes a retry's fingerprint:
+
+```text
+{
+  schema_version: "fleet.command-intent/v1",
+  command_schema_version: "fleet.command/v1",
+  work, kind, arguments,
+  expected_work_version: string|null,
+  lease_generation: string|null,
+  observed_snapshot_ref: string|null,
+  owner_policy_ref: string|null,
+  reason: { code: string, evidence_refs: array, confidence: finite_number|null }
+}
+```
+
+Arguments and evidence-reference shapes come from the registered command schema. Any
+semantically unordered set is normalized there, not by rearranging arbitrary arrays during
+JCS. Authorization decisions, resolved runtime observations and source/session attribution
+remain in the operation record but do not silently enter this DTO.
+
+The order object has exactly the following keys. Every reference is canonical/authority-issued,
+not a target-local database row number. The `ordered_items` array is the **entire** eligible
+population, already in canonical comparator order; JCS preserves that array order:
+
+```text
+{
+  schema_version: "fleet.selection-order/v1",
+  authority_id, queue_snapshot_ref, graph_revision, policy_ref,
+  taxonomy_ref, comparator_ref, owner_policy_ref, as_of_utc,
+  lane_context: {
+    capabilities: sorted_unique_string_array,
+    filter_contract_ref, filter_ast,
+    authorization_scope_ref, fairness_state_ref: string|null
+  },
+  complete_candidate_set: true,
+  eligible_count: canonical_decimal_string,
+  ordered_items: [
+    { work_id, work_version, effective_urgency, peer_rank, created_at }
+  ]
+}
+```
+
+Work versions, graph/policy/protection references, as-of and lane inputs bind the derivation;
+each ordered item carries all comparator keys. Work/version/urgency/rank values use canonical
+decimal strings (signed for a profile permitting negative urgency/rank); timestamps are the
+authority's canonical UTC strings, preserved without parse/reserialize changes. A partial or
+truncated candidate snapshot must not emit a conformant `order_hash`. Comparing only a top-20
+display page is not full-order conformance. A matching hash is a fingerprint, not authority,
+proof of complete inputs, or a claim grant. Byte/framing golden vectors are in
+[`contracts/digest-vectors.json`](contracts/digest-vectors.json); application-schema and
+cross-language golden DTO tests remain required implementation work.
+
+For a self-describing hydration manifest, `integrity.manifest_digest` is SHA-256 over its
+canonical form with **that digest field omitted**, under a separate manifest-purpose domain
+separator. Artifact digests cover the exact stored artifact bytes. Do not require a manifest
+to contain the digest of its own complete serialized bytes. See
+[`research/canonical-json-evidence.md`](research/canonical-json-evidence.md) for facts,
+tradeoffs and required conformance cases. These are design contracts, not code already shipped.
 
 ## Ordering and distributed priority
 
@@ -148,7 +269,8 @@ For one fixed authority/lane snapshot, first require **both** the task's require
 the claimer **and** the claimer's explicit filter of tasks. "Union of constraints" does
 not mean OR eligibility. Default predicates are both true. Then apply hard eligibility;
 then compare effective urgency, explicit exact peer rank within equal urgency, creation
-time and normalized canonical ID. Record policy, graph, item revisions and as-of time.
+time and the authority-qualified numeric work-ID comparator above. Record policy, graph,
+item revisions and as-of time.
 Claim revalidates current predicates; a projection or sampled candidate cannot grant a lease.
 The consistency boundary is the broker's claim transaction: validate item/work version,
 graph revision, active policy/profile revision, ownership and relevant eligibility inputs
@@ -157,6 +279,44 @@ claim time. A changed input requires recomputation/reselection or a typed stale 
 If the adapter cannot provide that atomic validation, it cannot advertise this capability.
 Graph revision validation and edge insertion share a transaction/serialized edit protocol;
 two individually valid opposite-edge checks must not both commit.
+
+### Protected owner priority policy
+
+Consume the existing Drew-only protected expedite ruling: #7030 and
+`pm-stack/design-reprioritization-2026-11-12.md:11–15,122,207`. The latter file's old numeric
+band table does **not** override #7030's ratified `15`/`25` correction. Protection is a
+write-authority restriction, not a new score, an execution hold, or a bypass of hard blockers.
+
+The existing policy/configuration authority must expose a versioned
+`fleet.owner-priority-policy/v1` observation containing `policy_ref`, `version`, source/evidence
+references, the trusted configured Drew owner-principal binding, a canonical protected-membership
+snapshot/reference, and protected fields/actions. Membership is owner-accepted policy, not
+inferred solely from a mutable label or score. Removing the mirror label cannot unprotect an item.
+Resolve issue-level membership to canonical work/task references without conflating equal
+issue numbers across repos. This describes an interface over existing policy state, not a new DB.
+
+Every priority-affecting mutation checks the current policy and `owner_policy_ref` atomically
+with the work-version mutation. Protected intrinsic score, peer placement, priority-label intent
+and membership changes require the specifically authenticated Drew owner action (or delivery
+of that exact already-authorized owner operation). A generic maintainer, agent, triage, manual
+`priority.write`, `--force` flag, confidence score or hysteresis bypass is **not** that authority.
+Automatic aging, clump refinement, label normalization, import/reconciliation, mobile and slash
+commands all cross the same gate. An untrusted removal/addition is a conflict/triage observation,
+not permission to demote, remove protection or promote an item into the protected set.
+
+Denied mutations return `OWNER_POLICY_PROTECTED` with no score/rank/membership change;
+a stale policy reference returns `OWNER_POLICY_VERSION_CONFLICT`. Missing/unverifiable policy
+for an affected mutation fails closed. Pure reads and otherwise eligible execution are not
+globally blocked by this priority-write restriction. Derived pressure remains separately
+explainable and cannot rewrite a protected intrinsic value. Projection repair may restore only
+the already-accepted policy value under its service scope; it cannot invent owner intent.
+
+An allowed owner amendment records authenticated principal, exact action/effect, current and
+next policy/membership versions, before/after, source evidence and operation ID. Before delayed
+delivery, recheck revocable permission/current preconditions; a client-provided owner/actor flag
+is never proof. Required oracles exercise **every** mutation path against protected/ordinary
+items, unauthorized actors, owner actions, membership changes and stale policy snapshots. This
+consumes an existing ruling; it is not a request for Drew to ratify it again.
 
 The source explicitly requests before/after placement: retain that feature, with exact
 integer peer ranks and an auditable rebalance contract. A cross-urgency move requires an
@@ -221,6 +381,7 @@ not an invented crate, daemon, executable or database:
 ```text
 pkgs/fleet/crates/fleet-queue/src/work/
   contracts.rs       # identity, command/result/version semantics
+  cli.rs             # strict work-command parsing; no shared registry ownership
   priority.rs        # intrinsic/profile/comparator/triage evaluation
   distribution.rs    # normalized intents, revisions, projection observations
   selection.rs       # eligibility, urgent gate, exploration model
@@ -240,6 +401,9 @@ independent of broker/client feature-gated adapters. Storage still belongs to ex
 stay in existing aggregator/projector/dispatch modules. One integration slice owns shared
 `lib.rs`, CLI `main.rs` and registry registration so parallel implementation does not race
 over those files. New module files/tests can otherwise be independent.
+The current slice plan names this shared registration work `CLI-13`; `CLI-02` owns the
+pure contract/parser, and `CLI-12` separately owns mutating resource-link operations rather
+than hiding them in read-only inspect/status. These planning keys do not allocate GitHub IDs.
 Placement is a concrete implementation-planning default, not allocation of storage/schema
 ownership. Reconcile it with #3424/#8575/#8579 and the QTI provenance disposition before
 schema-coupled work. `operations.rs` requires its own scoped mutation-outbox issue; it does

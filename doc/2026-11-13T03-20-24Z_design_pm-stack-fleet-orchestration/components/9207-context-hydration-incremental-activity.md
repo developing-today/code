@@ -24,6 +24,13 @@ Artifact directory proposal (implementation must use existing artifact root/path
 
 ### 2.2 Versioned manifest (normative shape candidate)
 
+The manifest digest follows the exact `fleet.context-manifest/v1` framing and self-field
+exclusion in [`architecture.md`](../architecture.md#digest-and-serialization-contract).
+Omit only `integrity.manifest_digest` before RFC 8785 canonicalization, hash the registered
+ASCII purpose plus one NUL byte plus canonical UTF-8, and emit `sha256:` plus lowercase hex.
+Referenced artifact hashes cover exact artifact bytes. HYD-01 includes independent framing
+and changed-field fixtures; hashing a manifest including its own digest is not the contract.
+
 ```json
 {
   "schema_version": "fleet.context-manifest/v1",
