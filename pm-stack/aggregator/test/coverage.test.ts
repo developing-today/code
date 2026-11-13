@@ -15,6 +15,7 @@ import {
   type CoverageReport,
   type CoverageSnapshotFile,
   type RepoCensus,
+  type RepoCoverage,
 } from "../src/coverage.ts";
 import { coverageFromFeed } from "../src/feed.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
@@ -612,17 +613,25 @@ describe("CoverageSnapshotStore writes (PR #3309 Codex)", () => {
   });
 });
 describe("CoverageSnapshotStore reads (#4140)", () => {
-  const row = {
+  const row: RepoCoverage = {
     repo: "developing-today/code",
     openIssues: 10,
     gateNow: 1,
     gateNext: 2,
+    staleOpenIssues: null,
+    staleIssuesCollectedAt: null,
+    staleIssuesError: null,
     poolItems: 3,
     poolUnsetStatus: 1,
     poolUnsetArea: 0,
   };
-  const report = { generatedAt: "2026-11-01T00:00:00Z", repos: [row] };
-  const goodFile = { baseline: report, current: report, weekly: report, anchorAt: "2026-11-01T00:00:00Z" };
+  const report: CoverageReport = { generatedAt: "2026-11-01T00:00:00Z", repos: [row] };
+  const goodFile: CoverageSnapshotFile = {
+    baseline: report,
+    current: report,
+    weekly: report,
+    anchorAt: "2026-11-01T00:00:00Z",
+  };
 
   async function readRaw(raw: unknown): Promise<CoverageSnapshotFile | null> {
     const dir = await mkdtemp(join(tmpdir(), "coverage-store-read-"));
