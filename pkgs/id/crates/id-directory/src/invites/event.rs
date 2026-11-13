@@ -12,7 +12,7 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use iroh_tickets::{Ticket as _, endpoint::EndpointTicket};
 use p2panda_core::Hash;
 
-use crate::groups::Role;
+use id_events::groups::Role;
 
 const DOMAIN: &[u8] = b"id-invite/v1/event";
 const TICKET_DOMAIN: &[u8] = b"id-invite/v1/ticket";
@@ -179,7 +179,7 @@ pub(super) fn ticket_digest(ticket: &EndpointTicket) -> [u8; 32] {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+    use id_core::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
 
     fn body_for(key: &SigningKey) -> InviteBody {
         InviteBody {

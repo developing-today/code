@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, bail, ensure};
 use rand::RngExt as _;
 
-use crate::world::hex_encode;
+use id_core::hex::hex_encode;
 
 /// One message to one address.
 #[derive(Clone, Debug, PartialEq, Eq)]
