@@ -63,6 +63,12 @@ async function access(db,id,user,level='reader',allowArchived=true){
  return s;
 }
 function audit(db,id,user,action,details){return db.prepare('INSERT INTO access_events(id,store_id,actor_id,at,action,details_json) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),id,user.id,now(),action,JSON.stringify(details))}
+async function adminMutation(db,sid,user,action,details,makeWrites,{activeShared=false}={}){
+ const receipt=crypto.randomUUID();
+ const guard=db.prepare("INSERT INTO access_events(id,store_id,actor_id,at,action,details_json) SELECT ?,s.id,?,?,?,? FROM stores s JOIN memberships m ON m.store_id=s.id WHERE s.id=? AND m.user_id=? AND m.role='admin' AND (s.type='shared' OR s.owner_id=?) AND (?=0 OR (s.archived=0 AND s.type='shared'))").bind(receipt,user.id,now(),action,JSON.stringify(details),sid,user.id,user.id,+activeShared);
+ const results=await db.batch([guard,...makeWrites(receipt)]);
+ if(!results[0]?.meta?.changes)fail(403,'Administrator authority changed; reload before retrying');
+}
 function publicSnapshot(state){
  const tags=state.tags.filter(t=>!t.archived&&!t.hidden),allowed=new Set(tags.map(t=>t.id));
  const items=state.items.filter(i=>!i.archived&&!i.hidden).map(i=>({...i,tags:i.tags.filter(t=>allowed.has(t))}));
@@ -155,10 +161,13 @@ export async function api(request,env){
    if(i.status!=='pending')return json({status:i.status});
    if(b.action==='accept'&&(i.type!=='shared'||i.archived))fail(409,'This store is not currently accepting members');
    const at=now(),status=b.action==='accept'?'accepted':'declined';
-   const stmts=[];
-   if(b.action==='accept')stmts.push(db.prepare("INSERT INTO memberships(store_id,user_id,email,role,created_at) SELECT store_id,?,?,role,? FROM invitations WHERE id=? AND status='pending' ON CONFLICT(store_id,user_id) DO NOTHING").bind(id,email,at,iid));
-   stmts.push(db.prepare("UPDATE invitations SET status=?,responded_at=? WHERE id=? AND status='pending'").bind(status,at,iid),audit(db,i.store_id,user,'invite.'+status,{inviteId:iid,email}));
-   await db.batch(stmts);return json({status,storeId:i.store_id});
+   const receipt=crypto.randomUUID();
+   const stmts=[db.prepare("INSERT INTO access_events(id,store_id,actor_id,at,action,details_json) SELECT ?,i.store_id,?,?,?,? FROM invitations i JOIN stores s ON s.id=i.store_id WHERE i.id=? AND i.email=? AND i.status='pending' AND (?='decline' OR (s.type='shared' AND s.archived=0))").bind(receipt,id,at,'invite.'+status,JSON.stringify({inviteId:iid,email}),iid,email,b.action)];
+   if(b.action==='accept')stmts.push(db.prepare("INSERT INTO memberships(store_id,user_id,email,role,created_at) SELECT store_id,?,?,role,? FROM invitations WHERE id=? AND status='pending' AND EXISTS(SELECT 1 FROM access_events WHERE id=?) ON CONFLICT(store_id,user_id) DO NOTHING").bind(id,email,at,iid,receipt));
+   stmts.push(db.prepare("UPDATE invitations SET status=?,responded_at=? WHERE id=? AND status='pending' AND EXISTS(SELECT 1 FROM access_events WHERE id=?)").bind(status,at,iid,receipt));
+   const results=await db.batch(stmts);
+   if(!results[0]?.meta?.changes){const actual=await db.prepare('SELECT status FROM invitations WHERE id=? AND email=?').bind(iid,email).first();if(actual&&actual.status!=='pending')return json({status:actual.status,storeId:i.store_id});fail(409,'Invitation or store changed; reload before responding');}
+   return json({status,storeId:i.store_id});
   }
   if(path[1]!=='stores'||!path[2])fail(404,'Route not found');
   const sid=path[2],sub=path[3];
@@ -241,7 +250,7 @@ export async function api(request,env){
    if(type!==currentType&&(type==='open'||currentType==='open'))fail(409,'Open stores cannot be converted. Create a separate store to avoid exposing old history.');
    if(type!==currentType&&(await db.prepare('SELECT key FROM default_stores WHERE store_id=?').bind(sid).first()))fail(409,'Default personal and shared stores retain their original type. Create another store for a different audience.');
    if(type!==currentType&&s.owner_id!==id)fail(403,'Only the owner can change store type');
-   await db.batch([db.prepare('UPDATE stores SET name=?,type=?,archived=?,updated_at=? WHERE id=?').bind(name,type==='open'?'shared':type,+archived,now(),sid),audit(db,sid,user,'store.settings',{before:{name:s.name,type:s.type,archived:!!s.archived},after:{name,type,archived}})]);
+   await adminMutation(db,sid,user,'store.settings',{before:{name:s.name,type:s.type,archived:!!s.archived},after:{name,type,archived}},receipt=>[db.prepare('UPDATE stores SET name=?,type=?,archived=?,updated_at=? WHERE id=? AND EXISTS(SELECT 1 FROM access_events WHERE id=?)').bind(name,type==='open'?'shared':type,+archived,now(),sid,receipt)]);
    return json({store:storeData(await access(db,sid,user))});
   }
   if(sub==='access'&&method==='GET'){
@@ -257,13 +266,13 @@ export async function api(request,env){
    const s=await access(db,sid,user,'admin'),b=await body(request),uid=path[4];
    if(uid===s.owner_id)fail(403,'The store owner always retains admin access');
    if(!['reader','editor','admin','remove'].includes(b.role))fail(400,'Invalid role');
-   await db.batch([b.role==='remove'?db.prepare('DELETE FROM memberships WHERE store_id=? AND user_id=?').bind(sid,uid):db.prepare('UPDATE memberships SET role=? WHERE store_id=? AND user_id=?').bind(b.role,sid,uid),audit(db,sid,user,'member.role',{userId:uid,role:b.role})]);
+   await adminMutation(db,sid,user,'member.role',{userId:uid,role:b.role},receipt=>[b.role==='remove'?db.prepare('DELETE FROM memberships WHERE store_id=? AND user_id=? AND EXISTS(SELECT 1 FROM access_events WHERE id=?)').bind(sid,uid,receipt):db.prepare('UPDATE memberships SET role=? WHERE store_id=? AND user_id=? AND EXISTS(SELECT 1 FROM access_events WHERE id=?)').bind(b.role,sid,uid,receipt)]);
    return json({ok:true});
   }
   if(sub==='invites'&&method==='POST'){
    const s=await access(db,sid,user,'admin',false);
    if(path[4]&&path[5]==='revoke'){
-    await db.batch([db.prepare("UPDATE invitations SET status='revoked',responded_at=? WHERE id=? AND store_id=? AND status='pending'").bind(now(),path[4],sid),audit(db,sid,user,'invite.revoked',{inviteId:path[4]})]);
+    await adminMutation(db,sid,user,'invite.revoked',{inviteId:path[4]},receipt=>[db.prepare("UPDATE invitations SET status='revoked',responded_at=? WHERE id=? AND store_id=? AND status='pending' AND EXISTS(SELECT 1 FROM access_events WHERE id=?)").bind(now(),path[4],sid,receipt)],{activeShared:true});
     return json({ok:true});
    }
    if(path.length!==4)fail(404,'Route not found');
@@ -273,7 +282,7 @@ export async function api(request,env){
    const existing=await db.prepare("SELECT id,role FROM invitations WHERE store_id=? AND email=? AND status='pending'").bind(sid,email).first();
    if(existing)return json({invitation:{id:existing.id,email,role:existing.role,status:'pending'},sent:false,note:'Invitation already pending. No email was sent.'});
    const iid=crypto.randomUUID(),at=now();
-   await db.batch([db.prepare('INSERT INTO invitations(id,store_id,email,role,created_by,created_at) VALUES(?,?,?,?,?,?)').bind(iid,sid,email,role,id,at),audit(db,sid,user,'invite.created',{inviteId:iid,email,role})]);
+   await adminMutation(db,sid,user,'invite.created',{inviteId:iid,email,role},receipt=>[db.prepare('INSERT INTO invitations(id,store_id,email,role,created_by,created_at) SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM access_events WHERE id=?)').bind(iid,sid,email,role,id,at,receipt)],{activeShared:true});
    return json({invitation:{id:iid,email,role,status:'pending'},sent:false,note:'Invitation saved, not emailed. Invitees must be allowed through the Site sharing policy before accepting.'},201);
   }
   fail(404,'Route not found');
