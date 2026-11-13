@@ -177,6 +177,7 @@ async fn provider(store: &Store, graph: Graph) -> (Router, EndpointAddr) {
         Arc::new(graph),
         BlobPolicy::default(),
         AccessPolicy::restricted([]),
+        std::collections::BTreeSet::new(),
     );
     let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(store, Some(events)))

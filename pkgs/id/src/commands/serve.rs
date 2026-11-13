@@ -725,6 +725,13 @@ fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
     crate::commands::group::log_path(path)
 }
 
+/// The largest blob the gate's HashSeq expansion will read into memory: a
+/// `HashSeq` of this size names 32768 children, far beyond any collection
+/// this node serves; a larger blob is treated as plain content, never a
+/// collection, so building the reference index stays size-bounded.
+#[cfg(feature = "web")]
+const MAX_HASHSEQ_BYTES: u64 = 1 << 20;
+
 /// Builds the blob gate's folded worlds from the two sources serve has: the group
 /// log at `groups_log` for membership, and the event store's document references
 /// for which blobs each world names (#173).
@@ -763,13 +770,32 @@ async fn build_blob_gate(
             }
         }
     };
-    // Expand HashSeq collections whose children are all in the store.
+    // Expand HashSeq collections whose children are all in the store. The
+    // expansion is bounded (#7181 review): only a group-referenced blob can
+    // contribute children to the index — an ungrouped reference is discarded
+    // below, so reading it here would be pure waste — and a blob is read into
+    // memory only when its stored size, asked from the store status rather
+    // than the content, is a positive multiple of 32 no larger than
+    // MAX_HASHSEQ_BYTES. A HashSeq is a list of 32-byte hashes; anything else
+    // cannot be one, and an oversized one is not worth a startup-time read
+    // proportional to its full contents.
     let mut children: std::collections::HashMap<iroh_blobs::Hash, Vec<iroh_blobs::Hash>> =
         std::collections::HashMap::new();
     let mut seen: std::collections::BTreeSet<iroh_blobs::Hash> = std::collections::BTreeSet::new();
-    let mut frontier: Vec<iroh_blobs::Hash> = references.iter().map(|(hash, _)| *hash).collect();
+    let mut frontier: Vec<iroh_blobs::Hash> = references
+        .iter()
+        .filter(|(_, group)| group.is_some())
+        .map(|(hash, _)| *hash)
+        .collect();
     while let Some(hash) = frontier.pop() {
         if !seen.insert(hash) {
+            continue;
+        }
+        let Ok(iroh_blobs::api::blobs::BlobStatus::Complete { size }) = store.status(hash).await
+        else {
+            continue;
+        };
+        if size == 0 || size > MAX_HASHSEQ_BYTES || !size.is_multiple_of(32) {
             continue;
         }
         let Ok(bytes) = store.get_bytes(hash).await else {
@@ -991,6 +1017,18 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // allows them only from nodes the access policy lets write. With the blob
     // gate built, the gate's handler decides pushes the same way and also
     // membership-checks fetches and observes (#173).
+    // The gate's local readers: the node's own key and the data directory's
+    // client key — the keys the write policy already trusts automatically —
+    // so the local CLI and REPL keep reading the node's own store with the
+    // gate on (#173, #7181 review).
+    let local_readers: std::collections::BTreeSet<EndpointId> =
+        match load_or_create_keypair(crate::CLIENT_KEY_FILE).await {
+            Ok(client_key) => [node_id, client_key.public()].into_iter().collect(),
+            Err(error) => {
+                warn!("blob gate: cannot load the client key for local reads: {error}");
+                [node_id].into_iter().collect()
+            }
+        };
     let blobs = match &blob_gate {
         Some(gate) => BlobsProtocol::new(
             &store_handle,
@@ -998,6 +1036,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 Arc::clone(gate),
                 crate::blob_gate::BlobPolicy::default(),
                 access.clone(),
+                local_readers,
             )),
         ),
         None => BlobsProtocol::new(
