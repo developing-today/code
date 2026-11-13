@@ -407,29 +407,56 @@ const MAX_PAGES: u64 = 100;
 /// The items of one list page: the array of a bare-array body
 /// (forks), or the single array field of an object body
 /// (`workflow_runs` / `jobs` / `workflows`).
-fn page_items(body: &Value) -> Vec<Value> {
+///
+/// A body with NO array at all is not an empty page — it is a
+/// malformed page (the listing field is `null`, absent, or the
+/// wrong shape), and reading it as empty would end the walk
+/// early and present a truncated listing as exact, against this
+/// crate's never-truncate-silently rule (#9556). It errors,
+/// naming the fields the body does carry, so the listing that
+/// failed is identifiable from the message.
+fn page_items(body: &Value) -> Result<Vec<Value>> {
     if let Some(items) = body.as_array() {
-        return items.clone();
+        return Ok(items.clone());
     }
     if let Some(obj) = body.as_object() {
         for value in obj.values() {
             if let Some(items) = value.as_array() {
-                return items.clone();
+                return Ok(items.clone());
             }
         }
+        let fields = obj
+            .keys()
+            .map(|k| k.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(transport_err(format!(
+            "malformed GitHub list page: object body has no array listing field \
+             (fields present: {fields}); refusing to treat it as an empty final page"
+        )));
     }
-    Vec::new()
+    Err(transport_err(format!(
+        "malformed GitHub list page: body is {}, not an array or a listing object; \
+         refusing to treat it as an empty final page",
+        match body {
+            Value::Null => "null",
+            Value::Bool(_) => "a boolean",
+            Value::Number(_) => "a number",
+            Value::String(_) => "a string",
+            _ => "an unexpected shape",
+        }
+    )))
 }
 
 /// Append `next` page's items onto `merged` (the first page's body,
 /// kept as the shape template); an object body's `total_count` is
 /// rewritten to the merged length so it can never again describe
 /// only the first page.
-fn append_page(merged: &mut Value, next: &Value) {
-    let items = page_items(next);
+fn append_page(merged: &mut Value, next: &Value) -> Result<()> {
+    let items = page_items(next)?;
     if let Some(arr) = merged.as_array_mut() {
         arr.extend(items);
-        return;
+        return Ok(());
     }
     if let Some(obj) = merged.as_object_mut() {
         let key = obj
@@ -446,6 +473,7 @@ fn append_page(merged: &mut Value, next: &Value) {
             }
         }
     }
+    Ok(())
 }
 
 /// Read a GitHub list to completion (#6605): request pages through
@@ -459,7 +487,7 @@ fn append_page(merged: &mut Value, next: &Value) {
 /// `scan_repo` does, deliberately unchanged.
 fn fetch_all_pages<F: FnMut(u64) -> Result<Value>>(mut fetch: F) -> Result<Value> {
     let mut merged = fetch(1)?;
-    let mut last_len = page_items(&merged).len() as u64;
+    let mut last_len = page_items(&merged)?.len() as u64;
     let mut page = 1;
     while last_len >= PAGE_SIZE {
         page += 1;
@@ -469,8 +497,8 @@ fn fetch_all_pages<F: FnMut(u64) -> Result<Value>>(mut fetch: F) -> Result<Value
             )));
         }
         let next = fetch(page)?;
-        last_len = page_items(&next).len() as u64;
-        append_page(&mut merged, &next);
+        last_len = page_items(&next)?.len() as u64;
+        append_page(&mut merged, &next)?;
     }
     Ok(merged)
 }
@@ -1405,7 +1433,11 @@ mod tests {
                 );
                 assert_eq!(total_count(&merged), n as u64, "seed {seed}");
             } else {
-                assert_eq!(page_items(&merged), model, "seed {seed}: concatenation");
+                assert_eq!(
+                    page_items(&merged).unwrap(),
+                    model,
+                    "seed {seed}: concatenation"
+                );
             }
         }
         // Cap invariant: an endless full-page list is rejected
@@ -1453,6 +1485,43 @@ mod tests {
             }
         });
         assert!(failed.is_err());
+    }
+
+    #[test]
+    fn pagination_malformed_page_errors_instead_of_truncating() {
+        // #9556: a malformed page — the listing field present but
+        // null — is not an empty final page. The walk must fail
+        // naming the listing, never return the partial listing as
+        // exact; a real empty array page still ends the walk.
+        let page = |items: Vec<Value>| json!({"total_count": 150, "workflow_runs": items});
+        let malformed_second = fetch_all_pages(|n| {
+            Ok(match n {
+                1 => page((1..=100).map(|i| json!({"id": i})).collect()),
+                _ => json!({"total_count": 150, "workflow_runs": null}),
+            })
+        });
+        let err = malformed_second.unwrap_err();
+        assert!(
+            err.message().contains("workflow_runs"),
+            "error names the listing field: {}",
+            err.message()
+        );
+
+        let malformed_first = fetch_all_pages(|_| Ok(json!({"workflow_runs": null})));
+        assert!(malformed_first.is_err());
+
+        let mut calls = 0;
+        let merged = fetch_all_pages(|n| {
+            calls += 1;
+            Ok(match n {
+                1 => page((1..=100).map(|i| json!({"id": i})).collect()),
+                _ => page(vec![]),
+            })
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(run_ids(&merged).len(), 100);
+        assert_eq!(total_count(&merged), 100);
     }
 
     #[test]
