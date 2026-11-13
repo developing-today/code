@@ -363,6 +363,11 @@ class TestLaunch(unittest.TestCase):
         self.assertIn("--task", claim)
         self.assertIn("777", claim)
         self.assertIn("openchamber", claim)
+        # #8176: the by-id claim stamps the route the session is
+        # created under (this row names no model — the default
+        # route).
+        self.assertEqual(claim[claim.index("--model-provider") + 1], "opencode-route")
+        self.assertEqual(claim[claim.index("--model-id") + 1], "workhorse")
         checkpoint = fq.calls[2]
         self.assertIn("opencode-claimant", checkpoint)
 

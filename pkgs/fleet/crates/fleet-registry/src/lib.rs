@@ -52,6 +52,10 @@ pub enum Capability {
     /// `fleet secrets …` — resolve secrets by name (step 6, #5554):
     /// the fleet-secrets chain as a verb — broker first, `bws` fallback.
     Secrets,
+    /// `fleet gh …` — the real `gh` CLI as a passthrough under a
+    /// rotating token (personal + the developing.today App's
+    /// installation tokens), code#8887.
+    Gh,
 }
 
 impl Capability {
@@ -71,6 +75,7 @@ impl Capability {
             Capability::DispatchTest => "dispatch-test",
             Capability::LaptopAgent => "laptop-agent",
             Capability::Secrets => "secrets",
+            Capability::Gh => "gh",
         }
     }
 
@@ -89,6 +94,7 @@ impl Capability {
         Capability::DispatchTest,
         Capability::LaptopAgent,
         Capability::Secrets,
+        Capability::Gh,
     ];
 }
 
@@ -279,6 +285,14 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Secrets,
         aliases: &[],
         subcommands: &["get", "list"],
+    },
+    Domain {
+        name: "gh",
+        summary: "The real `gh` CLI, passed through under a rotating fleet token (personal, then the developing.today App's installations); rate-limit and permission failures fail over to the next token.",
+        capabilities: &[Capability::Gh],
+        primary: Capability::Gh,
+        aliases: &[],
+        subcommands: &[],
     },
     Domain {
         name: "search",

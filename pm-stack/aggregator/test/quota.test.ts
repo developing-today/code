@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { poolState, windowPercent } from "../src/derive.ts";
 import { disabledProvidersFromConfig } from "../src/aa.ts";
-import { extractQuotaPools } from "../src/quota-extract.ts";
+import { extractQuotaPools, POOL_SPECS } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 
 // A synthetic quota view carrying the same dated-read phrasing the
@@ -82,36 +82,40 @@ describe("quota extractors", () => {
     const consumers = [
       {
         id: "_openai.main",
-        view: (reset: string) => `\n### ChatGPT — main account plans\n7-day 42% used; resets ${reset}, 18:01 UTC.\n`,
+        view: (reset: string, time: string) => `\n### ChatGPT — main account plans\n7-day 42% used; resets ${reset}, ${time} UTC.\n`,
         window: { name: "7-day", percent: 42 },
         extraWindows: 0,
       },
       {
         id: "opencode-go.drewrypope",
-        view: (reset: string) =>
-          `\n### OpenCode Go ×2 workspaces\n- **drewrypope — monthly 60% used**; monthly reset ${reset}, 18:01 UTC.\n`,
+        view: (reset: string, time: string) =>
+          `\n### OpenCode Go ×2 workspaces\n- **drewrypope — monthly 60% used**; monthly reset ${reset}, ${time} UTC.\n`,
         window: { name: "monthly", unit: "usd", limit: 60, used: 36, percent: 60 },
         extraWindows: 0,
       },
       {
         id: "_commandcode",
-        view: (reset: string) =>
-          `\n### Command Code\n$6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends ${reset}, 18:01 UTC.\n`,
+        view: (reset: string, time: string) =>
+          `\n### Command Code\n$6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends ${reset}, ${time} UTC.\n`,
         window: { name: "monthly credits", unit: "usd", limit: 10, used: 6.57, percent: 65.7 },
         extraWindows: 2,
       },
     ];
     const resets = [
-      { input: "Oct 30", expected: "2026-10-30T18:01:00.000Z" },
-      { input: "oct 30", expected: "2026-10-30T18:01:00.000Z" },
-      { input: "OCT 30", expected: "2026-10-30T18:01:00.000Z" },
-      { input: "Foo 30", expected: null },
-      { input: "Oct 39", expected: null },
+      { input: "Oct 30", time: "18:01", expected: "2026-10-30T18:01:00.000Z" },
+      { input: "oct 30", time: "18:01", expected: "2026-10-30T18:01:00.000Z" },
+      { input: "OCT 30", time: "18:01", expected: "2026-10-30T18:01:00.000Z" },
+      { input: "Foo 30", time: "18:01", expected: null },
+      { input: "Oct 39", time: "18:01", expected: null },
+      { input: "Oct 30", time: "18:60", expected: null },
+      { input: "Oct 30", time: "18:99", expected: null },
+      { input: "Oct 30", time: "24:00", expected: null },
+      { input: "Oct 30", time: "23:59", expected: "2026-10-30T23:59:00.000Z" },
     ];
 
     for (const consumer of consumers) {
       for (const reset of resets) {
-        const pool = extractQuotaPools(consumer.view(reset.input), NOW).find((p) => p.id === consumer.id)!;
+        const pool = extractQuotaPools(consumer.view(reset.input, reset.time), NOW).find((p) => p.id === consumer.id)!;
         expect(pool.windows).toHaveLength(1 + consumer.extraWindows);
         expect(pool.windows[0]).toMatchObject(consumer.window);
         expect(pool.windows[0].resetsAt).toBe(reset.expected);
@@ -308,6 +312,48 @@ describe("quota extractors", () => {
       expect(p.windows).toEqual([]);
       expect(p.note).toBeTruthy();
     }
+  });
+
+  test("extractor health distinguishes misses from intentional shell pools", () => {
+    const empty = new Map(extractQuotaPools("no reads here", NOW).map((p) => [p.id, p]));
+    for (const spec of POOL_SPECS) {
+      expect(empty.get(spec.id)?.extractionHealth).toEqual({
+        status: "gap",
+        matched: false,
+        reason: "section-missing",
+        count: 0,
+      });
+    }
+    for (const id of ["opendesign", "deepseek"]) {
+      expect(empty.get(id)?.extractionHealth).toEqual({
+        status: "intentional",
+        matched: null,
+        reason: "uninstrumented",
+        count: 0,
+      });
+    }
+  });
+
+  test("extractor health records parsed windows and distinguishes null/throw misses", () => {
+    expect(byId.get("anthropic:claude-pro")?.extractionHealth).toEqual({
+      status: "matched",
+      matched: true,
+      count: 1,
+    });
+    const nullResult = extractQuotaPools("### ChatGPT — main account plans\nno quota figures", NOW).find(
+      (p) => p.id === "_openai.main",
+    );
+    expect(nullResult?.extractionHealth).toEqual({
+      status: "gap",
+      matched: false,
+      reason: "extractor-null",
+      count: 0,
+    });
+    // No extractor-threw case: on current main every extractor is
+    // fail-soft (the codex extractor no longer throws on an
+    // unparseable reset date — it parses the window and ignores the
+    // date), so the extractor-threw branch in extractQuotaPools is
+    // defensive only and has no live input.
   });
 });
 

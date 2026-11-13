@@ -197,8 +197,8 @@ impl Filters {
         }
         for (col, vals) in [("l.topics", &self.topics), ("l.projects", &self.projects)] {
             for v in vals {
-                clauses.push(format!("{col} LIKE ?"));
-                params.push(Value::text(format!("%\"{v}\"%")));
+                clauses.push(format!("{col} LIKE ? ESCAPE '\\'"));
+                params.push(Value::text(topic_like_pattern(v)));
             }
         }
         if let Some(s) = &self.since {
@@ -232,8 +232,8 @@ impl Filters {
             (format!("{l_alias}.projects"), &self.projects),
         ] {
             for v in vals {
-                clauses.push(format!("{col} LIKE ?"));
-                params.push(Value::text(format!("%\"{v}\"%")));
+                clauses.push(format!("{col} LIKE ? ESCAPE '\\'"));
+                params.push(Value::text(topic_like_pattern(v)));
             }
         }
         if let Some(s) = &self.since {
@@ -275,6 +275,28 @@ impl Filters {
 
 fn placeholders(n: usize) -> String {
     vec!["?"; n].join(",")
+}
+
+/// Match one JSON string element in the serialized label list. Quotes in a
+/// value are encoded as `\\"` in JSON, so match that encoded backslash and
+/// quote rather than allowing the quote to cross an element boundary.
+fn topic_like_pattern(value: &str) -> String {
+    let mut pattern = String::from("%\"");
+    for ch in value.chars() {
+        match ch {
+            // JSON serializes an input backslash as two backslashes; LIKE
+            // must escape both of those bytes independently.
+            '\\' => pattern.push_str("\\\\\\\\"),
+            '%' => pattern.push_str("\\%"),
+            '_' => pattern.push_str("\\_"),
+            // JSON serializes a quote as backslash + quote. Escape the
+            // serialized backslash for LIKE; the quote itself is literal.
+            '"' => pattern.push_str("\\\\\""),
+            _ => pattern.push(ch),
+        }
+    }
+    pattern.push_str("\"%");
+    pattern
 }
 
 /// The FTS branch statement (shared by both backends; the Python
@@ -621,6 +643,67 @@ mod tests {
         assert_eq!(
             params,
             vec![Value::text("shareable"), Value::text("personal")]
+        );
+    }
+
+    #[test]
+    fn topic_and_project_like_filters_match_literal_json_elements() {
+        let cases = [
+            ("my_topic", r#"["my_topic"]"#, true),
+            ("my_topic", r#"["my-topic"]"#, false),
+            ("my_topic", r#"["myXtopic"]"#, false),
+            ("%", r#"["%"]"#, true),
+            ("%", r#"["100 days"]"#, false),
+            ("a\",\"b", r#"["a","b"]"#, false),
+            ("nixos", r#"["nixos","backup"]"#, true),
+            ("a_b", r#"["a_b"]"#, true),
+            ("a\\b", r#"["a\\b"]"#, true),
+        ];
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for (needle, json, expected) in cases {
+            let pattern = topic_like_pattern(needle);
+            let actual: bool = db
+                .query_row("SELECT ? LIKE ? ESCAPE '\\'", (&json, &pattern), |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(actual, expected, "needle={needle:?}, json={json}");
+        }
+    }
+
+    #[test]
+    fn both_filter_builders_use_escaped_like_patterns() {
+        let f = Filters::new(
+            vec![],
+            vec!["my_topic".into()],
+            vec!["%".into()],
+            vec![],
+            "personal",
+            None,
+            None,
+        )
+        .unwrap();
+        let (where_sql, where_params) = f.where_clause(TURSO_SHAPE);
+        let (session_sql, session_params) = f.session_clauses("s2", "l2");
+        assert!(where_sql.contains("l.topics LIKE ? ESCAPE '\\'"));
+        assert!(where_sql.contains("l.projects LIKE ? ESCAPE '\\'"));
+        assert!(
+            session_sql
+                .iter()
+                .any(|sql| sql == "l2.topics LIKE ? ESCAPE '\\'")
+        );
+        assert!(
+            session_sql
+                .iter()
+                .any(|sql| sql == "l2.projects LIKE ? ESCAPE '\\'")
+        );
+        assert_eq!(
+            &where_params[2..],
+            &[Value::text(r#"%"my\_topic"%"#), Value::text(r#"%"\%"%"#)]
+        );
+        assert_eq!(
+            &session_params[..],
+            &[Value::text(r#"%"my\_topic"%"#), Value::text(r#"%"\%"%"#)]
         );
     }
 
