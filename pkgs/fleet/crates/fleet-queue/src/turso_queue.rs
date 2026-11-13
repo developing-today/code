@@ -6424,8 +6424,16 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, platform"
     };
-    let mut sql = format!("SELECT {select} FROM tasks WHERE queue = ?");
-    let mut args: Vec<Arg> = vec![Arg::Text(queue)];
+    // #9420: the queue predicate applies only when a queue is named;
+    // an unnamed queue must not become `queue = ''`, which by
+    // construction returns zero rows and breaks exact-task readback
+    // ({"task": id} / {"dedupe_key": key} with no queue).
+    let mut sql = format!("SELECT {select} FROM tasks WHERE 1 = 1");
+    let mut args: Vec<Arg> = vec![];
+    if !queue.is_empty() {
+        sql += " AND queue = ?";
+        args.push(Arg::Text(queue));
+    }
     if let Some(s) = req_str(req, "status") {
         sql += " AND status = ?";
         args.push(Arg::Text(s.to_string()));
@@ -6450,6 +6458,12 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     if let Some(id) = req_i64(req, "task") {
         sql += " AND id = ?";
         args.push(Arg::Int(id));
+    }
+    // #9420: dedupe_key narrows to the task carrying that key (the
+    // delivery publisher's enqueue readback verifies by dedupe key).
+    if let Some(d) = req_str(req, "dedupe_key") {
+        sql += " AND dedupe_key = ?";
+        args.push(Arg::Text(d.to_string()));
     }
     let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
     sql += &format!(
@@ -7759,6 +7773,36 @@ mod tests {
         assert!(
             src.contains("worker_id, claimed_at, lease_until"),
             "rich list carries claimed_at"
+        );
+    }
+
+    #[test]
+    fn list_exact_readback_filters_9420() {
+        // #9420 oracle: exact-task readback works on the Turso
+        // verb_list — the task filter, a dedupe_key filter, and a
+        // queue predicate that applies only when a queue is named (an
+        // unnamed queue must not degenerate into queue = ''). The
+        // PostgREST /list handler carries the same contract.
+        let src = include_str!("turso_queue.rs");
+        let seg = seg8217(src, "fn verb_list(", "\nfn verb_health");
+        assert!(seg.contains("req_i64(req, \"task\")"), "task filter present");
+        assert!(seg.contains("AND id = ?"), "task filter narrows by id");
+        assert!(
+            seg.contains("req_str(req, \"dedupe_key\")") && seg.contains("AND dedupe_key = ?"),
+            "dedupe_key filter present"
+        );
+        assert!(
+            seg.contains("if !queue.is_empty()"),
+            "queue predicate is conditional on a named queue"
+        );
+        let broker = include_str!("queue_broker.rs");
+        assert!(
+            broker.contains("dedupe_key=eq."),
+            "PostgREST /list applies the dedupe_key filter"
+        );
+        assert!(
+            broker.contains("queue_pred"),
+            "PostgREST /list omits the queue predicate when unnamed"
         );
     }
 
