@@ -3,7 +3,7 @@
   "decision": "approved-after-merged-tree-verification",
   "manifest_sha256": "3b5bce3523945bf5adaa28739f0b90b7b70ff1d6522b4ac827246654e8ff6b06",
   "report_sha256": "668c87c3de13e62360fabf24aa5dbc018b20579f57ab4e2144676d17ab85d1a4",
-  "generator_sha256": "a623c066532705b112a356ad0de2bc2bec2e5c37d3ffde70099fce03ff734087",
+  "generator_sha256": "df648841b813c0fcacd7fb5f88a904e34dbb6d91758d94ef94c08143c0d954a0",
   "research_validator_sha256": "5d7fb08d7148770493401e200dca15a1b64c14b11ee5c754cbb77a97e9f561d2",
   "records": 126,
   "statements": 384,
@@ -21,5 +21,6 @@
     "No cloud/laptop benchmark winner claimed",
     "Original thirty-item list remains transparently unrecovered",
     "Actions queued; targeted local checks are not mislabeled as remote green checks"
-  ]
+  ],
+  "publisher_sha256": "ddf852398cb822f1c0d2f65f1deb0f8ab724a7c45436e6828e1be4cbabecc13a"
 }
