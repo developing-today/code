@@ -1353,6 +1353,14 @@ func (s *Server) brokerSamplerFor(session string, provider string) model.SampleF
 		if err != nil {
 			return model.Response{}, err
 		}
+		// When this request runs inside an interruptible ask call (a
+		// prompt hook during /v1/ask kind: exec), record the question
+		// on that call too: the host driving the call answers through
+		// its ask poll, which only exposes questions the call carries,
+		// so unattached the hook waited out its timeout unanswered
+		// (Codex review, PR #9021). Outside an ask call this is a
+		// no-op; the broker's own answerers remain the route, as before.
+		s.reg.attachSample(ctx, question, params)
 		// Publish the lifecycle before waiting, as the upstream
 		// sampling path does (hooks.go): a sample.opened hook is how
 		// an event-driven answerer learns there is a question to

@@ -63,14 +63,28 @@ const hookActionModule = "module"
 // something is a legitimate thing to ask for.
 var hookTimeout = defaults.ExecHookTimeout
 
-// Hook is one entry in the hooks list: a phase and the script that runs in it.
+// Hook is one entry in the hooks list: a phase and the one action that
+// runs in it. Exactly one action per hook (0001): a script or a prompt.
 //
 // `Script` is either a path to a file, or inline TypeScript, told apart the way
 // a person would: something that is one line, ends in a script extension and
 // exists is a file; anything else is source.
+//
+// `Prompt` is prompt text with @placeholders, sent to the configured model
+// provider (prompt_hooks.go). Its only implemented effect is advise.
 type Hook struct {
 	Phase  string `json:"phase"`
 	Script string `json:"script"`
+	// Prompt is the prompt action's text. Mutually exclusive with Script.
+	Prompt string `json:"prompt,omitempty"`
+	// Effect declares what the hook's output may do. For a prompt hook it
+	// must be empty or advise in this version; for a script hook it must
+	// agree with the phase's fixed effect when set. Anything else is
+	// refused at validation rather than silently ignored.
+	Effect string `json:"effect,omitempty"`
+	// Model selects the model a prompt hook asks, in the provider/model
+	// namespace; empty takes the configured default. Script hooks ignore it.
+	Model string `json:"model,omitempty"`
 	// Name labels the hook in errors and frames. Optional.
 	Name string `json:"name,omitempty"`
 }
@@ -95,6 +109,10 @@ type HookFrame struct {
 	Dropped []string `json:"dropped,omitempty"`
 	Advice  string   `json:"advice,omitempty"`
 	Error   string   `json:"error,omitempty"`
+	// Model and Provider name what answered a prompt hook, as the model
+	// layer reports them. Empty for script hooks.
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
 }
 
 // hookContext is the typed context a hook receives on standard input.
@@ -110,6 +128,9 @@ type hookContext struct {
 	ExitCode   int                  `json:"exitCode"`
 	DurationMs int64                `json:"durationMs"`
 	Artifacts  []Artifact           `json:"artifacts"`
+	// Calls are the tool calls the script made before this hook ran, in
+	// the same hashed-arguments shape call frames carry.
+	Calls []CallInfo `json:"calls,omitempty"`
 }
 
 // hookOutput is what a hook may return: one JSON object on stdout.
@@ -141,8 +162,19 @@ func validateHooks(hooks []Hook, origin string) error {
 			return fmt.Errorf("exec: %s hook %d: unknown phase %q (one of %s, %s, %s, %s)",
 				origin, i, h.Phase, HookBefore, HookOnSuccess, HookOnError, HookSuffix)
 		}
-		if strings.TrimSpace(h.Script) == "" {
-			return fmt.Errorf("exec: %s hook %d (%s): script is empty", origin, i, h.Phase)
+		hasScript := strings.TrimSpace(h.Script) != ""
+		hasPrompt := strings.TrimSpace(h.Prompt) != ""
+		switch {
+		case hasScript && hasPrompt:
+			return fmt.Errorf("exec: %s hook %d (%s): declares both script and prompt; exactly one action per hook (0001)", origin, i, h.Phase)
+		case !hasScript && !hasPrompt:
+			return fmt.Errorf("exec: %s hook %d (%s): declares neither script nor prompt", origin, i, h.Phase)
+		}
+		if hasPrompt && h.Effect != "" && h.Effect != hookEffectAdvise {
+			return fmt.Errorf("exec: %s hook %d (%s): prompt effect %q is not implemented (only %q in this slice; the other dial levels stay with #1929)", origin, i, h.Phase, h.Effect, hookEffectAdvise)
+		}
+		if hasScript && h.Effect != "" && h.Effect != effectFor(h.Phase) {
+			return fmt.Errorf("exec: %s hook %d (%s): script effect %q conflicts with the phase's fixed effect %q", origin, i, h.Phase, h.Effect, effectFor(h.Phase))
 		}
 	}
 	return nil
@@ -202,12 +234,28 @@ func (s *Service) runHooks(ctx context.Context, phase string, hooks []Hook, hctx
 		hctx.Diagnostic = hookDiagnostic(res.Error)
 		hctx.ExitCode = res.ExitCode
 		hctx.Artifacts = res.Artifacts
-		run := s.runOneHook(ctx, phase, h, hctx, ropts, res, emit)
-		run.Frame.Effect = effectFor(phase)
-		run.Frame.Original = applyHookResult(&run, phase, res)
-		run.Frame.Changed = run.Frame.Original != nil
+		var run hookRun
+		// Dispatch uses validation's trimmed predicate: a
+		// whitespace-only prompt is no prompt action, and a script
+		// hook carrying one must still run its script (Codex
+		// review, PR #9021).
+		if strings.TrimSpace(h.Prompt) != "" {
+			// A prompt hook only advises: its frame carries the advice,
+			// and applyHookResult is never consulted for it, so it cannot
+			// change the outcome whatever phase it runs in.
+			run = s.runPromptHook(ctx, phase, h, hctx, ropts, res)
+		} else {
+			run = s.runOneHook(ctx, phase, h, hctx, ropts, res, emit)
+			run.Frame.Effect = effectFor(phase)
+			run.Frame.Original = applyHookResult(&run, phase, res)
+			run.Frame.Changed = run.Frame.Original != nil
+		}
 		f := run.Frame
 		emit(Frame{Type: FrameHook, RunID: res.RunID, Hook: &f})
+		// The frame is also retained on the result: a structured
+		// caller (nil sink) receives no stream, and a prompt hook's
+		// advice lives only in its frame (Codex review, PR #9021).
+		res.Hooks = append(res.Hooks, f)
 		runs = append(runs, run)
 	}
 	return runs

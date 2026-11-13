@@ -248,6 +248,20 @@ func (t *askTable) get(id string) (*askCall, bool) {
 	return a, ok
 }
 
+// forRun returns the ask call that owns the given exec run, if one is
+// registered: a run the call began (beginRun) or a run attached to it
+// afterwards (attachRun / attachRunToRun for a declared script tool
+// nested inside it).
+func (t *askTable) forRun(run string) (*askCall, bool) {
+	if run == "" {
+		return nil, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	a, ok := t.byRun[run]
+	return a, ok
+}
+
 // owner returns the one call that owns every registered entry on this
 // connection, and how many entries that is. Entries are interruptible calls
 // and the in-flight upstream calls of a running script (its members); plain
@@ -323,6 +337,45 @@ func (r *Registry) attach(ctx context.Context, server, key string, req elicit.Re
 		Round: mcpclient.InputRound(ctx),
 	})
 	return a.ID, true
+}
+
+// attachSample records one of mcpx's own sampling questions -- a prompt
+// hook's model request, opened by the broker sampler in consumer.go --
+// against the interruptible call active on ctx, if any, and returns
+// whether it did.
+//
+// No (server, key) attribution is needed or possible here, unlike
+// attach: the context names the call itself, and a run's askCall
+// carries no server of its own. Without this, a sampling question a
+// prompt hook raised during an ask (kind: exec) sat only in the
+// broker, handleAskPoll never surfaced it to the host driving the
+// call, and the hook waited out its timeout instead of being answered
+// (Codex review, PR #9021).
+func (r *Registry) attachSample(ctx context.Context, req elicit.Request, params json.RawMessage) bool {
+	var a *askCall
+	if id, ok := ctx.Value(askCallKey{}).(string); ok && id != "" {
+		a, _ = r.asks.get(id)
+	}
+	if a == nil {
+		// No ask id on the context: the nested /v1/call path restores
+		// only the run id (X-Mcpx-Run, server.go), and runDeclaredScript
+		// associates a script-backed tool's fresh run with that parent
+		// run instead of stamping an ask id, so a prompt hook inside
+		// such a tool carries a run but no askCallKey. Resolve the
+		// owning call through the run before abandoning attachment,
+		// or its question is never exposed to the host driving the
+		// interruptible call and waits out its timeout (Codex review,
+		// PR #9021).
+		a, _ = r.asks.forRun(runFrom(ctx))
+	}
+	if a == nil {
+		return false
+	}
+	a.add(mcpserver.Question{
+		ID: req.ID, Method: "sampling/createMessage", Params: params,
+		Mode: string(req.Mode), Server: req.Server,
+	})
+	return true
 }
 
 // CallAsk runs an interruptible call and registers it for correlation.
@@ -575,8 +628,20 @@ func (s *Server) runAsk(ctx context.Context, id string, cc config.CallContext, r
 	}
 	s.reg.asks.beginRun(id, run, opts.Session)
 	defer s.reg.endAsk(id)
+	// The call's id rides the run's context, as on the other ask
+	// paths: an in-process question the run raises -- a prompt hook's
+	// sampling request -- is attributed through it (Registry.attachSample),
+	// so the host driving this call can answer it from its ask poll
+	// (Codex review, PR #9021).
+	ctx = withAskCall(ctx, id)
 	start := time.Now()
-	res, err := s.ExecService().Run(ctx, execsvc.Request{Source: req.Source, Opts: opts, RunID: run, CallSettings: callSettingsHeaderValue(callSettingsFrom(ctx))}, nil)
+	// An ask with kind: exec runs the same hooks /v1/exec runs,
+	// config-declared prompt hooks included: resolve the model
+	// layer onto the service or they report no provider here
+	// (Codex review, PR #9021).
+	svc := s.ExecService()
+	s.modelLayerForExec(ctx, svc, opts.Session)
+	res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, Opts: opts, RunID: run, CallSettings: callSettingsHeaderValue(callSettingsFrom(ctx))}, nil)
 	if err != nil && res == nil {
 		return nil, &tasks.Fault{Code: http.StatusBadRequest, Message: err.Error()}
 	}
