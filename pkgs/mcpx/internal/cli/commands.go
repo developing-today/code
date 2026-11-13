@@ -1242,6 +1242,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		}
 	} else if eo.Output != execsvc.OutputStream {
 		a.reportArtifacts(res)
+		a.reportHooks(res)
 	}
 	if res.ExitCode != 0 {
 		return &exitStatusError{code: res.ExitCode}
@@ -1262,6 +1263,14 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 	}
 	if res.TimedOut {
 		env["timedOut"] = true
+	}
+	// Retained hook frames ride in the envelope: a prompt hook's
+	// advice and warnings live only in its frame, and this path
+	// runs with a nil sink, so without this a --json caller paid
+	// for a model call whose entire effect was discarded (Codex
+	// review, PR #9021).
+	if len(res.Hooks) > 0 {
+		env["hooks"] = res.Hooks
 	}
 	if res.StdoutTruncated {
 		env["stdoutTruncated"] = true

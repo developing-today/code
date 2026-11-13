@@ -516,6 +516,23 @@ func (a *App) reportArtifacts(res *execsvc.Result) {
 	}
 }
 
+// reportHooks renders retained hook frames on the text path, to
+// stderr like reportArtifacts: stdout is the script's own answer,
+// and a prompt hook's advice (or its provider-unavailable warning)
+// would otherwise be generated and silently discarded on a local
+// run (Codex review, PR #9021). The stream path already encodes
+// hook frames as they happen, and the structured/JSON paths carry
+// res.Hooks in the document itself.
+func (a *App) reportHooks(res *execsvc.Result) {
+	for _, f := range res.Hooks {
+		if f.Advice != "" {
+			fmt.Fprintf(os.Stderr, "mcpx: hook advice (%s): %s\n", f.Phase, f.Advice)
+		} else if f.Error != "" {
+			fmt.Fprintf(os.Stderr, "mcpx: hook warning (%s): %s\n", f.Phase, f.Error)
+		}
+	}
+}
+
 // stream issues a request and hands back the live response.
 //
 // do() reads the whole body, which is right for every other call and wrong
