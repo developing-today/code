@@ -23,9 +23,10 @@ stage records are committed here and posted as `agent-note` comments on #9106.
 | [Crosscut](crosscut/versioned-design.md), [sequence](crosscut/sequencing-draft.md) | Extensibility, modes, sequencing: #9110–#9112 | Frozen draft; verifier passes 39 slots and DAG/config/file oracles |
 | [Addressing](part-a-addressing/versioned-design.md) | ID shapes and namespace families: #9113–#9124 | Frozen 35-slice draft; readable URI reference passes 10,000 round trips |
 | [Graph](part-a-graph/versioned-design.md) | Triples, attributes, social substrate: #9125–#9132 | Frozen 16-slice draft; fresh worker review passed; toy evidence reproduced |
-| [Federation](part-b/versioned-design.md) | Federation and trust: #9141–#9148 | Returned judge findings in bounded repair; no final acceptance claimed |
-| [Atlas](part-c/versioned-design.md) | Storage economics, search, recommendations: #9133–#9140 | Returned judge findings in bounded repair; empirical runs remain explicit follow-ups |
+| [Federation](part-b/versioned-design.md), [repairs](part-b/repair-disposition.md) | Federation and trust: #9141–#9148 | Frozen 32-slice set; bounded findings applied; allocation model passes 2,000 traces |
+| [Atlas](part-c/versioned-design.md), [repairs](part-c/repair-disposition.md) | Storage economics, search, recommendations: #9133–#9140 | Frozen 22-slice set; executable 11-transition reference fixture; empirical runs are explicit follow-ups |
 | [Answers](answers.md), [integration check](review/integration-check.md) | Summit rulings, conservative defaults, readiness boundaries | Concrete checkpoint; no repeated reviewer-wait loop |
+| [Verification](verification.md) | Copyable narrow commands, observed results and evidence limits | Runtime/production claims explicitly excluded |
 | [Delivery preparation](delivery/delivery-plan.md) | Individually workable issue drafts and native/queue readback gate | Offline-only until final validation; no issue publication is implied |
 
 Before final acceptance: a fresh judge independently verifies inventory coverage;

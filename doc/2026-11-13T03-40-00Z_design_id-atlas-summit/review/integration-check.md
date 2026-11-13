@@ -63,6 +63,29 @@ complete those references. S1.114–S1.120 remains crosscut #9110's responsibili
 5. The original 30-item Part B enumeration remains unrecovered. The replacement
    is labeled statement-derived; later original scope must receive extra slices.
 
+## Bounded repairs applied before the review-ready commit
+
+The writers froze their corrected batches; repair dispositions are retained at
+`../part-b/repair-disposition.md` and `../part-c/repair-disposition.md`. B now has
+32 slices (original reconstructed B01–B30 plus foundational B31/B32); C has 22,
+including distinct local and cloud benchmark-evidence tasks. Neither the returned
+judge files nor their earlier blocking verdicts were overwritten.
+
+The final-language pass also corrected the cross-part receipt dependency to B19
+(B11 is Diamond Types research), made B19 a V2 contract rather than waiting for
+V3 fan-out, and kept readable unreserved URI octets literal. It removed ambiguous
+sidecar self-ID/hash-prefix wording, required trusted-class **and** explicit relay
+authority, and added completed-reservation tombstones to the accounting model.
+Unknown CLI arguments are rejected before the B/C standalone checks run or read
+fixtures. These are concrete repairs, not a substitute for final independent
+whole-package/delivery acceptance.
+
+Observed narrow checks after those edits: URI 6 vectors/14 malformed/10,000
+round trips; B fixed checks plus 2,000 seeded accounting traces; C 11 computed
+reference-store transitions and 44 capability labels; synthetic cost arithmetic;
+strict extra-argument rejection for the three B/C check scripts. No benchmark
+timings or production-adapter correctness are established by these results.
+
 ## Checkpoint and next concrete deliverable
 
 Queue checkpoint `review_ready_integration` was attempted once as

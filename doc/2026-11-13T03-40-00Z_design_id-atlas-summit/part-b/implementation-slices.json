@@ -1,0 +1,1360 @@
+{
+  "schema_version": 2,
+  "provenance": {
+    "status": "original exact 30-item list not recovered",
+    "source": "See ../inventory-live/candidate-provenance.md for sources searched, seven named-category anchors, and an explicitly labeled statement-derived reconstruction. Slice names/boundaries below are not represented as the original filed 30. The interop kit maps to #9110 and is not counted among Part B component slices."
+  },
+  "component_counts": {
+    "#9141": 8,
+    "#9142": 3,
+    "#9143": 5,
+    "#9144": 5,
+    "#9145": 3,
+    "#9146": 2,
+    "#9147": 3,
+    "#9148": 3
+  },
+  "crosscut_inputs": [
+    {
+      "id": "X1",
+      "owner": "#9111",
+      "scope": "Modes/link kinds/storage tiering and final config schema; input seam only, not counted. This config seam cannot disable signed validation, budgets, replay binding or emergency revocation."
+    },
+    {
+      "id": "X2",
+      "owner": "#9110",
+      "scope": "Interop kit/non-specialness conformance; input seam only, not counted. No interop kit slice is falsely counted as a #9141-#9148 candidate."
+    },
+    {
+      "id": "X3",
+      "owner": "#9113 / Atlas content-plane sibling owner (exact owner to reconcile)",
+      "scope": "Missing checked-in Atlas content_hash producer/profile contract: Part B must consume exact ContentId bytes and not invent producer semantics."
+    },
+    {
+      "id": "X4",
+      "owner": "ID artifact compatibility follow-up within B05; sibling identity designs #6277/#6287-6290/#6312 to reconcile",
+      "scope": "Document existing serde_json::to_vec(SignedBody) signature preimage mismatch and preserve legacy vectors; new canonical-CBOR profile is additive, never silent re-sign/re-hash."
+    }
+  ],
+  "slices": [
+    {
+      "id": "B01",
+      "parent": "#9141",
+      "component": "signed acceptance and peer classes",
+      "title": "Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key",
+      "goal": "Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.21"
+      ],
+      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
+      "named_category_anchor": "named category (label only)",
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
+          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
+          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 1,
+      "pr_unit": "PR-B-9141",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
+    },
+    {
+      "id": "B02",
+      "parent": "#9141",
+      "component": "signed acceptance and peer classes",
+      "title": "Key compromise/revocation effect on previously accepted data (revalidate, flag, or quarantine)",
+      "goal": "Key compromise/revocation effect on previously accepted data (revalidate, flag, or quarantine) as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.22"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [
+        "B01"
+      ],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
+          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
+          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 2,
+      "pr_unit": "PR-B-9141",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
+    },
+    {
+      "id": "B03",
+      "parent": "#9141",
+      "component": "signed acceptance and peer classes",
+      "title": "Replay/freshness rules for re-presented signed data",
+      "goal": "Replay/freshness rules for re-presented signed data as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.23"
+      ],
+      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
+      "named_category_anchor": "named category (label only)",
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [
+        "B01"
+      ],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
+          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
+          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 3,
+      "pr_unit": "PR-B-9141",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
+    },
+    {
+      "id": "B04",
+      "parent": "#9141",
+      "component": "signed acceptance and peer classes",
+      "title": "Signature-suite agility and algorithm deprecation/migration",
+      "goal": "Signature-suite agility and algorithm deprecation/migration as an independently reviewable contract and implementation increment. Initial new profile is Ed25519 + deterministic CBOR with allowlisted suites; unknown suite fails closed.",
+      "statements": [
+        "S1.24"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V2",
+      "tier": "recommended",
+      "hard_dependencies": [
+        "B01"
+      ],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
+          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
+          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 4,
+      "pr_unit": "PR-B-9141",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
+    },
+    {
+      "id": "B05",
+      "parent": "#9141",
+      "component": "signed acceptance and peer classes",
+      "title": "Signer identity binding and validation distinct from mere signature presence",
+      "goal": "Signer identity binding and validation distinct from mere signature presence as an independently reviewable contract and implementation increment. Also preserve compatibility vectors for the existing SignedBody serde_json signature preimage mismatch; do not alter legacy signed bytes. Preserve legacy SignedBody serde_json preimage compatibility vectors and document the existing docs/code mismatch without changing old bytes.",
+      "statements": [
+        "S1.17\u2013S1.18"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [
+        "B01"
+      ],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
+          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
+          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet. Additional oracle: legacy artifact vectors verify against exact historical serde_json bytes before and after new canonical-CBOR profile support.",
+      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 5,
+      "pr_unit": "PR-B-9141",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
+    },
+    {
+      "id": "B06",
+      "parent": "#9141",
+      "component": "signed acceptance and peer classes",
+      "title": "Observable, recordable rejection events at the universal signed-ingest gate",
+      "goal": "Observable, recordable rejection events at the universal signed-ingest gate as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.19",
+        "S1.25"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [
+        "B05"
+      ],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
+          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
+          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 6,
+      "pr_unit": "PR-B-9141",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
+    },
+    {
+      "id": "B07",
+      "parent": "#9142",
+      "component": "sync and conflict reports",
+      "title": "First-class conflict-report artifact: versions, signers/sources, disputed data, retention/actionability",
+      "goal": "First-class conflict-report artifact: versions, signers/sources, disputed data, retention/actionability as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.34\u2013S1.38"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [],
+      "soft_dependencies": [
+        "#9141 envelope and peer-policy interfaces"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/sync.rs",
+          "status": "proposed new shared module, owned by PR-B-9142; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9142.rs",
+          "status": "proposed single integration test target federation_9142, owned by PR-B-9142; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_sync.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9142 (future target created by PR-B-9142)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9142.rs / federation_9142; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 7,
+      "pr_unit": "PR-B-9142",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9142, not split into conflicting PRs."
+    },
+    {
+      "id": "B08",
+      "parent": "#9142",
+      "component": "sync and conflict reports",
+      "title": "Implicit-trust sync scope/tolerance under capacity, retention, tenant and trust-domain boundaries",
+      "goal": "Define implicit-trust internal sync toward 1:1 sameness within reason: authorized scope, capacity, retention, tenant/trust boundaries; detect divergence and exclusions.",
+      "statements": [
+        "S1.26-S1.27",
+        "S1.28-S1.31"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered S1.27 added from #9142 statement coverage; not claimed in the recovered candidate source row. Includes S1.26-S1.27 coverage repair; not claimed in original candidate listing.",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [],
+      "soft_dependencies": [
+        "#9141 envelope and peer-policy interfaces"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/sync.rs",
+          "status": "proposed new shared module, owned by PR-B-9142; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9142.rs",
+          "status": "proposed single integration test target federation_9142, owned by PR-B-9142; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future model-based test: in-scope retained records converge; out-of-scope, deleted, expired or unauthorized records do not cross; oracle is scoped-set reference model.",
+      "done_command": "cargo test -p id-sync --test federation_9142 (future target created by PR-B-9142)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9142.rs / federation_9142; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 8,
+      "pr_unit": "PR-B-9142",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9142, not split into conflicting PRs."
+    },
+    {
+      "id": "B09",
+      "parent": "#9142",
+      "component": "sync and conflict reports",
+      "title": "Divergence detection and anti-entropy/reconciliation requirements before any later merge",
+      "goal": "Divergence detection and anti-entropy/reconciliation requirements before any later merge as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.32\u2013S1.40"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [
+        "B08"
+      ],
+      "soft_dependencies": [
+        "#9141 envelope and peer-policy interfaces"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/sync.rs",
+          "status": "proposed new shared module, owned by PR-B-9142; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9142.rs",
+          "status": "proposed single integration test target federation_9142, owned by PR-B-9142; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_sync.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9142 (future target created by PR-B-9142)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9142.rs / federation_9142; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 9,
+      "pr_unit": "PR-B-9142",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9142, not split into conflicting PRs."
+    },
+    {
+      "id": "B10",
+      "parent": "#9143",
+      "component": "CRDT research",
+      "title": "Automerge fit/evaluation against the shared CRDT criteria",
+      "goal": "Automerge fit/evaluation against the shared CRDT criteria; produce evidence and conditional/non-adoption result, not merge code.",
+      "statements": [
+        "S1.41"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "research",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V4",
+      "tier": "contingent",
+      "hard_dependencies": [],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
+          "status": "same docs-only PR-B-research; add dedicated component section"
+        }
+      ],
+      "failing_test_or_oracle": "Research acceptance oracle: compare at least two approaches on the common criteria, separate evidence from inference, and report conditional recommendation/non-adoption.",
+      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); t=p.read_text(); assert '#9143' in t and '#9147' in t\"",
+      "future_test_note": "Research artifact exists; add component-specific evidence.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 10,
+      "pr_unit": "PR-B-research",
+      "pr_scope": "One docs-only PR owns all research.md edits for #9143 and #9147; these slices are individually reviewed sections, not separate PRs."
+    },
+    {
+      "id": "B11",
+      "parent": "#9143",
+      "component": "CRDT research",
+      "title": "Identify \u201cdiamonds\u201d as Diamond Types and evaluate it on the shared criteria",
+      "goal": "Identify \u201cdiamonds\u201d as Diamond Types and evaluate it on the shared criteria; produce evidence and conditional/non-adoption result, not merge code.",
+      "statements": [
+        "S1.42"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "research",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V4",
+      "tier": "contingent",
+      "hard_dependencies": [],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
+          "status": "same docs-only PR-B-research; add dedicated component section"
+        }
+      ],
+      "failing_test_or_oracle": "Research acceptance oracle: compare at least two approaches on the common criteria, separate evidence from inference, and report conditional recommendation/non-adoption.",
+      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); t=p.read_text(); assert '#9143' in t and '#9147' in t\"",
+      "future_test_note": "Research artifact exists; add component-specific evidence.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 11,
+      "pr_unit": "PR-B-research",
+      "pr_scope": "One docs-only PR owns all research.md edits for #9143 and #9147; these slices are individually reviewed sections, not separate PRs."
+    },
+    {
+      "id": "B12",
+      "parent": "#9143",
+      "component": "CRDT research",
+      "title": "Willow protocol fit against reconciliation, scoping and signed-only acceptance",
+      "goal": "Willow protocol fit against reconciliation, scoping and signed-only acceptance; produce evidence and conditional/non-adoption result, not merge code.",
+      "statements": [
+        "S1.43"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "research",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V4",
+      "tier": "contingent",
+      "hard_dependencies": [],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
+          "status": "same docs-only PR-B-research; add dedicated component section"
+        }
+      ],
+      "failing_test_or_oracle": "Research acceptance oracle: compare at least two approaches on the common criteria, separate evidence from inference, and report conditional recommendation/non-adoption.",
+      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); t=p.read_text(); assert '#9143' in t and '#9147' in t\"",
+      "future_test_note": "Research artifact exists; add component-specific evidence.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 12,
+      "pr_unit": "PR-B-research",
+      "pr_scope": "One docs-only PR owns all research.md edits for #9143 and #9147; these slices are individually reviewed sections, not separate PRs."
+    },
+    {
+      "id": "B13",
+      "parent": "#9143",
+      "component": "CRDT research",
+      "title": "OCapN capability-reference/handoff fit; evaluate application-level attenuation separately",
+      "goal": "Evaluate what cited OCapN sources establish about object references and handoff; treat attenuation as an open application-level option, not a verified OCapN feature.",
+      "statements": [
+        "S1.44"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "research",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V4",
+      "tier": "contingent",
+      "hard_dependencies": [],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
+          "status": "same docs-only PR-B-research; add dedicated component section"
+        }
+      ],
+      "failing_test_or_oracle": "Research oracle: cited primary passages support capabilities/references/handoff; mark attenuation unverified unless a precise primary section is produced. Compare application wrapper as a separate option.",
+      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); t=p.read_text(); assert '#9143' in t and '#9147' in t\"",
+      "future_test_note": "Research artifact exists; add component-specific evidence.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 13,
+      "pr_unit": "PR-B-research",
+      "pr_scope": "One docs-only PR owns all research.md edits for #9143 and #9147; these slices are individually reviewed sections, not separate PRs."
+    },
+    {
+      "id": "B14",
+      "parent": "#9143",
+      "component": "CRDT research",
+      "title": "Common comparison matrix, non-exhaustive prior art and revisit threshold/recommendation",
+      "goal": "Common comparison matrix, non-exhaustive prior art and revisit threshold/recommendation; produce evidence and conditional/non-adoption result, not merge code.",
+      "statements": [
+        "S1.45\u2013S1.46"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "research",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V4",
+      "tier": "contingent",
+      "hard_dependencies": [],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
+          "status": "same docs-only PR-B-research; add dedicated component section"
+        }
+      ],
+      "failing_test_or_oracle": "Research acceptance oracle: compare at least two approaches on the common criteria, separate evidence from inference, and report conditional recommendation/non-adoption.",
+      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); t=p.read_text(); assert '#9143' in t and '#9147' in t\"",
+      "future_test_note": "Research artifact exists; add component-specific evidence.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 14,
+      "pr_unit": "PR-B-research",
+      "pr_scope": "One docs-only PR owns all research.md edits for #9143 and #9147; these slices are individually reviewed sections, not separate PRs."
+    },
+    {
+      "id": "B15",
+      "parent": "#9144",
+      "component": "federated query fan-out",
+      "title": "Prioritized remote selection: inputs, ordering, and treatment of a remote negative answer",
+      "goal": "Prioritized remote selection: inputs, ordering, and treatment of a remote negative answer as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.47\u2013S1.53"
+      ],
+      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
+      "named_category_anchor": "prioritization scoring",
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V3",
+      "tier": "recommended",
+      "hard_dependencies": [],
+      "soft_dependencies": [
+        "#9141 envelope and peer-policy interfaces",
+        "#9146 routing observations"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/query.rs",
+          "status": "proposed new shared module, owned by PR-B-9144; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9144.rs",
+          "status": "proposed single integration test target federation_9144, owned by PR-B-9144; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_query.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9144 (future target created by PR-B-9144)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9144.rs / federation_9144; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 15,
+      "pr_unit": "PR-B-9144",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9144, not split into conflicting PRs."
+    },
+    {
+      "id": "B16",
+      "parent": "#9144",
+      "component": "federated query fan-out",
+      "title": "Trusted-relay permission, max-hop propagation, and breadth\u00d7depth resource bounds",
+      "goal": "Trusted-relay permission, max-hop propagation, and breadth\u00d7depth resource bounds as an independently reviewable contract and implementation increment. Account atomically at query, authenticated requester/origin, supplying peer, authorized tenant and node scopes; refund only unused amounts; retries reuse exact multidimensional reservation.",
+      "statements": [
+        "S1.54\u2013S1.57",
+        "S1.61"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V3",
+      "tier": "recommended",
+      "hard_dependencies": [
+        "B17"
+      ],
+      "soft_dependencies": [
+        "#9141 envelope and peer-policy interfaces",
+        "#9146 routing observations"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/query.rs",
+          "status": "proposed new shared module, owned by PR-B-9144; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9144.rs",
+          "status": "proposed single integration test target federation_9144, owned by PR-B-9144; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future federation_9144 target covers hops/peer/work/bytes vector limits independently at per-query, authenticated-client, supplying-peer, tenant and node-aggregate scopes; reservation is atomic; cancellation/expiry refunds only unused amounts; retries reuse exact reservation and changed retry cannot mint; deadlines never reset. Oracle: local accounting ledger reference model (not crypto/fairness proof).",
+      "done_command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/federation_model.py && cargo test -p id-sync --test federation_9144 (future target created by PR-B-9144)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9144.rs / federation_9144; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 16,
+      "pr_unit": "PR-B-9144",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9144, not split into conflicting PRs."
+    },
+    {
+      "id": "B17",
+      "parent": "#9144",
+      "component": "federated query fan-out",
+      "title": "Query/relay/response signature validation, end-to-end responder provenance and stable request identity",
+      "goal": "Query/relay/response signature validation, end-to-end responder provenance and stable request identity as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.58\u2013S1.62"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V3",
+      "tier": "recommended",
+      "hard_dependencies": [],
+      "soft_dependencies": [
+        "#9141 envelope and peer-policy interfaces",
+        "#9146 routing observations"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/query.rs",
+          "status": "proposed new shared module, owned by PR-B-9144; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9144.rs",
+          "status": "proposed single integration test target federation_9144, owned by PR-B-9144; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_query.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9144 (future target created by PR-B-9144)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9144.rs / federation_9144; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 17,
+      "pr_unit": "PR-B-9144",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9144, not split into conflicting PRs."
+    },
+    {
+      "id": "B18",
+      "parent": "#9144",
+      "component": "federated query fan-out",
+      "title": "Privacy surface of query-interest disclosure and explicit mitigation/acceptance decision",
+      "goal": "Privacy surface of query-interest disclosure and explicit mitigation/acceptance decision as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.63"
+      ],
+      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
+      "named_category_anchor": "privacy surface",
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V3",
+      "tier": "recommended",
+      "hard_dependencies": [],
+      "soft_dependencies": [
+        "#9141 envelope and peer-policy interfaces",
+        "#9146 routing observations"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/query.rs",
+          "status": "proposed new shared module, owned by PR-B-9144; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9144.rs",
+          "status": "proposed single integration test target federation_9144, owned by PR-B-9144; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_query.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9144 (future target created by PR-B-9144)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9144.rs / federation_9144; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 18,
+      "pr_unit": "PR-B-9144",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9144, not split into conflicting PRs."
+    },
+    {
+      "id": "B19",
+      "parent": "#9144",
+      "component": "federated query fan-out",
+      "title": "V2 shared signed receipt schema (accepted / retained_until / verified_present)",
+      "goal": "Define the V2 shared signed receipt enum and binding fields, independently of V3 query fanout. #9115 existence uses verified_present; stored_unverified is inventory-only and never accepted content.",
+      "statements": [
+        "S1.100\u2013S1.104"
+      ],
+      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
+      "named_category_anchor": "ack primitive",
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [
+        "B05",
+        "B32"
+      ],
+      "soft_dependencies": [],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/receipt.rs",
+          "status": "proposed new V2 shared receipt schema module in PR-B-receipt-v2"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/receipt_v2.rs",
+          "status": "proposed single integration test target; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future schema conformance test distinguishes accepted, retained_until and verified_present; verifies all fields bind digest/recipient/scope/time/policy/duration; stored_unverified cannot pass acceptance gate. Oracle: typed reference validator plus signed vectors.",
+      "done_command": "cargo test -p id-sync --test receipt_v2 (future target created by PR-B-receipt-v2)",
+      "future_test_note": "V2 receipt schema PR is separate from V3 fanout PR; V3 later integrates relay provenance.",
+      "dependencies_note": "V2 shared schema depends only on V2 signer identity and validation gate. V3 relay provenance consumes this schema later; no V3 fanout dependency.",
+      "interface_first": true,
+      "sequence_within_component": 19,
+      "pr_unit": "PR-B-receipt-v2",
+      "pr_scope": "Standalone V2 interface PR for B19; depends only on V2 signer/envelope foundations B05 and B32."
+    },
+    {
+      "id": "B20",
+      "parent": "#9145",
+      "component": "duplicate and loop handling",
+      "title": "Request identity, duplicate-vs-loop classification, finite dedup state and expiry",
+      "goal": "Request identity, duplicate-vs-loop classification, finite dedup state and expiry as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.64",
+        "S1.70\u2013S1.72"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V3",
+      "tier": "recommended",
+      "hard_dependencies": [],
+      "soft_dependencies": [
+        "#9144 OriginQuery and RelayGrant types"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/dedup.rs",
+          "status": "proposed new shared module, owned by PR-B-9145; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9145.rs",
+          "status": "proposed single integration test target federation_9145, owned by PR-B-9145; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_dedup.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9145 (future target created by PR-B-9145)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9145.rs / federation_9145; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 20,
+      "pr_unit": "PR-B-9145",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9145, not split into conflicting PRs."
+    },
+    {
+      "id": "B21",
+      "parent": "#9145",
+      "component": "duplicate and loop handling",
+      "title": "Short-circuit and deduplicate in-flight/answered requests into coherent results",
+      "goal": "Short-circuit and deduplicate in-flight/answered requests into coherent results as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.67\u2013S1.68"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V3",
+      "tier": "recommended",
+      "hard_dependencies": [
+        "B20"
+      ],
+      "soft_dependencies": [
+        "#9144 OriginQuery and RelayGrant types"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/dedup.rs",
+          "status": "proposed new shared module, owned by PR-B-9145; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9145.rs",
+          "status": "proposed single integration test target federation_9145, owned by PR-B-9145; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_dedup.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9145 (future target created by PR-B-9145)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9145.rs / federation_9145; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 21,
+      "pr_unit": "PR-B-9145",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9145, not split into conflicting PRs."
+    },
+    {
+      "id": "B22",
+      "parent": "#9145",
+      "component": "duplicate and loop handling",
+      "title": "Inform requester/parties about duplicates and specifically signal detected loops",
+      "goal": "Inform requester/parties about duplicates and specifically signal detected loops as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.65\u2013S1.66",
+        "S1.69"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V3",
+      "tier": "recommended",
+      "hard_dependencies": [
+        "B20",
+        "B21"
+      ],
+      "soft_dependencies": [
+        "#9144 OriginQuery and RelayGrant types"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/dedup.rs",
+          "status": "proposed new shared module, owned by PR-B-9145; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9145.rs",
+          "status": "proposed single integration test target federation_9145, owned by PR-B-9145; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_dedup.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9145 (future target created by PR-B-9145)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9145.rs / federation_9145; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 22,
+      "pr_unit": "PR-B-9145",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9145, not split into conflicting PRs."
+    },
+    {
+      "id": "B23",
+      "parent": "#9146",
+      "component": "routing state",
+      "title": "Routing-state freshness, periodic validation, and detection of peer/topology changes",
+      "goal": "Routing-state freshness, periodic validation, and detection of peer/topology changes as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.73\u2013S1.76"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V3",
+      "tier": "recommended",
+      "hard_dependencies": [],
+      "soft_dependencies": [
+        "#9141 signed envelope interface"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/routing.rs",
+          "status": "proposed new shared module, owned by PR-B-9146; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9146.rs",
+          "status": "proposed single integration test target federation_9146, owned by PR-B-9146; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_routing.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9146 (future target created by PR-B-9146)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9146.rs / federation_9146; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 23,
+      "pr_unit": "PR-B-9146",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9146, not split into conflicting PRs."
+    },
+    {
+      "id": "B24",
+      "parent": "#9146",
+      "component": "routing state",
+      "title": "Signed/validated routing updates and protection against poisoning, suppression and manufactured loops",
+      "goal": "Signed/validated routing updates and protection against poisoning, suppression and manufactured loops as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.77\u2013S1.78"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V3",
+      "tier": "recommended",
+      "hard_dependencies": [
+        "B23"
+      ],
+      "soft_dependencies": [
+        "#9141 signed envelope interface"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/routing.rs",
+          "status": "proposed new shared module, owned by PR-B-9146; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9146.rs",
+          "status": "proposed single integration test target federation_9146, owned by PR-B-9146; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_routing.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9146 (future target created by PR-B-9146)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9146.rs / federation_9146; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 24,
+      "pr_unit": "PR-B-9146",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9146, not split into conflicting PRs."
+    },
+    {
+      "id": "B25",
+      "parent": "#9147",
+      "component": "reputation and claims",
+      "title": "Evidence-based ratings and explicit way reputation affects prioritization/class changes",
+      "goal": "Evidence-based ratings and explicit way reputation affects prioritization/class changes as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.79\u2013S1.82"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V4",
+      "tier": "contingent",
+      "hard_dependencies": [],
+      "soft_dependencies": [
+        "#9141 signed identity/rejection evidence",
+        "#9148 receipt evidence"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/reputation.rs",
+          "status": "proposed new shared module, owned by PR-B-9147-impl; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9147.rs",
+          "status": "proposed single integration test target federation_9147, owned by PR-B-9147-impl; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_reputation.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9147 (future target created by PR-B-9147-impl)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9147.rs / federation_9147; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 25,
+      "pr_unit": "PR-B-9147-impl",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9147-impl, not split into conflicting PRs."
+    },
+    {
+      "id": "B26",
+      "parent": "#9147",
+      "component": "reputation and claims",
+      "title": "Abuse-protection research: manipulation, retaliation, Sybils, whitewashing, collusion and spam claims",
+      "goal": "Abuse-protection research: manipulation, retaliation, Sybils, whitewashing, collusion and spam claims as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.88\u2013S1.91",
+        "S1.99"
+      ],
+      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
+      "named_category_anchor": "reputation-abuse research",
+      "kind": "research",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V4",
+      "tier": "contingent",
+      "hard_dependencies": [],
+      "soft_dependencies": [
+        "#9141 signed identity/rejection evidence",
+        "#9148 receipt evidence"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
+          "status": "same docs-only PR-B-research; add dedicated component section"
+        }
+      ],
+      "failing_test_or_oracle": "Research acceptance oracle: evaluate manipulation, retaliation, Sybil, whitewashing, collusion and spam-claim options; state limits/defaults; do not implement reputation thresholds in this slice.",
+      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); assert '#9147' in p.read_text()\"",
+      "future_test_note": "Research only; does not block or imply V4 implementation.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 26,
+      "pr_unit": "PR-B-research",
+      "pr_scope": "Docs-only shared research PR; no implementation dependency or Rust module."
+    },
+    {
+      "id": "B27",
+      "parent": "#9147",
+      "component": "reputation and claims",
+      "title": "Public signed append-only claims/disputes log, right of reply, and use of evidence in reputation",
+      "goal": "Public signed append-only claims/disputes log, right of reply, and use of evidence in reputation as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.92\u2013S1.98"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V4",
+      "tier": "contingent",
+      "hard_dependencies": [
+        "B05"
+      ],
+      "soft_dependencies": [
+        "#9141 signed identity/rejection evidence",
+        "#9148 receipt evidence"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/reputation.rs",
+          "status": "proposed new shared module, owned by PR-B-9147-impl; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9147.rs",
+          "status": "proposed single integration test target federation_9147, owned by PR-B-9147-impl; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_reputation.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9147 (future target created by PR-B-9147-impl)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9147.rs / federation_9147; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 27,
+      "pr_unit": "PR-B-9147-impl",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9147-impl, not split into conflicting PRs."
+    },
+    {
+      "id": "B28",
+      "parent": "#9148",
+      "component": "takeover and inconsistency evidence",
+      "title": "Highly trusted server takeover/key compromise: rapid revocation, blast-radius identification and prior-data posture",
+      "goal": "Highly trusted server takeover/key compromise: rapid revocation, blast-radius identification and prior-data posture as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.83\u2013S1.87"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [
+        "B02"
+      ],
+      "soft_dependencies": [
+        "#9144 query/receipt types",
+        "#9147 claims/log interface"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/evidence.rs",
+          "status": "proposed new shared module, owned by PR-B-9148; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9148.rs",
+          "status": "proposed single integration test target federation_9148, owned by PR-B-9148; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_evidence.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9148 (future target created by PR-B-9148)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9148.rs / federation_9148; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 28,
+      "pr_unit": "PR-B-9148",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9148, not split into conflicting PRs."
+    },
+    {
+      "id": "B29",
+      "parent": "#9148",
+      "component": "takeover and inconsistency evidence",
+      "title": "Ack/recipient-list contradiction detection, evidence retention, collusion threshold and public-log integration",
+      "goal": "Ack/recipient-list contradiction detection, evidence retention, collusion threshold and public-log integration as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.100\u2013S1.108"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V4",
+      "tier": "contingent",
+      "hard_dependencies": [
+        "B19",
+        "B27"
+      ],
+      "soft_dependencies": [
+        "#9144 query/receipt types",
+        "#9147 claims/log interface"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/evidence.rs",
+          "status": "proposed new shared module, owned by PR-B-9148; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9148.rs",
+          "status": "proposed single integration test target federation_9148, owned by PR-B-9148; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_evidence.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9148 (future target created by PR-B-9148)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9148.rs / federation_9148; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": true,
+      "sequence_within_component": 29,
+      "pr_unit": "PR-B-9148",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9148, not split into conflicting PRs."
+    },
+    {
+      "id": "B30",
+      "parent": "#9148",
+      "component": "takeover and inconsistency evidence",
+      "title": "Federated-search tampering threat model: omission/injection/reordering/staleness and completeness claims",
+      "goal": "Federated-search tampering threat model: omission/injection/reordering/staleness and completeness claims as an independently reviewable contract and implementation increment.",
+      "statements": [
+        "S1.109\u2013S1.113"
+      ],
+      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "The component acceptance criterion without redesigning sibling concerns.",
+      "version": "V4",
+      "tier": "contingent",
+      "hard_dependencies": [
+        "B17",
+        "B29"
+      ],
+      "soft_dependencies": [
+        "#9144 query/receipt types",
+        "#9147 claims/log interface"
+      ],
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/evidence.rs",
+          "status": "proposed new shared module, owned by PR-B-9148; does not exist yet"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9148.rs",
+          "status": "proposed single integration test target federation_9148, owned by PR-B-9148; does not exist yet"
+        }
+      ],
+      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_evidence.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
+      "done_command": "cargo test -p id-sync --test federation_9148 (future target created by PR-B-9148)",
+      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9148.rs / federation_9148; one target per component PR, not one target per slice.",
+      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
+      "interface_first": false,
+      "sequence_within_component": 30,
+      "pr_unit": "PR-B-9148",
+      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9148, not split into conflicting PRs."
+    },
+    {
+      "id": "B31",
+      "parent": "#9141",
+      "component": "signed acceptance and peer classes",
+      "title": "Core directional peer-class behavior and unknown-peer default",
+      "goal": "Implement the peer class operation matrix: fully_trusted is configured bidirectional policy but no bypass; send_only rejects inbound acceptance; accept_signed_from accepts only validated authorized data; unknown defaults to no acceptance; classes grant no relay by themselves.",
+      "statements": [
+        "S1.1-S1.11"
+      ],
+      "candidate_provenance": "additional foundational coverage slice; not part of the reconstructed 30-item count or claimed original candidate list",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "Core peer-policy API required before federation class behavior can ship.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [],
+      "soft_dependencies": [],
+      "dependencies_note": "In same ordered PR unit as B01-B06 and B32; no crucial slice depends on recommended work.",
+      "interface_first": true,
+      "sequence_within_component": 31,
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
+          "status": "proposed new shared module in PR-B-9141"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
+          "status": "one proposed integration test target for the whole #9141 PR unit"
+        }
+      ],
+      "failing_test_or_oracle": "Future table/model test across class \u00d7 direction \u00d7 operation \u00d7 peer-known state; oracle is the explicit policy matrix above.",
+      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
+      "future_test_note": "Same one PR/test target shared by B01-B06 and B32; ordered changes inside the #9141 PR, not separate overlapping PRs.",
+      "pr_unit": "PR-B-9141",
+      "pr_scope": "One ordered component PR contains B01-B06, B31 and B32; shared module/test ownership is sequenced within this PR."
+    },
+    {
+      "id": "B32",
+      "parent": "#9141",
+      "component": "signed acceptance and peer classes",
+      "title": "Mandatory universal signed-and-validated acceptance gate",
+      "goal": "Enforce signature, signer-binding, semantic validation, authorization and replay checks before admission from local, loopback, internal, hosted or remote paths; local producers sign before admission and use the same gate.",
+      "statements": [
+        "S1.12-S1.20"
+      ],
+      "candidate_provenance": "additional foundational coverage slice; not part of the reconstructed 30-item count or claimed original candidate list",
+      "named_category_anchor": null,
+      "kind": "design-and-implementation",
+      "enables": "Safety invariant for all new federation APIs; configuration cannot disable it.",
+      "version": "V2",
+      "tier": "crucial",
+      "hard_dependencies": [
+        "B31"
+      ],
+      "soft_dependencies": [],
+      "dependencies_note": "Hard substep depends on core peer-policy interface B31 within the same PR-B-9141; both are crucial.",
+      "interface_first": false,
+      "sequence_within_component": 32,
+      "owned_surfaces": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/acceptance.rs",
+          "status": "proposed new gate module in PR-B-9141"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
+          "status": "one proposed integration test target for the whole #9141 PR unit"
+        }
+      ],
+      "failing_test_or_oracle": "Future ingress matrix test supplies unsigned, malformed, wrong-signer and invalid payload through local/loopback/internal/hosted/remote paths; oracle: each is rejected before admission, while local signed valid record passes the same gate.",
+      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
+      "future_test_note": "Same one PR/test target shared by B01-B06 and B31; ordered changes inside the #9141 PR, not separate overlapping PRs.",
+      "pr_unit": "PR-B-9141",
+      "pr_scope": "One ordered component PR contains B01-B06, B31 and B32; shared module/test ownership is sequenced within this PR."
+    }
+  ],
+  "component_statement_coverage": {
+    "#9141": [
+      "S1.1-S1.25"
+    ],
+    "#9142": [
+      "S1.26-S1.40"
+    ],
+    "#9143": [
+      "S1.41-S1.46"
+    ],
+    "#9144": [
+      "S1.47-S1.63",
+      "S1.100-S1.104 (ack primitive; coordinate with #9148)"
+    ],
+    "#9145": [
+      "S1.64-S1.72"
+    ],
+    "#9146": [
+      "S1.73-S1.78"
+    ],
+    "#9147": [
+      "S1.79-S1.82",
+      "S1.88-S1.99"
+    ],
+    "#9148": [
+      "S1.83-S1.87",
+      "S1.100-S1.113"
+    ]
+  },
+  "dependency_semantics": "Hard edges mean the named contract/API must land first; soft edges are not blockers. Interface-first slices establish protocol types before dependents. No crucial slice depends on recommended/contingent work.",
+  "pr_units": [
+    {
+      "id": "PR-B-9141",
+      "scope": "B01-B06 and B31-B32 one ordered component PR",
+      "test": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
+      "target": "federation_9141"
+    },
+    {
+      "id": "PR-B-9142",
+      "scope": "B07-B09 one ordered component PR",
+      "test": "pkgs/id/crates/id-sync/tests/federation_9142.rs",
+      "target": "federation_9142"
+    },
+    {
+      "id": "PR-B-research",
+      "scope": "B10-B14 and B26 docs-only research PR; B26 is not implementation",
+      "test": "research.md acceptance checks",
+      "target": "none"
+    },
+    {
+      "id": "PR-B-9144",
+      "scope": "B15-B18 one ordered V3 component PR; B19 receipt schema has independent V2 PR-B-receipt-v2.",
+      "test": "pkgs/id/crates/id-sync/tests/federation_9144.rs",
+      "target": "federation_9144"
+    },
+    {
+      "id": "PR-B-9145",
+      "scope": "B20-B22 one ordered component PR",
+      "test": "pkgs/id/crates/id-sync/tests/federation_9145.rs",
+      "target": "federation_9145"
+    },
+    {
+      "id": "PR-B-9146",
+      "scope": "B23-B24 one ordered component PR",
+      "test": "pkgs/id/crates/id-sync/tests/federation_9146.rs",
+      "target": "federation_9146"
+    },
+    {
+      "id": "PR-B-9147-impl",
+      "scope": "B25 and B27 only; distinct from research-only B26",
+      "test": "pkgs/id/crates/id-sync/tests/federation_9147.rs",
+      "target": "federation_9147"
+    },
+    {
+      "id": "PR-B-9148",
+      "scope": "B28-B30 one ordered component PR",
+      "test": "pkgs/id/crates/id-sync/tests/federation_9148.rs",
+      "target": "federation_9148"
+    },
+    {
+      "id": "PR-B-receipt-v2",
+      "scope": "B19 V2 shared receipt schema; dependency only on signer/envelope foundations B05 and B32",
+      "test": "pkgs/id/crates/id-sync/tests/receipt_v2.rs",
+      "target": "receipt_v2"
+    }
+  ],
+  "reconstruction_count": 30,
+  "additional_foundational_coverage_slices": [
+    "B31",
+    "B32"
+  ],
+  "total_slice_count": 32,
+  "statement_coverage": {
+    "S1.1-S1.25": "#9141 slices B01-B06 and B31-B32; B31 covers classes/default, B32 covers universal gate",
+    "S1.26-S1.40": "#9142 B08 explicitly covers S1.26-S1.27; B07-B09 remaining sync/conflict coverage",
+    "S1.41-S1.46": "#9143 B10-B14 research",
+    "S1.47-S1.63": "#9144 B15-B18; B19 receipt schema is V2 and not a V3 fanout prerequisite",
+    "S1.64-S1.72": "#9145 B20-B22",
+    "S1.73-S1.78": "#9146 B23-B24",
+    "S1.79-S1.82 and S1.88-S1.99": "#9147 B25-B27",
+    "S1.83-S1.87 and S1.100-S1.113": "#9148 B28-B30; B19 defines V2 receipt schema for S1.100-S1.104, B29 evaluates contradiction evidence",
+    "S1.114-S1.120": "Crosscut #9106/#9110; not a Part B slice"
+  }
+}

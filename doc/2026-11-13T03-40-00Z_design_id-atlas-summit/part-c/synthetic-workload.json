@@ -1,0 +1,20 @@
+{
+  "format": "id-atlas-synthetic-workload/v2",
+  "measurement_status": "synthetic correctness fixture; no timings measured",
+  "identity_profile": "fixture-only SHA256 over the exact profile bytes; not a production ContentId algorithm claim",
+  "tenant": "tenant-a",
+  "expected_content_id": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  "operations": [
+    {"id":"blob_put_if_absent","input":{"bytes_hex":"616263","metadata":{"owner":"fixture"}},"expected":{"created":true,"generation":1,"lifecycle":"Live"},"engine_support":{"d1":"supported","r2":"supported","redb":"supported","turso":"supported"}},
+    {"id":"blob_get","input":{},"expected":{"bytes_hex":"616263","generation":1},"engine_support":{"d1":"supported","r2":"supported","redb":"supported","turso":"supported"}},
+    {"id":"metadata_lookup","input":{},"expected":{"metadata":{"owner":"fixture"},"generation":1},"engine_support":{"d1":"supported","r2":"supported","redb":"supported","turso":"supported"}},
+    {"id":"metadata_scan","input":{"tenant":"tenant-a","prefix":"sha256:"},"expected":{"content_ids":["sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]},"engine_support":{"d1":"supported","r2":"unsupported","redb":"supported","turso":"supported"}},
+    {"id":"ref_commit_if_live","input":{"reference":"loc-1"},"expected":{"accepted":true,"generation":1,"reference_count":1},"engine_support":{"d1":"supported","r2":"external-authority-required","redb":"supported","turso":"supported"}},
+    {"id":"object_tombstone_delete","input":{},"expected":{"tombstoned":false,"reason":"references-present","lifecycle":"Live"},"engine_support":{"d1":"authority-only","r2":"preconditioned-delete-after-authority-fence","redb":"authority-then-object-delete","turso":"authority-then-object-delete"}},
+    {"id":"ref_remove","input":{"reference":"loc-1"},"expected":{"removed":true,"reference_count":0},"engine_support":{"d1":"supported","r2":"external-authority-required","redb":"supported","turso":"supported"}},
+    {"id":"object_tombstone_delete","input":{},"expected":{"tombstoned":true,"generation":1,"lifecycle":"Tombstoned"},"engine_support":{"d1":"authority-only","r2":"preconditioned-delete-after-authority-fence","redb":"authority-then-object-delete","turso":"authority-then-object-delete"}},
+    {"id":"ref_commit_if_live","input":{"reference":"late-ref"},"expected":{"accepted":false,"reason":"generation-fenced"},"engine_support":{"d1":"supported","r2":"external-authority-required","redb":"supported","turso":"supported"}},
+    {"id":"blob_put_if_absent","input":{"bytes_hex":"616263","resurrection":true},"expected":{"created":true,"generation":2,"lifecycle":"Live","content_id":"sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},"engine_support":{"d1":"supported","r2":"supported","redb":"supported","turso":"supported"}},
+    {"id":"blob_get","input":{},"expected":{"bytes_hex":"616263","generation":2},"engine_support":{"d1":"supported","r2":"supported","redb":"supported","turso":"supported"}}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "canonical_fixture_profile": "SHA256 of exact bytes 616263",
+  "cloud_evidence": "not measured; separate follow-up",
+  "engine_operation_capability_mappings_checked": 44,
+  "fixture": "synthetic-reference-store-v2",
+  "fixture_digest_verified": true,
+  "generation_fence_and_resurrection": "reference model matched expected transitions",
+  "r2_metadata_scan": "explicitly unsupported",
+  "reference_transitions_executed_and_matched": 11,
+  "timings_measured": false
+}
