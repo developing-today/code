@@ -201,3 +201,16 @@ func TestRewriteFinalExpressionReview4Cases(t *testing.T) {
 		}
 	}
 }
+
+// Review cases, round 5 (PR #9344): assertion keywords stay
+// attached to their types across a newline, and an async
+// declaration with an intervening comment is still a declaration.
+func TestRewriteFinalExpressionReview5Cases(t *testing.T) {
+	if got, ok := rewriteFinalExpression("1 as\nnumber"); !ok || got != "__mcpxFinal(await (1 as\nnumber));" {
+		t.Errorf("as across a newline: got %q, %v; want the whole assertion wrapped", got, ok)
+	}
+	src := "console.log(await f()); async /* helper */ function f() { return 42 }"
+	if got, ok := rewriteFinalExpression(src); ok || got != src {
+		t.Errorf("async comment declaration: got %q, %v; want untouched", got, ok)
+	}
+}

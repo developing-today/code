@@ -68,6 +68,9 @@ var operandKeywords = map[string]bool{
 	"extends": true, "else": true, "do": true,
 	"const": true, "let": true, "var": true, "function": true,
 	"class": true, "import": true, "export": true,
+	// TypeScript assertion operators take a type after them:
+	// 1 as\nnumber is one expression, not two statements.
+	"as": true, "satisfies": true,
 }
 
 // controlHeads open a statement whose condition group is followed
@@ -106,7 +109,9 @@ func isExpressionStatement(text string) bool {
 		return false
 	}
 	if word == "async" {
-		if w2, _ := firstWord(strings.TrimSpace(rest)); w2 == "function" {
+		// Comments may intervene: async /* helper */ function
+		// is still a declaration.
+		if w2, _ := firstWord(skipTrivia(rest)); w2 == "function" {
 			return false
 		}
 	}
