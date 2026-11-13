@@ -14,6 +14,8 @@
       "statements": [
         "S0.1",
         "S0.2",
+        "S0.3",
+        "S0.4",
         "S0.7",
         "S0.14"
       ],
@@ -49,12 +51,13 @@
       "statements": [
         "S0.2",
         "S0.7",
+        "S0.10",
         "S0.13",
         "S0.14",
         "S0.15",
         "S0.16"
       ],
-      "enables": "Introduce separate store, blob, event-log, world, object-bucket, stream, and request-transport contract types with capability declarations, semantic guarantees, limits, and typed unsupported errors. This is the sole owner of common crate root exports/Cargo manifests and the shared test-vector schema; consumers add distinct module files and do not edit those roots.",
+      "enables": "Introduce separate store, blob, event-log, world, object-bucket, stream, and request-transport contract types with capability declarations, semantic guarantees, limits, and typed unsupported errors. Include a Kafka-like ordered-stream test double to verify additive supportability without selecting or implementing Kafka. This is the sole owner of common crate root exports/Cargo manifests and the shared test-vector schema; consumers add distinct module files and do not edit those roots.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-core/src/lib.rs",
@@ -374,8 +377,11 @@
         "S0.5",
         "S1.114",
         "S1.115",
+        "S1.116",
+        "S1.117",
         "S1.118",
-        "S1.119"
+        "S1.119",
+        "S1.120"
       ],
       "enables": "Run common signed-envelope, config, operation, and failure fixtures in native Rust and hosted TypeScript implementations; compare behavior without requiring identical internals.",
       "owned_files": [
@@ -545,10 +551,12 @@
         "V3"
       ],
       "statements": [
+        "S0.11",
         "S7.2",
         "S7.3",
         "S7.5",
         "S7.6",
+        "S7.7",
         "S7.8",
         "S7.9",
         "S7.15"

@@ -86,6 +86,16 @@ reference-store transitions and 44 capability labels; synthetic cost arithmetic;
 strict extra-argument rejection for the three B/C check scripts. No benchmark
 timings or production-adapter correctness are established by these results.
 
+The first strict publication-gate run correctly refused to emit issue drafts:
+its snapshot saw 124 records/38 component homes, missing exact metadata and eight
+unattributed statement IDs. A bounded annotation repair then assigned those eight
+IDs to their existing responsible crosscut slices. An independent range-expanded
+aggregate now finds **124 records covering all 384 statement IDs**, with no
+statement exemptions. This repairs attribution, not issue-body readiness. The
+publication helper still has disclosed schema/heuristic limitations and concrete
+ownership/dependency metadata gaps; its nine offline tests pass, but no issue was
+created or enqueued. Full final review and publication remain separate gates.
+
 ## Checkpoint and next concrete deliverable
 
 Queue checkpoint `review_ready_integration` was attempted once as
