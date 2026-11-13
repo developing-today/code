@@ -94,3 +94,21 @@ budget-capped leg only after the labelled cost-per-correct comparison".
 ultra / fast all point to high"), V2 treats `max` as an alias of `high`; the
 category config is left as is, and the alias is applied in the effort
 resolver rather than by editing user settings.
+
+## Q7 — 2026-11-13 07:10 CT — open-default — opencode#821 status
+
+**Observed:** brief §9 says route windows have no calendar/holiday support
+yet (fork issue opencode#821); gh shows opencode#821 **CLOSED COMPLETED
+2026-11-03** ("date-aware route windows — specific dates / holiday
+exclusions").
+
+**Default chosen:** treat date-aware windows as **shipped in the fork but
+unverified in this config** — D4's variant/peak pools use them where the
+config supports the syntax, and a verification slice checks the fork code
+and the live config before relying on it.
+
+## Q8 — 2026-11-13 07:10 CT — open-default — launch-packet rules as a source
+
+**Default chosen:** the standing rules (inventory R1–R12) are committed
+verbatim inside `inventory/check_inventory.py` as the `LAUNCH_PACKET`
+constant; they are also restated in `main.md` §4. No separate packet file.
