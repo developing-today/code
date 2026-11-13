@@ -27,6 +27,21 @@ benchmark datasets and metadata equality indices. An explicitly authorized
 signer session can hold material for its bounded operation; that exception
 does not enable general caching.
 
+This boundary must include **legacy paths before escrow is activated**. V1's
+broker lists/fetches accessible BWS secrets and the name-only fallback can
+return an arbitrary accessible value. Merely adding `DataClass::RootPrivate`
+to a new API will not exclude future root archives from those paths. Before
+the first production escrow copy, verify trusted scope/native-ID exclusions
+and least-privilege runtime/broker grants, including the old fallback and
+refresh path; preferably the runtime principal cannot access the root scope
+at all. Encrypted root archives remain root-class material for this rule.
+Classification/exclusion is authoritative policy bound to scope and native
+identity, not a caller assertion or mutable provider sidecar. New/unclassified
+items require reviewed adoption before ordinary replication. If the approved
+destination's permissions cannot preserve this boundary, activation remains
+blocked pending an explicit custody decision; this design creates or changes
+no project, vault or grant.
+
 **Root signing authorization is transaction-bound (review finding A-2).** An
 explicit signer reference plus a generally authorized principal is not
 enough. A root signing operation consumes a `SigningAuthorization` bound to:
@@ -139,6 +154,21 @@ actually support it, coalesce reads, and persist resumable cursors. A complete
 inventory token records pagination, grants and scope identity; a successful
 HTTP status alone is not completeness. Full-census schedules and incremental
 lookback are distinct obligations.
+
+Read-visible completeness is not automatically **deletion authority**. A
+provider can hide a revoked item behind an omission or 404 while the token,
+principal and configured project stay unchanged. Even two apparently complete
+scans then cannot prove deletion. Keep `MissingUnverifiable` separate from
+confirmed deletion; require documented visibility/permission evidence, a native
+deletion/trash event or explicitly reviewed confirmation before retirement or
+tombstone propagation. The hidden-ACL test must retain that item's baseline
+and produce no tombstone while other verified items can checkpoint.
+
+`zz.delete` immutability means Fleet does not edit or auto-purge history; it
+does not assert that a hosted item is WORM. Authenticate protected snapshots
+and receipts to detect edited history. A local hash chain alone cannot detect
+tail rollback without an independently anchored head. Restoration is a
+reviewed additive operation, not permission to rewrite evidence silently.
 
 ### ADR-S03 — Freshness is part of the result, not a cache implementation detail
 

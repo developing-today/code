@@ -40,20 +40,47 @@ pub struct CredentialId(pub uuid::Uuid);
 pub struct SecretAlias { pub scope: ScopeId, pub name: String }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DataClass { Public, Internal, MachineStatic, HumanSensitive, Recovery, RootPrivate, Dynamic }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SecretPurpose { RuntimeRead, RecoveryRead, RotationRead, AuditRead, RootSigning }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OfflineIntent { OnlineOnly, MayUsePolicyAuthorizedReplica }
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum AssuranceRequirement { Any, VerifiedVersion, HardwareBound }
 #[derive(Clone, Debug)]
-pub struct ReadPolicy {
-    pub max_age: Option<Duration>,
-    pub stale: StalePolicy,          // Forbid | AllowUntil(Duration)
-    pub allowed_sources: Vec<ProviderId>,
-    pub require_version_proof: bool,
+pub struct ResolutionContext {
+    pub purpose: SecretPurpose,
+    pub offline_intent: OfflineIntent,
+    pub required_assurance: AssuranceRequirement,
+    pub caller_max_age: Option<Duration>, // can only tighten stored policy
 }
+/// Returned only by the resolver's trusted policy source, never set per call.
+pub struct AuthoritativeCredentialPolicy {
+    stored_class: DataClass,
+    revocation_policy: RevocationPolicy,
+    maximum_age: Duration,
+    offline_allowed: bool,
+    minimum_assurance: AssuranceRequirement,
+}
+#[async_trait]
+pub trait AuthoritativePolicySource: Send + Sync {
+    async fn load(&self, id: CredentialId, cancel: CancellationToken)
+      -> Result<AuthoritativeCredentialPolicy, PolicyError>;
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevocationState { CurrentNotRevoked, Revoked, Unknown }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FreshnessDecision { Fresh, Degraded { reason: DegradedReason } }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DegradedReason { PolicyAuthorizedOfflineReplica, BoundedStaleUse }
 #[derive(Debug)]
 pub struct ResolvedSecret {
     pub value: SecretBytes,          // redacted Debug; no Serialize/Display
     pub source: ProviderId,
     pub native_revision: Option<Revision>,
     pub fetched_at: std::time::SystemTime,
-    pub stale: bool,
+    pub source_age: Duration,
+    pub revocation: RevocationState,
+    pub freshness: FreshnessDecision,
 }
 #[async_trait]
 pub trait SecretStore: Send + Sync {
@@ -63,24 +90,39 @@ pub trait SecretStore: Send + Sync {
     async fn list(&self, scope: &Scope, page: Option<PageToken>, cancel: CancellationToken)
       -> Result<Page<ProviderItem>, ProviderError>;
 }
-pub struct Resolver { /* policy + ordered adapters + bounded cache/single-flight */ }
+pub struct Resolver { /* trusted policy source + adapters + bounded cache/single-flight */ }
 impl Resolver {
-    pub async fn resolve(&self, r: &SecretRef, p: &ReadPolicy, cancel: CancellationToken)
+    pub async fn resolve(&self, r: &SecretRef, context: &ResolutionContext,
+                         cancel: CancellationToken)
       -> Result<ResolvedSecret, ResolveError>;
-    pub async fn resolve_many(&self, refs: &[SecretRef], p: &ReadPolicy, cancel: CancellationToken)
+    pub async fn resolve_many(&self, refs: &[SecretRef], context: &ResolutionContext,
+                              cancel: CancellationToken)
       -> Result<Vec<Result<ResolvedSecret, ResolveError>>, BatchError>;
 }
 ```
 
-`SecretBytes` owns zeroizing bytes where supported, has a deliberately redacted `Debug` implementation, and does not implement `Display` or `Serialize`; bytes are exposed only through an explicit closure (`with_exposed`). Secret-bearing values do not implement implicit `Clone`; any exceptional copy has a named, audited operation. `ResolvedSecret` may be debugged safely but metadata serializes only through a separate redacted receipt type. `SecretAlias { scope, name }` is a mutable lookup alias; it resolves to an opaque `CredentialId`, which remains stable across rename/relocation. Alias resolution must be explicit and scoped. Ordinary `Resolver` rejects `RootPrivate` and returns no signer capability. Root signer access is a separate authority plane and excludes ordinary resolver caches, prefetch, benchmarks and equality indices. Source selection is explicit policy, not “try any provider.” `resolve_many` preserves request order and per-item errors; it groups by provider/session internally and bounds concurrency. `ReadPolicy` defaults must be fail-closed; stale permission is explicit and class-dependent.
+`SecretBytes` owns zeroizing bytes where supported, has a deliberately redacted `Debug` implementation, and does not implement `Display` or `Serialize`; bytes are exposed only through an explicit closure (`with_exposed`). Secret-bearing values do not implement implicit `Clone`; any exceptional copy has a named, audited operation. `ResolvedSecret` may be debugged safely but metadata serializes only through a separate redacted receipt type. `SecretAlias { scope, name }` is a mutable lookup alias; it resolves to an opaque `CredentialId`, which remains stable across rename/relocation. Alias resolution must be explicit and scoped. Ordinary `Resolver` rejects `RootPrivate` and returns no signer capability. Root signer access is a separate authority plane and excludes ordinary resolver caches, prefetch, benchmarks and equality indices. `ResolutionContext` carries purpose, offline intent, required assurance and an optional caller freshness ceiling. The resolver obtains class, revocation policy, freshness ceiling, offline allowance, assurance floor and provider/native scope binding from a trusted authoritative policy index; none is caller-supplied or inferred from a provider label/mutable sidecar. The caller may only tighten (shorter maximum age, higher assurance, online-only); it cannot lower stored class or policy, permit revoked/unknown data against policy, or turn RootPrivate into a readable grant. Policy is keyed to verified provider/account/project/vault and native IDs. Unknown or adopted items require classification review before replication. Revoked/policy-denied credentials are never served from stale fallback. Successful results contain explicit `FreshnessDecision`, `source_age`, revocation state, source and revision; stale/degraded success requires both authoritative policy and caller intent and carries a typed reason. Denial is an error, never silent fallback. A fake-clock/class/purpose/offline/revocation matrix tests these rules. PERF-02 owns freshness semantics and implementation; ARCH-01 owns the API shape and does not create a second freshness policy or resolver.
 
 `ProviderDescriptor` carries stable ID/version and declared capabilities; capability discovery is separate from permission testing, and a successful list must include pagination completion evidence. For writes, later `fleet-secrets-admin` provides typed `Credential` / `SecretField` / `ProviderItem` mappings with ordered typed fields and encrypted lossless sidecar; provider-specific unknown fields cannot be silently dropped. Distinguish Bitwarden Secrets Manager (`bws`), Bitwarden Password Manager (`bw`) and `op`; credentials and auth scopes are separate.
 
-Errors are stable machine classes with redacted context, not arbitrary stderr: `InvalidReference`, `NotFound`, `Unauthenticated`, `PermissionDenied`, `Unavailable`, `RateLimited { retry_after }`, `Unsupported { operation }`, `Stale { age }`, `Conflict`, `MalformedProviderData`, `Cancelled`, `Timeout`, `Partial { completed, pending }`, `Integrity`, `PolicyDenied`, `AuthorityPlaneDenied`, and `Internal`. Secret identifiers may themselves be sensitive; callers choose log-safe IDs/hash pseudonyms. Do not preserve payload or values inside provider error strings.
+Per adapter **and operation**, record `WriteGuardLevel::{AtomicPrecondition, SerializedByContract, Unguarded}`. A level is established only by primary documentation plus an isolated test. `SerializedByContract` means every writer of that scope is known to use and honor the same serializing mechanism; a Fleet-local lease is insufficient if a human, app, or other tool can write outside it. Until proved otherwise, BWS, `op` and `bw` are `Unguarded`. Automatic apply to conflict-sensitive fields (any secret value and any field both sides may edit) requires `AtomicPrecondition` or `SerializedByContract`; otherwise the step stops as `needs-review`, or uses a separately approved, named weaker policy with its lost-update window in plan and receipt. A Fleet-local lease and readback are not serialization. Additive create and immutable-history writes are not gated by this conflict-sensitive update rule. This is ADR-S02/A-1; detailed adapter behavior belongs to #9158/#9159.
+
+Errors are stable machine classes with redacted context, not arbitrary stderr: `InvalidReference`, `NotFound`, `Unauthenticated`, `PermissionDenied`, `Unavailable`, `RateLimited { retry_after }`, `Unsupported { operation }`, `Stale { age }`, `Revoked`, `RevocationUnknown`, `AssuranceNotMet`, `Conflict`, `MalformedProviderData`, `Cancelled`, `Timeout`, `Partial { completed, pending }`, `Integrity`, `PolicyDenied`, `AuthorityPlaneDenied`, and `Internal`. Secret identifiers may themselves be sensitive; callers choose log-safe IDs/hash pseudonyms. Do not preserve payload or values inside provider error strings.
 
 ### Admin/write, reconciliation and custody
 
 ```rust
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriteGuardLevel {
+    AtomicPrecondition,
+    SerializedByContract,
+    Unguarded,
+}
+pub struct ProviderOperationGuard {
+    pub operation: ProviderOperation,
+    pub level: WriteGuardLevel,
+    pub evidence: Option<GuardEvidence>, // primary docs + isolated proof
+}
 #[async_trait]
 pub trait SecretWriter: SecretStore {
     async fn create(&self, item: &Credential, key: IdempotencyKey, c: CancellationToken)
@@ -103,37 +145,93 @@ impl ReconcileEngine {
 
 Diff/merge is deterministic and side-effect free; apply is a journaled saga, not an atomic distributed transaction. One mutation has a plan digest, user/scope approval, source/native revisions, idempotency key, preflight, write, read-back proof, receipt and compensating/recovery instructions. Cancellation before a remote write aborts cleanly; cancellation or process death after submission records `uncertain`, then resumes by read-back/idempotency rather than blindly repeating. Never interpret timeout, 403, failed page, or partial pagination as deletion. Preserve native IDs and update originals in place. `zz.delete` is protected verified history with retention policy, not an immediate destructive delete. Event payloads omit secret values; high-entropy keyed equality proofs only when separately approved.
 
+A-1's model oracle is **preflight → external edit → apply**: on an unguarded conflict-sensitive update, the external value remains recoverable and the operation reports conflict/unsupported-guard, never success. Readback after an unconditional overwrite is not serialization. The concrete planner/journal/saga is delegated to #9159.
+
 `fleet-secrets-admin` should be optional and may initially be a feature/module inside `fleet-secrets`; extract crate only when dependencies/users make its separate build valuable. It owns writer capability, reconciliation and audit journal. Runtime consumer cannot construct admin authority just by importing read resolver. Root signer handles are neither `SecretRef` nor `SecretBytes` and are issued only through a bounded, explicitly authorized signer session. Broker protocol already contains the #6767 metadata mitigation in source; deployment/canary evidence remains separate. Any future request-specific freshness contract is a new design requirement and must preserve old client compatibility; it is not a duplicate of #6767's merged per-secret refresh fix.
 
 ### Crypto, PKI, artifact IO
 
 ```rust
+pub struct SigningAuthorization { // private fields; minted only by authority service
+    root_key: AuthorizedKeyIdentity, // fingerprint/handle
+    subject_spki: PublicKeyIdentity,
+    signature_algorithm: SignatureAlgorithm,
+    serial: Option<SerialNumber>,
+    signed_payload_digest: Digest, // exact final TBS/message bytes
+    profile: ProfileId,
+    purpose: KeyPurpose,
+    validity: ExactValidity,
+    artifact_plan_digest: Digest,
+    destinations: Vec<AuthorizedDestination>,
+    expires_at: SystemTime,
+    transaction_id: TransactionId,
+    nonce: SingleUseNonce,
+}
+pub struct PreparedSigningTuple { /* private: SPKI, serial, exact TBS and plan digests */ }
+pub struct PreparedIssuance { /* immutable final TBS + artifacts; private fields */ }
+pub struct SignerSession { /* private, one validated authorization tuple */ }
+pub struct DurableTupleClaim { /* private, atomic single-winner, non-Clone */ }
+pub struct OutputAuthorization { /* private, exact plan/class/destination/expiry, non-Clone */ }
+
+#[async_trait]
+pub trait SigningAuthorizationPort: Send + Sync {
+    async fn authorize_prepared(&self, tuple: &PreparedSigningTuple,
+                                cancel: CancellationToken)
+        -> Result<SignerSession, AuthorizationError>;
+}
+#[async_trait]
+pub trait DurableAuthorizationLedger: Send + Sync {
+    async fn consume_once(&self, session: &mut SignerSession, tuple_digest: Digest,
+                          cancel: CancellationToken) -> Result<DurableTupleClaim, ClaimError>;
+    async fn record_result(&self, claim: DurableTupleClaim,
+                           result: SigningReceiptOrUncertain) -> Result<(), LedgerError>;
+}
 #[async_trait]
 pub trait Signer: Send + Sync {
-    fn public_key(&self) -> PublicKey;
-    fn algorithm(&self) -> SignatureAlgorithm;
-    async fn sign(&self, message: &[u8], c: CancellationToken) -> Result<Signature, SignError>;
+    async fn sign(&self, claim: &DurableTupleClaim, exact_tbs: &[u8],
+                  cancel: CancellationToken) -> Result<SigningReceipt, SignError>;
 }
-/// Not constructible from an ordinary secret reference or provider read.
-pub struct SignerSession { /* principal grant, key purpose, expiry, audit id */ }
-pub trait KeyResolver: Send + Sync {
-    fn resolve<'a>(&'a self, session: &'a SignerSession, r: &'a KeyRef,
-                   purpose: KeyPurpose, c: CancellationToken)
-      -> BoxFuture<'a, Result<Arc<dyn Signer>, KeyError>>;
+#[async_trait]
+pub trait OutputAuthorizationPort: Send + Sync {
+    async fn authorize_output(&self, plan: &ArtifactPlan, artifact: &ClassifiedArtifact,
+                              cancel: CancellationToken)
+        -> Result<OutputAuthorization, OutputAuthorizationError>;
 }
+#[async_trait]
+pub trait ArtifactSink: Send {
+    async fn write(&mut self, authorization: &OutputAuthorization,
+                   artifact: ClassifiedArtifact, cancel: CancellationToken)
+        -> Result<ArtifactReceipt, SinkError>;
+}
+
 pub struct PkiEngine { /* profiles, validation, graph, format-independent issuance */ }
 impl PkiEngine {
-    pub async fn issue_leaf(&self, req: LeafRequest, signer: Arc<dyn Signer>,
-                            clock: &dyn Clock, c: CancellationToken)
-      -> Result<IssuedCertificate, PkiError>;
-}
-pub trait ArtifactSink: Send {
-    async fn write(&mut self, artifact: Artifact, c: CancellationToken)
-      -> Result<ArtifactReceipt, SinkError>;
+    /// Apply-stage preparation reserves a serial and freezes exact SPKI/TBS.
+    /// Dry-run/preflight must not consume serials or mint signature authority.
+    pub async fn prepare_leaf(&self, req: LeafRequest, serials: &dyn SerialLedger,
+                              clock: &dyn Clock, cancel: CancellationToken)
+        -> Result<PreparedIssuance, PkiError>;
+    pub async fn sign_prepared(&self, prepared: PreparedIssuance,
+                               session: &mut SignerSession, claim: DurableTupleClaim,
+                               signer: &dyn Signer, cancel: CancellationToken)
+        -> Result<SignedIssuance, PkiError>;
+    /// Convenience helper prepares first and asks the injected port to authorize
+    /// the now-known tuple; it never accepts a prefilled grant for unknown bytes.
+    pub async fn issue_leaf(&self, req: LeafRequest,
+                            authorization: &dyn SigningAuthorizationPort,
+                            serials: &dyn SerialLedger, ledger: &dyn DurableAuthorizationLedger,
+                            signer: &dyn Signer, clock: &dyn Clock, cancel: CancellationToken)
+        -> Result<IssuedCertificate, PkiError>;
+    /// Root request always names the root-key identity and separate ceremony approval.
+    pub async fn issue_root(&self, req: RootRequest, root_key: ExplicitRootKeyRef,
+                            ceremony: &RootKeyCreationAuthorization,
+                            authorization: &dyn SigningAuthorizationPort,
+                            signer: &dyn Signer, ledger: &dyn DurableAuthorizationLedger,
+                            cancel: CancellationToken) -> Result<RootArtifact, PkiError>;
 }
 ```
 
-`fleet-crypto` owns algorithm/type registry and signer contracts; providers are optional adapters. `fleet-pki` owns CA/root/issuer/leaf/chain/CRL profiles and policy; it depends on crypto interfaces, not a specific key export or provider. Keep no-disk operation possible. `ArtifactSink` receives typed confidentiality classification; private key outputs require an explicitly authorized custody operation, sink permission and write receipts. PKI engine does not own provider replication or DNS mutation. A future `fleet-publish` seam is warranted only when more than one real publishing adapter exists.
+`fleet-crypto` owns algorithm/type registry and signer contracts; providers are optional adapters. `fleet-pki` owns CA/root/issuer/leaf/chain/CRL profiles and policy; it depends on crypto interfaces, not a specific key export or provider. Keep no-disk operation possible. Key-generation/storage ceremony approval is separate from signature authorization. The signer grant binds root key fingerprint/handle; subject SPKI identity and signature algorithm; profile/purpose; exact validity; reserved serial where relevant; hash of exact final TBS/message bytes; artifact-plan digest; authorized output/escrow destinations; expiry; transaction ID; single-use by default. Grant issuance occurs only after the signing subject/key is known, required serial is durably reserved (gaps are acceptable), and final bytes/plan are frozen. A dry run may render estimates/placeholders but cannot authorize a final signature or burn a serial. A multi-signature bounded grant must enumerate every final tuple; unlisted signatures are never allowed. Before invocation, the ledger atomically and durably consumes the exact tuple, single-winner across concurrent consumers. State is `authorized → consumed/claimed → submitted → receipt-recorded` or `uncertain`; a crash after claim without authoritative final receipt burns the tuple. A lost result with no authoritative signer status remains uncertain and blocked, never treated as unused or retried. Receipt names the authorized transaction. `SigningAuthorization`, `SignerSession`, `DurableTupleClaim` and `OutputAuthorization` have private constructors and no implicit `Clone`; `PreparedIssuance` is immutable and privately constructed by `PkiEngine`. Only the trusted authorization, ledger and output-authorization ports construct grants/claims. Inventory lookup, escrow read access, possession of key bytes, and a valid path never mint authorization. Tests refuse ambient discovery, signer substitution, changed SPKI/serial/TBS/plan digest, wrong purpose, expiry, replay, signer handle used as ordinary secret reference, concurrent double-consume, duplicate invocation, and retries after uncertain outcome. Inject crashes before claim, after durable claim/before signer call, after signer call/before receipt, and after receipt. ROOT-03/ROOT-04 synthetic signing must use this seam and must depend on the shared authorization contract (or explicitly assert identical enforcement), never sign directly around it. This is ADR-S01/A-2; PKI-specific implementation is delegated to ROOT-05/CERT-03. `ArtifactSink::write` requires an unforgeable `OutputAuthorization` bound to exact artifact-plan digest, confidentiality class, destination and expiry; there is no private-output method that accepts only an artifact or ordinary sink. Denied/expired/wrong-plan grants cause zero sink calls. The high-level `issue_leaf` helper receives an injected `SigningAuthorizationPort`/session factory and obtains authorization only after `prepare_leaf` has fixed subject SPKI, reserved serial and exact TBS. It never accepts a prefilled grant for unknown bytes. The preparation/reservation operation is side-effect explicit: a dry run may show estimates/placeholders but cannot reserve/burn a serial or mint final-TBS authorization. Root operations always use an explicit root key identity and grant. PKI engine does not own provider replication or DNS mutation. A future `fleet-publish` seam is warranted only when more than one real publishing adapter exists.
 
 The reference baseline keeps ML-DSA-44 required, with RSA-4096 production policy and explicit RSA-2048 compatibility gate; no silent algorithm substitution. Test-only deterministic entropy/clock are injected, never enabled in production. Existing `pkgs/id` Iroh endpoint key may be wrapped by an `IrohIdentityAdapter`, retaining identity-specific file semantics; it must not become a CA signer implicitly.
 
@@ -185,98 +283,69 @@ No reverse dependency from secrets core to CLI, PKI, disk archive, OpenBao, Nix,
 | **V3 (admin / PKI separation)** | Fully versioned admin API, typed provider writes, two-sided/three-way reconcile, protected `zz.delete`, audit/recovery; `fleet-crypto` + `fleet-pki` with ML-DSA-44 baseline and RSA policies; four-root / nine asymmetric cross-cert / A/B issuer reference tests; operator CLI remains wrapper; root custody workflow with explicit approval and tested restoration. | Root generation/upload during this design; production changes before separate gates and authorization. |
 | **V4 (federation hooks)** | Per-secret replication and provider compartments, policy-authorized BWS/OP/OpenBao/age replicas, dynamic-credential types, workload identity/attestation hooks, independent failure/compromise graphs, SPIFFE/SPIRE and infrastructure research; evaluate remote RPC/API separately. | Treating federation as universal mirroring, promoting R2 or OpenBao as baseline, or claiming HA from same-host replicas. |
 
-Root signing authority is distinct from encrypted escrow; escrow destinations don't automatically become active signers. Preserve migration from 3 named initial escrow destinations to offline/hardware custody and separate recovery identity. R2 remains researched client-side encrypted backup only unless independent adoption decision. SOPS ciphertext in Git is limited to explicitly scoped deployment values; age private key stays provisioned outside Git and Nix store. fnox is a near-term research target but not a mandatory abstraction: benchmark its public Rust API/stability and adapter capabilities before embedding or subprocess use. SecureStore must prove added value against age/SOPS rather than add a fourth redundant format.
+Root signing authority is distinct from encrypted escrow; escrow destinations do not automatically become active signers. The closed custody type is:
 
-## Issue-ready proposal packets (for child issues under #9157)
+```rust
+pub enum RootEscrowDestination {
+    EncryptedLaptop,
+    BwsProject,
+    OnePasswordVault,
+}
+pub struct RootEscrowPolicy {
+    destinations: BTreeMap<RootEscrowDestination, DestinationPolicy>,
+} // dedicated policy; never generic replication
+```
 
-Each packet is one independently verifiable deliverable. Issue creator should use native parent/dependency edges and the coordinator §4.2 contract; these are design proposals only, not created issues. Urgency values below are proposed scheduling inputs, not permission to dispatch. Negative cases are mandatory test assertions; oracles are explicit.
+It is not a generic provider list; no wildcard/future provider is permitted. Custody is complete only when all three are present and each independently restores with the other two unavailable. A missing destination or failed restore is incomplete custody, not success-with-warning. This is ADR-S05/A-3; the detailed implementation and synthetic restore proof belong to ROOT-09/ROOT-10. **Activation safety precondition:** before the first escrow copy, register the exact BWS project / OP vault and native escrow object IDs in the trusted policy registry, bound to verified provider/account scope; runtime principals (including the broker and legacy `fleet secrets get` BWS fallback) must not be able to read that root scope. Prefer a separately least-privileged runtime grant. If the provider grant cannot separate it, both the all-access broker refresh/cache and name-only fallback must reject the exact root scope before list/get/cache/print; a self-asserted `DataClass::RootPrivate` or mutable sidecar is not sufficient. Unknown/adopted records require classification review before replication. ROOT-09/OPS-10 must prove this with the original broker-compatible synthetic path; production escrow remains blocked until actual scope/native IDs and permissions are separately approved and verified. No BWS project is created automatically by this design. R2 remains researched client-side encrypted backup only unless independent adoption decision. SOPS ciphertext in Git is limited to explicitly scoped deployment values; age private key stays provisioned outside Git and Nix store. fnox is a near-term research target but not a mandatory abstraction: benchmark its public Rust API/stability and adapter capabilities before embedding or subprocess use. SecureStore must prove added value against age/SOPS rather than add a fourth redundant format.
 
-### ARCH-01 — Freeze runtime secret type and compatibility contract
-- **Kind / stage / proposed urgency:** design+implementation / V2 / High 400.
-- **Requirement IDs:** spec §§1, 8.4–8.6, 26.1, 35.2–35.4, 43, 48.1–48.2 V3-S02/V3-S07/V3-S13; addendum §§3, 9.
-- **Outcome/scope:** extend `fleet-secrets` with typed reference, source metadata, class, revision and freshness policy; preserve old `get/list` behavior. No writes/admin APIs.
-- **Acceptance:** API compiles for in-memory fake; stable redacted error enum; `fleet secrets get <name>` stdout/exit behavior unchanged; only explicitly policy-approved source selected; in-memory resolution avoids CLI spawn.
-- **Negative tests/oracle:** no `Debug`/serialization yields value; denied/stale/ambiguous URI, empty response, malformed provider values fail; compare CLI golden stdout/stderr/exit fixtures to V1 baseline (oracle: committed fixtures + type-level no-Serialize constraints).
-- **Boundaries/rollback:** `fleet-secrets`, its tests, minimal `fleet` compatibility adapter only. Revert additive types while retaining legacy resolver; no data migration.
-- **Dependencies:** none; prerequisite ARCH-02, ARCH-03.
+## Architecture-owned proposals and cross-domain ownership
 
-### ARCH-02 — Verify deployed #6767 mitigation with authorized live canary
-- **Kind / stage / proposed urgency:** operations+test / V2 / High 450; **Blocked** pending deployment/canary authorization.
-- **Requirement IDs:** spec §§8.4, 35.4, 37.2, 48.2 V3-S07/S11/S13; addendum §§2–3, 9; existing defect #6767.
-- **Outcome/scope:** verify rollout of the already-merged #6767 fix and execute the authorized live canary after its separate approval. This is not an implementation ticket. The design phase does not deploy, read live values, rotate credentials, or run a canary.
-- **Acceptance:** record deployed binary/source revision; verify deployed age/source metadata and per-secret refresh behavior with synthetic checks first; after explicit approval, canary a designated nonproduction/synthetic credential and record before/after value fingerprints, timestamps, observed refresh and rollback result without recording values. Confirm successful canary is independently read back from authoritative provider and broker.
-- **Negative tests/oracle:** if source revision is not #8491-or-later, deployment is not actually observed, canary permission is absent, provider read fails, or observed value does not match authoritative post-rotation fingerprint, stop; do not label mitigation deployed/verified and do not retry mutation blindly. Oracle: deployed binary provenance + broker metadata + authoritative-source fingerprint comparison + canary receipt.
-- **Boundaries/rollback:** deployment and canary are production-adjacent operations and are **Blocked** pending explicit approval and reviewed rollback; no edits in this design run. Rollback follows the deployed service's documented prior-binary rollback and preserves cache age/evidence. Do not remove last known-good behavior without owner signoff.
-- **Dependencies:** ARCH-01 may define the separate typed freshness policy but is not a prerequisite for observing #8491. Requires deployment owner, live-canary approval, and a documented nonproduction credential/scope.
+These are the only proposals owned by #9157 architecture. Domain work remains with the existing domain proposals listed below; the former broad ARCH-02–ARCH-05 and ARCH-08–ARCH-09 packets are retired as proposals, not silently dropped. Their requirement coverage is explicitly routed to domain owners. All proposed packets below are design/development planning only; no issues are created here.
 
-### ARCH-03 — Add capability-described read adapters and benchmark harness
-- **Kind / stage / proposed urgency:** implementation+benchmark / V2 / High 400.
-- **Requirement IDs:** spec §§34–35, 37–38, 42, 48.1–48.2 V3-S02/S11/S13/S14; addendum §§1–3, 6, 9.
-- **Outcome/scope:** provider descriptor/read adapter for BWS and OP; `bw` remains a separate disabled adapter behind separately verified auth. Evaluate fnox public Rust API before choosing direct integration; harness supports resolver/broker, direct CLI/API where authorized, synthetic fixtures.
-- **Acceptance:** capability/version/permission outputs distinguish unsupported, inaccessible and empty; reproducible cold/warm/list/batch p50/p95/p99, startup/RSS/error-rate output, redacted fixtures; no subprocess in embedded path when native client selected.
-- **Negative tests/oracle:** 403/partial pages/rate limits never mean deleted/not-found; no bw credential inherited from bws config; no secret fixture content in output. Oracle: adapter conformance suite + known synthetic provider state.
-- **Boundaries/rollback:** existing `fleet-secrets` modules/features and isolated harness; adapters off by default; preserve BWS CLI fallback.
-- **Dependencies:** ARCH-01. No dependency on blocked deployment canary for synthetic benchmarks; production resolver/broker measurements must identify deployment revision and remain pending until ARCH-02 is authorized/completed. External provider docs/API/version research is a blocking subtask before adoption, not before BWS maintenance.
+The architecture proposal urgency scores retain the shared charter's intrinsic scale (lower is sooner): 400–799 High, 800–1199 Standard, 1200–1599 Low, 1600–1999 Someday, 2000+ Cold; 0–399 is reserved for incident/critical. These four foundational proposals use numeric scores 450–500, all High. Preserve the intrinsic score and band separately from importance, hard-blocking status, implementation stage and dispatch directive. If a publisher projects to the existing queue scale, use High→20, Standard→40, Low/Someday/Cold→70; do not alter the PM schema or equate queue priority with intrinsic urgency.
 
-### ARCH-04 — Define canonical credential mapping and replication policy
-- **Kind / stage / proposed urgency:** design+implementation / V2→V3 / High 400.
-- **Requirement IDs:** spec §§19, 34.2–34.3, 35.3, 36, 38, 48.2 V3-S03/S04/S05/S08; addendum §§1, 5, 8.
-- **Outcome/scope:** ordered typed credential fields, stable Fleet/native IDs, revision, provenance, classes, compartment + per-item replica policy; encrypted lossless sidecar for unmodeled provider fields. No provider writes.
-- **Acceptance:** round-trip OP/BWS-compatible synthetic records, stable native IDs, per-field diff, policy explain includes read/write/replicate/export separately; root-private cannot enter default replication.
-- **Negative tests/oracle:** unknown field not discarded; duplicate aliases and unsupported fields conflict instead of last-write-wins; roots excluded absent explicit high-assurance policy. Oracle: canonical JSON golden corpus and round-trip property tests.
-- **Boundaries/rollback:** canonical types in existing `fleet-secrets` initially; no new crate until consumer/build evidence. Schema version parser and migration fixtures included.
-- **Dependencies:** ARCH-01/03. No personal-vault sweep; `bw` access separately blocked pending authorization.
+## Architecture challenge re-review
 
-### ARCH-05 — Build plan/apply/recover reconciliation and nonsecret journal
-- **Kind / stage / proposed urgency:** implementation+security tests / V3 / High 450.
-- **Requirement IDs:** spec §§20–21, 36, 48.1–48.2 V3-S04–S10/S25; addendum §§1, 5, 8.
-- **Outcome/scope:** deterministic three-way plan from verified baseline, per-field conflict resolution, staged writes, in-place updates, journaled saga, immutable receipts, guarded `zz.delete`, resume/recovery. Synthetic adapters only until separate first-sweep authorization.
-- **Acceptance:** each plan pins source revisions, idempotency and approval scope; partial writes recover, successful mutation read-backs before completion; retention and protected backup restore test; no timestamps as conflict winner.
-- **Negative tests/oracle:** timeout/403/partial pagination never becomes deletion; crash after write resolves uncertainty through readback; same-field double change flags conflict and keeps both values; journal/metadata contain no plaintext. Oracle: generated state-machine runs against reference model + failure injection.
-- **Boundaries/rollback:** optional `fleet-secrets-admin` module/crate; nonsecret local journal and its storage adapter; existing GitHub creation outbox is not reused. Rollback by pausing apply, preserving journal and resuming/compensating—not deleting history.
-- **Dependencies:** ARCH-04; ARCH-03 provider write capability tests. First live write is separately approval-blocked; reconciliation tests do not wait on the deployment canary.
+The architecture challenge is read in full. Its two blockers are now reflected as interface contracts, not claimed implementation evidence: A-1 requires per-adapter/per-operation guard level and denies automatic conflict-sensitive updates on unguarded targets unless an explicitly approved weaker policy is named; A-2 requires transaction-bound, single-use signing authorization and mismatch refusal. A-3 is constrained to the closed `RootEscrowPolicy` destination set with each copy restored in isolation before reporting complete custody. A-4 is owned by the ROOT/CERT verifier/client capability matrix; A-5 is owned by PERF measurement and REC completeness/cancellation testing. None authorizes production work or blocks synthetic contracts.
 
-### ARCH-06 — Add crypto signer interfaces and PKI engine library
-- **Kind / stage / proposed urgency:** design+implementation+test / V3 / High 450.
-- **Requirement IDs:** spec §§3–7, 9, 24, 26, 28, 44, 48.1–48.2 V3-S15–S22; addendum §9.
-- **Outcome/scope:** typed algorithms/signature path, signer handle abstraction, policies and in-memory artifact flow; four independent roots, nine asymmetric cross-certifications and A/B purpose partitions verified by synthetic keys. Implement requested roots-only alternative and direct eligible cross-signs; ML-DSA-44 baseline, RSA-4096 production, RSA-2048 gated.
-- **Acceptance:** library API equivalent core semantics to CLI plan; verifier matrix with independent implementation; no-disk memory sink; explicit unsupported-client outcomes; generated Fleet artifact fixtures pass independent checks.
-- **Negative tests/oracle:** classical path rejected by PQ-only; missing ML-DSA client capability is not “fixed” by cross-sign; invalid OID/extension/expiry and RSA-2048 long-root policy reject; unsupported OCSP never embedded. Oracle: reference chain model + OpenSSL/independent Rust verifier test corpus, with version pins.
-- **Boundaries/rollback:** proposed `fleet-crypto` and `fleet-pki` only if dependency graph supports isolation; CLI remains `fleet`; no new CA daemon. Synthetic keys only during planning.
-- **Dependencies:** ARCH-01 for typed key/secret refs, plus separate crypto library research/decision. No dependency on production custody or OpenBao.
+The JSON `urgency` is the shared charter's intrinsic numeric scale (lower is sooner); these four proposals use the High band 400–799. Preserve both numeric score and band. Urgency is separate from importance, blocking, stage and dispatch, and is not the Project/queue priority scale. No PM schema or queue mapping is changed here.
 
-### ARCH-07 — Integrate profile features into existing Fleet command registry/builds
-- **Kind / stage / proposed urgency:** implementation+packaging tests / V2→V3 / High 400.
-- **Requirement IDs:** spec §§1, 6, 25–26, 29, 43, 48.1 V3-S24; addendum §9.
-- **Outcome/scope:** add `secrets`, `generate`, `cert`/optional `pki` alias to existing registry and one binary; use selected features/profiles `consumer-min`, `agent`, `fleet`, `admin`, `serve`; generated help from single source; keep old aliases/exit contracts.
-- **Acceptance:** each binary's compiled/profile/effective capability matrix is tested; unavailable command responds in established registry format; JSON help schema; all existing variants build; connect size gate unchanged.
-- **Negative tests/oracle:** no cert/generate in connect artifact; no profile name widens compile capabilities; aliases normalize to one typed request; config-disabled command cannot run. Oracle: capability golden table, smoke invocations and Nix final-size gate.
-- **Boundaries/rollback:** existing `fleet-registry`, `fleet` manifests, `pkgs/fleet/default.nix`, docs. Revert feature composition without altering the old `secrets get/list` interface.
-- **Dependencies:** ARCH-01/06; coordinate with the separate `fleet` binary/profile owner. Admin-profile packaging requires ARCH-05.
+### Cross-domain requirement routing (not new architecture tickets)
 
-### ARCH-08 — Specify root custody, escrow and recovery adapters
-- **Kind / stage / proposed urgency:** security design + synthetic recovery test / V3 / High 450, then Blocked for production.
-- **Requirement IDs:** spec §§3, 10, 24, 30, 38, 48.2 V3-S08/S09/S18/S25; addendum §§5, 7.
-- **Outcome/scope:** model active signer separate from encrypted escrow; initial destinations exactly encrypted laptop + authorized BWS project + authorized OP vault; checksums, independent restore proof, SOPS/age recipient separation; R2 evaluated only. Offline/HSM migration plan.
-- **Acceptance:** threat/failure-domain and compromise graph; synthetic archive can restore on isolated environment with one independent recovery identity; custody manifest lists per-root identities, revision, fingerprint, authorized destinations and verification receipts.
-- **Negative tests/oracle:** no root key enters general sync/cache/provider; no same-host three-container “HA”; R2 not auto-enabled; recovery secret absent from archive/repo. Oracle: custody state model and synthetic restore test.
-- **Boundaries/rollback:** design and synthetic fixture only until explicit production approval. Rollback means stop replication and preserve verified escrow copies; do not silently remove the last recoverable copy.
-- **Dependencies:** ARCH-04/05/06. Production root generation/export/upload blocked by separate authorization and go/no-go.
+| Prior packet ID / subject | Existing owner proposal(s) | Boundary |
+|---|---|---|
+| ARCH-02 #6767 deployment/canary | Existing issue #6767 (open; PR #8491 code fix merged); no duplicate issue. Freshness contract belongs PERF-02. | This design does not deploy or canary. #6767's original fail-whole refresh defect is not the separate general caller max-age policy. |
+| ARCH-03 adapters, capabilities, benchmarks, fnox/SOPS | PERF-01–PERF-05; SEC-03–SEC-06 | Architecture defines seams only; domain owns adapters, upstream research and measurement. |
+| ARCH-04 canonical credential fields and replication policy | SEC-02/SEC-03; future replication invariants FUT-09 | Opaque logical IDs/alias relationship is coordinated with ARCH-01; no duplicate schema project. |
+| ARCH-05 plan/apply, journal, `zz.delete`, recovery | REC-01–REC-08; OPS-01/OPS-03 | A-1 guard semantics in this document are binding input; REC owns planner, guard enforcement, journal and state machine. |
+| ARCH-08 root escrow and restore | ROOT-09/ROOT-10; OPS-10 | Closed three-destination policy and restore-complete condition are binding; no architecture-owned custody implementation. |
+| ARCH-09 federation and workload identity | FUT-01–FUT-12 | Nonblocking research, no baseline service or deployment. |
+| PKI graph, profiles, issuance, client support | ROOT-01–ROOT-12; CERT-01–CERT-18; GEN-01/GEN-04; OPS-07–OPS-09 | ARCH-06 owns only generic shared signer/artifact authority interface, not PKI graph implementation or test matrix. |
 
-### ARCH-09 — Research V4 federation and workload identity contracts
-- **Kind / stage / proposed urgency:** research / V4 nonblocking / Standard 200.
-- **Requirement IDs:** spec §§27, 35, 37–42, 46 R-SEC-05–18; addendum §§4, 7–9.
-- **Outcome/scope:** evidence-backed evaluation of OpenBao (lab then independent failure domains), SPIFFE/SPIRE, fnox, SOPS/age, SecureStore, R2/Cloudflare, Kubernetes operators and identity; define stable provider/policy hooks, ownership and go/no-go criteria. No runtime dependency or deploy.
-- **Acceptance:** each candidate has primary-source links retrieved/date, actual maintenance/API/capability findings, threat and failure graph, cost/availability limits, pilot fixture and explicit no-go. fnox API stability and provider write coverage measured/reviewed; SecureStore compared to age, not presumed additive.
-- **Negative tests/oracle:** three containers on one host cannot pass independence test; hosted outage fallback disallowed without freshness/version proof; secret replicas cannot broaden scopes; dynamic credentials not represented as static sync. Oracle: explicit failure/compromise matrix and reproducible local-lab evidence.
-- **Boundaries/rollback:** docs and isolated synthetic labs only. Research can be parked without blocking V2/V3.
-- **Dependencies:** ARCH-01/02/04 for meaningful interface assessment; does not block PKI or secrets core.
+### Proposal ID migration note
+
+`ARCH-01` remains the runtime identity/type/compatibility seam and depends on TRACE-02 for the V1 golden oracle. `ARCH-06` is narrowed from the former “crypto signer interfaces and PKI engine” umbrella to generic signer/artifact authority interfaces. `ARCH-07` remains registry/feature wiring only; OPS-05 generated-help coordination is soft, not a blockedBy dependency. `ARCH-10` is added for independently testable profile/minimal dependency-closure enforcement. Former `ARCH-02` routes to #6767/PERF-02; `ARCH-03` to PERF/SEC; `ARCH-04` to SEC-02/SEC-03/FUT-09; `ARCH-05` to REC-01–REC-08/OPS; `ARCH-08` to ROOT-09/ROOT-10/OPS-10; `ARCH-09` to FUT. Old SEC-07, SEC-08 and REC-09 labels from a prior draft are retired historical aliases only, with no publishable body; current owners are ROOT-09/ROOT-10, PERF-02 and REC-01–REC-08 respectively. Those old ARCH IDs are migration aliases only and must not be filed as duplicate issues.
+
+Preserve the old numeric scores here as migration data; do not treat them as the new project priority or hide score changes:
+
+| Former ID | Former urgency | Disposition / current owner | Current architecture urgency |
+|---|---:|---|---:|
+| ARCH-01 runtime API | 400 | Retained as ARCH-01; depends on #9156 TRACE-02 for CLI/profile golden oracle; SEC-02 consumes the opaque ID seam | 450 High |
+| ARCH-02 broker rollout | 450 | No duplicate; existing #6767 owns deploy/canary, PERF-02 owns freshness policy; SEC-08 is retired historical-only alias | none |
+| ARCH-03 adapters/benchmarks | 400 | PERF-01–05 and SEC-03–06 | none |
+| ARCH-04 schema/replication | 400 | SEC-02/03, FUT-09 | none |
+| ARCH-05 reconciliation | 450 | REC-01–08 and OPS-01/03; REC-09 is retired historical-only alias | none |
+| ARCH-06 signer/PKI umbrella | 450 | Narrowed to generic signer/artifact authority seam | 500 High |
+| ARCH-07 registry | 400 | Retained as ARCH-07, only registry/feature wiring | 450 High |
+| ARCH-08 custody | 450 | ROOT-09/10 and OPS-10; SEC-07 is retired historical-only alias | none |
+| ARCH-09 federation research | 200 | FUT-01–12; old score not carried because it conflicts with current scale (0–399 incident/critical reserved) | none |
+| ARCH-10 minimal closure | new | Independent profile/dependency-closure proof | 450 High |
 
 ## Decisions still requiring evidence/review
 
 - Which supported official Rust BWS/OP SDKs are stable, authorized and maintained versus CLI use; do not assert before code/docs retrieval and a synthetic benchmark.
-- Exact provider consistency, pagination, revision/CAS, attachment and capability semantics; do not treat declared capability as granted permission.
+- Exact provider consistency, pagination, revision/CAS, attachment and capability semantics; do not treat declared capability as granted permission. Until primary docs plus isolated tests show otherwise, BWS/OP/BW writes are unguarded for conflict-sensitive fields.
 - Rust async runtime/library choice for secrets crate and whether a synchronous wrapper is needed; current broker is thread-based and must not dictate library consumers.
-- Binary-size budget beyond existing `fleet-connect`; proposed `consumer-min`/`agent` targets need measured baselines and owner approval.
+- Binary-size budget beyond existing `fleet-connect`; proposed consumer profile targets need measured baselines and owner approval.
 - Typed private-key zeroization guarantees and algorithm/library support matrix, especially ML-DSA X.509/client support; validate against current primary sources before selecting dependencies.
 - Whether `fleet-secrets-admin` becomes a separate crate after first implementation; decide from measured feature closure/consumer reuse, not naming aesthetics.

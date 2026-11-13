@@ -16,6 +16,8 @@ ALGORITHMS = ("rsa-4096", "p256", "ed25519", "ml-dsa-44")
 CLASSICAL = frozenset(("rsa-4096", "p256", "ed25519"))
 PURPOSES = ("base", "internal-web")
 PARTITIONS = ("A", "B")
+ROOT_NOT_AFTER = "2050-07-07T12:00:00Z"
+ISSUER_NOT_AFTER = "2032-07-07T12:00:00Z"
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,7 @@ class Certificate:
     signer_key: str
     signature_algorithm: str
     role: str
+    not_after: str
     purpose: str | None = None
     partition: str | None = None
 
@@ -68,7 +71,9 @@ def build_reference_graph() -> ReferenceGraph:
     certs: list[Certificate] = []
     for alg in ALGORITHMS:
         key = root_key_id(alg)
-        certs.append(Certificate(f"root-self/{alg}", key, key, alg, "root-self"))
+        certs.append(Certificate(
+            f"root-self/{alg}", key, key, alg, "root-self", ROOT_NOT_AFTER
+        ))
 
     # Every directed classical-to-classical edge, plus classical-to-PQ.
     for signer_alg in ALGORITHMS:
@@ -84,6 +89,7 @@ def build_reference_graph() -> ReferenceGraph:
                     signer,
                     signer_alg,
                     "root-cross",
+                    ROOT_NOT_AFTER,
                 ))
 
     # Direct issuer signing matrix: classical roots sign every classical
@@ -99,6 +105,7 @@ def build_reference_graph() -> ReferenceGraph:
                 signer,
                 signer_alg,
                 "issuer-cert",
+                ISSUER_NOT_AFTER,
                 purpose,
                 partition,
             ))
@@ -106,29 +113,33 @@ def build_reference_graph() -> ReferenceGraph:
     return ReferenceGraph(tuple(keys), tuple(certs))
 
 
-def pq_only_path(anchor_algorithm: str, signature_algorithms: tuple[str, ...]) -> bool:
-    """Whether an asserted certification path is ML-DSA-only.
+def pq_only_auth_path(
+    anchor_algorithm: str,
+    leaf_key_algorithm: str,
+    signature_algorithms: tuple[str, ...],
+) -> bool:
+    """Check only the declared ML-DSA authentication-policy metadata.
 
-    The caller supplies the anchor algorithm and each certificate signature
-    algorithm in leaf-to-anchor order.  This checks policy metadata, not a
-    certificate signature or path's validity.
+    Requires a nonempty CA-signature path, ML-DSA anchor, ML-DSA leaf
+    authentication key, and ML-DSA signature metadata for every edge. It does
+    not validate signatures, PKIX constraints, client support, TLS key
+    exchange, or quantum-resistant transport.
     """
-    return anchor_algorithm == "ml-dsa-44" and all(
-        algorithm == "ml-dsa-44" for algorithm in signature_algorithms
+    return (
+        anchor_algorithm == "ml-dsa-44"
+        and leaf_key_algorithm == "ml-dsa-44"
+        and bool(signature_algorithms)
+        and all(algorithm == "ml-dsa-44" for algorithm in signature_algorithms)
     )
 
 
-def require_explicit_signer_source(signer_source: str | None) -> str:
-    """Reject ambient/default signer discovery; this is a policy-only guard."""
+def require_named_signer_source(signer_source: str | None) -> str:
+    """Require a nonempty source label; this does NOT authorize signing.
+
+    Authorization, finite per-signature tuple matching, and durable anti-replay
+    belong to the future shared signer contract. This helper is only a
+    synthetic presence oracle against ambient/default source discovery.
+    """
     if signer_source is None or not signer_source.strip():
         raise ValueError("signing requires an explicit authorized signer source")
     return signer_source
-
-
-if __name__ == "__main__":
-    graph = build_reference_graph()
-    print(
-        f"synthetic keys={len(graph.keys)} certs={len(graph.certificates)} "
-        f"root-cross={len(graph.certs_for('root-cross'))} "
-        f"issuer-certs={len(graph.certs_for('issuer-cert'))}"
-    )
