@@ -119,7 +119,11 @@ import tools from "./mcpx-client.ts";
 
 Discovery is in the same surface: scripts can call `search()` and
 `describe()` to find a tool and read its signature at run time
-rather than having every schema loaded up front. The contract a
+rather than having every schema loaded up front. `search()` also
+finds saved scripts (recipes): every match carries a `kind` --
+`"tool"`, with a callable, or `"recipe"`, with the script's name
+and placeholders -- and both kinds are ranked and paged together
+in one stable order (CODE-36). The contract a
 script runs under — stdout is the result, `emit()` streams, a
 default export is the entry point — is the
 [scripts page](./scripts.md#script).

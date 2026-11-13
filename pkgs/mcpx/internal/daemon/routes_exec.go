@@ -139,6 +139,16 @@ func (s *Server) collectArtifacts(every time.Duration) {
 type registrySource struct {
 	reg      *Registry
 	endpoint string
+	// recipes supplies the saved scripts search() surfaces inside a
+	// script (CODE-36); nil means none are offered.
+	recipes func() []codegen.RecipeMeta
+}
+
+func (r registrySource) recipeMetas() []codegen.RecipeMeta {
+	if r.recipes == nil {
+		return nil
+	}
+	return r.recipes()
 }
 
 func (r registrySource) ClientModule(_ context.Context, ns []string) (string, error) {
@@ -149,7 +159,7 @@ func (r registrySource) ClientModule(_ context.Context, ns []string) (string, er
 	// No session baked in: several concurrent runs share one generated file
 	// and each must keep its own, which is what gives them separate pooled
 	// instances. The runner passes it through the environment instead.
-	return codegen.Module(nss, r.endpoint, ""), nil
+	return codegen.ModuleWithRecipes(nss, r.endpoint, "", r.recipeMetas()), nil
 }
 
 func (r registrySource) Globals(_ context.Context, ns []string) (string, error) {
@@ -172,6 +182,9 @@ func (r registrySource) ClientModuleFor(_ context.Context, language string, ns [
 	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
 	if err != nil {
 		return "", "", err
+	}
+	if lang.Name == codegen.TypeScript.Name {
+		return codegen.ModuleWithRecipes(nss, r.endpoint, "", r.recipeMetas()), lang.EmitGlobals(nss), nil
 	}
 	return lang.EmitModule(nss, r.endpoint, ""), lang.EmitGlobals(nss), nil
 }
@@ -231,7 +244,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	}
 
 	svc := &execsvc.Service{
-		Src: registrySource{reg: s.reg, endpoint: s.endpoint},
+		Src: registrySource{reg: s.reg, endpoint: s.endpoint, recipes: s.recipeMetas},
 		// Daemon-side script resolution (#2168) reads the same
 		// paths.scripts setting the CLI reads, resolved from this
 		// daemon's configuration file and environment — there is no

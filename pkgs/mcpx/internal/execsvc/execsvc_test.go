@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
 	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 )
@@ -663,6 +664,43 @@ func TestFailureKindsAreTyped(t *testing.T) {
 	})
 	if res.Error != "" || res.ErrorKind != "" {
 		t.Errorf("clean run: kind = %q, error = %q", res.ErrorKind, res.Error)
+	}
+}
+
+// CODE-36 (#1937): in-script search finds saved scripts (recipes)
+// beside tools, each match carrying its kind, and pages the combined
+// list in one stable order.
+func TestSearchFindsRecipesAlongsideTools(t *testing.T) {
+	needRuntime(t)
+	nss := []codegen.Namespace{{
+		Name: "media", Server: "media-server", Description: "media tools",
+		Tools: []codegen.Tool{{
+			Name:        "capture_screenshot",
+			Description: "Capture a screenshot of the page",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}`),
+		}},
+	}}
+	module := codegen.ModuleWithRecipes(nss, "http://127.0.0.1:1", "", []codegen.RecipeMeta{
+		{Name: "screenshot-and-diff", Description: "Screenshot a page and diff it against a baseline", Params: []string{"url", "baseline"}, Required: []string{"url"}},
+	})
+	svc := service(t, store(t))
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source:       `const hits = search("screenshot"); console.log(JSON.stringify(hits.map((h: any) => h.kind + ":" + (h.kind === "tool" ? h.tool : h.name) + ":" + h.params.join(","))));`,
+		ClientSource: module, Permissions: "all",
+	}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil {
+		t.Fatal("no result")
+	}
+	for _, want := range []string{"recipe:screenshot-and-diff:url,baseline", "tool:capture_screenshot:url"} {
+		if !strings.Contains(res.Stdout, want) {
+			t.Errorf("search output %q missing %q", res.Stdout, want)
+		}
+	}
+	if res.Error != "" {
+		t.Errorf("run error: %q", res.Error)
 	}
 }
 

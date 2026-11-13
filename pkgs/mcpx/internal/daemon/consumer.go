@@ -853,6 +853,29 @@ func clientFileNames() map[string]bool {
 	return map[string]bool{runner.ClientFileName: true, runner.GlobalsFileName: true}
 }
 
+// recipeMetas renders the loaded recipes as codegen search data
+// (CODE-36): name, summary, placeholder names. A recipe that opted
+// out of tool exposure (@tool false) is not offered in search
+// either -- one notion of hidden for both surfaces.
+func (s *Server) recipeMetas() []codegen.RecipeMeta {
+	all := s.loadRecipes()
+	out := make([]codegen.RecipeMeta, 0, len(all))
+	for _, r := range all {
+		if r.OptOut || r.Name == "" {
+			continue
+		}
+		m := codegen.RecipeMeta{Name: r.Name, Description: r.Summary}
+		for _, p := range r.Placeholders {
+			m.Params = append(m.Params, p.Name)
+			if p.Required {
+				m.Required = append(m.Required, p.Name)
+			}
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 func (s *Server) loadRecipes() []recipes.Recipe {
 	if s.consumer == nil {
 		return nil
@@ -960,7 +983,7 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 	res, rerr := runner.Run(rctx, runner.Options{
 		Source:        source,
 		Prelude:       prelude(nss),
-		ClientSource:  codegen.Module(nss, s.endpoint, session),
+		ClientSource:  codegen.ModuleWithRecipes(nss, s.endpoint, session, s.recipeMetas()),
 		GlobalsSource: codegen.GlobalDeclarations(nss),
 		// A Python one-shot lands here with a Python prelude when the
 		// source chose it (#1917 Phase 2); the same options the runner
