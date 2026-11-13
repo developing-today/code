@@ -12,7 +12,8 @@
 // = 5 minutes — the collector's cadence): while the stream is down,
 // poll the machine twin /api/freshness-events.json on the 5-minute
 // cadence and dispatch the same refresh on every poll (the policy's
-// cadence refresh, not only when the notice cursor moved). The
+// cadence refresh, not only when the notice cursor moved, and even
+// when the journal poll itself fails). The
 // moment the stream reopens, polling stops. Neither path reloads the
 // page, so view state survives both.
 (function () {
@@ -51,19 +52,21 @@
         if (envelope && typeof envelope.cursor === "number") {
           cursor = envelope.cursor;
         }
-        // The degraded-mode policy (src/freshness-fallback.ts) is a
-        // canonical refresh on the cadence itself, not only when the
-        // notice cursor moved: a fragment reread that fails
-        // transiently after a notice was consumed must not strand the
-        // view until some later notice happens to arrive. Refresh on
-        // every successful poll while the stream is down.
-        refresh();
       }
     } catch (e) {
-      /* a failed poll is retried on the same cadence; the data on
-         screen stays visibly as-is, never silently marked fresh */
+      /* a failed journal poll is retried on the same cadence; it
+         must not block the canonical refresh below */
     }
-    lastRefreshAt = Date.now();
+    // The degraded-mode policy (src/freshness-fallback.ts) is a
+    // canonical refresh on the cadence itself, not only when the
+    // notice cursor moved: a fragment reread that fails transiently
+    // after a notice was consumed must not strand the view until a
+    // later notice happens to arrive. Refresh on every fallback
+    // poll, even when the journal poll fails: the fragment
+    // endpoints are independent of the freshness journal, so a
+    // freshness-transport outage must not freeze the dashboard
+    // (Codex review on PR #9193).
+    refresh();
     schedule();
   }
 

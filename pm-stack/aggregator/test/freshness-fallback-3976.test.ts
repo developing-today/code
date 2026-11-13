@@ -71,8 +71,38 @@ describe("#3976 SSE-down fallback policy", () => {
     // gating the refresh on cursor movement strands the view until a
     // later notice happens to arrive.
     const asset = await readFile(join(import.meta.dir, "..", "src", "assets", "freshness-client.js"), "utf8");
-    expect(asset).toContain("every successful poll");
+    expect(asset).toContain("every fallback");
     expect(asset).not.toContain("if (moved)");
+  });
+
+  test("the browser asset refreshes even when the journal poll itself fails", async () => {
+    // The fragment endpoints are independent of the freshness
+    // journal: a journal outage (HTTP error or rejected fetch) must
+    // not freeze the dashboard for the whole transport outage
+    // (Codex review round 2 on PR #9193). Oracle: in the asset, the
+    // poll's refresh dispatch sits after the try/catch, not inside
+    // the successful-response branch.
+    const asset = await readFile(join(import.meta.dir, "..", "src", "assets", "freshness-client.js"), "utf8");
+    expect(asset).toContain("even when the journal poll fails");
+    const pollStart = asset.indexOf("async function poll()");
+    const refreshAt = asset.indexOf("refresh();", pollStart);
+    const catchAt = asset.indexOf("catch (e)", pollStart);
+    expect(catchAt).toBeGreaterThan(pollStart);
+    expect(refreshAt).toBeGreaterThan(catchAt);
+  });
+
+  test("dashrefresh listeners use the Datastar colon form the vendored bundle binds", async () => {
+    // The vendored Datastar v1 binds data-on:<event> (colon form);
+    // the dash form resolves to an unregistered plugin and never
+    // fires, leaving every dashrefresh dispatch inert (Codex review
+    // round 2 on PR #9193; see themeToggle() in render.ts). Oracle:
+    // every fragment container source carries the colon form and no
+    // source carries the dash form.
+    for (const rel of ["render.ts", "server.ts", "freshness-delivery.ts"]) {
+      const src = await readFile(join(import.meta.dir, "..", "src", rel), "utf8");
+      expect(src).toContain("data-on:dashrefresh__window");
+      expect(src).not.toContain("data-on-dashrefresh__window");
+    }
   });
 
   test("the layout ships the freshness client and the server serves it", async () => {

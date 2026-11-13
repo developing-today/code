@@ -1655,7 +1655,7 @@ export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDeta
   const fragBoard = viewQuery ? `/frag/board?${viewQuery}` : "/frag/board";
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('${fragBoard}')" data-on-dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('${fragBoard}')" data-on:dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
     provenance,
     "/board",
     ACTION_SCRIPT,
@@ -3420,7 +3420,7 @@ ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale $
  *  a refresh re-patches the container with itself (attrs included). */
 export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string, query = ""): string {
   const q = query ? `?${query}` : "";
-  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}${q}')" data-on-dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
+  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}${q}')" data-on:dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
 }
 
 /**
@@ -3672,7 +3672,7 @@ export function renderTodayShell(
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>`,
+    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>`,
     provenance,
     "/today",
     "",
@@ -3738,7 +3738,7 @@ export function renderQueue(view: QueueView, provenance: Provenance, detail?: Pr
 export function renderQueueShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Queue",
-    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
+    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
     provenance,
     "/queue",
     "",
@@ -4031,7 +4031,7 @@ export function renderOverview(data: OverviewData, provenance: Provenance, detai
 export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Overview",
-    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on-dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
+    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
     provenance,
     "/",
     "",
