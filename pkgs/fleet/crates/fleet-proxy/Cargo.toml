@@ -1,0 +1,41 @@
+[package]
+name = "fleet-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The fleet session proxy domain: `proxy serve` (the broker) and `proxy connect`/`init` (the client) — design note §4, epic developing-today/code#5412."
+
+[dependencies]
+fleet-registry = { workspace = true }
+fleet-config = { workspace = true }
+fleet-proxy-proto = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = "0.2"
+
+
+# The CONNECT-UDP bins (#6109) ride on the serve-gated modules;
+# required-features keeps the connect-only variant (§2's
+# mechanical-incapability build) from trying to build them.
+[[bin]]
+name = "fleet-connect-udp"
+path = "src/bin/fleet-connect-udp.rs"
+required-features = ["serve"]
+
+[[bin]]
+name = "fleet-udp-forward"
+path = "src/bin/fleet-udp-forward.rs"
+required-features = ["serve"]
+
+[features]
+# The broker half. The connect variant compiles this crate without
+# it: a dropped-on-a-box artifact carries the client and nothing
+# else (§2's mechanical-incapability rule).
+default = ["serve"]
+serve = []
+
+[dev-dependencies]
+# Property-based tests for the fleet-udp-forward parser invariants
+# (#6139), the same proptest version pkgs/id uses.
+proptest = "1.12"

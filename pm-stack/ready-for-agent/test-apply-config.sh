@@ -10,7 +10,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"; kill "${STUB_PID:-}" 2>/dev/null || true' EXIT
 
 mkdir -p "$WORK/repos/code"
-cat > "$WORK/config.json" <<'JSON'
+cat >"$WORK/config.json" <<'JSON'
 {
   "version": 1,
   "graphqlUrl": "http://127.0.0.1:16056/graphql",
@@ -100,23 +100,64 @@ sleep 1
 export RFA_CONFIG="$WORK/config.json"
 export RFA_REPOS_DIR="$WORK/repos"
 export RFA_GRAPHQL_URL="http://127.0.0.1:16056/graphql"
+# Do not let the test runner's environment affect the normal-apply cases.
+unset DRY_RUN
 
-: > "$WORK/mutations.log"
-DRY_RUN=1 ./apply-config.sh > "$WORK/dry-run.out"
+: >"$WORK/mutations.log"
+DRY_RUN=1 ./apply-config.sh >"$WORK/dry-run.out"
 grep -q "would register" "$WORK/dry-run.out"
-[[ ! -s "$WORK/mutations.log" ]] || { echo "FAIL: dry run mutated the harness"; exit 1; }
+[[ ! -s "$WORK/mutations.log" ]] || {
+  echo "FAIL: dry run mutated the harness"
+  exit 1
+}
 echo "ok: dry run plans registration and mutates nothing"
 
-./apply-config.sh > "$WORK/first.out"
+DRY_RUN=TrUe ./apply-config.sh >"$WORK/true-dry-run.out"
+grep -q "would register" "$WORK/true-dry-run.out"
+[[ ! -s "$WORK/mutations.log" ]] || {
+  echo "FAIL: DRY_RUN=true mutated the harness"
+  exit 1
+}
+echo "ok: DRY_RUN=true is accepted case-insensitively"
+
+DRY_RUN=0 ./apply-config.sh >"$WORK/first.out"
 grep -q "addLocalRepository" "$WORK/mutations.log"
 grep -q "updateRepositorySettings" "$WORK/mutations.log"
 grep -q "unpauseRepository" "$WORK/mutations.log"
-echo "ok: first apply registers, configures, unpauses"
+echo "ok: DRY_RUN=0 first apply registers, configures, unpauses"
 
-: > "$WORK/mutations.log"
-./apply-config.sh > "$WORK/second.out"
+: >"$WORK/mutations.log"
+env -u DRY_RUN ./apply-config.sh >"$WORK/second.out"
 grep -q "already match config" "$WORK/second.out"
-[[ ! -s "$WORK/mutations.log" ]] || { echo "FAIL: second apply was not a no-op:"; cat "$WORK/mutations.log"; exit 1; }
+[[ ! -s "$WORK/mutations.log" ]] || {
+  echo "FAIL: second apply was not a no-op:"
+  cat "$WORK/mutations.log"
+  exit 1
+}
 echo "ok: second apply is a no-op (idempotent)"
+
+# A conventional false-y string must not suppress a real config update.
+python3 - "$WORK/config.json" <<'PYEOF'
+import json, sys
+
+with open(sys.argv[1]) as f:
+    config = json.load(f)
+config["repositories"][0]["defaultModel"] = "opencode-go/dry-run-falsey-test"
+with open(sys.argv[1], "w") as f:
+    json.dump(config, f)
+PYEOF
+
+: >"$WORK/mutations.log"
+DRY_RUN=0 ./apply-config.sh >"$WORK/falsey.out"
+grep -q "updated developing-today/code settings: defaultModel" "$WORK/falsey.out"
+grep -Fxq "updateRepositorySettings" "$WORK/mutations.log" || {
+  echo "FAIL: DRY_RUN=0 did not send the config mutation to the harness"
+  exit 1
+}
+if grep -q "DRY-RUN" "$WORK/falsey.out"; then
+  echo "FAIL: DRY_RUN=0 was treated as dry-run"
+  exit 1
+fi
+echo "ok: DRY_RUN=0 applies config mutations"
 
 echo "apply-config.test: PASS"

@@ -6,10 +6,12 @@
 // its result companion) on the same pattern. Everything underneath
 // (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
 // apply actions; the dashboard only records them.
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
+import { buildQuotaAnalytics, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
-import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
+import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
 import {
   checkActionAgainstItem,
   effectiveNeedsOrder,
@@ -17,11 +19,33 @@ import {
   findTierItem,
   questionIdForOption,
 } from "./tier-items.ts";
-import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
+import {
+  authorizeCommentAuthor,
+  commentKindCounts,
+  CommentsStore,
+  queuedComments,
+  validateNewComment,
+} from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
-import { EventsStore, emitEvent } from "./events.ts";
+import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
+import { EventsStore, emitEvent, pageEvents } from "./events.ts";
+import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
+import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
+import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
+import { fleetFeedRevisionReader, FreshnessReconciler } from "./freshness-reconcile.ts";
+import {
+  IngestionStore,
+  WatchdogEpisodeStabilizer,
+  ingestActivity,
+  createWatchdogGapSyncQueue,
+  watchdogDeliveries,
+  activityCoverageHtml,
+  gapsHtml,
+  ACTIVITY_SOURCE_COVERAGE,
+} from "./activity.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
+import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -32,7 +56,51 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
+import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
+import {
+  getNeedsDrew,
+  listOpenNeedsDrew,
+  raiseNeedsDrew,
+  recordAnswer,
+  shouldFetchNeedsDrewCensus,
+  validateNeedsDrew,
+  type NeedsDrewCensus,
+  type NeedsDrewQuestion,
+} from "./needs-drew.ts";
+import {
+  decisionSetOpenState,
+  decisionSetProgress,
+  deferWithSubmissions,
+  getDecisionDrafts,
+  getDecisionSet,
+  isDeferLean,
+  decisionSetSummary,
+  decisionSetsForView,
+  isDecisionSetView,
+  listDecisionSets,
+  listOpenDecisionSets,
+  raiseDecisionSet,
+  refreshDecisionSet,
+  recordResolutions,
+  requestInfoOpenQuestions,
+  upsertDecisionDrafts,
+  validateDecisionDraftUpsert,
+  validateDecisionSet,
+  withGeneratedSetId,
+  effectiveQuestionMode,
+  type DecisionItem,
+  type DecisionSet,
+  type DecisionSetView,
+  type DecisionSubmission,
+  decisionsDraftScript,
+} from "./decisions.ts";
+import {
+  appendDecisionEvents,
+  readDecisionEvents,
+  validateDecisionEventInput,
+  type DecisionEventInput,
+} from "./decision-events.ts";
+import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -44,7 +112,16 @@ import {
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
+import {
+  allRefs,
+  buildAttention,
+  buildQuotaActions,
+  deriveToday,
+  filterAttentionViewByRefs,
+  projectPace,
+  quotaActionTierItems,
+  type RoadmapGrain,
+} from "./derive.ts";
 import {
   reconcileRoadmap,
   roadmapDriftReport,
@@ -52,7 +129,10 @@ import {
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
 import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
+import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
+import { SpendRollupStore } from "./spend-rollups.ts";
+import { buildSpendCards, type SpendCardsView } from "./spend-cards.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
   PROJECT_CONFIGS,
@@ -96,12 +176,17 @@ import {
   renderToday,
   renderTodayBody,
   renderTodayShell,
+  questionsSectionHtml,
   type CommentFormOpts,
+  eventTableHtml,
 } from "./render.ts";
 import { buildBriefs } from "./brief.ts";
+import { buildDigest, listDigestArchives, readDigestArchive, type Digest, type DigestKind } from "./digest.ts";
 import { timingSafeEqual } from "node:crypto";
 import {
   getAlertsStore,
+  requestAlertTick,
+  sendClassTestPush,
   sendTestPush,
   startAlertEngine,
   toPublicSubscription,
@@ -109,21 +194,112 @@ import {
   validateNewSubscription,
 } from "./alerts.ts";
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
-import { resolveBwsSecret } from "./secrets.ts";
+import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
-import { renderAlerts, esc } from "./render.ts";
+import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
+import {
+  deriveSoleDoorPoolIds,
+  isNotificationTestClass,
+  NOTIFICATION_CLASS_DEFAULTS,
+  NOTIFICATION_CLASSES,
+  rollupNotificationSends,
+  type NotificationSnapshot,
+} from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
-import { buildQueueView } from "./queue-view.ts";
+import { buildQueueView, queueInputsStale } from "./queue-view.ts";
+import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
+import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
+import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
+import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
+import { ItemHistoryStore } from "./item-history.ts";
+import { computeFlowAnalytics } from "./flow-analytics.ts";
+import {
+  FORECAST_CONTRACT_VERSION,
+  quotaForecastContract,
+  subjectForecastContracts,
+  type ForecastContract,
+} from "./forecast-contract.ts";
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
+// astral character straddling the cap is dropped whole, so a persisted
+// event field can never end in a lone high surrogate.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
+const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
+const spendRollupStore = new SpendRollupStore(cfg.snapshotsDir);
+/** #4824: the Projects/Roadmap spend-beside-progress view over the
+ * #4823 rollup store. A failed read renders no spend block (the
+ * store's absence is already the honest state — ingestion is a
+ * separate slice); it never fabricates zeroed cards. */
+const loadSpendCards = async (): Promise<SpendCardsView | null> => {
+  try {
+    return buildSpendCards(await spendRollupStore.readAll());
+  } catch {
+    return null;
+  }
+};
+
+async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
+  const targets = [...items.values()].filter(
+    (item) => item.labels.some((label) => label.toLowerCase() === "ready-for-agent") && /#\d+$/.test(item.ref),
+  );
+  if (!targets.length) return [];
+  const observedAt = new Date().toISOString();
+  if (cfg.source !== "live") {
+    // #4969 (Codex on PR #5283): fixtures mode must never read the live
+    // harness — deterministic fixture dispatch data, mirroring the
+    // health.ts fixtures boundary. The canned set has no picked-up
+    // work item, so every labelled fixture item is honestly
+    // "not picked up".
+    return targets.map((item) => ({
+      ref: item.ref,
+      state: RFA_NOT_PICKED_UP,
+      provenance: { source: "ready-for-agent", observedAt, repository: item.ref.split("#")[0], mode: "fixtures" },
+    }));
+  }
+  try {
+    const state = await fetchRfaState(cfg.readyForAgent.baseUrl);
+    return targets
+      .map((item) => {
+        const match = /^(.*)#(\d+)$/.exec(item.ref);
+        if (!match) return null;
+        return {
+          ref: item.ref,
+          state: dispatchStateFor(state, match[1], Number(match[2])) || RFA_NOT_PICKED_UP,
+          provenance: { source: "ready-for-agent", observedAt, repository: match[1] },
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  } catch {
+    return targets.map((item) => ({
+      ref: item.ref,
+      state: "unavailable",
+      provenance: {
+        source: "ready-for-agent",
+        observedAt,
+        repository: item.ref.split("#")[0],
+        error: "harness read failed",
+      },
+    }));
+  }
+}
 
 /** #1220: the coverage snapshot behind the /projects panel — computed
  * from the feed's items + the Project pool, rotated weekly by
@@ -152,6 +328,15 @@ async function coverageSnapshot(
 const actionsStore = new ActionsStore(cfg.actionsFile);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
+const freshnessStore = new FreshnessStore(cfg.freshnessFile);
+
+/** #3976: the 5-minute anti-entropy reconciler over the freshness
+ *  journal. Its one wired canonical reader is the fleet feed — the
+ *  aggregator's own canonical source, fingerprinted exactly as the
+ *  collector's notice identity (generatedAt + sha256 of the file).
+ *  Its health view feeds /health + /api/health via healthContext. */
+const freshnessReconciler = new FreshnessReconciler(freshnessStore, [fleetFeedRevisionReader(cfg.feedFile)]);
+const activityStore = new IngestionStore(cfg.activityFile);
 
 /** #1739: the event log's fire-and-forget sink for source-side
  *  writers (orchestration publishes, registry merges). Never awaited,
@@ -159,6 +344,61 @@ const eventsStore = new EventsStore(cfg.eventsFile);
 function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
   void emitEvent(eventsStore, event);
 }
+
+/** #3321: the activity-ingestion sink for the source-side writers
+ *  (watchdog episodes, Kaneo board changes). Dedupe + checkpoints
+ *  live in the store. The returned promise resolves true only when
+ *  every delivery is durable (ingested or already seen): the live
+ *  source awaits it as the acknowledgment that lets it discard its
+ *  Kaneo baseline (Codex P2, PR #5141) — failed deliveries retain
+ *  their cards' baseline entries so the next poll retries the same
+ *  stable delivery ids, while acknowledged cards advance. */
+async function recordActivity(
+  deliveries: Parameters<typeof ingestActivity>[2],
+): Promise<{ failed: number; failedIds: string[] }> {
+  const result = await ingestActivity(activityStore, eventsStore, deliveries);
+  return { failed: result.failed, failedIds: result.failedIds };
+}
+
+/** #3977: source freshness notices are not #1739 activity records.
+ *  This store is owned by the aggregator process; the projector and
+ *  collector reach it only through the loopback publisher listener. */
+async function recordFreshness(input: FreshnessInput): Promise<void> {
+  await freshnessStore.publish(input);
+}
+
+/** #3321: the source-gap sink for the live source's polling gaps
+ *  (Codex P2, PR #5141): a non-null `to` records (or extends) the
+ *  open gap for the source; a null `to` is recovery — the open gap
+ *  resolves as backfilled, since polling has resumed and the next
+ *  diff lands against the preserved baseline. Never throws into the
+ *  source's read path. */
+async function recordSourceGap(source: string, from: string, to: string | null): Promise<void> {
+  try {
+    if (to !== null) {
+      await activityStore.recordGap(source, from, to);
+      return;
+    }
+    for (const gap of await activityStore.gaps()) {
+      if (gap.source === source && gap.status === "open") {
+        // Recovery happened now, not at the last failed poll: extend
+        // the gap window to the recovery moment as it resolves
+        // (Codex P2, PR #5141).
+        await activityStore.resolveGap(gap.id, "backfilled", new Date().toISOString());
+      }
+    }
+  } catch (err) {
+    console.error(
+      `[activity] WARNING: source gap record failed for ${source}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/** #3321: pins watchdog episodes to their first-observed `since`
+ *  (Codex P2, PR #5141) — watchdogTierItems assigns `now` for
+ *  several breach kinds, so without this the stream would gain a
+ *  new "episode" on every attention render of one outage. */
+const watchdogEpisodes = new WatchdogEpisodeStabilizer();
 async function hasStreamEvent(kind: string, ref: string): Promise<boolean> {
   return eventsStore.has(kind, ref);
 }
@@ -172,11 +412,19 @@ function pickSource(): Source {
         standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
         onEvent: recordStreamEvent,
         hasEvent: hasStreamEvent,
+        onActivity: recordActivity,
+        onFreshness: recordFreshness,
+        onSourceGap: recordSourceGap,
+        seenActivityIds: (source) => activityStore.seenIds(source),
       })
     : fixtureSource();
 }
 
 const source = pickSource();
+
+/** Lazy quota refresh (#1171): stale page/API loads ask the deployed
+ *  gatherer unit to run again; single-flight + cooldown live in the module. */
+const quotaRefresher = createQuotaRefresher({ trigger: systemdTrigger() });
 
 // #1279: prefer the latest-comment-per-ref read so a busy batch cannot
 // truncate an item's most recent activity out of its brief.
@@ -278,6 +526,7 @@ async function healthContext(prime = true): Promise<HealthView> {
     itemsCoverage: lastItemsCoverage,
     comments: await commentsStore.pendingCounts().catch(() => undefined),
     conflicts: await assembleConflicts().catch(() => null),
+    pushHealth: cfg.source === "fixtures" ? null : freshnessReconciler.health(new Date()),
   });
 }
 
@@ -326,6 +575,16 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+/** Same response shape as {@link json} without the 2-space pretty-print:
+ *  the board JSON legitimately carries seconds of data and the pretty
+ *  form adds ~10% bytes for nothing a machine consumer reads (#5082). */
+function jsonCompact(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
 function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
@@ -359,6 +618,692 @@ async function alertsIntakeAuthorized(req: Request): Promise<boolean> {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// --- Needs-Drew questions (#8568) ------------------------------------------
+
+/** The token-carrying answer-page URL for a raised question. */
+function needsDrewAnswerUrl(item: NeedsDrewQuestion): string {
+  return `${cfg.publicOrigin}/answer/${encodeURIComponent(item.ledgerId)}?t=${item.token}`;
+}
+
+const ANSWER_PAGE_STYLE = `<style>
+  body { font-family: system-ui, sans-serif; background: #0e1117; color: #e6edf3; margin: 0; padding: 2rem 1rem; }
+  main { max-width: 40rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; line-height: 1.35; }
+  .context { color: #9da7b1; white-space: pre-wrap; }
+  .links a { color: #58a6ff; display: block; margin: 0.35rem 0; overflow-wrap: anywhere; }
+  .options { display: grid; gap: 0.6rem; margin: 1.2rem 0; }
+  button.option { text-align: left; padding: 0.8rem 1rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; }
+  button.option:hover { border-color: #58a6ff; }
+  textarea { width: 100%; min-height: 4.5rem; box-sizing: border-box; background: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 0.5rem; padding: 0.6rem; }
+  button.submit { margin-top: 0.6rem; padding: 0.7rem 1.2rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 0; background: #1f6feb; color: #fff; cursor: pointer; }
+  .confirm { border: 1px solid #238636; border-radius: 0.5rem; padding: 1rem; }
+</style>`;
+
+/** Render GET /answer/<ledgerId>. The caller has already verified the
+ * token; the 403 shape renders nothing about the question. */
+function renderAnswerPage(item: NeedsDrewQuestion): string {
+  const links = item.links
+    .filter((l) => /^https?:\/\//.test(l))
+    .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
+    .join("");
+  if (item.answer) {
+    const chosen = item.answer.optionId
+      ? (item.options.find((o) => o.id === item.answer?.optionId)?.label ?? item.answer.optionId)
+      : null;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+<div class="confirm"><p>Answered${chosen ? `: <strong>${esc(chosen)}</strong>` : ""}.</p>
+${item.answer.freeText ? `<p>${esc(item.answer.freeText)}</p>` : ""}
+<p class="context">Recorded at ${esc(item.answer.at)} — the fleet worker has been unblocked.</p></div>
+</main></body></html>`;
+  }
+  const buttons = item.options
+    .map((o) => `<button class="option" type="button" data-option="${esc(o.id)}">${esc(o.label)}</button>`)
+    .join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Needs Drew — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+${item.context ? `<p class="context">${esc(item.context)}</p>` : ""}
+${links ? `<div class="links">${links}</div>` : ""}
+<div class="options">${buttons}</div>
+<label>Or answer in your own words (optional, sent with a tapped option or on its own):
+<textarea id="freeText" placeholder="Free-text answer"></textarea></label>
+<button class="submit" type="button" id="sendText">Send free-text answer</button>
+<p id="status" class="context"></p>
+<script>
+const token = ${JSON.stringify(item.token)};
+const endpoint = ${JSON.stringify(`/api/needs-drew/${encodeURIComponent(item.ledgerId)}/answer`)};
+async function answer(payload) {
+  const status = document.getElementById('status');
+  status.textContent = 'Sending…';
+  try {
+    const res = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, ...payload }) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    status.textContent = 'Answer recorded — thank you. The fleet worker has been unblocked.';
+    document.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  } catch { status.textContent = 'Sending failed — please try again.'; }
+}
+document.querySelectorAll('button.option').forEach((b) => {
+  b.addEventListener('click', () => {
+    const freeText = document.getElementById('freeText').value.trim();
+    answer({ optionId: b.dataset.option, ...(freeText ? { freeText } : {}) });
+  });
+});
+document.getElementById('sendText').addEventListener('click', () => {
+  const freeText = document.getElementById('freeText').value.trim();
+  if (!freeText) { document.getElementById('status').textContent = 'Write an answer first, or tap an option above.'; return; }
+  answer({ freeText });
+});
+</script>
+</main></body></html>`;
+}
+
+function renderAnswerForbidden(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>Answer link not available</h1>
+<p class="context">This answer link is unknown or its token does not match. Nothing about the question is shown without the correct link.</p>
+</main></body></html>`;
+}
+
+// --- Decision sets (#8766) -------------------------------------------------
+
+/** The token-carrying decisions-page URL for a raised set. */
+function decisionsPageUrl(set: DecisionSet): string {
+  return `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
+}
+
+/**
+ * The live Questions section for Today / Needs-you (#9354): reads the
+ * decision-set store at request time, keeps sets with open questions,
+ * newest first. A store read failure renders the honest unavailable
+ * section (questionsSectionHtml(null, ...)), never a confident zero.
+ * (listDecisionSets itself reads an absent/corrupt store as empty,
+ * following the store's existing contract.)
+ */
+async function questionsHtml(): Promise<string> {
+  try {
+    const sets = await listDecisionSets(cfg.decisionsFile);
+    const byId = new Map(sets.map((s) => [s.setId, s]));
+    const summaries = sets
+      .map((s) => decisionSetSummary(s))
+      .filter((s) => s.openQuestions > 0)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return questionsSectionHtml(summaries, (s) => {
+      const set = byId.get(s.setId);
+      return set ? decisionsPageUrl(set) : `/decisions/${encodeURIComponent(s.setId)}`;
+    });
+  } catch {
+    return questionsSectionHtml(null, () => "/decisions");
+  }
+}
+
+/** Append decision-set events (#9335 v2): best-effort — an event-log
+ * failure is logged and never fails the interaction it records. */
+async function logDecisionEvents(inputs: DecisionEventInput[]): Promise<void> {
+  if (!inputs.length) return;
+  try {
+    await appendDecisionEvents(cfg.decisionsEventsFile, cfg.decisionsOutboxFile, inputs);
+  } catch (err) {
+    console.error(`decision events: append failed (${err instanceof Error ? err.message : "error"})`);
+  }
+}
+
+function questionRefFor(
+  set: DecisionSet,
+  ledgerId: string,
+  qid: string,
+): { ledgerId: string; qid: string; questionIndex?: number } {
+  const item = set.items.find((i) => i.ledgerId === ledgerId);
+  const idx = item ? item.questions.findIndex((q) => q.qid === qid) : -1;
+  return { ledgerId, qid, ...(idx >= 0 ? { questionIndex: idx + 1 } : {}) };
+}
+
+function eventTypeForKind(kind: DecisionSubmission["kind"]): "submit" | "defer" | "request-info" {
+  return kind === "answered" ? "submit" : kind === "deferred" ? "defer" : "request-info";
+}
+
+function submissionEventPayload(sub: DecisionSubmission): Record<string, unknown> {
+  return {
+    kind: sub.kind,
+    ...(sub.optionId ? { optionId: sub.optionId } : {}),
+    ...(sub.optionIds ? { optionIds: sub.optionIds } : {}),
+    ...(sub.freeText ? { freeText: sub.freeText.slice(0, 2000) } : {}),
+    ...(sub.customAnswer ? { customAnswer: sub.customAnswer.slice(0, 2000) } : {}),
+    ...(sub.lean ? { lean: sub.lean } : {}),
+    ...(sub.note ? { note: sub.note.slice(0, 2000) } : {}),
+    ...(sub.comment ? { comment: sub.comment.slice(0, 2000) } : {}),
+  };
+}
+
+/** Parse a decisions submissions array — shared by /submit and by
+ * /defer's filled-answers-win payload (#8766). */
+function parseDecisionSubmissions(
+  raw: unknown,
+): { ok: true; value: DecisionSubmission[] } | { ok: false; error: string } {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 256) {
+    return { ok: false, error: "submissions must be an array of 1-256 entries" };
+  }
+  const submissions: DecisionSubmission[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return { ok: false, error: "submissions entries must be objects" };
+    }
+    const s = entry as Record<string, unknown>;
+    const ledgerId = typeof s.ledgerId === "string" ? s.ledgerId : "";
+    const qid = typeof s.qid === "string" ? s.qid : "";
+    const kind = s.kind;
+    if (!ledgerId || !qid || (kind !== "answered" && kind !== "deferred" && kind !== "request-info")) {
+      return { ok: false, error: "submissions entries require ledgerId, qid and kind answered|deferred|request-info" };
+    }
+    if (kind === "deferred" && !isDeferLean(s.lean)) {
+      return { ok: false, error: "deferred submissions require a lean of none|skeptical|approve" };
+    }
+    submissions.push({
+      ledgerId,
+      qid,
+      kind,
+      ...(typeof s.optionId === "string" ? { optionId: s.optionId } : {}),
+      ...(Array.isArray(s.optionIds)
+        ? { optionIds: s.optionIds.filter((x): x is string => typeof x === "string") }
+        : {}),
+      ...(typeof s.freeText === "string" ? { freeText: s.freeText } : {}),
+      ...(typeof s.customAnswer === "string" ? { customAnswer: s.customAnswer } : {}),
+      ...(isDeferLean(s.lean) ? { lean: s.lean } : {}),
+      ...(typeof s.note === "string" ? { note: s.note } : {}),
+      ...(typeof s.comment === "string" ? { comment: s.comment } : {}),
+    });
+  }
+  return { ok: true, value: submissions };
+}
+
+const DECISIONS_PAGE_STYLE = `${ANSWER_PAGE_STYLE}<style>
+  .group { color: #9da7b1; text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.85rem; margin: 1.6rem 0 0.4rem; }
+  .item { border: 1px solid #30363d; border-radius: 0.6rem; padding: 1rem; margin: 0.8rem 0; background: #11161d; }
+  .item h2 { font-size: 1.1rem; margin: 0 0 0.3rem; line-height: 1.35; }
+  .q { border-top: 1px solid #21262d; padding: 0.8rem 0 0.2rem; margin-top: 0.8rem; }
+  .q p.qq { font-weight: 600; margin: 0 0 0.3rem; }
+  .opt { display: block; padding: 0.45rem 0; cursor: pointer; }
+  .opt input { margin-right: 0.5rem; }
+  select.defer { width: 100%; box-sizing: border-box; margin-top: 0.5rem; padding: 0.55rem; background: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 0.5rem; }
+  .done { color: #3fb950; font-size: 0.92rem; padding: 0.35rem 0; }
+  .bar { border: 1px solid #30363d; border-radius: 0.6rem; padding: 1rem; margin: 1.2rem 0; background: #11161d; }
+  .bar button { margin: 0.3rem 0.4rem 0.3rem 0; }
+  button.sendback { background: #6e3feb; }
+  .provided { border: 1px solid #1f6feb; border-radius: 0.5rem; padding: 0.6rem 0.8rem; margin: 0.5rem 0; background: #0d1b2e; }
+  .provided .ph { color: #58a6ff; font-weight: 600; margin: 0 0 0.3rem; }
+  .provided p { margin: 0; white-space: pre-wrap; }
+  button.reqinfo { background: #8250df; margin-top: 0.4rem; }
+  .bulkchk { font-size: 0.92rem; color: #9da7b1; }
+  #status { min-height: 1.2em; }
+  .chip { display: inline-block; border: 1px solid #30363d; border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.78rem; color: #9da7b1; margin: 0 0.25rem 0.25rem 0; }
+  .chip.reco { border-color: #238636; color: #3fb950; }
+  .desc { border: 1px solid #21262d; border-radius: 0.5rem; padding: 0.6rem 0.8rem; margin: 0.5rem 0; background: #0d1117; white-space: pre-wrap; color: #c9d1d9; }
+  .combo { color: #9da7b1; font-size: 0.85rem; }
+  .reco-note { color: #3fb950; font-size: 0.9rem; }
+  label.own { display: block; margin-top: 0.6rem; color: #9da7b1; font-size: 0.92rem; }
+  button.defaults { background: #238636; }
+  .submitted-bar { margin: 0.6rem 0; color: #9da7b1; font-size: 0.95rem; }
+  section.item.submitted { display: none; }
+  body.show-submitted section.item.submitted { display: block; opacity: 0.85; }
+  .group.submitted-group { display: none; }
+  body.show-submitted .group.submitted-group { display: block; }
+  button.submit.top { margin: 0.2rem 0 0.4rem; }
+</style>`;
+
+/** Render GET /decisions/<setId>. The caller has already verified the
+ * token; the 403 shape renders nothing about the set. Only open
+ * questions are interactive; resolved ones show as a compact recorded
+ * line. An item whose questions are all resolved renders as a
+ * submitted card, hidden by default (Drew, 2026-11-13): the page's
+ * "Show submitted items" toggle brings it back for review, since the
+ * page has no undo. */
+function renderDecisionsPage(set: DecisionSet): string {
+  const progress = decisionSetProgress(set);
+  const groups: string[] = [];
+  for (const item of set.items) if (!groups.includes(item.group)) groups.push(item.group);
+  const itemCard = (item: DecisionItem): string => {
+    const open = item.questions.filter((q) => !q.resolution);
+    const links = item.links
+      .filter((l) => /^https?:\/\//.test(l))
+      .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
+      .join("");
+    const resolvedLines = item.questions
+      .filter((q) => q.resolution)
+      .map((q) => {
+        const r = q.resolution!;
+        const what =
+          r.kind === "deferred"
+            ? `deferred to the orchestrator${r.lean && r.lean !== "none" ? ` (lean: ${esc(r.lean)})` : ""}${r.optionLabel ? ` — your tentative pick: ${esc(r.optionLabel)}` : ""}${r.comment ? ` — comment: ${esc(r.comment)}` : ""}`
+            : r.kind === "request-info"
+              ? `more information requested${r.note ? ` — you said: ${esc(r.note)}` : ""}`
+              : `answered${
+                  r.optionLabels && r.optionLabels.length > 1
+                    ? `: ${esc(r.optionLabels.join(" + "))}`
+                    : r.optionLabel
+                      ? `: ${esc(r.optionLabel)}`
+                      : r.freeText
+                        ? `: ${esc(r.freeText)}`
+                        : ""
+                }${r.customAnswer ? ` — own answer: ${esc(r.customAnswer)}` : ""}`;
+        return `<div class="done">✓ ${esc(q.question)} — ${what}</div>`;
+      })
+      .join("");
+    if (open.length === 0) {
+      return `<section class="item submitted" data-ledger="${esc(item.ledgerId)}" data-submitted="1">
+<h2>${esc(item.title)}</h2>
+${links ? `<div class="links">${links}</div>` : ""}
+${resolvedLines}
+<div class="done">✓ Submitted — hidden by default. Tick "Show submitted items" at the top of the page to review it.</div>
+</section>`;
+    }
+    const sortedOpen = open
+      .map((q, i) => ({ q, i }))
+      .sort((a, b) => (a.q.order ?? a.i) - (b.q.order ?? b.i))
+      .map((x) => x.q);
+    const questionBlocks = sortedOpen
+      .map((q) => {
+        const mode = effectiveQuestionMode(q);
+        const recommended = q.recommendedOptionIds ?? [];
+        const chips = (tags?: string[]): string =>
+          (tags ?? []).map((t) => `<span class="chip">${esc(t)}</span>`).join("");
+        const inputs = q.options
+          .map((o) => {
+            const combo =
+              o.combinationOf && o.combinationOf.length
+                ? ` <span class="combo">combines ${o.combinationOf
+                    .map((cid) => esc(q.options.find((x) => x.id === cid)?.label ?? cid))
+                    .join(" + ")}</span>`
+                : "";
+            const isReco = recommended.includes(o.id);
+            return `<label class="opt"><input class="optin" type="${mode === "multi" ? "checkbox" : "radio"}" name="opt-${esc(q.qid)}" value="${esc(o.id)}"${isReco ? ` checked data-recommended="1"` : ""}>${esc(o.label)}${isReco ? ` <span class="chip reco">recommended</span>` : ""}${chips(o.tags)}${combo}</label>`;
+          })
+          .join("");
+        return `<div class="q" data-ledger="${esc(item.ledgerId)}" data-qid="${esc(q.qid)}" data-mode="${mode}" data-recommended="${esc(JSON.stringify(recommended))}">
+<p class="qq">${esc(q.question)}${chips(q.tags)}</p>
+${q.description ? `<div class="desc">${esc(q.description)}</div>` : ""}
+${q.infoProvided ? `<div class="provided"><p class="ph">Information you requested</p><p>${esc(q.infoProvided)}</p></div>` : ""}
+${q.context ? `<p class="context">${esc(q.context)}</p>` : ""}
+${recommended.length ? `<p class="reco-note">Recommended default preselected — it is not recorded until you submit.</p>` : ""}
+${inputs}
+<label class="own">My own answer<textarea class="ft" placeholder="My own answer — or a comment (sent back with any action on this question)"></textarea></label>
+<select class="defer">
+<option value="">I'll answer this one</option>
+<option value="none">Defer</option>
+<option value="skeptical">Defer — leaning no</option>
+<option value="approve">Defer — leaning yes</option>
+</select>
+<textarea class="infonote" placeholder="Need more information first? Say what's missing (optional)"></textarea>
+<button class="reqinfo" type="button" data-reqinfo>Request more information</button>
+</div>`;
+      })
+      .join("");
+    const submitBtn = (cls: string): string =>
+      `<button class="${cls}" type="button" data-submit-item="${esc(item.ledgerId)}">Submit this item</button>`;
+    return `<section class="item" data-ledger="${esc(item.ledgerId)}">
+<label class="bulkchk"><input type="checkbox" class="bulk"> select this item for a bulk action below (defer or request info)</label>
+<h2>${esc(item.title)}</h2>
+${links ? `<div class="links">${links}</div>` : ""}
+${resolvedLines}
+${open.length > 1 ? submitBtn("submit top") : ""}
+${questionBlocks}
+${submitBtn("submit")}
+</section>`;
+  };
+  const isSubmittedItem = (i: DecisionItem): boolean => i.questions.every((q) => q.resolution);
+    const submittedCount = set.items.filter(isSubmittedItem).length;
+    const body = groups
+    .map((g) => {
+      const groupItems = set.items
+        .filter((i) => i.group === g)
+        .map((item, i) => ({ item, i }))
+        .sort((a, b) => (a.item.order ?? a.i) - (b.item.order ?? b.i))
+        .map((x) => x.item);
+      const cards = groupItems.map(itemCard).join("");
+      const allSubmitted = groupItems.length > 0 && groupItems.every(isSubmittedItem);
+      return cards ? `<div class="group${allSubmitted ? " submitted-group" : ""}">${esc(g)}</div>${cards}` : "";
+    })
+    .join("");
+  const caughtUp = progress.openQuestions === 0;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Decisions — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
+<body><main><h1>${esc(set.title)}</h1>
+<p class="context">${progress.openQuestions} question${progress.openQuestions === 1 ? "" : "s"} open across ${progress.openItems} item${progress.openItems === 1 ? "" : "s"} · ${progress.answered} answered · ${progress.deferred} deferred · ${progress.infoRequested} sent back for more information so far. Fill in what you want — you can submit a partially-filled item; what you filled in is recorded and the rest stays here.</p>
+${caughtUp ? `<div class="confirm"><p>All caught up — every question in this set has been answered or sent back. Nothing left on this page.</p></div>` : ""}
+<div class="submitted-bar" id="submittedBar"${submittedCount === 0 ? " hidden" : ""}><label><input type="checkbox" id="showSubmitted"> Show submitted items (<span id="submittedCount">${submittedCount}</span>)</label></div>
+${body}
+<div class="bar">
+<p class="context">Bulk actions</p>
+<button class="submit" type="button" id="submitAll">Submit everything I've filled in</button>
+<button class="submit defaults" type="button" id="submitDefaults">Submit defaults</button>
+<p class="context">Submit defaults records the raiser's recommended preselection for every open question that has one (plus any "my own answer" text you typed on those questions). Preselected defaults are shown selected, but they are NOT an answer until you submit them.</p>
+<p class="context">Defer checked items to the orchestrator instead of answering — they leave this page and become the orchestrator's job. Precedence per question: (1) the question's own defer setting wins, with its tentative pick and comment riding along as guidance; (2) a filled-in answer submits as an answer; (3) only a question nobody touched uses the default flavor picked here:</p>
+<select class="defer" id="bulkLean">
+<option value="none">Defer</option>
+<option value="skeptical">Defer — leaning no</option>
+<option value="approve">Defer — leaning yes</option>
+</select>
+<button class="submit sendback" type="button" id="deferChecked">Defer checked to orchestrator</button>
+<button class="submit sendback" type="button" id="deferAll">Defer ALL remaining</button>
+<p class="context">Or request more information for the checked items — they leave this page and come back in a later set once the information has been gathered:</p>
+<textarea class="infonote" id="bulkInfoNote" placeholder="Comment for the bulk actions — rides back with the checked items (for request-info: say what's missing)"></textarea>
+<button class="submit reqinfo" type="button" id="reqinfoChecked">Request more info for checked items</button>
+</div>
+<p id="status" class="context"></p>
+<script>
+var TOKEN = ${JSON.stringify(set.token)};
+var SET_ID = ${JSON.stringify(set.setId)};
+function status(msg) { document.getElementById('status').textContent = msg; }
+function pickedValues(block) {
+  var vals = [];
+  block.querySelectorAll('input.optin:checked').forEach(function (i) { vals.push(i.value); });
+  return vals;
+}
+function applySelection(sub, block, vals) {
+  if (!vals.length) return;
+  if (block.getAttribute('data-mode') === 'multi') sub.optionIds = vals;
+  else sub.optionId = vals[0];
+}
+function collect(scopeLedger) {
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var ledger = block.getAttribute('data-ledger');
+    if (scopeLedger && ledger !== scopeLedger) return;
+    var qid = block.getAttribute('data-qid');
+    var lean = block.querySelector('select.defer').value;
+    if (lean) {
+      var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: lean };
+      applySelection(dsub, block, pickedValues(block));
+      var dtext = block.querySelector('textarea.ft').value.trim();
+      if (dtext) dsub.comment = dtext;
+      subs.push(dsub); return;
+    }
+    var vals = pickedValues(block);
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (vals.length || text) {
+      var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
+      applySelection(sub, block, vals);
+      if (text) { sub.freeText = text; sub.customAnswer = text; }
+      subs.push(sub);
+    }
+  });
+  return subs;
+}
+function applyOpenState(state) {
+  var openByItem = {};
+  state.items.forEach(function (i) { openByItem[i.ledgerId] = i.openQids; });
+  document.querySelectorAll('.q').forEach(function (block) {
+    var open = openByItem[block.getAttribute('data-ledger')] || [];
+    if (open.indexOf(block.getAttribute('data-qid')) === -1) block.remove();
+  });
+  document.querySelectorAll('section.item').forEach(function (card) {
+    if (card.classList.contains('submitted')) return;
+    if (!card.querySelector('.q')) {
+      card.classList.add('submitted');
+      card.setAttribute('data-submitted', '1');
+      card.querySelectorAll('button.submit').forEach(function (el) { el.remove(); });
+      var bulk = card.querySelector('.bulkchk');
+      if (bulk) bulk.remove();
+      var note = document.createElement('div');
+      note.className = 'done';
+      note.textContent = '✓ Submitted — hidden by default. Tick "Show submitted items" at the top of the page to review it.';
+      card.appendChild(note);
+    }
+  });
+  refreshSubmitted();
+  if (!document.querySelector('section.item:not(.submitted)')) {
+    status('All caught up — every question in this set is recorded. You can close this page.');
+  }
+}
+async function post(path, payload) {
+  var res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(Object.assign({ token: TOKEN }, payload)) });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+async function submit(scopeLedger) {
+  var subs = collect(scopeLedger);
+  if (subs.length === 0) { status('Nothing filled in yet — pick an option, write an answer, or choose a defer.'); return; }
+  status('Sending…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: subs });
+    applyOpenState(out);
+    var applied = out.outcomes.filter(function (o) { return o.applied; }).length;
+    status('Recorded ' + applied + ' — ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+async function sendBack(all) {
+  // The flavor picked here is only the DEFAULT for questions nobody
+  // touched: the gather below sends each question's own defer setting
+  // and each filled answer as submissions, the server records those
+  // first, and this payload lean reaches only what is still open.
+  var lean = document.getElementById('bulkLean').value;
+  var payload;
+  var scopeIds = null;
+  if (all) { payload = { lean: lean, allRemaining: true }; }
+  else {
+    var ids = [];
+    document.querySelectorAll('section.item').forEach(function (card) {
+      if (card.querySelector('input.bulk').checked) ids.push(card.getAttribute('data-ledger'));
+    });
+    if (ids.length === 0) { status('Check at least one item first, or use ALL remaining.'); return; }
+    payload = { lean: lean, ledgerIds: ids };
+    scopeIds = ids;
+  }
+  // Filled answers win over the bulk defer: everything already filled
+  // in inside the scope rides along as submissions — the server records
+  // them first (answers stay rulings, per-question defers keep their
+  // own lean and comment) and defers only what is still unanswered.
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var ledger = block.getAttribute('data-ledger');
+    if (scopeIds && scopeIds.indexOf(ledger) === -1) return;
+    var qid = block.getAttribute('data-qid');
+    var qlean = block.querySelector('select.defer').value;
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (qlean) {
+      var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: qlean };
+      applySelection(dsub, block, pickedValues(block));
+      if (text) dsub.comment = text;
+      subs.push(dsub); return;
+    }
+    var vals = pickedValues(block);
+    if (vals.length || text) {
+      var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
+      applySelection(sub, block, vals);
+      if (text) { sub.freeText = text; sub.customAnswer = text; }
+      subs.push(sub);
+    }
+  });
+  if (subs.length) payload.submissions = subs;
+  var bulkComment = document.getElementById('bulkInfoNote').value.trim();
+  if (bulkComment) payload.comment = bulkComment;
+  status('Sending back…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/defer', payload);
+    applyOpenState(out);
+    var recorded = (out.outcomes || []).filter(function (o) { return o.applied; }).length;
+    var msg = 'Deferred ' + out.deferredCount + ' question(s) to the orchestrator';
+    if (recorded) msg = 'Recorded ' + recorded + ' filled-in answer(s) first; deferred the rest — ' + out.deferredCount + ' question(s) deferred to the orchestrator';
+    status(msg + ' — ' + out.remainingOpenQuestions + ' still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+document.querySelectorAll('[data-submit-item]').forEach(function (b) {
+  b.addEventListener('click', function () { submit(b.getAttribute('data-submit-item')); });
+});
+document.getElementById('submitAll').addEventListener('click', function () { submit(null); });
+document.getElementById('deferChecked').addEventListener('click', function () { sendBack(false); });
+document.getElementById('deferAll').addEventListener('click', function () { sendBack(true); });
+async function requestInfoOne(block) {
+  var note = block.querySelector('textarea.infonote').value.trim();
+  var sub = { ledgerId: block.getAttribute('data-ledger'), qid: block.getAttribute('data-qid'), kind: 'request-info' };
+  if (note) sub.note = note;
+  status('Requesting more information…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: [sub] });
+    applyOpenState(out);
+    status('Recorded — that question will come back in a later set with the information added. ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+async function requestInfoChecked() {
+  var ids = [];
+  document.querySelectorAll('section.item').forEach(function (card) {
+    if (card.querySelector('input.bulk').checked) ids.push(card.getAttribute('data-ledger'));
+  });
+  if (ids.length === 0) { status('Check at least one item first.'); return; }
+  var note = document.getElementById('bulkInfoNote').value.trim();
+  var payload = { ledgerIds: ids };
+  if (note) payload.note = note;
+  status('Requesting more information…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/request-info', payload);
+    applyOpenState(out);
+    status('Recorded ' + out.requestedCount + ' question(s) to come back with more information — ' + out.remainingOpenQuestions + ' still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+document.querySelectorAll('[data-reqinfo]').forEach(function (b) {
+  b.addEventListener('click', function () { requestInfoOne(b.closest('.q')); });
+});
+document.getElementById('reqinfoChecked').addEventListener('click', requestInfoChecked);
+async function submitDefaults() {
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var reco = [];
+    try { reco = JSON.parse(block.getAttribute('data-recommended') || '[]'); } catch (e) { reco = []; }
+    if (!reco.length) return;
+    var sub = { ledgerId: block.getAttribute('data-ledger'), qid: block.getAttribute('data-qid'), kind: 'answered' };
+    if (block.getAttribute('data-mode') === 'multi') sub.optionIds = reco; else sub.optionId = reco[0];
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (text) { sub.freeText = text; sub.customAnswer = text; }
+    subs.push(sub);
+  });
+  if (!subs.length) { status('No recommended defaults in this set.'); return; }
+  status('Submitting defaults…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: subs });
+    applyOpenState(out);
+    var applied = out.outcomes.filter(function (o) { return o.applied; }).length;
+    status('Recorded ' + applied + ' default(s) — ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+var defaultsBtn = document.getElementById('submitDefaults');
+if (defaultsBtn) defaultsBtn.addEventListener('click', submitDefaults);
+// --- Submitted items hide by default (Drew, 2026-11-13): the toggle
+// brings them back for review; the count tracks server-rendered
+// submitted cards and cards submitted during this session alike.
+function refreshSubmitted() {
+  var n = document.querySelectorAll('section.item.submitted').length;
+  var bar = document.getElementById('submittedBar');
+  if (bar) bar.hidden = n === 0;
+  var c = document.getElementById('submittedCount');
+  if (c) c.textContent = String(n);
+}
+var showSubmittedBox = document.getElementById('showSubmitted');
+if (showSubmittedBox) showSubmittedBox.addEventListener('change', function () {
+  document.body.classList.toggle('show-submitted', showSubmittedBox.checked);
+});
+refreshSubmitted();
+// --- Draft event reporting (#9335): typed-but-not-submitted changes are
+// events too. Debounced per question (2.5s of inactivity), never per
+// keystroke; the server drafts push remains the durable state copy.
+var draftEventTimers = {};
+function reportDraftEvent(block) {
+  var qid = block.getAttribute('data-qid');
+  if (!qid) return;
+  if (draftEventTimers[qid]) clearTimeout(draftEventTimers[qid]);
+  draftEventTimers[qid] = setTimeout(function () {
+    var payload = { selected: pickedValues(block) };
+    var ft = block.querySelector('textarea.ft');
+    if (ft && ft.value.trim()) payload.customAnswer = ft.value.trim().slice(0, 2000);
+    var leanEl = block.querySelector('select.defer');
+    if (leanEl && leanEl.value) payload.lean = leanEl.value;
+    var noteEl = block.querySelector('textarea.infonote');
+    if (noteEl && noteEl.value.trim()) payload.note = noteEl.value.trim().slice(0, 2000);
+    try {
+      fetch('/api/decisions/' + encodeURIComponent(SET_ID) + '/events', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: TOKEN, events: [{ type: 'draft', questionRef: { ledgerId: block.getAttribute('data-ledger'), qid: qid }, payload: payload }] }),
+        keepalive: true
+      }).catch(function () {});
+    } catch (e) { /* events are best-effort */ }
+  }, 2500);
+}
+document.addEventListener('input', function (e) { var b = e.target && e.target.closest ? e.target.closest('.q') : null; if (b) reportDraftEvent(b); });
+document.addEventListener('change', function (e) { var b = e.target && e.target.closest ? e.target.closest('.q') : null; if (b) reportDraftEvent(b); });
+${decisionsDraftScript(set.setId)}
+</script>
+</main></body></html>`;
+}
+
+/** Render GET /decisions — the decision-sets index (#8867). Lists every
+ * set in the store with counts live from decisionSetSummary (the same
+ * numbers the set page itself reports), in today / this-week / all
+ * views with an open-only toggle, newest first. Each row links to the
+ * set's own token-carrying page; the index carries no token of its own
+ * and sits behind the same access as every other aggregator page
+ * (tailnet origin / Cloudflare Access on pm.security.cab) — no new
+ * public surface, and the per-set token model is untouched. */
+const CHICAGO_STAMP = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, openOnly: boolean): string {
+  const inView = decisionSetsForView(allSets, view);
+  const visible = openOnly ? inView.filter((s) => decisionSetSummary(s).openQuestions > 0) : inView;
+  const totalOpen = inView.reduce((n, s) => n + decisionSetSummary(s).openQuestions, 0);
+  const viewTab = (v: DecisionSetView, label: string): string =>
+    v === view
+      ? `<strong>${label}</strong>`
+      : `<a href="/decisions?view=${v}${openOnly ? "&open=1" : ""}">${label}</a>`;
+  const toggle = openOnly
+    ? `<strong>Open only</strong> · <a href="/decisions?view=${view}">Show all</a>`
+    : `<a href="/decisions?view=${view}&open=1">Open only</a>`;
+  const rows = visible
+    .map((set) => {
+      const s = decisionSetSummary(set);
+      const stamp = Number.isFinite(Date.parse(s.createdAt))
+        ? CHICAGO_STAMP.format(new Date(s.createdAt))
+        : s.createdAt;
+      const breakdown = `${s.answered} answered · ${s.deferred} deferred · ${s.infoRequested} sent back for more info`;
+      const state = s.fullyResolved ? `all settled — ${breakdown}` : `${s.openQuestions} open · ${breakdown}`;
+      return `<div class="item"><h2><a href="${esc(decisionsPageUrl(set))}">${esc(s.title)}</a></h2>
+<p class="context">Raised ${esc(stamp)} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · ${state}</p>
+<p class="context">Set <code>${esc(s.setId)}</code></p></div>`;
+    })
+    .join("");
+  const empty =
+    allSets.length === 0
+      ? `<p class="context">No decision sets have been raised yet.</p>`
+      : `<p class="context">No sets in this view${openOnly ? " with open questions" : ""}.</p>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Decision sets — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
+<body><main><h1>Decision sets</h1>
+<p class="context">${inView.length} set${inView.length === 1 ? "" : "s"} · ${totalOpen} question${totalOpen === 1 ? "" : "s"} open. Newest first. Each set opens its own page — the same link its push notification carried.</p>
+<p class="context">${viewTab("today", "New today")} · ${viewTab("week", "This week")} · ${viewTab("all", "All")} &nbsp;|&nbsp; ${toggle}</p>
+${visible.length ? rows : empty}
+</main></body></html>`;
+}
+
+function renderDecisionsForbidden(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>Decisions link not available</h1>
+<p class="context">This decisions link is unknown or its token does not match. Nothing about the set is shown without the correct link.</p>
+</main></body></html>`;
+}
+
 /** The PWA manifest (#3315 slice a, landed with #3676): start_url is
  * the attention view per the design; icons incl. maskable + iOS. */
 const PWA_MANIFEST = {
@@ -385,14 +1330,120 @@ function emptyQuotaView(): QuotaView {
   return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
 }
 function emptyUsageView(): UsageView {
-  return { services: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
+  return {
+    services: [],
+    uninstrumentedServices: [],
+    payg: [],
+    charges: [],
+    attention: [],
+    domains: null,
+    subscriptions: [],
+    history: {},
+  };
 }
 
-async function boardContext() {
+async function loadBoardContext() {
   const board = await source.board().catch(() => []);
   const refs = allRefs(board);
   const items = await source.items(refs).catch(() => new Map());
   return { board, items };
+}
+
+// #5082: the board assembly is the stack's most expensive read — a
+// Kaneo login + poll with per-project task pagination, one projector
+// /links call per card, and the items() closure over every ref — and
+// every board-family request used to pay it in full. Under ordinary
+// fleet load the assembly outlives the 10 s dashboard deadline
+// (assembly-deadline.ts), so /board, /api/board.json, and the overview
+// (which embeds the board) 503'd even with every upstream healthy;
+// concurrent cold loads each started their own assembly and multiplied
+// the damage (measured 2026-11-08: 3 concurrent -> 3 assemblies, all
+// 503). The assembly now gets the /today contract (#1179): a short TTL
+// serves warm hits from the last successful read, and concurrent cold
+// requests share one in-flight load.
+//
+// The cache sits BELOW the variant split, which is what makes it safe
+// for every consumer: ?done=all, saved-view filters, and the HTML/JSON
+// renderers are all derived per request from this one context
+// (boardJsonBody / boardJsonViewBody / renderBoard), so no variant can
+// ever be served another variant's body. Provenance stays truthful the
+// same way it does for /today: prov()/provDetail() are still read live
+// per request at the call sites. Fail-soft fallbacks (an empty board
+// when Kaneo is down) are the honest degraded state of the read and
+// are cached as-is until expiry, exactly as #1179 documents; a
+// throwing load is never cached.
+const boardContextCache = new TodayCache<Awaited<ReturnType<typeof loadBoardContext>>>(TODAY_CACHE_TTL_MS);
+async function boardContext(): Promise<Awaited<ReturnType<typeof loadBoardContext>>> {
+  return boardContextCache.get(loadBoardContext);
+}
+
+/** All shared forecast contracts (#3984): epic-completion + stall-risk
+ * per epic subject from the stored item history (#3981), and one
+ * quota-exhaustion contract per quota pool. The rate for a pool is
+ * only usable when the gatherer measured a token burn for a token
+ * window with ok freshness — anything else stays the contract's
+ * first-class quota_rate_unavailable state, never an invented date. */
+async function allForecastContracts(
+  pool: ProjectPoolItem[],
+): Promise<{ byRef: Map<RefKey, ForecastContract[]>; contracts: ForecastContract[] }> {
+  const byRef = new Map<RefKey, ForecastContract[]>();
+  const contracts: ForecastContract[] = [];
+  const add = (c: ForecastContract) => {
+    contracts.push(c);
+    byRef.set(c.subjectRef, [...(byRef.get(c.subjectRef) ?? []), c]);
+  };
+  const cutoffs = await itemHistoryStore.readAll().catch(() => []);
+  if (cutoffs.length) {
+    const poolByRef = new Map(pool.map((it) => [it.ref, it]));
+    const subjects = new Set<RefKey>();
+    for (const cutoff of cutoffs) {
+      for (const item of cutoff.items) {
+        if (item.parentRef) subjects.add(item.parentRef);
+      }
+    }
+    for (const subjectRef of subjects) {
+      const poolItem = poolByRef.get(subjectRef);
+      const statusDisagreement =
+        poolItem &&
+        poolItem.status &&
+        ((poolItem.state === "closed" && poolItem.status !== "Done") ||
+          (poolItem.state === "open" && poolItem.status === "Done"))
+          ? `GitHub state ${poolItem.state} disagrees with Project Status ${poolItem.status}; both are shown, neither is preferred`
+          : null;
+      for (const c of subjectForecastContracts(cutoffs, subjectRef, {
+        updatedAt: poolItem?.updatedAt ?? null,
+        statusDisagreement,
+        scope: `direct native children of ${subjectRef} in the Project #4 pool item history (curated pool scope, not a repo-wide backlog)`,
+      })) {
+        add(c);
+      }
+    }
+  }
+  const quota = await source.quota().catch(() => emptyQuotaView());
+  const asOf = new Date().toISOString();
+  for (const qpool of quota.pools) {
+    const window = qpool.windows
+      .filter((w) => w.limit !== null && w.limit > 0)
+      .sort((a, b) => (b.percent ?? 0) - (a.percent ?? 0))[0];
+    const rate =
+      window && window.unit === "tokens" && qpool.burnTokensPerMin != null && qpool.freshness?.state === "ok"
+        ? { amountPerHour: qpool.burnTokensPerMin * 60, observedAt: qpool.freshness.measuredAt }
+        : null;
+    add(
+      quotaForecastContract({
+        poolId: qpool.id,
+        provider: qpool.provider,
+        asOf,
+        unit: window?.unit ?? "tokens",
+        remainingAmount: window ? window.limit! - window.used : null,
+        limitAmount: window?.limit ?? null,
+        nextReset: window?.resetsAt ?? null,
+        rate,
+        scope: `quota pool ${qpool.id} (${qpool.provider}/${qpool.plan})`,
+      }),
+    );
+  }
+  return { byRef, contracts };
 }
 
 async function roadmapContext() {
@@ -437,11 +1488,36 @@ async function roadmapContext() {
 }
 
 async function searchContext(query: string) {
-  const [board, rows] = await Promise.all([source.board(), source.roadmap()]);
-  const refs = [...new Set([...allRefs(board), ...allRefs(rows)])];
+  // #1212 slice 2: registry, DNS, services, and tier items join the
+  // board/roadmap subjects. Each extra source fails soft (empty on
+  // error) so one broken source never takes search down with it.
+  const [board, rows, registry, dns, usage, orchestration] = await Promise.all([
+    source.board(),
+    source.roadmap(),
+    source.registry().catch(() => []),
+    source.dns().catch(() => null),
+    source.usage().catch(() => null),
+    source.orchestration().catch(() => null),
+  ]);
+  const tierItems = orchestration ? [...orchestration.tiers.needsDrew, ...orchestration.tiers.needsOrchestrator] : [];
+  // Codex P2 on PR #7331: refs carried only by the slice-2 sources
+  // (registry taskRefs, tier-item refs) join the resolution set, or
+  // their search badges always render unresolved even when the live
+  // pool/projector could resolve them.
+  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(
+    isValidRef,
+  );
+  const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
   const items = await source.items(refs);
-  return { query, results: searchWork(board, rows, items, query), items };
+  const extras = { registry, dns, services: usage?.services ?? [], tierItems };
+  return { query, results: searchWork(board, rows, items, query, extras), items };
 }
+
+// #3321: watchdog gap-sync passes run whole and in observation
+// order through this queue (Codex P2, PR #5141 round 5) — see
+// createWatchdogGapSyncQueue in activity.ts for why the bare
+// fire-and-forget sync interleaved.
+const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
 
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
 // current diagnoses (feed age + probes via the health assembly —
@@ -454,12 +1530,16 @@ async function searchContext(query: string) {
 // registry age from the source's already-loaded feed.
 async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
   if (cfg.source !== "live") return [];
-  const health = await healthContext(false);
-  return watchdogTierItems({
+  const [health, projectAudit] = await Promise.all([
+    healthContext(false),
+    source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
+  ]);
+  const items = watchdogTierItems({
     now: Date.now(),
     feedAgeMs: health.feed.ageMs,
     feedGeneratedAt: health.feed.generatedAt,
     ...(diagnosis ? { orchestration: diagnosis } : {}),
+    projectAudit,
     ...(source.provenanceDetail ? { registryAgeMs: source.provenanceDetail().registry.ageMs } : {}),
     probes: health.services
       .filter((s) => WATCHDOG_PROBE_SERVICE_IDS.includes(s.def.id))
@@ -471,6 +1551,17 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
         ...(s.probedAt ? { probedAt: s.probedAt } : {}),
       })),
   });
+  // #3321: every derivation is also an ingestion pass — the current
+  // breach episodes go to the stream (dedupe makes re-derivation a
+  // no-op) and the gap records sync with the breach set. Episodes
+  // are stabilized first (first-observed `since` wins until the
+  // breach clears), so one continuous outage is one delivery.
+  const stableItems = watchdogEpisodes.stabilize(items);
+  void recordActivity(watchdogDeliveries(stableItems));
+  void enqueueWatchdogGapSync(activityStore, stableItems).catch((err) => {
+    console.error(`[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  return items;
 }
 
 async function attentionContext(opts: { census?: boolean } = {}) {
@@ -494,8 +1585,19 @@ async function attentionContext(opts: { census?: boolean } = {}) {
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
   const watchdog = await deriveWatchdogItems(diagnosis);
+  const quota = await source.quota().catch(() => null);
+  const view = buildAttention(feed, summary, Date.now(), diagnosis, watchdog);
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /today, as orchestrator-tier task items — derived once here from
+  // the same pure function, so entries clear on every surface the
+  // moment their source condition no longer holds.
+  const quotaItems = quota ? quotaActionTierItems(buildQuotaActions(quota, AA_PLAN_FACTS)) : [];
+  if (quota) {
+    view.orchestratorExtra = [...view.orchestratorExtra, ...quotaItems];
+  }
   return {
-    view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog),
+    view,
+    quotaItems,
     coverage,
     orchestration: summary,
     diagnosis,
@@ -578,7 +1680,7 @@ async function attentionRender() {
   return { view, coverage, counts, act, briefs, census };
 }
 
-async function todaySignals() {
+async function loadTodaySignals() {
   const [health, quotaResult] = await Promise.all([
     healthContext(false).catch(() => null),
     source
@@ -589,16 +1691,42 @@ async function todaySignals() {
   return { health, quota: quotaResult.quota, quotaUnavailable: quotaResult.unavailable };
 }
 
-async function todayContext() {
-  const [{ board, items }, { rows }, { view, coverage }, signals, summary] = await Promise.all([
+// #1179: the shell (/today) and the fragment (/frag/today) both need
+// the health+quota strip, seconds apart on every page view. Bound the
+// repeated live reads with a short TTL; concurrent cold requests share
+// the in-flight load. Provenance stays truthful: prov()/provDetail()
+// are still read live per request at the call sites below.
+const todaySignalsCache = new TodayCache<Awaited<ReturnType<typeof loadTodaySignals>>>(TODAY_CACHE_TTL_MS);
+async function todaySignals(): Promise<Awaited<ReturnType<typeof loadTodaySignals>>> {
+  return todaySignalsCache.get(loadTodaySignals);
+}
+
+async function loadTodayContext() {
+  const [{ board, items }, { rows, pool }, { view, coverage, orchestration }, signals] = await Promise.all([
     boardContext(),
     roadmapContext(),
     attentionContext(),
     todaySignals(),
-    source.orchestration().catch(() => null),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
-  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, ...signals };
+  const queue = buildQueueView({ board, pool, items, orchestration });
+  return {
+    today: deriveToday(board, rows, items, orchestration, new Date(), diagnosis, pool),
+    view,
+    coverage,
+    ...signals,
+    queue,
+    queueStale: queueInputsStale(signals.health),
+  };
+}
+
+// #1179: /today?full=1, /frag/today, and /api/today.json all render
+// from this one assembly. Same short-TTL + coalescing contract as the
+// signals cache above; a throwing load is never cached (the fetch
+// error boundary still 500s) and expiry triggers a fresh read.
+const todayContextCache = new TodayCache<Awaited<ReturnType<typeof loadTodayContext>>>(TODAY_CACHE_TTL_MS);
+async function todayContext(): Promise<Awaited<ReturnType<typeof loadTodayContext>>> {
+  return todayContextCache.get(loadTodayContext);
 }
 
 async function queueContext() {
@@ -613,7 +1741,7 @@ async function queueContext() {
 /** The render inputs the overview (front door, #1134) assembles:
  *  the attention view, the Project pool, quota, the health view, and
  *  the board — the same contexts the dedicated pages render from. */
-async function overviewContext() {
+async function loadOverviewContext() {
   const [{ view }, pool, quota, health, { board, items }, orchestration, actionsByObject] = await Promise.all([
     attentionContext(),
     source.projects().catch(() => [] as ProjectPoolItem[]),
@@ -624,6 +1752,59 @@ async function overviewContext() {
     actionsStore.byObject().catch(() => new Map()),
   ]);
   return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
+}
+
+// #5082: same contract as the board assembly above — the overview
+// fan-out (attention + pool + quota + health + board + orchestration)
+// was re-run live on every /, /frag/overview, and /api/overview.json
+// request and tripped the same 10 s deadline. The per-request
+// derivations (deriveOverview / renderOverview) and the provenance
+// reads stay live; only the assembly is cached. The board leg inside
+// rides the boardContext cache, so a cold overview and a cold board
+// share one board assembly.
+const overviewContextCache = new TodayCache<Awaited<ReturnType<typeof loadOverviewContext>>>(TODAY_CACHE_TTL_MS);
+async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverviewContext>>> {
+  return overviewContextCache.get(loadOverviewContext);
+}
+
+// #3976 (Codex review on PR #9193): a freshness notice means canonical
+// data changed, but the TTL caches above could still serve an assembly
+// built before the notice for up to 10s — and nothing re-requests when
+// the TTL expires, so an accepted revision could stay invisible until
+// a later notice or a manual refresh. Invalidate the two assemblies
+// the freshness fragments reread (/frag/overview, /frag/today) the
+// moment a notice becomes durable. The store seam covers every
+// acceptance path — in-process recordFreshness, the IPC handler, and
+// the reconciler's synthetic invalidations all publish through the
+// same store.
+freshnessStore.onNotice(() => {
+  overviewContextCache.clear();
+  todayContextCache.clear();
+});
+
+/** The live-source half of the /program assembly (#1046 + #1121): the
+ *  items closure for the program refs, the Project pool, the roadmap,
+ *  orchestration, and the coverage census inputs. Everything
+ *  view-dependent (saved-view filtering, briefs, forecasts, the
+ *  render) is derived per request from this bundle in the handler. */
+async function loadProgramSources() {
+  const [items, pool, rows, orchestration, census, poolAvailable] = await Promise.all([
+    source.items(programRefs()).catch(() => new Map()),
+    source.projects().catch(() => []),
+    source.roadmap().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+  ]);
+  return { items, pool, rows, orchestration, census, poolAvailable };
+}
+
+// #5082: /program is a bounded dashboard route with the same failure
+// shape — its source fan-out ran live on every request. Same TTL +
+// single-flight contract as the board/overview assemblies above.
+const programSourcesCache = new TodayCache<Awaited<ReturnType<typeof loadProgramSources>>>(TODAY_CACHE_TTL_MS);
+async function programSources(): Promise<Awaited<ReturnType<typeof loadProgramSources>>> {
+  return programSourcesCache.get(loadProgramSources);
 }
 
 // -- Saved views (#1276) -------------------------------------------------
@@ -658,18 +1839,6 @@ async function resolveView(url: URL): Promise<ResolvedView | null> {
   return null;
 }
 
-function ghItemLike(item: GhItem, pool?: ProjectPoolItem | null): ViewItemLike {
-  return {
-    ref: item.ref,
-    repo: item.ref.replace(/#\d+$/, ""),
-    area: item.projectArea ?? pool?.area ?? null,
-    horizon: item.projectHorizon ?? pool?.horizon ?? null,
-    owner: item.author,
-    state: item.state,
-    epic: pool?.epicRef ?? null,
-  };
-}
-
 function poolItemLike(item: ProjectPoolItem): ViewItemLike {
   return {
     ref: item.ref,
@@ -682,21 +1851,31 @@ function poolItemLike(item: ProjectPoolItem): ViewItemLike {
   };
 }
 
-/** A board card / roadmap row matches when its own fields match, or
- *  when any canonical item it links to matches. */
-function linkedLike(
-  own: ViewItemLike,
-  links: readonly { ref: RefKey }[],
-  items: Map<RefKey, GhItem>,
-  poolByRef: Map<RefKey, ProjectPoolItem>,
-  filters: ViewFilters,
-): boolean {
-  if (itemMatchesView(own, filters)) return true;
-  for (const l of links) {
-    const item = items.get(l.ref);
-    if (item && itemMatchesView(ghItemLike(item, poolByRef.get(l.ref)), filters)) return true;
+function eventContextByRef(pool: readonly ProjectPoolItem[]): Map<string, { project: string; epic: string | null }> {
+  const context = new Map<string, { project: string; epic: string | null }>();
+  for (const item of pool) {
+    const ref = item.ref.replace(/^gh:/i, "").toLowerCase();
+    context.set(ref, {
+      project: item.projectUrl,
+      epic: item.epicRef ?? (item.kind?.toLowerCase() === "epic" ? item.ref : null),
+    });
   }
-  return false;
+  return context;
+}
+
+function eventFilterFromUrl(
+  url: URL,
+  itemContext: ReadonlyMap<string, { project?: string | null; epic?: string | null }>,
+) {
+  return {
+    kind: url.searchParams.get("kind") ?? undefined,
+    refs: url.searchParams.getAll("ref"),
+    actor: url.searchParams.get("actor") ?? undefined,
+    project: url.searchParams.get("project") ?? undefined,
+    epic: url.searchParams.get("epic") ?? undefined,
+    search: url.searchParams.get("q") ?? undefined,
+    itemContext,
+  };
 }
 
 /** Apply a preference view verb to the views store (#1276). Returns a
@@ -734,6 +1913,31 @@ async function applyViewAction(action: DashAction): Promise<string> {
   }
 }
 
+/** The digest (#1278): built live from the same Source as every page;
+ * the archived form is the JSON the generator script wrote. */
+async function digestContext(kind: DigestKind): Promise<Digest> {
+  // Prime the items facet first (#1267 pattern): items() is the call
+  // that records the pool's feed freshness into provenance — without
+  // it the digest's pool sections would read an unprimed facet.
+  await source.items([]).catch(() => null);
+  const [pool, needsDrew, quota, poolAvailable] = await Promise.all([
+    source.projects(),
+    source.needsDrew ? source.needsDrew().catch(() => null) : Promise.resolve(null),
+    source.quota().catch(() => null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => undefined) : Promise.resolve(undefined),
+  ]);
+  return buildDigest({
+    pool,
+    needsDrew,
+    quota,
+    provenanceDetail: source.provenanceDetail?.() ?? null,
+    poolAvailable,
+    sourceKind: cfg.source,
+    now: new Date(),
+    kind,
+  });
+}
+
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
 
 async function handler(req: Request): Promise<Response> {
@@ -741,6 +1945,15 @@ async function handler(req: Request): Promise<Response> {
   const path = url.pathname;
   const prov = () => source.provenance();
   const provDetail = () => source.provenanceDetail?.();
+
+  // --- #3978: freshness delivery for browsers ------------------------------
+  // GET /freshness/stream (SSE) and GET /api/freshness-events.json read the
+  // #3977 journal only. Scope is server-derived from the page name; a caller
+  // cannot widen it, and no notice carries source payload or a secret.
+  if (req.method === "GET" && (path === "/freshness/stream" || path === "/api/freshness-events.json")) {
+    const delivery = await freshnessDeliveryResponse(req, url, { reader: freshnessStore });
+    if (delivery !== null) return delivery;
+  }
 
   // --- Author identities for the on-demand picker (#1179) ------------------
   // List pages render author pickers with the standing identities only;
@@ -755,6 +1968,11 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewRoadmapAnnotation(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const annotationAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!annotationAccess.ok) return json({ error: annotationAccess.error }, annotationAccess.status);
+      parsed.value.author = annotationAccess.author;
       const rows = await source.roadmap().catch(() => []);
       if (!rows.some((row) => row.subject === parsed.value.objectRef)) {
         return json({ error: "objectRef is not a current roadmap row" }, 404);
@@ -793,11 +2011,27 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const commentAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!commentAccess.ok) return json({ error: commentAccess.error }, commentAccess.status);
+      parsed.value.author = commentAccess.author;
+      // #941: a privileged author additionally requires the operator
+      // token when one is configured (fail closed on a secret-store
+      // outage); with no secret configured the write stays unverified.
+      // Runs on the Access-derived author above, so the two gates
+      // compose: identity first, privilege second.
+      const authorization = authorizeCommentAuthor(
+        parsed.value.author,
+        req.headers.get("authorization"),
+        await resolveBwsSecretLookup("pm-aggregator.comments-operator-token"),
+      );
+      if (!authorization.ok) return json({ error: authorization.error }, authorization.status);
       // #1509: a persistence failure is a server error, not bad input -
       // only the validation/body-parse path above earns a 400.
       let comment;
       try {
-        comment = await commentsStore.add(parsed.value);
+        comment = await commentsStore.add(parsed.value, { authorVerified: authorization.authorVerified });
       } catch (err) {
         return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
@@ -830,13 +2064,18 @@ async function handler(req: Request): Promise<Response> {
   }
   // --- Dashboard action writes (#1152/#1154/#1156) -----------------------
   // The triage write path: forms POST DashActions here; the fleet
-  // consumers (orchestration pass, Jules keeper) poll state=new and
+  // consumers (orchestration pass) poll state=new and
   // report outcomes to /api/actions/result. The dashboard itself never
   // writes GitHub, the Project, or a session server.
   if (req.method === "POST" && path === "/api/actions") {
     try {
       const parsed = validateNewAction(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: gate every action write, including non-triage and
+      // preference actions, on the configured Access identity.
+      const actionAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!actionAccess.ok) return json({ error: actionAccess.error }, actionAccess.status);
+      parsed.value.author = actionAccess.author;
       // #1291/#1293: checks that need the currently published item —
       // option/survey membership, required-question coverage, proposal
       // identity, the access/policy auto ban. Enforced only when the
@@ -949,6 +2188,9 @@ async function handler(req: Request): Promise<Response> {
         deduped?: boolean;
         error?: string;
       }[] = [];
+      // One enforcer for the whole batch: the request's JWT is
+      // verified once, not once per action (see access-identity.ts).
+      const enforceBatchAuthor = createAccessAuthorEnforcer(req);
       for (const [index, raw] of entries.entries()) {
         const objectRef =
           typeof raw === "object" && raw !== null && typeof (raw as { objectRef?: unknown }).objectRef === "string"
@@ -959,6 +2201,12 @@ async function handler(req: Request): Promise<Response> {
           results.push({ index, objectRef, ok: false, error: parsed.error });
           continue;
         }
+        const batchAccess = await enforceBatchAuthor(parsed.value.author);
+        if (!batchAccess.ok) {
+          results.push({ index, objectRef, ok: false, error: batchAccess.error });
+          continue;
+        }
+        parsed.value.author = batchAccess.author;
         if (parsed.value.kind === "triage" && section) {
           const problem = checkActionAgainstItem(
             parsed.value,
@@ -1008,13 +2256,14 @@ async function handler(req: Request): Promise<Response> {
         // Fire-and-forget: the response never waits on, and is never
         // failed by, the event append.
         recordStreamEvent({
-          actor: updated.appliedByRun ?? body.byRun.slice(0, 200),
+          actor: updated.appliedByRun ?? capUnits(body.byRun, 200),
           kind: body.outcome === "applied" ? "action-applied" : "action-rejected",
           ref: updated.objectRef,
-          summary: (
+          summary: capUnits(
             `${updated.kind}/${updated.verb} ${body.outcome} by ${body.byRun}` +
-            (typeof body.note === "string" && body.note ? ` — ${body.note}` : "")
-          ).slice(0, 500),
+              (typeof body.note === "string" && body.note ? ` — ${body.note}` : ""),
+            500,
+          ),
         });
       }
       const updated = result?.action;
@@ -1024,38 +2273,106 @@ async function handler(req: Request): Promise<Response> {
     }
   }
   if (path === "/api/events.json") {
-    // #1739: the cross-stack event stream, newest first, with
-    // kind/ref/actor filters — the machine twin of /events below.
-    const events = await eventsStore.list({
-      kind: url.searchParams.get("kind") ?? undefined,
-      ref: url.searchParams.get("ref") ?? undefined,
-      actor: url.searchParams.get("actor") ?? undefined,
+    // #1739/#3323: the same source-native stream and filters as /events.
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const filtered = await eventsStore.list(eventFilterFromUrl(url, eventContextByRef(pool)));
+    const page = pageEvents(filtered, {
+      cursor: url.searchParams.get("cursor"),
+      limit: Number(url.searchParams.get("limit") ?? 50),
     });
-    return json({ events });
+    // #3322 slice A: the audit health surface rides along — pending
+    // retry-outbox count + hash-chain integrity verdict.
+    const [health, checkpoints, gaps] = await Promise.all([
+      eventsStore.health(),
+      activityStore.checkpoints(),
+      activityStore.gaps(),
+    ]);
+    return json({
+      events: page.events,
+      health,
+      pagination: { total: filtered.length, snapshotAt: page.snapshotAt, nextCursor: page.nextCursor },
+      activity: {
+        checkpoints,
+        gaps,
+        coverage: ACTIVITY_SOURCE_COVERAGE,
+        freshness: {
+          status: "unknown",
+          reason: "ingestion checkpoints record deliveries, not successful source polls",
+        },
+      },
+    });
   }
   if (path === "/events") {
-    // #1739: the human page over the same stream /api/events.json
-    // serves — same records, same filters (?kind=&ref=&actor=).
-    const filter = {
-      kind: url.searchParams.get("kind") ?? undefined,
-      ref: url.searchParams.get("ref") ?? undefined,
-      actor: url.searchParams.get("actor") ?? undefined,
-    };
-    const events = await eventsStore.list(filter);
-    const rows = events
-      .map(
-        (e) =>
-          `<tr><td>${esc(e.at)}</td><td>${esc(e.actor)}</td><td>${esc(e.kind)}</td>` +
-          `<td>${esc(e.ref)}</td><td>${esc(e.summary)}</td></tr>`,
-      )
-      .join("\n");
+    // Machine and human surfaces share filters, ordering, and a stable
+    // ingestion snapshot for cursor pagination.
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const filtered = await eventsStore.list(eventFilterFromUrl(url, eventContextByRef(pool)));
+    const page = pageEvents(filtered, {
+      cursor: url.searchParams.get("cursor"),
+      limit: Number(url.searchParams.get("limit") ?? 50),
+    });
+    const projects = [...new Set(pool.map((item) => item.projectUrl))].sort();
+    const epics = new Map<string, string>();
+    for (const item of pool) {
+      if (item.kind?.toLowerCase() === "epic") epics.set(item.ref, item.title);
+      if (item.epicRef)
+        epics.set(item.epicRef, pool.find((candidate) => candidate.ref === item.epicRef)?.title ?? item.epicRef);
+    }
+    const refs = url.searchParams.getAll("ref");
+    const option = (value: string, label: string, selected: string) =>
+      `<option value="${esc(value)}"${value === selected ? " selected" : ""}>${esc(label)}</option>`;
+    const projectOptions = [...new Set([url.searchParams.get("project") ?? "", ...projects].filter(Boolean))]
+      .map((value) => option(value, value, url.searchParams.get("project") ?? ""))
+      .join("");
+    const selectedEpic = url.searchParams.get("epic") ?? "";
+    if (selectedEpic && !epics.has(selectedEpic)) epics.set(selectedEpic, selectedEpic);
+    const epicOptions = [...epics.entries()]
+      .map(([value, label]) => option(value, label, url.searchParams.get("epic") ?? ""))
+      .join("");
+    // Every ref filter is a visible, editable input: hidden preserved
+    // refs could not be removed, so clearing the visible Ref field
+    // still restricted results to the item's linked refs (Codex P2,
+    // PR #5266). A cleared input submits ref="", which filterEvents
+    // ignores, so clearing an input is removing that ref.
+    const refInputs = (refs.length ? refs : [""])
+      .map((ref, index) => `<label>Ref${index ? ` ${index + 1}` : ""} <input name="ref" value="${esc(ref)}"></label>`)
+      .join("");
+    const nextUrl = page.nextCursor ? new URL(url) : null;
+    if (nextUrl && page.nextCursor) nextUrl.searchParams.set("cursor", page.nextCursor);
+    const apiUrl = new URL(url);
+    apiUrl.pathname = "/api/events.json";
+    apiUrl.hash = "";
     return html(
-      `<!doctype html><html><head><meta charset="utf-8"><title>Events — pm-stack</title></head><body>` +
-        `<h1>Events</h1><p>${events.length} event(s), newest first. ` +
-        `Machine twin: <a href="/api/events.json">/api/events.json</a> (filters: kind, ref, actor).</p>` +
-        `<table><thead><tr><th>at</th><th>actor</th><th>kind</th><th>ref</th><th>summary</th></tr></thead>` +
-        `<tbody>${rows}</tbody></table></body></html>`,
+      `<!doctype html><html><head><meta charset="utf-8"><title>Events — pm-stack</title>` +
+        `<style>body{margin:1rem;font:16px system-ui,sans-serif}form{display:flex;flex-wrap:wrap;align-items:end;gap:.75rem}form label{display:grid;gap:.25rem}.tblwrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}table{border-collapse:collapse;min-width:36rem}th,td{border:1px solid #888;padding:.4rem .55rem;text-align:left;vertical-align:top}.muted{color:#666}</style></head><body>` +
+        `<h1>Events</h1><p>Showing ${page.events.length} of ${filtered.length} matching events from a fixed snapshot, newest first. ` +
+        `Machine twin: <a href="${esc(apiUrl.pathname + apiUrl.search)}">/api/events.json</a>.</p>` +
+        `<p class="muted"><strong>Freshness: unknown.</strong> Ingestion checkpoints record deliveries, not successful source polls.</p>` +
+        `<form method="get" action="/events" aria-label="Filter activity events">` +
+        `<label>Project <select name="project"><option value="">All projects</option>${projectOptions}</select></label>` +
+        `<label>Epic <select name="epic"><option value="">All epics</option>${epicOptions}</select></label>` +
+        `<label>Kind <input name="kind" value="${esc(url.searchParams.get("kind") ?? "")}"></label>` +
+        `<label>Actor <input name="actor" value="${esc(url.searchParams.get("actor") ?? "")}"></label>` +
+        refInputs +
+        `<label>Search <input name="q" value="${esc(url.searchParams.get("q") ?? "")}"></label>` +
+        `<label>Page size <select name="limit">${[25, 50, 100].map((n) => option(String(n), String(n), url.searchParams.get("limit") ?? "50")).join("")}</select></label>` +
+        `<button type="submit">Filter</button></form>` +
+        eventTableHtml(page.events) +
+        (nextUrl ? `<p><a rel="next" href="${esc(nextUrl.pathname + nextUrl.search)}">Next page →</a></p>` : "") +
+        `<h2>Activity gaps</h2><div class="tblwrap">` +
+        gapsHtml(await activityStore.gaps()) +
+        `</div><h2>Activity source coverage</h2><div class="tblwrap">` +
+        activityCoverageHtml() +
+        `</div>` +
+        `</body></html>`,
     );
+  }
+  if (path === "/api/activity.json") {
+    // #3321: activity-ingestion state — per-source checkpoints, gap
+    // records, and the documented source coverage. The machine twin
+    // of the sections the /events page renders below its table.
+    const [checkpoints, gaps] = await Promise.all([activityStore.checkpoints(), activityStore.gaps()]);
+    return json({ checkpoints, gaps, coverage: ACTIVITY_SOURCE_COVERAGE });
   }
   if (path === "/api/views.json") {
     // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.
@@ -1067,10 +2384,19 @@ async function handler(req: Request): Promise<Response> {
     const object = url.searchParams.get("object");
     const kind = url.searchParams.get("kind");
     const state = url.searchParams.get("state");
+    // #4620: state=all is the explicit all-history read (audit and
+    // retrospective consumers). It must not fall through to the literal
+    // state filter, which silently returned an empty list while the
+    // store held applied/rejected history — a false zero. Any other
+    // value that is not a real action state is a 400, never an empty
+    // list, so a mistyped filter cannot masquerade as "no history".
+    if (state && state !== "all" && !ACTION_STATES.has(state)) {
+      return json({ error: `state must be one of: all, ${[...ACTION_STATES].join(", ")}` }, 400);
+    }
     let list = await actionsStore.all();
     if (object) list = list.filter((a) => a.objectRef === object);
     if (kind) list = list.filter((a) => a.kind === kind);
-    if (state) list = list.filter((a) => a.state === state);
+    if (state && state !== "all") list = list.filter((a) => a.state === state);
     return json({ actions: list, pending: await actionsStore.pendingCounts() });
   }
 
@@ -1103,7 +2429,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/overview") {
     const data = await overviewContext();
-    const wrapped = `<div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on-dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
+    const wrapped = `<div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
     return sseResponse(ssePatch("#overview-main", wrapped));
   }
   if (path === "/board") {
@@ -1116,17 +2442,7 @@ async function handler(req: Request): Promise<Response> {
         }),
       );
     }
-    const poolByRef = act.poolByRef;
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
-    );
-    const keptRefs = new Set<string>();
-    for (const b of keptBoard) for (const l of b.links) keptRefs.add(l.ref);
-    const keptItems = new Map(
-      [...items].filter(
-        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
-      ),
-    );
+    const { board: keptBoard, items: keptItems } = filterBoardForView(board, items, act.poolByRef, resolved.filters);
     return html(
       renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, {
         showAllDone: url.searchParams.get("done") === "all",
@@ -1135,31 +2451,66 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
-    const wrapped = `<div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')">${renderBoardBody(board, items, counts, act)}</div>`;
+    // #8521: the fragment twin applies the same saved view as /board
+    // (PR #4013 missed it), and its refresh URLs re-name the view so
+    // a reload does not silently drop the filter. #7937: the same
+    // treatment for ?done=all — the fragment renders the full Done
+    // strip when the flag is present (PR #3855 wired it only into
+    // /board), and fragBoardUrl carries it across refreshes.
+    const fragUrl = fragBoardUrl(url.searchParams);
+    const resolved = await resolveView(url);
+    const view = resolved ? filterBoardForView(board, items, act.poolByRef, resolved.filters) : { board, items };
+    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on:dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
     return sseResponse(ssePatch("#board-main", wrapped));
   }
 
   if (path === "/today") {
     if (url.searchParams.get("full") !== "1") {
       const signals = await todaySignals();
-      return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
+      // #9354: the Questions section lives in the SHELL, outside the
+      // #today-main fragment div (see the /frag/today note below).
+      return html(
+        renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable, await questionsHtml()),
+      );
     }
-    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable));
+    const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
+    return html(
+      renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale, await questionsHtml()),
+    );
   }
   if (path === "/frag/today") {
-    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable)}</div>`;
+    // #9354: questionsHtml is deliberately NOT passed here — the
+    // /today shell already renders the Questions section outside the
+    // #today-main fragment div, so a fragment refresh carrying it too
+    // would show the section twice on the live page. The shell's copy
+    // is from page load, which its footer states. (?full=1 never uses
+    // the shell, so it passes questionsHtml via renderToday instead.)
+    const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
+    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
   }
 
+  if (path === "/digest") {
+    const kind = url.searchParams.get("kind") === "weekly" ? "weekly" : "daily";
+    const date = url.searchParams.get("date");
+    const archives = await listDigestArchives(cfg.digestsDir);
+    // The dated archive URL (#1278): renders the stored digest verbatim.
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const archived =
+        (await readDigestArchive(cfg.digestsDir, date, kind)) ??
+        (kind === "daily" ? null : await readDigestArchive(cfg.digestsDir, date, "daily"));
+      if (archived) return html(renderDigest(archived, archives, prov(), provDetail()));
+      return html(renderDigest(await digestContext("daily"), archives, prov(), provDetail()), 404);
+    }
+    return html(renderDigest(await digestContext(kind), archives, prov(), provDetail()));
+  }
   if (path === "/queue") {
     if (url.searchParams.get("full") !== "1") return html(renderQueueShell(prov(), provDetail()));
     return html(renderQueue(await queueContext(), prov(), provDetail()));
   }
   if (path === "/frag/queue") {
     const view = await queueContext();
-    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
+    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
     return sseResponse(ssePatch("#queue-main", wrapped));
   }
 
@@ -1174,6 +2525,11 @@ async function handler(req: Request): Promise<Response> {
       orchestration,
       orchestrationStatus,
     });
+    const forecasts = (await allForecastContracts(pool)).byRef;
+    // #4830: the same twin /api/flow-analytics.json serves, computed
+    // the same way — the Roadmap charts render exactly this object.
+    const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
+    const spendCards = await loadSpendCards();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -1204,29 +2560,18 @@ async function handler(req: Request): Promise<Response> {
           await annotationsFor(rows),
           viewQuery,
           briefs,
+          forecasts,
+          flowAnalytics,
+          spendCards,
         ),
       );
     }
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike(
-        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
-        r.links,
-        items,
-        poolByRef,
-        resolved.filters,
-      ),
-    );
     // Codex P2, PR #4013: items linked from a KEPT row keep their
     // metadata (links/badges in roadmapCard) even when they fail the
     // item filter themselves — same rule the board handler applies.
-    const keptRefs = new Set<string>();
-    for (const r of keptRows) for (const l of r.links) keptRefs.add(l.ref);
-    const keptItems = new Map(
-      [...items].filter(
-        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
-      ),
-    );
+    // Shared with /api/roadmap.json via filterRoadmapForView (#8723).
+    const { rows: keptRows, items: keptItems } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
     return html(
       renderRoadmap(
         keptRows,
@@ -1240,8 +2585,50 @@ async function handler(req: Request): Promise<Response> {
         await annotationsFor(keptRows),
         viewQuery,
         briefs,
+        forecasts,
+        flowAnalytics,
+        spendCards,
       ),
     );
+  }
+
+  if (path === "/api/flow-analytics.json") {
+    // #4829 (step 2 of #1281): the flow-analytics JSON twin — the
+    // exact numbers the step-3 charts (#4830) will render, computed
+    // from the #3981 item-history store. Every group carries its
+    // computation window and gap signal via the shared window block.
+    const cutoffs = await itemHistoryStore.readAll().catch(() => []);
+    return json({
+      generatedAt: new Date().toISOString(),
+      ...computeFlowAnalytics(cutoffs),
+    });
+  }
+
+  if (path === "/api/forecasts.json") {
+    // #3984: the shared forecast contract — the identical objects the
+    // Roadmap and Projects pages render as one-line summaries.
+    const pool = await source.projects().catch(() => []);
+    const { contracts } = await allForecastContracts(pool);
+    const subject = url.searchParams.get("subject");
+    return json({
+      contractVersion: FORECAST_CONTRACT_VERSION,
+      generatedAt: new Date().toISOString(),
+      contracts: subject ? contracts.filter((c) => c.subjectRef === subject) : contracts,
+    });
+  }
+
+  if (path === "/api/quota-analytics.json") {
+    // The analytics & projection model behind /quota's section —
+    // the identical object the page renders from.
+    const [quota, usage] = await Promise.all([
+      source.quota().catch(() => emptyQuotaView()),
+      source.usage().catch(() => emptyUsageView()),
+    ]);
+    try {
+      return json(buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile }));
+    } catch {
+      return json({ error: "analytics unavailable" }, 503);
+    }
   }
 
   if (path === "/quota") {
@@ -1249,7 +2636,24 @@ async function handler(req: Request): Promise<Response> {
       source.quota().catch(() => emptyQuotaView()),
       source.usage().catch(() => emptyUsageView()),
     ]);
-    return html(renderQuota(quota, prov(), usage, provDetail()));
+    // Never block on providers (#1171): decide from the stored measurement,
+    // ask the gatherer to run in the background, render what we have.
+    const refresh = quotaRefresher.request(quota);
+    // Analytics fail-soft: a broken ledger read must never take the
+    // quota page down with it (the builder itself also degrades).
+    let analytics: QuotaAnalytics | null = null;
+    try {
+      analytics = buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile });
+    } catch {
+      analytics = null;
+    }
+    return html(renderQuota(quota, prov(), usage, provDetail(), refresh, analytics));
+  }
+
+  if (req.method === "POST" && path === "/quota/refresh") {
+    const quota = await source.quota().catch(() => emptyQuotaView());
+    quotaRefresher.manual(quota);
+    return new Response(null, { status: 303, headers: { Location: "/quota" } });
   }
 
   const serviceMatch = /^\/quota\/service\/([\w-]+)$/.exec(path);
@@ -1266,18 +2670,70 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/attention") {
     // #1444: shell first; header/queues/sessions stream in as
     // fragments. ?full=1 keeps the full server render (no-JS path).
+    // ?refs=<objectRefs> is the digest landing filter (#7193 Codex):
+    // only the named entries render, and the refs ride the fragment
+    // URLs so the streamed sections stay filtered.
+    const refsParam = url.searchParams.get("refs");
+    const refs = refsParam
+      ? refsParam
+          .split(",")
+          .map((ref) => ref.trim())
+          .filter(Boolean)
+      : [];
     if (url.searchParams.get("full") !== "1") {
-      return html(renderAttentionShell(prov(), provDetail()));
+      // #9354: Questions section in the shell, below the sessions
+      // fragment; the /frag/attention/* fragments do not carry it.
+      return html(renderAttentionShell(prov(), provDetail(), refsParam ?? undefined, await questionsHtml()));
     }
-    const { view, coverage, counts, act, briefs, census } = await attentionRender();
-    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs, census));
+    const rendered = await attentionRender();
+    const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
+    return html(
+      renderAttention(
+        view,
+        rendered.coverage,
+        prov(),
+        rendered.counts,
+        provDetail(),
+        rendered.act,
+        rendered.briefs,
+        rendered.census,
+        await questionsHtml(),
+      ),
+    );
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
-    const { view, coverage, counts, act, briefs, census } = await attentionRender();
-    const sections = attentionSections(view, coverage, counts, act, briefs, census);
-    return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
+    const refsParam = url.searchParams.get("refs");
+    const refs = refsParam
+      ? refsParam
+          .split(",")
+          .map((ref) => ref.trim())
+          .filter(Boolean)
+      : [];
+    const rendered = await attentionRender();
+    const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
+    const sections = attentionSections(
+      view,
+      rendered.coverage,
+      rendered.counts,
+      rendered.act,
+      rendered.briefs,
+      rendered.census,
+    );
+    return sseResponse(
+      ssePatch(`#attn-${section}`, attentionFragment(section, sections[section], refsParam ?? undefined)),
+    );
+  }
+  if (path === "/assets/app.css") {
+    // The committed Tailwind + DaisyUI build (Phase C): source is
+    // src/ui.css, rebuilt with `bun run build:css`; never generated at
+    // request time, so a plain pull deploys it like the other assets.
+    const file = Bun.file(new URL("./assets/app.css", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
   }
   if (path === "/assets/datastar.js") {
     // The vendored Datastar bundle (#1444) — a static asset, never a
@@ -1307,10 +2763,10 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/aa") {
-    return html(renderAa(await source.aa(), prov(), provDetail()));
+    return html(renderAa(await source.aa(url.searchParams.get("batch")), prov(), provDetail()));
   }
   if (path === "/api/aa.json") {
-    const section = await source.aa();
+    const section = await source.aa(url.searchParams.get("batch"));
     return json(section ?? { status: "absent", reason: "no AA explorer section in the fleet feed yet" });
   }
 
@@ -1384,10 +2840,11 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/api/projects.json") {
-    const [pool, census, poolAvailable] = await Promise.all([
+    const [pool, census, poolAvailable, audit] = await Promise.all([
       source.projects().catch(() => []),
       source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+      source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
     ]);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
     // #1279: the JSON twin of the brief panels on the pool cards — the
@@ -1407,6 +2864,7 @@ async function handler(req: Request): Promise<Response> {
       // Build with the full pool so a filtered-out blocker can still have
       // its state resolved, but only expose briefs for the visible items.
       briefs: Object.fromEntries([...briefs].filter(([ref]) => outRefs.has(ref))),
+      audit,
       coverage: coverage.current,
       coverageBaseline: coverage.baseline,
     });
@@ -1418,15 +2876,13 @@ async function handler(req: Request): Promise<Response> {
     // registry in src/project-config.ts; the live half derived from
     // the same Source the other views read (items / projects /
     // roadmap / orchestration), each facet failing soft on its own.
-    const [items, pool, rows, orchestration, formOpts, actionsByObject, census, poolAvailable] = await Promise.all([
-      source.items(programRefs()).catch(() => new Map()),
-      source.projects().catch(() => []),
-      source.roadmap().catch(() => []),
-      source.orchestration().catch(() => null),
+    // #5082: the live-source fan-out rides the programSources cache
+    // (TTL + single-flight); the local-store reads and everything
+    // view-dependent below stay per-request.
+    const [{ items, pool, rows, orchestration, census, poolAvailable }, formOpts, actionsByObject] = await Promise.all([
+      programSources(),
       commentFormOpts(),
       actionsStore.byObject(),
-      source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
-      source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
     // #1276 (Codex P2, PR #4013): /projects redirects here with the
     // view parameters preserved, but this handler never resolved the
@@ -1458,6 +2914,13 @@ async function handler(req: Request): Promise<Response> {
         actionsByObject,
         identities: formOpts.identities,
         briefs,
+        forecasts: (await allForecastContracts(viewPool)).byRef,
+        // #4830: the Projects page (merged into /program, #1497)
+        // renders the #4829 twin as charts, computed as the endpoint
+        // computes it.
+        flowAnalytics: computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => [])),
+        // #4824: spend beside progress on the pool cards.
+        spend: await loadSpendCards(),
       }),
     );
   }
@@ -1526,17 +2989,24 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/board.json") {
     const { board, items } = await boardContext();
+    const showAllDone = url.searchParams.get("done") === "all";
     const resolved = await resolveView(url);
-    if (!resolved) return json({ board, items: [...items.values()] });
+    if (!resolved) return jsonCompact(boardJsonBody(board, items, { showAllDone }));
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+    // Filter the policy-eligible board against the full item lookup
+    // BEFORE the done-strip limit (#8058): limiting first dropped a
+    // view's matching done cards outside the global newest 100.
+    // boardJsonViewBody then applies the limit and restricts the
+    // shipped items to the selected cards, so the response stays
+    // bounded as #5082 requires — the full closure is only a lookup.
+    const bounded = boardJsonViewBody(
+      board,
+      items,
+      (b) => linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+      { showAllDone },
     );
-    const keptItems = [...items.values()].filter((it) =>
-      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
-    );
-    return json({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
+    return jsonCompact({ board: bounded.board, items: bounded.items, view: resolved.view?.id ?? null });
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
@@ -1554,18 +3024,10 @@ async function handler(req: Request): Promise<Response> {
     }
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike(
-        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
-        r.links,
-        items,
-        poolByRef,
-        resolved.filters,
-      ),
-    );
-    const keptItems = [...items.values()].filter((it) =>
-      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
-    );
+    // #8723: the same rule as the HTML twin -- items linked from a
+    // kept row ship even when they fail the view themselves.
+    const { rows: keptRows, items: keptItemMap } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
+    const keptItems = [...keptItemMap.values()];
     const annotatedKeptRows = await Promise.all(
       keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
     );
@@ -1580,18 +3042,41 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/quota.json") {
     // Extended in place for the hub (design §1.1): the pools/burn/choices
     // shape is unchanged for existing consumers (quota-guidance); the
-    // hub sections ride as additional top-level keys. Snapshot history
+    // hub sections and extractor health ride as additional top-level keys. Snapshot history
     // stays out of this twin — it is per-service, on the service twin.
     const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
+    // #1171: a stale read returns immediately with refresh state instead of
+    // waiting on provider calls; the gatherer runs in the background.
+    const refresh = quotaRefresher.request(quota);
     return json({
       ...quota,
+      refresh,
       saas: usage.services,
       payg: usage.payg,
       charges: usage.charges,
       attention: usage.attention,
       domains: usage.domains,
       subscriptions: usage.subscriptions,
+
+      uninstrumentedServices: usage.uninstrumentedServices,
+      extractorHealth: {
+        pools: quota.pools.map((pool) => ({
+          id: pool.id,
+          ...(pool.extractionHealth ?? { status: "unavailable", matched: null, reason: "not-recorded", count: 0 }),
+        })),
+        services: usage.services.map((service) => ({
+          id: service.id,
+          ...(service.extractionHealth ?? { status: "unavailable", matched: null, reason: "not-recorded", count: 0 }),
+        })),
+      },
     });
+  }
+  if (req.method === "POST" && path === "/api/quota/refresh") {
+    const quota = await source.quota().catch(() => emptyQuotaView());
+    const refresh = quotaRefresher.manual(quota);
+    // generatedAt is the client's poll baseline (#6125): the manual
+    // refresh is only done when quota-current.json advances past it.
+    return json({ requested: refresh.triggered, refresh, generatedAt: quota.gatherer?.generatedAt ?? null });
   }
   if (path === "/api/quota/service.json") {
     const id = url.searchParams.get("id") ?? "";
@@ -1620,9 +3105,19 @@ async function handler(req: Request): Promise<Response> {
     // tier items are appended in their TierItem shape (tier-annotated
     // needs-orchestrator) so machine consumers see the same queue the
     // HTML renders — the array shape itself is unchanged (Codex P2
-    // on PR #2431).
-    const { view } = await attentionContext();
-    return json([...view.all, ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const }))]);
+    // on PR #2431). #3317: include non-session needs-drew items too,
+    // matching the full queue rendered by the attention page.
+    const { view, quotaItems } = await attentionContext();
+    return json([
+      ...view.all,
+      ...view.drewExtra.map((i) => ({ ...i, tier: "needs-drew" as const })),
+      ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
+      // #1174 (Codex P2, PR #4695): the synthesized quota tasks ride along
+      // in the same TierItem shape — this endpoint is the machine-first
+      // interface the attention page advertises, so the quota tasks must
+      // be discoverable here, not only in the HTML orchestrator tier.
+      ...quotaItems.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
+    ]);
   }
   if (path === "/api/coverage.json") {
     const { view, coverage } = await attentionContext();
@@ -1631,6 +3126,24 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/today.json") {
     const { today } = await todayContext();
     return json(today);
+  }
+  if (path === "/api/digest.json") {
+    const kind = url.searchParams.get("kind") === "weekly" ? "weekly" : "daily";
+    const date = url.searchParams.get("date");
+    // Share the /digest handler's archive resolution (#5279 Codex): a
+    // dated request returns the stored digest verbatim, so the machine
+    // twin of a weekly or historical page is the digest it displays.
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const archived =
+        (await readDigestArchive(cfg.digestsDir, date, kind)) ??
+        (kind === "daily" ? null : await readDigestArchive(cfg.digestsDir, date, "daily"));
+      if (archived) return json(archived);
+      return json({ error: `no ${kind} digest archived for ${date}` }, 404);
+    }
+    return json(await digestContext(kind));
+  }
+  if (path === "/api/digests.json") {
+    return json({ archives: await listDigestArchives(cfg.digestsDir) });
   }
   if (path === "/api/queue.json") {
     return json(await queueContext());
@@ -1668,6 +3181,13 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/assets/push-client.js") {
     const file = Bun.file(new URL("./assets/push-client.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/assets/freshness-client.js") {
+    const file = Bun.file(new URL("./assets/freshness-client.js", import.meta.url));
     if (!(await file.exists())) return json({ error: "asset missing" }, 404);
     return new Response(file, {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
@@ -1723,19 +3243,535 @@ async function handler(req: Request): Promise<Response> {
     return json(summary);
   }
 
+  // Per-class test sends (#3318): one test per preference class,
+  // honouring the stored class toggles, landing per design §3.
+  if (path === "/api/push/test-class") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+    let cls: unknown;
+    try {
+      cls = ((await readJsonBody(req)) as { class?: unknown })?.class;
+    } catch {
+      return json({ error: "invalid test-class body" }, 400);
+    }
+    if (!isNotificationTestClass(cls)) return json({ error: "unknown notification class" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const summary = await sendClassTestPush(store, cfg.publicOrigin, cls);
+    return json(summary);
+  }
+
   // --- Alert throat (#3676): incident intake + ack/close --------------
   if (req.method === "POST" && path === "/api/alerts") {
     if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
     try {
-      const parsed = validateNewIncident(await readJsonBody(req));
+      const rawBody: unknown = await readJsonBody(req);
+      const parsed = validateNewIncident(rawBody);
       if (!parsed.ok) return json({ error: parsed.error }, 400);
       const { incident, created } = await store.postIncident(parsed.value);
-      return json({ incident, created }, created ? 201 : 200);
+      const status = created ? 201 : 200;
+      // #8568/#8766 producer extensions: exactly one of needsDrew /
+      // stackHealth / decisionSet may ride an incident post. The incident insert
+      // above is unchanged; a VALIDATION failure of an extension is a
+      // 400 (the poster's bug should be loud at the poster), while a
+      // store failure is logged and never fails the incident post.
+      const ext =
+        rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? (rawBody as Record<string, unknown>) : {};
+      const hasNeedsDrew = ext.needsDrew !== undefined;
+      const hasStackHealth = ext.stackHealth !== undefined;
+      const hasDecisionSet = ext.decisionSet !== undefined;
+      if ([hasNeedsDrew, hasStackHealth, hasDecisionSet].filter(Boolean).length > 1) {
+        return json({ error: "needsDrew, stackHealth and decisionSet extensions are mutually exclusive" }, 400);
+      }
+      if (hasNeedsDrew) {
+        const v = validateNeedsDrew(ext.needsDrew);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source);
+          requestAlertTick();
+          return json(
+            { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
+            status,
+          );
+        } catch (err) {
+          console.error(`alerts intake: needsDrew raise failed (${err instanceof Error ? err.message : "error"})`);
+          return json({ incident, created }, status);
+        }
+      }
+      if (hasStackHealth) {
+        const v = validateStackHealth(ext.stackHealth);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          await setStackHealth(cfg.stackHealthFile, v.value);
+          if (v.value.state === "up") {
+            await store.closeOpenIncidentByKey(parsed.value.source, parsed.value.key);
+          }
+          requestAlertTick();
+        } catch (err) {
+          console.error(`alerts intake: stackHealth update failed (${err instanceof Error ? err.message : "error"})`);
+        }
+        return json({ incident, created }, status);
+      }
+      if (hasDecisionSet) {
+        const v = validateDecisionSet(ext.decisionSet);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          const beforeSet = await getDecisionSet(cfg.decisionsFile, v.value.setId).catch(() => null);
+          const set = await raiseDecisionSet(cfg.decisionsFile, v.value, parsed.value.source);
+          if (!beforeSet) {
+            await logDecisionEvents([
+              {
+                setId: set.setId,
+                type: "set.created",
+                payload: {
+                  via: "api/alerts",
+                  source: parsed.value.source,
+                  title: set.title,
+                  items: set.items.length,
+                  questions: set.items.reduce((n, i) => n + i.questions.length, 0),
+                },
+              },
+            ]);
+          }
+          requestAlertTick();
+          return json({ incident, created, decisionSet: { setId: set.setId, pageUrl: decisionsPageUrl(set) } }, status);
+        } catch (err) {
+          console.error(`alerts intake: decisionSet raise failed (${err instanceof Error ? err.message : "error"})`);
+          return json({ incident, created }, status);
+        }
+      }
+      return json({ incident, created }, status);
     } catch (err) {
       return json({ error: `invalid incident: ${err instanceof Error ? err.message : err}` }, 400);
     }
+  }
+  // --- Needs-Drew answers (#8568) --------------------------------------
+  const needsDrewAnswerMatch = /^\/api\/needs-drew\/([^/]+)\/answer$/.exec(path);
+  if (req.method === "POST" && needsDrewAnswerMatch) {
+    const ledgerId = decodePathSegment(needsDrewAnswerMatch[1]);
+    if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);
+    let body: { token?: unknown; optionId?: unknown; freeText?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid answer body" }, 400);
+    }
+    // No bearer: the per-question token is the authority.
+    const item = await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    if (!item || typeof body.token !== "string" || body.token !== item.token) {
+      return json({ error: "unknown question or bad token" }, 403);
+    }
+    const optionId = typeof body.optionId === "string" ? body.optionId : undefined;
+    if (optionId !== undefined && !item.options.some((o) => o.id === optionId)) {
+      return json({ error: "optionId is not one of the question options" }, 400);
+    }
+    const freeText = typeof body.freeText === "string" ? body.freeText : undefined;
+    if (body.freeText !== undefined && freeText === undefined) {
+      return json({ error: "freeText must be a string" }, 400);
+    }
+    if (optionId === undefined && !freeText?.trim()) {
+      return json({ error: "optionId or freeText required" }, 400);
+    }
+    const updated = await recordAnswer(cfg.needsDrewFile, ledgerId, {
+      ...(optionId !== undefined ? { optionId } : {}),
+      ...(freeText !== undefined ? { freeText } : {}),
+      via: "api",
+    });
+    if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
+    return json({
+      ledgerId,
+      answered: true,
+      answer: {
+        ...(updated.answer.optionId !== undefined ? { optionId: updated.answer.optionId } : {}),
+        ...(updated.answer.freeText !== undefined ? { freeText: updated.answer.freeText } : {}),
+        at: updated.answer.at,
+        via: updated.answer.via,
+      },
+    });
+  }
+  const answerPageMatch = /^\/answer\/([^/]+)$/.exec(path);
+  if (req.method === "GET" && answerPageMatch) {
+    const ledgerId = decodePathSegment(answerPageMatch[1]);
+    const token = url.searchParams.get("t") ?? "";
+    const item = ledgerId === null ? null : await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    // Unknown question or token mismatch: 403, and the question is
+    // never rendered — the token is the only authority here.
+    if (!item || !token || token !== item.token) return html(renderAnswerForbidden(), 403);
+    return html(renderAnswerPage(item));
+  }
+  // --- Decision-set submit API + event log (#9335 v2) -----------------
+  // POST /api/decision-sets (alias: /api/decision-sets/submit): the
+  // authenticated submit API. Intake-bearer auth, the same token as
+  // /api/alerts. Body: the bare v2 set object or { decisionSet: {...} }
+  // (a sibling `source` string is honored). setId may be omitted — a
+  // UUID is minted. The response returns the setId and the full token
+  // page URL to the authenticated submitter ONLY; the URL is never
+  // logged. Exactly one push per set: a fresh raise requests the alert
+  // tick exactly like the /api/alerts decisionSet path; a re-submit of
+  // an existing setId is idempotent and sends no second push.
+  if (req.method === "POST" && (path === "/api/decision-sets" || path === "/api/decision-sets/submit")) {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    let rawBody: unknown;
+    try {
+      rawBody = await readJsonBody(req);
+    } catch {
+      return json({ error: "invalid submit body" }, 400);
+    }
+    const prepared = withGeneratedSetId(rawBody);
+    const ext =
+      prepared && typeof prepared === "object" && !Array.isArray(prepared) ? (prepared as Record<string, unknown>) : {};
+    const candidate = ext.decisionSet !== undefined ? ext.decisionSet : prepared;
+    const v = validateDecisionSet(candidate);
+    if (!v.ok) return json({ error: v.error }, 400);
+    const source = typeof ext.source === "string" && ext.source ? ext.source : "decisions-ledger";
+    // #9354 refresh mode: a sibling `refresh: true` opts a standing
+    // (ledger-mirror) set into refreshDecisionSet — contents are
+    // replaced, token/createdAt/source and resolutions-by-qid are
+    // preserved. No push and no set.created event on a refresh: the
+    // set is not new, and a standing set refreshed hourly must not
+    // push hourly. Refresh of a not-yet-existing set is a normal
+    // create (201, created: true, push + set.created as usual).
+    const refresh = ext.refresh === true;
+    const before = await getDecisionSet(cfg.decisionsFile, v.value.setId).catch(() => null);
+    try {
+      if (refresh && before) {
+        const set = await refreshDecisionSet(cfg.decisionsFile, v.value, source);
+        // The event log accepts a set-level "edit" event without a
+        // questionRef (validateDecisionEventInput / the type enum
+        // include "edit"), so a refresh is recorded that way.
+        await logDecisionEvents([
+          {
+            setId: set.setId,
+            type: "edit",
+            payload: {
+              via: "api/decision-sets",
+              refresh: true,
+              items: set.items.length,
+              questions: set.items.reduce((n, i) => n + i.questions.length, 0),
+            },
+          },
+        ]);
+        const pageUrl = decisionsPageUrl(set);
+        return json({ setId: set.setId, pageUrl, url: pageUrl, created: false, refreshed: true }, 200);
+      }
+      const set = await raiseDecisionSet(cfg.decisionsFile, v.value, source);
+      if (!before) {
+        await logDecisionEvents([
+          {
+            setId: set.setId,
+            type: "set.created",
+            payload: {
+              via: "api/decision-sets",
+              source,
+              title: set.title,
+              items: set.items.length,
+              questions: set.items.reduce((n, i) => n + i.questions.length, 0),
+            },
+          },
+        ]);
+        requestAlertTick();
+      }
+      const pageUrl = decisionsPageUrl(set);
+      return json({ setId: set.setId, pageUrl, url: pageUrl, created: !before }, before ? 200 : 201);
+    } catch (err) {
+      console.error(`decision-sets submit: raise failed (${err instanceof Error ? err.message : "error"})`);
+      return json({ error: "decision set raise failed" }, 500);
+    }
+  }
+  // Decision-set events: read (activity processor polling) + report
+  // (the page's draft/edit events). Two prefixes name the same routes:
+  // /api/decision-sets/<setId>/events (the documented contract) and
+  // /api/decisions/<setId>/events (the page's own prefix).
+  // Auth: the intake bearer OR the per-set token (as ?t=, as a bearer,
+  // or — for POST — as body.token). Nothing about the set's events is
+  // served without one of them.
+  const decisionEventsMatch = /^\/api\/(?:decision-sets|decisions)\/([^/]+)\/events$/.exec(path);
+  if ((req.method === "GET" || req.method === "POST") && decisionEventsMatch) {
+    const setId = decodePathSegment(decisionEventsMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set) return json({ error: "unknown set" }, 404);
+    const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+    const tokenOk = (t: unknown): boolean => typeof t === "string" && t.length > 0 && t === set.token;
+    if (req.method === "GET") {
+      const qToken = url.searchParams.get("t") ?? "";
+      if (!tokenOk(qToken) && !tokenOk(bearer) && !(await alertsIntakeAuthorized(req))) {
+        return json({ error: "unknown set or bad token" }, 403);
+      }
+      const since = url.searchParams.get("since") ?? undefined;
+      const limitRaw = Number(url.searchParams.get("limit") ?? "");
+      const page = await readDecisionEvents(cfg.decisionsEventsFile, setId, {
+        since,
+        ...(Number.isFinite(limitRaw) && limitRaw > 0 ? { limit: limitRaw } : {}),
+      });
+      return json({ setId, events: page.events, nextCursor: page.nextCursor, count: page.count });
+    }
+    let evBody: { token?: unknown; events?: unknown };
+    try {
+      evBody = (await readJsonBody(req)) as typeof evBody;
+    } catch {
+      return json({ error: "invalid events body" }, 400);
+    }
+    if (!tokenOk(evBody.token) && !tokenOk(bearer) && !(await alertsIntakeAuthorized(req))) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    if (!Array.isArray(evBody.events) || evBody.events.length < 1 || evBody.events.length > 32) {
+      return json({ error: "events must be an array of 1-32 entries" }, 400);
+    }
+    const inputs: DecisionEventInput[] = [];
+    for (const rawEv of evBody.events) {
+      const ve = validateDecisionEventInput(rawEv);
+      if (!ve.ok) return json({ error: ve.error }, 400);
+      inputs.push({
+        setId,
+        type: ve.value.type,
+        ...(ve.value.questionRef ? { questionRef: ve.value.questionRef } : {}),
+        payload: ve.value.payload,
+      });
+    }
+    const stored = await appendDecisionEvents(cfg.decisionsEventsFile, cfg.decisionsOutboxFile, inputs).catch(
+      () => null,
+    );
+    if (!stored) return json({ error: "event append failed" }, 500);
+    return json({ appended: stored.length, eventIds: stored.map((e) => e.eventId) });
+  }
+  // --- Decision sets (#8766) -------------------------------------------
+  // --- Decision-sets index (#8867) --------------------------------------
+  // GET /decisions: every set in the store, counts computed live at
+  // request time. The index carries no token of its own — it sits behind
+  // the same access as the rest of the aggregator (tailnet origin /
+  // Cloudflare Access), and each row links onward to the set's own
+  // token-carrying page.
+  if (req.method === "GET" && path === "/decisions") {
+    const sets = await listDecisionSets(cfg.decisionsFile).catch(() => [] as DecisionSet[]);
+    const viewParam = url.searchParams.get("view");
+    const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "all";
+    return html(renderDecisionsIndex(sets, view, url.searchParams.get("open") === "1"));
+  }
+  const decisionsPageMatch = /^\/decisions\/([^/]+)$/.exec(path);
+  if (req.method === "GET" && decisionsPageMatch) {
+    const setId = decodePathSegment(decisionsPageMatch[1]);
+    const token = url.searchParams.get("t") ?? "";
+    const set = setId === null ? null : await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    // Unknown set or token mismatch: 403, and the set is never rendered
+    // — the per-set token is the only authority here.
+    if (!set || !token || token !== set.token) return html(renderDecisionsForbidden(), 403);
+    return html(renderDecisionsPage(set));
+  }
+  const decisionsSubmitMatch = /^\/api\/decisions\/([^/]+)\/submit$/.exec(path);
+  if (req.method === "POST" && decisionsSubmitMatch) {
+    const setId = decodePathSegment(decisionsSubmitMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: { token?: unknown; submissions?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid submit body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const parsedSubs = parseDecisionSubmissions(body.submissions);
+    if (!parsedSubs.ok) return json({ error: parsedSubs.error }, 400);
+    const result = await recordResolutions(cfg.decisionsFile, setId, parsedSubs.value);
+    if (!result) return json({ error: "unknown set" }, 404);
+    await logDecisionEvents(
+      result.outcomes
+        .filter((o) => o.applied)
+        .map((o) => {
+          const sub = parsedSubs.value.find((x) => x.qid === o.qid)!;
+          return {
+            setId,
+            type: eventTypeForKind(sub.kind),
+            questionRef: questionRefFor(set, sub.ledgerId, sub.qid),
+            payload: submissionEventPayload(sub),
+          } satisfies DecisionEventInput;
+        }),
+    );
+    return json({ outcomes: result.outcomes, ...decisionSetOpenState(result.set) });
+  }
+  const decisionsDeferMatch = /^\/api\/decisions\/([^/]+)\/defer$/.exec(path);
+  if (req.method === "POST" && decisionsDeferMatch) {
+    const setId = decodePathSegment(decisionsDeferMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: {
+      token?: unknown;
+      lean?: unknown;
+      ledgerIds?: unknown;
+      allRemaining?: unknown;
+      submissions?: unknown;
+      comment?: unknown;
+    };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid defer body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    if (!isDeferLean(body.lean)) {
+      return json({ error: "lean must be none|skeptical|approve" }, 400);
+    }
+    const all = body.allRemaining === true;
+    const ledgerIds = Array.isArray(body.ledgerIds)
+      ? body.ledgerIds.filter((x): x is string => typeof x === "string")
+      : [];
+    if (!all && ledgerIds.length === 0) {
+      return json({ error: "ledgerIds or allRemaining required" }, 400);
+    }
+    // Filled answers win over the bulk defer (#8766): submissions the
+    // page gathered from filled-in fields are recorded FIRST, and only
+    // the still-unanswered questions in scope are deferred.
+    let submissions: DecisionSubmission[] = [];
+    if (body.submissions !== undefined) {
+      const parsedSubs = parseDecisionSubmissions(body.submissions);
+      if (!parsedSubs.ok) return json({ error: parsedSubs.error }, 400);
+      submissions = parsedSubs.value;
+    }
+    const result = await deferWithSubmissions(
+      cfg.decisionsFile,
+      setId,
+      submissions,
+      all ? { allRemaining: true as const } : { ledgerIds },
+      body.lean,
+      typeof body.comment === "string" ? body.comment : undefined,
+    );
+    if (!result) return json({ error: "unknown set" }, 404);
+    await logDecisionEvents([
+      ...result.outcomes
+        .filter((o) => o.applied)
+        .map((o) => {
+          const sub = submissions.find((x) => x.qid === o.qid)!;
+          return {
+            setId,
+            type: eventTypeForKind(sub.kind),
+            questionRef: questionRefFor(set, sub.ledgerId, sub.qid),
+            payload: submissionEventPayload(sub),
+          } satisfies DecisionEventInput;
+        }),
+      ...(result.deferredCount > 0
+        ? [
+            {
+              setId,
+              type: "defer" as const,
+              payload: {
+                bulk: true,
+                deferredCount: result.deferredCount,
+                lean: body.lean as string,
+                scope: all ? "allRemaining" : "checked",
+              },
+            } satisfies DecisionEventInput,
+          ]
+        : []),
+    ]);
+    return json({
+      outcomes: result.outcomes,
+      deferredCount: result.deferredCount,
+      ...decisionSetOpenState(result.set),
+    });
+  }
+  const decisionsReqInfoMatch = /^\/api\/decisions\/([^/]+)\/request-info$/.exec(path);
+  if (req.method === "POST" && decisionsReqInfoMatch) {
+    const setId = decodePathSegment(decisionsReqInfoMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: { token?: unknown; note?: unknown; ledgerIds?: unknown; allRemaining?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid request-info body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const all = body.allRemaining === true;
+    const ledgerIds = Array.isArray(body.ledgerIds)
+      ? body.ledgerIds.filter((x): x is string => typeof x === "string")
+      : [];
+    if (!all && ledgerIds.length === 0) {
+      return json({ error: "ledgerIds or allRemaining required" }, 400);
+    }
+    const result = await requestInfoOpenQuestions(
+      cfg.decisionsFile,
+      setId,
+      all ? { allRemaining: true as const } : { ledgerIds },
+      typeof body.note === "string" ? body.note : undefined,
+    );
+    if (!result) return json({ error: "unknown set" }, 404);
+    if (result.requestedCount > 0) {
+      await logDecisionEvents([
+        {
+          setId,
+          type: "request-info",
+          payload: {
+            bulk: true,
+            requestedCount: result.requestedCount,
+            scope: all ? "allRemaining" : "checked",
+            ...(typeof body.note === "string" && body.note ? { note: body.note.slice(0, 2000) } : {}),
+          },
+        },
+      ]);
+    }
+    return json({ requestedCount: result.requestedCount, ...decisionSetOpenState(result.set) });
+  }
+
+  const decisionsDraftsMatch = /^\/api\/decisions\/([^/]+)\/drafts$/.exec(path);
+  if ((req.method === "GET" || req.method === "POST") && decisionsDraftsMatch) {
+    const setId = decodePathSegment(decisionsDraftsMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (req.method === "GET") {
+      const token = url.searchParams.get("t") ?? "";
+      // Unknown set or token mismatch: 403, nothing about the set's
+      // drafts is shown without the correct link.
+      if (!set || !token || token !== set.token) {
+        return json({ error: "unknown set or bad token" }, 403);
+      }
+      const drafts = await getDecisionDrafts(cfg.decisionsFile, setId).catch(() => null);
+      return json({
+        drafts: drafts ?? { questions: {}, bulk: [], bulkLean: "", bulkNote: "", updatedAt: "" },
+      });
+    }
+    let body: { token?: unknown; drafts?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid drafts body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const parsedDrafts = validateDecisionDraftUpsert(body.drafts);
+    if (!parsedDrafts.ok) return json({ error: parsedDrafts.error }, 400);
+    const result = await upsertDecisionDrafts(cfg.decisionsFile, setId, parsedDrafts.value);
+    if (!result) return json({ error: "unknown set" }, 404);
+    await logDecisionEvents(
+      result.applied.map((qid) => {
+        const entry = result.drafts.questions[qid];
+        const ledgerId = qid.slice(0, qid.lastIndexOf("#")) || qid;
+        return {
+          setId,
+          type: "draft" as const,
+          questionRef: questionRefFor(set, ledgerId, qid),
+          payload: {
+            ...(entry?.opt ? { opt: entry.opt } : {}),
+            ...(entry?.opts ? { opts: entry.opts } : {}),
+            ...(entry?.ft ? { freeText: entry.ft.slice(0, 2000) } : {}),
+            ...(entry?.lean ? { lean: entry.lean } : {}),
+            ...(entry?.note ? { note: entry.note.slice(0, 2000) } : {}),
+          },
+        } satisfies DecisionEventInput;
+      }),
+    );
+    return json({ drafts: result.drafts, applied: result.applied, skipped: result.skipped });
   }
   const alertActionMatch = /^\/api\/alerts\/([\w-]+)\/(ack|close)$/.exec(path);
   if (req.method === "POST" && alertActionMatch) {
@@ -1786,6 +3822,54 @@ async function handler(req: Request): Promise<Response> {
         : json({ error: "alerts store unavailable" }, 503);
     }
   }
+  if (path === "/alerts/preferences" || path === "/api/alerts/preferences.json") {
+    // #3318: subscription preferences — per-class toggles, quiet
+    // hours, this-browser state, per-class test sends. Writes go
+    // through the existing /api/push/subscriptions upsert; this
+    // route only reads the stored subscriptions for the form.
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/alerts/preferences"
+        ? html(renderNotificationPreferences({ available: false, subscriptions: [] }, prov(), VAPID_PUBLIC_KEY))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const subscriptions = await store.listSubscriptions();
+      if (path === "/api/alerts/preferences.json")
+        return json({
+          available: true,
+          subscriptions: subscriptions.map(toPublicSubscription),
+          classes: NOTIFICATION_CLASSES,
+          defaults: NOTIFICATION_CLASS_DEFAULTS,
+        });
+      return html(renderNotificationPreferences({ available: true, subscriptions }, prov(), VAPID_PUBLIC_KEY));
+    } catch {
+      return path === "/alerts/preferences"
+        ? html(renderNotificationPreferences({ available: false, subscriptions: [] }, prov(), VAPID_PUBLIC_KEY))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+  }
+  if (path === "/notifications" || path === "/api/notifications.json") {
+    // #3319: the weekly sent-vs-acted roll-up over the send ledger.
+    // Same reachability as every dashboard page (the tailnet origin);
+    // the only alerts write surface stays the bearer-gated intake.
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/notifications"
+        ? html(renderNotifications({ available: false, rollup: null }, prov()))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const sends = await store.listSends();
+      const rollup = rollupNotificationSends(sends, new Date());
+      if (path === "/api/notifications.json") return json(rollup);
+      return html(renderNotifications({ available: true, rollup }, prov()));
+    } catch {
+      return path === "/notifications"
+        ? html(renderNotifications({ available: false, rollup: null }, prov()))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+  }
   if (path === "/api/health") {
     // #1267: prime first — health's answer must not depend on
     // request order. `sections` carries the structured diagnosis
@@ -1818,16 +3902,22 @@ async function handler(req: Request): Promise<Response> {
     // repository settings, work-item counts and GraphQL errors reach the
     // machine surface too, not only the rendered page.
     body.rfa = view.rfa;
+    // #3976: push health (journal + reconciler state) reaches the
+    // machine surface too, from the same assembly /health renders.
+    body.push = view.push;
     body.degraded = view.degraded;
     return json(body);
   }
 
+  const itemJsonMatch = /^\/api\/item\/(.+)\.json$/.exec(path);
   const itemMatch = /^\/item\/(.+)$/.exec(path);
-  if (itemMatch) {
+  const matchedItemPath = itemJsonMatch ?? itemMatch;
+  if (matchedItemPath) {
     // #2748: same guard as /discuss — JSON 400 on malformed encoding.
-    const id = decodePathSegment(itemMatch[1]);
+    const encodedId = matchedItemPath[1];
+    const id = decodePathSegment(encodedId);
     if (id === null) {
-      return json({ error: `malformed percent-encoding in path segment: ${itemMatch[1]}` }, 400);
+      return json({ error: `malformed percent-encoding in path segment: ${encodedId}` }, 400);
     }
     const [board, rows] = await Promise.all([source.board().catch(() => []), source.roadmap().catch(() => [])]);
     const roadmapRow = rows.find((r) => r.subject === id);
@@ -1836,6 +3926,13 @@ async function handler(req: Request): Promise<Response> {
       const title = subject.title;
       const links = subject.links;
       const refs = allRefs([subject]);
+      const activityRefs = [...new Set([id, ...refs].map((ref) => ref.replace(/^gh:/i, "")))];
+      const activityQuery = new URLSearchParams();
+      for (const ref of activityRefs) activityQuery.append("ref", ref);
+      const [itemEvents, itemGaps] = await Promise.all([
+        eventsStore.list({ refs: activityRefs }),
+        activityStore.gaps(),
+      ]);
       const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] =
         await Promise.all([
           source.items(refs).catch(() => new Map()),
@@ -1863,6 +3960,14 @@ async function handler(req: Request): Promise<Response> {
       // item page carries the status-request control for that pool item.
       const pooled = pool.find((p) => refs.includes(p.ref));
       const epicRollup = pooled?.kind === "Epic" ? buildEpicRollups(pool).get(pooled.ref) : undefined;
+      const dispatchStates = await readyAgentDispatchStates(items);
+      if (itemJsonMatch) {
+        return json({
+          subject,
+          linkedItems: [...items.values()],
+          dispatchStates,
+        });
+      }
       const extras = {
         dashComments,
         ...(roadmapRow ? { roadmapAnnotations } : {}),
@@ -1882,9 +3987,19 @@ async function handler(req: Request): Promise<Response> {
           : {}),
         ...(epicRollup ? { epicRollup } : {}),
         briefs,
+        ...(dispatchStates.length ? { dispatchStates } : {}),
+        activity: {
+          events: itemEvents,
+          globalHref: `/events?${activityQuery.toString()}`,
+          gaps: itemGaps,
+          coverage: ACTIVITY_SOURCE_COVERAGE,
+        },
       };
       return html(renderItem(title, id, links, items, comments, prov(), extras));
     }
+    // #4969 (Codex on PR #5283): an unresolved /api/item/<id>.json id
+    // gets the structured JSON 404, not the HTML page response.
+    if (itemJsonMatch) return notFoundResponse(path);
     return html(
       `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${esc(id)}</code></p>`,
       404,
@@ -1910,7 +4025,7 @@ async function fetchHandler(req: Request): Promise<Response> {
   // failure as an unsuccessful render.
   let res: Response;
   try {
-    res = await handler(req);
+    res = await dashboardResponseWithinDeadline(req, () => handler(req));
   } catch (err) {
     console.error(`aggregator: handler failed for ${req.method} ${req.url}:`, err);
     res = errorBoundaryResponse(new URL(req.url).pathname, err);
@@ -1931,12 +4046,32 @@ const servers = cfg.hosts.map((hostname) =>
   Bun.serve({
     hostname,
     port: cfg.port,
+    // Phase B §13.1: slow fragments (overview/board/queue renders) exceed
+    // Bun's 10s default idle timeout and the patch response gets killed
+    // mid-render; 60s gives the heavy contexts room without going unbounded.
+    idleTimeout: 60,
     fetch: fetchHandler,
   }),
 );
 
 for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
+}
+
+// Cross-process publishers get a separate loopback-only listener; never
+// add this port to PM_AGG_HOSTS or expose it through the Cloudflare tunnel.
+const freshnessIpcServer = Bun.serve({
+  hostname: "127.0.0.1",
+  port: cfg.freshnessPort,
+  fetch: createFreshnessIpcHandler(freshnessStore),
+});
+console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
+
+// #3976: start the anti-entropy loop in live mode — one pass now,
+// then the 5-minute cadence. Fixtures mode has no journal to reconcile.
+if (cfg.source === "live") {
+  void freshnessReconciler.reconcile().catch(() => undefined);
+  freshnessReconciler.start();
 }
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their
@@ -1962,4 +4097,53 @@ if (source.ingestSnapshots) {
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation
 // tick (live mode only, fail-soft — see src/alerts.ts).
-startAlertEngine(cfg);
+startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
+  const [
+    attention,
+    quota,
+    health,
+    actions,
+    comments,
+    needsDrewRaised,
+    decisionSets,
+    stackHealthDown,
+    stackHealthStates,
+    opencodeConfigText,
+  ] = await Promise.all([
+    attentionContext(),
+    source.quota().catch(() => emptyQuotaView()),
+    healthContext(false),
+    actionsStore.all().catch(() => []),
+    commentsStore.all().catch(() => []),
+    listOpenNeedsDrew(cfg.needsDrewFile).catch(() => []),
+    listOpenDecisionSets(cfg.decisionsFile).catch(() => []),
+    listStackHealthDown(cfg.stackHealthFile).catch(() => []),
+    readStackHealthStates(cfg.stackHealthFile).catch(() => ({})),
+    // #8882: the section-risk join reads the deployed config's route
+    // leaf sets; a missing/unreadable config yields no membership.
+    readFile(cfg.opencodeConfigFile, "utf8").catch(() => ""),
+  ]);
+  const drewActivity = [
+    ...actions
+      .filter((action) => action.author.kind === "drew")
+      .map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
+    ...comments
+      .filter((comment) => comment.author.kind === "drew")
+      .map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
+  ];
+  return {
+    attention: attention.view,
+    quota,
+    health,
+    drewActivity,
+    soleDoorPoolIds: deriveSoleDoorPoolIds(quota),
+    sectionPools: sectionPoolIdsFromConfig(
+      opencodeConfigText,
+      quota.pools.map((pool) => pool.id),
+    ),
+    needsDrewRaised,
+    decisionSets,
+    stackHealthDown,
+    stackHealthStates,
+  };
+});

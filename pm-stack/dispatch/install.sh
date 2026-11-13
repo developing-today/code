@@ -14,11 +14,24 @@
 #   supabase_url, supabase_service_role_key (rendered into
 #   ~/pm-stack/dispatch/.env, mode 600). Fleet Supabase is muse-dev2;
 #   the key's source of truth is Bitwarden
-#   `supabase.muse-dev2.service-role-key`. (The un-namespaced
-#   `supabase.service-role-key` in Bitwarden is the DELETED legacy
-#   muse-dev project's key — never use it; see code#5120.)
+#   `supabase.muse-dev2.service-role-key`. (The un-namespaced trio
+#   was flipped to muse-dev2 values at the 2026-10-30 cutover and
+#   renamed on 2026-11-04 to `supabase.legacy-muse-dev.*`; the
+#   DELETED legacy project's preserved key is
+#   `supabase.muse-dev.service-role-key` — never use it; see code#5120.)
 # - NOT in sops: DISPATCH_API_TOKEN lives in ~/secrets/dispatch.env
-#   (mode 600, laptop-only), which the unit also reads. This script
+#   (mode 600, laptop-only), which the unit also reads. Its by-name
+#   vault home is Bitwarden `pm-dispatch.api-token` (issue #5555) —
+#   a rotation updates both places and then restarts
+#   pm-dispatch.service: the unit reads this file only at start, so
+#   without a restart the service keeps serving the old token and
+#   rejects the new one. Recovery: if ~/secrets/dispatch.env is
+#   lost, restore DISPATCH_API_TOKEN from the Bitwarden item BEFORE
+#   running this script — when the file is absent the script
+#   generates a fresh token, which silently desyncs from the vault
+#   copy and from every client holding the saved token (they get
+#   401s) until the vault and the clients are updated to match.
+#   This script
 #   ensures that file exists and carries a generated
 #   DISPATCH_API_TOKEN when one is absent. SUPABASE_URL /
 #   SUPABASE_SERVICE_ROLE_KEY lines left in that file are stale: the
@@ -135,8 +148,8 @@ if [ "$CHANGED" -eq 1 ]; then
 
   cd "$DST"
   bun install --silent
-  echo "$SRC_HASH" > "$DST/.deploy-tree-hash"
-  echo "$SRC_INPUTS" > "$DST/.deploy-inputs-hash"
+  echo "$SRC_HASH" >"$DST/.deploy-tree-hash"
+  echo "$SRC_INPUTS" >"$DST/.deploy-inputs-hash"
 fi
 
 systemctl --user daemon-reload

@@ -1,0 +1,37 @@
+name: deploy flake checks
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Issue #7322: the deploy-list and deploy-list-malformed flake checks
+# (lib/default.nix, root flake checks) were only ever executed by the
+# nix-ci schedule / full flake check on main, so a PR touching
+# pkgs/deploy/** or lib/default.nix could break them and still merge
+# green. This dedicated basic-tier workflow runs exactly those two
+# checks on such PRs — a targeted build of two runCommandLocal checks,
+# never a full flake check on a PR (ci-policy.md class 4).
+#
+# No merge_group trigger: main has no merge queue (Drew ruling,
+# 2026-11-08; see .github/ci-policy.md).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-flake-checks:
+    name: "basic: deploy flake checks (deploy-list + deploy-list-malformed)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - name: Build deploy-list and deploy-list-malformed flake checks
+        run: |
+          echo "Executing flake checks: deploy-list, deploy-list-malformed"
+          nix build             ".#checks.x86_64-linux.deploy-list"             ".#checks.x86_64-linux.deploy-list-malformed"             --print-build-logs

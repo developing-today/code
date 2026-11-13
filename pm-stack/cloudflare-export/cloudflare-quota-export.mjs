@@ -180,7 +180,11 @@ export function classifyR2(groups) {
     else if (R2_FREE.has(action)) continue;
     else unclassified.push(action);
   }
-  return { classA, classB, unclassified, nonbillable };
+  // Saturation (#6880): a result at the query limit may exclude
+  // further operation groups, so both class totals are lower bounds;
+  // the r2-storage discipline, applied to the operations dataset.
+  const saturated = groups.length >= R2_OPERATIONS_GROUP_LIMIT;
+  return { classA, classB, unclassified, nonbillable, saturated };
 }
 
 /** Fold KV action types onto the card's two metrics: reads, and
@@ -278,22 +282,55 @@ export function parseGraphqlUsage(
   const push = (id, used, unit, extra = {}) =>
     metrics.push({ id, used, unit, source: src, ...extra });
 
+  // Saturation discipline (#6880): every grouped dataset in
+  // GRAPHQL_QUERY carries an explicit limit; a result AT the limit
+  // may be truncated, so the affected metrics are flagged
+  // lowerBound — the r2-storage pattern below, applied to all of
+  // them. (The *Saturated locals are computed only after the
+  // fail-closed readers have validated the groups are arrays.)
   const workers = account?.workersInvocationsAdaptive;
-  push("workers-requests", firstSum(workers, "requests", "workers"), "count");
-  push("workers-cpu-ms", Math.round(firstSum(workers, "cpuTimeUs", "workers") / 1000), "ms");
+  const workersRequests = firstSum(workers, "requests", "workers");
+  const workersCpuMs = Math.round(firstSum(workers, "cpuTimeUs", "workers") / 1000);
+  const workersSaturated = workers.length >= WORKERS_GROUP_LIMIT;
+  push("workers-requests", workersRequests, "count", {
+    ...(workersSaturated ? { lowerBound: true } : {}),
+  });
+  push("workers-cpu-ms", workersCpuMs, "ms", {
+    ...(workersSaturated ? { lowerBound: true } : {}),
+  });
 
-  const kv = foldKv(account?.kvOperationsAdaptiveGroups);
-  push("kv-reads", kv.reads, "count");
-  push("kv-writes", kv.writes, "count");
+  const kvGroups = account?.kvOperationsAdaptiveGroups;
+  const kv = foldKv(kvGroups);
+  const kvSaturated = kvGroups.length >= KV_GROUP_LIMIT;
+  push("kv-reads", kv.reads, "count", {
+    ...(kvSaturated ? { lowerBound: true } : {}),
+  });
+  push("kv-writes", kv.writes, "count", {
+    ...(kvSaturated ? { lowerBound: true } : {}),
+  });
 
-  push("d1-rows-read", firstSum(account?.d1AnalyticsAdaptiveGroups, "rowsRead", "d1"), "rows");
-  push("d1-rows-written", firstSum(account?.d1AnalyticsAdaptiveGroups, "rowsWritten", "d1"), "rows");
+  const d1Groups = account?.d1AnalyticsAdaptiveGroups;
+  const d1Saturated = Array.isArray(d1Groups) && d1Groups.length >= D1_GROUP_LIMIT;
+  push("d1-rows-read", firstSum(d1Groups, "rowsRead", "d1"), "rows", {
+    ...(d1Saturated ? { lowerBound: true } : {}),
+  });
+  push("d1-rows-written", firstSum(d1Groups, "rowsWritten", "d1"), "rows", {
+    ...(d1Saturated ? { lowerBound: true } : {}),
+  });
 
-  push("queues-ops", firstSum(account?.queueMessageOperationsAdaptiveGroups, "billableOperations", "queues"), "ops");
+  const queueGroups = account?.queueMessageOperationsAdaptiveGroups;
+  const queuesSaturated = Array.isArray(queueGroups) && queueGroups.length >= QUEUES_GROUP_LIMIT;
+  push("queues-ops", firstSum(queueGroups, "billableOperations", "queues"), "ops", {
+    ...(queuesSaturated ? { lowerBound: true } : {}),
+  });
 
   const r2 = classifyR2(account?.r2OperationsAdaptiveGroups);
-  push("r2-class-a", r2.classA, "ops");
-  push("r2-class-b", r2.classB, "ops");
+  push("r2-class-a", r2.classA, "ops", {
+    ...(r2.saturated ? { lowerBound: true } : {}),
+  });
+  push("r2-class-b", r2.classB, "ops", {
+    ...(r2.saturated ? { lowerBound: true } : {}),
+  });
 
   const storageGroups = account?.r2StorageAdaptiveGroups;
   if (!Array.isArray(storageGroups)) {
@@ -326,10 +363,17 @@ export function parseGraphqlUsage(
   });
 
   // Neurons are a fractional measurement (fixture total 4114515.31), not a request count: plain-decimal strings stay valid here.
-  const neuronsTotal = firstSum(account?.aiInferenceAdaptiveGroups, "totalNeurons", "ai", { integerString: false });
+  const aiGroups = account?.aiInferenceAdaptiveGroups;
+  const neuronsTotal = firstSum(aiGroups, "totalNeurons", "ai", { integerString: false });
+  const aiSaturated = aiGroups.length >= AI_NEURONS_GROUP_LIMIT;
   const daysElapsed = Math.max(1, (now - cycleStart) / 86_400_000);
   push("workers-ai-neurons", Math.round(neuronsTotal / daysElapsed), "neurons", {
-    detail: `per-day average over the cycle to date; cycle total ${Math.round(neuronsTotal)} neurons`,
+    ...(aiSaturated ? { lowerBound: true } : {}),
+    detail:
+      `per-day average over the cycle to date; cycle total ${Math.round(neuronsTotal)} neurons` +
+      (aiSaturated
+        ? ` — group count hit the ${AI_NEURONS_GROUP_LIMIT} query limit, so the cycle total (and this average) is a LOWER BOUND`
+        : ""),
   });
 
   // The average above stays for card compatibility; the per-day alert
@@ -435,6 +479,18 @@ function scopeError(what, status) {
 // GraphQL Analytics API's maximum limit; parseGraphqlUsage flags the
 // total as a lower bound if a result ever saturates it.
 export const R2_STORAGE_GROUP_LIMIT = 10000;
+
+// The remaining GRAPHQL_QUERY group limits (#6880). Each dataset's
+// parser flags its metrics lowerBound when a result reaches its
+// limit — the same discipline as r2-storage above — so no at-limit
+// sum is ever published as an exact reading. Keep these in step with
+// the `limit:` arguments in GRAPHQL_QUERY below.
+export const WORKERS_GROUP_LIMIT = 100;
+export const KV_GROUP_LIMIT = 100;
+export const D1_GROUP_LIMIT = 100;
+export const QUEUES_GROUP_LIMIT = 100;
+export const R2_OPERATIONS_GROUP_LIMIT = 1000;
+export const AI_NEURONS_GROUP_LIMIT = 100;
 
 const GRAPHQL_QUERY = `query($a: string!, $s: Time!, $e: Time!) {
   viewer {
@@ -610,17 +666,60 @@ async function writeOutputs(outDir, doc) {
   await appendFile(join(outDir, "history.jsonl"), `${JSON.stringify(doc)}\n`, "utf8");
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  const opt = (name, fallback) => {
-    const i = args.indexOf(name);
-    return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
+/** Strict single-pass argv parsing (#3469). Every value-taking flag must be
+ * followed by a value token that is not itself a flag: a flag token (or
+ * nothing) where a value belongs is a usage error naming the flag, raised
+ * before any directory is created or any API call is made. The parse is
+ * single-pass — each value token is consumed once — so a flag token can
+ * never double as both a value and a flag. Unknown flags and bare
+ * positionals are usage errors too: silently ignoring them is what used
+ * to redirect output into a directory named after a flag. Throws
+ * ExportError("usage", 2); main() turns it into stderr + exit 2. */
+const VALUE_FLAGS = new Set(["--out-dir", "--account-id"]);
+
+function usageError(message) {
+  throw new ExportError("usage", 2, message);
+}
+
+export function parseArgs(argv) {
+  const values = {};
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    if (!VALUE_FLAGS.has(token)) {
+      if (token.startsWith("--")) usageError(`unknown flag ${JSON.stringify(token)}`);
+      else usageError(`unexpected argument ${JSON.stringify(token)} (this exporter takes only --flag value pairs)`);
+    }
+    const value = argv[i + 1];
+    if (typeof value !== "string" || value === "" || value.startsWith("--")) {
+      usageError(
+        `${token} requires a value that is not another flag (got ${value === undefined ? "nothing" : JSON.stringify(value)})`,
+      );
+    }
+    values[token] = value;
+    i++; // consume the value: no token is read twice
+  }
+  return {
+    outDir: values["--out-dir"] ?? join(homedir(), "atlas", "cloudflare-export"),
+    accountId: values["--account-id"],
   };
-  const outDir = opt("--out-dir", join(homedir(), "atlas", "cloudflare-export"));
+}
+
+async function main() {
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    if (error instanceof ExportError && error.status === "usage") {
+      console.error(`cloudflare-quota-export: ${error.message}; refusing to run, no output written`);
+      process.exit(2);
+    }
+    throw error;
+  }
+  const outDir = options.outDir;
   try {
     const doc = await run({
       token: process.env.CLOUDFLARE_API_TOKEN,
-      accountId: opt("--account-id", undefined),
+      accountId: options.accountId,
     });
     await writeOutputs(outDir, doc);
     console.log(JSON.stringify({ status: doc.status, measuredAt: doc.measuredAt, metrics: doc.metrics.length, outDir }));

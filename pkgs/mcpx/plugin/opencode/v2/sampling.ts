@@ -37,16 +37,13 @@
  * second answer) leaves the question open for the next poll or
  * another answerer, and never fails the session or setup.
  */
-import type { DaemonClient } from "../mcpx/daemon.ts";
+import type { DaemonClient } from "../../core/daemon.ts";
 
 /** The slice of the daemon client the watcher uses. */
 export type SamplingDaemonLike = Pick<DaemonClient, "pendingElicitations" | "answer">;
 
 /** ctx.generate.text, structurally: prompt in, text out. */
-export type GenerateTextLike = (input: {
-  prompt: string;
-  model?: string;
-}) => Promise<unknown>;
+export type GenerateTextLike = (input: { prompt: string; model?: string }) => Promise<unknown>;
 
 /** One broker row from GET /v1/elicit, the fields sampling reads. */
 export type BrokerRow = {
@@ -126,10 +123,7 @@ export function createMessageResult(text: string, model: string): Record<string,
 }
 
 const generateText = async (generate: GenerateTextLike, prompt: string): Promise<string> => {
-  const out = (await generate({ prompt })) as
-    | { text?: unknown; data?: { text?: unknown } }
-    | null
-    | undefined;
+  const out = (await generate({ prompt })) as { text?: unknown; data?: { text?: unknown } } | null | undefined;
   const text = typeof out?.text === "string" ? out.text : out?.data?.text;
   if (typeof text !== "string") throw new Error("generate.text returned no text");
   return text;
@@ -183,10 +177,7 @@ export function createSamplingAnswerer(deps: SamplingDeps): {
  * the runtime supports it so a forgotten stop can never keep a host
  * process alive; stop() is still the contract (setup's cleanup).
  */
-export function startSamplingWatcher(
-  deps: SamplingDeps,
-  intervalMs = 5000,
-): { stop: () => void } {
+export function startSamplingWatcher(deps: SamplingDeps, intervalMs = 5000): { stop: () => void } {
   const answerer = createSamplingAnswerer(deps);
   let stopped = false;
   const tick = (): void => {

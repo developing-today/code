@@ -43,22 +43,22 @@ DATE="$(date +%F)"
 SKIP_DEDUPE=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --date)
-      DATE="$2"
-      shift 2
-      ;;
-    --skip-dedupe)
-      SKIP_DEDUPE=1
-      shift
-      ;;
-    --*)
-      echo "atlas-backup: unknown argument: $1" >&2
-      exit 2
-      ;;
-    *)
-      DATE="$1"
-      shift
-      ;;
+  --date)
+    DATE="$2"
+    shift 2
+    ;;
+  --skip-dedupe)
+    SKIP_DEDUPE=1
+    shift
+    ;;
+  --*)
+    echo "atlas-backup: unknown argument: $1" >&2
+    exit 2
+    ;;
+  *)
+    DATE="$1"
+    shift
+    ;;
   esac
 done
 
@@ -91,8 +91,8 @@ early_fail() {
 }
 
 # --- DATE validation (pm-dashboard-backup #989 pattern) -------------------
-if [[ ! "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
-  || [ "$(date -d "$DATE" +%F 2>/dev/null)" != "$DATE" ]; then
+if [[ ! $DATE =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||
+  [ "$(date -d "$DATE" +%F 2>/dev/null)" != "$DATE" ]; then
   echo "atlas-backup: invalid DATE '$DATE' - expected a real calendar date as YYYY-MM-DD" >&2
   exit 1
 fi
@@ -141,11 +141,11 @@ for s in json.load(sys.stdin):
 R2_ACCESS_KEY_ID="$(bws_get cloudflare.r2-backups-access-key-id)"
 R2_SECRET_ACCESS_KEY="$(bws_get cloudflare.r2-backups-secret-access-key)"
 R2_ENDPOINT="$(bws_get cloudflare.r2-endpoint)"
-[ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ] && [ -n "$R2_ENDPOINT" ] \
-  || early_fail "R2 credentials incomplete in Bitwarden"
+[ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ] && [ -n "$R2_ENDPOINT" ] ||
+  early_fail "R2 credentials incomplete in Bitwarden"
 case "$R2_ENDPOINT" in
-  http://*|https://*) ;;
-  *) R2_ENDPOINT="https://$R2_ENDPOINT" ;;
+http://* | https://*) ;;
+*) R2_ENDPOINT="https://$R2_ENDPOINT" ;;
 esac
 R2_ENDPOINT="${R2_ENDPOINT%/}"
 # An env-configured rclone remote for R2 (no rclone.conf edit needed).
@@ -161,12 +161,22 @@ export RCLONE_CONFIG_R2BAK_NO_CHECK_BUCKET="true"
 
 # --- snapshot + probe -------------------------------------------------------
 FREE="$(python3 -c 'import shutil,sys; print(shutil.disk_usage(sys.argv[1]).free)' "$HOME/atlas/turso-atlas/data")"
-[ "$FREE" -ge $((5 * 1024 * 1024 * 1024)) ] \
-  || early_fail "only $FREE bytes free in atlas data dir"
+[ "$FREE" -ge $((5 * 1024 * 1024 * 1024)) ] ||
+  early_fail "only $FREE bytes free in atlas data dir"
 
 STAGE="$HOME/atlas/turso-atlas/data/.backup-staging/$DATE"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
+# Bound the staging tree (darwin-nix#373): the EXIT trap removes
+# today's STAGE on every handled exit, but a SIGKILLed run (OOM,
+# service timeout) leaves its date dir behind and later runs only
+# ever touch their own date. This run holds the instance lock, so
+# remove every OTHER date's staging dir here: a killed run leaves
+# at most one stale dir, reclaimed by the next run.
+for stale in "$HOME/atlas/turso-atlas/data/.backup-staging"/*; do
+  [ -e "$stale" ] || continue
+  [ "$stale" = "$STAGE" ] || rm -rf "$stale"
+done
 SNAP="$STAGE/atlas-$DATE.db"
 sqlite3 "$DB" ".backup '$SNAP'" || early_fail "sqlite3 .backup failed"
 
@@ -175,7 +185,8 @@ MANIFEST="$STAGE/atlas-$DATE.manifest.json"
 # Integrity check + row counts on the snapshot, deterministic gzip,
 # hashes, and the manifest — one python step (the old runner's probe,
 # unchanged in substance).
-PROBE="$(python3 - "$SNAP" "$GZ" "$MANIFEST" "$DATE" "$DB" <<'PYEOF'
+PROBE="$(
+  python3 - "$SNAP" "$GZ" "$MANIFEST" "$DATE" "$DB" <<'PYEOF'
 import gzip, hashlib, json, os, shutil, sqlite3, sys
 from datetime import datetime, timezone
 
@@ -235,7 +246,8 @@ COUNTS_CSV="$(printf '%s' "$PROBE" | cut -d' ' -f3)"
 # --- dedupe against the last filed snapshot ---------------------------------
 # Only a true OK verdict in the log counts as filed (the old runner's
 # last_filed rule: a PARTIAL line's leg summary must never read as filed).
-LOGINFO="$(python3 - "$LOG" <<'PYEOF'
+LOGINFO="$(
+  python3 - "$LOG" <<'PYEOF'
 import os, sys
 sha, dates = "", []
 if os.path.isfile(sys.argv[1]):
@@ -266,15 +278,30 @@ short_err() { printf '%s' "$1" | head -1 | tr '|' '/' | cut -c1-200; }
 LEG_LAPTOP="ok"
 LEG_ERR=""
 leg_laptop() {
-  mkdir -p "$OUTDIR" || { LEG_ERR="mkdir $OUTDIR failed"; return 1; }
-  cp "$GZ" "$OUTDIR/.atlas.tmp" || { LEG_ERR="copy to laptop staging failed"; return 1; }
+  mkdir -p "$OUTDIR" || {
+    LEG_ERR="mkdir $OUTDIR failed"
+    return 1
+  }
+  cp "$GZ" "$OUTDIR/.atlas.tmp" || {
+    LEG_ERR="copy to laptop staging failed"
+    return 1
+  }
   local got
   got="$(sha256sum "$OUTDIR/.atlas.tmp" | cut -d' ' -f1)"
-  [ "$got" = "$DIGEST" ] || { LEG_ERR="laptop sha mismatch: $got != $DIGEST"; return 1; }
-  mv "$OUTDIR/.atlas.tmp" "$OUTDIR/atlas-$DATE.db.gz" \
-    || { LEG_ERR="laptop rename failed"; return 1; }
-  cp "$MANIFEST" "$OUTDIR/atlas-$DATE.manifest.json" \
-    || { LEG_ERR="laptop manifest copy failed"; return 1; }
+  [ "$got" = "$DIGEST" ] || {
+    LEG_ERR="laptop sha mismatch: $got != $DIGEST"
+    return 1
+  }
+  mv "$OUTDIR/.atlas.tmp" "$OUTDIR/atlas-$DATE.db.gz" ||
+    {
+      LEG_ERR="laptop rename failed"
+      return 1
+    }
+  cp "$MANIFEST" "$OUTDIR/atlas-$DATE.manifest.json" ||
+    {
+      LEG_ERR="laptop manifest copy failed"
+      return 1
+    }
 }
 if ! leg_laptop; then LEG_LAPTOP="FAIL: $(short_err "$LEG_ERR")"; fi
 
@@ -282,12 +309,21 @@ LEG_R2="ok"
 LEG_ERR=""
 leg_r2() {
   local dest="r2bak:$R2_BUCKET/$R2_PREFIX/$DATE/atlas-$DATE.db.gz"
-  rclone copyto "$GZ" "$dest" 2>&1 || { LEG_ERR="R2 upload failed"; return 1; }
+  rclone copyto "$GZ" "$dest" 2>&1 || {
+    LEG_ERR="R2 upload failed"
+    return 1
+  }
   local got
   got="$(rclone cat "$dest" 2>/dev/null | sha256sum | cut -d' ' -f1)"
-  [ "$got" = "$DIGEST" ] || { LEG_ERR="R2 sha mismatch: got $got"; return 1; }
-  rclone copyto "$MANIFEST" "r2bak:$R2_BUCKET/$R2_PREFIX/$DATE/atlas-$DATE.manifest.json" 2>&1 \
-    || { LEG_ERR="R2 manifest upload failed"; return 1; }
+  [ "$got" = "$DIGEST" ] || {
+    LEG_ERR="R2 sha mismatch: got $got"
+    return 1
+  }
+  rclone copyto "$MANIFEST" "r2bak:$R2_BUCKET/$R2_PREFIX/$DATE/atlas-$DATE.manifest.json" 2>&1 ||
+    {
+      LEG_ERR="R2 manifest upload failed"
+      return 1
+    }
 }
 if ! leg_r2; then LEG_R2="FAIL: $(short_err "$LEG_ERR")"; fi
 
@@ -295,12 +331,21 @@ LEG_DRIVE="ok"
 LEG_ERR=""
 leg_drive() {
   local dest="drive:$DRIVE_DIR/atlas-$DATE.db.gz"
-  rclone copyto "$GZ" "$dest" 2>&1 || { LEG_ERR="Drive upload failed"; return 1; }
+  rclone copyto "$GZ" "$dest" 2>&1 || {
+    LEG_ERR="Drive upload failed"
+    return 1
+  }
   local got
   got="$(rclone cat "$dest" 2>/dev/null | sha256sum | cut -d' ' -f1)"
-  [ "$got" = "$DIGEST" ] || { LEG_ERR="Drive sha mismatch: got $got"; return 1; }
-  rclone copyto "$MANIFEST" "drive:$DRIVE_DIR/atlas-$DATE.manifest.json" 2>&1 \
-    || { LEG_ERR="Drive manifest upload failed"; return 1; }
+  [ "$got" = "$DIGEST" ] || {
+    LEG_ERR="Drive sha mismatch: got $got"
+    return 1
+  }
+  rclone copyto "$MANIFEST" "drive:$DRIVE_DIR/atlas-$DATE.manifest.json" 2>&1 ||
+    {
+      LEG_ERR="Drive manifest upload failed"
+      return 1
+    }
 }
 if ! leg_drive; then LEG_DRIVE="FAIL: $(short_err "$LEG_ERR")"; fi
 
@@ -322,10 +367,10 @@ if [ "$LEG_R2" = "ok" ]; then
   if subs="$(rclone lsf --dirs-only "r2bak:$R2_BUCKET/$R2_PREFIX" 2>/dev/null)"; then
     for day in $subs; do
       day="${day%/}"
-      if [[ "$day" =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]] \
-        && ! printf '%s\n' "$KEEP_SET" | grep -qx "$day"; then
-        rclone purge "r2bak:$R2_BUCKET/$R2_PREFIX/$day" >/dev/null 2>&1 \
-          || echo "atlas-backup: WARN R2 rotation failed for $day" >&2
+      if [[ $day =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]] &&
+        ! printf '%s\n' "$KEEP_SET" | grep -qx "$day"; then
+        rclone purge "r2bak:$R2_BUCKET/$R2_PREFIX/$day" >/dev/null 2>&1 ||
+          echo "atlas-backup: WARN R2 rotation failed for $day" >&2
       fi
     done
   else
@@ -335,18 +380,18 @@ fi
 
 if [ "$LEG_DRIVE" = "ok" ]; then
   if files="$(rclone lsf "drive:$DRIVE_DIR" 2>/dev/null)"; then
-    keep_names="$(printf '%s\n' "$files" | grep -E '^atlas-20[0-9]{2}-[0-9]{2}-[0-9]{2}\.db\.gz$' \
-      | sort -r | head -n "$KEEP_DRIVE")"
+    keep_names="$(printf '%s\n' "$files" | grep -E '^atlas-20[0-9]{2}-[0-9]{2}-[0-9]{2}\.db\.gz$' |
+      sort -r | head -n "$KEEP_DRIVE")"
     for name in $files; do
       case "$name" in
-        atlas-*.db.gz)
-          if ! printf '%s\n' "$keep_names" | grep -qx "$name"; then
-            rclone deletefile "drive:$DRIVE_DIR/$name" >/dev/null 2>&1 \
-              || echo "atlas-backup: WARN Drive rotation failed for $name" >&2
-            rclone deletefile "drive:$DRIVE_DIR/${name%.db.gz}.manifest.json" >/dev/null 2>&1 \
-              || true
-          fi
-          ;;
+      atlas-*.db.gz)
+        if ! printf '%s\n' "$keep_names" | grep -qx "$name"; then
+          rclone deletefile "drive:$DRIVE_DIR/$name" >/dev/null 2>&1 ||
+            echo "atlas-backup: WARN Drive rotation failed for $name" >&2
+          rclone deletefile "drive:$DRIVE_DIR/${name%.db.gz}.manifest.json" >/dev/null 2>&1 ||
+            true
+        fi
+        ;;
       esac
     done
   else

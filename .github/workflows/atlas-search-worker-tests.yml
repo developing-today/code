@@ -1,0 +1,60 @@
+name: atlas-search worker tests
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Test verification for pkgs/atlas-search/worker (#7683).
+#
+# The atlas-search cache Worker's vitest suite — pkgs/atlas-search/
+# worker/test/ (key.test.ts: query canonicalisation + the DO cache-key
+# digest oracle; space.test.ts: validateEmbed embedding-space pins;
+# worker.test.ts: auth gate, DO cache hit, the #6937 whitespace-query
+# and #6982 null-search-response regressions) — was run by no
+# workflow, flake check, or justfile recipe, only by hand via npm test.
+#
+# This workflow runs the suite (npm ci + npm test = vitest with
+# @cloudflare/vitest-pool-workers) on pushes to main that touch
+# pkgs/atlas-search/worker/ and on dispatch, following the house
+# pattern for test workflows (id-hosted-worker-tests.yml). Main tier
+# only: not a merge gate.
+#
+# The run step first fails if any suite file or the package manifest
+# or lockfile is missing, so a green run can never be a silently
+# skipped suite.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/atlas-search/worker/**"
+      - ".github/workflows/atlas-search-worker-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-search-worker-tests-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  worker-tests:
+    name: "full (main tier): atlas-search worker vitest suite"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Run the atlas-search worker vitest suite
+        working-directory: pkgs/atlas-search/worker
+        run: |
+          for f in test/key.test.ts test/space.test.ts test/worker.test.ts package.json package-lock.json; do
+            if [ ! -f "$f" ]; then
+              echo "::error::pkgs/atlas-search/worker/$f is missing — the worker suite was not run."
+              exit 1
+            fi
+          done
+          npm ci
+          npm test

@@ -18,7 +18,7 @@ import { navLinks } from "../src/render.ts";
 
 const SRC = join(import.meta.dir, "..", "src");
 const serverSource = readFileSync(join(SRC, "server.ts"), "utf8");
-const renderSource = readFileSync(join(SRC, "render.ts"), "utf8");
+const renderSource = readFileSync(join(SRC, "ui.css"), "utf8") + "\n" + readFileSync(join(SRC, "render.ts"), "utf8");
 
 /** The CSS rule body for a selector in the stylesheet string. */
 function cssRule(selector: string): string {
@@ -36,8 +36,10 @@ function serverPaths(): { exact: string[]; prefixes: string[] } {
 }
 
 /** Routes that are not pages a person navigates to: JSON twins, POST
- * endpoints, datastar fragments, static assets, and the /board alias. */
-const NON_PAGE = /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$|^\/manifest\.webmanifest$/;
+ * endpoints, datastar fragments, static assets, the /board alias, and
+ * the /freshness/stream SSE endpoint (machine-consumed, never navigated to). */
+const NON_PAGE =
+  /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$|^\/manifest\.webmanifest$|^\/quota\/refresh$|^\/freshness\/stream$/;
 
 describe("the manifest groups every page (#1135)", () => {
   test("every page names one of PAGE_GROUPS, and groups have no page-less id", () => {

@@ -293,6 +293,23 @@ func (b mcpBackend) execOptions(ctx context.Context, timeoutSec int) execsvc.Opt
 	return opts
 }
 
+// hookAdviceText renders the retained hook frames a prompt hook left
+// on the result — its advice, or the warning that no provider could
+// answer — one line per frame, the same selection reportHooks makes
+// for the CLI text path. Script hooks carry neither field and render
+// nothing.
+func hookAdviceText(res execsvc.Result) string {
+	var lines []string
+	for _, f := range res.Hooks {
+		if f.Advice != "" {
+			lines = append(lines, "hook advice ("+f.Phase+"): "+f.Advice)
+		} else if f.Error != "" {
+			lines = append(lines, "hook warning ("+f.Phase+"): "+f.Error)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // renderExec turns a script's result into mcpx_exec's tool result. Shared by
 // the direct path and the interruptible one (serve_ask.go), so a script
 // answered inline renders exactly like one that was never asked anything.
@@ -305,18 +322,27 @@ func renderExec(res execsvc.Result) (string, error) {
 	}
 	sb.WriteString(res.Stdout)
 	text := strings.TrimRight(sb.String(), "\n")
+	// Prompt-hook advice is the hook's sole output, and an MCP caller
+	// has no stderr for it to ride on (reportHooks' channel): without
+	// this the model runs and its answer silently disappears on both
+	// the direct and the interruptible path (Codex review, PR #9021).
+	hooks := hookAdviceText(res)
 	if res.Error != "" {
+		parts := []string{res.Error}
 		if text != "" {
-			return "", fmt.Errorf("%s\n\n%s", res.Error, text)
+			parts = append(parts, text)
 		}
-		return "", errors.New(res.Error)
+		if hooks != "" {
+			parts = append(parts, hooks)
+		}
+		return "", errors.New(strings.Join(parts, "\n\n"))
 	}
 	// A hook may have replaced the result after the script ran -- an
 	// onSuccess transform, or an onError recovery for a script that
 	// printed nothing. res.Result then no longer matches what stdout
 	// parses to, and the replacement is the outcome the caller must
 	// see; the raw stdout stays available after it.
-	if res.Result != nil {
+	if res.Result != nil || res.ResultPresent {
 		if b, merr := json.Marshal(res.Result); merr == nil {
 			fromStdout := false
 			if trimmed := strings.TrimSpace(res.Stdout); trimmed != "" {
@@ -334,6 +360,13 @@ func renderExec(res execsvc.Result) (string, error) {
 					text = string(b)
 				}
 			}
+		}
+	}
+	if hooks != "" {
+		if text != "" {
+			text += "\n\n" + hooks
+		} else {
+			text = hooks
 		}
 	}
 	if text == "" && len(res.Artifacts) == 0 {
@@ -360,7 +393,7 @@ func (b mcpBackend) Log(ctx context.Context, since, level, event string, limit i
 	if err != nil {
 		return "", err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	if limit <= 0 {
 		limit = 50
 	}
@@ -387,10 +420,10 @@ func (b mcpBackend) Stats(ctx context.Context, dimension string) (string, error)
 	if dimension == "" {
 		dimension = "calls"
 	}
-	t, err := tuiSource{app: b.app}.Stats(ctx, dimension)
+	t, err := tuiSource(b).Stats(ctx, dimension)
 	if err != nil {
 		if dimension == "instances" {
-			t, err = tuiSource{app: b.app}.Instances(ctx)
+			t, err = tuiSource(b).Instances(ctx)
 		}
 		if err != nil {
 			return "", err
@@ -522,6 +555,13 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	// below reads -- so neither surface's cadence changes.
 	if a.daemonStore != nil {
 		srv.TaskStore = a.daemonStore
+		// Retention follows the same settings the daemon's taskStore()
+		// reads on /v1 access (#6247): without this, a tasks.ttl /
+		// tasks.maxAge change made through /v1/settings never reached
+		// the MCP surface's cached store pointer.
+		srv.TaskRetention = func() (time.Duration, time.Duration) {
+			return a.Settings().Duration("tasks.ttl"), a.Settings().Duration("tasks.maxAge")
+		}
 	} else {
 		// A standalone server (mcpx serve) keeps a private store;
 		// wire its audit seam to the durable log or its task
@@ -682,11 +722,6 @@ func unspecifiedHost(h string) bool {
 	return ip != nil && ip.IsUnspecified()
 }
 
-func writeJSONResponse(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
-}
-
 // adapterTools turns declarations into MCP tools.
 //
 // prefixed names each tool <adapter>_<tool>, as mcpx's own tools/list must
@@ -753,24 +788,6 @@ func renderAdapterResult(r *adapter.Result) string {
 		return "(no output)"
 	}
 	return b.String()
-}
-
-// runInline runs a snippet and collects what it printed.
-//
-// It goes through the same runScript the exec command uses rather than a
-// parallel path, because two ways to run a script is two sets of bugs, and
-// the one nobody runs by hand is the one that rots.
-func (a *App) runInline(ctx context.Context, source string, out interface {
-	Write([]byte) (int, error)
-}) error {
-	// The redirection is set and restored rather than done on a copy. An App
-	// holds a sync.Once, and copying one copies the Once -- which vet catches
-	// and which would otherwise mean the clone silently re-resolved every
-	// setting from scratch.
-	prevOut, prevMachine := a.stdoutOverride, a.machineOutput
-	a.stdoutOverride, a.machineOutput = out, true
-	defer func() { a.stdoutOverride, a.machineOutput = prevOut, prevMachine }()
-	return a.runScript(ctx, []string{source}, true)
 }
 
 func firstLine(s string) string {

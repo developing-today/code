@@ -16,7 +16,16 @@ around it.
 
 ### The contract
 
-- **stdout is the result; stderr is diagnostics.** Use the `log`
+- **A snippet's final expression is its result; otherwise stdout
+  is.** An `mcpx exec` snippet whose last top-level statement is an
+  expression reports that expression's value as the result
+  (CODE-19); a snippet that prints its answer, or one whose final
+  expression is `undefined`, follows the stdout rule instead:
+  stdout is the result, stderr is diagnostics. Snippets with a
+  default or selected named export, and file scripts, keep the
+  entry-point rule and are not rewritten. Under the stdout rule
+  the structured result is populated only when stdout parses as
+  JSON; plain-text stdout remains stdout. Use the `log`
   helper rather than `console.error` for diagnostics:
   `log.info("fetched {count} pages", { count: 3 })` — a message
   may carry `{placeholders}` filled from the attributes, and
@@ -88,9 +97,11 @@ writer hits first:
   properties — that Node itself runs fine once types are
   transformed. An `enum` in a script is guarded by a test
   (`TestNodeRunsNonErasableTypeScript`), not a limitation.
-- **Typechecking is Deno-only.** `--typecheck` /
-  `script.typecheck` runs the check (via `deno check`) before
-  the run and only applies when Deno is the runtime.
+- **Typechecking is Deno-only.** `--typecheck` / `script.typecheck`
+  remain accepted as legacy spellings for `--script-check` /
+  `script.check`. `types` resolves imports and checks types with `deno check`,
+  and `strict` also checks declaration files. The old value `on` means `types`.
+  Non-Deno runtimes warn and continue because they strip types rather than checking them.
 
 ### Authority
 

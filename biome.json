@@ -46,6 +46,9 @@
     }
   },
   "css": {
+    "parser": {
+      "tailwindDirectives": true
+    },
     "formatter": {
       "enabled": true,
       "indentStyle": "space",
@@ -60,5 +63,11 @@
       "quoteStyle": "double",
       "semicolons": "always"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["pm-stack/aggregator/src/ui.css"],
+      "formatter": { "enabled": false }
+    }
+  ]
 }

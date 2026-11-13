@@ -27,7 +27,11 @@ if [ "$SRC" != "$EXPECTED_SRC" ]; then
 fi
 STATE_DIR="$HOME/.local/state/pm-aggregator"
 SOPS="$HOME/secrets/pm-stack.sops.yaml"
-UNIT_SRC="$SRC/../systemd/pm-aggregator.service"
+# Resolve the unit against the checkout root via the logical parent of
+# $SRC: "$SRC/../systemd" would be resolved by the kernel through the
+# package dir itself, so a symlinked package dir (smoke fixture, legacy
+# ~/pm-stack bridge) lands in the symlink target's parent instead.
+UNIT_SRC="$(dirname "$SRC")/systemd/pm-aggregator.service"
 UNIT_DST="$HOME/.config/systemd/user/pm-aggregator.service"
 TAILNET_IP="${TAILNET_IP:-100.99.113.103}"
 
@@ -96,7 +100,67 @@ if [ "$CHANGED" -eq 1 ]; then
   # deployments can keep using it until their update and delivery are
   # verified.
   umask 077
+  # Dependencies first, while the old service is still running
+  # (CodeRabbit on PR #8765): the migration gate below stops the
+  # service, and a failure here must not leave it stopped.
+  cd "$SRC"
+  bun install --silent
   ENV_FILE="$STATE_DIR/.env"
+
+  # Migration gate for the roadmap-annotations store (#8763; Codex P2
+  # and CodeRabbit on PR #8765), BEFORE the env below points the
+  # service at the state-dir path: config.ts used to default the
+  # store to the service working directory -- this checkout -- so an
+  # existing deployment's history can sit at $SRC/roadmap-annotations.json,
+  # and the running old process would keep writing there (a first
+  # annotation can even create it after any check). Stop the legacy
+  # writer unconditionally (when running) before inspecting either
+  # store: stopping only in the migration branch left a window where
+  # the writer could create a checkout store after the check when the
+  # destination already existed, and that file would be orphaned at
+  # restart. If the writer cannot be stopped, abort rather than
+  # strand a store. Never overwrite an existing destination; the
+  # restart after this block starts the service on the new
+  # configuration. A failure after the stop restarts the service on
+  # a consistent configuration via restore_stopped_service below.
+  LEGACY_ANNOTATIONS="$SRC/roadmap-annotations.json"
+  ANNOTATIONS_DST="${STATE_DIR}/roadmap-annotations.json"
+  STOPPED_FOR_MIGRATION=0
+  MIGRATED_ANNOTATIONS=0
+  ENV_RENDERED=0
+  restore_stopped_service() {
+    local rc="$?"
+    if [ "$STOPPED_FOR_MIGRATION" -eq 1 ]; then
+      echo "WARNING: install failed after stopping pm-aggregator.service; restoring the previous configuration" >&2
+      local restart=1
+      if [ "$MIGRATED_ANNOTATIONS" -eq 1 ] && [ "$ENV_RENDERED" -eq 0 ]; then
+        if ! mv "$ANNOTATIONS_DST" "$LEGACY_ANNOTATIONS" 2>/dev/null; then
+          echo "ERROR: could not move the migrated roadmap annotations at $ANNOTATIONS_DST back to $LEGACY_ANNOTATIONS; leaving pm-aggregator.service stopped -- move the file back manually before starting it, so it does not start on a configuration whose store is missing" >&2
+          restart=0
+        fi
+      fi
+      rm -f "$ENV_FILE.tmp"
+      if [ "$restart" -eq 1 ]; then
+        systemctl --user start pm-aggregator.service || true
+      fi
+    fi
+    exit "$rc"
+  }
+  trap restore_stopped_service EXIT
+  if systemctl --user is-active --quiet pm-aggregator.service; then
+    if ! systemctl --user stop pm-aggregator.service; then
+      echo "ERROR: could not stop pm-aggregator.service; aborting before the roadmap-annotations migration so no store is stranded" >&2
+      exit 1
+    fi
+    STOPPED_FOR_MIGRATION=1
+  fi
+  if [ -f "$LEGACY_ANNOTATIONS" ] && [ -e "$ANNOTATIONS_DST" ]; then
+    echo "WARNING: legacy roadmap annotations at $LEGACY_ANNOTATIONS and an existing $ANNOTATIONS_DST both exist; leaving both untouched -- merge them manually" >&2
+  elif [ ! -e "$ANNOTATIONS_DST" ] && [ -f "$LEGACY_ANNOTATIONS" ]; then
+    mv "$LEGACY_ANNOTATIONS" "$ANNOTATIONS_DST"
+    MIGRATED_ANNOTATIONS=1
+    echo "migrated legacy roadmap annotations from $LEGACY_ANNOTATIONS to $ANNOTATIONS_DST"
+  fi
   {
     echo "PM_AGG_BUILD_VERSION=${BUILD_VERSION}"
     echo "PM_AGG_SOURCE=live"
@@ -104,11 +168,13 @@ if [ "$CHANGED" -eq 1 ]; then
     echo "PM_AGG_FEED_FILE=${STATE_DIR}/fleet-feed.json"
     echo "PM_AGG_COMMENTS_FILE=${STATE_DIR}/comments.json"
     echo "PM_AGG_EVENTS_FILE=${STATE_DIR}/events.json"
+    echo "PM_AGG_ACTIVITY_FILE=${STATE_DIR}/activity-ingestion.json"
     echo "PM_AGG_ACTIONS_FILE=${STATE_DIR}/actions.json"
     echo "PM_AGG_REGISTRY_FILE=${STATE_DIR}/registry.json"
     echo "PM_AGG_SNAPSHOTS_DIR=${STATE_DIR}/snapshots"
     echo "PM_AGG_QUOTA_CURRENT_FILE=${STATE_DIR}/quota-current.json"
     echo "PM_AGG_COVERAGE_SNAPSHOT_FILE=${STATE_DIR}/coverage-snapshot.json"
+    echo "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${STATE_DIR}/roadmap-annotations.json"
     echo "PM_PROJECTOR_URL=http://127.0.0.1:7801"
     for key in kaneo_admin_email:KANEO_ADMIN_EMAIL kaneo_admin_password:KANEO_ADMIN_PASSWORD grist_api_key:GRIST_API_KEY; do
       sops_key="${key%%:*}"
@@ -116,13 +182,20 @@ if [ "$CHANGED" -eq 1 ]; then
       value="$(sops -d --extract "[\"${sops_key}\"]" "$SOPS")"
       echo "${env_name}=${value}"
     done
-  } >"$ENV_FILE"
+  } >"$ENV_FILE.tmp"
+  # Render atomically (CodeRabbit on PR #8765): a sops failure mid-render
+  # used to leave a truncated .env behind. The restore trap above only
+  # restarts the service on the new env once this move has landed.
+  mv "$ENV_FILE.tmp" "$ENV_FILE"
+  ENV_RENDERED=1
   chmod 600 "$ENV_FILE"
 
-  cp "$UNIT_SRC" "$UNIT_DST"
+  if [ -L "$UNIT_DST" ]; then
+    echo "pm-aggregator.service is symlink-managed at $UNIT_DST; skipping unit copy"
+  else
+    cp "$UNIT_SRC" "$UNIT_DST"
+  fi
 
-  cd "$SRC"
-  bun install --silent
   echo "$SRC_HASH" >"$STATE_DIR/.deploy-tree-hash"
   echo "$SRC_INPUTS" >"$STATE_DIR/.deploy-inputs-hash"
 fi
@@ -131,6 +204,7 @@ systemctl --user daemon-reload
 systemctl --user enable pm-aggregator.service
 if [ "$CHANGED" -eq 1 ]; then
   systemctl --user restart pm-aggregator.service
+  STOPPED_FOR_MIGRATION=0
 elif ! systemctl --user is-active --quiet pm-aggregator.service; then
   systemctl --user start pm-aggregator.service
 fi

@@ -159,12 +159,38 @@ def test_reference_outside_plan_does_not_deadlock_or_get_used():
         h.cleanup()
 
 
+def test_wrong_shape_reference_does_not_crash_scheduler():
+    # Issue #6834: a list/dict reference is unhashable in the
+    # scheduler's state.get(ref) and an int reference can never match
+    # a repo name — pre-fix the whole clone run died before DONE.
+    # validate_plan now neutralizes them to None: full clones, run
+    # completes, no --reference flag is passed for the poisoned rows.
+    h = Harness(
+        [
+            {"repo": "o/anchor"},
+            {"repo": "o/member", "reference": ["o/anchor"]},
+            {"repo": "o/other", "reference": 123},
+        ]
+    )
+    try:
+        assert h.run() == 0
+        assert "--reference" not in h.command("o/member")
+        assert "--reference" not in h.command("o/other")
+        records = {record["repo"]: record for record in h.records()}
+        assert len(records) == 3
+        assert all(r["status"] == "ok" for r in records.values())
+        assert records["o/member"]["reference_used"] is None
+    finally:
+        h.cleanup()
+
+
 if __name__ == "__main__":
     tests = [
         test_slow_anchor_is_used_as_reference,
         test_failed_anchor_uses_full_clone_fallback,
         test_reference_cycle_uses_no_inflight_fallback,
         test_reference_outside_plan_does_not_deadlock_or_get_used,
+        test_wrong_shape_reference_does_not_crash_scheduler,
     ]
     for test in tests:
         test()

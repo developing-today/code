@@ -1,7 +1,8 @@
 // The AA cost explorer as data. The source of record is the Supabase
 // `ainventory` schema (the AA import: v_rankings,
-// v_threshold_metrics, benchmark_results, and the Test_Runs data in
-// sheet_rows, all read through v_latest_import_batch). The collector
+// v_threshold_metrics, measurement_events (the canonical benchmark
+// store, code#4401), and the Test_Runs data in sheet_rows, read
+// through v_latest_import_batch where the store carries batch identity). The collector
 // queries it, assembles the section with the helpers here, and embeds
 // it in the fleet feed; the aggregator renders the section as-is.
 // Everything in this module is pure and unit-tested (test/aa.test.ts),
@@ -22,6 +23,7 @@ import type {
   AaThreshold,
 } from "./model.ts";
 import { isIsoDate } from "./validate.ts";
+import { serviceIdFor } from "./quota-gather-map.ts";
 
 // --- scalar coercion ---------------------------------------------------------
 // The Supabase Management API serializes numeric columns as JSON
@@ -223,8 +225,7 @@ export function mergeOpencodeConfigTexts(baseText: string, overlayText: string):
     return null;
   }
   if (typeof base !== "object" || base === null || typeof overlay !== "object" || overlay === null) return null;
-  const isObj = (v: unknown): v is Record<string, unknown> =>
-    typeof v === "object" && v !== null && !Array.isArray(v);
+  const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
   const merge = (b: unknown, o: unknown): unknown => {
     if (!isObj(b) || !isObj(o)) return o;
     const out: Record<string, unknown> = { ...b };
@@ -607,6 +608,14 @@ export interface AaPlanFact {
   /** List-rate dollars of usage per $1 paid, when the plan meters so. */
   multiplier: number | null;
   note: string;
+  /** Typed cancellation source data (#1174): the plan is cancelled and
+   *  its paid period ends on this ISO date. The quota-action derivation
+   *  (buildQuotaActions) reads THESE fields — never the note prose —
+   *  so update them with the registry when a plan changes. */
+  cancelled?: boolean;
+  periodEndsAt?: string;
+  /** Concrete next step while the cancelled period still has time left. */
+  renewalAction?: string;
 }
 
 export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
@@ -625,6 +634,11 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     multiplier: 6,
     note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×).",
   },
+  _commandcode: {
+    plan: "Command Code GOAT",
+    multiplier: 7,
+    note: "0/mo → 0 credits (7×); the entry Go tier is  → 0 credits (10×). Tier on the account is unconfirmed.",
+  },
   commandcode: {
     plan: "Command Code GOAT",
     multiplier: 7,
@@ -640,10 +654,20 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     multiplier: null,
     note: "OpenAI plan quota — the fleet's final reserve, spent last by design.",
   },
-  "openai.alternate": {
+  "_openai.alt": {
     plan: "ChatGPT plan (student)",
     multiplier: null,
-    note: "Second ChatGPT account door; resolves through the fork's built-in catalog.",
+    note: "Second ChatGPT account door (popesdrew, self-contained _openai instance; renamed from openai.alternate 2026-11-10, code#8163).",
+  },
+  "_openai.main": {
+    plan: "ChatGPT plan",
+    multiplier: null,
+    note: "Main ChatGPT account door (drewrypope, self-contained _openai instance; renamed from openai.main 2026-11-10, code#8163).",
+  },
+  _claude: {
+    plan: "Claude plan",
+    multiplier: null,
+    note: "Claude Code door — the fork's fleet-built _claude provider (renamed from claude-code 2026-11-07, #1823).",
   },
   "claude-code": {
     plan: "Claude plan",
@@ -735,7 +759,7 @@ interface RawModelEntry {
 }
 
 /** Route id -> the leaf model ids it reaches (nested routes expanded). */
-function routeLeafSets(cfg: { experimental?: { model_routes?: unknown } }): Map<string, Set<string>> {
+export function routeLeafSets(cfg: { experimental?: { model_routes?: unknown } }): Map<string, Set<string>> {
   const routes = new Map<string, unknown[]>();
   const rawRoutes = cfg.experimental?.model_routes;
   if (typeof rawRoutes === "object" && rawRoutes !== null) {
@@ -765,6 +789,65 @@ function routeLeafSets(cfg: { experimental?: { model_routes?: unknown } }): Map<
     const acc = new Set<string>();
     expand(routeId, new Set(), acc);
     out.set(routeId, acc);
+  }
+  return out;
+}
+
+/** The major route sections the section-risk notification class
+ * (#8882) watches: exactly the sections Drew named — no scout.
+ * `small` reaches small-100k's leaves through its nested
+ * opencode-route/small-100k target, and the live leaf analysis
+ * (2026-11-12) shows small-100k's door set identical to small's, so
+ * small-100k rolls up under small with no extra mapping. Keep in
+ * sync with SECTION_RISK_SECTIONS in notifications.ts. */
+export const SECTION_RISK_SECTIONS = ["workhorse", "speed", "specialist", "summit", "small"] as const;
+
+/** Does quota pool `poolId` serve route door `door` (a leaf's
+ * provider part)? The join, pinned by #8882's unit tests:
+ *  - exact: the gatherer's service-id spelling of the door is the
+ *    pool id (serviceIdFor: _claude -> anthropic:claude-pro,
+ *    _muse/meta -> meta, _openai -> _openai.main);
+ *  - split pools: a pool id under the door with a dot suffix serves
+ *    the door (_antigravity.gemini / _antigravity.claude-gpt serve
+ *    _antigravity; opencode-go.<workspace> serves opencode-go);
+ *  - plan doors: *-plan pseudo-providers in routes map to the pools
+ *    of their base provider (opencode-go-plans -> opencode-go.*,
+ *    openai-plan -> _openai.main/_openai.alt, mistral-plan -> mistral). */
+export function poolServesDoor(poolId: string, door: string): boolean {
+  if (serviceIdFor(door) === poolId) return true;
+  if (poolId.startsWith(`${door}.`)) return true;
+  if (door.endsWith("-plan") || door.endsWith("-plans")) {
+    const base = door.replace(/-plans?$/, "");
+    const bare = poolId.replace(/^_/, "");
+    if (poolId === base || bare === base) return true;
+    if (poolId.startsWith(`${base}.`) || bare.startsWith(`${base}.`) || bare.startsWith(`${base}:`)) return true;
+  }
+  return false;
+}
+
+/** Section -> quota pool ids serving it, from the deployed OpenCode
+ * config text (#8882). Unparseable config yields {} — the caller
+ * derives no section candidates, never a guessed membership. */
+export function sectionPoolIdsFromConfig(text: string, poolIds: readonly string[]): Record<string, string[]> {
+  let cfg: unknown;
+  try {
+    cfg = JSON.parse(stripJsonComments(text));
+  } catch {
+    return {};
+  }
+  if (typeof cfg !== "object" || cfg === null) return {};
+  const leafSets = routeLeafSets(cfg as { experimental?: { model_routes?: unknown } });
+  const out: Record<string, string[]> = {};
+  for (const section of SECTION_RISK_SECTIONS) {
+    const leaves = leafSets.get(section);
+    if (!leaves) {
+      out[section] = [];
+      continue;
+    }
+    const doors = new Set([...leaves].map((leaf) => leaf.split("/")[0]));
+    out[section] = [
+      ...new Set(poolIds.filter((poolId) => [...doors].some((door) => poolServesDoor(poolId, door)))),
+    ].sort();
   }
   return out;
 }
@@ -1126,9 +1209,8 @@ export function aaSectionFromSupabase(
     // (tracked default + runtime overlay) so the sync-owned providers'
     // models stay visible after the split.
     const effectiveText =
-      (opencodeRuntimeText
-        ? mergeOpencodeConfigTexts(opencodeConfigText, opencodeRuntimeText)
-        : null) ?? opencodeConfigText;
+      (opencodeRuntimeText ? mergeOpencodeConfigTexts(opencodeConfigText, opencodeRuntimeText) : null) ??
+      opencodeConfigText;
     const inputs = parseOpencodeCoverageInputs(effectiveText);
     if (inputs) coverage = computeAaCoverage(measuredNames, inputs);
     catalog = aaCatalogFromConfig(effectiveText, { configs, rankings }, prices) ?? undefined;
@@ -1149,6 +1231,37 @@ export function aaSectionFromSupabase(
   };
 }
 
+/**
+ * Re-derive a section's current-price overlay from `prices` (#8211).
+ *
+ * The batch-bound payload (rankings, configs, thresholds, test runs,
+ * sources, cai, coverage, catalog membership) is untouched; only the
+ * two price-derived facets move: the section's `prices` list and each
+ * catalog entry's `rate`, recomputed through the same lookup
+ * `aaCatalogFromConfig` uses (full id, then bare model part). This is
+ * what lets a cached historical batch report current rates at serve
+ * time without refetching any of its batch-bound measurements: the
+ * overlay is batch-independent by definition (`v_current_prices`), so
+ * freezing it into the per-batch cache was the defect. The input
+ * section is not mutated.
+ */
+export function aaApplyPriceOverlay(section: AaSection, prices: AaPrice[]): AaSection {
+  const rates = catalogRates(prices);
+  const out: AaSection = { ...section };
+  if (section.catalog) {
+    out.catalog = section.catalog.map((entry) => ({
+      ...entry,
+      rate: rates.get(entry.id) ?? rates.get(`part:${normalizeModelName(modelPart(entry.id))}`) ?? null,
+    }));
+  }
+  if (prices.length) {
+    out.prices = [...prices];
+  } else {
+    delete out.prices;
+  }
+  return out;
+}
+
 /** Structural check shared by the collector and the live source. */
 export function isAaSection(v: unknown): v is AaFeedSection {
   if (typeof v !== "object" || v === null) return false;
@@ -1164,12 +1277,25 @@ export function isAaSection(v: unknown): v is AaFeedSection {
       (r) => typeof r === "object" && r !== null && typeof r.testRunKey === "string" && typeof r.family === "string",
     ) &&
     Array.isArray(s.configs) &&
+    // #4169: aaConfigsTable maps entries dereferencing c.modelName — a
+    // null entry passed this gate and threw in the render.
+    s.configs.every(
+      (c) => typeof c === "object" && c !== null && typeof (c as { modelName?: unknown }).modelName === "string",
+    ) &&
     Array.isArray(s.testRuns) &&
     s.testRuns.every(
       (r) =>
         typeof r === "object" &&
         r !== null &&
-        (typeof (r as { snapshotDate?: unknown }).snapshotDate === "string" ||
+        // #4169: aaTimingsTable dereferences r.modelVariantKey via
+        // variantLabel (.split) — an entry without a string key passed
+        // this gate and threw in the render.
+        typeof (r as { modelVariantKey?: unknown }).modelVariantKey === "string" &&
+        // #5289: snapshotDate is a date, not just a string — summarizeAa
+        // publishes these values verbatim as the batch's snapshot vintage,
+        // so gate them with isIsoDate like generatedAt above (date-only
+        // forms pass; impossible/non-ISO strings degrade the section).
+        (isIsoDate((r as { snapshotDate?: unknown }).snapshotDate) ||
           (r as { snapshotDate?: unknown }).snapshotDate === null),
     ) &&
     // #2415: summarizeAa iterates thresholds and the /aa renderer maps
@@ -1194,7 +1320,35 @@ export function isAaSection(v: unknown): v is AaFeedSection {
         src !== null &&
         typeof (src as { name?: unknown }).name === "string" &&
         typeof (src as { kind?: unknown }).kind === "string",
-    )
+    ) &&
+    // #4169: coverage, catalog, and cai are optional (absent when the
+    // collector could not build them) but the /aa renderer dereferences
+    // them when present — a present-but-malformed value passed this gate
+    // and threw in the render instead of degrading to the not-collected
+    // banner. Gate each at the depth its consumer dereferences it.
+    (s.coverage === undefined ||
+      (typeof s.coverage === "object" &&
+        s.coverage !== null &&
+        (
+          [
+            "measuredNotPooled",
+            "catalogNotPooledMeasured",
+            "measuredNotInCatalog",
+            "catalogNotPooledUnmeasured",
+          ] as const
+        ).every(
+          (k) => Array.isArray(s.coverage?.[k]) && (s.coverage?.[k] as unknown[]).every((n) => typeof n === "string"),
+        ))) &&
+    (s.catalog === undefined ||
+      (Array.isArray(s.catalog) &&
+        s.catalog.every(
+          (e) =>
+            typeof e === "object" &&
+            e !== null &&
+            typeof (e as { provider?: unknown }).provider === "string" &&
+            Array.isArray((e as { routes?: unknown }).routes),
+        ))) &&
+    (s.cai === undefined || (Array.isArray(s.cai) && s.cai.every((r) => typeof r === "object" && r !== null)))
   );
 }
 

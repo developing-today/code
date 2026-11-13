@@ -171,6 +171,16 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
 
         let mut transfer_ids = HashSet::with_capacity(request.transfer_ids.len());
         for id in &request.transfer_ids {
+            // TigerBeetle reserves 0 and u128::MAX as transfer IDs
+            // and refuses them outright at submission (#6194, the
+            // #6135 finding): reject them here, in preflight, before
+            // any intent is persisted — otherwise the write-ahead
+            // intent strands as a poison Submitted record.
+            if *id == 0 || *id == u128::MAX {
+                bail!(
+                    "preflight: transfer ID {id} is reserved (zero and u128::MAX are refused by TigerBeetle)"
+                );
+            }
             if !transfer_ids.insert(*id) {
                 bail!("preflight: duplicate transfer ID {id}");
             }
@@ -189,7 +199,7 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
         let check_account = |id: AccountId, ledger: u32, role: &str| -> Result<()> {
             let account = self
                 .backend
-                .lookup_account(id)
+                .try_lookup_account(id)?
                 .with_context(|| format!("preflight: {role} account {id} does not exist"))?;
             if account.ledger != ledger {
                 bail!(
@@ -209,7 +219,7 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
 
         let user_balance = self
             .backend
-            .account_balance(request.user_source)
+            .try_account_balance(request.user_source)?
             .context("preflight: user source balance missing")?;
         let needed = request
             .amount_in
@@ -223,7 +233,7 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
         }
         let lp_balance = self
             .backend
-            .account_balance(request.lp_dest)
+            .try_account_balance(request.lp_dest)?
             .context("preflight: LP destination balance missing")?;
         if lp_balance.spendable() < amount_out {
             bail!(
@@ -292,12 +302,40 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
     /// `Submitted` record the recovery scanner reconciles by lookup —
     /// it never resubmits blindly, and idempotent IDs make even a
     /// resubmission safe.
+    ///
+    /// Terminal states are final (#4678): a `Posted` record is already
+    /// in the ledger, and an `Abandoned` record carries the recovery
+    /// scanner's deliberate decision not to resubmit. Submitting either
+    /// would silently reverse that decision and move funds, so both
+    /// are refused before any state write or ledger call. This also
+    /// makes an identical `execute()` retry against a terminal record
+    /// fail explicitly instead of resurrecting the conversion.
     pub fn submit(&mut self, record: &mut IntentRecord) -> Result<()> {
+        if matches!(record.state, IntentState::Posted | IntentState::Abandoned) {
+            bail!(
+                "submit: conversion {} is already {:?}; refusing to submit a terminal intent",
+                record.conversion_id,
+                record.state
+            );
+        }
         record.state = IntentState::Submitted;
         self.store
             .put(record)
             .context("intent state persist (Submitted) failed")?;
         let results = self.backend.create_transfers(&record.legs);
+        // #4669: the trait contract is one result per leg. zip()
+        // stops at the shorter side, so a short vector would leave
+        // legs unexamined and still advance to Posted — refuse here,
+        // before any per-leg verdict, and stay Submitted for the
+        // recovery scanner.
+        if results.len() != record.legs.len() {
+            bail!(
+                "conversion {}: backend returned {} results for {} legs \u{2014} refusing to mark Posted on a short result vector",
+                record.conversion_id,
+                results.len(),
+                record.legs.len()
+            );
+        }
         for (leg, result) in record.legs.iter().zip(results.iter()) {
             match result {
                 Ok(()) | Err(TransferError::Exists) => {}

@@ -10,8 +10,11 @@
       }
     },
     "fff": {
-      "command": "/home/user/.local/bin/fff-mcp",
-      "args": []
+      "command": "fff-mcp",
+      "args": [],
+      "mcpx": {
+        "readOnlyTools": ["find_files", "grep", "multi_grep"]
+      }
     },
     "chrome-devtools": {
       "command": "npx",
@@ -57,7 +60,8 @@
     },
     "gopls-mcp-server": {
       "command": "go",
-      "args": ["run", "golang.org/x/tools/gopls@latest", "mcp"]
+      "args": ["run", "golang.org/x/tools/gopls@latest", "mcp"],
+      "mcpx": { "scope": "worktree" }
     },
     "codebase-memory": {
       "command": "npx",
@@ -67,17 +71,9 @@
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://mcp.deepwiki.com/mcp"]
     },
-    "fff-nix": {
-      "command": "/home/user/.local/bin/fff-mcp",
-      "args": ["/home/user/code"]
-    },
-    "fff-worktree": {
-      "command": "/home/user/.local/bin/fff-mcp",
-      "args": ["/home/user/.local/share/opencode/worktree"]
-    },
     "codedb": {
       "command": "node",
-      "args": ["/home/user/git/code/bin/codedb-bridge.mjs"],
+      "args": ["bin/codedb-bridge.mjs"],
       "env": {
         "CODEDB_NO_TELEMETRY": "1",
         "CODEDB_DAEMON_URL": "http://127.0.0.1:7719"

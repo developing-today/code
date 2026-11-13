@@ -30,8 +30,7 @@ Fresh checks, laptop via the existing SSH route, 2026-10-29T12:12Z
   `gateway.auth.token` is configured as a **secret reference** that the CLI
   path cannot resolve (`OPENCLAW_GATEWAY_TOKEN` missing/empty in that path;
   status degrades to read-only). See gap G2.
-- `~/.openclaw/openclaw.json` has an **empty `channels` object** (triage
-  3341) — no chat channels are configured at all. Channel setup is owned by
+- `~/.openclaw/openclaw.json` has an **empty `channels` object** (triage 3341) — no chat channels are configured at all. Channel setup is owned by
   #1029 (Slack/Telegram/WhatsApp), still open.
 - Sandbox side (triage 3341): the sandbox VM is **not a tailnet node**; its
   only laptop route is an SSH CONNECT proxy, and an HTTP attempt to the
@@ -56,7 +55,7 @@ webhook, or peer agent — can talk to it.
 
 `gateway.auth.token` exists as a secret reference, but the CLI path cannot
 resolve it, and the status overview reports loopback auth as **none**. Two
-different facts are entangled: (a) how a *remote* caller proves itself to
+different facts are entangled: (a) how a _remote_ caller proves itself to
 the gateway, and (b) how local tooling reads the token. Today neither is in
 a state a comms design can build on: a design that says "just call the
 gateway API" silently assumes (a) works.
@@ -76,6 +75,24 @@ gateway API" silently assumes (a) works.
   enforcement + provisioning). No credential is created or rotated by this
   design task.
 
+- **Status (2026-11-08, task 13141, issue #2300):** the invalid-caller half
+  of this gap is now **verified live**. A probe of the tailnet gateway
+  (`ws://100.99.113.103:18789`) using only a synthetic invalid token was
+  rejected: the WebSocket connected, then the gateway closed it with code
+  1008 and `unauthorized: gateway token mismatch`. Current `origin/main`
+  configuration matches that outcome: `home/openclaw/default.nix` sets
+  `gateway.bind = "tailnet"` and `gateway.auth.mode = "token"`, with the
+  token supplied as an environment SecretRef named
+  `OPENCLAW_GATEWAY_TOKEN`; `nixos/hosts/amd-openclaw-secrets.nix`
+  provisions it from the secrets-manager entry named
+  `openclaw.gateway-token` (names and references only — no credential
+  value was read, sent, or recorded by the probe or by this update).
+  **Still unverified:** a successful _authorized_ non-loopback call, and
+  distinct per-consumer caller identity (the design decision above names
+  Muse's gateway client as the first consumer). Issue #2300 therefore
+  stays open for the authorized-caller / per-consumer identity remainder;
+  the invalid-token rejection alone does not close it.
+
 ### G3. The sandbox has no non-SSH route to the laptop
 
 The sandbox VM is not a tailnet node; its CONNECT proxy is SSH-only and
@@ -88,7 +105,7 @@ Muse (sandbox side) cannot open a TCP connection to
      exists in Muse's environment for exactly this class of join), giving
      the sandbox a direct route to the tailnet bind — then G2's token auth
      is the only gate.
-  2. A relay on a machine that is already a tailnet node *and* reachable
+  2. A relay on a machine that is already a tailnet node _and_ reachable
      from the sandbox — strictly worse (extra hop, extra thing to own);
      take it only if (1) is refused for a stated reason.
 - **Owner:** follow-up issue filed from this doc (sandbox tailnet route
@@ -104,8 +121,8 @@ on the tailnet can open a connection to it today, whatever the exposure
 flag says. Treating the flag as the posture would misstate the actual
 attack surface.
 
-- **Design posture wanted:** the tailnet bind is treated as *real,
-  intentional exposure to the tailnet only*, and it is allowed to stay
+- **Design posture wanted:** the tailnet bind is treated as _real,
+  intentional exposure to the tailnet only_, and it is allowed to stay
   **only** with G2's token auth enforced on it. If G2 cannot be enforced,
   the bind goes back to loopback-only until it can. The exposure flag is
   not cited as a security property anywhere downstream of this doc.
@@ -133,11 +150,11 @@ undesigned), G3 (no sandbox→tailnet route), G4 (tailnet bind is real
 exposure), plus the program's placement context (fleet epic #2055: the
 comms path is also the substrate for later placement-framework work).
 
-| Candidate | Works today? | Blockers | Properties |
-|---|---|---|---|
-| **A. Direct server-to-server API** (Muse → gateway HTTP/WS on the tailnet bind) | **No** | G3 (no route from the sandbox), then G2 (token auth for remote callers) | Lowest latency, structured API, no third-party intermediary; but two gaps must close first, and it is a private 1:1 path — Aster or anyone else joins by building their own client |
-| **B. Shared Slack channel** (both agents as members of one channel) | **Yes — the only candidate both sides can join today** | OpenClaw's Slack leg is unconfigured, but that is exactly #1029's first leg; Muse's Slack connector is already connected | Human-visible by default (Drew can watch and intervene in the same place), asynchronous-friendly, message history is the audit trail, zero new credentials on the Muse side; latency and format are chat-shaped, not API-shaped |
-| **C. Three-way channel** (Muse + Aster + the OpenClaw agent) | Same as B | Same as B | Not a third integration: see §3.2 |
+| Candidate                                                                       | Works today?                                           | Blockers                                                                                                                 | Properties                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A. Direct server-to-server API** (Muse → gateway HTTP/WS on the tailnet bind) | **No**                                                 | G3 (no route from the sandbox), then G2 (token auth for remote callers)                                                  | Lowest latency, structured API, no third-party intermediary; but two gaps must close first, and it is a private 1:1 path — Aster or anyone else joins by building their own client                                              |
+| **B. Shared Slack channel** (both agents as members of one channel)             | **Yes — the only candidate both sides can join today** | OpenClaw's Slack leg is unconfigured, but that is exactly #1029's first leg; Muse's Slack connector is already connected | Human-visible by default (Drew can watch and intervene in the same place), asynchronous-friendly, message history is the audit trail, zero new credentials on the Muse side; latency and format are chat-shaped, not API-shaped |
+| **C. Three-way channel** (Muse + Aster + the OpenClaw agent)                    | Same as B                                              | Same as B                                                                                                                | Not a third integration: see §3.2                                                                                                                                                                                               |
 
 ## 3. Recommendation
 
@@ -161,8 +178,8 @@ these specifics:
   test: Muse posts a tasking message, the OpenClaw agent answers
   in-thread, Drew can see both. That smoke test is the acceptance test for
   the comms path existing at all.
-- **Why not A first:** A is the better *machine* interface and the worse
-  *first* step — it is blocked on two gaps (G3, G2) and produces a private
+- **Why not A first:** A is the better _machine_ interface and the worse
+  _first_ step — it is blocked on two gaps (G3, G2) and produces a private
   path Drew cannot observe. B is unblocked, observable, and its history
   doubles as the audit trail the fleet's other agent-to-agent paths lack.
 
@@ -221,6 +238,9 @@ wrote it.
   non-loopback gateway callers, provision via the secrets manager by
   reference; verify the tailnet bind requires it. Filed as a follow-up
   issue from this doc's PR pass: **#2300**.
+  Status 2026-11-08: invalid-token rejection verified live on the tailnet
+  bind (close code 1008); #2300 stays open for the authorized-caller /
+  per-consumer identity remainder — see the G2 status note in §2.
 - **Sandbox tailnet route (G3):** join the sandbox VM to the tailnet (or
   record the stated refusal and fall back to a relay design) so the
   phase-2 direct-API path has a route. Filed as a follow-up issue: **#2301**.

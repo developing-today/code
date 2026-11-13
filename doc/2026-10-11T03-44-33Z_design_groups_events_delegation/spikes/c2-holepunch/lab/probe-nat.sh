@@ -11,12 +11,18 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-NFT=${NFT:-/nix/store/66dl0246qv0avvzid7xkj85xqdlrx78a-nftables-1.1.7/bin/nft}
+NFT=${NFT:-$(command -v nft || true)}
+if [ -z "$NFT" ] || ! command -v "$NFT" >/dev/null 2>&1; then
+  echo "nft was not found; set NFT or use the documented nix c2-lab entry point" >&2
+  exit 127
+fi
+NFT=$(command -v "$NFT")
+export NFT
 export NFT
 
 if [ "${1:-}" != "--inner" ]; then
-	nat=${1:?usage: probe-nat.sh cone|restricted|symmetric}
-	exec unshare -Urn bash "$HERE/probe-nat.sh" --inner "$nat"
+  nat=${1:?usage: probe-nat.sh cone|restricted|symmetric}
+  exec unshare -Urn bash "$HERE/probe-nat.sh" --inner "$nat"
 fi
 shift
 
@@ -41,12 +47,12 @@ p3=$!
 
 # Host a sends to both destinations from port 4444, then keeps listening on 4444.
 ns_exec host-a python3 -I "$HERE/probe.py" "$PORT" 5 --delay 1 \
-	--to 10.0.0.1:9000 --to 10.0.0.1:9001 >"$STATE/host-a.txt" 2>&1 &
+  --to 10.0.0.1:9000 --to 10.0.0.1:9001 >"$STATE/host-a.txt" 2>&1 &
 p4=$!
 wait "$p1" "$p2" "$p3" "$p4"
 
 echo "== NAT: $NAT"
 for f in root-9000 root-9001 host-a root-9002; do
-	echo "-- $f"
-	cat "$STATE/$f.txt"
+  echo "-- $f"
+  cat "$STATE/$f.txt"
 done

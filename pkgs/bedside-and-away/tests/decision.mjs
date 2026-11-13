@@ -1,0 +1,17 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const ctx=vm.createContext({document:{addEventListener(){}},console});
+vm.runInContext(fs.readFileSync('public/decision.js','utf8'),ctx);
+const run=code=>JSON.parse(vm.runInContext('JSON.stringify('+code+')',ctx));
+const c=[{id:'price',name:'Price',weight:3},{id:'fit',name:'Fit',weight:5}];ctx.criteria=c;
+assert.equal(run("decisionScore(criteria,{price:5,fit:5}).score"),100);
+assert.equal(run("decisionScore(criteria,{price:5}).score"),null);
+assert.equal(run("decisionScore(criteria,{price:0,fit:0}).score"),0);
+assert.equal(run("decisionScore(criteria,{price:'5',fit:5}).score"),null);
+assert.equal(run("decisionScore([{id:'ignored',weight:0}],{}).score"),null);
+ctx.state={items:[{id:'g',kind:'virtual',tags:['one']},{id:'a',kind:'item',parent:'g',tags:[]},{id:'b',kind:'item',parent:'a',tags:[]},{id:'x',kind:'item',hidden:true,parent:'g',tags:['one']},{id:'y',kind:'item',archived:true,parent:'g',tags:['one']}]};
+assert.deepEqual(run("decisionCandidates(state,'tag:one').map(x=>x.id)"),['a','b']);
+assert.deepEqual(run("decisionCandidates(state,'selected',['g','a']).map(x=>x.id)"),['a','b']);
+assert.deepEqual(run("decisionCandidates(state,'group:g').map(x=>x.id)"),['a','b']);
+console.log('PASS decision mode: weighted explicit scores, unknown/zero semantics, category/group/selection expansion and visibility.');

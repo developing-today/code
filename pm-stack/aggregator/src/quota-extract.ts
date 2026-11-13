@@ -12,12 +12,13 @@
 // assistant's Power subscription is never a pool, so no extractor here
 // emits either.
 // exactly TWO ChatGPT pools — the main account (drewrypope) reached
-// through the `codex` gatherer door (pool openai.main) and the
-// alternate account (popesdrew) through the `openai.alternate` door
-// (pool openai.alternate). Separate accounts, separate allowances:
-// never collapse them into one pool.
+// through the `_openai.main` door and the alternate account
+// (popesdrew) through the `_openai.alt` door. Separate accounts,
+// separate allowances: never collapse them into one pool. (Pool ids
+// renamed to the door ids 2026-11-10, code#8163 — see POOL NAMING.)
 import { poolState } from "./derive.ts";
 import type { QuotaPool, QuotaWindow } from "./model.ts";
+import { parseIsoDate } from "./validate.ts";
 
 const MONTHS: Record<string, number> = {
   Jan: 0,
@@ -41,6 +42,7 @@ function monthDayTime(mon: string, day: string, hhmm: string, now: Date): string
   if (month === undefined) return null;
 
   const [h, m] = hhmm.split(":").map(Number);
+  if (!Number.isInteger(h) || h < 0 || h > 23 || !Number.isInteger(m) || m < 0 || m > 59) return null;
   const dayNumber = Number(day);
   const dateInYear = (year: number) => new Date(Date.UTC(year, month, dayNumber, h, m));
   const isRequestedDate = (date: Date) => date.getUTCMonth() === month && date.getUTCDate() === dayNumber;
@@ -164,6 +166,10 @@ function dateTimeCentral(date: string, hhmm: string): string {
  * flow through the shared conversion unchanged.
  */
 function resetDateTimeCentral(date: string, hhmm: string): string | null {
+  // Gate the calendar date and clock time with the shared primitive FIRST:
+  // dateTimeCentral supplies the Central-time offset conversion, but the
+  // ingest contract's real-date check belongs to validate.ts (#2470).
+  if (parseIsoDate(`${date}T${hhmm}`) === null) return null;
   try {
     return dateTimeCentral(date, hhmm);
   } catch {
@@ -242,7 +248,7 @@ const extractCodex: Extractor = (s, now) => {
 /**
  * The alternate ChatGPT account (popesdrew). It has no dated-read
  * section in the stewardship view yet — its live windows arrive
- * through the quota gatherer (the openai.alternate credential) and
+ * through the quota gatherer (the _openai.alt credential) and
  * are overlaid onto this pool by overlayQuotaCurrent. The extractor
  * exists so a future "### ChatGPT (Alternate)" section is picked up
  * like every other pool's dated read; until then it fail-softs to
@@ -292,7 +298,7 @@ const extractMeta: Extractor = (s, now) => {
   return { windows: [pctWindow("weekly", Number(pct[1]), resetIso)] };
 };
 
-function goWorkspace(name: "drewrypope" | "popesdrew"): Extractor {
+function goWorkspace(name: "drewrypope" | "popesdrew" | "developing-today-0"): Extractor {
   return (s, now) => {
     const m = first(
       s,
@@ -322,6 +328,10 @@ function goWorkspace(name: "drewrypope" | "popesdrew"): Extractor {
   };
 }
 
+/** ClinePass has 5-hour, weekly, and monthly windows; an offset beyond a
+ * year is not a plausible reset for any of them (#2383). */
+const MAX_CLINEPASS_RESET_OFFSET_DAYS = 366;
+
 const extractClinePass: Extractor = (s) => {
   const measured = first(s, /Measured (\d{4}-\d{2}-\d{2}) ~(\d{2}:\d{2}) CDT/i);
   const m = first(
@@ -329,8 +339,41 @@ const extractClinePass: Extractor = (s) => {
     /5-hour \*\*(\d+(?:\.\d+)?)%\*\* used; weekly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\); monthly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\)/i,
   );
   if (!measured || !m) return null;
-  const base = Date.parse(dateTimeCentral(measured[1], measured[2]));
-  const rel = (d: string, h: string) => new Date(base + (Number(d) * 24 + Number(h)) * 3_600_000).toISOString();
+  // The measured capture is the anchor for both relative resets (#2383).
+  // The measured capture anchors reset dates, not the percentages. If it
+  // is an impossible calendar/wall time, retain the matched windows and
+  // mark only their resets unknown (#2383). The shared primitive owns
+  // date validity; dateTimeCentral owns the Central-time offset conversion.
+  let base: number | null = null;
+  if (parseIsoDate(`${measured[1]}T${measured[2]}`) !== null) {
+    try {
+      const anchor = dateTimeCentral(measured[1], measured[2]);
+      base = parseIsoDate(anchor)?.getTime() ?? null;
+    } catch {
+      // Nonexistent Central wall time: keep the read, with no reset anchor.
+    }
+  }
+  const rel = (d: string, h: string): string | null => {
+    const days = Number(d);
+    const hours = Number(h);
+    if (
+      base === null ||
+      !Number.isInteger(days) ||
+      !Number.isInteger(hours) ||
+      days < 0 ||
+      hours < 0 ||
+      hours > 23 ||
+      days > MAX_CLINEPASS_RESET_OFFSET_DAYS
+    ) {
+      return null;
+    }
+    const resetMs = base + (days * 24 + hours) * 3_600_000;
+    if (!Number.isFinite(resetMs)) return null;
+    const reset = new Date(resetMs);
+    if (!Number.isFinite(reset.getTime())) return null;
+    const iso = reset.toISOString();
+    return parseIsoDate(iso) === null ? null : iso;
+  };
   return {
     windows: [
       pctWindow("5-hour", Number(m[1]), null),
@@ -462,8 +505,9 @@ interface PoolSpec {
 }
 
 // POOL NAMING (2026-11-03, Drew): a pool's id is its OpenCode config
-// provider id whenever the config defines one — meta, openai.main,
-// openai.alternate, opencode-go.drewrypope, opencode-go.popesdrew, cline-pass,
+// provider id whenever the config defines one — meta, _openai.main,
+// _openai.alt, opencode-go.drewrypope, opencode-go.popesdrew,
+// opencode-go.developing-today-0, cline-pass,
 // opendesign, deepseek, commandcode. The colon-suffixed spellings these
 // replaced (meta:high-usage, openai:codex, opencode-go:drewrypope, ...)
 // survive only in the historical snapshot series and the one-shot
@@ -475,6 +519,16 @@ interface PoolSpec {
 // antigravity-direct.gemini / antigravity-direct.claude-gpt — the
 // opencode-go.<workspace> pattern (Drew, 2026-11-03: "why are you not
 // including antigravity in the board?"). Ground truth for the
+// RENAMED 2026-11-07 (#1823, Drew): fleet-built providers carry a
+// leading underscore — the commandcode pool is now _commandcode and
+// the Antigravity pools ride under _antigravity.gemini /
+// _antigravity.claude-gpt. Per the rule above, each starts a NEW
+// snapshot series; the pre-rename series stay in the store under
+// their old ids, unrewritten. (2026-11-10, code#8163, Drew: "update
+// all old names to use equivalent new names": the two ChatGPT pools
+// follow the same rule — openai.main -> _openai.main and
+// openai.alternate -> _openai.alt, the self-contained door ids; the
+// pre-rename series stay in the store under the old ids.)
 // choice: the deployed config defines antigravity-agy,
 // antigravity-direct and antigravity-ls (ls/agy are the disabled
 // legacy doors; no antigravity-local provider exists), and
@@ -502,21 +556,21 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read (console-only usage).",
   },
   {
-    id: "openai.main",
+    id: "_openai.main",
     provider: "OpenAI",
     plan: "ChatGPT (Main — drewrypope)",
-    heading: /^### ChatGPT/,
+    heading: /^### ChatGPT(?! \(Alternate\))/,
     extract: extractCodex,
     shellNote: "No current read. OpenAI is the fleet's final reserve pool.",
   },
   {
-    id: "openai.alternate",
+    id: "_openai.alt",
     provider: "OpenAI",
     plan: "ChatGPT (Alternate — popesdrew)",
     heading: /^### ChatGPT \(Alternate\)/,
     extract: extractChatGptAlternate,
     shellNote:
-      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai.main); the two are never combined.",
+      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the _openai.alt credential — a separate pool from the main account (_openai.main); the two are never combined.",
   },
   {
     id: "opencode-go.drewrypope",
@@ -535,6 +589,14 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
+    id: "opencode-go.developing-today-0",
+    provider: "OpenCode Go",
+    plan: "developing-today-0 account",
+    heading: /^### OpenCode Go/,
+    extract: goWorkspace("developing-today-0"),
+    shellNote: "No current read.",
+  },
+  {
     id: "cline-pass",
     provider: "ClinePass",
     plan: "Cline Pass (Annual)",
@@ -543,7 +605,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read (dashboard-only source).",
   },
   {
-    id: "commandcode",
+    id: "_commandcode",
     provider: "Command Code",
     plan: "GO",
     heading: /^### Command Code/,
@@ -551,7 +613,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "antigravity-direct.gemini",
+    id: "_antigravity.gemini",
     provider: "Antigravity",
     plan: "Gemini pool",
     heading: /^### Gemini/,
@@ -559,7 +621,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "antigravity-direct.claude-gpt",
+    id: "_antigravity.claude-gpt",
     provider: "Antigravity",
     plan: "Claude+GPT pool",
     heading: /^### Gemini/,
@@ -576,7 +638,9 @@ const SHELL_POOLS: QuotaPool[] = [
     plan: "Go",
     state: "healthy",
     windows: [],
+
     note: "No dated read. Live windows arrive through the quota gatherer (the OpenCode opendesign credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent.",
+    extractionHealth: { status: "intentional", matched: null, reason: "uninstrumented", count: 0 },
   },
   {
     id: "deepseek",
@@ -585,6 +649,7 @@ const SHELL_POOLS: QuotaPool[] = [
     state: "healthy",
     windows: [],
     note: "PAYG balance ¥44.63 (2026-10-25 read), parked. Not a plan pool — never a fallback for supervised sessions; plan-covered Flash routes are preferred.",
+    extractionHealth: { status: "intentional", matched: null, reason: "uninstrumented", count: 0 },
   },
 ];
 
@@ -597,7 +662,7 @@ const SHELL_POOLS: QuotaPool[] = [
  * OpenCode config door sat in disabled_providers. That hid live,
  * measured pools whose traffic runs through model routes rather than
  * the disabled direct door: at removal time the deployed board was
- * missing anthropic:claude-pro, commandcode, deepseek and BOTH
+ * missing anthropic:claude-pro, _commandcode, deepseek and BOTH
  * Antigravity pools even though the OpenCode quota read reported
  * them. Pool assembly no longer consults disabled_providers at all;
  * extractQuotaPools returns every pool it knows, and the serve-time
@@ -622,10 +687,24 @@ export function extractQuotaPools(quotaViewText: string, now = new Date()): Quot
   const pools: QuotaPool[] = [];
   for (const spec of POOL_SPECS) {
     const section = sectionOf(quotaViewText, spec.heading);
+    if (!section) {
+      pools.push({
+        id: spec.id,
+        provider: spec.provider,
+        plan: spec.plan,
+        state: "healthy",
+        windows: [],
+        note: spec.shellNote,
+        extractionHealth: { status: "gap", matched: false, reason: "section-missing", count: 0 },
+      });
+      continue;
+    }
     let raw: Raw | null = null;
+    let threw = false;
     try {
-      raw = section ? spec.extract(section, now) : null;
+      raw = spec.extract(section, now);
     } catch {
+      threw = true;
       raw = null;
     }
     if (!raw) {
@@ -636,6 +715,12 @@ export function extractQuotaPools(quotaViewText: string, now = new Date()): Quot
         state: "healthy",
         windows: [],
         note: spec.shellNote,
+        extractionHealth: {
+          status: "gap",
+          matched: false,
+          reason: threw ? "extractor-threw" : "extractor-null",
+          count: 0,
+        },
       });
       continue;
     }
@@ -647,6 +732,7 @@ export function extractQuotaPools(quotaViewText: string, now = new Date()): Quot
       windows: raw.windows,
       note: raw.note,
       wallLiftsAt: raw.wallLiftsAt,
+      extractionHealth: { status: "matched", matched: true, count: raw.windows.length },
     };
     pool.state = raw.wallLiftsAt ? "walled" : poolState(pool);
     if (pool.state === "walled" && !pool.wallLiftsAt) {

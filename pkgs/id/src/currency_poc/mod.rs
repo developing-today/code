@@ -16,6 +16,9 @@
 //!   LP→user), every leg stamped `user_data_128 = conversion_id`.
 //! - `recovery` — the recovery scanner reconciling unresolved intents
 //!   by pre-generated transfer-ID lookup.
+//! - `tb_ledger` (feature `currency-poc-tb`) — the same seam over the
+//!   official TigerBeetle Rust client, for running the scenarios against
+//!   a real cluster.
 //! - `harness` — step 0: a throwaway single-replica TigerBeetle test
 //!   cluster (pinned binary, start/stop) for running the same
 //!   scenarios against a real cluster once a client binding lands.
@@ -32,6 +35,9 @@ pub mod harness;
 pub mod intent;
 pub mod ledger;
 pub mod recovery;
+#[cfg(feature = "currency-poc-tb")]
+pub mod tb_ledger;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;

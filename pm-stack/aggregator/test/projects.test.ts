@@ -6,8 +6,10 @@ import { loadConfig } from "../src/config.ts";
 import type { OrchestrationSection } from "../src/model.ts";
 import {
   derivedProjectState,
+  fetchProjectSnapshot,
+  isProjectAudit,
+  parseProjectAudit,
   fetchProjectPool,
-  fetchProjectPoolWithCount,
   isProjectPoolItem,
   parseProjectItems,
   poolItemToGhItem,
@@ -27,6 +29,13 @@ const GQL = {
       title: "Developing Today",
       number: 4,
       url: "https://github.com/orgs/developing-today/projects/4",
+      fields: {
+        nodes: [
+          { id: "PVTSSF_status", name: "Status", dataType: "SINGLE_SELECT", options: [{ id: "todo", name: "Todo" }] },
+          { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT", options: [{ id: "lab", name: "lab-cluster" }] },
+        ],
+      },
+      views: { nodes: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }] },
       items: {
         totalCount: 3,
         pageInfo: { hasNextPage: false, endCursor: null },
@@ -39,8 +48,8 @@ const GQL = {
               number: 508,
               title: "EPIC: Basement cluster",
               state: "OPEN",
-              url: "https://github.com/dezren39/nix/issues/508",
-              repository: { nameWithOwner: "dezren39/nix" },
+              url: "https://github.com/dezren39/darwin-nix/issues/508",
+              repository: { nameWithOwner: "dezren39/darwin-nix" },
               updatedAt: "2026-10-20T12:05:58Z",
               author: { login: "dezren39" },
             },
@@ -97,18 +106,35 @@ function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount 
 }
 
 describe("fetchProjectPool pagination", () => {
-  test("throws rather than returning a partial pool when page ten has another page", async () => {
+  test("paginates past ten pages and returns every item from a long finite pool", async () => {
+    // Oracle: the pool is complete iff every page was fetched and every
+    // delivered item returned — no page-count cap (Drew, 2026-11-12).
     let calls = 0;
     const fetchFn: typeof fetch = Object.assign(
       async () => {
         calls++;
-        return new Response(JSON.stringify(projectPage(true, `cursor-${calls}`)));
+        return new Response(JSON.stringify(projectPage(calls < 13, calls < 13 ? `cursor-${calls}` : null, 26)));
       },
       { preconnect: () => {} },
     );
 
-    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/truncat.*25/i);
-    expect(calls).toBe(10);
+    const items = await fetchProjectPool("test-token", fetchFn);
+    expect(calls).toBe(13);
+    expect(items).toHaveLength(26);
+  });
+
+  test("throws when pagination does not advance instead of looping forever", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = Object.assign(
+      async () => {
+        calls++;
+        return new Response(JSON.stringify(projectPage(true, "cursor-stuck")));
+      },
+      { preconnect: () => {} },
+    );
+
+    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/did not advance/i);
+    expect(calls).toBe(2);
   });
 
   test("returns every item from a finite multi-page pool", async () => {
@@ -126,39 +152,8 @@ describe("fetchProjectPool pagination", () => {
     expect(items).toHaveLength(6);
   });
 
-  test("preserves the provider-reported total beside the emitted pool entries", async () => {
-    const fetchFn: typeof fetch = Object.assign(
-      async () => new Response(JSON.stringify(projectPage(false, null, 9))),
-      { preconnect: () => {} },
-    );
-    const read = await fetchProjectPoolWithCount("test-token", fetchFn);
-    // The fixture page holds one draft the parser intentionally excludes,
-    // so the comparable total is the provider's 9 minus that exclusion.
-    expect(read.reportedTotal).toBe(8);
-    expect(read.excludedCount).toBe(1);
-    expect(read.items).toHaveLength(2);
-  });
 
-  test("a complete collection of a pool with drafts reports no lag", async () => {
-    const fetchFn: typeof fetch = Object.assign(
-      async () => new Response(JSON.stringify(projectPage(false, null, 3))),
-      { preconnect: () => {} },
-    );
-    const read = await fetchProjectPoolWithCount("test-token", fetchFn);
-    // totalCount 3 = 2 emitted + 1 excluded draft: the comparable total
-    // equals the emitted count, so health computes zero lag.
-    expect(read.reportedTotal).toBe(2);
-    expect(read.items).toHaveLength(2);
-  });
 
-  test("keeps a missing provider total unknown instead of turning it into zero", async () => {
-    const page = projectPage(false, null, 9);
-    delete (page.data.node.items as { totalCount?: number }).totalCount;
-    const fetchFn: typeof fetch = Object.assign(async () => new Response(JSON.stringify(page)), { preconnect: () => {} });
-    const read = await fetchProjectPoolWithCount("test-token", fetchFn);
-    expect(read.reportedTotal).toBeNull();
-    expect(read.items).toHaveLength(2);
-  });
 
   test("returns a single-page pool unchanged", async () => {
     let calls = 0;
@@ -195,13 +190,13 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     const pool = parseProjectItems(GQL);
     expect(pool.length).toBe(2);
     const epic = pool[0];
-    expect(epic.ref).toBe("dezren39/nix#508");
+    expect(epic.ref).toBe("dezren39/darwin-nix#508");
     expect(epic.state).toBe("open");
     expect(epic.status).toBe("In Progress");
     expect(epic.area).toBe("lab-cluster");
     expect(epic.horizon).toBe("Quarter");
     expect(epic.kind).toBe("Epic");
-    expect(epic.issueUrl).toBe("https://github.com/dezren39/nix/issues/508");
+    expect(epic.issueUrl).toBe("https://github.com/dezren39/darwin-nix/issues/508");
     expect(epic.url).toBe("https://github.com/orgs/developing-today/projects/4?pane=issue&itemId=111");
     expect(pool[1].state).toBe("closed");
   });
@@ -215,6 +210,25 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     // projectItemUrl falls back to the bare board URL without an item id.
     expect(pool[0].url).toBe("https://github.com/orgs/developing-today/projects/4");
     expect(isProjectPoolItem(pool[0])).toBe(true);
+  });
+
+  test("the pool gate refuses impossible updatedAt stamps (#5202)", () => {
+    const item = parseProjectItems(GQL)[0];
+    // Control: the collector's own stamp passes, and the missing-stamp
+    // forms (absent field, '') stay valid.
+    expect(isProjectPoolItem(item)).toBe(true);
+    expect(isProjectPoolItem({ ...item, updatedAt: "" })).toBe(true);
+    const { updatedAt: _dropped, ...withoutStamp } = item;
+    expect(isProjectPoolItem(withoutStamp)).toBe(true);
+    // Impossible calendar days and non-ISO strings are refused: before
+    // the gate they rolled over in Date.parse and fabricated this-week
+    // activity in derive.ts momentum math.
+    for (const bad of ["2026-02-29", "2026-02-30", "2026-04-31", "March 2, 2026", "not-a-date"]) {
+      expect(isProjectPoolItem({ ...item, updatedAt: bad })).toBe(false);
+    }
+    // A real leap day and a full ISO datetime still pass.
+    expect(isProjectPoolItem({ ...item, updatedAt: "2024-02-29" })).toBe(true);
+    expect(isProjectPoolItem({ ...item, updatedAt: "2026-03-01T12:00:00Z" })).toBe(true);
   });
 
   test("derived state + disagreement", () => {
@@ -231,7 +245,7 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
       goals: [
         {
           linedUp: [
-            { title: "x", ref: "dezren39/nix#508", status: "in-progress", horizon: "today", horizonWhy: "test" },
+            { title: "x", ref: "dezren39/darwin-nix#508", status: "in-progress", horizon: "today", horizonWhy: "test" },
           ],
         },
       ],
@@ -240,12 +254,61 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     expect(derivedProjectState(pool[0], section)).toBe("In Progress");
     expect(projectDisagreement(pool[0], section)).toBeNull();
   });
+
+  test("overlapping pages: a node delivered twice is counted once and the audit survives the feed gate (#8599)", async () => {
+    // Page 1 delivers PVTI_1 + PVTI_2, page 2 repeats PVTI_2 and adds
+    // PVTI_3 (the board mutated mid-export). totalCount is 3 distinct
+    // items; without dedupe every distribution would sum to 4 and
+    // isProjectAudit would discard the fetched snapshot as absent.
+    const page1 = structuredClone(GQL);
+    page1.data.node.items.totalCount = 3;
+    page1.data.node.items.pageInfo = { hasNextPage: true, endCursor: "cursor-1" };
+    page1.data.node.items.nodes = [GQL.data.node.items.nodes[0], GQL.data.node.items.nodes[1]];
+    const page2 = structuredClone(GQL);
+    page2.data.node.items.totalCount = 3;
+    page2.data.node.items.pageInfo = { hasNextPage: false, endCursor: null };
+    page2.data.node.items.nodes = [GQL.data.node.items.nodes[1], GQL.data.node.items.nodes[2]];
+    const pages = [page1, page2];
+    let call = 0;
+    const mockFetch = (async () =>
+      new Response(JSON.stringify(pages[call++]), { status: 200 })) as unknown as typeof fetch;
+    const snapshot = await fetchProjectSnapshot("test-token", mockFetch, "2026-11-01T21:00:00.000Z");
+    expect(call).toBe(2);
+    expect(snapshot.audit.totalItems).toBe(3);
+    expect(snapshot.audit.counts.status).toEqual({ "(unset)": 1, Done: 1, "In Progress": 1 });
+    expect(isProjectAudit(snapshot.audit)).toBe(true);
+    expect(snapshot.counts).toEqual({ reportedTotal: 2, emittedEntries: 2 });
+    // The pool is deduplicated by item id as well.
+    expect(snapshot.items.map((item) => item.id)).toEqual(["PVTI_1", "PVTI_2"]);
+  });
+
+  test("scheduled fetch keeps the full item total and publishes one-page audit metadata", async () => {
+    const mockFetch = (async () => new Response(JSON.stringify(GQL), { status: 200 })) as unknown as typeof fetch;
+    const snapshot = await fetchProjectSnapshot("test-token", mockFetch, "2026-11-01T21:00:00.000Z");
+    expect(snapshot.items).toHaveLength(2);
+    expect(snapshot.audit.totalItems).toBe(3);
+    // The board's third item is a draft the pool excludes: the
+    // comparable total is 3 - 1 = 2, so a complete collection shows
+    // no lag (Codex P2 on PR #5180).
+    expect(snapshot.counts).toEqual({ reportedTotal: 2, emittedEntries: 2 });
+    expect(snapshot.audit.fields.map((field) => field.name)).toEqual(["Status", "Area"]);
+    expect(snapshot.audit.views).toEqual([
+      { id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" },
+    ]);
+    expect(snapshot.audit.counts.status).toEqual({ "(unset)": 1, Done: 1, "In Progress": 1 });
+    expect(snapshot.audit.counts.area).toEqual({ "(unset)": 2, "lab-cluster": 1 });
+    expect(snapshot.audit.counts.repo).toEqual({
+      "(unlinked)": 1,
+      "developing-today/code": 1,
+      "dezren39/darwin-nix": 1,
+    });
+  });
 });
 
 describe("items-from-pool resolution", () => {
   test("pool entry builds a GhItem carrying the Project fields", () => {
     const item = poolItemToGhItem(parseProjectItems(GQL)[0]);
-    expect(item.ref).toBe("dezren39/nix#508");
+    expect(item.ref).toBe("dezren39/darwin-nix#508");
     expect(item.kind).toBe("issue");
     expect(item.state).toBe("open");
     expect(item.projectStatus).toBe("In Progress");
@@ -256,6 +319,7 @@ describe("items-from-pool resolution", () => {
     const dir = await mkdtemp(join(tmpdir(), "pm-projects-"));
     const feedFile = join(dir, "fleet-feed.json");
     const pool = parseProjectItems(GQL);
+    const projectAudit = parseProjectAudit(GQL, GQL.data.node.items.nodes, new Date().toISOString());
     await writeFile(
       feedFile,
       JSON.stringify({
@@ -264,6 +328,7 @@ describe("items-from-pool resolution", () => {
         quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
         attention: [],
         projects: pool,
+        projectAudit,
       }),
     );
     const cfg = loadConfig({
@@ -272,12 +337,13 @@ describe("items-from-pool resolution", () => {
       PM_PROJECTOR_URL: "off",
     });
     const src = liveSource(cfg);
-    const items = await src.items(["dezren39/nix#508", "developing-today/code#910"]);
-    expect(items.get("dezren39/nix#508")?.title).toBe("EPIC: Basement cluster");
+    const items = await src.items(["dezren39/darwin-nix#508", "developing-today/code#910"]);
+    expect(items.get("dezren39/darwin-nix#508")?.title).toBe("EPIC: Basement cluster");
     expect(items.get("developing-today/code#910")?.state).toBe("closed");
     expect(src.provenance().items).toContain("live (project pool");
     const served = await src.projects();
     expect(served.length).toBe(2);
+    expect(await src.projectAudit?.()).toEqual(projectAudit);
   });
 });
 
@@ -525,12 +591,94 @@ describe("collector graph edges (#2399 contract)", () => {
   });
 });
 
+describe("Project #4 audit snapshot (#1218)", () => {
+  test("exports field definitions, views, total items, and distributions including drafts/unlinked items", () => {
+    const page = {
+      data: {
+        node: {
+          title: "Developing Today",
+          number: 4,
+          url: "https://github.com/orgs/developing-today/projects/4",
+          fields: {
+            nodes: [
+              {
+                id: "PVTSSF_status",
+                name: "Status",
+                dataType: "SINGLE_SELECT",
+                options: [
+                  { id: "opt_open", name: "In Progress" },
+                  { id: "opt_done", name: "Done" },
+                ],
+              },
+              { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT", options: [{ id: "opt_lab", name: "lab" }] },
+            ],
+          },
+          views: { nodes: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }] },
+          items: { totalCount: 3 },
+        },
+      },
+    };
+    const audit = parseProjectAudit(
+      page,
+      [
+        {
+          content: { repository: { nameWithOwner: "developing-today/code" } },
+          fieldValues: {
+            nodes: [
+              { name: "In Progress", field: { name: "Status" } },
+              { name: "lab", field: { name: "Area" } },
+            ],
+          },
+        },
+        {
+          content: { repository: { nameWithOwner: "dezren39/nix" } },
+          fieldValues: { nodes: [{ name: "Done", field: { name: "Status" } }] },
+        },
+        { content: null, fieldValues: { nodes: [{ name: "ops", field: { name: "Area" } }] } },
+      ],
+      "2026-11-01T21:00:00.000Z",
+    );
+
+    expect(audit).toMatchObject({
+      totalItems: 3,
+      fields: [
+        {
+          id: "PVTSSF_status",
+          name: "Status",
+          dataType: "SINGLE_SELECT",
+          options: [
+            { id: "opt_open", name: "In Progress" },
+            { id: "opt_done", name: "Done" },
+          ],
+        },
+        { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT" },
+      ],
+      views: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }],
+      counts: {
+        status: { Done: 1, "In Progress": 1, "(unset)": 1 },
+        area: { "(unset)": 1, lab: 1, ops: 1 },
+        repo: { "(unlinked)": 1, "developing-today/code": 1, "dezren39/nix": 1 },
+      },
+    });
+    expect(isProjectAudit(audit)).toBe(true);
+    expect(isProjectAudit({ ...audit, counts: { ...audit.counts, status: { Done: -1 } } })).toBe(false);
+    expect(isProjectAudit({ ...audit, counts: { ...audit.counts, area: { lab: 2 } } })).toBe(false);
+  });
+
+  test("query requests board schema, views, and all item field values", () => {
+    expect(PROJECT_QUERY).toContain("fields(first: 100)");
+    expect(PROJECT_QUERY).toContain("ProjectV2SingleSelectField { options { id name } }");
+    expect(PROJECT_QUERY).toContain("views(first: 100) { nodes { id name layout filter } }");
+    expect(PROJECT_QUERY).toContain("fieldValues(first: 100)");
+  });
+});
+
 describe("renderProjects", () => {
   test("renders cards, both links, filter, and the disagreement badge", () => {
     const pool = parseProjectItems(GQL);
     const html = renderProjects(pool, PROV, {});
     expect(html).toContain("EPIC: Basement cluster");
-    expect(html).toContain("dezren39/nix#508");
+    expect(html).toContain("dezren39/darwin-nix#508");
     expect(html).toContain("itemId=111");
     expect(html).toContain("⚠ project: In Progress · derived: Todo");
     expect(html).toContain("/projects?area=lab-cluster");

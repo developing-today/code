@@ -8,7 +8,7 @@
 // as unknown.
 
 import type { Comment, GhState, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
-import { refUrl } from "./model.ts";
+import { isValidRef, refUrl } from "./model.ts";
 import { derivedProjectState, projectDisagreement, type DerivedProjectState } from "./projects.ts";
 
 export interface BriefEvidence {
@@ -73,9 +73,11 @@ function buildItemBriefWithIndexes(
       ? `Unknown — orchestration source is ${inputs.orchestrationStatus}; derived state is not asserted.`
       : derived === "Done"
         ? "Done — the linked issue/PR is closed or merged."
-        : derived === "In Progress"
-          ? "In Progress — open, and referenced by the orchestration plan (a tier item, a lined-up goal task, or a dependency)."
-          : "Todo — open, with no orchestration reference placing it in flight.";
+        : derived === "In Review"
+          ? "In Review — the linked item is an open, ready (non-draft) PR: under review by GitHub's draft/ready distinction (#1198)."
+          : derived === "In Progress"
+            ? "In Progress — open, and referenced by the orchestration plan (a tier item, a lined-up goal task, or a dependency)."
+            : "Todo — open, with no orchestration reference placing it in flight.";
   const stateEvidence: BriefEvidence =
     derived === "In Progress" || derived === "Unknown"
       ? {
@@ -89,7 +91,8 @@ function buildItemBriefWithIndexes(
   // as blocking while it is open — or while its state is unknown (absent
   // from the pool): an unknown blocker is stated as unknown, not assumed
   // resolved.
-  const blockers = (item.blockedBy ?? []).map((ref) => {
+  const rawBlockers = item.blockedBy ?? [];
+  const blockers = rawBlockers.filter(isValidRef).map((ref) => {
     const target = byRef.get(ref);
     return {
       ref,
@@ -99,13 +102,20 @@ function buildItemBriefWithIndexes(
   });
   const activeBlockers = blockers.filter((b) => b.state === "open" || b.state === "unknown");
   const blocked = activeBlockers.length > 0;
+  const invalidBlockerCount = rawBlockers.length - blockers.length;
   const blockerText = !blockers.length
-    ? "Not blocked — no “blocked by” edges in the projection."
+    ? invalidBlockerCount
+      ? `Unknown — ${invalidBlockerCount} malformed “blocked by” edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted from the projection.`
+      : "Not blocked — no “blocked by” edges in the projection."
     : blocked
       ? `Blocked by ${activeBlockers
           .map((b) => `${b.ref}${b.state === "unknown" ? " (state unknown — not in the current pool)" : ""}`)
-          .join(", ")}.`
-      : `Not blocked — every recorded blocker (${blockers.map((b) => b.ref).join(", ")}) is closed or merged.`;
+          .join(
+            ", ",
+          )}.${invalidBlockerCount ? ` ${invalidBlockerCount} malformed edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted.` : ""}`
+      : invalidBlockerCount
+        ? `Unknown — valid blockers (${blockers.map((b) => b.ref).join(", ")}) are closed or merged, but ${invalidBlockerCount} malformed edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted.`
+        : `Not blocked — every recorded blocker (${blockers.map((b) => b.ref).join(", ")}) is closed or merged.`;
   const blockerEvidence: BriefEvidence = blocked
     ? { text: activeBlockers[0].ref, url: activeBlockers[0].url }
     : itemEvidence;
@@ -152,6 +162,11 @@ function buildItemBriefWithIndexes(
     nextAction = {
       text: `Resolve the blocker first: ${activeBlockers[0].ref}.`,
       evidence: { text: activeBlockers[0].ref, url: activeBlockers[0].url },
+    };
+  } else if (invalidBlockerCount) {
+    nextAction = {
+      text: `Validate ${invalidBlockerCount} malformed “blocked by” edge${invalidBlockerCount === 1 ? "" : "s"} before treating this item as unblocked.`,
+      evidence: itemEvidence,
     };
   } else if (disagreement) {
     nextAction = {

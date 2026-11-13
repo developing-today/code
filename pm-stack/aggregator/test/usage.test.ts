@@ -9,7 +9,13 @@ import { join } from "node:path";
 import { buildAttentionFlags, freshness, projectPace, resetMarkers } from "../src/derive.ts";
 import { countedEstimate, type QuotaView, type SnapshotRecord, type UsageView } from "../src/model.ts";
 import { renderQuota, renderServiceDetail, fmtMetricValue, freshnessStamp } from "../src/render.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
+import {
+  extractCharges,
+  extractPaygLines,
+  extractSaasServices,
+  extractSubscriptions,
+  extractUninstrumentedServices,
+} from "../src/saas-extract.ts";
 import { isSnapshotRecord, SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
 import { fixtureSource } from "../src/sources/fixtures.ts";
 
@@ -55,6 +61,16 @@ const REGISTRY = `
 
 - [observed] Meta API plan: usage past the wall metered as PAYG — **$20.00 charged 05:15 CDT + $3.91 charged 07:47 CDT** (Visa •7535 card alerts).
 - [observed] Cloudflare gateway DeepSeek V4 Pro accrual Oct 24–25: $29.60 per budget alert vs $45.10 per gateway cost attribution; final figure lands on the Nov 2 invoice.
+`;
+
+const FREE_SERVICES = `
+## Evaluated 2026-10-29
+
+| Service | What for | Status | Overage behavior | Guardrail notes |
+|---|---|---|---|---|
+| boats.cloud | Unknown — named to check | checked 2026-10-29 — verdict: unverified — no official site resolves | unverified | Do NOT adopt or enter payment details |
+| Render | PaaS | checked 2026-10-29 | wall | Keep no payment method on free workspaces |
+| Future service | Testing | unchecked — no official review yet | unknown | Verify before adoption |
 `;
 
 describe("saas extraction (Part b)", () => {
@@ -154,6 +170,67 @@ describe("saas extraction (Part b)", () => {
     expect(shells.every((s) => s.measuredAt === null)).toBe(true);
   });
 
+  test("service extraction health reports missing sections and intentional uninstrumented services", () => {
+    const shells = new Map(extractSaasServices("nothing here").map((s) => [s.id, s]));
+    for (const id of ["cloudflare", "turso", "github", "modal", "oci", "bitwarden"]) {
+      expect(shells.get(id)?.extractionHealth).toMatchObject({
+        status: "gap",
+        matched: false,
+        reason: "section-missing",
+        count: 0,
+      });
+    }
+    for (const id of ["vercel", "backblaze-b2", "fly-io", "baseten", "supabase"]) {
+      expect(shells.get(id)?.extractionHealth).toMatchObject({
+        status: "intentional",
+        matched: null,
+        reason: "uninstrumented",
+      });
+    }
+    expect(byId.get("cloudflare")?.extractionHealth?.status).toBe("matched");
+    const noMetrics = extractSaasServices("### Cloudflare — Workers platform\n- **Usage / dates:** no metrics").find(
+      (s) => s.id === "cloudflare",
+    );
+    expect(noMetrics?.extractionHealth).toMatchObject({
+      status: "gap",
+      matched: false,
+      reason: "extractor-null",
+      count: 0,
+    });
+  });
+
+  test("extractor-null keeps parsed service evidence while marking the gap", () => {
+    const section = `### Cloudflare — Workers platform
+- **Plan / price / allowance:** renamed format
+- **Usage / dates:** new format, read 2026-10-24.
+- **PAYG estimate:** low $1 / high $5 per month; counted as used = 1.2 × high = $6.
+- **Last checked:** dashboard 2026-10-25.
+- **Conflict/stale earlier evidence:** dashboard and tracker disagree about the current plan.
+`;
+    const cloudflare = extractSaasServices(section).find((s) => s.id === "cloudflare")!;
+    expect(cloudflare.extractionHealth).toMatchObject({ status: "gap", matched: false, reason: "extractor-null" });
+    expect(cloudflare.metrics).toEqual([]);
+    expect(cloudflare.paygEstimate).toMatchObject({ low: 1, high: 5 });
+    expect(cloudflare.reads.some((read) => read.at === "2026-10-24")).toBe(true);
+    expect(cloudflare.conflicts).toHaveLength(1);
+    expect(cloudflare.measuredAt).toBe("2026-10-25");
+  });
+
+  test("instrumented SaaS extractors report null when their patterns match no values", () => {
+    const fixtures: [string, string][] = [
+      ["turso", "### Turso\n- **Plan / price / allowance:** renamed format\n- **Usage / dates:** unknown"],
+      ["github", "### GitHub\n- **Plan / price / allowance:** renamed format\n- **Usage / dates:** unknown"],
+      ["modal", "### Modal\n- **Plan / price / allowance:** renamed format\n- **Usage / dates:** unknown"],
+      ["oci", "### OCI Always Free\n- **Plan / price / allowance:** renamed format\n- **Usage / dates:** unknown"],
+      ["bitwarden", "### Bitwarden\n- **Usage / dates:** count not recorded"],
+    ];
+    for (const [id, fixture] of fixtures) {
+      const service = extractSaasServices(fixture).find((s) => s.id === id)!;
+      expect(service.extractionHealth, id).toMatchObject({ status: "gap", matched: false, reason: "extractor-null" });
+      expect(service.metrics, id).toEqual([]);
+    }
+  });
+
   test("candidates: B2, Fly.io, Baseten are explicit candidate shells, never held (#1058)", () => {
     for (const id of ["backblaze-b2", "fly-io", "baseten"]) {
       const s = byId.get(id)!;
@@ -171,6 +248,63 @@ describe("saas extraction (Part b)", () => {
     expect(t.sources?.trackerRow).toBe("Turso");
     expect(t.sources?.baselineDoc).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
     expect(byId.get("fly-io")!.sources?.trackerRow).toBeNull();
+  });
+
+  test("sources provenance: quota-view section names are literal heading text (#6848)", () => {
+    // Fly.io's spec heading is the only one with a regex escape
+    // (/^### Fly\.io$/); the displayed section name must be the literal
+    // heading, not the regex source.
+    expect(byId.get("fly-io")!.sources?.quotaViewSection).toBe("### Fly.io");
+    for (const s of services) {
+      if (s.sources) expect(s.sources.quotaViewSection).not.toContain("\\");
+    }
+  });
+
+  test("free-services tracker rows preserve state, date, and guardrail text", () => {
+    expect(extractUninstrumentedServices(FREE_SERVICES)).toEqual([
+      {
+        name: "boats.cloud",
+        whatFor: "Unknown — named to check",
+        status: "checked — verdict: unverified — no official site resolves",
+        checkedAt: "2026-10-29",
+        overageBehavior: "unverified",
+        guardrailNotes: "Do NOT adopt or enter payment details",
+      },
+      {
+        name: "Render",
+        whatFor: "PaaS",
+        status: "checked",
+        checkedAt: "2026-10-29",
+        overageBehavior: "wall",
+        guardrailNotes: "Keep no payment method on free workspaces",
+      },
+      {
+        name: "Future service",
+        whatFor: "Testing",
+        status: "unchecked — no official review yet",
+        checkedAt: null,
+        overageBehavior: "unknown",
+        guardrailNotes: "Verify before adoption",
+      },
+    ]);
+  });
+
+  test("free-services tracker rows: escaped pipes stay inside their cell (Codex P2, PR #3939)", () => {
+    const doc = `
+| Service | What for | Status | Overage behavior | Guardrail notes |
+|---|---|---|---|---|
+| Webby | Web \\| worker hosting | checked 2026-10-29 | wall | Keep no payment method on file |
+`;
+    expect(extractUninstrumentedServices(doc)).toEqual([
+      {
+        name: "Webby",
+        whatFor: "Web | worker hosting",
+        status: "checked",
+        checkedAt: "2026-10-29",
+        overageBehavior: "wall",
+        guardrailNotes: "Keep no payment method on file",
+      },
+    ]);
   });
 
   test("modal: monthly console read carries a dated used-credits value", () => {
@@ -471,6 +605,19 @@ describe("pace + freshness (§4, §1.1)", () => {
     const ok = projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 40)], "weekly")!;
     expect(ok.projectedExhaustionAt?.slice(0, 10)).toBe("2026-11-05");
   });
+  test("pace: negative pct with a future resetsAt yields no percent-at-reset projection (#6316)", () => {
+    // The #2346 poison fixture, now with resetsAt on the last record:
+    // -1e9 -> -999999999 over 2 days, reset +7 days. Before the guard,
+    // projectPace returned projectedPercentAtReset -999999995.5.
+    const poison = projectPace(
+      [rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999, "2026-10-31T00:00:00Z")],
+      "weekly",
+    )!;
+    expect(poison.projectedPercentAtReset).toBeNull();
+    expect(poison.projectedExhaustionAt).toBeNull();
+    expect(poison.slopePerDay).toBe(0.5);
+    expect(poison.points).toBe(2);
+  });
   test("no projection from a single point or a flat series", () => {
     expect(projectPace([rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
     expect(projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
@@ -557,7 +704,7 @@ describe("hub renders", () => {
       source: "api",
       observedBy: "backfill:quota-view.md",
     };
-    usage.history = { ...usage.history, "deepseek": [rec] };
+    usage.history = { ...usage.history, deepseek: [rec] };
     const html = renderQuota(await src.quota(), src.provenance(), usage);
     expect(html).toContain("DeepSeek PAYG reserve balance");
     expect(html).toContain("¥44.63");
@@ -575,10 +722,29 @@ describe("hub renders", () => {
     const html = renderQuota(await src.quota(), src.provenance());
     expect(html).toContain("Quota + throughput");
   });
+  test("quota and service cards show extraction gaps without changing their state", async () => {
+    const src = fixtureSource();
+    const quota = await src.quota();
+    quota.pools[0] = {
+      ...quota.pools[0],
+      extractionHealth: { status: "gap", matched: false, reason: "section-missing", count: 0 },
+    };
+    const usage = await src.usage();
+    usage.services[0] = {
+      ...usage.services[0],
+      extractionHealth: { status: "gap", matched: false, reason: "extractor-null", count: 0 },
+    };
+    const html = renderQuota(quota, src.provenance(), usage);
+    expect(html.match(/extraction gap/g)?.length).toBe(2);
+    expect(html).toContain('class="badge walled"');
+    expect(html).toContain('title="section-missing"');
+    expect(html).toContain('title="extractor-null"');
+  });
   test("hub sources section + candidate cards visible; detail sources block (#1058)", async () => {
     const src = fixtureSource();
     const usage: UsageView = {
       services: extractSaasServices(VIEW),
+      uninstrumentedServices: extractUninstrumentedServices(FREE_SERVICES),
       payg: extractPaygLines(VIEW, REGISTRY),
       charges: [],
       attention: [],
@@ -594,6 +760,11 @@ describe("hub renders", () => {
     expect(html).toContain("Fly.io");
     expect(html).toContain("Baseten");
     expect(html).toContain("candidate");
+    expect(html).toContain("Tracker services without instrumented quotas");
+    expect(html).toContain("<details><summary>3 evaluated services");
+    expect(html).toContain("boats.cloud");
+    expect(html).toContain("checked — verdict: unverified — no official site resolves");
+    expect(html).toContain("2026-10-29");
     const turso = usage.services.find((s) => s.id === "turso")!;
     const detail = renderServiceDetail(turso, [], src.provenance());
     expect(detail).toContain("Sources");

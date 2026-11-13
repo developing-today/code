@@ -37,10 +37,15 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
+            # #774 recurrence (2026-11-12): when the Magic Nix Cache proxy
+            # throttles (HTTP 418), fall back to building from source
+            # instead of hard-failing the check on the narinfo fetch.
+            fallback = true
 
       # Same store cache as the PR gate, so the nightly run starts warm
       # and unchanged derivations are not rebuilt from cold (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
         with:
           # FlakeHub Cache off (#2120): no id-token is granted and the
           # developing-today org is not registered, so the action's

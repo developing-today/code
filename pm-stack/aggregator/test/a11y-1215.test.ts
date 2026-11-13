@@ -9,7 +9,10 @@ import { PAGES } from "../src/pages.ts";
 import { navLinks, pageDropdown, renderAa } from "../src/render.ts";
 import { FIXTURE_AA } from "../src/sources/fixtures.ts";
 
-const renderSource = readFileSync(join(import.meta.dir, "..", "src", "render.ts"), "utf8");
+const renderSource =
+  readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8") +
+  "\n" +
+  readFileSync(join(import.meta.dir, "..", "src", "render.ts"), "utf8");
 
 describe("light theme (#1215)", () => {
   const light = renderSource.slice(
@@ -127,7 +130,7 @@ describe("the emitted explorer script stays valid (#1215, Codex P1 on PR #3308)"
     }));
     expect(scripts.length).toBeGreaterThan(0);
     const module = scripts.find((script) => script.tag.includes('type="module"') && !script.tag.includes(" src="));
-    expect(module?.body).toContain('/assets/aa-explorer-computations.js');
+    expect(module?.body).toContain("/assets/aa-explorer-computations.js");
     for (const script of scripts) {
       if (script.tag.includes('type="application/json"')) continue;
       const source = script.body.replace(/^\s*import [^\n]*\n/, "");

@@ -29,9 +29,16 @@ import {
   type SectionDiagnosis,
 } from "./feed.ts";
 import type { GhItem, ProvenanceDetail, QuotaView, RefKey } from "./model.ts";
+import type { PushHealthView } from "./freshness-reconcile.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
-import { fetchRfaState, rfaHealthDown, rfaHealthFacet, type RfaHealthFacet, type RfaState } from "./sources/ready-for-agent.ts";
+import {
+  fetchRfaState,
+  rfaHealthDown,
+  rfaHealthFacet,
+  type RfaHealthFacet,
+  type RfaState,
+} from "./sources/ready-for-agent.ts";
 
 /** Orchestration cadence: hourly; next run is an expectation, not a promise. */
 const ORCHESTRATION_CADENCE_MS = 3_600_000;
@@ -128,10 +135,10 @@ export interface FeedSectionHealth {
 export interface QuotaGathererProviderHealth {
   providerId: string;
   serviceId: string;
-  state: "ok" | "stale" | "error";
+  state: "ok" | "stale" | "error" | "lapsed";
   /** The latest successful sync, or null when the provider has never
    * synced: an errored entry's measuredAt is the failed attempt's time,
-   * not a sync (Codex P2 on PR #5180). Retained (stale) entries keep
+   * not a sync (Codex P2 on PR #5180). Retained (stale) and lapsed entries keep
    * their last successful measuredAt. */
   lastSyncAt: string | null;
   /** Quota providers do not currently publish a comparable expected row total. */
@@ -239,6 +246,14 @@ export interface HealthView {
    *  probe's HTTP 200. "down" with the error when the harness cannot
    *  be read; never an invented state. */
   rfa: RfaHealthFacet;
+  /** #3976: push health — the freshness journal + 5-minute reconciler
+   *  state (push up/degraded/down, last event, last successful
+   *  reconcile, per-source age/lag, open/reset gaps), assembled by
+   *  src/freshness-reconcile.ts. Separate from source freshness on
+   *  purpose: a connected stream is not proof of fresh data, and a
+   *  quiet source is not an outage. Null when the caller did not
+   *  assemble it (fixtures mode, older call sites) — never invented. */
+  push: PushHealthView | null;
 }
 
 // --- Render registry -------------------------------------------------------
@@ -362,7 +377,6 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
     section("attention", undefined, true),
     section("orchestration", feed.orchestration?.generatedAt, feed.orchestration !== undefined),
     section("dns", feed.dns?.generatedAt, feed.dns !== undefined),
-    section("julesSummary", undefined, feed.julesSummary !== undefined),
     section("registry", undefined, feed.registry !== undefined),
     section("projects", undefined, feed.projects !== undefined),
     section("coverage", undefined, feed.coverage !== undefined),
@@ -394,6 +408,9 @@ export interface HealthInputs {
   /** Source-conflict inbox (#1282 slice 1) — counted on the stack health
    *  surface so the backlog is visible where the stack's state already is. */
   conflicts?: ConflictInbox | null;
+  /** #3976: the reconciler's current push-health view (server.ts
+   *  supplies it in live mode); absent/null renders as unassembled. */
+  pushHealth?: PushHealthView | null;
 }
 
 export interface HealthDeps {
@@ -441,7 +458,11 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
                 detail: `feed generatedAt ${feed.generatedAt} is >60s in the future — never fresh`,
               }
             : feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS
-              ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — at or past the 5m freshness threshold` }
+              ? {
+                  state: "stale",
+                  ok: false,
+                  detail: `feed ${ageMsText(feedAgeMs)} — at or past the 5m freshness threshold`,
+                }
               : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
     } else if (def.probe === "section") {
       if (!diagnosis) {
@@ -519,6 +540,9 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     (services.some((s) => s.ok === false) ||
       (feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS) ||
       checkout.state === "behind" ||
+      // #3976: an unreadable freshness journal means push state
+      // cannot be proven — that is degraded, never silently ok.
+      (inputs.pushHealth != null && inputs.pushHealth.state === "down") ||
       // #1203: a harness whose GraphQL cannot be read (or whose backend
       // is not READY) is a degraded dependency, not an invisible one.
       rfa.state === "down" ||
@@ -574,6 +598,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     },
     pages: pageHealth(now),
     rfa,
+    push: inputs.pushHealth ?? null,
     facets: inputs.detail ?? null,
     itemsCoverage: inputs.itemsCoverage ?? null,
     comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },

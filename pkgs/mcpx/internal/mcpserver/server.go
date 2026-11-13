@@ -303,6 +303,16 @@ type Server struct {
 	// means the standalone behaviour: a private in-memory store.
 	TaskStore *taskStore
 
+	// TaskRetention, when set, supplies the current tasks.ttl /
+	// tasks.maxAge retention settings and is consulted on every
+	// task-store access, so a /v1/settings change reaches MCP task
+	// traffic without an intervening /v1 task request (#6247). A
+	// function, because the settings are hot: a value copied here
+	// would never follow a change (the MaxCompletions pattern). The
+	// daemon wires it when it injects its store; nil keeps the
+	// store's construction-time configuration.
+	TaskRetention func() (ttl, maxAge time.Duration)
+
 	// TaskAudit, when set, is the audit seam a private task store
 	// (the TaskStore == nil path in tasks()) is wired with, so a
 	// standalone server's task lifecycle records reach a log instead
@@ -379,8 +389,16 @@ func (s *Server) WithExtras(extras []Extra) *Server {
 		// Notify comes along. Dropping it silently turned off every push
 		// capability the moment a single extra tool existed, and a client
 		// cannot detect a server that declared nothing.
-		Notify:             s.Notify,
-		Ask:                s.Ask,
+		Notify: s.Notify,
+		Ask:    s.Ask,
+		// The task-store wiring comes along (#6247): dropping it here
+		// silently gave the extras server a private store and a nil
+		// retention provider, so the production MCPServer() path —
+		// which builds extras after injecting the daemon's store —
+		// lost both the shared store (#1555) and retention refresh.
+		TaskStore:          s.TaskStore,
+		TaskRetention:      s.TaskRetention,
+		TaskAudit:          s.TaskAudit,
 		ExtrasOnly:         s.ExtrasOnly,
 		OwnInstructions:    s.OwnInstructions,
 		Instance:           s.Instance,
@@ -425,6 +443,42 @@ type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
+
+	// relayed marks an error that is a peer's, carried verbatim
+	// (UpstreamError.relay). It is never serialized; it exists so the
+	// local-origin marker below is stamped only on errors mcpx minted
+	// itself (#2435).
+	relayed bool
+}
+
+// withLocalOrigin stamps e's data with the local-origin marker,
+// "mcpx": {"origin": "local"}, merged into whatever data the error
+// already carries (#2435). It answers the client's first diagnostic
+// question -- did mcpx mint this error, or is it relaying a peer's? --
+// for every error mcpx mints itself on the MCP surface: its name
+// checks, its internal failures, its policy refusals. A peer's error
+// is relayed untouched and never marked (see relayed above). Data
+// that is not a JSON object has nowhere to merge a key into and is
+// left as it is; every current local mint carries nil or object data.
+func withLocalOrigin(e *rpcError) *rpcError {
+	marker := map[string]any{"origin": "local"}
+	switch d := e.Data.(type) {
+	case nil:
+		e.Data = map[string]any{"mcpx": marker}
+	case map[string]any:
+		if inner, ok := d["mcpx"].(map[string]any); ok {
+			inner["origin"] = "local"
+		} else if _, taken := d["mcpx"]; !taken {
+			d["mcpx"] = marker
+		}
+	case json.RawMessage:
+		var m map[string]any
+		if len(d) > 0 && json.Unmarshal(d, &m) == nil && m != nil {
+			e.Data = m
+			return withLocalOrigin(e)
+		}
+	}
+	return e
 }
 
 // Error codes from the JSON-RPC specification. Using the standard ones means
@@ -731,6 +785,12 @@ func (s *Server) HandleOn(ctx context.Context, c *Conn, req request) *response {
 	ctx = withIdentity(ctx, c.identityFor(req.Params))
 	resp := s.handle(ctx, c, req)
 	if resp == nil || resp.Error != nil {
+		if resp != nil && resp.Error != nil && !resp.Error.relayed {
+			// An error mcpx minted itself, anywhere in the dispatch
+			// below: stamp its local origin (#2435). A relayed peer
+			// error keeps the peer's data exactly as it arrived.
+			resp.Error = withLocalOrigin(resp.Error)
+		}
 		return resp
 	}
 	if peer.Modern {
@@ -874,7 +934,16 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		if version == "" && c != nil {
 			version = c.Version()
 		}
-		if version != "" {
+		if version != "" && !(capName == "completions" && !Defines(version, FeatCompletions)) {
+			// The completions exemption: 2024-11-05 has no completions
+			// capability to advertise with, but completion/complete
+			// itself is older than the capability (see FeatCompletions),
+			// and capabilities() answers it for every revision. Gating
+			// it on advertisement makes the method unreachable for
+			// exactly the peers that cannot declare it — the
+			// conformance suite's completion-max-100 case at
+			// 2024-11-05 (#2716). The gate applies only where the
+			// capability exists to be advertised.
 			var caps map[string]any
 			if peer.Modern {
 				caps = s.capabilities(ctx, peer.Version, c)
@@ -1379,7 +1448,6 @@ func malformedMeta(req request) *response {
 	return nil
 }
 
-// negotiate picks a protocol version.
 // Supported are the protocol versions mcpx actually implements, newest first.
 //
 // Both eras. The legacy revisions negotiate once through an initialize
@@ -1394,6 +1462,7 @@ func malformedMeta(req request) *response {
 // 2025-03-26 replaced it, and 2026-07-28 says new implementations SHOULD NOT
 // adopt it. A 2024-11-05 client speaking Streamable HTTP is served; one that
 // only knows HTTP+SSE is not.
+// negotiate picks a protocol version.
 var Supported = spec.Revisions
 
 // ModernLatest is the newest per-request-metadata revision mcpx serves.
@@ -1853,12 +1922,12 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 		var req request
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
 			_ = enc.Encode(response{JSONRPC: "2.0",
-				Error: &rpcError{Code: codeParse, Message: err.Error()}})
+				Error: withLocalOrigin(&rpcError{Code: codeParse, Message: err.Error()})})
 			continue
 		}
 		if req.JSONRPC != "" && req.JSONRPC != "2.0" {
 			_ = enc.Encode(response{JSONRPC: "2.0", ID: req.ID,
-				Error: &rpcError{Code: codeInvalidRequest, Message: "unsupported jsonrpc version"}})
+				Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest, Message: "unsupported jsonrpc version"})})
 			continue
 		}
 		if len(req.ID) == 0 || req.Method == "initialize" {
@@ -1918,11 +1987,11 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 func (s *Server) stdioBatch(ctx context.Context, c *Conn, line []byte) any {
 	var elems []json.RawMessage
 	if err := json.Unmarshal(line, &elems); err != nil {
-		return response{JSONRPC: "2.0", Error: &rpcError{Code: codeParse, Message: err.Error()}}
+		return response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{Code: codeParse, Message: err.Error()})}
 	}
 	if len(elems) == 0 {
-		return response{JSONRPC: "2.0", Error: &rpcError{Code: codeInvalidRequest,
-			Message: "an empty batch is not a request"}}
+		return response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest,
+			Message: "an empty batch is not a request"})}
 	}
 	v := c.Version()
 	if v == "" {
@@ -2001,8 +2070,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// surface as it has always been.
 	r = r.WithContext(withCodemode(r.Context(), r.URL.Query().Get("codemode") == "false"))
 	if !s.originAllowed(r.Header.Get("Origin")) {
-		writeJSON(w, http.StatusForbidden, response{JSONRPC: "2.0", Error: &rpcError{
-			Code: codeInvalidRequest, Message: "Origin " + r.Header.Get("Origin") + " is not allowed"}})
+		writeJSON(w, http.StatusForbidden, response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{
+			Code: codeInvalidRequest, Message: "Origin " + r.Header.Get("Origin") + " is not allowed"})})
 		return
 	}
 	switch r.Method {
@@ -2035,14 +2104,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// goroutine with its stream still open.
 	if id, result, rerr, ok := replyOf(body); ok {
 		if modernHeaderVersion(hv) {
-			writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: &rpcError{
-				Code: codeInvalidRequest, Message: "2026-07-28 clients send no responses"}})
+			writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{
+				Code: codeInvalidRequest, Message: "2026-07-28 clients send no responses"})})
 			return
 		}
 		c, found := s.session(r.Header.Get(sessionHeader))
 		if !found || !c.deliver(id, result, rerr) {
-			writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: &rpcError{
-				Code: codeInvalidRequest, Message: "no request is waiting for that id on this session"}})
+			writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{
+				Code: codeInvalidRequest, Message: "no request is waiting for that id on this session"})})
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
@@ -2052,7 +2121,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req request
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0",
-			Error: &rpcError{Code: codeParse, Message: err.Error()}})
+			Error: withLocalOrigin(&rpcError{Code: codeParse, Message: err.Error()})})
 		return
 	}
 	if requestVersion(req.Params) != "" || modernHeaderVersion(hv) {
@@ -2065,10 +2134,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // serveModern answers one 2026-07-28 POST.
 func (s *Server) serveModern(w http.ResponseWriter, r *http.Request, req request) {
 	if bad := checkModernHeaders(r, req); bad != nil {
+		bad.Error = withLocalOrigin(bad.Error)
 		writeJSON(w, http.StatusBadRequest, bad)
 		return
 	}
 	if bad := s.checkParamHeaders(r, req); bad != nil {
+		bad.Error = withLocalOrigin(bad.Error)
 		writeJSON(w, http.StatusBadRequest, bad)
 		return
 	}
@@ -2096,6 +2167,7 @@ func (s *Server) serveLegacy(w http.ResponseWriter, r *http.Request, req request
 	if hv != "" && (!supports(hv) || Modern(hv)) {
 		bad := unsupportedVersion(req.ID, nil)
 		bad.Error.Data = map[string]any{"supported": LegacySupported(), "requested": hv}
+		bad.Error = withLocalOrigin(bad.Error)
 		writeJSON(w, http.StatusBadRequest, bad)
 		return
 	}
@@ -2104,8 +2176,8 @@ func (s *Server) serveLegacy(w http.ResponseWriter, r *http.Request, req request
 			// Unknown, expired or DELETEd. The client MUST then start a new
 			// session with an initialize that carries no session id.
 			writeJSON(w, http.StatusNotFound, response{JSONRPC: "2.0", ID: req.ID,
-				Error: &rpcError{Code: codeInvalidRequest,
-					Message: "no such session; send initialize without " + sessionHeader + " to start one"}})
+				Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest,
+					Message: "no such session; send initialize without " + sessionHeader + " to start one"})})
 			return
 		}
 	}
@@ -2182,12 +2254,12 @@ func (s *Server) serveBatch(w http.ResponseWriter, r *http.Request, body []byte,
 	var elems []json.RawMessage
 	if err := json.Unmarshal(body, &elems); err != nil {
 		writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0",
-			Error: &rpcError{Code: codeParse, Message: err.Error()}})
+			Error: withLocalOrigin(&rpcError{Code: codeParse, Message: err.Error()})})
 		return
 	}
 	if len(elems) == 0 {
 		writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0",
-			Error: &rpcError{Code: codeInvalidRequest, Message: "an empty batch is not a request"}})
+			Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest, Message: "an empty batch is not a request"})})
 		return
 	}
 	var c *Conn
@@ -2198,7 +2270,7 @@ func (s *Server) serveBatch(w http.ResponseWriter, r *http.Request, body []byte,
 		sc, ok := s.session(id)
 		if !ok {
 			writeJSON(w, http.StatusNotFound, response{JSONRPC: "2.0",
-				Error: &rpcError{Code: codeInvalidRequest, Message: "no such session"}})
+				Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest, Message: "no such session"})})
 			return
 		}
 		c, tracked, ctx = sc, true, context.WithoutCancel(ctx)
@@ -2236,13 +2308,13 @@ func (s *Server) serveBatch(w http.ResponseWriter, r *http.Request, body []byte,
 func (s *Server) serveDELETE(w http.ResponseWriter, r *http.Request) {
 	id := r.Header.Get(sessionHeader)
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: &rpcError{
-			Code: codeInvalidRequest, Message: "DELETE ends a session; name it in " + sessionHeader}})
+		writeJSON(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{
+			Code: codeInvalidRequest, Message: "DELETE ends a session; name it in " + sessionHeader})})
 		return
 	}
 	if _, ok := s.session(id); !ok {
-		writeJSON(w, http.StatusNotFound, response{JSONRPC: "2.0", Error: &rpcError{
-			Code: codeInvalidRequest, Message: "no such session"}})
+		writeJSON(w, http.StatusNotFound, response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{
+			Code: codeInvalidRequest, Message: "no such session"})})
 		return
 	}
 	s.dropSession(id)
@@ -2269,7 +2341,7 @@ func (s *Server) sessionFor(r *http.Request, req request) (*Conn, string) {
 		// A modern request is never bound to a legacy session: 2026-07-28
 		// has no sessions and says to ignore the header, and binding it
 		// would hand it that client's pending questions and version.
-		if c, ok := s.session(id); ok && !(modern && c.legacy) {
+		if c, ok := s.session(id); ok && (!modern || !c.legacy) {
 			return c, ""
 		}
 	}
@@ -2727,9 +2799,16 @@ func (c *Conn) cancel(params json.RawMessage) {
 	// On stdio this is how a client ends a subscriptions/listen: there is
 	// no per-request stream to close.
 	c.cancelListen(p.RequestID)
+	// The record is keyed by the canonical JSON id, so a numeric 7 and
+	// a string "7" stay the different requests JSON-RPC says they are:
+	// unquoting here would collapse the two into one key, and a later
+	// lookup for the string request would read the numeric request's
+	// cancellation as its own. The hook still hears the id's string
+	// value, which is the form its consumers compare against.
 	id := listenKey(p.RequestID)
+	hookID := id
 	if unq, err := strconv.Unquote(id); err == nil {
-		id = unq // a string id is recorded as the string, not its JSON
+		hookID = unq // a string id is reported as the string, not its JSON
 	}
 	c.mu.Lock()
 	if c.cancelled == nil {
@@ -2738,7 +2817,7 @@ func (c *Conn) cancel(params json.RawMessage) {
 	c.cancelled[id] = p.Reason
 	c.mu.Unlock()
 	if c.s.OnCancel != nil {
-		c.s.OnCancel(id, p.Reason)
+		c.s.OnCancel(hookID, p.Reason)
 	}
 	// And acted on: the request's context is cancelled, which is what
 	// reaches the upstream call, and its response is withheld.
@@ -2746,7 +2825,9 @@ func (c *Conn) cancel(params json.RawMessage) {
 }
 
 // Cancelled reports whether a request was cancelled on the default
-// connection, and why.
+// connection, and why. The id is matched in the canonical JSON form
+// Conn.cancel recorded, so "42" the string names the numeric request
+// 42 and a string-id request is named by its JSON (`"42"`).
 func (s *Server) Cancelled(id string) (string, bool) {
 	c := s.conn()
 	c.mu.Lock()

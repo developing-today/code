@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // The write policy gate (#1979), in the destructive_test.go fixture
@@ -118,6 +120,77 @@ func TestRegistryPreDispatchFailureDoesNotRecordUnknownOutcome(t *testing.T) {
 	}
 	if _, blocked := ledger.Lookup("demo"); blocked {
 		t.Fatal("pre-dispatch failure incorrectly recorded an unknown outcome")
+	}
+}
+
+// (#6493) The post-dispatch ledger classification honors the operator's
+// readOnlyTools declaration, not just tool annotations. Oracle: after a
+// genuinely post-dispatch failure -- the fake server's "slow" tool is
+// dispatched, then the call context times out before any response --
+// the ledger must contain no unknown-outcome record for the declared
+// read-only tool, and must still contain one for the same tool when it
+// is not declared. "slow" carries no annotations, so the annotation
+// path alone classifies it as a write in both cases.
+func TestCallWithLedgerHonorsDeclaredReadOnlyAfterDispatch(t *testing.T) {
+	run := func(t *testing.T, declared bool) (error, bool) {
+		t.Helper()
+		ledger, err := OpenWriteLedger(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r *Registry
+		if declared {
+			r = writePolicyRegistryWithReadOnly("allow", "slow")
+		} else {
+			r = writePolicyRegistry("allow")
+		}
+		r.writeLedger = ledger
+		// Resolve through the real config path, as the pool tests do:
+		// a hand-built Resolved leaves the folded defaults (instance
+		// cap, start/call timeouts) at zero and the pool cannot serve.
+		cfg := &config.Config{MCPServers: map[string]*config.Server{
+			"demo": {Name: "demo", Command: testsupport.FakeMCPBinary(t)},
+		}}
+		resolved, err := cfg.Resolve("demo")
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		scopeKey, _ := resolved.Scope.Key(config.CallContext{})
+		p := pool.New(resolved)
+		t.Cleanup(p.Close)
+		// Warm the pool with a generous context first: cold start and
+		// discovery must not eat the timed call's budget, or the failure
+		// lands in discovery (pre-dispatch) instead of after dispatch.
+		warmCtx, warmCancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer warmCancel()
+		if _, err := p.Call(warmCtx, config.ResolvedScope{Key: scopeKey}, "echo", map[string]any{"message": "warm"}); err != nil {
+			t.Fatalf("warm-up call: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, callErr := r.callWithLedger(ctx, p, "demo", "slow", map[string]any{"ms": 30000}, config.ResolvedScope{Key: scopeKey}, "call")
+		if callErr == nil {
+			t.Fatal("slow call unexpectedly succeeded")
+		}
+		_, blocked := ledger.Lookup("demo")
+		return callErr, blocked
+	}
+
+	callErr, blocked := run(t, true)
+	var unknown ErrUnknownOutcome
+	if errors.As(callErr, &unknown) {
+		t.Fatalf("declared read-only post-dispatch failure = %v, want the raw call error", callErr)
+	}
+	if blocked {
+		t.Fatal("declared read-only tool recorded an unknown outcome after a post-dispatch failure")
+	}
+
+	callErr, blocked = run(t, false)
+	if !errors.As(callErr, &unknown) {
+		t.Fatalf("undeclared post-dispatch failure = %T %v, want ErrUnknownOutcome", callErr, callErr)
+	}
+	if !blocked {
+		t.Fatal("undeclared write tool recorded no unknown outcome after a post-dispatch failure")
 	}
 }
 
@@ -335,5 +408,114 @@ func TestWritePolicyDenyPassesAReadOnlyTool(t *testing.T) {
 	asked, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, nil)
 	if err != nil || asked {
 		t.Errorf("read-only under deny: asked=%v err=%v, want a pass", asked, err)
+	}
+}
+
+// writePolicyRegistryWithReadOnly is a registry whose per-name view
+// for "demo" declares the named tools read-only (#6116).
+func writePolicyRegistryWithReadOnly(mode string, tools ...string) *Registry {
+	r := writePolicyRegistry(mode)
+	r.views = map[string]*config.Resolved{
+		"demo": {Namespace: "demo", ReadOnlyTools: tools},
+	}
+	return r
+}
+
+// (#6116) A tool the operator declared read-only passes the gate in
+// every mode, with no broker and nobody to answer: the declaration is
+// the pre-authorization a headless session can actually give. The
+// tool here is unannotated, so without the declaration the
+// specification's defaults make it a possibly destructive write --
+// the fff.find_files case, gated identically to a delete.
+func TestWritePolicyDeclaredReadOnlyPassesWithNoAnswerer(t *testing.T) {
+	for _, mode := range []string{"ask", "deny"} {
+		r := writePolicyRegistryWithReadOnly(mode, "wipe")
+		p := writePolicyPool(t, "", ``)
+		asked, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, nil)
+		if err != nil || asked {
+			t.Errorf("mode %s: declared read-only: asked=%v err=%v, want a pass", mode, asked, err)
+		}
+	}
+}
+
+// The declaration names tools exactly: a tool that is not listed
+// keeps the gate, in the same registry, on the same server.
+func TestWritePolicyDeclarationDoesNotWidenToUnlistedTools(t *testing.T) {
+	r := writePolicyRegistryWithReadOnly("ask", "wipe")
+	p := writePolicyPool(t, "", ``)
+	_, err := r.applyWritePolicy(context.Background(), p, "demo", "other", config.CallContext{}, nil)
+	var notConfirmed ErrNotConfirmed
+	if !errors.As(err, &notConfirmed) {
+		t.Fatalf("unlisted tool under ask with no broker = %v, want ErrNotConfirmed", err)
+	}
+}
+
+// The destructive floor is cleared by the declaration too, and only
+// by it: with a broker installed and confirmDestructive on, the
+// declared tool is not asked about (it returns at once, where an
+// unanswered question would wait out the ask timeout and refuse),
+// and the undeclared one is refused when nobody answers.
+func TestDeclaredReadOnlyClearsTheDestructiveFloor(t *testing.T) {
+	broker, err := elicit.Open(filepath.Join(t.TempDir(), "elicit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close() }()
+	r := &Registry{
+		consumer: ConsumerPolicy{
+			WritePolicy:        "allow",
+			ConfirmDestructive: true,
+			AskTimeout:         2 * time.Second,
+		},
+		broker: broker,
+		views: map[string]*config.Resolved{
+			"demo": {Namespace: "demo", ReadOnlyTools: []string{"seek"}},
+		},
+	}
+	p := pool.New(&config.Resolved{
+		Server:    &config.Server{Name: "demo", Command: "demo"},
+		Namespace: "demo",
+	})
+	p.SetSchemas(
+		[]mcpclient.Tool{{Name: "wipe"}, {Name: "seek"}},
+		nil, nil, "", time.Now(), time.Time{}, false)
+
+	if err := r.confirmDestructive(context.Background(), p, "demo", "seek", config.CallContext{}); err != nil {
+		t.Fatalf("declared read-only tool was asked about: %v", err)
+	}
+	err = r.confirmDestructive(context.Background(), p, "demo", "wipe", config.CallContext{})
+	var notConfirmed ErrNotConfirmed
+	if !errors.As(err, &notConfirmed) {
+		t.Fatalf("undeclared tool with nobody to answer = %v, want ErrNotConfirmed", err)
+	}
+}
+
+// (#6116) A gate refusal is a typed refusal, not a tool failure: HTTP
+// 403 and a machine-readable code in the error body, so a headless
+// caller can tell "the gate refused this call" apart from "the tool
+// ran and failed" (502, no code) without parsing the error text.
+func TestGateRefusalsAreTyped(t *testing.T) {
+	r := writePolicyRegistry("ask")
+	p := writePolicyPool(t, "", ``)
+	_, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, nil)
+	if got := failureStatus(err); got != 403 {
+		t.Errorf("failureStatus(ErrNotConfirmed) = %d, want 403", got)
+	}
+	if body := callErrorBody(err); body.Code != "confirmation_required" {
+		t.Errorf("callErrorBody(ErrNotConfirmed).Code = %q, want confirmation_required", body.Code)
+	}
+
+	r = writePolicyRegistry("deny")
+	_, err = r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, nil)
+	if body := callErrorBody(err); body.Code != "write_policy_denied" {
+		t.Errorf("callErrorBody(ErrWriteDenied).Code = %q, want write_policy_denied", body.Code)
+	}
+
+	plain := errors.New("boom")
+	if got := failureStatus(plain); got != 502 {
+		t.Errorf("failureStatus(plain error) = %d, want 502", got)
+	}
+	if body := callErrorBody(plain); body.Code != "" {
+		t.Errorf("callErrorBody(plain error).Code = %q, want empty", body.Code)
 	}
 }

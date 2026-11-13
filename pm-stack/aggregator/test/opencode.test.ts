@@ -232,7 +232,10 @@ describe("opencode v2 mapper", () => {
     }));
     overrides = {
       sessions: {
-        data: [...futureSessions, { id: "ses_recent", title: "genuinely recent", time: { created: recent, updated: recent } }],
+        data: [
+          ...futureSessions,
+          { id: "ses_recent", title: "genuinely recent", time: { created: recent, updated: recent } },
+        ],
       },
       active: { data: {} },
       permissions: { data: {} },
@@ -248,7 +251,9 @@ describe("opencode v2 mapper", () => {
   test("active/pending-included future sessions map a null lastActivityAt (#4180)", async () => {
     const future = NOW + 365 * 24 * 3_600_000;
     overrides = {
-      sessions: { data: [{ id: "ses_future_active", title: "future but live", time: { created: recent, updated: future } }] },
+      sessions: {
+        data: [{ id: "ses_future_active", title: "future but live", time: { created: recent, updated: future } }],
+      },
       active: { data: { ses_future_active: {} } },
       permissions: { data: [] },
     };
@@ -303,6 +308,9 @@ describe("opencode v2 mapper", () => {
       true,
     );
     expect(mapped!.tokensBySession.has("undefined")).toBe(false);
+    // The null/id-less sessions plus malformed permission/form/message
+    // containers are dropped and counted, never silently swallowed (#2543).
+    expect(mapped!.droppedElements).toBe(5);
     expect(mapped!.entries.find((entry) => entry.sessionId === "ses_broken")?.messageCount).toBe(0);
     expect(mapped!.entries.find((entry) => entry.sessionId === "ses_valid_sibling")?.messageCount).toBe(2);
   });

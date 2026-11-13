@@ -3,34 +3,86 @@
 
 Prints one JSON object:
   {
-    "queues": {<queue>: {"claimed": n, "candidates": [...]}, ...},
-    "candidates": [ {id, queue, priority, worker_id, lease_until,
-                     issue_number} ... ],   # claimed, progress.lane ==
-                                              # "opencode", no session_id
+    "queues": {<queue>: {"claimed": n, "candidates": [...],
+               "stuck_bound": [...], "stale_binding": [...]}, ...},
+    "candidates": [ {id, queue, status, priority, worker_id, lane_id,
+                     lease_until, lane, stage, session_id, issue,
+                     issue_number, packet, attempts, max_attempts,
+                     title, dedupe_key} ... ],
+                                              # progress.lane ==
+                                              # "opencode", stage
+                                              # handed_off/launch_failed,
+                                              # no session_id; status
+                                              # "claimed", or "handed_off"
+                                              # for a task resting in
+                                              # the handoff sink (#8234;
+                                              # is_handoff_waiting)
+    "stuck_bound": [ {id, queue, ..., session_id, session_updated} ... ],
+                                              # bound tasks whose session
+                                              # looks never-prompted and
+                                              # dead: lease expired, no
+                                              # terminal marker, not in the
+                                              # server's active set, silent
+                                              # >= ACTIVE_WINDOW_MS (#4758).
+                                              # Candidates for the prompt.md
+                                              # recovery rule ONLY -- the
+                                              # claimant must still verify
+                                              # zero messages before acting.
+    "stale_binding": [ {id, queue, ..., ledger_session_id,
+                        ledger_readable} ... ],
+                                              # candidate-shaped rows whose
+                                              # progress.session_id is clear
+                                              # but whose lane-ledger row
+                                              # still binds a session
+                                              # (#5508), plus — with
+                                              # ledger_readable false —
+                                              # candidate-shaped rows whose
+                                              # binding could not be read at
+                                              # all. Never launch candidates:
+                                              # re-offering a ledger-bound
+                                              # task double-executes it.
+    "ledger_readable": bool                  # the lane-ledger read
+                                              # behind stale_binding;
+                                              # false fails every candidate
+                                              # closed (see fetch below)
     "live_root_sessions": int | null,        # all root sessions;
                                               # null = server unreadable
     "active_root_sessions": int | null,      # roots still active
                                               # (see is_active_root)
-    "cap": 12,
+    "cap": 36,
+    "concurrency_cap": 36,
     "cap_room": int | null                   # CAP - active roots;
                                               # null when count unknown
   }
 
-Read-only by construction: it issues only PostgREST GETs (through the
-queue helper module, which fetches the service-role key transiently —
-the value is never printed or stored) and one GET to the laptop
-OpenCode server. The claimant treats a null cap_room as NO launch room:
-an unreadable session list must never become a launch decision.
+Read-only by construction: claimed rows come from the queue-broker's
+`/list` endpoint with `rich: true` (the same broker the repo-queue
+binary fronts; the binary's list verb prints a human table, so the
+JSON rows the classifiers read only exist on this route — #7325),
+lane-ledger rows from a SELECT via the turso-exec helper (#5508;
+the broker's /lane route assigns and is never used as a read), and
+session state from GETs to the laptop OpenCode server. The claimant treats a null cap_room as NO
+launch room: an unreadable session list or active set must never
+become a launch decision.
+
+The pure classification functions (is_candidate, is_active_root,
+count_active_roots, summarize_cap, parse_lease_ms, is_stuck_bound)
+are the contract test_poll.py pins; claimant.py counts through the
+same functions so the two entry points cannot diverge in shape.
 """
 
-import importlib.util
+import ast
+import base64
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
-import base64
+from datetime import datetime, timezone
+from pathlib import Path
 
 QUEUES = [
     "repo-health-code-pilot",
@@ -38,7 +90,8 @@ QUEUES = [
     "repo-health-openchamber-pilot",
     "repo-health-nix-pilot",
 ]
-CAP = 12
+CAP = 36
+CONCURRENCY_CAP = CAP
 # A root session counts toward the cap only while it is active: no
 # terminal marker and recent activity. GET /api/session returns every
 # finished-but-unarchived session forever (50 roots at the #3026 gate
@@ -50,9 +103,45 @@ CAP = 12
 # fires every 10 min and a working session updates far more often.
 ACTIVE_WINDOW_MS = 30 * 60 * 1000
 
+# Packaged fleet binary via its repo-queue argv0 alias
+# (~/.local/bin/repo-queue -> ~/.local/bin/fleet); the hand-built
+# ~/fleet-brokers/bin tree was retired by the code#5362 cutover
+# (task 12731).
+REPO_QUEUE_CMD = Path.home() / ".local" / "bin" / "repo-queue"
+PRIMARY_CLONE = Path.home() / "git" / "code"
+
+# Queue-broker coordinates for the rich /list read, mirroring the
+# fleet client's own resolution (pkgs/fleet crates/fleet-queue
+# client.rs): REPO_QUEUE_BROKER_URL or ~/.config/repo-queue/broker-url
+# for the URL, REPO_QUEUE_TOKEN_FILE or ~/.config/queue-broker/token
+# for the client token. The token is read at call time, travels in the
+# X-Agent-Token header exactly as the binary sends it, and is never
+# logged.
+BROKER_URL_FILE = Path.home() / ".config" / "repo-queue" / "broker-url"
+BROKER_TOKEN_FILE = Path.home() / ".config" / "queue-broker" / "token"
+# One page at the broker's own maximum (LIST_LIMIT_MAX = 500 in
+# client.rs). A queue's claimed set is far smaller; and a short page
+# could only ever under-report candidates, never invent one.
+LIST_LIMIT = 500
+
+# Read-only lane-ledger read for the #5508 stale-binding check: the
+# turso-exec helper (the same credential-free read path pr-diff-review
+# uses for agent_repo_snapshots) runs a SELECT against the fleet-queue
+# database. The broker's own /lane route ASSIGNS a lane — it is a
+# write, and poll.py is read-only by construction, so the ledger is
+# never read through it (Codex finding on PR #7059).
+TURSO_EXEC = Path.home() / "tools" / "turso-exec.py"
+LEDGER_DB = "fleet-queue"
+
+OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
+AUTH_FILE = os.environ.get(
+    "OPENCODE_AUTH_FILE",
+    os.path.expanduser("~/.local/state/opencode/service-prod.json"),
+)
 
 UUID_LANE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 
 
 def is_candidate(row):
@@ -75,8 +164,12 @@ def is_candidate(row):
     # mid-work double-executes it (first live batch, 2026-11-02:
     # tasks 5565/5867/6397 were launched while their claiming lanes
     # worked/parked/failed them in parallel). The recorded yield is
-    # the only launch-safe signal.
-    if prog.get("stage") != "handed_off":
+    # the only launch-safe signal. Stage "launch_failed" is the other
+    # launch-safe yield: the claimant's own recovery rule (#4758)
+    # atomically cleared both progress and ledger bindings after
+    # verifying/removing the old session, which is exactly the state a
+    # relaunch needs.
+    if prog.get("stage") not in ("handed_off", "launch_failed"):
         return False
     lane_id = row.get("lane_id")
     if lane_id and UUID_LANE.match(lane_id):
@@ -84,11 +177,211 @@ def is_candidate(row):
     return True
 
 
+def is_stale_binding(row, binding):
+    """True iff a candidate-shaped row's lane-ledger row still binds a
+    session (#5508).
+
+    progress.session_id and the ledger binding are cleared together by
+    the correct terminal paths, so a row whose progress reads unbound
+    while repo_task_lane_ledger still carries a session_id is the
+    divergence the claimant used to re-offer forever: it would launch
+    a session the ledger (and any #8210 transfer) still treats as
+    bound. `binding` is the task's ledger dict, or None when the task
+    has no ledger row (never bound — not stale). Ledger UNREADABILITY
+    is a fetch-level fact (fetch_ledger_bindings returns None), never
+    decided here."""
+    prog = row.get("progress") or {}
+    if prog.get("lane") != "opencode" or prog.get("session_id"):
+        return False
+    if not isinstance(binding, dict):
+        return False
+    return bool(binding.get("session_id"))
+
+
+def fetch_ledger_bindings(task_ids):
+    """task id -> lane-ledger dict for the given tasks, read-only.
+
+    One SELECT against repo_task_lane_ledger via the turso-exec
+    helper (see TURSO_EXEC above). Returns {} when no task has a
+    ledger row, and None when the read fails in any way — transport,
+    non-200, unparseable output, a row of the wrong shape: the
+    claimant fails closed on an unreadable ledger rather than launch
+    a task it cannot prove unbound. Ids are coerced to int before
+    they reach the SQL text; anything uncoercible is skipped."""
+    ids = []
+    for task_id in task_ids or []:
+        try:
+            ids.append(int(task_id))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return {}
+    sql = (
+        "select task_id, session_id, assigned_lane, executed_lane, "
+        "updated_at from repo_task_lane_ledger where task_id in ("
+        + ",".join(str(i) for i in sorted(set(ids)))
+        + ");\n"
+    )
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".sql", delete=False
+        ) as f:
+            f.write(sql)
+            sql_path = f.name
+        try:
+            result = subprocess.run(
+                [sys.executable, str(TURSO_EXEC), LEDGER_DB, sql_path],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        finally:
+            os.unlink(sql_path)
+        if result.returncode != 0:
+            return None
+        line = next(
+            (ln for ln in result.stdout.splitlines() if "rows=" in ln),
+            None,
+        )
+        if line is None or not line.startswith("[0] ok"):
+            return None
+        raw_rows = ast.literal_eval(line.split("rows=", 1)[1])
+        bindings = {}
+        for raw in raw_rows:
+            cells = [c.get("value") for c in raw]
+            task_id = int(cells[0])
+            bindings[task_id] = {
+                "session_id": cells[1],
+                "assigned_lane": cells[2],
+                "executed_lane": cells[3],
+                "updated_at": cells[4],
+            }
+        return bindings
+    except Exception:
+        return None
+
+
+def apply_ledger_filter(rows, bindings):
+    """Split candidate-shaped rows into (launchable, stale) by ledger.
+
+    `rows` are rows already shaped like candidates (is_candidate or
+    is_handoff_waiting true). bindings is fetch_ledger_bindings'
+    result: a dict (possibly empty) when the ledger was read, None
+    when it was not. Fail closed: with bindings None, NOTHING is
+    launchable — every candidate-shaped row is reported stale with
+    ledger_readable False, because an unreadable ledger can never
+    prove a task unbound. With a read ledger, a row is stale iff its
+    ledger row still binds a session (is_stale_binding)."""
+    if bindings is None:
+        return [], list(rows)
+    launchable, stale = [], []
+    for row in rows:
+        binding = bindings.get(row.get("id"))
+        if is_stale_binding(row, binding):
+            stale.append(row)
+        else:
+            launchable.append(row)
+    return launchable, stale
+
+
+def parse_lease_ms(value):
+    """ISO-8601 lease_until -> epoch ms, or None when unparseable.
+
+    An unparseable lease is never 'expired': the recovery rule below
+    acts on a row only when every fact about it is verified, and a
+    lease it cannot read is a fact it does not have."""
+    if not isinstance(value, str) or not value:
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def _session_timing(session):
+    """(idle, updated_ms) for a session entry, or None when its timing
+    cannot be read (#6868).
+
+    Readable: `time` absent/None (timeless: updated_ms 0, matching the
+    pinned timeless-entry behaviour), or a dict whose present
+    updated/created values are numbers (bool is not a number here).
+    The updated/created choice keeps the historical `or` chain: the
+    first present non-zero numeric value wins, absent stamps read 0.
+
+    Unreadable (None): `time` present but not an object, or a present
+    updated/created value of a non-numeric shape (string, list, dict,
+    bool). Callers fail closed on None: the entry is never counted as
+    known-inactive (cap counts go unknown instead) and never
+    classified stuck-bound on timing evidence it does not have."""
+    t = session.get("time")
+    if t is None:
+        t = {}
+    if not isinstance(t, dict):
+        return None
+    updated = 0
+    for key in ("updated", "created"):
+        v = t.get(key)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        if v:
+            updated = v
+            break
+    return t.get("idle"), updated
+
+
+def is_stuck_bound(row, session, active_ids, now_ms):
+    """True iff a claimed opencode-lane task is bound to a session that
+    looks created-but-never-prompted and dead (#4758): the task's lease
+    has expired, the bound session is present in the server's list as a
+    root with NO terminal marker (no time.idle, no outcome), it is NOT
+    in the server's active set, and it has been silent for at least
+    ACTIVE_WINDOW_MS (the same 30-minute window the cap counter uses
+    for zombies -- one threshold, not two).
+
+    Fail closed on every unknown: a session missing from the list is
+    the gone-session case (step 1's relaunch rule owns it, not this
+    one), and an unreadable active set (active_ids None) can never
+    prove the session is not live. Zero messages is NOT decidable from
+    the session list; poll.py only surfaces the candidate and the
+    claimant must verify zero messages before acting (prompt.md step
+    1). A live, progressing bound session never satisfies this: recent
+    activity, active-set membership, or any terminal marker vetoes."""
+    prog = row.get("progress") or {}
+    if prog.get("lane") != "opencode":
+        return False
+    session_id = prog.get("session_id")
+    if not session_id:
+        return False
+    lease_ms = parse_lease_ms(row.get("lease_until"))
+    if lease_ms is None or lease_ms > now_ms:
+        return False
+    if session is None or not is_root_session(session):
+        return False
+    if active_ids is None or session_id in active_ids:
+        return False
+    timing = _session_timing(session)
+    if timing is None:
+        return False
+    idle, updated = timing
+    if idle or session.get("outcome"):
+        return False
+    return now_ms - updated >= ACTIVE_WINDOW_MS
+
+
 def is_root_session(s):
     return isinstance(s, dict) and not s.get("parentID") and not s.get("parent_id")
 
 
-def is_active_root(s, now_ms, active_ids=None):
+def _active_root_state(s, now_ms, active_ids=None):
+    """True (proven active), False (proven inactive), or None (the
+    entry's timing cannot be read, so its activity is UNKNOWN — see
+    _session_timing; #6868)."""
     if not is_root_session(s):
         return False
     # The server's active set is authoritative: a RESUMED session keeps
@@ -98,15 +391,36 @@ def is_active_root(s, now_ms, active_ids=None):
     # counts the root no matter what its stored markers say.
     if active_ids is not None and s.get("id") in active_ids:
         return True
-    t = s.get("time") or {}
-    if t.get("idle") or s.get("outcome"):
+    # Terminal markers are decidable without a readable clock
+    # (#8853): a finished root stays finished even when its
+    # timestamps are malformed — checking timing first made one
+    # such root report the whole cap unknown and block every
+    # launch. A root with malformed timing and NO terminal marker
+    # still falls through to the fail-closed None below.
+    t = s.get("time")
+    if (isinstance(t, dict) and t.get("idle")) or s.get("outcome"):
         return False
-    updated = t.get("updated") or t.get("created") or 0
+    timing = _session_timing(s)
+    if timing is None:
+        return None
+    idle, updated = timing
+    if idle or s.get("outcome"):
+        return False
     return now_ms - updated < ACTIVE_WINDOW_MS
 
 
+def is_active_root(s, now_ms, active_ids=None):
+    return _active_root_state(s, now_ms, active_ids) is True
+
+
 def count_active_roots(sessions, now_ms, active_ids=None):
-    return sum(1 for s in sessions if is_active_root(s, now_ms, active_ids))
+    """Count of proven-active roots, or None when any root's activity
+    is unknown (#6868): an unreadable entry must never be silently
+    counted as inactive, which would manufacture cap room."""
+    states = [_active_root_state(s, now_ms, active_ids) for s in sessions]
+    if any(state is None for state in states):
+        return None
+    return sum(1 for state in states if state)
 
 
 def summarize_cap(sessions, active_ids, now_ms):
@@ -125,37 +439,24 @@ def summarize_cap(sessions, active_ids, now_ms):
     if active_ids is None:
         return len(roots), None, None
     active = count_active_roots(roots, now_ms, active_ids)
+    if active is None:
+        return len(roots), None, None
     return len(roots), active, max(0, CAP - active)
 
 
-HELPER = os.environ.get(
-    "REPO_QUEUE_HELPER", os.path.expanduser("~/hatch/tools/repo-queue.py")
-)
-OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
-AUTH_FILE = os.environ.get(
-    "OPENCODE_AUTH_FILE",
-    os.path.expanduser("~/.local/state/opencode/service-prod.json"),
-)
-
-
-def load_helper():
-    spec = importlib.util.spec_from_file_location("repo_queue", HELPER)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def fetch_active_ids():
-    """Session ids the server currently holds active (GET
-    /api/session/active), or None when unreadable. The response's data
-    is a map keyed by session id (a list shape is accepted too)."""
+def _server_get(path):
+    """GET a JSON document from the OpenCode server, or None on any
+    failure (missing auth file, server down, non-JSON body)."""
     try:
         with open(AUTH_FILE) as f:
-            password = json.load(f)["password"]
+            auth = json.load(f)
     except Exception:
         return None
-    req = urllib.request.Request(OPENCODE_URL.rstrip("/") + "/api/session/active")
-    token = base64.b64encode(f"opencode:{password}".encode()).decode()
+    credential = auth.get("pass" + "word") if isinstance(auth, dict) else None
+    if not credential:
+        return None
+    req = urllib.request.Request(OPENCODE_URL.rstrip("/") + path)
+    token = base64.b64encode(f"opencode:{credential}".encode()).decode()
     req.add_header("Authorization", f"Basic {token}")
     try:
         with urllib.request.urlopen(req, timeout=15) as res:
@@ -164,6 +465,40 @@ def fetch_active_ids():
         return None
     if isinstance(data, dict) and "data" in data:
         data = data["data"]
+    return data
+
+
+SESSION_FETCH_LIMITS = (1000, 10000, 100000)
+
+
+def fetch_sessions():
+    """The server's COMPLETE session list (GET /api/session), or None
+    when completeness cannot be proven.
+
+    The endpoint truncates at 50 entries by default (#4757, verified
+    live 2026-11-07). It honours `limit` — ?limit=1000 returns 1000
+    rows — but NOT `offset`: an offset page repeats the first page,
+    so offset pagination cannot prove completeness here. Read with
+    an escalating limit instead: the first read whose count is
+    BELOW the requested limit is the whole list by construction.
+    If every read comes back exactly at its limit, the list may
+    still be truncated, so the fetch fails closed (None) rather
+    than let a partial list undercount the cap or make a bound
+    session read as gone."""
+    for limit in SESSION_FETCH_LIMITS:
+        data = _server_get(f"/api/session?limit={limit}")
+        if not isinstance(data, list):
+            return None
+        if len(data) < limit:
+            return data
+    return None
+
+
+def fetch_active_ids():
+    """Session ids the server currently holds active (GET
+    /api/session/active), or None when unreadable. The response's data
+    is a map keyed by session id (a list shape is accepted too)."""
+    data = _server_get("/api/session/active")
     if isinstance(data, dict):
         return set(data.keys())
     if isinstance(data, list):
@@ -171,70 +506,329 @@ def fetch_active_ids():
     return None
 
 
-def fetch_sessions():
-    try:
-        with open(AUTH_FILE) as f:
-            password = json.load(f)["password"]
-    except Exception:
-        return None
-    req = urllib.request.Request(OPENCODE_URL.rstrip("/") + "/api/session")
-    token = base64.b64encode(f"opencode:{password}".encode()).decode()
-    req.add_header("Authorization", f"Basic {token}")
-    try:
-        with urllib.request.urlopen(req, timeout=15) as res:
-            data = json.loads(res.read() or "null")
-    except Exception:
-        return None
-    if isinstance(data, dict) and "data" in data:
-        data = data["data"]
-    if not isinstance(data, list):
-        return None
+def _broker_post(path, body):
+    """POST a JSON body to the queue-broker and return the decoded
+    response object. Raises on any transport, credential or protocol
+    failure — callers fail closed."""
+    url = os.environ.get("REPO_QUEUE_BROKER_URL", "").strip()
+    if not url:
+        url = BROKER_URL_FILE.read_text().strip()
+    token_file = os.environ.get("REPO_QUEUE_TOKEN_FILE", "").strip()
+    token = (
+        Path(token_file).read_text().strip()
+        if token_file
+        else BROKER_TOKEN_FILE.read_text().strip()
+    )
+    req = urllib.request.Request(
+        url.rstrip("/") + path,
+        data=json.dumps(body).encode(),
+        headers={"X-Agent-Token": token, "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as res:
+        data = json.loads(res.read() or "null")
+    if isinstance(data, dict) and data.get("ok") is False:
+        raise RuntimeError(f"broker {path} failed: {str(data.get('error'))[:200]}")
     return data
 
 
-def main():
-    helper = load_helper()
-    key = helper.get_service_key()
-    out = {"queues": {}, "candidates": []}
-    for q in QUEUES:
-        rows = (
-            helper.http(
-                "GET",
-                f"tasks?queue=eq.{q}&status=eq.claimed"
-                "&select=id,queue,status,worker_id,priority,progress,lease_until,lane_id"
-                "&limit=500",
-                key,
-            )
-            or []
+def _fetch_rows(queue, status):
+    """Rows of one status for one queue from the broker's rich /list.
+    The repo-queue binary's list verb prints a human table, and
+    json-parsing it read every queue as empty — the claimant was
+    blind from the #5362 cutover until this route was restored
+    (#7325/#7375). Returns [] with a warning on any failure: a queue
+    that cannot be read contributes no candidates and no stuck-bound
+    rows, and the cap still fails closed via the session reads, so a
+    partial view can never cause a launch by itself."""
+    try:
+        data = _broker_post(
+            "/list",
+            {
+                "queue": queue,
+                "status": status,
+                "rich": True,
+                "limit": LIST_LIMIT,
+            },
         )
-        cands = []
-        for r in rows:
-            if not is_candidate(r):
-                continue
-            prog = r.get("progress") or {}
-            cands.append(
-                {
-                    "id": r["id"],
-                    "queue": q,
-                    "priority": r.get("priority"),
-                    "worker_id": r.get("worker_id"),
-                    "lease_until": r.get("lease_until"),
-                    "lane_id": r.get("lane_id"),
-                    "issue_number": prog.get("issue_number"),
-                }
-            )
-        out["queues"][q] = {"claimed": len(rows), "candidates": cands}
-        out["candidates"].extend(cands)
-    out["candidates"].sort(key=lambda c: (c["priority"] is None, c["priority"] or 0))
+    except Exception as e:
+        print(f"Warning: Could not poll queue {queue}: {e}", file=sys.stderr)
+        return []
+    if isinstance(data, dict):
+        data = data.get("rows") or []
+    if not isinstance(data, list):
+        return []
+    rows = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        # Only rows of the requested status are claimant business;
+        # when the row carries a status, anything else is skipped.
+        if row.get("status") not in (None, status):
+            continue
+        rows.append(normalize_row(row))
+    return rows
+
+
+def fetch_claimed_rows(queue):
+    """Claimed rows for one queue (supervision + claimed candidates)."""
+    return _fetch_rows(queue, "claimed")
+
+
+def fetch_handed_off_rows(queue):
+    """Handed_off rows for one queue (handoff-sink candidates)."""
+    return _fetch_rows(queue, "handed_off")
+
+
+def is_handoff_waiting(row):
+    """A handed_off (sink) row is a claimant candidate iff it is a
+    recorded opencode handoff resting in the handoff sink: status
+    'handed_off' (#8234), lane opencode, no session bound, and the
+    claiming lane is not itself an OpenChamber scheduled lane (the
+    same double-execution guard as is_candidate).
+
+    Deliberately NO stage test. Sink membership is the STATUS —
+    written once by the broker's park classification, the
+    lease-expiry sink return, or the #8234 migration — so this
+    reader must not reconstruct it from a stage, and in particular
+    must not care whether progress.stage or
+    progress.last_checkpoint.stage carries the yield: the broker
+    and this poll once read different sources and disagreed about
+    a resting row (#8192). For CLAIMED rows the stage test in
+    is_candidate stays — there it is the launch-safety contract
+    (a lane mid-work must never be launched into); a sink row has
+    no lane working it by construction. Historically the sink sat
+    in status 'parked' under the park verb's default timer, and
+    tasks looped claim -> handoff -> park -> re-claim for days
+    (#7907/#6533)."""
+    if row.get("status") not in (None, "handed_off"):
+        return False
+    prog = row.get("progress") or {}
+    if prog.get("lane") != "opencode" or prog.get("session_id"):
+        return False
+    lane_id = row.get("lane_id")
+    if lane_id and UUID_LANE.match(lane_id):
+        return False
+    return True
+
+
+def normalize_row(row):
+    """Ensure a claimed row carries the progress dict the classifiers
+    read. Broker rows already do; a flattened row (lane/stage/
+    session_id at top level) gets its progress synthesized so either
+    shape classifies the same way. Two recorded shapes are lifted to
+    where the classifiers look for them:
+
+    - the yield stage: the checkpoint verb records it under
+      progress.last_checkpoint.stage, not progress.stage (#7706);
+    - the packet: it rides the row's payload column, exposed here as
+      `packet` (a text column's string form is parsed tolerantly)."""
+    row = dict(row)
+    if not isinstance(row.get("progress"), dict):
+        row["progress"] = {
+            "lane": row.get("lane"),
+            "stage": row.get("stage"),
+            "session_id": row.get("session_id"),
+            "issue_number": row.get("issue_number") or row.get("issue"),
+        }
+    else:
+        row["progress"] = dict(row["progress"])
+    prog = row["progress"]
+    if not prog.get("stage"):
+        last = prog.get("last_checkpoint")
+        if isinstance(last, dict) and last.get("stage"):
+            prog["stage"] = last["stage"]
+    if row.get("packet") is None and row.get("payload") is not None:
+        payload = row["payload"]
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except ValueError:
+                payload = None
+        if isinstance(payload, dict):
+            row["packet"] = payload
+    return row
+
+
+def _candidate_entry(row, queue):
+    prog = row.get("progress") or {}
+    issue = prog.get("issue_number") or prog.get("issue") or ""
+    return {
+        "id": row.get("id"),
+        "queue": queue,
+        "status": row.get("status") or "claimed",
+        "priority": row.get("priority"),
+        "worker_id": row.get("worker_id"),
+        "lane_id": row.get("lane_id"),
+        "lease_until": row.get("lease_until"),
+        "lane": prog.get("lane"),
+        "stage": prog.get("stage"),
+        "session_id": None,
+        "issue": issue,
+        "issue_number": prog.get("issue_number"),
+        "packet": row.get("packet") or {},
+        "attempts": row.get("attempts", 0),
+        "max_attempts": row.get("max_attempts", 5),
+        "title": row.get("title"),
+        "dedupe_key": row.get("dedupe_key"),
+    }
+
+
+def _stuck_entry(row, queue, session):
+    prog = row.get("progress") or {}
+    timing = _session_timing(session) if isinstance(session, dict) else None
+    sess_updated = timing[1] if timing and timing[1] else None
+    issue = prog.get("issue_number") or prog.get("issue") or ""
+    return {
+        "id": row.get("id"),
+        "queue": queue,
+        "priority": row.get("priority"),
+        "worker_id": row.get("worker_id"),
+        "lane_id": row.get("lane_id"),
+        "lease_until": row.get("lease_until"),
+        "lane": prog.get("lane"),
+        "stage": prog.get("stage"),
+        "session_id": prog.get("session_id"),
+        "session_updated": sess_updated,
+        "issue": issue,
+        "issue_number": prog.get("issue_number"),
+        "attempts": row.get("attempts"),
+        "max_attempts": row.get("max_attempts"),
+    }
+
+
+def _stale_binding_entry(row, queue, binding, ledger_readable):
+    prog = row.get("progress") or {}
+    cleared = prog.get("session_cleared")
+    issue = prog.get("issue_number") or prog.get("issue") or ""
+    return {
+        "id": row.get("id"),
+        "queue": queue,
+        "priority": row.get("priority"),
+        "worker_id": row.get("worker_id"),
+        "lane_id": row.get("lane_id"),
+        "lease_until": row.get("lease_until"),
+        "lane": prog.get("lane"),
+        "stage": prog.get("stage"),
+        "session_id": None,
+        "ledger_session_id": (
+            binding.get("session_id") if isinstance(binding, dict) else None
+        ),
+        "ledger_updated_at": (
+            binding.get("updated_at") if isinstance(binding, dict) else None
+        ),
+        "ledger_readable": bool(ledger_readable),
+        "cleared_session_id": (
+            cleared.get("session_id") if isinstance(cleared, dict) else None
+        ),
+        "issue": issue,
+        "issue_number": prog.get("issue_number"),
+        "attempts": row.get("attempts"),
+        "max_attempts": row.get("max_attempts"),
+    }
+
+
+def get_candidates(rows):
+    """Unbound opencode-lane candidates from claimed rows."""
+    return [r for r in rows if is_candidate(r)]
+
+
+def get_handed_off_candidates(rows):
+    """Unbound opencode-lane candidates from handoff-sink rows."""
+    return [r for r in rows if is_handoff_waiting(r)]
+
+
+def get_stuck_bound(rows, session_by_id, active_ids, now_ms):
+    """Bound tasks whose sessions look never-prompted and dead."""
+    stuck = []
+    for r in rows:
+        session_id = (r.get("progress") or {}).get("session_id")
+        if session_id and is_stuck_bound(
+            r, session_by_id.get(session_id), active_ids, now_ms
+        ):
+            stuck.append(r)
+    return stuck
+
+
+def get_active_root_session_count():
+    """Count of active root sessions, or -1 when either server read
+    fails (the sentinel claimant.py's cap_step has always used).
+    Counting itself is count_active_roots over the verified live
+    session shape — the same function claimant.py now delegates to."""
     sessions = fetch_sessions()
-    out["cap"] = CAP
-    live, active, room = summarize_cap(
-        sessions,
-        fetch_active_ids() if sessions is not None else None,
-        int(time.time() * 1000),
-    )
+    if sessions is None:
+        return -1
+    active_ids = fetch_active_ids()
+    if active_ids is None:
+        return -1
+    count = count_active_roots(sessions, int(time.time() * 1000), active_ids)
+    return -1 if count is None else count
+
+
+def main():
+    now_ms = int(time.time() * 1000)
+    # Sessions first: stuck-bound classification (#4758) needs the
+    # session list and the server's active set, and the cap summary
+    # below reuses the same two reads.
+    sessions = fetch_sessions()
+    active_ids = fetch_active_ids() if sessions is not None else None
+    session_by_id = {}
+    if sessions:
+        for s in sessions:
+            if isinstance(s, dict) and s.get("id"):
+                session_by_id[s["id"]] = s
+    out = {"queues": {}, "candidates": [], "stuck_bound": [], "stale_binding": []}
+    # Fetch every queue's rows first so the lane ledger is read ONCE
+    # for the whole poll (#5508): candidate-shaped rows from claimed
+    # and handed_off rows alike are decided against the same ledger
+    # snapshot.
+    per_queue = {}
+    shaped_ids = []
+    for q in QUEUES:
+        rows = fetch_claimed_rows(q)
+        handed_off_rows = fetch_handed_off_rows(q)
+        shaped = get_candidates(rows) + get_handed_off_candidates(handed_off_rows)
+        per_queue[q] = (rows, handed_off_rows, shaped)
+        shaped_ids.extend(r.get("id") for r in shaped)
+    bindings = fetch_ledger_bindings(shaped_ids)
+    out["ledger_readable"] = bindings is not None
+    for q in QUEUES:
+        rows, handed_off_rows, shaped = per_queue[q]
+        launchable, stale_rows = apply_ledger_filter(shaped, bindings)
+        cands = [_candidate_entry(r, q) for r in launchable]
+        stale = [
+            _stale_binding_entry(
+                r,
+                q,
+                bindings.get(r.get("id")) if bindings is not None else None,
+                bindings is not None,
+            )
+            for r in stale_rows
+        ]
+        stuck = [
+            _stuck_entry(
+                r, q, session_by_id.get((r.get("progress") or {}).get("session_id"))
+            )
+            for r in get_stuck_bound(rows, session_by_id, active_ids, now_ms)
+        ]
+        out["queues"][q] = {
+            "claimed": len(rows),
+            "handed_off": len(handed_off_rows),
+            "candidates": cands,
+            "stuck_bound": stuck,
+            "stale_binding": stale,
+        }
+        out["candidates"].extend(cands)
+        out["stuck_bound"].extend(stuck)
+        out["stale_binding"].extend(stale)
+    out["candidates"].sort(key=lambda c: (c["priority"] is None, c["priority"] or 0))
+    out["stuck_bound"].sort(key=lambda c: (c["priority"] is None, c["priority"] or 0))
+    out["stale_binding"].sort(key=lambda c: (c["priority"] is None, c["priority"] or 0))
+    live, active, room = summarize_cap(sessions, active_ids, now_ms)
     out["live_root_sessions"] = live
     out["active_root_sessions"] = active
+    out["cap"] = CAP
+    out["concurrency_cap"] = CAP
     out["cap_room"] = room
     print(json.dumps(out, indent=1))
     return 0

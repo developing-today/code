@@ -2,11 +2,22 @@
 """Watchdog: OpenAI credential invariant for the laptop OpenCode store.
 
 Invariant (recurrence guard for developing-today/code#3216):
-  - provider `openai`: NO credential row with method chatgpt-token-sharing
-    may exist, and the ACTIVE credential method must be chatgpt-browser
-    or chatgpt-headless.
-  - provider `openai.alternate`: the ACTIVE credential method must be
+  - provider `_openai.main`: NO credential row with method
+    chatgpt-token-sharing may exist, and the ACTIVE credential method
+    must be chatgpt-browser or chatgpt-headless.
+  - provider `_openai.alt`: the ACTIVE credential method must be
     chatgpt-browser or chatgpt-headless.
+
+The main account was renamed `openai` -> `openai.main` in PR #5085;
+the retired `openai` identity is deliberately NOT checked (issue
+#5250): a store still carrying only `openai` rows reports
+`openai.main: no credential rows found` rather than passing.
+
+Rename 2 (2026-11-11, PR #8318, issue #8163): both doors were
+renamed to the self-contained ids `_openai.main` / `_openai.alt`
+and the retired rows were deleted. This watchdog kept checking
+the retired ids for a full morning afterwards and reported
+false violations hourly (fallout recorded on issue #8653).
 
 Read-only. Never prints token values (only credential ids, labels, methods).
 Exit: 0 healthy, 1 violation, 2 check error.
@@ -21,7 +32,7 @@ import sys
 DEFAULT_DB = os.path.expanduser("~/.local/share/opencode/opencode.db")
 ALLOWED_ACTIVE_METHODS = {"chatgpt-browser", "chatgpt-headless"}
 BANNED_METHOD = "chatgpt-token-sharing"
-PROVIDERS = ("openai", "openai.alternate")
+PROVIDERS = ("_openai.main", "_openai.alt")
 
 
 def method_of(value_json):
@@ -53,7 +64,7 @@ def check(db_path):
         if not creds:
             violations.append(f"{provider}: no credential rows found")
             continue
-        if provider == "openai":
+        if provider == "_openai.main":
             for cred_id, label, active, method in creds:
                 if method == BANNED_METHOD:
                     violations.append(

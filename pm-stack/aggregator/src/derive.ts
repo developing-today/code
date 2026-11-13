@@ -1,8 +1,11 @@
 // Pure derivations from the read model: the execution strip, the roadmap
 // timeline lanes, and the unified comment stream. No I/O here.
 import type { SectionDiagnosis } from "./feed.ts";
-import type { Comment, GhItem, Link, RefKey, RoadmapRow } from "./model.ts";
+import type { Comment, GhItem, Link, ProjectPoolItem, RefKey, RoadmapRow } from "./model.ts";
+import { validateRoadmapHorizon } from "./roadmap-horizon.ts";
+import { summarizeWipLanes, type WipLaneSummary } from "./wip-limits.ts";
 import { parseIsoDate } from "./validate.ts";
+import { canonicalStatusFor, ghItemDerivedStatus, type StatusSource } from "./status-taxonomy.ts";
 
 export interface ExecutionStrip {
   /** Draft PRs, and open issues already dispatched or in progress. */
@@ -19,7 +22,7 @@ export interface ExecutionStrip {
   unknown: RefKey[];
 }
 
-const IMPLEMENTING_LABELS = new Set(["status:in-progress", "in-progress", "ready-for-agent"]);
+const IMPLEMENTING_LABELS = new Set(["status:in-progress", "in-progress"]);
 
 export function executionStrip(links: Link[], items: Map<RefKey, GhItem>): ExecutionStrip {
   const strip: ExecutionStrip = {
@@ -63,7 +66,7 @@ export interface Lane {
 }
 
 const QUARTER = /^Q([1-4])\s+(\d{4})$/i;
-const DATE = /^(\d{4})-(\d{2})-(\d{2})/;
+const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
@@ -85,17 +88,21 @@ export function isCalendarDate(year: number, month: number, day: number): boolea
  * "Ongoing", "Unscheduled" and anything else sort after every quarter.
  */
 export function laneFor(horizon: string): Lane {
-  const h = horizon.trim();
+  const validation = validateRoadmapHorizon(horizon);
+  const h = validation.valid ? validation.canonical : horizon.trim();
   const q = QUARTER.exec(h);
   if (q) return quarterLane(Number(q[2]), Number(q[1]));
   const d = DATE.exec(h);
   if (d && isCalendarDate(Number(d[1]), Number(d[2]), Number(d[3])))
     return quarterLane(Number(d[1]), Math.floor((Number(d[2]) - 1) / 3) + 1);
-  if (/^ongoing$/i.test(h)) return { key: "ongoing", label: "Ongoing", order: 1e6 };
+  if (/^now$/i.test(h)) return { key: "now", label: "Now", order: 1e6 };
+  if (/^next$/i.test(h)) return { key: "next", label: "Next", order: 1e6 + 1 };
+  if (/^later$/i.test(h)) return { key: "later", label: "Later", order: 1e6 + 2 };
+  if (/^ongoing$/i.test(h)) return { key: "ongoing", label: "Ongoing", order: 1e6 + 3 };
   if (h === "" || /^unscheduled$/i.test(h)) {
-    return { key: "unscheduled", label: "Unscheduled", order: 1e6 + 2 };
+    return { key: "unscheduled", label: "Unscheduled", order: 1e6 + 5 };
   }
-  return { key: `other:${h}`, label: h, order: 1e6 + 1 };
+  return { key: `other:${h}`, label: h, order: 1e6 + 4 };
 }
 
 function quarterLane(year: number, quarter: number): Lane {
@@ -327,12 +334,18 @@ export interface SectionMatch {
  */
 export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): TieredEntry {
   if (match && e.state !== "in-motion") {
-    if (match.tier === "needs-drew") return { ...e, tier: "needs-drew", drewReason: match.item.reason };
+    if (match.tier === "needs-drew")
+      return { ...e, tier: "needs-drew", tierSince: match.item.since, drewReason: match.item.reason };
     const next = match.item.recommendedAction ? ` Next: ${match.item.recommendedAction}` : "";
     return { ...e, tier: "needs-orchestrator", orchestratorNote: `${match.item.reason}${next}` };
   }
   if (e.state !== "in-motion" && e.supervisionNote && ESCALATION_NOTE.test(e.supervisionNote)) {
-    return { ...e, tier: "needs-drew", drewReason: `Keeper escalated this session — ${e.supervisionNote}` };
+    return {
+      ...e,
+      tier: "needs-drew",
+      tierSince: e.lastActivityAt ?? undefined,
+      drewReason: `Keeper escalated this session — ${e.supervisionNote}`,
+    };
   }
   if (e.state !== "in-motion" && e.awaitingQuestion) {
     const q = e.awaitingQuestion;
@@ -341,6 +354,7 @@ export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): Tiere
         return {
           ...e,
           tier: "needs-drew",
+          tierSince: e.lastActivityAt ?? undefined,
           drewReason: `A session is asking permission for something destructive — ${q}`,
         };
       }
@@ -349,13 +363,19 @@ export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): Tiere
       // Jules questions are the keeper's to answer (it replies with the
       // standard proceed/feedback messages) — they never need Drew
       // unless the orchestration job escalates them explicitly.
-      return { ...e, tier: "needs-drew", drewReason: `Waiting on your decision — ${q}` };
+      return {
+        ...e,
+        tier: "needs-drew",
+        tierSince: e.lastActivityAt ?? undefined,
+        drewReason: `Waiting on your decision — ${q}`,
+      };
     }
   }
   if (e.state !== "in-motion" && e.lastTurnError && CREDENTIAL_ERR.test(e.lastTurnError)) {
     return {
       ...e,
       tier: "needs-drew",
+      tierSince: e.lastActivityAt ?? undefined,
       drewReason: `Blocked on a sign-in only you can complete — ${e.lastTurnError}`,
     };
   }
@@ -395,6 +415,32 @@ export interface AttentionView {
   expiredCount: number;
   /** The tier source's diagnosis (#1139); drives the banner + counts. */
   tierSource: TierSourceInfo;
+}
+
+/** Digest landing filter (#7193 Codex): the alert digest links to
+ * /attention?refs=<objectRefs>; keep only the entries those refs name.
+ * Ref forms mirror NotificationCandidate.objectRef: session:<id>,
+ * item:<id>, a bare session/item id, a GitHub ref (owner/repo#n), or
+ * gh:<ref>. Quota/health refs name no attention entries (their own
+ * pages carry them), so they simply match nothing here. */
+export function filterAttentionViewByRefs(view: AttentionView, refs: string[]): AttentionView {
+  const wanted = new Set(refs.map((ref) => ref.trim()).filter(Boolean));
+  if (wanted.size === 0) return view;
+  const matchEntry = (e: TieredEntry) => wanted.has(`session:${e.sessionId}`) || wanted.has(e.sessionId);
+  const matchItem = (item: TierItem) =>
+    wanted.has(`item:${item.id}`) ||
+    wanted.has(item.id) ||
+    (item.sessionId ? wanted.has(`session:${item.sessionId}`) || wanted.has(item.sessionId) : false) ||
+    (item.ref ? wanted.has(item.ref) || wanted.has(`gh:${item.ref}`) : false);
+  return {
+    ...view,
+    drew: view.drew.filter(matchEntry),
+    orchestrator: view.orchestrator.filter(matchEntry),
+    drewExtra: view.drewExtra.filter(matchItem),
+    orchestratorExtra: view.orchestratorExtra.filter(matchItem),
+    watchdog: view.watchdog.filter(matchItem),
+    all: view.all.filter(matchEntry),
+  };
 }
 
 /** Classify, expire, and tier a raw session feed in one pass. */
@@ -504,14 +550,20 @@ export function sessionRoots(entries: TieredEntry[]): TieredEntry[] {
 
 const YMD = /^(\d{4})-(\d{2})-(\d{2})/;
 
+// ⚡ Bolt: Intl.DateTimeFormat construction is expensive (~29µs) and this
+// formatter's options never change, so build it once at module load instead
+// of on every chicagoYmd() call (several per dashboard render / digest run).
+// Formatters are stateless for format() calls, so sharing one is safe.
+const CHICAGO_YMD_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
 /** "2026-10-25" in America/Chicago for an instant. */
 export function chicagoYmd(now = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Chicago",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
+  return CHICAGO_YMD_FORMATTER.format(now);
 }
 
 export function addDaysYmd(ymd: string, n: number): string {
@@ -565,7 +617,9 @@ export type RoadmapGrain = "quarter" | "month" | "week" | "3d" | "today";
 
 /** The row's calendar date when its Horizon is an ISO date, else null. */
 export function rowDate(row: RoadmapRow): string | null {
-  const m = YMD.exec(row.horizon.trim());
+  const validation = validateRoadmapHorizon(row.horizon);
+  if (!validation.valid || !/^\d{4}-\d{2}-\d{2}$/.test(validation.canonical)) return null;
+  const m = YMD.exec(validation.canonical);
   if (!m || !isCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) return null;
   return `${m[1]}-${m[2]}-${m[3]}`;
 }
@@ -580,6 +634,7 @@ export interface DayGrain {
   lanes: DayLane[];
   /** Dated rows outside the window. */
   outside: number;
+  outsideRows: RoadmapRow[];
   /** Rows with no calendar date (quarter grain, ongoing, unscheduled). */
   coarse: RoadmapRow[];
 }
@@ -595,7 +650,7 @@ export function roadmapDayGrain(rows: RoadmapRow[], grain: "week" | "3d" | "toda
         : Array.from({ length: 7 }, (_, i) => addDaysYmd(weekStartYmd(today), i));
   const inWindow = new Set(days);
   const lanes = new Map(days.map((d) => [d, [] as RoadmapRow[]]));
-  let outside = 0;
+  const outsideRows: RoadmapRow[] = [];
   const coarse: RoadmapRow[] = [];
   for (const row of rows) {
     const d = rowDate(row);
@@ -604,7 +659,7 @@ export function roadmapDayGrain(rows: RoadmapRow[], grain: "week" | "3d" | "toda
     } else if (inWindow.has(d)) {
       lanes.get(d)?.push(row);
     } else {
-      outside++;
+      outsideRows.push(row);
     }
   }
   return {
@@ -613,7 +668,8 @@ export function roadmapDayGrain(rows: RoadmapRow[], grain: "week" | "3d" | "toda
       label: d === today ? `${ymdLabel(d)} · today` : ymdLabel(d),
       rows: lanes.get(d) ?? [],
     })),
-    outside,
+    outside: outsideRows.length,
+    outsideRows,
     coarse,
   };
 }
@@ -663,6 +719,41 @@ export interface TodayObjective {
   /** Where the objective came from, e.g. "orchestrator · today". */
   chip: string;
   ref?: RefKey;
+  /** Source-vs-derived status disagreement (#1198), both sides named,
+   * when the objective's source status and the status derived from
+   * its linked GitHub item disagree canonically. Absent = agreement
+   * (or no second side to compare). */
+  statusNote?: string;
+}
+
+/**
+ * The #1198 disagreement note for one Today objective: the source's
+ * own status (Grist row, Kaneo column) against the linked GitHub
+ * item — its derived lifecycle status when GitHub derives one, else
+ * its Project Status. Canonical comparison via status-taxonomy.ts:
+ * spelling variants of the same status never produce a note.
+ */
+export function todayStatusNote(
+  source: StatusSource,
+  rawStatus: string,
+  links: Link[],
+  items: Map<RefKey, GhItem>,
+): string | undefined {
+  const sourceCanonical = canonicalStatusFor(source, rawStatus);
+  if (!sourceCanonical) return undefined;
+  const linked = links.map((l) => items.get(l.ref)).find((g) => g !== undefined);
+  if (!linked) return undefined;
+  const derived = ghItemDerivedStatus(linked);
+  if (derived && derived !== sourceCanonical) {
+    return `⚠ ${source}: ${rawStatus} · derived: ${derived}`;
+  }
+  if (linked.projectStatus) {
+    const projectCanonical = canonicalStatusFor("project", linked.projectStatus);
+    if (projectCanonical && projectCanonical !== sourceCanonical) {
+      return `⚠ ${source}: ${rawStatus} · project: ${linked.projectStatus}`;
+    }
+  }
+  return undefined;
 }
 
 export interface ProjectMomentum {
@@ -676,6 +767,8 @@ export interface ProjectMomentum {
 export interface TodayView {
   objectives: TodayObjective[];
   momentum: ProjectMomentum[];
+  /** The board's configured lane/project/epic caps, also returned by the JSON twin. */
+  wipLanes?: WipLaneSummary[];
   /** True when rendered from the #899 orchestration section. */
   fromOrchestrator: boolean;
   generatedAt?: string;
@@ -690,6 +783,11 @@ export interface TodayView {
 }
 
 const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, normal: 2, medium: 2, low: 3 };
+
+function priorityRank(priority: string | undefined): number {
+  const key = (priority ?? "normal").toLowerCase();
+  return Object.hasOwn(PRIORITY_ORDER, key) ? PRIORITY_ORDER[key] : 2;
+}
 
 /**
  * The orchestrator sometimes publishes `progressedSinceLastRun` as a
@@ -760,9 +858,11 @@ export function deriveToday(
   section: OrchestrationSection | null,
   now = new Date(),
   diagnosis?: SectionDiagnosis,
+  projectPool: ProjectPoolItem[] = [],
 ): TodayView {
   if (section) {
     const view = todayFromSection(section);
+    view.wipLanes = summarizeWipLanes(board, projectPool);
     view.sectionDiagnosis = diagnosis ?? {
       state: "live",
       runId: section.runId,
@@ -776,25 +876,38 @@ export function deriveToday(
   const today = chicagoYmd(now);
   const objectives: TodayObjective[] = [];
   for (const row of rows) {
-    if (rowDate(row) === today && !/^done$/i.test(row.status)) {
-      objectives.push({ title: row.title, chip: "roadmap · today", detail: `${row.area} · ${row.status}` });
+    // #1198: "done" is judged canonically (Grist also spells it
+    // Complete/Shipped), not by one source's regex.
+    if (rowDate(row) === today && canonicalStatusFor("grist", row.status) !== "Done" && !/^done$/i.test(row.status)) {
+      objectives.push({
+        title: row.title,
+        chip: "roadmap · today",
+        detail: `${row.area} · ${row.status}`,
+        statusNote: todayStatusNote("grist", row.status, row.links, items),
+      });
     }
   }
   const byPriority = (a: BoardItem, b: BoardItem) =>
-    (PRIORITY_ORDER[(a.priority ?? "normal").toLowerCase()] ?? 2) -
-      (PRIORITY_ORDER[(b.priority ?? "normal").toLowerCase()] ?? 2) ||
-    (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+    priorityRank(a.priority) - priorityRank(b.priority) || (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
   for (const item of board
     .filter((b) => b.status === "in-progress")
     .sort(byPriority)
     .slice(0, 5)) {
-    objectives.push({ title: item.title, chip: `in progress · ${item.repo}` });
+    objectives.push({
+      title: item.title,
+      chip: `in progress · ${item.repo}`,
+      statusNote: todayStatusNote("kaneo", item.status, item.links, items),
+    });
   }
   for (const item of board
     .filter((b) => b.status === "in-review")
     .sort(byPriority)
     .slice(0, 3)) {
-    objectives.push({ title: item.title, chip: `in review · ${item.repo}` });
+    objectives.push({
+      title: item.title,
+      chip: `in review · ${item.repo}`,
+      statusNote: todayStatusNote("kaneo", item.status, item.links, items),
+    });
   }
 
   const weekAgo = now.getTime() - 7 * 86_400_000;
@@ -827,7 +940,13 @@ export function deriveToday(
       detail: inProgress ? undefined : "nothing in progress on the board",
     });
   }
-  return { fromOrchestrator: false, objectives, momentum, sectionDiagnosis: diagnosis ?? { state: "absent" } };
+  return {
+    fromOrchestrator: false,
+    objectives,
+    momentum,
+    wipLanes: summarizeWipLanes(board, projectPool),
+    sectionDiagnosis: diagnosis ?? { state: "absent" },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -836,7 +955,16 @@ export function deriveToday(
 // PAYG over $5 (unbilled accrual only — Q3 default), surfaces worst-first.
 // ---------------------------------------------------------------------------
 
-import { countedEstimate, type AttentionFlag, type QuotaView, type SnapshotRecord, type UsageView } from "./model.ts";
+import {
+  countedEstimate,
+  type AttentionFlag,
+  type Horizon,
+  type QuotaAction,
+  type QuotaActionKind,
+  type QuotaView,
+  type SnapshotRecord,
+  type UsageView,
+} from "./model.ts";
 
 export const BUBBLE_PCT = 80;
 export const BUBBLE_USD = 5;
@@ -922,6 +1050,166 @@ export function buildAttentionFlags(
   const rank = (kind: AttentionFlag["kind"]): number =>
     kind === "credential-lifecycle" ? 0 : kind === "over-limit" ? 1 : kind === "payg-unbilled" ? 2 : 3;
   return flags.sort((a, b) => (rank(a.kind) === rank(b.kind) ? b.severity - a.severity : rank(a.kind) - rank(b.kind)));
+}
+
+// --- Quota actions (#1174) --------------------------------------------------
+// One derivation for the expiring/cancelled, walled, and high-usage
+// quota actions surfaced on /quota's strip, /today, and /attention's
+// orchestrator tier. The cancellation source data is the plan-facts
+// registry (AaPlanFact.cancelled/periodEndsAt, updated with the
+// registry when a plan changes) — never scraped from display prose.
+// Walled and high-usage state comes from the pools themselves. An
+// entry exists only while its condition holds (deadline in the
+// future and inside the window, pool still walled, window still hot
+// with a distant reset), so entries expire and clear on their own and
+// no surface can render a duplicate or stale copy.
+
+/** Structural plan-fact input; AA_PLAN_FACTS satisfies this. */
+export interface QuotaPlanFact {
+  cancelled?: boolean;
+  periodEndsAt?: string | null;
+  renewalAction?: string | null;
+}
+
+/** A cancelled period counts as expiring inside this many days. */
+export const QUOTA_ACTION_WINDOW_DAYS = 14;
+/** High-usage bar: strictly above this percent of limit. */
+export const QUOTA_HIGH_USAGE_PCT = 85;
+/** High-usage counts only when the reset is further out than this. */
+export const QUOTA_HIGH_USAGE_RESET_MS = 24 * 3_600_000;
+
+function planFactKeyForPool(poolId: string): string {
+  return poolId.replace(":", ".");
+}
+
+/**
+ * Every eligible quota action across the pools, worst first: expiring
+ * periods by nearest deadline, then walled pools, then high-usage
+ * windows by percent. Pure — same quota in, same actions out — so the
+ * three surfaces render the identical entries.
+ */
+export function buildQuotaActions(
+  quota: QuotaView,
+  plans: Readonly<Record<string, QuotaPlanFact>> = {},
+  now = Date.now(),
+): QuotaAction[] {
+  const actions: QuotaAction[] = [];
+  for (const pool of quota.pools) {
+    const key = planFactKeyForPool(pool.id);
+    const fact = Object.hasOwn(plans, key) ? plans[key] : undefined; // #3056 own-key guard
+    const periodEnd = fact?.cancelled && fact.periodEndsAt ? Date.parse(fact.periodEndsAt) : NaN;
+    if (Number.isFinite(periodEnd)) {
+      const left = (periodEnd as number) - now;
+      if (left >= 0 && left <= QUOTA_ACTION_WINDOW_DAYS * 86_400_000) {
+        const day = String(fact?.periodEndsAt).slice(0, 10);
+        actions.push({
+          id: `${pool.id}:expiry`,
+          poolId: pool.id,
+          provider: pool.provider,
+          plan: pool.plan,
+          kind: "expiry",
+          title: `${pool.provider} — ${pool.plan} ends ${day}`,
+          detail: `Cancelled — period ends ${day}${fact?.renewalAction ? ` · ${fact.renewalAction}` : ""}`,
+          deadline: new Date(periodEnd as number).toISOString(),
+          href: "/quota",
+        });
+      }
+    }
+    if (pool.state === "walled") {
+      actions.push({
+        id: `${pool.id}:walled`,
+        poolId: pool.id,
+        provider: pool.provider,
+        plan: pool.plan,
+        kind: "walled",
+        title: `${pool.provider} — ${pool.plan} is walled`,
+        detail: pool.wallLiftsAt
+          ? `Walled — lifts ${pool.wallLiftsAt.slice(0, 10)} · hold new sessions until then`
+          : "Walled with no lift date recorded — check the pool before starting sessions",
+        deadline: pool.wallLiftsAt ?? null,
+        href: "/quota",
+      });
+    }
+    // Eligibility before selection (Codex P2, PR #4695): a hotter window
+    // whose reset is near — or unrecorded — must not mask a qualifying
+    // cooler window, so pick the highest-usage window among those whose
+    // reset is distant enough to act on.
+    let worst: QuotaWindow | null = null;
+    let worstPct = 0;
+    let worstReset = "";
+    for (const w of pool.windows) {
+      const pct = windowPercent(w);
+      if (pct <= QUOTA_HIGH_USAGE_PCT || !w.resetsAt) continue;
+      const reset = Date.parse(w.resetsAt);
+      if (!Number.isFinite(reset) || reset - now <= QUOTA_HIGH_USAGE_RESET_MS) continue;
+      if (pct > worstPct) {
+        worstPct = pct;
+        worst = w;
+        worstReset = w.resetsAt;
+      }
+    }
+    if (worst) {
+      actions.push({
+        id: `${pool.id}:high-usage`,
+        poolId: pool.id,
+        provider: pool.provider,
+        plan: pool.plan,
+        kind: "high-usage",
+        title: `${pool.provider} — ${pool.plan} at ${Math.round(worstPct)}%`,
+        detail: `${worst.name} window ${Math.round(worstPct)}% used · resets ${worstReset.slice(0, 10)} — burn it down or hold new sessions`,
+        deadline: worstReset,
+        href: "/quota",
+      });
+    }
+  }
+  const rank: Record<QuotaActionKind, number> = { expiry: 0, walled: 1, "high-usage": 2 };
+  return actions.sort(
+    (a, b) =>
+      rank[a.kind] - rank[b.kind] || (a.deadline ?? "").localeCompare(b.deadline ?? "") || a.id.localeCompare(b.id),
+  );
+}
+
+/** The /quota "Needs attention" strip rows for already-derived actions. */
+export function quotaActionFlags(actions: QuotaAction[], now = Date.now()): AttentionFlag[] {
+  return actions.map((a) => ({
+    kind: "quota-action" as const,
+    label: a.title,
+    detail: a.detail,
+    href: a.href,
+    severity:
+      a.kind === "expiry" && a.deadline
+        ? 1000 + (QUOTA_ACTION_WINDOW_DAYS - (Date.parse(a.deadline) - now) / 86_400_000)
+        : a.kind === "walled"
+          ? 500
+          : 100,
+  }));
+}
+
+/** The /attention orchestrator-tier items for already-derived actions. */
+export function quotaActionTierItems(actions: QuotaAction[], now = Date.now()): TierItem[] {
+  const at = new Date(now).toISOString();
+  return actions.map((a) => {
+    const left = a.deadline ? Date.parse(a.deadline) - now : NaN;
+    return {
+      id: `quota-action:${a.id}`,
+      kind: "task" as const,
+      title: a.title,
+      // Aggregator-synthesized like the #1148 watchdog items: derived
+      // live, never published by the orchestrator.
+      source: "watchdog" as const,
+      reason: a.detail,
+      since: at,
+      lastSeenAt: at,
+      horizon: (Number.isFinite(left)
+        ? left <= 86_400_000
+          ? "today"
+          : left <= 3 * 86_400_000
+            ? "next-3-days"
+            : "longer"
+        : "longer") as Horizon,
+      recommendedAction: a.detail,
+    };
+  });
 }
 
 export interface Freshness {
@@ -1032,7 +1320,12 @@ export function projectPace(records: SnapshotRecord[], metricId: string): PacePr
     if (Number.isFinite(candidate.getTime())) projectedExhaustionAt = candidate.toISOString();
   }
   let projectedPercentAtReset: number | null = null;
-  if (last.resetsAt) {
+  // Same out-of-domain guard as projectedExhaustionAt above (#6316):
+  // a negative last pct cannot support a percent-at-reset projection
+  // either -- the unguarded extrapolation rendered absurd values
+  // (e.g. -999999995.5) for poisoned series whose last record carried
+  // a future resetsAt. Slope and points are still reported.
+  if (lastVal >= 0 && last.resetsAt) {
     const toReset = (Date.parse(last.resetsAt) - Date.parse(last.ts)) / 86_400_000;
     if (toReset > 0) projectedPercentAtReset = Math.round((lastVal + slope * toReset) * 10) / 10;
   }

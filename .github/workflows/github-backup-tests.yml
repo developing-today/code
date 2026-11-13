@@ -1,0 +1,103 @@
+name: github-backup tests
+
+# Test verification for infra/github-backup (#5937).
+#
+# The github-backup regression suite (tests/, 10 files, ~250 checks over
+# clone/reconcile/drain/deploy safety) was enumerated by no workflow and
+# had no documented CI runner, so it executed only when a human
+# remembered. This workflow runs every file in the suite and fails when
+# any file exits non-zero.
+#
+# The tests are plain python3 scripts (stdlib only, no deps) that exit
+# non-zero on failure. Three of them — the test_deploy_*.py modules —
+# execute their checks at import time and end in sys.exit at module
+# level, so `python3 -m unittest discover` errors on them (errors=3)
+# instead of running them. The suite is therefore run file-by-file as
+# scripts, which is also how the modules document their own invocation
+# ("Run: python3 infra/github-backup/tests/test_*.py"). The run step
+# counts the files it executed and fails if the glob matched nothing,
+# so a green run can never be a silently skipped suite.
+#
+# The deploy tests drive the real deploy.mjs with stubbed
+# bws/wrangler/git executables, so the job provisions Node as well as
+# Python. The remaining tests shell out to the real git CLI, which the
+# runner image provides.
+#
+# The queue Worker's own suite (worker/test/index.test.mjs, #6085 —
+# auth + KV pagination) is a node --test file, not part of the Python
+# glob; it runs in its own step below with the same fail-if-missing
+# discipline, so it cannot silently drop out of CI either.
+#
+# Trigger policy matches the house pattern since 5a94833ea3:
+# dispatch/schedule only, no push/pull_request triggers. The schedule
+# is daily at 04:47 UTC (off the hour, clear of the other dailies);
+# it was promised here but missing from `on:` until #7777, so the
+# suite silently never ran between 2026-11-05 and this fix.
+# CI tier policy: see .github/ci-policy.md.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "47 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: "github-backup: regression suite"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Run the github-backup regression suite (each file as a script)
+        run: |
+          fail=0
+          count=0
+          for t in infra/github-backup/tests/test_*.py; do
+            count=$((count + 1))
+            echo "::group::$t"
+            if python3 "$t"; then
+              echo "PASS: $t"
+            else
+              echo "::error::FAIL: $t"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          echo "Ran $count test file(s)."
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No test files matched infra/github-backup/tests/test_*.py — the suite was not run."
+            exit 1
+          fi
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::github-backup regression suite: at least one file failed (see above)."
+            exit 1
+          fi
+          echo "github-backup regression suite: all $count files passed."
+
+      - name: Run the github-backup Worker tests (node --test)
+        run: |
+          test_file="infra/github-backup/worker/test/index.test.mjs"
+          if [ ! -f "$test_file" ]; then
+            echo "::error::Worker test file missing: $test_file — the suite was not run."
+            exit 1
+          fi
+          node --test "$test_file"
+          echo "github-backup Worker tests passed."

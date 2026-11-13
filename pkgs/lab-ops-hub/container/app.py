@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Lab Ops Hub crawler container.
 
-Tiny stdlib-only HTTP service. POST /crawl {"url": "..."} -> fetches the page
-with a real HTTP client, extracts title / link count / readable text, returns
-JSON in the same shape the Worker's fallback produces. Runs only on demand
-(Worker starts it via getContainer, sleepAfter=2m kills it when idle), so it
-burns container minutes only while crawling.
+Tiny HTTP service with one IDNA dependency. POST /crawl {"url": "..."} ->
+fetches the page with a real HTTP client, extracts title / link count / readable
+text, returns JSON in the same shape the Worker's fallback produces. Runs only
+on demand (Worker starts it via getContainer, sleepAfter=2m kills it when idle),
+so it burns container minutes only while crawling.
 """
 
 import base64
@@ -22,6 +22,8 @@ import urllib.request
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import unquote, urlparse, urlsplit
+
+import idna
 
 # Crawl-target policy (#441): the Worker validates before dispatching,
 # and this service re-validates independently (defence in depth — it is
@@ -521,18 +523,47 @@ def validate_crawl_url(raw):
                 if candidate.isascii():
                     return judged_label
                 try:
-                    return candidate.encode("idna").decode("ascii")
-                except (UnicodeError, ValueError):
-                    # The fallback still owes the Worker the UTS-46
-                    # compatibility mappings NFC does not perform:
-                    # NFKC maps e.g. the fullwidth digit in an RTL
-                    # label the codec's Unicode 3.2 bidi rules refuse
-                    # (the alef + fullwidth-1 label returns the
-                    # Worker's xn--1-zhc, not the unmapped
-                    # xn--4db2378j) - Codex round 2 on PR #3781.
-                    return "xn--" + unicodedata.normalize("NFKC", candidate).encode(
-                        "punycode"
+                    # Match the Worker's WHATWG URL hostname conversion:
+                    # UTS-46 nontransitional, not Python's IDNA2003
+                    # stdlib codec (Unicode 3.2 nameprep).
+                    return idna.encode(
+                        candidate,
+                        uts46=True,
+                        transitional=False,
+                        std3_rules=False,
                     ).decode("ascii")
+                except (UnicodeError, ValueError):
+                    # Preserve the permissive fallback for labels
+                    # python-idna declines — but apply the UTS-46
+                    # mapping FIRST, independently of the strict
+                    # IDNA2008 validation that just failed, and only
+                    # then let NFKC supply any remaining compatibility
+                    # mappings before punycode. NFKC alone maps
+                    # U+03F2 (lunate sigma) to U+03C2 (final sigma)
+                    # where UTS-46 maps it to U+03C3, so a label the
+                    # codec refuses over an underscore (ϲ_.com) came
+                    # back as the final-sigma host xn--_-xmb instead
+                    # of the WHATWG xn--_-zmb — a different hostname
+                    # than the Worker certified (Codex review of
+                    # PR #5231). uts46_remap is mapping only (no
+                    # validity checks), so the permissive reach of
+                    # the fallback is unchanged.
+                    try:
+                        candidate = idna.core.uts46_remap(
+                            candidate, std3_rules=False, transitional=False
+                        )
+                    except (UnicodeError, ValueError):
+                        pass
+                    normalized = unicodedata.normalize("NFKC", candidate)
+                    if normalized.isascii():
+                        # The remapping can leave a pure-ASCII label
+                        # (UTS-46 deletes U+FE0F, so a_ + U+FE0F
+                        # remaps to a_): return it directly. An xn--
+                        # prefix on an ASCII label names a different
+                        # host than the Worker returns (Codex review
+                        # of PR #5231).
+                        return normalized
+                    return "xn--" + normalized.encode("punycode").decode("ascii")
 
             return_host = (
                 ".".join(
@@ -1327,6 +1358,13 @@ _CRAWL_TIMEOUT_SECONDS = 20
 _CRAWL_MAX_BODY_BYTES = 2_000_000
 _CRAWL_READ_CHUNK_BYTES = 65_536
 
+# Request-side bounds for POST /crawl (#7036): the payload is a small
+# {"url": ...} JSON object, and the server is single-threaded, so the
+# declared Content-Length is validated before any read and the read
+# itself runs under one absolute deadline.
+_CRAWL_REQUEST_MAX_BODY_BYTES = 65_536
+_CRAWL_REQUEST_READ_TIMEOUT_SECONDS = 10
+
 
 def _fetch_crawl(url):
     # Fetch a validated URL and return (status, body capped at 2 MB). One
@@ -1439,12 +1477,64 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._send(200, {"ok": True, "service": "labops-crawler"})
 
+    def _read_request_body(self, length):
+        # Read exactly `length` bytes under one absolute deadline
+        # (#7036): a client that declares an in-cap length but stalls
+        # mid-body must not wedge this single-threaded server.
+        deadline = time.monotonic() + _CRAWL_REQUEST_READ_TIMEOUT_SECONDS
+        chunks = []
+        remaining = length
+        try:
+            while remaining > 0:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError("request body read timed out")
+                self.connection.settimeout(left)
+                # read1(), not read(): the buffered read() keeps
+                # recv-ing until the full count arrives, and a client
+                # dribbling bytes faster than the socket timeout keeps
+                # every recv alive, so read() outlives the absolute
+                # deadline (#8906; the _fetch_crawl pattern above).
+                # read1() returns after a single raw read, so the loop
+                # rechecks the deadline between chunks.
+                chunk = self.rfile.read1(min(remaining, _CRAWL_READ_CHUNK_BYTES))
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("request body read timed out")
+                if not chunk:
+                    raise ValueError(
+                        "request body ended before Content-Length bytes arrived"
+                    )
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        finally:
+            self.connection.settimeout(None)
+        return b"".join(chunks)
+
     def do_POST(self):
         if self.path != "/crawl":
             return self._send(404, {"error": "POST /crawl only"})
+        # Validate Content-Length before reading a single byte (#7036):
+        # the old code trusted it outright — a negative length reads
+        # until EOF and an oversized one waits for a body that may
+        # never finish, and either wedges every later request behind
+        # this single-threaded server.
+        raw_length = self.headers.get("content-length")
+        if raw_length is None:
+            return self._send(400, {"error": "missing Content-Length"})
         try:
-            length = int(self.headers.get("content-length", "0"))
-            url = json.loads(self.rfile.read(length))["url"]
+            length = int(raw_length)
+        except ValueError:
+            return self._send(400, {"error": f"invalid Content-Length: {raw_length!r}"})
+        if length < 0 or length > _CRAWL_REQUEST_MAX_BODY_BYTES:
+            return self._send(
+                400,
+                {
+                    "error": f"Content-Length {length} out of range: "
+                    f"0..{_CRAWL_REQUEST_MAX_BODY_BYTES}"
+                },
+            )
+        try:
+            url = json.loads(self._read_request_body(length))["url"]
             try:
                 # Fetch the validated form: identical to the request
                 # except for a percent-encoded host, which is fetched
@@ -1469,6 +1559,14 @@ class Handler(BaseHTTPRequestHandler):
                     "text": text[:20000],
                 },
             )
+        except TimeoutError:
+            # The stalled-body case (#7036): answer if the socket still
+            # takes it, and either way the handler returns so the
+            # server answers the next request.
+            try:
+                self._send(408, {"error": "request body read timed out"})
+            except Exception:  # noqa: BLE001 - the client may be gone
+                pass
         except Exception as e:  # noqa: BLE001 - surface any crawl failure as JSON
             self._send(502, {"error": str(e)})
 

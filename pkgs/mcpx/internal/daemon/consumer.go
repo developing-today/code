@@ -251,12 +251,19 @@ func (r *Registry) DiagnoseTools() []diagnose.Tool {
 		p := r.pools[name]
 		view := r.views[name]
 		all, _, at := p.CachedSchemas()
-		if at.IsZero() {
+		if view.Virtual() {
+			// A virtual namespace's own cache is never stamped;
+			// its readiness is its mount sources', as in
+			// Namespaces (Codex P2 on PR #8632).
+			if !r.virtualCached(view) {
+				continue
+			}
+		} else if at.IsZero() {
 			// Nothing has been read from this server yet. Reporting no tools
 			// would let the history record every one of them as removed.
 			continue
 		}
-		for _, t := range visibleTools(view, all) {
+		for _, t := range visibleTools(view, r.viewCatalogue(name, view, all)) {
 			out = append(out, diagnose.Tool{
 				Namespace: view.Namespace,
 				Name:      t.Name,
@@ -414,6 +421,13 @@ func describeInstance(in pool.InstanceStatus) string {
 // ---- confirm a destructive call ----
 
 // ErrNotConfirmed is returned when a destructive call was not approved.
+//
+// It is a typed refusal, not a tool failure (#6116): failureStatus
+// answers it 403 and callErrorBody carries code
+// "confirmation_required", so a caller -- above all a headless one,
+// which can never answer the question -- can tell "the gate refused
+// this call" apart from "the tool ran and failed" (a 502 with an
+// upstream error) instead of quoting the gate text as a result.
 type ErrNotConfirmed struct {
 	Tool   string
 	Reason string
@@ -434,32 +448,71 @@ func (e ErrNotConfirmed) Error() string {
 // An unanswered question refuses the call. That is the opposite of the
 // disambiguation default, and for the opposite reason: there, doing nothing
 // is safe; here, doing nothing is the destructive thing.
-func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool string, cc config.CallContext) error {
+// declaredReadOnly reports whether the operator declared this tool
+// read-only for this server in local configuration (#6116): the
+// per-server readOnlyTools list, read from the requested server's
+// view for the same reason the write policy override is -- pools are
+// shared between aliases, and the declaration belongs to the name
+// the caller asked for. The operator's own declaration is trusted
+// outright, as the locally declared stdio server's annotations are
+// (#2191); a server cannot declare its own tools read-only this way.
+func (r *Registry) declaredReadOnly(server, tool string) bool {
+	view, ok := r.View(server)
+	return ok && view.DeclaresReadOnly(tool)
+}
+
+func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext) error {
+	return r.confirmDestructiveFor(ctx, p, server, tool, cc, nil)
+}
+
+// confirmDestructiveFor is confirmDestructive for a call that may name a
+// script-backed view (#1933 slice 2). A script view carries the hints its
+// declaration states, not an upstream server's annotations, so the floor
+// classifies it from those: a script declared read-only clears the call,
+// every other script is confirmed when in doubt.
+func (r *Registry) confirmDestructiveFor(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, script *config.ToolView) error {
+	if r.declaredReadOnly(server, tool) {
+		// The operator declared this tool read-only (#6116): a
+		// pre-authorized call, not a destructive one, so there is
+		// nothing to confirm -- in any session mode, including a
+		// headless one with nobody to answer.
+		return nil
+	}
 	if !r.consumer.ConfirmDestructive || r.broker == nil {
 		return nil
 	}
-	all, _, at := p.CachedSchemas()
-	if at.IsZero() {
-		// Never read, or invalidated by a list_changed. Deciding from an
-		// empty or stale list would let the call through unasked -- which
-		// is what happened on every call that arrived while a new daemon
-		// was still reading schemas -- so read them now, and refuse if
-		// they cannot be read: failing open is the one wrong answer here.
-		fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
-		if err != nil {
-			return ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
-				Reason: "its annotations could not be read: " + err.Error()}
-		}
-		all = fresh
-		// This refresh is a genuine catalog observation: discharge
-		// any dead-rule re-check a list_changed left pending (#1986).
-		r.recheckDeadArgumentRules(p.Name())
+	if script != nil && !destructiveHint(ScriptAnnotations(*script)) {
+		// The operator declared this script read-only locally: the same
+		// trusted declaration a stdio server's annotations get (#2191),
+		// and the only classification a script has.
+		return nil
 	}
 	var found *mcpclient.Tool
-	for i := range all {
-		if all[i].Name == tool {
-			found = &all[i]
-			break
+	if script != nil {
+		found = &mcpclient.Tool{Name: tool, Annotations: ScriptAnnotations(*script)}
+	} else {
+		all, _, at := p.CachedSchemas()
+		if at.IsZero() {
+			// Never read, or invalidated by a list_changed. Deciding from an
+			// empty or stale list would let the call through unasked -- which
+			// is what happened on every call that arrived while a new daemon
+			// was still reading schemas -- so read them now, and refuse if
+			// they cannot be read: failing open is the one wrong answer here.
+			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
+			if err != nil {
+				return ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
+					Reason: "its annotations could not be read: " + err.Error()}
+			}
+			all = fresh
+			// This refresh is a genuine catalog observation: discharge
+			// any dead-rule re-check a list_changed left pending (#1986).
+			r.recheckDeadArgumentRules(p.Name())
+		}
+		for i := range all {
+			if all[i].Name == tool {
+				found = &all[i]
+				break
+			}
 		}
 	}
 	if found == nil || annotationClearsCall(p, found) {
@@ -542,6 +595,14 @@ func (e ErrArgumentRuleDenied) Error() string {
 // under allow confirmDestructive still runs, which is how the floor
 // reaches a destructive call the policy let through.
 func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (bool, error) {
+	return r.applyWritePolicyFor(ctx, p, server, tool, cc, args, nil)
+}
+
+// applyWritePolicyFor is applyWritePolicy for a call that may name a
+// script-backed view (#1933 slice 2). A script view classifies from the
+// hints its own declaration states; every other call reads the upstream's
+// annotations exactly as before.
+func (r *Registry) applyWritePolicyFor(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any, script *config.ToolView) (bool, error) {
 	// A record only affects a server with an unknown write. Consult it
 	// before argument rules, the write mode, or the destructive floor.
 	// A read-only hint is exempt; if it cannot be refreshed, fail closed
@@ -555,6 +616,22 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 		if !blocked {
 			return policy.Decision{}, false
 		}
+		if script != nil && policy.Classify(ScriptAnnotations(*script)).ReadOnly {
+			// A declared read-only script cannot be the write an
+			// earlier uncertain call might have performed.
+			return policy.Decision{}, false
+		}
+		if r.declaredReadOnly(server, tool) {
+			// The operator declared this tool read-only in local
+			// configuration (#6116). That declaration is trusted
+			// outright and needs no upstream schema to rest on --
+			// which matters here: a script-only namespace has no
+			// upstream schemas at all, so the refresh-and-scan below
+			// could never find this tool and would block a read-only
+			// inspection call behind an unknown write it cannot be
+			// (Codex P2 on PR #8317).
+			return policy.Decision{}, false
+		}
 		tools, _, at := p.CachedSchemas()
 		if at.IsZero() || p.SchemaExpired() {
 			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
@@ -566,7 +643,8 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 			tools = fresh
 		}
 		for _, candidate := range tools {
-			if candidate.Name == tool && policy.Classify(candidate.Annotations).ReadOnly {
+			if candidate.Name == tool && (policy.Classify(candidate.Annotations).ReadOnly ||
+				r.declaredReadOnly(server, tool)) {
 				return policy.Decision{}, false
 			}
 		}
@@ -633,27 +711,43 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 	// RefreshSchemas returns the error instead of serving the stale
 	// catalogue, and deciding from stale annotations is exactly the
 	// fail-open this gate exists to prevent.
-	all, _, at := p.CachedSchemas()
-	if at.IsZero() || p.SchemaExpired() {
-		fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
-		if err != nil {
-			return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
-				Reason: "write policy: its annotations could not be read: " + err.Error()}
-		}
-		all = fresh
-		// This refresh is a genuine catalog observation: discharge
-		// any dead-rule re-check a list_changed left pending (#1986).
-		r.recheckDeadArgumentRules(p.Name())
-	}
 	// A tool the schemas do not name is treated as unannotated, which
 	// the specification's defaults read as a possibly destructive
-	// write -- the conservative answer, not an exemption.
+	// write -- the conservative answer, not an exemption. A script-backed
+	// view (#1933 slice 2) carries no upstream schema; its declaration's
+	// own hints are what classify it.
 	class := policy.Classify(nil)
-	for i := range all {
-		if all[i].Name == tool {
-			class = policy.Classify(all[i].Annotations)
-			break
+	if script != nil {
+		class = policy.Classify(ScriptAnnotations(*script))
+	} else {
+		all, _, at := p.CachedSchemas()
+		if at.IsZero() || p.SchemaExpired() {
+			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
+			if err != nil {
+				return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
+					Reason: "write policy: its annotations could not be read: " + err.Error()}
+			}
+			all = fresh
+			// This refresh is a genuine catalog observation: discharge
+			// any dead-rule re-check a list_changed left pending (#1986).
+			r.recheckDeadArgumentRules(p.Name())
 		}
+		for i := range all {
+			if all[i].Name == tool {
+				class = policy.Classify(all[i].Annotations)
+				break
+			}
+		}
+	}
+	if r.declaredReadOnly(server, tool) {
+		// The operator declared this tool read-only in local
+		// configuration (#6116). That declaration outranks the
+		// server's annotations -- including their absence, which
+		// the specification's defaults read as a possibly
+		// destructive write and which is what gated manifestly
+		// read-only search tools (fff.find_files) in headless
+		// sessions, where the gate's question has no answerer.
+		class = policy.Classification{ReadOnly: true}
 	}
 
 	decision := policy.Evaluator{}.Evaluate(policy.Input{
@@ -757,6 +851,29 @@ func destructiveHint(raw json.RawMessage) bool {
 // than something anybody would run.
 func clientFileNames() map[string]bool {
 	return map[string]bool{runner.ClientFileName: true, runner.GlobalsFileName: true}
+}
+
+// recipeMetas renders the loaded recipes as codegen search data
+// (CODE-36): name, summary, placeholder names. A recipe that opted
+// out of tool exposure (@tool false) is not offered in search
+// either -- one notion of hidden for both surfaces.
+func (s *Server) recipeMetas() []codegen.RecipeMeta {
+	all := s.loadRecipes()
+	out := make([]codegen.RecipeMeta, 0, len(all))
+	for _, r := range all {
+		if r.OptOut || r.Name == "" {
+			continue
+		}
+		m := codegen.RecipeMeta{Name: r.Name, Description: r.Summary}
+		for _, p := range r.Placeholders {
+			m.Params = append(m.Params, p.Name)
+			if p.Required {
+				m.Required = append(m.Required, p.Name)
+			}
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func (s *Server) loadRecipes() []recipes.Recipe {
@@ -866,7 +983,7 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 	res, rerr := runner.Run(rctx, runner.Options{
 		Source:        source,
 		Prelude:       prelude(nss),
-		ClientSource:  codegen.Module(nss, s.endpoint, session),
+		ClientSource:  codegen.ModuleWithRecipes(nss, s.endpoint, session, s.recipeMetas()),
 		GlobalsSource: codegen.GlobalDeclarations(nss),
 		// A Python one-shot lands here with a Python prelude when the
 		// source chose it (#1917 Phase 2); the same options the runner
@@ -1086,6 +1203,7 @@ func (s *Server) modelLayer(ctx context.Context, session string) (model.Provider
 		DefaultModel:         pol.ModelDefault,
 		Timeout:              pol.ModelTimeout,
 		Sampler:              s.brokerSampler(session),
+		PluginSampler:        s.pluginSampler(session),
 	})
 }
 
@@ -1198,6 +1316,18 @@ func (p modelRepairProvider) Complete(ctx context.Context, req scripting.Complet
 // unavailable provider, not a hang: the broker's expiry answer lands as
 // an error here and the caller falls back deterministically.
 func (s *Server) brokerSampler(session string) model.SampleFunc {
+	return s.brokerSamplerFor(session, "sampling")
+}
+
+// pluginSampler is the plugin backend's binding over the same broker
+// (#1925): identical plumbing, but the question and the answer carry
+// the plugin provider's name, so a plugin answerer can tell its
+// questions from sampling's and callers see which backend answered.
+func (s *Server) pluginSampler(session string) model.SampleFunc {
+	return s.brokerSamplerFor(session, "plugin")
+}
+
+func (s *Server) brokerSamplerFor(session string, provider string) model.SampleFunc {
 	if s.reg == nil || s.reg.broker == nil {
 		return nil
 	}
@@ -1217,12 +1347,20 @@ func (s *Server) brokerSampler(session string) model.SampleFunc {
 		question, err := broker.OpenRequest(elicit.SampleAsk(elicit.Ask{
 			Server:  "mcpx",
 			Session: session,
-			Message: "mcpx asks for a model completion (model.provider=sampling)",
+			Message: "mcpx asks for a model completion (model.provider=" + provider + ")",
 			TTL:     ttl,
 		}, params))
 		if err != nil {
 			return model.Response{}, err
 		}
+		// When this request runs inside an interruptible ask call (a
+		// prompt hook during /v1/ask kind: exec), record the question
+		// on that call too: the host driving the call answers through
+		// its ask poll, which only exposes questions the call carries,
+		// so unattached the hook waited out its timeout unanswered
+		// (Codex review, PR #9021). Outside an ask call this is a
+		// no-op; the broker's own answerers remain the route, as before.
+		s.reg.attachSample(ctx, question, params)
 		// Publish the lifecycle before waiting, as the upstream
 		// sampling path does (hooks.go): a sample.opened hook is how
 		// an event-driven answerer learns there is a question to
@@ -1246,13 +1384,13 @@ func (s *Server) brokerSampler(session string) model.SampleFunc {
 		s.reg.publish(events.Event{Kind: events.SampleAnswered, Server: question.Server,
 			Data: mustJSON(elicitAnsweredSummary(question, ans))})
 		if ans.Action != elicit.Accept {
-			return model.Response{}, fmt.Errorf("model: sampling %s: %w", ans.Action, model.ErrUnavailable)
+			return model.Response{}, fmt.Errorf("model: %s %s: %w", provider, ans.Action, model.ErrUnavailable)
 		}
 		text, answered := parseSampleResult(ans.Content)
 		if strings.TrimSpace(text) == "" {
-			return model.Response{}, fmt.Errorf("model: sampling answered with no text: %w", model.ErrUnavailable)
+			return model.Response{}, fmt.Errorf("model: %s answered with no text: %w", provider, model.ErrUnavailable)
 		}
-		return model.Response{Text: text, Model: answered, Provider: "sampling"}, nil
+		return model.Response{Text: text, Model: answered, Provider: provider}, nil
 	}
 }
 

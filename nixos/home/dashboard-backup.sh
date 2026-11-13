@@ -26,15 +26,17 @@ mkdir -p "$STAGE/aggregator" "$STAGE/meta-quota-export" "$STAGE/journals" "$OUTD
 # --- data set (explicit list only; the aggregator .env is deliberately NOT
 # --- included — no config/secret files belong in this archive) ---
 for f in actions.json comments.json fleet-feed.json quota-current.json \
-         registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
-         events.json views.json coverage-snapshot.json aa-last-good.json; do
-  if [ -f "$AGG/$f" ]; then cp -a "$AGG/$f" "$STAGE/aggregator/$f";
+  registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
+  events.json views.json coverage-snapshot.json aa-last-good.json; do
+  if [ -f "$AGG/$f" ]; then
+    cp -a "$AGG/$f" "$STAGE/aggregator/$f"
   else echo "dashboard-backup: WARN missing $AGG/$f" >&2; fi
 done
 if [ -d "$AGG/snapshots" ]; then cp -a "$AGG/snapshots" "$STAGE/aggregator/snapshots"; fi
 if [ -d "$AGG/charge-inputs" ]; then cp -a "$AGG/charge-inputs" "$STAGE/aggregator/charge-inputs"; fi
 for f in latest.json history.jsonl; do
-  if [ -f "$META/$f" ]; then cp -a "$META/$f" "$STAGE/meta-quota-export/$f";
+  if [ -f "$META/$f" ]; then
+    cp -a "$META/$f" "$STAGE/meta-quota-export/$f"
   else echo "dashboard-backup: WARN missing $META/$f" >&2; fi
 done
 
@@ -42,14 +44,14 @@ done
 NOW_EPOCH="$(date +%s)"
 LAST=0
 if [ -f "$MARKER" ]; then LAST="$(cat "$MARKER" 2>/dev/null || echo 0)"; fi
-case "$LAST" in (*[!0-9]*|"") LAST=0;; esac
-W=$(( NOW_EPOCH - 86400 ))
+case "$LAST" in *[!0-9]* | "") LAST=0 ;; esac
+W=$((NOW_EPOCH - 86400))
 if [ "$LAST" -gt 0 ] && [ "$LAST" -lt "$W" ]; then W="$LAST"; fi
 SINCE_STR="$(date -d "@$W" '+%F %T')"
 for svc in pm-aggregator quota-gatherer meta-quota-export; do
   journalctl --user -u "$svc.service" --since "$SINCE_STR" --no-pager -o short-iso \
-    > "$STAGE/journals/$svc.log" 2>/dev/null \
-    || echo "(journal unavailable for $svc)" > "$STAGE/journals/$svc.log"
+    >"$STAGE/journals/$svc.log" 2>/dev/null ||
+    echo "(journal unavailable for $svc)" >"$STAGE/journals/$svc.log"
 done
 
 # --- manifest ---
@@ -82,7 +84,8 @@ tar -I zstd -cf "$TMPARC" -C "$STAGE" .
 mv "$TMPARC" "$ARCHIVE"
 VDIR="$(mktemp -d)"
 tar -I zstd -xf "$ARCHIVE" -C "$VDIR"
-if ! ( cd "$VDIR" && python3 - <<'PYEOF'
+if ! (
+  cd "$VDIR" && python3 - <<'PYEOF'
 import hashlib, json, os, sys
 m = json.load(open("manifest.json"))
 bad = 0
@@ -97,11 +100,12 @@ sys.exit(1 if bad else 0)
 PYEOF
 ); then
   echo "dashboard-backup: VERIFY FAILED for $ARCHIVE" >&2
-  rm -rf "$VDIR"; exit 1
+  rm -rf "$VDIR"
+  exit 1
 fi
 rm -rf "$VDIR"
 
-echo "$NOW_EPOCH" > "$MARKER"
+echo "$NOW_EPOCH" >"$MARKER"
 echo "dashboard-backup: OK $ARCHIVE ($(stat -c%s "$ARCHIVE") bytes, sha256 $(sha256sum "$ARCHIVE" | cut -d' ' -f1))"
 
 # --- prune day dirs older than 30 days (only this script's own date dirs) ---
@@ -109,5 +113,8 @@ CUTOFF="$(date -d '30 days ago' +%F)"
 for d in "$ROOT"/20??-??-??; do
   [ -d "$d" ] || continue
   day="$(basename "$d")"
-  if [[ "$day" < "$CUTOFF" ]]; then rm -rf "$d"; echo "dashboard-backup: pruned $day"; fi
+  if [[ $day < $CUTOFF ]]; then
+    rm -rf "$d"
+    echo "dashboard-backup: pruned $day"
+  fi
 done

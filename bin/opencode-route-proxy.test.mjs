@@ -33,7 +33,7 @@ const freePort = () =>
 const makeLeaf = (name, expectedKey) => {
   const leaf = {
     name,
-    mode: "ok", // ok | rate
+    mode: "ok", // ok | rate | auth | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream | big-first-event | preface-flood
     last: null,
     hits: 0,
     server: null,
@@ -54,12 +54,58 @@ const makeLeaf = (name, expectedKey) => {
         res.writeHead(401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: { message: "bad key" } }));
       }
+      if (leaf.mode === "auth") {
+        res.writeHead(401, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({ error: { message: "expired credential" } }),
+        );
+      }
       if (leaf.mode === "rate") {
         res.writeHead(429, {
           "content-type": "application/json",
           "retry-after": "30",
         });
         return res.end(JSON.stringify({ error: { message: "quota" } }));
+      }
+      if (leaf.mode === "sse-rate") {
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "retry-after": "30",
+        });
+        const error = JSON.stringify({
+          error: {
+            message: "quota exhausted",
+            type: "rate_limit_error",
+            code: "insufficient_quota",
+            status: 429,
+          },
+        });
+        res.write(`data: ${error.slice(0, 14)}`);
+        return setTimeout(() => res.end(`${error.slice(14)}\n\n`), 10);
+      }
+      if (leaf.mode === "delayed-sse-rate") {
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "retry-after": "30",
+        });
+        res.write(": heartbeat\n\n");
+        const error = JSON.stringify({
+          error: {
+            message: "quota exhausted",
+            type: "rate_limit_error",
+            code: "insufficient_quota",
+            status: 429,
+          },
+        });
+        return setTimeout(() => {
+          res.write(`data: ${error.slice(0, 14)}`);
+          setTimeout(() => res.end(`${error.slice(14)}\n\n`), 10);
+        }, 300);
+      }
+      if (leaf.mode === "stream-break") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(": heartbeat\n\n");
+        return setTimeout(() => res.destroy(), 10);
       }
       if (body.stream) {
         res.writeHead(200, { "content-type": "text/event-stream" });
@@ -78,7 +124,87 @@ const makeLeaf = (name, expectedKey) => {
             ],
             ...(usage ? { usage } : {}),
           })}\n\n`;
-        res.write(chunk({ role: "assistant", content: name }));
+        if (leaf.mode === "big-first-event") {
+          // One valid first content event larger than the relay's
+          // 64 KiB preface window, delivered in slices so the parser
+          // buffer crosses the window mid-event (#5558 Codex P2).
+          const big = "A".repeat(96 * 1024);
+          const event = `data: ${JSON.stringify({
+            id: "chatcmpl-x",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: body.model,
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    { index: 0, function: { name: "f", arguments: big } },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })}\n\n`;
+          let off = 0;
+          const step = () => {
+            if (off < event.length) {
+              res.write(event.slice(off, off + 8192));
+              off += 8192;
+              return setTimeout(step, 1);
+            }
+            res.write(
+              chunk({}, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }),
+            );
+            return res.end("data: [DONE]\n\n");
+          };
+          return step();
+        }
+        if (leaf.mode === "preface-flood") {
+          // A non-content preface past the relay's pre-content
+          // limit, then the response stays open: the relay must
+          // fail over AND cancel this stream (#5558 Codex P2).
+          // Cancellation is observable here as the socket closing
+          // before the response ever ended.
+          leaf.prefaceAborted = false;
+          res.on("close", () => {
+            if (!res.writableEnded) leaf.prefaceAborted = true;
+          });
+          res.write(": preface\n\n");
+          let sent = 0;
+          const step = () => {
+            if (res.destroyed || res.writableEnded) return;
+            res.write(`: ${"p".repeat(4096)}\n\n`);
+            sent += 4096;
+            if (sent < 192 * 1024) return setTimeout(step, 1);
+            // Hold the response open; only the relay's cancel ends it.
+          };
+          return step();
+        }
+        if (leaf.mode === "delayed-stream") {
+          res.write(chunk({ role: "assistant" }));
+          return setTimeout(() => {
+            res.write(chunk({ content: name }));
+            res.write(
+              chunk({}, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }),
+            );
+            res.end("data: [DONE]\n\n");
+          }, 350);
+        }
+        res.write(chunk({ role: "assistant" }));
+        res.write(chunk({ content: name }));
+        if (leaf.mode === "late-sse-rate") {
+          return res.end(
+            `data: ${JSON.stringify({
+              error: {
+                message: "late quota exhausted",
+                type: "rate_limit_error",
+                code: "insufficient_quota",
+                status: 429,
+              },
+            })}\n\n`,
+          );
+        }
         res.write(
           chunk({}, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }),
         );
@@ -126,7 +252,9 @@ const ROUTE_ATTEMPT_SCHEMA = `CREATE TABLE route_attempt (
   cost_usd real)`;
 
 const startProxy = async (arg = {}) => {
-  const timeout = typeof arg === "string" ? arg : "15000";
+  const timeout =
+    typeof arg === "string" ? arg : String(arg.timeoutMs ?? "15000");
+  const leafTimeout = typeof arg === "object" ? arg.leafTimeoutMs : undefined;
   const pinnedNow = arg && typeof arg === "object" ? arg.nowMs : undefined;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-test-"));
   const leafA = await makeLeaf("LEAF-A", "key-a");
@@ -185,6 +313,7 @@ const startProxy = async (arg = {}) => {
       "grp-ordered": { "providers": ["leafB", "leafA"], "selection": "ordered" },
       "grp-rr": { "providers": ["leafA", "leafB"], "selection": "round-robin" },
       "grp-weighted": { "providers": ["leafA", "leafB"], "selection": "weighted", "weights": { "leafA": 0, "leafB": 1 } },
+      "grp-prototype-spellings": { "providers": ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "leafA"], "selection": "ordered" },
     },
     "model_route_windows": {
       "peak": { "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"], "start": "01:00", "end": "04:00", "timezone": "UTC" },
@@ -204,6 +333,7 @@ const startProxy = async (arg = {}) => {
       "t-disabled": { "selection": "ordered", "targets": ["leafOff/m-b", "leafB/m-b"] },
       "t-nocred-first": { "selection": "ordered", "targets": ["leafNoCred/m-nc", "leafB/m-b"] },
       "t-nocred-only": { "selection": "ordered", "targets": ["leafNoCred/m-nc"] },
+      "t-gate-nocred": { "selection": "ordered", "targets": ["leafA/m-a", "leafNoCred/m-b"] },
       "t-window": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
       "t-window-inv": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": { "name": "peak", "invert": true } }, "leafB/m-b" ] },
       "t-window-unknown": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "no-such-window" }, "leafB/m-b" ] },
@@ -218,8 +348,10 @@ const startProxy = async (arg = {}) => {
       "t-group": { "selection": "ordered", "targets": ["grp-ordered/m-g"] },
       "t-group-rr": { "selection": "ordered", "targets": ["grp-rr/m-g"] },
       "t-group-weighted": { "selection": "ordered", "targets": ["grp-weighted/m-g"] },
+      "t-group-prototype-spellings": { "selection": "ordered", "targets": ["grp-prototype-spellings/m-a"] },
       "t-group-skip": { "selection": "ordered", "targets": ["grp-ordered/m-a"] },
       "t-openai-default": { "selection": "ordered", "targets": ["openai/m-gpt"] },
+      "t-a-only": { "selection": "ordered", "targets": ["leafA/m-a"] },
     },
   },
 }`,
@@ -233,6 +365,9 @@ const startProxy = async (arg = {}) => {
     OPENCODE_ROUTE_PROXY_CONFIG: configPath,
     OPENCODE_ROUTE_PROXY_DB: dbPath,
     OPENCODE_ROUTE_PROXY_TIMEOUT_MS: timeout,
+    ...(leafTimeout !== undefined
+      ? { OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS: String(leafTimeout) }
+      : {}),
     ...(pinnedNow
       ? { OPENCODE_ROUTE_PROXY_NOW_MS: String(pinnedNow) }
       : {}),
@@ -258,7 +393,7 @@ const startProxy = async (arg = {}) => {
     const ro = new DatabaseSync(dbPath, { readOnly: true });
     const rows = ro
       .prepare(
-        "SELECT route_id, provider_id, model_id, variant, outcome, error_tag, session_id, failed_over_to, output_started FROM route_attempt ORDER BY id",
+        "SELECT route_id, provider_id, model_id, variant, outcome, error_tag, error_status, error_message, quota, session_id, failed_over_to, output_started, first_token_ms FROM route_attempt ORDER BY id",
       )
       .all();
     ro.close();
@@ -275,13 +410,25 @@ const startProxy = async (arg = {}) => {
     leafA.server.close();
     leafB.server.close();
   };
-  return { base, post, attempts, leafA, leafB, cleanup, log: () => log };
+  return { base, post, attempts, leafA, leafB, cleanup, dbPath, log: () => log };
 };
 
 const MSGS = [
   { role: "system", content: "be terse" },
   { role: "user", content: "hello" },
 ];
+
+const waitForAttempts = async (p, count) => {
+  let rows = [];
+  for (let i = 0; i < 20; i++) {
+    try {
+      rows = p.attempts();
+    } catch {}
+    if (rows.length >= count) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return rows;
+};
 
 test("invalid timeout exits at startup with a useful diagnostic", () => {
   for (const raw of ["0", "-1", "1.5", "1e3", "0x10", " 100", "2147483648", "3000000000", "abc", "nope"]) {
@@ -310,6 +457,38 @@ test("configured deadline aborts a slow leaf", async () => {
     await p.cleanup();
   }
 });
+
+test(
+  "per-leaf first-response timeout fails over and records the attempt",
+  async () => {
+    const p = await startProxy({ timeoutMs: "500", leafTimeoutMs: "100" });
+    try {
+      p.leafA.mode = "slow";
+      const start = Date.now();
+      const res = await p.post({
+        model: "opencode-route/t-ordered",
+        messages: MSGS,
+      });
+      assert.equal(res.status, 200);
+      const json = await res.json();
+      assert.equal(json.choices[0].message.content, "LEAF-B");
+      assert.ok(
+        Date.now() - start < 2500,
+        "per-leaf timeout did not shed promptly",
+      );
+      assert.equal(p.leafA.hits, 1);
+      assert.equal(p.leafB.hits, 1);
+      const rows = p.attempts();
+      assert.equal(rows.length, 2);
+      assert.equal(rows[0].outcome, "timeout");
+      assert.equal(rows[0].error_tag, "Transport");
+      assert.equal(rows[0].failed_over_to, "leafB/m-b");
+      assert.equal(rows[1].outcome, "success");
+    } finally {
+      await p.cleanup();
+    }
+  },
+);
 
 test("health and model list are served locally", async () => {
   const p = await startProxy();
@@ -356,7 +535,7 @@ test("429 on the first leaf fails over; both attempts recorded", async () => {
     // leafB has no static key in config: it must be served by the
     // credential-store key, which the leaf verifies.
     assert.equal(p.leafB.last.headers.authorization, "Bearer key-b");
-    const rows = p.attempts();
+    const rows = await waitForAttempts(p, 2);
     assert.equal(rows.length, 2);
     assert.equal(rows[0].outcome, "failure");
     assert.equal(rows[0].error_tag, "RateLimit");
@@ -364,6 +543,94 @@ test("429 on the first leaf fails over; both attempts recorded", async () => {
     assert.equal(rows[0].session_id, null);
     assert.equal(rows[1].outcome, "success");
     assert.equal(rows[1].session_id, null);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("repeated authentication failures demote a leaf until it succeeds", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "auth";
+    for (let i = 0; i < 3; i++) {
+      const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+      assert.equal(res.status, 200);
+      assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    }
+
+    const beforeDemotion = p.attempts();
+    const authFailures = beforeDemotion.filter((row) => row.provider_id === "leafA");
+    assert.equal(authFailures.length, 3);
+    assert.ok(authFailures.every((row) => row.outcome === "failure"));
+    assert.ok(authFailures.every((row) => row.error_tag === "Authentication"));
+    assert.ok(authFailures.every((row) => row.error_status === 401));
+    assert.ok(authFailures.every((row) => row.quota === null));
+
+    // Three prior auth failures move leafA behind leafB for the next turn.
+    const fallback = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(fallback.status, 200);
+    assert.equal((await fallback.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(
+      p.attempts().filter((row) => row.provider_id === "leafA").length,
+      3,
+    );
+
+    // A success on the demoted pair clears the failure run.
+    p.leafA.mode = "ok";
+    const recovered = await p.post({ model: "opencode-route/t-a-only", messages: MSGS });
+    assert.equal(recovered.status, 200);
+    const primaryAgain = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(primaryAgain.status, 200);
+    assert.equal(
+      (await primaryAgain.json()).choices[0].message.content,
+      "LEAF-A",
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("RateLimit-only failures still demote a leaf until its next success", async () => {
+  const p = await startProxy();
+  try {
+    const db = new DatabaseSync(p.dbPath);
+    const insert = db.prepare(
+      `INSERT INTO route_attempt
+       (time_started, time_ended, route_id, provider_id, model_id, outcome, error_tag, output_started)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const now = Date.now();
+    for (let i = 0; i < 3; i++) {
+      insert.run(
+        now - 1000 + i,
+        now - 999 + i,
+        "t-ordered",
+        "leafA",
+        "m-a",
+        "failure",
+        "RateLimit",
+        0,
+      );
+    }
+    db.close();
+
+    const fallback = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(fallback.status, 200);
+    assert.equal((await fallback.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(
+      p.attempts().filter((row) => row.provider_id === "leafA").length,
+      3,
+    );
+
+    p.leafA.mode = "ok";
+    const recovered = await p.post({ model: "opencode-route/t-a-only", messages: MSGS });
+    assert.equal(recovered.status, 200);
+    const primaryAgain = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(primaryAgain.status, 200);
+    assert.equal(
+      (await primaryAgain.json()).choices[0].message.content,
+      "LEAF-A",
+    );
   } finally {
     await p.cleanup();
   }
@@ -378,7 +645,7 @@ test("variant remap reaches the leaf as reasoning_effort", async () => {
     });
     assert.equal(res.status, 200);
     assert.equal(p.leafA.last.body.reasoning_effort, "high");
-    const rows = p.attempts();
+    const rows = await waitForAttempts(p, 1);
     assert.equal(rows[0].variant, "high");
   } finally {
     await p.cleanup();
@@ -429,14 +696,233 @@ test("streaming relays SSE and records a success attempt", async () => {
   }
 });
 
+test("first-token timing includes delay past the pre-content window", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "delayed-stream";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    assert.ok((await res.text()).includes("LEAF-A"));
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "success");
+    assert.ok(rows[0].first_token_ms > 200, `first_token_ms=${rows[0].first_token_ms}`);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content SSE quota error fails over to the next stream", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "sse-rate";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    assert.ok(!text.includes("quota exhausted"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "RateLimit");
+    assert.equal(rows[0].error_status, 429);
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(JSON.parse(rows[0].quota).retryAfterMs, 30_000);
+    assert.equal(rows[1].outcome, "success");
+    assert.equal(rows[1].provider_id, "leafB");
+    assert.equal(rows[1].output_started, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content SSE error after the buffer window still fails over cleanly", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "delayed-sse-rate";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    assert.ok(!text.includes("quota exhausted"), text);
+    assert.ok(!text.includes("heartbeat"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "RateLimit");
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(JSON.parse(rows[0].quota).retryAfterMs, 30_000);
+    assert.equal(rows[1].outcome, "success");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content transport break fails over without committing the heartbeat", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "stream-break";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    assert.ok(!text.includes("heartbeat"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "Transport");
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(rows[1].outcome, "success");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("stream errors after content do not fail over", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "late-sse-rate";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-A"), text);
+    assert.ok(text.includes("late quota exhausted"), text);
+    assert.equal(p.leafB.hits, 0);
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].output_started, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a first content event larger than the preface window is relayed, not rejected (#5558)", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "big-first-event";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("A".repeat(1024)), "large first event must reach the client");
+    assert.ok(text.includes("[DONE]"));
+    assert.equal(p.leafB.hits, 0);
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "success");
+    assert.equal(rows[0].output_started, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content preface overflow fails over and cancels the rejected stream (#5558)", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "preface-flood";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(rows[1].outcome, "success");
+    // The rejected leaf's stream was cancelled, not left generating.
+    for (let i = 0; i < 50 && !p.leafA.prefaceAborted; i++)
+      await new Promise((r) => setTimeout(r, 100));
+    assert.equal(p.leafA.prefaceAborted, true);
+  } finally {
+    await p.cleanup();
+  }
+});
+
 test("unknown route and malformed bodies are rejected", async () => {
   const p = await startProxy();
   try {
     const res = await p.post({ model: "opencode-route/nope", messages: MSGS });
     assert.equal(res.status, 502);
     assert.match((await res.json()).error.message, /unknown route/);
+    for (const provider of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+      const proto = await p.post({ model: `${provider}/m-b`, messages: MSGS });
+      assert.equal(proto.status, 502, `prototype spelling ${provider} must miss provider tables`);
+      assert.match((await proto.json()).error.message, /unknown|no credential|provider/i);
+    }
     const bad = await p.post({ model: "opencode-route/t-ordered", messages: "x" });
     assert.equal(bad.status, 400);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("chunk boundary inside a multibyte character arrives intact (#4335)", async () => {
+  const p = await startProxy();
+  try {
+    const text = "café ☃ fin";
+    const payload = JSON.stringify({ model: "opencode-route/t-ordered", messages: [{ role: "user", content: text }] });
+    const bytes = Buffer.from(payload, "utf8");
+    // Split inside the é bytes (0xC3 0xA9) and inside the ☃ bytes
+    // (0xE2 0x98 0x83): per-chunk string coercion would emit U+FFFD here.
+    const eAcute = bytes.indexOf(Buffer.from("é", "utf8"));
+    const snowman = bytes.indexOf(Buffer.from("☃", "utf8"));
+    assert.ok(eAcute > 0 && snowman > eAcute);
+    const parts = [bytes.subarray(0, eAcute + 1), bytes.subarray(eAcute + 1, snowman + 2), bytes.subarray(snowman + 2)];
+    const res = await fetch(`${p.base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new ReadableStream({
+        start(c) {
+          for (const part of parts) c.enqueue(part);
+          c.close();
+        },
+      }),
+      duplex: "half",
+    });
+    assert.equal(res.status, 200);
+    assert.equal(p.leafA.last.body.messages[0].content, text);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("oversize body is rejected with 413 (#4335)", async () => {
+  const p = await startProxy();
+  try {
+    const big = "x".repeat(51 * 1024 * 1024);
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: [{ role: "user", content: big }] });
+    assert.equal(res.status, 413);
   } finally {
     await p.cleanup();
   }
@@ -619,6 +1105,18 @@ test("provider route (weighted) honors weights keyed by member provider id", asy
   }
 });
 
+test("provider routes skip prototype-spelling members like other unknown providers", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-group-prototype-spellings", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.deepEqual(p.attempts().map(row => row.provider_id), ["leafA"]);
+  } finally {
+    await p.cleanup();
+  }
+});
+
 test("provider route skips a member whose catalog lacks the model", async () => {
   const p = await startProxy();
   try {
@@ -766,6 +1264,278 @@ test("config load names invalid windows instead of silently evaluating them", as
     assert.ok(log.includes("bad-wrap-99"), `log names the window:\n${log}`);
     assert.ok(log.includes("99:99"), `log names the bad value:\n${log}`);
     assert.ok(log.includes("bad-start-2400"), `log names each bad window:\n${log}`);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// ------------------------------------------------------------ #5295 gate
+
+// Seed one quota-bearing failure for a (provider, model) pair, as if
+// the leaf had answered 429 with a Retry-After `retryAfterMs` long at
+// `atMs`. Written straight into the fixture ledger the proxy reads.
+const seedQuotaFailure = (dbPath, { provider, model, atMs, retryAfterMs, endedMs }) => {
+  const db = new DatabaseSync(dbPath);
+  db.prepare(
+    `INSERT INTO route_attempt (
+       time_started, time_ended, session_id, assistant_message_id,
+       route_id, provider_id, model_id, variant, outcome,
+       error_tag, error_code, error_status, error_message, retryable,
+       output_started, failed_over_to, quota
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    atMs,
+    endedMs ?? atMs + 50,
+    null,
+    null,
+    "seed",
+    provider,
+    model,
+    null,
+    "failure",
+    "RateLimit",
+    null,
+    429,
+    "leaf HTTP 429: quota",
+    1,
+    0,
+    null,
+    JSON.stringify({ retryAfterMs }),
+  );
+  db.close();
+};
+
+// A Monday noon UTC, pinned via OPENCODE_ROUTE_PROXY_NOW_MS so the
+// gate's clock is deterministic.
+const GATE_NOW = Date.UTC(2026, 0, 5, 12, 0, 0);
+
+test("known-exhausted pair is excluded while a live pair exists (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // One minute ago the leaf said: retry after an hour. The pair is
+    // known exhausted for another ~59 minutes — one failure is
+    // enough; demotion's >=3 must not be required.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0, "the exhausted leaf must not be attempted");
+    const rows = p.attempts().filter((r) => r.route_id === "t-ordered");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafB");
+    assert.ok(
+      p.log().includes("known-exhausted gate excluded leafA/m-a"),
+      `gate decision should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("known-exhausted pair returns after its reset passes (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // Two hours ago the leaf said retry after an hour: the reset is
+    // an hour in the past at the pinned now, so the gate has lifted.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 7_200_000,
+      retryAfterMs: 3_600_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
+    assert.equal(p.leafB.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("all candidates known-exhausted: route still walks in order (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafB",
+      model: "m-b",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    // Fail-safe: a known-exhausted leg as last resort beats no route,
+    // so the walk keeps the (demoted) order and leaf A still serves.
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
+    assert.ok(
+      p.log().includes("known-exhausted gate bypassed"),
+      `bypass should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a success after the quota failure clears the gate (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 120_000,
+      retryAfterMs: 3_600_000,
+    });
+    // The pair served successfully a minute after that failure
+    // (another door sharing the ledger): the exhaustion is stale.
+    const db = new DatabaseSync(p.dbPath);
+    db.prepare(
+      `INSERT INTO route_attempt (
+         time_started, time_ended, session_id, assistant_message_id,
+         route_id, provider_id, model_id, variant, outcome,
+         error_tag, error_code, error_status, error_message, retryable,
+         output_started, failed_over_to, quota
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      GATE_NOW - 60_000,
+      GATE_NOW - 59_000,
+      null,
+      null,
+      "seed",
+      "leafA",
+      "m-a",
+      null,
+      "success",
+      null,
+      null,
+      null,
+      null,
+      1,
+      0,
+      null,
+      null,
+    );
+    db.close();
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("gate bypassed when the only survivor has no credential (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    // leafA/m-a is known-exhausted and leafNoCred/m-b is not — but
+    // leafNoCred has no credential, so excluding leafA would still
+    // empty the route at the #3228 filter. The gate must bypass and
+    // keep leafA as the last resort instead of failing the request.
+    const res = await p.post({ model: "opencode-route/t-gate-nocred", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
+    assert.ok(
+      p.log().includes("known-exhausted gate bypassed"),
+      `bypass should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("retry delay is anchored to the quota response receipt (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // The 429 took 90s to arrive (started 2 minutes ago, received 30s
+    // ago) and asked for 60 more seconds of backoff. Anchored to the
+    // request start the pair would already be eligible again
+    // (start + 60s < now); anchored to the receipt it is exhausted
+    // for another ~30s.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 120_000,
+      endedMs: GATE_NOW - 30_000,
+      retryAfterMs: 60_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("an overlapping success completed before the quota response does not clear the gate (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // Quota failure: started 2 minutes ago, the 429 arrived 10s ago.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 120_000,
+      endedMs: GATE_NOW - 10_000,
+      retryAfterMs: 3_600_000,
+    });
+    // Overlapping success: STARTED after the failing request (so
+    // start-time ordering would call it the latest word) but
+    // COMPLETED a minute ago — before the 429 was received. It is
+    // not a recovery; the gate must hold.
+    const db = new DatabaseSync(p.dbPath);
+    db.prepare(
+      `INSERT INTO route_attempt (
+         time_started, time_ended, session_id, assistant_message_id,
+         route_id, provider_id, model_id, variant, outcome,
+         error_tag, error_code, error_status, error_message, retryable,
+         output_started, failed_over_to, quota
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      GATE_NOW - 110_000,
+      GATE_NOW - 60_000,
+      null,
+      null,
+      "seed",
+      "leafA",
+      "m-a",
+      null,
+      "success",
+      null,
+      null,
+      null,
+      null,
+      1,
+      0,
+      null,
+      null,
+    );
+    db.close();
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0);
   } finally {
     await p.cleanup();
   }

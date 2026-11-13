@@ -11,10 +11,18 @@ import { AutoSaveManager, type SaveResult } from "./auto-save";
 import { buildCollabWsUrl, type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { updateHeaderSubtitle } from "./header-subtitle";
-import { identityNeedsRefresh } from "./identity-refresh";
+import {
+  identityNeedsRefresh,
+  meResponseCarriesName,
+  parseIdentityMeResponse,
+  parseIdentityNameResponse,
+  parseIdentityRegisterResponse,
+} from "./identity-refresh";
+import { clientIdForDisplay } from "./settings-identity";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
+import { isCopyFileResponse, isNewFileResponse, isRenameFileResponse, isSaveFileResponse } from "./file-op-responses";
 import { isSaveShortcut } from "./save-shortcut";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
@@ -144,17 +152,22 @@ async function ensureIdentity(): Promise<IdentityState | null> {
     try {
       const resp = await fetch(`/api/identity/me?token=${encodeURIComponent(stored.token)}`);
       if (resp.ok) {
-        const data = await resp.json();
+        const rawBody: unknown = await resp.json();
+        const data = parseIdentityMeResponse(rawBody);
+        // A wrong-shape me body carrying no name field at all must not
+        // wipe the stored display name (#7838): the parser maps an
+        // absent name to null, so presence is checked on the raw body.
+        const nameCarried = meResponseCarriesName(rawBody);
         // Server returns a refreshed token on each validation, resetting the
         // 30-day expiry clock. Save it so the client stays authenticated as
         // long as they visit within every 30 days.
         if (data.token) {
           stored.token = data.token;
-          saveIdentity(stored.token, stored.clientId, data.name || null);
+          saveIdentity(stored.token, stored.clientId, nameCarried ? data.name : stored.name);
         }
         // Update name from server (may have changed via another tab/session)
-        const serverName = data.name || null;
-        if (serverName !== stored.name) {
+        const serverName = data.name;
+        if (nameCarried && serverName !== stored.name) {
           updateStoredName(serverName);
           stored.name = serverName;
         }
@@ -181,11 +194,11 @@ async function ensureIdentity(): Promise<IdentityState | null> {
       console.error("[id] Identity registration failed:", resp.status);
       return null;
     }
-    const data = await resp.json();
+    const data = parseIdentityRegisterResponse(await resp.json());
     const identity: IdentityState = {
       token: data.token,
-      clientId: data.client_id,
-      name: data.name || null,
+      clientId: data.clientId,
+      name: data.name,
     };
     saveIdentity(identity.token, identity.clientId, identity.name);
     console.log("[id] New identity registered:", identity.clientId);
@@ -211,8 +224,8 @@ async function updateDisplayName(token: string, name: string | null): Promise<st
       console.error("[id] Name update failed:", resp.status);
       return null;
     }
-    const data = await resp.json();
-    const updatedName = data.name || null;
+    const data = parseIdentityNameResponse(await resp.json());
+    const updatedName = data.name;
     updateStoredName(updatedName);
     console.log("[id] Display name updated:", updatedName);
     return updatedName;
@@ -450,6 +463,10 @@ function onMainSwapped(): void {
       .then((identity) => {
         if (identity) {
           currentIdentity = identity;
+          // Codex P2 on PR #7328: if this refresh re-registered (expired
+          // token), the settings page may already have rendered the old
+          // client id — refresh the displayed id to match the new identity.
+          refreshSettingsClientId();
         }
       })
       .catch(() => {
@@ -514,6 +531,26 @@ function onPartialSwapped(_targetSelector: string): void {
  * Initialize search debounce for file search input and show-deleted checkbox.
  * Search triggers after 300ms of inactivity; checkbox triggers immediately.
  */
+/**
+ * Current file-list query params: search + show-deleted + the #4973
+ * sort/origin controls. Every partial refresh (search debounce,
+ * show-deleted toggle, tag WebSocket events) must carry all of them, or
+ * the refresh silently drops the sort order and origin filter while the
+ * controls still show them selected (Codex review, PR #5191).
+ */
+function currentFileListParams(): URLSearchParams {
+  const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
+  const showDeletedCheckbox = document.getElementById("show-deleted") as HTMLInputElement | null;
+  const sortSelect = document.getElementById("file-sort") as HTMLSelectElement | null;
+  const originInput = document.getElementById("file-origin") as HTMLInputElement | null;
+  const params = new URLSearchParams();
+  if (searchInput?.value) params.set("search", searchInput.value);
+  if (showDeletedCheckbox?.checked) params.set("show_deleted", "true");
+  if (sortSelect?.value) params.set("sort", sortSelect.value);
+  if (originInput?.value) params.set("origin", originInput.value);
+  return params;
+}
+
 function initSearchDebounce(): void {
   const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
   const showDeletedCheckbox = document.getElementById("show-deleted") as HTMLInputElement | null;
@@ -523,12 +560,7 @@ function initSearchDebounce(): void {
   const doSearch = () => {
     if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
     searchDebounceTimer = setTimeout(() => {
-      const query = searchInput?.value || "";
-      const showDeleted = showDeletedCheckbox?.checked || false;
-      const params = new URLSearchParams();
-      if (query) params.set("search", query);
-      if (showDeleted) params.set("show_deleted", "true");
-      const qs = params.toString();
+      const qs = currentFileListParams().toString();
       const url = qs ? `/api/files?${qs}` : "/api/files";
       fetchPartial(url, "#file-list-content");
     }, 300);
@@ -542,12 +574,7 @@ function initSearchDebounce(): void {
     showDeletedCheckbox.addEventListener("change", () => {
       // Immediate on checkbox change (no debounce)
       if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-      const query = searchInput?.value || "";
-      const showDeleted = showDeletedCheckbox?.checked || false;
-      const params = new URLSearchParams();
-      if (query) params.set("search", query);
-      if (showDeleted) params.set("show_deleted", "true");
-      const qs = params.toString();
+      const qs = currentFileListParams().toString();
       const url = qs ? `/api/files?${qs}` : "/api/files";
       fetchPartial(url, "#file-list-content");
     });
@@ -578,7 +605,25 @@ function initPeersAutoRefresh(): void {
  * Populate the display name input on the settings page (if present).
  * Reads the current name from the identity state and fills the input.
  */
+/**
+ * Render the settings page client id (#1792): the stable, server-issued
+ * client id. It persists across in-site navigation because the identity
+ * is kept in localStorage; fall back to the stored value when the
+ * in-memory identity has not been populated yet. Called both when the
+ * settings page initializes and when an async identity refresh completes
+ * (re-registration after token expiry changes the id under a page that
+ * already rendered the old one — Codex P2, PR #7328).
+ */
+function refreshSettingsClientId(): void {
+  const clientIdEl = document.getElementById("client-id-value");
+  if (clientIdEl) {
+    clientIdEl.textContent = clientIdForDisplay(currentIdentity?.clientId, getStoredIdentity()?.clientId);
+  }
+}
+
 function initSettingsIdentity(): void {
+  refreshSettingsClientId();
+
   const input = document.getElementById("display-name-input") as HTMLInputElement | null;
   if (!input) return; // Not on settings page
 
@@ -618,8 +663,14 @@ async function init(): Promise<void> {
   // Initialize theme system
   initTheme();
 
+  // A program-only surface (#2146 phase 2) has no Explorer identity
+  // or tags endpoints on its listener: registering an identity or
+  // connecting the tags WebSocket there would only fail and retry
+  // forever. The world presenter (world.ts) is the whole surface.
+  const programSurface = document.querySelector("[data-world-program]") !== null;
+
   // Initialize client identity (register if needed, validate if stored)
-  currentIdentity = await ensureIdentity();
+  currentIdentity = programSurface ? null : await ensureIdentity();
 
   // Create app API
   const app: IdApp = {
@@ -665,14 +716,7 @@ async function init(): Promise<void> {
             const lastRefresh = (window as unknown as Record<string, number>).__tagRefreshTs || 0;
             if (now - lastRefresh > 500) {
               (window as unknown as Record<string, number>).__tagRefreshTs = now;
-              const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
-              const showDeletedCheckbox = document.getElementById("show-deleted") as HTMLInputElement | null;
-              const query = searchInput?.value || "";
-              const showDeleted = showDeletedCheckbox?.checked || false;
-              const params = new URLSearchParams();
-              if (query) params.set("search", query);
-              if (showDeleted) params.set("show_deleted", "true");
-              const qs = params.toString();
+              const qs = currentFileListParams().toString();
               const url = qs ? `/api/files?${qs}` : "/api/files";
               fetchPartial(url, "#file-list-content");
             }
@@ -761,6 +805,7 @@ async function init(): Promise<void> {
         removeBtn.className = "tag-remove-btn";
         removeBtn.textContent = "\u00d7";
         removeBtn.title = "Remove tag";
+        removeBtn.setAttribute("aria-label", `Remove tag ${label}`);
         removeBtn.onclick = (e) => {
           e.preventDefault();
           if (filename) {
@@ -1096,7 +1141,11 @@ async function init(): Promise<void> {
           return { ok: false };
         }
 
-        const result = (await response.json()) as { hash: string; name: string; archive_name: string | null };
+        const result: unknown = await response.json();
+        if (!isSaveFileResponse(result)) {
+          console.error("[id] Save failed: unexpected /api/save response shape", result);
+          return { ok: false };
+        }
         console.log("[id] File saved:", result);
 
         // Update the hash in the container (doc_id stays as filename)
@@ -1133,7 +1182,11 @@ async function init(): Promise<void> {
           return;
         }
 
-        const result = (await response.json()) as { hash: string; name: string };
+        const result: unknown = await response.json();
+        if (!isNewFileResponse(result)) {
+          console.error("[id] Create file failed: unexpected /api/new response shape", result);
+          return;
+        }
         console.log("[id] File created:", result);
 
         // Clear input
@@ -1246,12 +1299,15 @@ async function init(): Promise<void> {
           return;
         }
 
-        const result = (await response.json()) as {
-          name: string;
-          hash: string;
-          archived_original: string | null;
-          archived_replaced: string | null;
-        };
+        const result: unknown = await response.json();
+        if (!isRenameFileResponse(result)) {
+          console.error("[id] Rename failed: unexpected /api/rename response shape", result);
+          if (renameBtn) renameBtn.textContent = "error!";
+          setTimeout(() => {
+            if (renameBtn) renameBtn.textContent = "rename";
+          }, 2000);
+          return;
+        }
         console.log("[id] File renamed:", result);
 
         if (renameBtn) {
@@ -1314,10 +1370,15 @@ async function init(): Promise<void> {
           return;
         }
 
-        const result = (await response.json()) as {
-          name: string;
-          hash: string;
-        };
+        const result: unknown = await response.json();
+        if (!isCopyFileResponse(result)) {
+          console.error("[id] Copy failed: unexpected /api/copy response shape", result);
+          if (copyBtn) copyBtn.textContent = "error!";
+          setTimeout(() => {
+            if (copyBtn) copyBtn.textContent = "copy";
+          }, 2000);
+          return;
+        }
         console.log("[id] File copied:", result);
 
         if (copyBtn) {
@@ -1503,7 +1564,7 @@ async function init(): Promise<void> {
   console.log("[id] Web interface initialized");
 
   // Connect tags WebSocket for live updates (global — stays connected across pages)
-  app.connectTagsWs();
+  if (!programSurface) app.connectTagsWs();
 
   // Initialize back button on main page
   updateBackLink(app.navHistory, app.currentPath);

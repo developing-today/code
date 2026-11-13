@@ -161,3 +161,56 @@ describe("apiTokenFor installation resolution", () => {
     expect(calls).toContain("https://api.github.com/app/installations/42/access_tokens");
   });
 });
+
+describe("GitHub API response shape validation (#6954)", () => {
+  const auth = { kind: "token", token: "t" } as const;
+
+  test("listResource rejects non-array 200 pages in the module vocabulary, never spreads a string", async () => {
+    for (const bodyText of ["null", JSON.stringify({ message: "oops" }), JSON.stringify("hello"), "42"]) {
+      const fetchFn = async () => new Response(bodyText, { status: 200 });
+      const result = await listResource(auth, "repos/o/r/issues", fetchFn as unknown as typeof fetch).catch(
+        (error: unknown) => error,
+      );
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toContain("github_api_unexpected_shape");
+    }
+  });
+
+  test("discovery with a null 200 body falls back to the plain token", async () => {
+    const env = {
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: testKeyB64("pkcs8"),
+      GITHUB_TOKEN: "plain-token",
+    };
+    const fetchFn = async (url: string) => {
+      if (url === "https://api.github.com/repos/acme/null-discovery/installation") {
+        return new Response("null", { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    };
+    const resolved = await apiTokenFor(env, "acme/null-discovery", fetchFn as unknown as typeof fetch);
+    expect(resolved).toEqual({ kind: "token", token: "plain-token" });
+  });
+
+  test("access-token replies without a non-empty string token fail in the module vocabulary", async () => {
+    const env = {
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: testKeyB64("pkcs8"),
+      GITHUB_APP_INSTALL_ID: "42",
+    };
+    for (const [repo, bodyText] of [
+      ["acme/tok-empty-object", "{}"],
+      ["acme/tok-null", "null"],
+      ["acme/tok-number", JSON.stringify({ token: 123 })],
+      ["acme/tok-blank", JSON.stringify({ token: "" })],
+    ] as const) {
+      const fetchFn = async (url: string) => {
+        if (url.includes("/access_tokens")) return new Response(bodyText, { status: 200 });
+        return new Response("{}", { status: 404 });
+      };
+      const result = await apiTokenFor(env, repo, fetchFn as unknown as typeof fetch).catch((error: unknown) => error);
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toContain("installation_token_failed_shape");
+    }
+  });
+});

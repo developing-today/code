@@ -8,9 +8,9 @@
 /** The four working repositories (design record, "Request and intent"). */
 export const REPOS = [
   "developing-today/code",
-  "developing-today/opencode",
-  "developing-today/openchamber",
-  "dezren39/nix",
+  "developing-today-forks/opencode",
+  "developing-today-forks/openchamber",
+  "dezren39/darwin-nix",
 ] as const;
 
 /** "owner/repo#123" — the registry's canonical key for an issue or PR. */
@@ -84,6 +84,12 @@ export interface ProjectPoolItem {
   labels?: string[];
   author?: string;
   updatedAt?: string;
+  /** Completion timestamps from the linked issue/PR, when the
+   * projection carried them: an issue's closedAt, a PR's mergedAt
+   * (or its closedAt when closed unmerged). The digest's Done
+   * section selects by these, never by updatedAt (#5279 Codex). */
+  closedAt?: string;
+  mergedAt?: string;
   /** Project single-select fields; null when unset on the item. */
   status: string | null;
   area: string | null;
@@ -107,6 +113,38 @@ export interface ProjectPoolItem {
    *  no epic ancestor, and when the parent chain leaves the pool (the
    *  collector only knows Kind for items on the board). */
   epicRef?: RefKey;
+}
+
+/** One configured field on Project #4, exported for repository-readable audits. */
+export interface ProjectAuditField {
+  id: string;
+  name: string;
+  dataType: string;
+  options?: { id: string; name: string }[];
+}
+
+/** One saved view on Project #4. */
+export interface ProjectAuditView {
+  id: string;
+  name: string;
+  layout: string;
+  filter: string | null;
+}
+
+/** Scheduled, read-only Project #4 audit snapshot carried by the fleet feed. */
+export interface ProjectAudit {
+  title: string;
+  number: number;
+  url: string;
+  generatedAt: string;
+  totalItems: number;
+  fields: ProjectAuditField[];
+  views: ProjectAuditView[];
+  counts: {
+    status: Record<string, number>;
+    area: Record<string, number>;
+    repo: Record<string, number>;
+  };
 }
 
 export type CommentKind = "issue_comment" | "review" | "review_comment";
@@ -174,6 +212,8 @@ export interface RoadmapRow {
   area: string;
   status: string;
   horizon: string;
+  /** Validation warning; the original Grist/seed value remains available in `horizon`. */
+  horizonError?: string;
   source: string;
   notes: string;
   links: Link[];
@@ -222,8 +262,9 @@ export type ProvenanceDetail = Record<keyof Provenance, ProvenanceFacet>;
 
 /** "error"/"stale" are gatherer-overlay states (#1151): the gatherer
  * could not read the pool, or its read is past the freshness bound.
- * They are never rendered as healthy, and never as zero usage. */
-export type QuotaState = "healthy" | "near" | "walled" | "error" | "stale";
+ * "lapsed" is a confirmed terminal subscription state, not a provider
+ * failure. None are rendered as healthy or as zero usage. */
+export type QuotaState = "healthy" | "near" | "walled" | "error" | "stale" | "lapsed";
 
 /** One usage window a provider exposes (5-hour, weekly, monthly, ...). */
 export interface QuotaWindow {
@@ -235,6 +276,15 @@ export interface QuotaWindow {
   resetsAt: string | null;
   /** Percent used, 0–100+, computed when `limit` is known. */
   percent?: number;
+}
+
+/** Result of the quota-view pattern extraction, separate from live quota state. */
+export interface ExtractionHealth {
+  status: "matched" | "gap" | "intentional" | "unavailable";
+  matched: boolean | null;
+  reason?: "section-missing" | "extractor-null" | "extractor-threw" | "uninstrumented" | "not-recorded";
+  /** Number of windows/metrics extracted when matched. */
+  count: number;
 }
 
 /** One pool (plan + identity) with its windows and live burn. */
@@ -250,8 +300,14 @@ export interface QuotaPool {
   windows: QuotaWindow[];
   /** tokens/min over the recent window, when measurable. */
   burnTokensPerMin?: number;
+  /** Per-window exhaustion interval forecasts (#3983), set by the
+   * collector from the measured burn history. Additive for existing
+   * consumers; absent when the collector did not derive them. */
+  exhaustion?: ExhaustionForecast[];
   /** Sessions currently burning this pool, with cumulative tokens. */
   activeSessions?: { session: string; model: string; tokens: number }[];
+  /** Pattern-extraction health; absent on older fleet feeds. */
+  extractionHealth?: ExtractionHealth;
   /** Gatherer freshness for this pool (#1151), set when
    * quota-current.json carried an entry for it. */
   freshness?: PoolFreshness;
@@ -261,6 +317,42 @@ export interface QuotaPool {
    * share one pool read — never a fake split. The pool's own windows
    * stay the headline. */
   credentials?: QuotaCredentialRow[];
+}
+
+/** One window's time-to-exhaustion forecast (#3983): an interval
+ * projected from the measured burn-rate distribution of the #3933
+ * contract, or an explicit unknown — never a fabricated date. */
+export interface ExhaustionForecast {
+  pool: string;
+  provider: string;
+  window: string;
+  unit: string;
+  state: "forecast" | "unknown" | "exhausted";
+  /** Why no forecast exists, when state is "unknown". */
+  reason?:
+    | "missing_limit"
+    | "missing_reset"
+    | "reset_passed"
+    | "stale_source"
+    | "no_measured_burn"
+    | "insufficient_observations"
+    | "zero_rate";
+  /** limit - used for the window; null when the limit is unknown. */
+  remaining: number | null;
+  resetsAt: string | null;
+  /** The named measurement window pair rates must fit inside. */
+  rateWindowMs: number;
+  /** Gatherer source for the pool read, when freshness is known. */
+  source: string | null;
+  /** Same-period pair rates behind the percentiles, when forecast. */
+  sampleRates?: number;
+  ratesPerMin?: { p50: number; p80: number };
+  p50ExhaustsAt?: string;
+  p80ExhaustsAt?: string;
+  p50VsReset?: "before" | "after";
+  p80VsReset?: "before" | "after";
+  /** When state is "exhausted": the collection instant (already there). */
+  exhaustsAt?: string;
 }
 
 /** One credential's own quota read within a pool (#1113). */
@@ -282,8 +374,8 @@ export interface QuotaCredentialRow {
 export interface PoolFreshness {
   measuredAt: string;
   source: string;
-  state: "ok" | "stale" | "error";
-  /** Why the gatherer could not read the pool, when state is "error". */
+  state: "ok" | "stale" | "error" | "lapsed";
+  /** Why the gatherer could not read the pool, when state is "error" or "lapsed". */
   error?: string;
 }
 
@@ -292,7 +384,7 @@ export interface GathererProviderFreshness {
   providerId: string;
   serviceId: string;
   credentialLabel?: string;
-  state: "ok" | "stale" | "error";
+  state: "ok" | "stale" | "error" | "lapsed";
   measuredAt: string;
   source: string;
   error?: string;
@@ -325,6 +417,10 @@ export interface QuotaView {
   /** Gatherer overlay provenance (#1151); absent when no
    * quota-current.json was read. Additive for existing consumers. */
   gatherer?: GathererSummary;
+  /** Provider-auth keeper alerts (#6671), carried from
+   * quota-current.json by overlayQuotaCurrent; the board renders
+   * every non-ok keeper. Absent when no gatherer file was read. */
+  providerAuth?: import("./provider-auth-alerts.ts").ProviderAuthAlert[];
   /** Feed-load sanitization counts (#2429/#3921): present only when the
    * loader dropped malformed pools, credentials, windows, active sessions,
    * or burn segments, so an
@@ -427,6 +523,8 @@ export type AttentionTier = "needs-drew" | "needs-orchestrator" | "in-motion";
 
 export interface TieredEntry extends AttentionEntry {
   tier: AttentionTier;
+  /** When the orchestration job first observed this session in its tier. */
+  tierSince?: string;
   /** Why this needs Drew — present iff tier is "needs-drew". */
   drewReason?: string;
   /** What the fleet will do with it — present iff tier is "needs-orchestrator". */
@@ -441,21 +539,6 @@ export interface SourceCoverage {
   detail: string;
 }
 
-/** Keeper run totals for Jules, parsed from jules-review-state.json. */
-export interface JulesSummary {
-  /** When the keeper last ran (its `last_run`). */
-  at: string | null;
-  /** Sessions the keeper currently tracks in its `items` map. */
-  tracked: number;
-  /** Totals from the note written by the keeper's last run, when it parses. */
-  total?: number;
-  completed?: number;
-  failed?: number;
-  inProgress?: number;
-  awaitingFeedback?: number;
-  awaitingPlan?: number;
-}
-
 export function refKey(ref: GhRef): RefKey {
   return `${ref.repo}#${ref.number}`;
 }
@@ -468,12 +551,43 @@ export function parseRef(key: RefKey): GhRef {
   return { repo: m[1], number };
 }
 
+/** The one shared ref-validity rule (#4952): a value is a usable RefKey
+ *  only if parseRef accepts it — owner/repo#N shape AND a safe-integer
+ *  number. Boundary validators and store-load gates route through this
+ *  instead of re-checking the shape with a local regex whose \d+ group
+ *  admits numbers parseRef (and refUrl) then throw on. */
+/** The ref contract (design #6242, closed out by the Phase 4 inventory on
+ *  #6243): a ref is an annotation, not identity. (1) Validity is
+ *  isValidRef only - no local shape checks. (2) An invalid ref is dropped
+ *  at the consumption step beside its gate: the item survives, the drop
+ *  is traced (log or count). (3) Producers mint only valid refs: scrapes
+ *  route through refsInText / titleRefs, which filter with isValidRef,
+ *  and constructors validate before minting. (4) Rendering or deriving
+ *  reaches refUrl for stored or feed-derived refs only through a guard
+ *  (an isValidRef check, a load/read gate upstream, or a safe-link
+ *  helper); an invalid ref renders as plain text, never a throw.
+ *  Code-built refs (issue(n), fixture literals, validated config) are
+ *  exempt from (4): parseRef's throw is their test-time assertion. */
+
+export function isValidRef(value: unknown): value is RefKey {
+  if (typeof value !== "string") return false;
+  try {
+    parseRef(value as RefKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/g;
 
 /** Every GitHub issue/PR URL in a piece of text, as ref keys (deduplicated). */
 export function refsInText(text: string): RefKey[] {
   const out = new Set<RefKey>();
-  for (const m of text.matchAll(GH_URL)) out.add(`${m[1]}#${m[2]}`);
+  for (const m of text.matchAll(GH_URL)) {
+    const key = m[1] + "#" + m[2];
+    if (isValidRef(key)) out.add(key);
+  }
   return [...out];
 }
 
@@ -788,7 +902,7 @@ export interface AaThreshold {
   usdPerUsablePoint: number | null;
 }
 
-/** One AA Intelligence Index row of ainventory.benchmark_results. */
+/** One AA Intelligence Index row of ainventory.measurement_events (canonical, code#4401). */
 export interface AaConfig {
   modelName: string;
   benchmark: string;
@@ -817,7 +931,7 @@ export interface AaTestRun {
 }
 
 /**
- * One Coding Agent Index row of ainventory.benchmark_results (the
+ * One Coding Agent Index row of ainventory.measurement_events (the
  * import's Coding_Agent_Results rows): a model + effort + agent
  * harness observation, kept strictly separate from the AA Intelligence
  * Index — no score conversion between the indexes (the ChatGPT
@@ -888,7 +1002,7 @@ export interface AaCoverage {
   /** Measured models no provider catalog carries under a matched name. */
   measuredNotInCatalog: string[];
   /** Catalog model ids (provider/model) with no AA measurement and no
-   * pool seat — e.g. commandcode/reflection/beam:free. Display names
+   * pool seat — e.g. _commandcode/reflection/beam:free. Display names
    * are catalog ids, not AA names, so they can be found in the config. */
   catalogNotPooledUnmeasured: string[];
 }
@@ -1007,6 +1121,36 @@ export interface AaCatalogEntry {
   } | null;
 }
 
+/**
+ * One selectable AA workbook version (#3302). The index is built from
+ * ainventory.sources rows with kind='drive-workbook' — the complete
+ * register; ingest_batches is optional metadata only. Carriers whose
+ * batch-bound semantic content has the same fingerprint are collapsed
+ * into the newest entry.
+ */
+export interface AaBatchSummary {
+  /** ainventory import batch id (the ?batch= value). */
+  importBatch: string;
+  /** Workbook file name from sources.name. */
+  name: string | null;
+  /** When ainventory imported the workbook. */
+  importedAt: string | null;
+  /** The workbook file's own Drive modification time. */
+  driveModifiedAt: string | null;
+  /** ingest_batches.ran_at when a metadata row exists, else null. */
+  ranAt: string | null;
+  /** ingest_batches.inserted_counts when a metadata row exists. */
+  insertedCounts: Record<string, number> | null;
+  /** Human label: date + short file name. */
+  label: string;
+  /** sha256 of the batch-bound semantic payload; null until built. */
+  fingerprint: string | null;
+  /** Whether a usable per-batch payload file exists. */
+  cached: boolean;
+  /** True for the newest surviving entry. */
+  latest: boolean;
+}
+
 /** The AA explorer section as the collector embeds it in the fleet feed. */
 export interface AaSection {
   status: "ok";
@@ -1014,6 +1158,9 @@ export interface AaSection {
   generatedAt: string;
   /** ainventory import batch (v_latest_import_batch) the rows came from. */
   batch: string;
+  /** Selectable workbook versions, newest first, carrier duplicates
+   * collapsed by content fingerprint (#3302). Absent in older feeds. */
+  batches?: AaBatchSummary[];
   sources: AaSourceInfo[];
   rankings: AaRanking[];
   thresholds: AaThreshold[];
@@ -1078,6 +1225,8 @@ export interface DashComment {
   objectRef: string;
   kind: DashCommentKind;
   author: DashAuthor;
+  /** True only when a privileged Drew/Muse author supplied the configured operator token. */
+  authorVerified?: boolean;
   body: string;
   createdAt: string;
   /** kind "message": the orchestrator's triage state. */
@@ -1092,6 +1241,13 @@ export interface DashComment {
    *  fleet poster reported (#1210), rendered so a failed comment
    *  shows why it failed, not just that it did. Cleared on posting. */
   githubError?: string;
+  /** kind "github", when githubState is "failed": when the most
+   *  recent failure was reported (#8586), so the queue renders the
+   *  failure's age rather than the comment's age. Refreshed on every
+   *  repeat failure alongside githubError; cleared on posting.
+   *  Absent on records written before the field existed — readers
+   *  fall back to createdAt for those. */
+  githubFailedAt?: string;
 }
 
 /** Runtime families the session registry tracks. */
@@ -1248,6 +1404,21 @@ export interface SaasService {
   reads: DatedRead[];
   /** The section's usage prose, trimmed (detail view + shell cards). */
   usageNote?: string;
+  /** Pattern-extraction health; absent on older fleet feeds. */
+  extractionHealth?: ExtractionHealth;
+}
+
+/** A service evaluated in free-services-to-check.md but not represented
+ * by an instrumented quota card. Values are copied from that tracker so
+ * the overview never invents provider states or pricing behavior. */
+export interface UninstrumentedSaasService {
+  name: string;
+  whatFor: string;
+  /** Tracker status text with its dated check kept in checkedAt. */
+  status: string;
+  checkedAt: string | null;
+  overageBehavior: string;
+  guardrailNotes: string;
 }
 
 /** One line of the PAYG dollars card (§1.2). */
@@ -1280,14 +1451,45 @@ export interface ChargeRow {
 /**
  * One tripped bubble rule (§1.3): a metric over 80% of its limit, or
  * projected unbilled PAYG over $5 (unbilled accrual only, Q3 default).
+ * "quota-action" entries are the eligible quota actions from
+ * buildQuotaActions (derive.ts, #1174) — expiry/cancellation, walled,
+ * and high-usage — rendered on the same strip, never a second list.
  */
 export interface AttentionFlag {
-  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle";
+  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle" | "quota-action";
   label: string;
   detail: string;
   href: string;
   /** Percent (over-limit) or counted dollars (payg-unbilled); worst first. */
   severity: number;
+}
+
+/**
+ * One actionable quota entry (#1174): an expiring/cancelled plan
+ * period, a walled pool, or a high-usage window whose reset is far
+ * enough away to act on. Derived once by buildQuotaActions (derive.ts)
+ * from the pools' typed source data — never by scraping display
+ * prose — and rendered identically on /quota, /today, and /attention.
+ * An entry exists only while its source condition holds: past
+ * deadlines and cleared states produce no entry, so nothing goes
+ * stale and nothing renders twice.
+ */
+export type QuotaActionKind = "expiry" | "walled" | "high-usage";
+
+export interface QuotaAction {
+  /** Stable per pool + kind, so surfaces dedupe by identity. */
+  id: string;
+  poolId: string;
+  provider: string;
+  plan: string;
+  kind: QuotaActionKind;
+  /** Actionable one-liner, e.g. "OpenCode Go — Personal ends 2026-11-02". */
+  title: string;
+  /** Reason + deadline + concrete next step, when the source names one. */
+  detail: string;
+  /** ISO deadline when the source carries one (expiry date, wall lift, reset). */
+  deadline: string | null;
+  href: string;
 }
 
 /**
@@ -1311,7 +1513,7 @@ export interface QuotaCurrentWindow {
   resetsAt: string | null;
   measuredAt: string;
   source: string;
-  state: "ok" | "error";
+  state: "ok" | "error" | "lapsed";
 }
 
 export interface QuotaCurrentEntry {
@@ -1328,7 +1530,13 @@ export interface QuotaCurrentEntry {
   /** Provenance class for the provider's credential source; never a credential value. */
   credentialSource?: "claude-code" | "opencode" | "environment";
   planLabel?: string;
-  state: "ok" | "error" | "unconfigured";
+  /** Provider-side failure classification, when the quota module
+   *  carries one (e.g. meta's "no-data"); never a credential value. */
+  failureClass?: string;
+  /** ISO time of the provider's last successful read, when the quota
+   *  module carries one; lets readers age a degraded row honestly. */
+  lastSuccessAt?: string;
+  state: "ok" | "error" | "lapsed" | "unconfigured";
   measuredAt: string;
   /** #1268: ISO time of the tick that retained this entry from the
    *  previous tick after the provider's run errored. The data is
@@ -1349,7 +1557,7 @@ export interface QuotaGatherHeartbeat {
   tickAt: string;
   ok: boolean;
   durationMs: number;
-  perProvider: Record<string, { state: "ok" | "error"; ms: number; rows: number; error?: string }>;
+  perProvider: Record<string, { state: "ok" | "error" | "lapsed"; ms: number; rows: number; error?: string }>;
   /** Set when the tick itself failed before any provider ran (import / credential store). */
   error?: string;
 }
@@ -1360,6 +1568,10 @@ export interface QuotaCurrentFile {
   source: string;
   heartbeat: QuotaGatherHeartbeat;
   providers: QuotaCurrentEntry[];
+  /** Provider-auth keeper projection (#6671): both keepers' alert
+   * state, embedded by the gatherer from the renewal state files
+   * beside quota-current.json. Additive; absent on older files. */
+  providerAuth?: import("./provider-auth-alerts.ts").ProviderAuthAlert[];
   /** Parser diagnostics for malformed entries removed at the ingest boundary. */
   sanitized?: { droppedProviders: number; droppedWindows: number };
 }
@@ -1386,6 +1598,8 @@ export interface SnapshotRecord {
 /** The hub's family-2 + PAYG + charges model, served by Source.usage(). */
 export interface UsageView {
   services: SaasService[];
+  /** Tracker-derived SaaS services without an instrumented quota card. */
+  uninstrumentedServices: UninstrumentedSaasService[];
   payg: PaygLine[];
   charges: ChargeRow[];
   /** Set when no charge evidence could be derived — the strip explains itself. */
