@@ -1717,6 +1717,32 @@
         }
       ]
     },
+    "explore": {
+      // 2026-11-13 (Drew, direct order): subsession routing.
+      // Child sessions inherit the parent session's model/route
+      // unless the agent definition configures its own (fork
+      // subagent tool: explicit model > agent's configured model
+      // > inherited). Explore children had no configured model,
+      // so search/fetch/summarize work ran on the parent's full
+      // workhorse chain: session_v2 shows 716 of 747 explore
+      // children in the 7 days to 2026-11-13 recorded on the
+      // workhorse route, ~405M input + ~570M cache-read tokens.
+      // Explore is read-only (its permission set denies edit,
+      // shell and subagent), so the scout route - free Beam
+      // first, then DeepSeek Flash #low, then Haiku #low - is
+      // sufficient for it and returns workhorse quota to
+      // implementation work. Only the model is set here;
+      // explore's permissions keep coming from
+      // .opencode/agents/explore.md and the built-in definition
+      // (the config agent plugin applies a model-only entry
+      // without touching permissions). general/build children
+      // are unchanged: implementation work keeps the inherited
+      // route. MEASUREMENT: session_v2 child sessions by agent
+      // - explore model distribution and tokens per session,
+      // 7 days before vs after; route_attempt on the scout and
+      // beam-plan legs for success/latency.
+      "model": "opencode-route/scout"
+    },
     "classifier": {
       "model": "opencode-route/scout",
       "temperature": 0,
