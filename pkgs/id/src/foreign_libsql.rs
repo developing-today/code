@@ -848,10 +848,30 @@ fn parse_http_response(raw: &[u8]) -> Result<TransportResponse, TransportError> 
         .nth(1)
         .and_then(|code| code.parse().ok())
         .ok_or_else(|| TransportError::Io("response has no status code".to_owned()))?;
-    let chunked = head.lines().any(|line| {
-        line.to_ascii_lowercase().starts_with("transfer-encoding:")
-            && line.to_ascii_lowercase().contains("chunked")
-    });
+    let mut transfer_encoding_seen = false;
+    let mut chunked = false;
+    for line in head.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("transfer-encoding") {
+            continue;
+        }
+        transfer_encoding_seen = true;
+        for coding in value.split(',') {
+            if !coding.trim().eq_ignore_ascii_case("chunked") || chunked {
+                return Err(TransportError::Io(
+                    "unsupported transfer encoding".to_owned(),
+                ));
+            }
+            chunked = true;
+        }
+    }
+    if transfer_encoding_seen && !chunked {
+        return Err(TransportError::Io(
+            "unsupported transfer encoding".to_owned(),
+        ));
+    }
     let body_bytes = if chunked {
         dechunk(body_bytes)?
     } else {
@@ -859,6 +879,97 @@ fn parse_http_response(raw: &[u8]) -> Result<TransportResponse, TransportError> 
     };
     let body = String::from_utf8_lossy(&body_bytes).into_owned();
     Ok(TransportResponse { status, body })
+}
+
+fn is_http_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#'..=b'\'' | b'*' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+        )
+}
+
+fn skip_optional_whitespace(mut bytes: &[u8]) -> &[u8] {
+    while matches!(bytes.first(), Some(b' ' | b'\t')) {
+        bytes = &bytes[1..];
+    }
+    bytes
+}
+
+fn quoted_extension_value_len(bytes: &[u8]) -> Option<usize> {
+    if !bytes.starts_with(b"\"") {
+        return None;
+    }
+    let mut index = 1;
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
+            b'"' => return Some(index + 1),
+            b'\\' => {
+                let escaped = *bytes.get(index + 1)?;
+                if !(matches!(escaped, b'\t' | b' ')
+                    || (0x21..=0x7e).contains(&escaped)
+                    || escaped >= 0x80)
+                {
+                    return None;
+                }
+                index += 2;
+            }
+            b'\t' | b' ' | b'!' | b'#'..=b'[' | b']'..=b'~' => index += 1,
+            0x80..=0xff => index += 1,
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn valid_chunk_extensions(mut bytes: &[u8]) -> bool {
+    while !bytes.is_empty() {
+        bytes = skip_optional_whitespace(bytes);
+        let Some(after_semicolon) = bytes.strip_prefix(b";") else {
+            return false;
+        };
+        bytes = skip_optional_whitespace(after_semicolon);
+        let name_len = bytes
+            .iter()
+            .take_while(|byte| is_http_token_byte(**byte))
+            .count();
+        if name_len == 0 {
+            return false;
+        }
+        let after_name = &bytes[name_len..];
+        if let Some(after_equals) = skip_optional_whitespace(after_name).strip_prefix(b"=") {
+            bytes = skip_optional_whitespace(after_equals);
+            let value_len = if bytes.starts_with(b"\"") {
+                let Some(value_len) = quoted_extension_value_len(bytes) else {
+                    return false;
+                };
+                value_len
+            } else {
+                bytes
+                    .iter()
+                    .take_while(|byte| is_http_token_byte(**byte))
+                    .count()
+            };
+            if value_len == 0 {
+                return false;
+            }
+            bytes = &bytes[value_len..];
+        } else {
+            bytes = after_name;
+        }
+    }
+    true
+}
+
+fn valid_trailer_field(line: &[u8]) -> bool {
+    let Some(colon) = line.iter().position(|byte| *byte == b':') else {
+        return false;
+    };
+    !line[..colon].is_empty()
+        && line[..colon].iter().copied().all(is_http_token_byte)
+        && line[colon + 1..].iter().all(|byte| {
+            matches!(byte, b'\t' | b' ') || (0x21..=0x7e).contains(byte) || *byte >= 0x80
+        })
 }
 
 fn dechunk(body: &[u8]) -> Result<Vec<u8>, TransportError> {
@@ -869,20 +980,52 @@ fn dechunk(body: &[u8]) -> Result<Vec<u8>, TransportError> {
             .windows(2)
             .position(|window| window == b"\r\n")
             .ok_or_else(|| TransportError::Io("bad chunk framing".to_owned()))?;
-        let size_line = std::str::from_utf8(&rest[..line_end])
+        let size_line = &rest[..line_end];
+        let size_end = size_line
+            .iter()
+            .position(|byte| !byte.is_ascii_hexdigit())
+            .unwrap_or(size_line.len());
+        let size_bytes = &size_line[..size_end];
+        let size_text = std::str::from_utf8(size_bytes)
             .map_err(|_| TransportError::Io("bad chunk size".to_owned()))?;
-        let size = usize::from_str_radix(size_line.trim(), 16)
+        if size_text.is_empty() {
+            return Err(TransportError::Io("bad chunk size".to_owned()));
+        }
+        if !valid_chunk_extensions(&size_line[size_end..]) {
+            return Err(TransportError::Io("bad chunk extension".to_owned()));
+        }
+        let size = usize::from_str_radix(size_text, 16)
             .map_err(|_| TransportError::Io("bad chunk size".to_owned()))?;
+        rest = &rest[line_end + 2..];
         if size == 0 {
+            loop {
+                let trailer_end = rest
+                    .windows(2)
+                    .position(|window| window == b"\r\n")
+                    .ok_or_else(|| TransportError::Io("bad chunk framing".to_owned()))?;
+                if trailer_end == 0 {
+                    rest = &rest[2..];
+                    break;
+                }
+                if !valid_trailer_field(&rest[..trailer_end]) {
+                    return Err(TransportError::Io("bad chunk trailer".to_owned()));
+                }
+                rest = &rest[trailer_end + 2..];
+            }
+            if !rest.is_empty() {
+                return Err(TransportError::Io(
+                    "extra data after chunked body".to_owned(),
+                ));
+            }
             return Ok(out);
         }
-        let after = &rest[line_end + 2..];
-        if after.len() < size {
+        if rest.len() < size {
             return Err(TransportError::Io("short chunk".to_owned()));
         }
-        out.extend_from_slice(&after[..size]);
-        rest = &after[size..];
-        rest = rest.strip_prefix(b"\r\n").unwrap_or(rest);
+        out.extend_from_slice(&rest[..size]);
+        rest = rest[size..]
+            .strip_prefix(b"\r\n")
+            .ok_or_else(|| TransportError::Io("bad chunk framing".to_owned()))?;
     }
 }
 
@@ -1270,15 +1413,57 @@ mod tests {
     }
 
     #[test]
+    fn test_chunked_body_accepts_chunk_extensions_and_trailers() {
+        // Oracle: RFC 9112 chunked coding; extensions decorate the size and
+        // trailer fields follow the zero-sized last chunk.
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4 ; foo = bar ; quoted=\"hello world\"\r\nWiki\r\n0\r\nX-Checksum: yes\r\n\r\n";
+        let response = parse_http_response(raw).expect("valid extensions and trailers parse");
+        assert_eq!(response.body, "Wiki");
+    }
+
+    #[test]
+    fn test_unsupported_transfer_codings_are_rejected() {
+        for coding in ["notchunked", "gzip, chunked", "chunked, gzip", ""] {
+            let raw = format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: {coding}\r\n\r\n4\r\nWiki\r\n0\r\n\r\n"
+            );
+            assert!(
+                parse_http_response(raw.as_bytes()).is_err(),
+                "unsupported transfer coding must error: {coding:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_chunked_body_malformed_framing_errors_without_panic() {
         let head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
-        for body in [&b"zz\r\nabc\r\n0\r\n\r\n"[..], b"4\r\nWi", b"4"] {
+        for body in [
+            &b"zz\r\nabc\r\n0\r\n\r\n"[..],
+            b"4\r\nWi",
+            b"4",
+            b"4\r\nWiki0\r\n\r\n",
+            b"0\r\n",
+            b"0\r\nX-Checksum: yes\r\n",
+            b"4;;bad\r\nWiki\r\n0\r\n\r\n",
+            b"0\r\nnot-a-field\r\n\r\n",
+            b"4 \r\nWiki\r\n0\r\n\r\n",
+            b"4;foo=bar \r\nWiki\r\n0\r\n\r\n",
+        ] {
             let mut raw = head.to_vec();
             raw.extend_from_slice(body);
             assert!(
                 parse_http_response(&raw).is_err(),
                 "malformed framing must error: {body:?}"
             );
+        }
+    }
+
+    proptest::proptest! {
+        /// Oracle: for every byte sequence, the chunk decoder either returns
+        /// decoded bytes or a transport error; malformed wire data never panics.
+        #[test]
+        fn test_dechunk_never_panics_for_arbitrary_bytes(body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512)) {
+            let _ = dechunk(&body);
         }
     }
 
