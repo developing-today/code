@@ -1,0 +1,8 @@
+[Unit]
+Description=OpenChamber scheduled-task per-run history collector — code#2174 Gap 1
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=180
+ExecStart=/usr/bin/env python3 %h/git/code/pm-stack/scheduled-history/collect.py collect --dir %h/git/code
