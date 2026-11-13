@@ -85,3 +85,35 @@ func TestRewriteFinalExpressionReviewCases(t *testing.T) {
 		})
 	}
 }
+
+// Review cases, round 2 (PR #9344): blank lines and comments do
+// not end a statement whose next token continues it, relational
+// operators continue an expression, and a comment may sit between
+// export and default.
+func TestRewriteFinalExpressionReview2Cases(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+		ok   bool
+	}{
+		{"blank line call chain", "const f = () => (x) => x + 1;\nf()\n\n(2)", "const f = () => (x) => x + 1;\n__mcpxFinal(await (f()\n\n(2)));", true},
+		{"relational continuation", "1\n< 2", "__mcpxFinal(await (1\n< 2));", true},
+		{"export comment default abstains", "export /* entry */ default () => 42;\n1", "", false},
+		{"comment then chain", "foo()\n// note\n.bar();", "__mcpxFinal(await (foo()\n// note\n.bar()));", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := rewriteFinalExpression(tc.src)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v (got %q)", ok, tc.ok, got)
+			}
+			if tc.ok && got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+			if !tc.ok && got != tc.src {
+				t.Errorf("abstention changed the source: got %q want %q", got, tc.src)
+			}
+		})
+	}
+}

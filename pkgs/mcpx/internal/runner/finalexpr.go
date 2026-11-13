@@ -384,7 +384,8 @@ func scanTopLevel(src string) (spans []stmtSpan, hasDefault bool, ok bool) {
 			if depth0() && start == i && word == "export" {
 				// Peek the next word: export default ... means the
 				// program has an entry point; abstain entirely.
-				if w2, _ := firstWord(strings.TrimSpace(src[j:])); w2 == "default" {
+				// Comments may intervene (export /* entry */ default).
+				if nextWordAfter(src, j) == "default" {
 					hasDefault = true
 				}
 			}
@@ -440,16 +441,51 @@ func canEndAtNewline(src string, end int) bool {
 	}
 }
 
+// skipTrivia advances past whitespace (including newlines) and
+// comments, returning what remains: the first real token after a
+// boundary candidate is what decides continuation, not the next
+// physical line -- f() followed by a blank line and (2) is one
+// call chain, not two statements.
+func skipTrivia(s string) string {
+	for {
+		s = strings.TrimLeft(s, " \t\r\n")
+		if strings.HasPrefix(s, "//") {
+			i := strings.IndexByte(s, '\n')
+			if i < 0 {
+				return ""
+			}
+			s = s[i+1:]
+			continue
+		}
+		if strings.HasPrefix(s, "/*") {
+			i := strings.Index(s, "*/")
+			if i < 0 {
+				return ""
+			}
+			s = s[i+2:]
+			continue
+		}
+		return s
+	}
+}
+
+// nextWordAfter returns the first identifier at or after pos,
+// skipping whitespace and comments.
+func nextWordAfter(src string, pos int) string {
+	w, _ := firstWord(skipTrivia(src[pos:]))
+	return w
+}
+
 // continuesOnNextLine reports whether the text from pos (just
 // after a newline) opens with something that continues the
 // previous statement rather than starting a new one.
 func continuesOnNextLine(src string, pos int) bool {
-	s := strings.TrimLeft(src[pos:], " \t")
+	s := skipTrivia(src[pos:])
 	if s == "" {
 		return false
 	}
 	switch s[0] {
-	case '.', '(', '[', '`', '+', '-', '*', '/', '%', '&', '|', '^', '?', ':', ',', '=':
+	case '.', '(', '[', '`', '+', '-', '*', '/', '%', '&', '|', '^', '?', ':', ',', '=', '<', '>':
 		return true
 	}
 	if w, _ := firstWord(s); w == "else" || w == "catch" || w == "finally" || w == "while" || w == "instanceof" || w == "in" {

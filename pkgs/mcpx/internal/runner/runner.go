@@ -516,11 +516,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// so hits the runtime's type-check cache, and a different program
 		// cannot be mistaken for it.
 		source := opts.Source
-		if opts.Export == "" && strings.Contains(opts.ClientSource, "__mcpxFinal") {
+		if opts.Export == "" && strings.TrimSpace(opts.Launcher) != LauncherNone && strings.Contains(opts.ClientSource, "__mcpxFinal") {
 			// CODE-19: a snippet's final top-level expression is
 			// its result; rewrite it to report through the client
 			// (whose capture global exists only when the client
-			// carries it). A selected named export is an entry
+			// carries it). With no launcher shim there are no
+			// globals at all, so bare-runtime runs keep their
+			// source too. A selected named export is an entry
 			// point with its own result rule, like the default
 			// export the transform itself abstains on. The
 			// transform abstains on anything it cannot classify,

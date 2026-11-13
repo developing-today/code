@@ -1336,6 +1336,11 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			if rb, err := json.Marshal(res.Result); err == nil {
 				if pb, err := json.Marshal(stdoutParsed); err == nil && string(rb) == string(pb) {
 					res.Result = nil
+					// Presence described the discarded result; it
+					// must not survive it, or consumers would
+					// present the discard as a deliberate null
+					// (CODE-19 review, PR #9344).
+					res.ResultPresent = false
 				}
 			}
 		}

@@ -1124,6 +1124,13 @@ export { emitResult as emit };
  */
 export function captureFinal(value: unknown): void {
   if (value === undefined) return;
+  // JSON.stringify silently drops a function or symbol value
+  // instead of throwing, which would read back as an explicit
+  // null result; inspect those, like the values that throw.
+  if (typeof value === "function" || typeof value === "symbol") {
+    send("final", { value: safeInspect(value) });
+    return;
+  }
   try {
     send("final", { value });
   } catch {

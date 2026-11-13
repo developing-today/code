@@ -856,3 +856,73 @@ func TestBeforeHookFinalExpressionDoesNotLeak(t *testing.T) {
 		t.Errorf("main result = %#v, want the stdout answer object, not the hook's 3", res.Result)
 	}
 }
+
+// CODE-19 review (PR #9344): when truncation discards a
+// stdout-derived result, its presence marker goes with it --
+// otherwise consumers present the discard as a deliberate null.
+func TestTruncationClearsResultPresence(t *testing.T) {
+	svc := service(t, store(t))
+	svc.Limits.StdoutLimit = 200
+	res, _ := run(t, svc, `
+import { installGlobals } from "./mcpx-client.ts";
+installGlobals();
+console.log(JSON.stringify({ data: "x".repeat(5000) }));
+`, execsvc.Options{})
+	if !res.StdoutTruncated {
+		t.Fatal("expected StdoutTruncated")
+	}
+	if res.Result != nil || res.ResultPresent {
+		t.Errorf("truncated stdout result: value = %#v, present = %v, want neither", res.Result, res.ResultPresent)
+	}
+}
+
+// CODE-19 review (PR #9344): with no launcher shim there are no
+// globals to capture through, so the source must run as written
+// even when a client source is present.
+func TestLauncherNoneSkipsFinalRewrite(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source: `console.log(JSON.stringify({ ok: true }));`,
+		ClientSource: module, Permissions: "all", Launcher: runner.LauncherNone,
+	}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Error != "" {
+		t.Fatalf("bare-runtime run failed: %s", res.Error)
+	}
+	if got, ok := res.Result.(map[string]any); !ok || got["ok"] != true {
+		t.Errorf("bare-runtime result = %#v, want the stdout object", res.Result)
+	}
+}
+
+// CODE-19 review (PR #9344): a final value JSON silently omits
+// (a function, a symbol) is reported inspected, not as an
+// explicit null.
+func TestFinalUnstringifiableValuesAreInspected(t *testing.T) {
+	needRuntime(t)
+	module := codegen.Module(nil, "http://127.0.0.1:1", "")
+	svc := service(t, store(t))
+	run := func(src string) *execsvc.Result {
+		res, err := svc.RunWith(context.Background(), runner.Options{
+			Source: src, ClientSource: module, Permissions: "all",
+		}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Error != "" {
+			t.Fatalf("run of %q failed: %s", src, res.Error)
+		}
+		return res
+	}
+	res := run(`(() => 42)`)
+	if s, ok := res.Result.(string); !ok || s == "" || !res.ResultPresent {
+		t.Errorf("function final: result = %#v (present %v), want an inspected string", res.Result, res.ResultPresent)
+	}
+	res = run(`Symbol("answer")`)
+	if s, ok := res.Result.(string); !ok || !strings.Contains(s, "Symbol") {
+		t.Errorf("symbol final: result = %#v, want the inspected symbol", res.Result)
+	}
+}
