@@ -362,12 +362,21 @@ function parsePathFlag(flag, raw, args) {
 
 function parseArgs(argv) {
   const args = { db: null, outDir: null, windowHours: DEFAULT_WINDOW_HOURS, freshHours: DEFAULT_FRESH_HOURS };
+  const seen = new Set();
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
-    if (a === "--db") args.db = parsePathFlag("--db", argv[++i], args);
-    else if (a === "--out-dir") args.outDir = parsePathFlag("--out-dir", argv[++i], args);
-    else if (a === "--window-hours") args.windowHours = parseHourFlag("--window-hours", argv[++i], args);
-    else if (a === "--fresh-hours") args.freshHours = parseHourFlag("--fresh-hours", argv[++i], args);
+    if (["--db", "--out-dir", "--window-hours", "--fresh-hours"].includes(a)) {
+      if (seen.has(a)) {
+        const err = new ExportError("invalid-argument", 2, `opencode usage export: duplicate option ${a}`);
+        err.suppressFailureDocument = true;
+        throw err;
+      }
+      seen.add(a);
+      if (a === "--db") args.db = parsePathFlag(a, argv[++i], args);
+      else if (a === "--out-dir") args.outDir = parsePathFlag(a, argv[++i], args);
+      else if (a === "--window-hours") args.windowHours = parseHourFlag(a, argv[++i], args);
+      else args.freshHours = parseHourFlag(a, argv[++i], args);
+    }
     else throw new Error(`unknown argument: ${a}`);
   }
   return args;
@@ -394,10 +403,12 @@ export async function run({
         ? err
         : new ExportError("invalid-argument", 2, `opencode usage export: ${err?.message ?? err}`);
     const doc = failureDocument(e.status, e.message, attemptedAt);
-    try {
-      await writeDocument(err?.args?.outDir ?? join(home, "atlas/opencode-usage-export"), doc);
-    } catch {
-      /* nowhere to write the failure either; exit code carries it */
+    if (!e.suppressFailureDocument) {
+      try {
+        await writeDocument(err?.args?.outDir ?? join(home, "atlas/opencode-usage-export"), doc);
+      } catch {
+        /* nowhere to write the failure either; exit code carries it */
+      }
     }
     return { exitCode: e.exitCode, doc };
   }
