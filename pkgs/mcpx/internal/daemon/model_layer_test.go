@@ -314,3 +314,65 @@ func TestBrokerSamplerPublishesSampleLifecycle(t *testing.T) {
 		t.Errorf("resp = %+v, want the answered text", out.resp)
 	}
 }
+
+// Codex P2 (PR #9021): a sampling question opened inside an
+// interruptible ask call (a prompt hook during /v1/ask kind: exec)
+// is recorded on that call, so the host driving the call sees it in
+// its ask poll and can answer it -- before, the question sat only in
+// the broker and the hook waited out its timeout.
+func TestBrokerSamplerAttachesQuestionToActiveAskCall(t *testing.T) {
+	reg := samplingRegistry(t)
+	s := &Server{reg: reg}
+	pol := defaultConsumerPolicy()
+	pol.ModelTimeout = 5 * time.Second
+	reg.asks.beginRun("call-1", "run-1", "sess-1")
+	defer reg.endAsk("call-1")
+	ctx := withAskCall(withPolicy(context.Background(), pol), "call-1")
+	fn := s.brokerSampler("sess-1")
+	type outcome struct {
+		resp model.Response
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		resp, err := fn(ctx, model.Request{Messages: []model.Message{{Role: "user", Content: "advise"}}})
+		done <- outcome{resp, err}
+	}()
+	call, ok := reg.asks.get("call-1")
+	if !ok {
+		t.Fatal("the ask call was not registered")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var qid string
+	for {
+		qs, _ := call.snapshot()
+		if len(qs) == 1 {
+			if qs[0].Method != "sampling/createMessage" {
+				t.Fatalf("attached question method = %q, want sampling/createMessage", qs[0].Method)
+			}
+			qid = qs[0].ID
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the sampling question was never attached to the ask call (%d questions)", len(qs))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := reg.broker.Respond(elicit.Answer{
+		ID: qid, Action: elicit.Accept, By: "test",
+		Content: json.RawMessage(`{"role":"assistant","model":"host-model","content":{"type":"text","text":"host advice"}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case out := <-done:
+		if out.err != nil {
+			t.Fatalf("sampler: %v", out.err)
+		}
+		if out.resp.Text != "host advice" || out.resp.Provider != "sampling" {
+			t.Fatalf("resp = %+v, want the host's advice via sampling", out.resp)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sampler never returned after the ask answer")
+	}
+}

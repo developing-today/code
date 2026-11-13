@@ -325,6 +325,34 @@ func (r *Registry) attach(ctx context.Context, server, key string, req elicit.Re
 	return a.ID, true
 }
 
+// attachSample records one of mcpx's own sampling questions -- a prompt
+// hook's model request, opened by the broker sampler in consumer.go --
+// against the interruptible call active on ctx, if any, and returns
+// whether it did.
+//
+// No (server, key) attribution is needed or possible here, unlike
+// attach: the context names the call itself, and a run's askCall
+// carries no server of its own. Without this, a sampling question a
+// prompt hook raised during an ask (kind: exec) sat only in the
+// broker, handleAskPoll never surfaced it to the host driving the
+// call, and the hook waited out its timeout instead of being answered
+// (Codex review, PR #9021).
+func (r *Registry) attachSample(ctx context.Context, req elicit.Request, params json.RawMessage) bool {
+	id, ok := ctx.Value(askCallKey{}).(string)
+	if !ok || id == "" {
+		return false
+	}
+	a, ok := r.asks.get(id)
+	if !ok {
+		return false
+	}
+	a.add(mcpserver.Question{
+		ID: req.ID, Method: "sampling/createMessage", Params: params,
+		Mode: string(req.Mode), Server: req.Server,
+	})
+	return true
+}
+
 // CallAsk runs an interruptible call and registers it for correlation.
 func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc config.CallContext, args any) (json.RawMessage, error) {
 	// A mounted tool (#1933 slice 3) delegates to its home server
@@ -575,6 +603,12 @@ func (s *Server) runAsk(ctx context.Context, id string, cc config.CallContext, r
 	}
 	s.reg.asks.beginRun(id, run, opts.Session)
 	defer s.reg.endAsk(id)
+	// The call's id rides the run's context, as on the other ask
+	// paths: an in-process question the run raises -- a prompt hook's
+	// sampling request -- is attributed through it (Registry.attachSample),
+	// so the host driving this call can answer it from its ask poll
+	// (Codex review, PR #9021).
+	ctx = withAskCall(ctx, id)
 	start := time.Now()
 	// An ask with kind: exec runs the same hooks /v1/exec runs,
 	// config-declared prompt hooks included: resolve the model

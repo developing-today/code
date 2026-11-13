@@ -129,12 +129,16 @@ func renderPromptTemplate(tmpl string, values map[string]json.RawMessage) string
 // answer — or the reason there is none — in the hook's frame. It never
 // touches res: advise is the whole effect, in every phase.
 func (s *Service) runPromptHook(ctx context.Context, phase string, h Hook, hctx hookContext,
-	ropts runner.Options, res *Result) hookRun {
+	ropts runner.Options, res *Result) (out hookRun) {
 
-	out := hookRun{Hook: h}
+	out = hookRun{Hook: h}
 	out.Frame = HookFrame{On: HookPointScript, Phase: phase, Action: hookActionPrompt, Effect: hookEffectAdvise}
 
 	start := time.Now()
+	// The result is named so this deferred timing lands on the value
+	// the caller receives: with an unnamed result every return copies
+	// the struct first, and the measured duration never left this
+	// function (Codex review, PR #9021).
 	defer func() {
 		out.Duration = time.Since(start)
 		out.Frame.DurationMs = out.Duration.Milliseconds()

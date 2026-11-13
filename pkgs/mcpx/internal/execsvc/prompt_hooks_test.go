@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/model"
 	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
@@ -13,15 +14,19 @@ import (
 // fakeProvider is a model.Provider that answers from a script, so prompt
 // hook tests never reach a network or a real model.
 type fakeProvider struct {
-	text string
-	err  error
-	last model.Request
+	text  string
+	err   error
+	delay time.Duration
+	last  model.Request
 }
 
 func (f *fakeProvider) Name() string { return "fake" }
 
 func (f *fakeProvider) Generate(_ context.Context, req model.Request) (model.Response, error) {
 	f.last = req
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
 	if f.err != nil {
 		return model.Response{}, f.err
 	}
@@ -259,5 +264,29 @@ func TestModelTokenCap(t *testing.T) {
 		if got := ModelTokenCap(tc.perCall, tc.budget); got != tc.want {
 			t.Errorf("ModelTokenCap(%d, %d) = %d, want %d", tc.perCall, tc.budget, got, tc.want)
 		}
+	}
+}
+
+// Codex P3 (PR #9021): the returned hook run carries the measured
+// duration. runPromptHook's result used to be unnamed, so every
+// return copied the struct before the deferred timing callback ran,
+// and callers always saw a zero duration no matter how long the
+// provider took.
+func TestRunPromptHookReportsDuration(t *testing.T) {
+	fake := &fakeProvider{text: "slow advice", delay: 25 * time.Millisecond}
+	s := &Service{ModelProvider: fake}
+	res := &Result{RunID: "r1", Result: "ok"}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+	h := Hook{Phase: HookOnSuccess, Prompt: "advise"}
+
+	run := s.runPromptHook(context.Background(), HookOnSuccess, h, hctx, runner.Options{}, res)
+	if run.Failed {
+		t.Fatalf("run failed: %s", run.Frame.Error)
+	}
+	if run.Duration < 25*time.Millisecond {
+		t.Fatalf("run duration = %v, want at least the provider's 25ms", run.Duration)
+	}
+	if run.Frame.DurationMs < 25 {
+		t.Fatalf("frame durationMs = %d, want at least 25", run.Frame.DurationMs)
 	}
 }

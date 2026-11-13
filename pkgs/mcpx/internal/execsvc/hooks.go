@@ -235,7 +235,11 @@ func (s *Service) runHooks(ctx context.Context, phase string, hooks []Hook, hctx
 		hctx.ExitCode = res.ExitCode
 		hctx.Artifacts = res.Artifacts
 		var run hookRun
-		if h.Prompt != "" {
+		// Dispatch uses validation's trimmed predicate: a
+		// whitespace-only prompt is no prompt action, and a script
+		// hook carrying one must still run its script (Codex
+		// review, PR #9021).
+		if strings.TrimSpace(h.Prompt) != "" {
 			// A prompt hook only advises: its frame carries the advice,
 			// and applyHookResult is never consulted for it, so it cannot
 			// change the outcome whatever phase it runs in.
