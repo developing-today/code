@@ -35,7 +35,7 @@ const MIN_LANES: u32 = 1;
 const MAX_LANES: u32 = 4;
 
 /// Encrypt a raw 32-byte identity key into the version 1 envelope.
-pub(crate) fn encrypt(passphrase: &[u8], key: &[u8; KEY_LEN]) -> Result<Vec<u8>> {
+pub fn encrypt(passphrase: &[u8], key: &[u8; KEY_LEN]) -> Result<Vec<u8>> {
     let mut salt = [0; SALT_LEN];
     let mut nonce = [0; NONCE_LEN];
     rand::rng().fill(&mut salt);
@@ -81,7 +81,7 @@ pub(crate) fn encrypt(passphrase: &[u8], key: &[u8; KEY_LEN]) -> Result<Vec<u8>>
 }
 
 /// Authenticate and decrypt a version 1 identity key envelope.
-pub(crate) fn decrypt(passphrase: &[u8], envelope: &[u8]) -> Result<[u8; KEY_LEN]> {
+pub fn decrypt(passphrase: &[u8], envelope: &[u8]) -> Result<[u8; KEY_LEN]> {
     if envelope.len() != ENVELOPE_LEN {
         bail!("invalid key envelope length");
     }

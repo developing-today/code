@@ -7,8 +7,8 @@ use anyhow::{Context, Result, bail};
 use zeroize::Zeroizing;
 
 use crate::cli::KeyCommand;
-use crate::key_envelope;
-use crate::seed_phrase;
+use id_core::key_envelope;
+use id_core::seed_phrase;
 use crate::store::load_or_create_keypair;
 use crate::{CLIENT_KEY_FILE, KEY_FILE};
 

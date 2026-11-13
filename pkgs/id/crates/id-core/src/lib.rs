@@ -29,6 +29,8 @@ pub mod connectivity;
 pub mod discovery;
 pub mod frames;
 pub mod hex;
+pub mod key_envelope;
+pub mod seed_phrase;
 pub mod ip_evidence;
 pub mod json_unique;
 pub mod membership;
@@ -74,3 +76,20 @@ pub enum Refusal {
     #[error("{0}")]
     RateLimited(String),
 }
+
+/// Filename for the server's Ed25519 keypair.
+///
+/// The node's long-term identity key, stored in the node's data directory.
+pub const KEY_FILE: &str = ".iroh-key";
+
+/// Filename for the client's Ed25519 keypair.
+///
+/// Used when connecting to remote peers. Separate from the server key to allow
+/// different identities for serving vs. connecting.
+pub const CLIENT_KEY_FILE: &str = ".iroh-key-client";
+
+/// Filename for the serve lock file.
+///
+/// Created when `id serve` is running. Contains the node ID and addresses
+/// for local clients to connect. Automatically removed on clean shutdown.
+pub const SERVE_LOCK: &str = ".iroh-serve.lock";
