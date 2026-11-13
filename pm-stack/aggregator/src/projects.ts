@@ -205,8 +205,16 @@ export function projectPageInfo(json: unknown): { hasNextPage: boolean; endCurso
 
 export interface ProjectPoolRead {
   items: ProjectPoolItem[];
-  /** GraphQL's provider-reported total, comparable to the emitted item count. */
+  /** The provider-reported total made comparable to the emitted item count:
+   * GraphQL's totalCount counts every item in the project, including the
+   * draft and unlinked items parseProjectItems intentionally excludes, so
+   * the exclusions are subtracted here (Codex P2 on PR #5180). Comparing the
+   * raw total against the emitted count reported positive lag on a complete
+   * collection whenever the project held a draft. */
   reportedTotal: number | null;
+  /** How many provider items parseProjectItems intentionally excluded
+   * (drafts and items without a linked issue/PR) across all pages read. */
+  excludedCount: number;
 }
 
 /** Fetch the whole pool (paginated). Throws on HTTP/GraphQL errors so
@@ -216,6 +224,7 @@ export async function fetchProjectPoolWithCount(
   fetchFn: typeof fetch = fetch,
 ): Promise<ProjectPoolRead> {
   const out: ProjectPoolItem[] = [];
+  let excludedCount = 0;
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
   for (let page = 0; page < 10; page++) {
@@ -232,7 +241,13 @@ export async function fetchProjectPoolWithCount(
     if (!res.ok) throw new Error(`github GraphQL HTTP ${res.status}`);
     const json: unknown = await res.json();
     if ((json as GqlProjectPage).errors) throw new Error("github GraphQL returned errors");
-    out.push(...parseProjectItems(json));
+    const pageItems = parseProjectItems(json);
+    out.push(...pageItems);
+    // Every node parseProjectItems did not emit was intentionally excluded
+    // (a draft, or an item with no linked issue/PR): count it so the
+    // provider total can be compared against the emitted population.
+    const pageNodes = (json as GqlProjectPage)?.data?.node?.items?.nodes ?? [];
+    excludedCount += pageNodes.length - pageItems.length;
     lastPageInfo = projectPageInfo(json);
     if (!lastPageInfo.hasNextPage || !lastPageInfo.endCursor) break;
     cursor = lastPageInfo.endCursor;
@@ -242,7 +257,12 @@ export async function fetchProjectPoolWithCount(
   }
   // Epic membership needs the whole pool (parents may sit on other
   // pages), so it resolves once over the aggregate, not per page.
-  return { items: resolveEpicRefs(out), reportedTotal: lastPageInfo?.totalCount ?? null };
+  const totalCount = lastPageInfo?.totalCount ?? null;
+  return {
+    items: resolveEpicRefs(out),
+    reportedTotal: totalCount === null ? null : totalCount - excludedCount,
+    excludedCount,
+  };
 }
 
 /** Array-only compatibility helper for consumers that do not need source totals. */

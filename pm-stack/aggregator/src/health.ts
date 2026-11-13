@@ -129,7 +129,11 @@ export interface QuotaGathererProviderHealth {
   providerId: string;
   serviceId: string;
   state: "ok" | "stale" | "error";
-  lastSyncAt: string;
+  /** The latest successful sync, or null when the provider has never
+   * synced: an errored entry's measuredAt is the failed attempt's time,
+   * not a sync (Codex P2 on PR #5180). Retained (stale) entries keep
+   * their last successful measuredAt. */
+  lastSyncAt: string | null;
   /** Quota providers do not currently publish a comparable expected row total. */
   behindBy: null;
   lagNote: string;
@@ -544,7 +548,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
             providerId: provider.providerId,
             serviceId: provider.serviceId,
             state: provider.state,
-            lastSyncAt: provider.measuredAt,
+            lastSyncAt: provider.state === "error" ? null : provider.measuredAt,
             behindBy: null,
             lagNote: "provider does not report a comparable expected entry total",
             ...(provider.credentialLabel ? { credentialLabel: provider.credentialLabel } : {}),

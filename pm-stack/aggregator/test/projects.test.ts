@@ -132,7 +132,22 @@ describe("fetchProjectPool pagination", () => {
       { preconnect: () => {} },
     );
     const read = await fetchProjectPoolWithCount("test-token", fetchFn);
-    expect(read.reportedTotal).toBe(9);
+    // The fixture page holds one draft the parser intentionally excludes,
+    // so the comparable total is the provider's 9 minus that exclusion.
+    expect(read.reportedTotal).toBe(8);
+    expect(read.excludedCount).toBe(1);
+    expect(read.items).toHaveLength(2);
+  });
+
+  test("a complete collection of a pool with drafts reports no lag", async () => {
+    const fetchFn: typeof fetch = Object.assign(
+      async () => new Response(JSON.stringify(projectPage(false, null, 3))),
+      { preconnect: () => {} },
+    );
+    const read = await fetchProjectPoolWithCount("test-token", fetchFn);
+    // totalCount 3 = 2 emitted + 1 excluded draft: the comparable total
+    // equals the emitted count, so health computes zero lag.
+    expect(read.reportedTotal).toBe(2);
     expect(read.items).toHaveLength(2);
   });
 

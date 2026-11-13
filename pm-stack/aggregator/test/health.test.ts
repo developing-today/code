@@ -155,6 +155,45 @@ describe("buildHealth probes", () => {
     expect(html).toContain(syncedAt);
   });
 
+  test("an errored quota provider reports an unknown last-sync, a retained one keeps its last success", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const syncedAt = new Date(NOW - 30_000).toISOString();
+    const attemptedAt = new Date(NOW - 5_000).toISOString();
+    const quota: QuotaView = {
+      pools: [],
+      burn: [],
+      choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] },
+      gatherer: {
+        generatedAt: attemptedAt,
+        source: "openchamber-quota",
+        tickAt: attemptedAt,
+        ok: false,
+        providers: [
+          {
+            providerId: "codex",
+            serviceId: "openai.main",
+            state: "error",
+            measuredAt: attemptedAt,
+            source: "openchamber-quota",
+          },
+          {
+            providerId: "claude",
+            serviceId: "anthropic.main",
+            state: "stale",
+            measuredAt: syncedAt,
+            source: "openchamber-quota",
+          },
+        ],
+      },
+    };
+    const view = await buildHealth(inputs({ quota }), { fetcher, cache: createProbeCache(), now: NOW });
+    // The errored provider's measuredAt is the failed attempt's time, not
+    // a sync: lastSyncAt is unknown. The stale provider's measuredAt is
+    // its retained last success and stays the last-sync time.
+    expect(view.quotaGatherer?.providers[0]).toMatchObject({ providerId: "codex", state: "error", lastSyncAt: null });
+    expect(view.quotaGatherer?.providers[1]).toMatchObject({ providerId: "claude", state: "stale", lastSyncAt: syncedAt });
+  });
+
   test("a stopped collector is visible on the health page by the next five-minute interval", async () => {
     // An isolated stand-in collector writes only a temporary feed. Freeze the
     // observation clock immediately after its last write and advance it to the
