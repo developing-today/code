@@ -65,6 +65,16 @@ describe("#3976 SSE-down fallback policy", () => {
     expect(asset).not.toContain("location.reload");
   });
 
+  test("the browser asset refreshes on every fallback poll, not only when the cursor moved", async () => {
+    // A consumed notice whose fragment reread fails transiently must
+    // be retried by the next cadence poll (Codex review on PR #9193);
+    // gating the refresh on cursor movement strands the view until a
+    // later notice happens to arrive.
+    const asset = await readFile(join(import.meta.dir, "..", "src", "assets", "freshness-client.js"), "utf8");
+    expect(asset).toContain("every successful poll");
+    expect(asset).not.toContain("if (moved)");
+  });
+
   test("the layout ships the freshness client and the server serves it", async () => {
     const render = await readFile(join(import.meta.dir, "..", "src", "render.ts"), "utf8");
     const server = await readFile(join(import.meta.dir, "..", "src", "server.ts"), "utf8");

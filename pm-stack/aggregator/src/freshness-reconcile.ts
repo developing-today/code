@@ -78,6 +78,12 @@ export interface CanonicalRevisionReader {
 export interface ReconcileJournal {
   listAfter(after: number): Promise<{ cursor: number; resetRequired: boolean; events: FreshnessNotice[] }>;
   publish(input: FreshnessInput): Promise<{ notice: FreshnessNotice; duplicate: boolean; pending: boolean }>;
+  /** Optional durable-state verification (FreshnessStore provides
+   *  it): resolves while the journal on disk matches what listAfter
+   *  serves, throws when the durable journal was lost, replaced, or
+   *  became unreadable after startup. listAfter alone cannot detect
+   *  that — it serves the in-memory listing. */
+  verifyDurable?(): Promise<void>;
 }
 
 export type PushState = "up" | "degraded" | "down";
@@ -163,6 +169,22 @@ export class FreshnessReconciler {
     this.journalDown = false;
     this.journalError = null;
 
+    // Durable-state verification: a journal file deleted, replaced, or
+    // made unreadable after startup still answers listAfter from
+    // memory, so the listing above cannot prove durability. When the
+    // journal offers the seam, a failed verification is push down —
+    // exactly like an unreadable journal — never a healthy pass over
+    // durable state that no longer exists.
+    if (this.journal.verifyDurable !== undefined) {
+      try {
+        await this.journal.verifyDurable();
+      } catch (err) {
+        this.journalDown = true;
+        this.journalError = err instanceof Error ? err.message : String(err);
+        return this.health(now);
+      }
+    }
+
     // Journal loss/reset: the cursor is monotonic within one journal
     // file, so a backwards move means retained history was replaced.
     if (this.cursorSeen !== null && page.cursor < this.cursorSeen) {
@@ -182,7 +204,11 @@ export class FreshnessReconciler {
       } catch (err) {
         // Producer outage: report the source unavailable and leave its
         // previous gap state untouched — nothing is repaired or hidden.
+        // The pass is NOT successful: no canonical revision could be
+        // checked for this source, so lastSuccessfulReconcileAt must
+        // not advance over an outage (Codex review on PR #9193).
         this.unavailable.set(reader.source, err instanceof Error ? err.message : String(err));
+        durable = false;
         continue;
       }
       if (revision === null) {

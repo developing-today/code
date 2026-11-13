@@ -1546,6 +1546,21 @@ async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverview
   return overviewContextCache.get(loadOverviewContext);
 }
 
+// #3976 (Codex review on PR #9193): a freshness notice means canonical
+// data changed, but the TTL caches above could still serve an assembly
+// built before the notice for up to 10s — and nothing re-requests when
+// the TTL expires, so an accepted revision could stay invisible until
+// a later notice or a manual refresh. Invalidate the two assemblies
+// the freshness fragments reread (/frag/overview, /frag/today) the
+// moment a notice becomes durable. The store seam covers every
+// acceptance path — in-process recordFreshness, the IPC handler, and
+// the reconciler's synthetic invalidations all publish through the
+// same store.
+freshnessStore.onNotice(() => {
+  overviewContextCache.clear();
+  todayContextCache.clear();
+});
+
 /** The live-source half of the /program assembly (#1046 + #1121): the
  *  items closure for the program refs, the Project pool, the roadmap,
  *  orchestration, and the coverage census inputs. Everything

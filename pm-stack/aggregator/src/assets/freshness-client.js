@@ -11,7 +11,8 @@
 // Degraded mode (policy: src/freshness-fallback.ts, SSE_DOWN_REFRESH_MS
 // = 5 minutes — the collector's cadence): while the stream is down,
 // poll the machine twin /api/freshness-events.json on the 5-minute
-// cadence and dispatch the same refresh when the cursor moved. The
+// cadence and dispatch the same refresh on every poll (the policy's
+// cadence refresh, not only when the notice cursor moved). The
 // moment the stream reopens, polling stops. Neither path reloads the
 // page, so view state survives both.
 (function () {
@@ -48,10 +49,15 @@
       if (res.ok) {
         var envelope = await res.json();
         if (envelope && typeof envelope.cursor === "number") {
-          var moved = envelope.cursor !== cursor || envelope.resetRequired === true;
           cursor = envelope.cursor;
-          if (moved) refresh();
         }
+        // The degraded-mode policy (src/freshness-fallback.ts) is a
+        // canonical refresh on the cadence itself, not only when the
+        // notice cursor moved: a fragment reread that fails
+        // transiently after a notice was consumed must not strand the
+        // view until some later notice happens to arrive. Refresh on
+        // every successful poll while the stream is down.
+        refresh();
       }
     } catch (e) {
       /* a failed poll is retried on the same cadence; the data on

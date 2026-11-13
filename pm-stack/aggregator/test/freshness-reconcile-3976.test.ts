@@ -42,7 +42,12 @@ class FakeJournal implements ReconcileJournal {
   cursor = 0;
   pendingNext = false;
   failReads = false;
+  verifyError: Error | null = null;
   publishCalls: FreshnessInput[] = [];
+
+  async verifyDurable() {
+    if (this.verifyError) throw this.verifyError;
+  }
 
   async listAfter(after: number) {
     if (this.failReads) throw new Error("journal io error");
@@ -222,6 +227,63 @@ describe("#3976 freshness reconciliation", () => {
     const view = await reconciler.reconcile(at(0));
     expect(view.state).toBe("down");
     expect(view.detail).toContain("journal unreadable");
+  });
+
+  test("a failed source read does not advance the last successful reconcile", async () => {
+    const journal = new FakeJournal();
+    let down = false;
+    const reader = {
+      source: "fleet-feed" as const,
+      read: async (): Promise<CanonicalRevision | null> => {
+        if (down) throw new Error("feed file unreadable");
+        return feedRevision(0);
+      },
+    };
+    const reconciler = new FreshnessReconciler(journal, [reader]);
+
+    const healthy = await reconciler.reconcile(at(0));
+    expect(healthy.lastSuccessfulReconcileAt).toBe(at(0).toISOString());
+
+    down = true;
+    const outage = await reconciler.reconcile(at(60_000));
+    // The source could not be checked at all: the pass must not stamp
+    // a fresh successful-reconcile time over the outage.
+    expect(outage.lastSuccessfulReconcileAt).toBe(at(0).toISOString());
+    expect(outage.lastReconcileAttemptAt).toBe(at(60_000).toISOString());
+    expect(outage.state).toBe("degraded");
+    expect(outage.sources.find((s) => s.source === "fleet-feed")?.state).toBe("unavailable");
+  });
+
+  test("durable journal loss after startup is push down, not a healthy pass from memory", async () => {
+    const journal = new FakeJournal();
+    const reconciler = new FreshnessReconciler(journal, [readerOf(feedRevision(0))]);
+    const healthy = await reconciler.reconcile(at(0));
+    expect(healthy.state).toBe("up");
+
+    journal.verifyError = new Error("freshness journal file is missing — durable state lost");
+    const lost = await reconciler.reconcile(at(60_000));
+    expect(lost.state).toBe("down");
+    expect(lost.detail).toContain("durable state lost");
+    expect(lost.lastSuccessfulReconcileAt).toBe(at(0).toISOString());
+  });
+
+  test("the real store's verification catches a journal file deleted after startup", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "freshness-reconcile-verify-"));
+    try {
+      const file = join(dir, "freshness.json");
+      const store = new FreshnessStore(file);
+      const reconciler = new FreshnessReconciler(store, [readerOf(feedRevision(0))]);
+      const healthy = await reconciler.reconcile(at(0));
+      expect(healthy.state).toBe("up");
+      expect((await store.listAfter(0)).events).toHaveLength(1);
+
+      await rm(file); // the durable journal disappears; memory still serves it
+      const lost = await reconciler.reconcile(at(60_000));
+      expect(lost.state).toBe("down");
+      expect(lost.detail).toContain("missing");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   test("reconcile interval is the 5-minute design cadence", () => {
