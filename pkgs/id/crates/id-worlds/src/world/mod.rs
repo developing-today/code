@@ -36,6 +36,7 @@ mod clock;
 mod coordinator;
 mod core;
 mod handle;
+mod handoff_operations;
 pub mod hotness;
 mod metrics;
 mod replica;
@@ -53,11 +54,15 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use coordinator::{
     ActiveHandoff, Coordinator, CoordinatorError, EntityInTransit, EntityOwner, ExportReceipt,
     HandoffCompletion, HandoffStage, ImportReceipt, ObserveOutcome, ReconcileOutcome,
-    TransitStage, STUCK_THRESHOLD_MS,
+    STUCK_THRESHOLD_MS, TransitStage,
 };
 pub(crate) use core::AdminHistoryByteLedger;
 pub use core::WorldCore;
 pub use handle::WorldHandle;
+pub use handoff_operations::{
+    ClientRoute, HandoffOperations, HandoffOpsEntry, HandoffOpsSnapshot, OperationKind, OpsError,
+    RouteDecision, StaleRoute,
+};
 pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
