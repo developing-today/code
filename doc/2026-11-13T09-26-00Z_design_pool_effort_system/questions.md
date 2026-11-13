@@ -46,3 +46,24 @@ plan → PAYG, Cloudflare included-usage burned first among metered options),
 and it also informs the category-pool order in brief §1 only where a category
 is served by a decision model. The statement inventory maps the phrase to the
 decision-pool design, not to a category name.
+
+## Q3 — 2026-11-13 06:40 CT — open-default — Cloudflare "$10 of included usage"
+
+**Observed (R2 research):** the Workers paid plan's Workers AI allowance is
+10,000 neurons/day (≈ $0.11/day at overage rates), not a $10 monthly credit;
+paid plans have no hard stop at the allowance. Drew's wording was "$10 (or
+whatever)".
+
+**Default chosen:** the decision executor keeps its own per-UTC-day neuron
+counter against the real included allowance (configurable, default 10,000
+neurons/day), burns it first among metered options, and disengages at the
+cap; Cloudflare's 429/overage is never the stop signal. If Drew meant a
+separate dollar budget (e.g. a $10/month overage ceiling), it becomes a
+second configurable cap on the same counter.
+
+## Q4 — 2026-11-13 06:40 CT — open-default — "Luna 100k" in the decision chain
+
+**Default chosen:** Luna 100k = the existing `limited` pool's first leg
+(openai-plan gpt-6-luna #medium with the @100k policy cap, PR #9384), pinned
+directly as the decision chain's last resort — never through `small` or
+`limited` as a whole (supplement §4: "don't use small").
