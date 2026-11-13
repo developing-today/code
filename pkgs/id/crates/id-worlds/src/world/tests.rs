@@ -1655,7 +1655,9 @@ mod tests {
                 "{entry:?}"
             );
         }
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_WRITE_LEASE);
+        // The max-version pin moved to version 8 with recurring
+        // schedules (#1355); the lease entries still require exactly 7.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_SCHEDULE_RECURRENCE);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         let mut lease = WriteLease::bootstrap();
