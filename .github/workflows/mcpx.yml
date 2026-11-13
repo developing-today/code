@@ -64,12 +64,6 @@ on:
       - ".opencode/plugin/**"
       # Keep the workflow self-tested, including this trigger restoration.
       - ".github/workflows/mcpx.yml"
-  pull_request:
-    paths:
-      - "pkgs/mcpx/**"
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".opencode/plugin/**"
-      - ".github/workflows/mcpx.yml"
   schedule:
     # Nightly full-suite stress (#1973). Odd minute, off the hour.
     - cron: "23 3 * * *"

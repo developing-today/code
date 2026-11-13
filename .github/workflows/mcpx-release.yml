@@ -1,3 +1,4 @@
+# Automatic tag-push releases disabled by owner, 2026-11-13; manual snapshot remains.
 name: mcpx release
 
 # Cuts an mcpx release from the monorepo (decision 0005 §2.1-§2.3, §3, §5;
@@ -19,9 +20,6 @@ name: mcpx release
 # without publishing a release. That run is the proof the release path works,
 # and it is how a person checks a change before tagging.
 on:
-  push:
-    tags:
-      - "mcpx/v*"
   workflow_dispatch:
     inputs:
       version:

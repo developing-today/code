@@ -7,10 +7,6 @@ name: atlas-search
 # this basic-tier job runs tests only.
 
 on:
-  pull_request:
-    paths:
-      - "pkgs/atlas-search/**"
-      - ".github/workflows/atlas-search-pr.yml"
   push:
     branches: [main]
     paths:

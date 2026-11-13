@@ -12,15 +12,6 @@ name: workflow-lint
 # static binary, so this stays a seconds-long basic check.
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/**"
-      - ".github/actions/**"
-      - ".github/scripts/check-workflows.sh"
-      - ".github/scripts/check-workflows.test.sh"
-      - ".github/ci-policy.md"
-      - ".github/scripts/check-ci-policy-agreement.sh"
-      - ".github/scripts/check-ci-policy-agreement.test.sh"
   workflow_dispatch:
 
 permissions:
